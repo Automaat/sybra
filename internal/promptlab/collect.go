@@ -1,9 +1,7 @@
 package promptlab
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
@@ -11,39 +9,37 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 )
 
-// loadEvaluationReport reads the persisted fleet scorecard. A missing file
-// (evaluation service hasn't ticked yet) is treated as "no evidence yet" —
-// not an error — so a fresh install can run the loop without crashing. A
-// present-but-corrupt file is a genuine error: it would be wrong to treat
-// unparsable data as "nothing wrong".
-func loadEvaluationReport(path string) (evaluation.Report, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return evaluation.Report{}, nil
-		}
-		return evaluation.Report{}, err
-	}
-	var report evaluation.Report
-	if err := json.Unmarshal(data, &report); err != nil {
-		return evaluation.Report{}, fmt.Errorf("parse evaluation report: %w", err)
-	}
-	return report, nil
-}
+// unboundedSince/unboundedUntil span effectively all time. CollectWeakSubjects
+// receives records already scoped by the caller's lookback window (see
+// withinLookback); passing an all-time window into evaluation.BreakdownBy and
+// evaluation.Compute means the lookback trim is the only one that applies —
+// there is no second, independent window to fall out of sync with it.
+var (
+	unboundedSince time.Time
+	unboundedUntil = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+)
 
-// CollectWeakSubjects derives per-role WeakSubjects from an evaluation report
-// and supporting run records. A role is only surfaced when it clears BOTH
-// gates — MinSamples (enough runs to trust the number) and MinEffectSize
-// (the failure rate is actually worse than the fleet baseline, not noise) —
-// so a single unlucky run never triggers a proposal. Results are sorted by
-// effect size, worst first.
-func CollectWeakSubjects(report evaluation.Report, records []stats.RunRecord, minSamples int, minEffectSize float64) []WeakSubject {
+// CollectWeakSubjects derives per-role WeakSubjects directly from run
+// records — not a persisted evaluation report — so the same lookback-
+// filtered evidence backs both the gating metrics (samples, failure rate,
+// effect size vs the fleet baseline) and the representative project/task
+// attribution. A role is only surfaced when it clears BOTH gates —
+// MinSamples (enough runs to trust the number) and MinEffectSize (the
+// failure rate is actually worse than the fleet baseline, not noise) — so a
+// single unlucky run never triggers a proposal. Results are sorted by effect
+// size, worst first.
+func CollectWeakSubjects(records []stats.RunRecord, minSamples int, minEffectSize float64) []WeakSubject {
+	overall := evaluation.Compute(records, nil, unboundedSince, unboundedUntil)
+	byRole := evaluation.BreakdownBy(records, unboundedSince, unboundedUntil, func(r stats.RunRecord) string {
+		return normalizedRole(r.Role)
+	})
+
 	var out []WeakSubject
-	for _, b := range report.ByRole {
-		if b.Key == "" || b.Runs < minSamples {
+	for _, b := range byRole {
+		if b.Runs < minSamples {
 			continue
 		}
-		effect := b.FailureRate - report.Overall.FailureRate
+		effect := b.FailureRate - overall.FailureRate
 		if effect < minEffectSize {
 			continue
 		}
@@ -51,7 +47,7 @@ func CollectWeakSubjects(report evaluation.Report, records []stats.RunRecord, mi
 			Subject: Subject{Role: b.Key},
 			Metric:  "failure_rate",
 			Detail: fmt.Sprintf("role %s fails %.0f%% vs %.0f%% overall over %d runs",
-				b.Key, b.FailureRate*100, report.Overall.FailureRate*100, b.Runs),
+				b.Key, b.FailureRate*100, overall.FailureRate*100, b.Runs),
 			Samples:    b.Runs,
 			EffectSize: effect,
 			ProjectIDs: projectIDsForRole(records, b.Key),

@@ -83,7 +83,6 @@ func (c *promptLabCoordinator) tick(ctx context.Context) {
 	}
 	lookback := time.Duration(c.cfg.PromptLab.LookbackHours * float64(time.Hour))
 	result, err := promptlab.Run(ctx, promptlab.Options{
-		ReportPath:    config.EvaluationReportPath(),
 		Records:       records,
 		OutputDir:     config.PromptLabDir(),
 		Lookback:      lookback,

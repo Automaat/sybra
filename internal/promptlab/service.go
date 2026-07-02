@@ -13,7 +13,6 @@ import (
 
 // Options configures one Run.
 type Options struct {
-	ReportPath    string
 	Records       []stats.RunRecord
 	OutputDir     string
 	Lookback      time.Duration
@@ -25,11 +24,11 @@ type Options struct {
 	Logger        *slog.Logger
 }
 
-// Run orchestrates collect -> propose -> evaluate -> SaveRunResult. A
-// missing evaluation report is treated as "no evidence yet" (empty
-// RunResult, nil error); a present-but-malformed report is a genuine error
-// and Run returns early without writing anything, so a parse failure can
-// never be mistaken for "no weak subjects" and silently persisted.
+// Run orchestrates collect -> propose -> evaluate -> SaveRunResult. Gating
+// metrics are derived entirely from opts.Records within the lookback window —
+// not a separately persisted evaluation report — so there is no window to
+// fall out of sync with --lookback and no on-disk report the ticker has to
+// race to read.
 func Run(ctx context.Context, opts Options) (RunResult, error) {
 	select {
 	case <-ctx.Done():
@@ -45,13 +44,8 @@ func Run(ctx context.Context, opts Options) (RunResult, error) {
 		now = time.Now().UTC()
 	}
 
-	report, err := loadEvaluationReport(opts.ReportPath)
-	if err != nil {
-		return RunResult{}, err
-	}
-
 	records := withinLookback(opts.Records, opts.Lookback, now)
-	subjects := CollectWeakSubjects(report, records, opts.MinSamples, opts.MinEffectSize)
+	subjects := CollectWeakSubjects(records, opts.MinSamples, opts.MinEffectSize)
 	proposals, dropped := Propose(subjects, opts.MaxProposals, now)
 	if dropped > 0 {
 		logger.Info("promptlab.capped", "dropped", dropped, "kept", len(proposals))

@@ -51,7 +51,6 @@ func cmdPromptLabRun(cfg *config.Config, store *task.Manager, projStore *project
 	}
 
 	result, err := promptlab.Run(context.Background(), promptlab.Options{
-		ReportPath:    config.EvaluationReportPath(),
 		Records:       statsStore.All(),
 		OutputDir:     config.PromptLabDir(),
 		Lookback:      lookback,

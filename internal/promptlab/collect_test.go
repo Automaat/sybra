@@ -4,35 +4,48 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
-func TestCollectWeakSubjectsGates(t *testing.T) {
-	report := evaluation.Report{
-		Overall: evaluation.Scorecard{FailureRate: 0.10},
-		ByRole: []evaluation.Breakdown{
-			{Key: "implementation", Runs: 20, FailureRate: 0.40}, // clears both gates
-			{Key: "review", Runs: 20, FailureRate: 0.15},         // below min effect size
-			{Key: "fix-review", Runs: 2, FailureRate: 0.90},      // below min samples
-		},
+// repeatRecords returns n records for role with the given outcome, so tests
+// can build up per-role run/failure counts without hand-listing each record.
+func repeatRecords(n int, role, outcome, projectID, taskIDPrefix string) []stats.RunRecord {
+	out := make([]stats.RunRecord, n)
+	for i := range out {
+		out[i] = stats.RunRecord{
+			Role:      role,
+			Outcome:   outcome,
+			ProjectID: projectID,
+			TaskID:    taskIDPrefix + string(rune('a'+i)),
+		}
 	}
-	records := []stats.RunRecord{
-		{Role: "implementation", ProjectID: "p1", TaskID: "t1"},
-		{Role: "implementation", ProjectID: "p2", TaskID: "t2"},
-	}
+	return out
+}
 
-	got := CollectWeakSubjects(report, records, 10, 0.15)
+func TestCollectWeakSubjectsGates(t *testing.T) {
+	var records []stats.RunRecord
+	// implementation: 10 runs, 5 failed -> 0.50 failure rate, clears both gates.
+	records = append(records, repeatRecords(5, "implementation", "failed", "p1", "impl-fail-")...)
+	records = append(records, repeatRecords(5, "implementation", "ok", "p2", "impl-ok-")...)
+	// review: 10 runs, 1 failed -> 0.10 failure rate, below min effect size.
+	records = append(records, repeatRecords(1, "review", "failed", "p1", "review-fail-")...)
+	records = append(records, repeatRecords(9, "review", "ok", "p1", "review-ok-")...)
+	// fix-review: 2 runs, both failed -> below min samples despite high rate.
+	records = append(records, repeatRecords(2, "fix-review", "failed", "p1", "fix-review-")...)
+	// docs: 10 runs, all passing -> dilutes the fleet baseline to 0.25.
+	records = append(records, repeatRecords(10, "docs", "ok", "p1", "docs-")...)
+
+	got := CollectWeakSubjects(records, 5, 0.15)
 	if len(got) != 1 {
 		t.Fatalf("len(got) = %d, want 1: %+v", len(got), got)
 	}
 	if got[0].Role != "implementation" {
 		t.Fatalf("role = %q, want implementation", got[0].Role)
 	}
-	if got[0].Samples != 20 {
-		t.Fatalf("samples = %d, want 20", got[0].Samples)
+	if got[0].Samples != 10 {
+		t.Fatalf("samples = %d, want 10", got[0].Samples)
 	}
-	wantEffect := 0.30
+	wantEffect := 0.25 // 0.50 role rate - 0.25 overall rate
 	if diff := got[0].EffectSize - wantEffect; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("effect size = %v, want %v", got[0].EffectSize, wantEffect)
 	}
@@ -41,8 +54,8 @@ func TestCollectWeakSubjectsGates(t *testing.T) {
 	}
 }
 
-func TestCollectWeakSubjectsEmptyReport(t *testing.T) {
-	got := CollectWeakSubjects(evaluation.Report{}, nil, 5, 0.15)
+func TestCollectWeakSubjectsNoRecords(t *testing.T) {
+	got := CollectWeakSubjects(nil, 5, 0.15)
 	if len(got) != 0 {
 		t.Fatalf("len(got) = %d, want 0", len(got))
 	}
