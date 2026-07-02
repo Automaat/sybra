@@ -33,6 +33,22 @@ const staffCodeReviewProvider = "claude"
 
 const transientFetchWarnThreshold = 3
 
+// readyPRState is a cached "confirmed ready to merge" snapshot for a task's
+// linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
+// cycles instead of re-running the full per-PR fetch (reviews, threads,
+// status checks) once a PR has already been observed OPEN + clean +
+// checks-green + approved — as long as a cheap head-SHA-only probe confirms
+// the head commit hasn't moved. A force-push (or any other head-SHA change)
+// invalidates the entry immediately, since the cached approval/CI verdict is
+// pinned to the old commit. handleAutoMerge evicts the entry the moment it
+// acts on the PR (arm native auto-merge or attempt a squash merge), so the
+// next cycle always does a fresh fetch to observe the post-action state
+// (merged/closed, or armed) instead of replaying a stale snapshot.
+type readyPRState struct {
+	HeadSHA string
+	PR      github.PullRequest
+}
+
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
 type ReviewHandler struct {
 	DomainHandler
@@ -85,6 +101,13 @@ type ReviewHandler struct {
 	// search polling to the primary instance. Overridable in tests; nil falls
 	// back to github.FetchPRsForMonitor.
 	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
+	// fetchHeadSHAFn cheaply probes a PR's current head SHA, used to validate
+	// (or invalidate) a readyPRCache entry without doing a full per-PR fetch.
+	// Overridable in tests; nil falls back to github.FetchPRHeadSHA.
+	fetchHeadSHAFn func(repo string, number int) (string, error)
+	// readyPRCache holds known-ready PR snapshots keyed by "repo#number"; see
+	// readyPRState.
+	readyPRCache map[string]readyPRState
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
@@ -153,6 +176,8 @@ func newReviewHandler(
 		mergePRViaREST:      github.MergePRViaREST,
 		fetchThreads:        github.FetchReviewThreads,
 		resolveThread:       github.ResolveReviewThread,
+		fetchHeadSHAFn:      github.FetchPRHeadSHA,
+		readyPRCache:        make(map[string]readyPRState),
 		cfg:                 cfg,
 		experience:          experienceStore,
 	}
@@ -467,31 +492,64 @@ func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssu
 	}
 }
 
+func prRefCacheKey(repo string, number int) string {
+	return fmt.Sprintf("%s#%d", repo, number)
+}
+
+// fetchKnownTaskPRs fetches the current state of every task's linked PR. A PR
+// last observed ready-to-merge (readyPRCache) skips the full fetch as long as
+// a cheap head-SHA-only probe confirms the head commit hasn't moved since —
+// avoiding a wasted full re-poll for PRs that are green but stuck behind an
+// unrelated dispatch gate (a running agent/workflow, or prTracker cooldown).
+// A head-SHA mismatch (force-push) or a failed probe evicts the cache entry
+// and falls back to a full fetch, so a stale ready-state is never reused.
 func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
 	fetchFn := github.FetchPRsForMonitor
 	if r.fetchKnownPRsFn != nil {
 		fetchFn = r.fetchKnownPRsFn
 	}
+	headSHAFn := r.fetchHeadSHAFn
+	if headSHAFn == nil {
+		headSHAFn = github.FetchPRHeadSHA
+	}
+
 	refs := make([]github.PRRef, 0, len(matchers))
 	seen := make(map[string]struct{}, len(matchers))
+	prs := make([]github.PullRequest, 0, len(matchers))
 	for i := range matchers {
 		m := &matchers[i]
 		if m.ProjectID == "" || m.PRNumber == 0 {
 			continue
 		}
-		key := fmt.Sprintf("%s#%d", m.ProjectID, m.PRNumber)
+		key := prRefCacheKey(m.ProjectID, m.PRNumber)
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
+
+		if cached, ok := r.readyPRCache[key]; ok {
+			sha, err := headSHAFn(m.ProjectID, m.PRNumber)
+			if err == nil && sha != "" && sha == cached.HeadSHA {
+				prs = append(prs, cached.PR)
+				continue
+			}
+			delete(r.readyPRCache, key)
+		}
 		refs = append(refs, github.PRRef{Repo: m.ProjectID, Number: m.PRNumber})
 	}
+
+	// Drop cache entries for PRs no longer linked to a monitored task.
+	for key := range r.readyPRCache {
+		if _, ok := seen[key]; !ok {
+			delete(r.readyPRCache, key)
+		}
+	}
+
 	if len(refs) == 0 {
-		return nil
+		return prs
 	}
 
 	results := fetchFn(refs)
-	prs := make([]github.PullRequest, 0, len(results))
 	for i := range results {
 		res := &results[i]
 		if res.Err != nil {
@@ -499,11 +557,41 @@ func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []githu
 			continue
 		}
 		if !res.Open {
+			delete(r.readyPRCache, prRefCacheKey(res.Repo, res.Number))
 			continue
 		}
 		prs = append(prs, res.PR)
+		r.updateReadyPRCache(res.Repo, res.Number, res.PR)
 	}
 	return prs
+}
+
+// updateReadyPRCache records pr as a known-ready snapshot when it satisfies
+// the auto-merge readiness gate, or evicts any stale entry otherwise. Uses
+// the strict (non-renovate-bypass) gate only: the renovate-fix relaxation in
+// handleAutoMerge depends on the task's tags, which TaskMatcher does not
+// carry, so a renovate-fix PR is simply never cached and always gets a fresh
+// fetch — under-caching a narrow case beats risking a stale merge decision.
+func (r *ReviewHandler) updateReadyPRCache(repo string, number int, pr github.PullRequest) {
+	key := prRefCacheKey(repo, number)
+	ready := pr.SourcedViaREST && readyForRESTAutoMerge(pr) || !pr.SourcedViaREST && readyForCopilotAutoMerge(pr)
+	if !ready || pr.HeadSHA == "" {
+		delete(r.readyPRCache, key)
+		return
+	}
+	if r.readyPRCache == nil {
+		r.readyPRCache = make(map[string]readyPRState)
+	}
+	r.readyPRCache[key] = readyPRState{HeadSHA: pr.HeadSHA, PR: pr}
+}
+
+// evictReadyPRCache drops a cached ready-state, forcing the next poll cycle
+// to do a full fetch. Called by handleAutoMerge the moment it acts on a PR
+// (arms native auto-merge or attempts a squash merge) since either action
+// makes the cached snapshot stale — the PR may now be merged/closed, or have
+// native auto-merge armed — and only a fresh fetch can observe that.
+func (r *ReviewHandler) evictReadyPRCache(repo string, number int) {
+	delete(r.readyPRCache, prRefCacheKey(repo, number))
 }
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,

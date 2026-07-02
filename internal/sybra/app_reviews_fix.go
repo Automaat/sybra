@@ -131,6 +131,7 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 			if aerr := enableFn(issue.PR.Repository, issue.PR.Number); aerr != nil {
 				r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", aerr)
 			} else {
+				r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 				r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
 				r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
 					"pr": issue.PR.Number, "repo": issue.PR.Repository,
@@ -183,6 +184,7 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		}
 		mergeErr = merge(issue.PR.Repository, issue.PR.Number)
 	}
+	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
 	if mergeErr != nil {
 		r.logger.Error("auto-merge.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", mergeErr)
 		return
