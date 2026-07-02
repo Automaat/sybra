@@ -27,6 +27,10 @@ function makePR(overrides: Record<string, unknown> = {}) {
     copilotReviewed: false,
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
+    sourcedViaRest: false,
+    restMergeableState: '',
+    restApproved: false,
+    restCiFetched: false,
     ...overrides,
   }
 }

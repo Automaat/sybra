@@ -176,6 +176,20 @@ export class PullRequest {
     "updatedAt": string;
 
     /**
+     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
+     * native auto-merge eligibility against the base branch's protection —
+     * never the head branch.
+     */
+    "baseRefName": string;
+
+    /**
+     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
+     * armed on this PR (derived live from `autoMergeRequest` being non-null —
+     * never persisted on the task model).
+     */
+    "autoMergeEnabled": boolean;
+
+    /**
      * SourcedViaREST marks a PullRequest fetched over GitHub's REST API
      * (fetchPRForMonitorViaREST) instead of GraphQL, used when the GraphQL
      * budget is low. REST exposes no thread-resolution or Copilot-review data,
@@ -277,6 +291,12 @@ export class PullRequest {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
         }
+        if (!("baseRefName" in $$source)) {
+            this["baseRefName"] = "";
+        }
+        if (!("autoMergeEnabled" in $$source)) {
+            this["autoMergeEnabled"] = false;
+        }
         if (!("sourcedViaRest" in $$source)) {
             this["sourcedViaRest"] = false;
         }
@@ -367,6 +387,20 @@ export class RenovatePR {
     "copilotReviewed": boolean;
     "createdAt": string;
     "updatedAt": string;
+
+    /**
+     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
+     * native auto-merge eligibility against the base branch's protection —
+     * never the head branch.
+     */
+    "baseRefName": string;
+
+    /**
+     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
+     * armed on this PR (derived live from `autoMergeRequest` being non-null —
+     * never persisted on the task model).
+     */
+    "autoMergeEnabled": boolean;
 
     /**
      * SourcedViaREST marks a PullRequest fetched over GitHub's REST API
@@ -471,6 +505,12 @@ export class RenovatePR {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
         }
+        if (!("baseRefName" in $$source)) {
+            this["baseRefName"] = "";
+        }
+        if (!("autoMergeEnabled" in $$source)) {
+            this["autoMergeEnabled"] = false;
+        }
         if (!("sourcedViaRest" in $$source)) {
             this["sourcedViaRest"] = false;
         }
@@ -495,13 +535,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField25_0 = $$createType2;
+        const $$createField27_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField25_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField27_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }
