@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -67,11 +68,11 @@ const renovatePRQuery = `query($q: String!) {
 }`
 
 // FetchRenovatePRs returns Renovate bot PRs for the given repositories.
-func FetchRenovatePRs(author string, repos []string) ([]RenovatePR, error) {
-	return fetchRenovatePRsWith(defaultExecer, author, repos)
+func FetchRenovatePRs(ctx context.Context, author string, repos []string) ([]RenovatePR, error) {
+	return fetchRenovatePRsWith(ctx, defaultExecer, author, repos)
 }
 
-func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR, error) {
+func fetchRenovatePRsWith(ctx context.Context, e execer, author string, repos []string) ([]RenovatePR, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
@@ -99,7 +100,7 @@ func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR
 	for start := 0; start < len(repos); start += renovateSearchChunkSize {
 		end := min(start+renovateSearchChunkSize, len(repos))
 		query := buildRenovateSearchQuery(authors, repos[start:end])
-		prs, err := searchRenovatePRsWith(e, query)
+		prs, err := searchRenovatePRsWith(ctx, e, query)
 		if err != nil {
 			if runtimeCacheEnabled(e) {
 				if stale, ok := renovatePRsCache.GetStale(cacheKey); ok {
@@ -122,8 +123,8 @@ func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR
 	return all, nil
 }
 
-func searchRenovatePRsWith(e execer, query string) ([]RenovatePR, error) {
-	resp, err := runGHAPIWith(e, "", "graphql",
+func searchRenovatePRsWith(ctx context.Context, e execer, query string) ([]RenovatePR, error) {
+	resp, err := runGHAPICtxWith(ctx, e, "", "graphql",
 		"-f", "query="+renovatePRQuery,
 		"-f", "q="+query)
 	if err != nil {

@@ -95,7 +95,7 @@ func TestK8sSandbox_ClusterExists(t *testing.T) {
 	); err != nil {
 		t.Fatalf("pre-create cluster: %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = stopK3dCluster(clusterName) })
+	t.Cleanup(func() { _ = stopK3dCluster(ctx, clusterName) })
 
 	cfg := &project.SandboxConfig{
 		Cluster: "k3d",

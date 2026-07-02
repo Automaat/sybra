@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -465,7 +466,12 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 			}
 			cleanRetryReset = true
 		}
-		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
+		// context.Background(): StartAgent implements workflow.AgentDispatcher,
+		// a fixed interface signature with no ctx parameter (invoked from many
+		// workflow step-execution call sites); see the Engine.SetContext /
+		// e.ctx pattern for why threading ctx across that interface is out of
+		// scope for this pass.
+		d, wtErr := a.agentOrch.worktrees.PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
 			if _, recovered := markRebaseBlockedWithRecoveryResult(a.tasks, taskID, wtErr, a.agentOrch.logger, a.agentOrch.conflictRecovery); recovered {
 				return "", "", "", workflow.ErrDispatchInFlight
@@ -526,7 +532,10 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		}
 		return fmt.Errorf("stat clean retry worktree: %w", err)
 	}
-	if err := project.ResetWorktreeForRetry(target, ref); err != nil {
+	// context.Background(): StartAgent implements workflow.AgentDispatcher,
+	// a fixed interface signature with no ctx parameter (see the earlier
+	// comment on the PrepareForTask call in this file).
+	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
 		a.agentOrch.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
@@ -563,7 +572,7 @@ func currentWorktreeHead(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.Command("git", "rev-parse", "--verify", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--verify", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

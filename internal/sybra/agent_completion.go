@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -199,7 +200,9 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// Worktree and sandbox cleanup for terminal tasks (after engine
 	// advances, so status is final).
 	if t, err := h.tasks.Get(ag.TaskID); err == nil && task.IsTerminalStatus(t.Status) {
-		go h.worktrees.Remove(ag.TaskID)
+		// context.Background(): OnComplete implements agent.Manager's
+		// onComplete callback, a fixed func(*Agent) signature with no ctx.
+		go h.worktrees.Remove(context.Background(), ag.TaskID)
 		if h.sandboxes != nil {
 			go h.sandboxes.Stop(ag.TaskID)
 		}
@@ -306,14 +309,16 @@ func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
 
 	branch := t.Branch
 	if branch == "" {
-		branch, err = project.CurrentBranch(wtPath)
+		// context.Background(): pushFixReviewBranch runs off agent.Manager's
+		// onComplete callback, a fixed func(*Agent) signature with no ctx.
+		branch, err = project.CurrentBranch(context.Background(), wtPath)
 		if err != nil {
 			h.logger.Warn("fix-review.push.branch", "task_id", ag.TaskID, "agent_id", ag.ID, "path", wtPath, "err", err)
 			return
 		}
 	}
 
-	if err := project.PushSync(wtPath, branch); err != nil {
+	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
 		if errors.Is(err, project.ErrBranchMissing) {
 			h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "reason", "local branch ref missing")
 			return
@@ -335,7 +340,7 @@ func (h *AgentCompletionHandler) captureHeadSHA(taskID string) string {
 	if err != nil || !h.worktrees.Exists(t) {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
 	if err != nil {
 		return ""
 	}

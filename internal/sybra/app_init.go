@@ -132,7 +132,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 			if ground {
 				opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), minSubs))
 			}
-			return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL, opts...)
+			return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL, opts...)
 		})
 		a.logger.Info("umbrella.autodetect.enabled")
 	}
@@ -261,7 +261,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 }
 
 func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
-	approvalServer, approvalAddr := a.startApprovalServer(emit)
+	approvalServer, approvalAddr := a.startApprovalServer(ctx, emit)
 	agentCfg := a.agentManagerConfig(approvalAddr)
 	var err error
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
@@ -276,7 +276,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	}
 	if err != nil {
 		if approvalServer != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			if shutdownErr := approvalServer.Shutdown(shutdownCtx); shutdownErr != nil {
 				a.logger.Warn("approval-server.shutdown-after-agent-manager-init-failure", "err", shutdownErr)
 			}
@@ -696,8 +696,8 @@ func (a *App) initAgentConfig() {
 	})
 }
 
-func (a *App) startApprovalServer(emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
-	srv, err := agent.NewApprovalServer(emit, a.logger, a.cfg.Agent.ApprovalPort)
+func (a *App) startApprovalServer(ctx context.Context, emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
+	srv, err := agent.NewApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort)
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
 		return nil, ""
@@ -736,7 +736,10 @@ func (a *App) initLoopAgents() error {
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
 	a.seedDefaultLoopAgents()
-	a.loopSched.Sync()
+	// loopagent.Scheduler.Sync spawns loop-agent goroutines derived from its
+	// own s.ctx field, bound once from the ctx passed to NewScheduler above
+	// (this same Startup ctx) rather than an explicit per-call parameter.
+	a.loopSched.Sync() //nolint:contextcheck // Scheduler uses its own s.ctx field, see comment above
 }
 
 func (a *App) seedDefaultLoopAgents() {

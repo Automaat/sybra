@@ -339,5 +339,11 @@ func (s *Syncer) log(level slog.Level, msg string, args ...any) {
 	if s.Logger == nil {
 		return
 	}
+	// context.Background() is intentional: this is a plain diagnostic log
+	// call (info/debug/warn/error helpers used from a dozen call sites
+	// throughout this package), not a cancellable operation. Threading a
+	// real ctx through Run and every info/debug/warn/error/log call in the
+	// package would be a broad, purely-cosmetic refactor for a slog.Log
+	// argument this codebase never uses for context-based correlation.
 	s.Logger.Log(context.Background(), level, msg, args...)
 }

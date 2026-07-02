@@ -3,6 +3,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -60,7 +61,7 @@ func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := project.CloneBare(src, barePath); err != nil {
+	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
 	}
 
@@ -97,7 +98,7 @@ updated_at: 2025-01-01T00:00:00Z
 		PRBranchResolver: func(repo string, prNumber int) (string, error) {
 			// Resolve to the default branch so CreateWorktreeExisting finds
 			// refs/remotes/origin/<branch>.
-			return project.DefaultBranch(barePath)
+			return project.DefaultBranch(context.Background(), barePath)
 		},
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})

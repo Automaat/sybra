@@ -121,7 +121,7 @@ func (c *todoistCoordinator) syncNow() error {
 	if c.handler == nil {
 		return fmt.Errorf("todoist integration not enabled")
 	}
-	c.handler.PollAndSync()
+	c.handler.PollAndSync(context.Background())
 	return nil
 }
 

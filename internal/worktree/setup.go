@@ -19,7 +19,7 @@ import (
 // Returns an error on the first non-zero exit or on timeout. Callers must
 // treat setup failure as blocking: an agent started on a worktree with a
 // broken toolchain will burn tokens hitting missing-tool errors.
-func (m *Manager) runSetup(taskID, wtPath string, commands []string) error {
+func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, commands []string) error {
 	if len(commands) == 0 {
 		return nil
 	}
@@ -49,7 +49,7 @@ func (m *Manager) runSetup(taskID, wtPath string, commands []string) error {
 		_, _ = logFile.WriteString(s)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), m.setupTimeout)
+	ctx, cancel := context.WithTimeout(parent, m.setupTimeout)
 	defer cancel()
 
 	writeLog(fmt.Sprintf(
@@ -186,7 +186,7 @@ func (m *Manager) resolveSetupCommands(wtPath string, proj project.Project) []st
 	return merged
 }
 
-func (m *Manager) installChecks(wtPath string, proj project.Project) {
+func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project.Project) {
 	repoCfg, err := project.LoadRepoConfig(wtPath)
 	if err != nil {
 		m.logger.Warn("worktree.repo-config", "path", wtPath, "err", err)
@@ -196,10 +196,10 @@ func (m *Manager) installChecks(wtPath string, proj project.Project) {
 		repoChecks = repoCfg.Checks
 	}
 	checks := project.MergeChecks(repoChecks, proj.Checks)
-	if err := project.InstallHooks(wtPath, checks); err != nil {
+	if err := project.InstallHooks(ctx, wtPath, checks); err != nil {
 		m.logger.Warn("worktree.hooks", "path", wtPath, "err", err)
 	}
-	if err := project.EnforceForkOnlyPush(wtPath); err != nil {
+	if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
 		m.logger.Warn("worktree.fork-only-push", "path", wtPath, "err", err)
 	}
 }

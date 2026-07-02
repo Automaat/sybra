@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -361,8 +362,8 @@ func coalescedFixPrompt(issues []github.PRIssue) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) bool {
-	return r.dispatchFixIssues(issue.TaskID, []github.PRIssue{issue})
+func (r *ReviewHandler) handlePRIssue(ctx context.Context, issue github.PRIssue) bool {
+	return r.dispatchFixIssues(ctx, issue.TaskID, []github.PRIssue{issue})
 }
 
 // dispatchFixIssues spawns a single pr-fix agent that addresses every handled
@@ -371,7 +372,7 @@ func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) bool {
 // ready_to_merge and applies the retry/cooldown gate. Coalescing avoids the
 // double-dispatch where a CI failure and review comments from the same push each
 // spawned their own sequential agent.
-func (r *ReviewHandler) dispatchFixIssues(taskID string, handle []github.PRIssue) bool {
+func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, handle []github.PRIssue) bool {
 	if len(handle) == 0 {
 		return false
 	}
@@ -388,11 +389,14 @@ func (r *ReviewHandler) dispatchFixIssues(taskID string, handle []github.PRIssue
 		r.logPRIssueDetected(t.ID, handle[i])
 	}
 	primary := handle[0]
-	dir, ok := r.prepareWorktree(t, primary)
+	dir, ok := r.prepareWorktree(ctx, t, primary)
 	if !ok {
 		return false
 	}
-	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir)
+	// dispatchPRIssue -> workflowEngine.DispatchEvent eventually reaches
+	// execShell, which derives its context from workflow.Engine's own e.ctx
+	// field (Engine.SetContext), not an explicit parameter threaded here.
+	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
 }
 
 // dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks
@@ -497,13 +501,16 @@ func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
 				"task_id", taskID, "step", priorStep)
 		}
 	}
-	return r.handlePRIssue(github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
+	// context.Background() is a dead end here: recoverStaleBranchConflict is
+	// wired as AgentOrchestrator.conflictRecovery, a fixed func(taskID string)
+	// bool callback (see app_agents.go) with no ctx parameter to thread from.
+	return r.handlePRIssue(context.Background(), github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
 }
 
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
 // Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
 // consecutive failures. Returns ("", true) when no worktree is needed.
-func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (string, bool) {
+func (r *ReviewHandler) prepareWorktree(ctx context.Context, t task.Task, issue github.PRIssue) (string, bool) {
 	if t.ProjectID == "" {
 		return "", true
 	}
@@ -514,9 +521,9 @@ func (r *ReviewHandler) prepareWorktree(t task.Task, issue github.PRIssue) (stri
 	// Conflict and comment fixes operate on the PR's existing branch, so check
 	// it out (PrepareForFix). A CI fix re-runs on a fresh worktree.
 	if issue.Kind == github.PRIssueConflict || issue.Kind == github.PRIssueComments {
-		d, wtErr = r.worktrees.PrepareForFix(t, issue.PR.Number)
+		d, wtErr = r.worktrees.PrepareForFix(ctx, t, issue.PR.Number)
 	} else {
-		d, wtErr = r.worktrees.PrepareForTask(t, nil)
+		d, wtErr = r.worktrees.PrepareForTask(ctx, t, nil)
 	}
 	if wtErr != nil {
 		// A conflict fix already operates on the non-rebasing PrepareForFix path,

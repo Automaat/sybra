@@ -1,6 +1,8 @@
 package todoist
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +29,7 @@ func TestListActiveTasks(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWith("test-token", srv.Client(), srv.URL)
-	tasks, err := c.ListActiveTasks("123")
+	tasks, err := c.ListActiveTasks(context.Background(), "123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,9 +52,42 @@ func TestListActiveTasks_Error(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWith("bad-token", srv.Client(), srv.URL)
-	_, err := c.ListActiveTasks("123")
+	_, err := c.ListActiveTasks(context.Background(), "123")
 	if err == nil {
 		t.Fatal("expected error for 401 response")
+	}
+}
+
+// TestListActiveTasks_ContextCancelled proves the request is built with
+// http.NewRequestWithContext: cancelling ctx before the call must abort the
+// request instead of hitting the server, and never be checked into a build
+// that reverts to http.NewRequest.
+func TestListActiveTasks_ContextCancelled(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := NewClientWith("test-token", srv.Client(), srv.URL)
+	_, err := c.ListActiveTasks(ctx, "123")
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled in error chain, got: %v", err)
+	}
+	select {
+	case <-called:
+		t.Error("server should not have been contacted with a cancelled context")
+	default:
 	}
 }
 
@@ -69,7 +104,7 @@ func TestCloseTask(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWith("test-token", srv.Client(), srv.URL)
-	if err := c.CloseTask("42"); err != nil {
+	if err := c.CloseTask(context.Background(), "42"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -85,7 +120,7 @@ func TestListProjects(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClientWith("test-token", srv.Client(), srv.URL)
-	projects, err := c.ListProjects()
+	projects, err := c.ListProjects(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -25,11 +25,17 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-a.dispatchNudge:
-			a.dispatchPass()
+			// dispatchPass ultimately reaches agent.Manager.Run (via
+			// maybeStartOrchestrator -> OrchestratorService.StartOrchestrator),
+			// a Wails-bound method the frontend also invokes directly with no
+			// arguments, and whose signature is shared by dozens of unrelated
+			// dispatch call sites. Threading ctx through it would be a broad,
+			// unrelated API change rather than a targeted cancellation fix.
+			a.dispatchPass() //nolint:contextcheck // Wails-bound StartOrchestrator + Manager.Run boundary, see comment above
 		case <-dispatch.C:
-			a.dispatchPass()
+			a.dispatchPass() //nolint:contextcheck // Wails-bound StartOrchestrator + Manager.Run boundary, see comment above
 		case <-maintenance.C:
-			a.maintenancePass()
+			a.maintenancePass(ctx)
 		}
 	}
 }
@@ -43,21 +49,25 @@ func (a *App) dispatchPass() {
 }
 
 // maintenancePass runs the expensive, git/agent-touching recovery and cleanup.
-func (a *App) maintenancePass() {
-	metrics.OrchestratorTick()
+func (a *App) maintenancePass(ctx context.Context) {
+	metrics.OrchestratorTick(ctx)
 	if a.workflowEngine != nil {
-		a.workflowEngine.ResumeStalled()
+		// workflow.Engine derives its shell-step context from its own e.ctx
+		// field (Engine.SetContext, bound once from App's root ctx), not an
+		// explicit per-call parameter.
+		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
 	}
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
-	a.recovery.RestartStaleInProgress()
+	a.recovery.RestartStaleInProgress(ctx)
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
-	// raw-URL title) forever and never dispatch a workflow.
+	// raw-URL title) forever and never dispatch a workflow. The eventual
+	// agent.Manager dispatch chain uses its own m.ctx field, same pattern.
 	if a.taskSvc != nil {
-		a.taskSvc.ReconcilePendingEnrichment()
+		a.taskSvc.ReconcilePendingEnrichment() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see comment above
 	}
-	a.worktrees.CleanupOrphaned()
+	a.worktrees.CleanupOrphaned(ctx)
 }
 
 // nudgeDispatch asks the orchestrator loop to run a dispatch pass promptly

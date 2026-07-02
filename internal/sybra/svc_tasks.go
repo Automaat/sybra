@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -435,7 +436,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 	if task.IsTerminalStatus(t.Status) {
 		s.wg.Go(func() {
-			s.worktrees.Remove(t.ID)
+			// context.Background(): UpdateTask is a Wails-bound method; this
+			// runs in a detached background goroutine with no ctx to thread.
+			s.worktrees.Remove(context.Background(), t.ID)
 			if s.sandboxes != nil {
 				s.sandboxes.Stop(t.ID)
 			}
@@ -485,7 +488,8 @@ func (s *TaskService) DeleteTask(id string) error {
 	if s.sandboxes != nil {
 		s.sandboxes.Stop(id)
 	}
-	s.worktrees.Remove(id)
+	// context.Background(): DeleteTask is a Wails-bound method with no ctx.
+	s.worktrees.Remove(context.Background(), id)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
 			Type:   audit.EventTaskDeleted,
@@ -560,7 +564,10 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 
 	dir := config.HomeDir()
 	if t.ProjectID != "" {
-		d, err := s.worktrees.PrepareForReview(t)
+		// context.Background(): reached from CreateTask's async enrich-from-PR
+		// goroutine (and the enrich-reconcile maintenance retry), both fired
+		// from a Wails-bound entry point with no ctx to thread through.
+		d, err := s.worktrees.PrepareForReview(context.Background(), t)
 		if err != nil {
 			s.logger.Warn("enrich-pr.worktree", "task_id", t.ID, "err", err)
 		} else {

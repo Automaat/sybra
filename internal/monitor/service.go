@@ -193,9 +193,9 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 
 	s.state.recordReport(report, now)
 	s.emit(events.MonitorReport, report)
-	metrics.MonitorTick()
+	metrics.MonitorTick(ctx)
 	for i := range report.Anomalies {
-		metrics.MonitorAnomaly(string(report.Anomalies[i].Kind))
+		metrics.MonitorAnomaly(ctx, string(report.Anomalies[i].Kind))
 	}
 	return report, nil
 }

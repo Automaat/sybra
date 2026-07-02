@@ -52,10 +52,12 @@ linters:
     # dependency hygiene
     - depguard
 
+    # cancellation plumbing (http/exec/net + ctx propagation)
+    - contextcheck
+    - noctx
+
     # deferred — require codebase-wide changes; re-enable after dedicated cleanup:
     #   - containedctx   # top-level orchestrators legitimately hold a cancel ctx
-    #   - contextcheck   # 27 sites need ctx plumbed through more APIs
-    #   - noctx          # 9 sites need http.NewRequestWithContext / context-aware ctors
     #   - tparallel      # 22 test funcs need t.Parallel() on their top-level
 
   settings:
@@ -189,6 +191,7 @@ linters:
           - errcheck
           - funlen
           - gosec
+          - noctx
         path: _test\.go
 
 formatters:

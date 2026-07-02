@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -525,14 +526,14 @@ func inferCodexState(filePath string) State {
 
 // findCodexPIDs returns a CWD→PID map for running codex processes (macOS only).
 func findCodexPIDs() map[string]int {
-	out, err := exec.Command("pgrep", "-f", "codex").Output()
+	out, err := exec.CommandContext(context.Background(), "pgrep", "-f", "codex").Output()
 	if err != nil {
 		return nil
 	}
 
 	result := make(map[string]int)
 	for pidStr := range strings.FieldsSeq(string(out)) {
-		lsofOut, err := exec.Command("lsof", "-a", "-d", "cwd", "-Fn", "-p", pidStr).Output()
+		lsofOut, err := exec.CommandContext(context.Background(), "lsof", "-a", "-d", "cwd", "-Fn", "-p", pidStr).Output()
 		if err != nil {
 			continue
 		}

@@ -48,7 +48,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		ReasoningTokens:          5,
 		PremiumRequests:          6,
 	}
-	m.saveRegistry(original)
+	m.saveRegistry(context.Background(), original)
 
 	records, err := m.reg.List()
 	if err != nil {
@@ -57,7 +57,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("record count = %d, want 1", len(records))
 	}
-	if wantProcStartedAt := processStartString(original.PID); wantProcStartedAt != "" && records[0].ProcStartedAt != wantProcStartedAt {
+	if wantProcStartedAt := processStartString(context.Background(), original.PID); wantProcStartedAt != "" && records[0].ProcStartedAt != wantProcStartedAt {
 		t.Fatalf("ProcStartedAt = %q, want %q", records[0].ProcStartedAt, wantProcStartedAt)
 	}
 

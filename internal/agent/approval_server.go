@@ -33,15 +33,16 @@ type ApprovalServer struct {
 // resolves after a restart); 0 binds a random port. A pinned port that is
 // already taken falls back to a random port with a warning rather than
 // failing startup.
-func NewApprovalServer(emit EmitFunc, logger *slog.Logger, port int) (*ApprovalServer, error) {
+func NewApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, port int) (*ApprovalServer, error) {
 	addr := "127.0.0.1:0"
 	if port > 0 {
 		addr = fmt.Sprintf("127.0.0.1:%d", port)
 	}
-	listener, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil && port > 0 {
 		logger.Warn("approval-server.port-taken", "port", port, "err", err, "fallback", "random")
-		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		listener, err = lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)

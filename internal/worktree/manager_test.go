@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -324,7 +325,7 @@ func TestCleanupOrphaned(t *testing.T) {
 		Logger:       discardLogger(),
 	})
 
-	m.CleanupOrphaned()
+	m.CleanupOrphaned(context.Background())
 
 	// Orphan should be removed
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
@@ -345,10 +346,10 @@ func TestRunSetup_EmptyIsNoOp(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
 
-	if err := m.runSetup("task-empty", wtDir, nil); err != nil {
+	if err := m.runSetup(context.Background(), "task-empty", wtDir, nil); err != nil {
 		t.Fatalf("runSetup(nil): %v", err)
 	}
-	if err := m.runSetup("task-empty", wtDir, []string{}); err != nil {
+	if err := m.runSetup(context.Background(), "task-empty", wtDir, []string{}); err != nil {
 		t.Fatalf("runSetup([]): %v", err)
 	}
 	// No log should have been written.
@@ -368,7 +369,7 @@ func TestRunSetup_WritesLogOnSuccess(t *testing.T) {
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
 
 	marker := filepath.Join(wtDir, "bootstrap-ran")
-	if err := m.runSetup("task-ok", wtDir, []string{
+	if err := m.runSetup(context.Background(), "task-ok", wtDir, []string{
 		"touch " + marker,
 		"echo greetings-from-setup",
 	}); err != nil {
@@ -402,7 +403,7 @@ func TestRunSetup_FailureBlocks(t *testing.T) {
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
 
 	secondMarker := filepath.Join(wtDir, "should-not-run")
-	err := m.runSetup("task-fail", wtDir, []string{
+	err := m.runSetup(context.Background(), "task-fail", wtDir, []string{
 		"exit 17",
 		"touch " + secondMarker,
 	})
@@ -432,7 +433,7 @@ func TestRunSetup_CwdIsWorktreeRoot(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
 
-	if err := m.runSetup("task-cwd", wtDir, []string{"pwd > .cwd"}); err != nil {
+	if err := m.runSetup(context.Background(), "task-cwd", wtDir, []string{"pwd > .cwd"}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
 
@@ -463,7 +464,7 @@ func TestRunSetup_TimeoutKillsProcess(t *testing.T) {
 	})
 
 	start := time.Now()
-	err := m.runSetup("task-timeout", wtDir, []string{"sleep 5"})
+	err := m.runSetup(context.Background(), "task-timeout", wtDir, []string{"sleep 5"})
 	dur := time.Since(start)
 
 	if err == nil {
@@ -471,6 +472,39 @@ func TestRunSetup_TimeoutKillsProcess(t *testing.T) {
 	}
 	if dur > 3*time.Second {
 		t.Errorf("timeout did not fire quickly: took %s", dur)
+	}
+}
+
+// TestRunSetup_ParentCancellationKillsProcess proves runSetup derives its
+// working context from the caller-supplied parent instead of context.Background():
+// cancelling the parent must abort a long-running setup command even though
+// SetupTimeout alone would not have fired yet.
+func TestRunSetup_ParentCancellationKillsProcess(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	m := New(Config{
+		WorktreesDir: wtDir,
+		LogsDir:      logsDir,
+		Logger:       discardLogger(),
+		SetupTimeout: time.Minute,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := m.runSetup(ctx, "task-parent-cancel", wtDir, []string{"sleep 5"})
+	dur := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error when parent context is cancelled")
+	}
+	if dur > 3*time.Second {
+		t.Errorf("parent cancellation did not abort setup quickly: took %s", dur)
 	}
 }
 
@@ -483,14 +517,14 @@ func TestRunSetup_NoLogsDir(t *testing.T) {
 	m := New(Config{WorktreesDir: wtDir, Logger: discardLogger()})
 
 	marker := filepath.Join(wtDir, "ran")
-	if err := m.runSetup("task-nologs", wtDir, []string{"touch " + marker}); err != nil {
+	if err := m.runSetup(context.Background(), "task-nologs", wtDir, []string{"touch " + marker}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("marker missing: %v", err)
 	}
 
-	if err := m.runSetup("task-nologs", wtDir, []string{"exit 1"}); err == nil {
+	if err := m.runSetup(context.Background(), "task-nologs", wtDir, []string{"exit 1"}); err == nil {
 		t.Fatal("expected failure to propagate even without log dir")
 	}
 }
@@ -527,7 +561,7 @@ func TestRunSetup_TrustsMiseConfig(t *testing.T) {
 	miseBin, miseLog := installFakeMise(t, 0)
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
-	if err := m.runSetup("task-trust", wtDir, []string{"true"}); err != nil {
+	if err := m.runSetup(context.Background(), "task-trust", wtDir, []string{"true"}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
 
@@ -558,7 +592,7 @@ func TestRunSetup_SkipsTrustWithoutMiseConfig(t *testing.T) {
 	miseBin, miseLog := installFakeMise(t, 0)
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
-	if err := m.runSetup("task-no-mise", wtDir, []string{"true"}); err != nil {
+	if err := m.runSetup(context.Background(), "task-no-mise", wtDir, []string{"true"}); err != nil {
 		t.Fatalf("runSetup: %v", err)
 	}
 
@@ -582,7 +616,7 @@ func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	marker := filepath.Join(wtDir, "did-run")
-	if err := m.runSetup("task-trust-fail", wtDir, []string{"touch " + marker}); err != nil {
+	if err := m.runSetup(context.Background(), "task-trust-fail", wtDir, []string{"touch " + marker}); err != nil {
 		t.Fatalf("runSetup should succeed despite trust failure: %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -638,7 +672,7 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := h.m.PrepareForTask(tk, nil)
+	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
 	}
@@ -690,7 +724,7 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := h.m.PrepareForTask(tk, nil)
+	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
 	}
@@ -752,7 +786,7 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wtPath, err := h.m.PrepareForTask(tk, nil)
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
 	}
@@ -784,7 +818,7 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wtPath, err := h.m.PrepareForTask(tk, nil)
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
 	}
@@ -803,7 +837,7 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
 
-	gotPath, err := h.m.PrepareForTask(tk, nil)
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if !errors.Is(err, ErrRebaseFailed) {
 		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
 	}
@@ -826,7 +860,7 @@ func TestPrepareForTask_BadSlugRejected(t *testing.T) {
 		Status:    task.StatusTodo,
 		AgentMode: "headless",
 	}
-	_, err := h.m.PrepareForTask(badTask, nil)
+	_, err := h.m.PrepareForTask(context.Background(), badTask, nil)
 	if err == nil {
 		t.Fatal("PrepareForTask with path-traversal slug: expected error, got nil")
 	}
@@ -865,7 +899,7 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = h.m.PrepareForTask(tk, nil)
+	_, err = h.m.PrepareForTask(context.Background(), tk, nil)
 	if err == nil {
 		t.Fatal("expected PrepareForTask to fail when bootstrap exits non-zero")
 	}

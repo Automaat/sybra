@@ -100,14 +100,14 @@ func NewIssuesFetcher(
 
 func (f *IssuesFetcher) Name() string { return "issues" }
 
-func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
+func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	if f.fetchSnapshot != nil {
-		f.pollSnapshot()
+		f.pollSnapshot(ctx)
 		return f.interval()
 	}
 
 	issues, err := f.fetchAssigned()
-	metrics.GitHubFetch(err == nil)
+	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
 		if github.IsTransientError(err) {
 			f.transientFetchFails++
@@ -125,16 +125,16 @@ func (f *IssuesFetcher) Poll(_ context.Context) time.Duration {
 	f.transientFetchFails = 0
 	f.emit("issues:updated", issues)
 	f.logger.Debug("issues.poll", "count", len(issues))
-	metrics.GitHubIssuesImported(len(issues))
+	metrics.GitHubIssuesImported(ctx, len(issues))
 	f.syncIssuesToTasks(issues)
 	f.syncLabeledIssuesToTasks()
 	return f.interval()
 }
 
-func (f *IssuesFetcher) pollSnapshot() {
+func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 	repos := f.allowedRepos()
 	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
-	metrics.GitHubFetch(err == nil)
+	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
 		if github.IsTransientError(err) {
 			f.transientFetchFails++
@@ -153,7 +153,7 @@ func (f *IssuesFetcher) pollSnapshot() {
 
 	f.emit("issues:updated", snapshot.Assigned)
 	f.logger.Debug("issues.poll", "count", len(snapshot.Assigned))
-	metrics.GitHubIssuesImported(len(snapshot.Assigned))
+	metrics.GitHubIssuesImported(ctx, len(snapshot.Assigned))
 	f.syncIssuesToTasks(snapshot.Assigned)
 
 	f.logger.Debug("labeled-issues.poll", "count", len(snapshot.Labeled))

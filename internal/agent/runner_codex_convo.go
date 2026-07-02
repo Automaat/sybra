@@ -145,7 +145,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		a.SetState(StateStopped)
 		m.logger.Info("agent.convo.done", "id", a.ID, "provider", a.Provider, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
-		m.fireComplete(a, a.GetExitErr() == nil)
+		m.fireComplete(ctx, a, a.GetExitErr() == nil)
 		m.markAgentDone(a)
 	}()
 
@@ -176,7 +176,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 	// Record the agent so a restart can recreate it (the log path is now set).
 	if m.survives() {
 		a.setDetached(true)
-		m.saveRegistry(a)
+		m.saveRegistry(ctx, a)
 	}
 
 	// shutdownSurvive reports whether a ctx cancel should leave the agent

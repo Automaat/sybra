@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -86,7 +87,7 @@ func TestComputeLanding_LocalOnly(t *testing.T) {
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		tasks:         tasks,
 	}
-	outcome, data := r.computeLanding(created.ID, 42, "MERGED", "merged")
+	outcome, data := r.computeLanding(context.Background(), created.ID, 42, "MERGED", "merged")
 
 	if outcome != "merged" {
 		t.Errorf("outcome = %q, want merged", outcome)

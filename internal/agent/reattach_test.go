@@ -81,7 +81,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 		PID:           headlessCmd.Process.Pid,
 		LogPath:       headlessLog,
 		StartedAt:     time.Now().UTC(),
-		ProcStartedAt: processStartString(headlessCmd.Process.Pid),
+		ProcStartedAt: processStartString(context.Background(), headlessCmd.Process.Pid),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 		PID:           interactiveCmd.Process.Pid,
 		LogPath:       interactiveLog,
 		StartedAt:     time.Now().UTC(),
-		ProcStartedAt: processStartString(interactiveCmd.Process.Pid),
+		ProcStartedAt: processStartString(context.Background(), interactiveCmd.Process.Pid),
 	}, reg)
 	if interactiveAgent == nil {
 		t.Fatal("reattachInteractive returned nil, expected a live agent")
