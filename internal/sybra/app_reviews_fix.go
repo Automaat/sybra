@@ -84,7 +84,11 @@ func (r *ReviewHandler) handleAutoMerge(issue github.PRIssue) {
 		if supportsFn == nil {
 			supportsFn = github.SupportsNativeAutoMerge
 		}
-		if ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName); serr == nil && ok {
+		ok, serr := supportsFn(issue.PR.Repository, issue.PR.BaseRefName)
+		if serr != nil {
+			r.logger.Error("auto-merge.native-support-check-failed", "task_id", t.ID, "pr", issue.PR.Number, "err", serr)
+		}
+		if serr == nil && ok {
 			enableFn := r.enableAutoMergeFn
 			if enableFn == nil {
 				enableFn = github.EnableAutoMerge

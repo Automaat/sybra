@@ -1253,7 +1253,7 @@ func (r *ReviewHandler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs 
 
 	for i := range tasks {
 		t := &tasks[i]
-		if handled[t.ID] || !prMonitorEligible(t) {
+		if handled[t.ID] || t.Status != task.StatusInReview || !prMonitorEligible(t) {
 			continue
 		}
 		if t.ProjectID == "" {
