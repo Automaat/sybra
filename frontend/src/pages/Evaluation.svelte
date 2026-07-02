@@ -4,6 +4,7 @@
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
   import type {
     ComparisonBreakdown,
+    ExperimentGroup,
     ExperimentKindBreakdown,
   } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 
@@ -501,7 +502,7 @@
         {/if}
       </div>
 
-      {#snippet experimentCards(experiments: ExperimentKindBreakdown['experiments'])}
+      {#snippet experimentCards(experiments: ExperimentGroup['experiments'])}
         {#if experiments && experiments.length > 0}
           <div class="mb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {#each experiments as exp (exp.key)}
@@ -655,8 +656,9 @@
       {/snippet}
 
       {#each experimentKinds as kind (kind)}
-        {@const group = kindGroup(kind)}
-        {#if group || kind !== 'unknown'}
+        {@const kindBreakdown = kindGroup(kind)}
+        {@const groups = kindBreakdown?.groups ?? []}
+        {#if kindBreakdown || kind !== 'unknown'}
           <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
             <h3 class="mb-1 text-sm font-semibold text-surface-500">{kindLabel(kind)} experiments</h3>
             {#if kind === 'unknown'}
@@ -669,25 +671,42 @@
               </p>
             {/if}
 
-            {#if !group}
+            {#if !kindBreakdown}
               <p class="text-xs text-surface-400">No {kind} experiments configured.</p>
-            {:else if (group.rows?.length ?? 0) === 0 && (group.rowsContribution?.length ?? 0) === 0}
+            {:else if groups.length === 0}
               <p class="text-xs text-surface-400">{kindLabel(kind)} experiments configured, but no runs recorded yet.</p>
             {:else}
-              {@render experimentCards(group.experiments)}
+              {#each groups as expGroup (expGroup.experimentId)}
+                <div class="mb-4 border-t border-surface-200 pt-3 first:mt-0 first:border-0 first:pt-0 dark:border-surface-700">
+                  <h4 class="mb-1 text-xs font-semibold text-surface-500">
+                    {expGroup.experimentId}
+                    {#if expGroup.subject}
+                      <span class="font-normal text-surface-400">
+                        · {[expGroup.subject.workflowId, expGroup.subject.stepId, expGroup.subject.role, expGroup.subject.skillName].filter(Boolean).join(' · ')}
+                      </span>
+                    {/if}
+                  </h4>
 
-              {#if group.rows && group.rows.length > 0}
-                <h4 class="mb-2 mt-2 text-xs font-semibold text-surface-400">Latest author</h4>
-                {@render comparisonTable(group.rows, group.rows, false)}
-              {/if}
+                  {#if (expGroup.rows?.length ?? 0) === 0 && (expGroup.rowsContribution?.length ?? 0) === 0}
+                    <p class="text-xs text-surface-400">Configured, but no runs recorded yet.</p>
+                  {:else}
+                    {@render experimentCards(expGroup.experiments)}
 
-              {#if group.rowsContribution && group.rowsContribution.length > 0}
-                <h4 class="mb-2 mt-4 text-xs font-semibold text-surface-400">Contribution</h4>
-                <p class="mb-2 max-w-3xl text-xs text-surface-400">
-                  Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
-                </p>
-                {@render comparisonTable(group.rowsContribution, group.rowsContribution, true)}
-              {/if}
+                    {#if expGroup.rows && expGroup.rows.length > 0}
+                      <h5 class="mb-2 mt-2 text-xs font-semibold text-surface-400">Latest author</h5>
+                      {@render comparisonTable(expGroup.rows, expGroup.rows, false)}
+                    {/if}
+
+                    {#if expGroup.rowsContribution && expGroup.rowsContribution.length > 0}
+                      <h5 class="mb-2 mt-4 text-xs font-semibold text-surface-400">Contribution</h5>
+                      <p class="mb-2 max-w-3xl text-xs text-surface-400">
+                        Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
+                      </p>
+                      {@render comparisonTable(expGroup.rowsContribution, expGroup.rowsContribution, true)}
+                    {/if}
+                  {/if}
+                </div>
+              {/each}
             {/if}
           </div>
         {/if}

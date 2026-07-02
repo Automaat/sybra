@@ -184,8 +184,23 @@ type Report struct {
 // model swap in the same table. "unknown" collects rows whose ExperimentID no
 // longer resolves against the configured abtest.Config (e.g. a retired
 // experiment) so orphaned data stays visible instead of silently vanishing.
+//
+// Within a kind, Groups further partitions rows by ExperimentID: each
+// abtest.Experiment pins one Subject and one set of fixed variant
+// provider/models, so two experiments of the same kind (e.g. two prompt
+// experiments targeting different workflow steps) never share a comparison
+// table even though they share a kind.
 type ExperimentKindBreakdown struct {
-	Kind             string                   `json:"kind"`
+	Kind   string            `json:"kind"`
+	Groups []ExperimentGroup `json:"groups,omitempty"`
+}
+
+// ExperimentGroup is the comparison table for a single experiment: every row
+// shares the same ExperimentID, and therefore the same Subject and (for
+// prompt/skill experiments) the same fixed variant provider/model settings.
+type ExperimentGroup struct {
+	ExperimentID     string                   `json:"experimentId"`
+	Subject          *abtest.Subject          `json:"subject,omitempty"`
 	Rows             []ComparisonBreakdown    `json:"rows,omitempty"`
 	RowsContribution []ComparisonBreakdown    `json:"rowsContribution,omitempty"`
 	Experiments      []ExperimentSampleStatus `json:"experiments,omitempty"`
@@ -585,10 +600,11 @@ func classifyExperimentKind(expID string, byID map[string]abtest.Experiment) (ki
 }
 
 // GroupByKind partitions already-computed comparison rows and experiment
-// sample statuses by experiment kind (model/prompt/skill/unknown), so callers
-// never need to re-scan records or events per kind. Rows/statuses are
-// annotated with Kind (and Subject, for resolved experiments) as they are
-// partitioned.
+// sample statuses first by experiment kind (model/prompt/skill/unknown), then
+// by ExperimentID within each kind, so callers never need to re-scan records
+// or events per kind and two experiments of the same kind never land in the
+// same comparison table. Rows/statuses are annotated with Kind (and Subject,
+// for resolved experiments) as they are partitioned.
 func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experiment) []ExperimentKindBreakdown {
 	byID := make(map[string]abtest.Experiment, len(exps))
 	configuredKinds := map[string]bool{}
@@ -599,8 +615,8 @@ func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experim
 		configuredKinds[exps[i].KindValue()] = true
 	}
 
-	classifyRows := func(rows []ComparisonBreakdown) map[string][]ComparisonBreakdown {
-		out := map[string][]ComparisonBreakdown{}
+	classifyRows := func(rows []ComparisonBreakdown) map[string]map[string][]ComparisonBreakdown {
+		out := map[string]map[string][]ComparisonBreakdown{}
 		for i := range rows {
 			row := rows[i]
 			kind, resolved := classifyExperimentKind(row.ExperimentID, byID)
@@ -611,14 +627,17 @@ func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experim
 			if resolved {
 				row.Subject = byID[row.ExperimentID].Subject
 			}
-			out[kind] = append(out[kind], row)
+			if out[kind] == nil {
+				out[kind] = map[string][]ComparisonBreakdown{}
+			}
+			out[kind][row.ExperimentID] = append(out[kind][row.ExperimentID], row)
 		}
 		return out
 	}
 	rowsByKind := classifyRows(latestAuthor.Rows)
 	contribByKind := classifyRows(contribution.Rows)
 
-	statusesByKind := map[string][]ExperimentSampleStatus{}
+	statusesByKind := map[string]map[string][]ExperimentSampleStatus{}
 	seen := map[string]bool{}
 	addStatuses := func(statuses []ExperimentSampleStatus) {
 		for i := range statuses {
@@ -632,7 +651,10 @@ func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experim
 				continue
 			}
 			seen[dedupeKey] = true
-			statusesByKind[kind] = append(statusesByKind[kind], st)
+			if statusesByKind[kind] == nil {
+				statusesByKind[kind] = map[string][]ExperimentSampleStatus{}
+			}
+			statusesByKind[kind][st.ExperimentID] = append(statusesByKind[kind][st.ExperimentID], st)
 		}
 	}
 	addStatuses(latestAuthor.Experiments)
@@ -640,18 +662,45 @@ func GroupByKind(latestAuthor, contribution CompareResult, exps []abtest.Experim
 
 	out := make([]ExperimentKindBreakdown, 0, len(experimentKindOrder))
 	for _, kind := range experimentKindOrder {
-		rows := rowsByKind[kind]
-		contribRows := contribByKind[kind]
-		statuses := statusesByKind[kind]
-		if len(rows) == 0 && len(contribRows) == 0 && len(statuses) == 0 && !configuredKinds[kind] {
+		expIDs := map[string]bool{}
+		for id := range rowsByKind[kind] {
+			expIDs[id] = true
+		}
+		for id := range contribByKind[kind] {
+			expIDs[id] = true
+		}
+		for id := range statusesByKind[kind] {
+			expIDs[id] = true
+		}
+		if len(expIDs) == 0 {
+			if !configuredKinds[kind] {
+				continue
+			}
+			out = append(out, ExperimentKindBreakdown{Kind: kind})
 			continue
 		}
-		out = append(out, ExperimentKindBreakdown{
-			Kind:             kind,
-			Rows:             rows,
-			RowsContribution: contribRows,
-			Experiments:      statuses,
-		})
+
+		orderedIDs := make([]string, 0, len(expIDs))
+		for id := range expIDs {
+			orderedIDs = append(orderedIDs, id)
+		}
+		sort.Strings(orderedIDs)
+
+		groups := make([]ExperimentGroup, 0, len(orderedIDs))
+		for _, expID := range orderedIDs {
+			var subject *abtest.Subject
+			if exp, ok := byID[expID]; ok {
+				subject = exp.Subject
+			}
+			groups = append(groups, ExperimentGroup{
+				ExperimentID:     expID,
+				Subject:          subject,
+				Rows:             rowsByKind[kind][expID],
+				RowsContribution: contribByKind[kind][expID],
+				Experiments:      statusesByKind[kind][expID],
+			})
+		}
+		out = append(out, ExperimentKindBreakdown{Kind: kind, Groups: groups})
 	}
 	return out
 }

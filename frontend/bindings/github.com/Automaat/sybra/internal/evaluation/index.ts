@@ -4,6 +4,7 @@
 export {
     Breakdown,
     ComparisonBreakdown,
+    ExperimentGroup,
     ExperimentKindBreakdown,
     ExperimentSampleStatus,
     PhaseReport,

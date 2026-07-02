@@ -257,17 +257,67 @@ export class ComparisonBreakdown {
 }
 
 /**
+ * ExperimentGroup is the comparison table for a single experiment: every row
+ * shares the same ExperimentID, and therefore the same Subject and (for
+ * prompt/skill experiments) the same fixed variant provider/model settings.
+ */
+export class ExperimentGroup {
+    "experimentId": string;
+    "subject"?: abtest$0.Subject | null;
+    "rows"?: ComparisonBreakdown[];
+    "rowsContribution"?: ComparisonBreakdown[];
+    "experiments"?: ExperimentSampleStatus[];
+
+    /** Creates a new ExperimentGroup instance. */
+    constructor($$source: Partial<ExperimentGroup> = {}) {
+        if (!("experimentId" in $$source)) {
+            this["experimentId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ExperimentGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ExperimentGroup {
+        const $$createField1_0 = $$createType1;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("subject" in $$parsedSource) {
+            $$parsedSource["subject"] = $$createField1_0($$parsedSource["subject"]);
+        }
+        if ("rows" in $$parsedSource) {
+            $$parsedSource["rows"] = $$createField2_0($$parsedSource["rows"]);
+        }
+        if ("rowsContribution" in $$parsedSource) {
+            $$parsedSource["rowsContribution"] = $$createField3_0($$parsedSource["rowsContribution"]);
+        }
+        if ("experiments" in $$parsedSource) {
+            $$parsedSource["experiments"] = $$createField4_0($$parsedSource["experiments"]);
+        }
+        return new ExperimentGroup($$parsedSource as Partial<ExperimentGroup>);
+    }
+}
+
+/**
  * ExperimentKindBreakdown groups A/B comparison rows by experiment kind
  * (model, prompt, skill) so a prompt/skill rewrite is never compared against a
  * model swap in the same table. "unknown" collects rows whose ExperimentID no
  * longer resolves against the configured abtest.Config (e.g. a retired
  * experiment) so orphaned data stays visible instead of silently vanishing.
+ * 
+ * Within a kind, Groups further partitions rows by ExperimentID: each
+ * abtest.Experiment pins one Subject and one set of fixed variant
+ * provider/models, so two experiments of the same kind (e.g. two prompt
+ * experiments targeting different workflow steps) never share a comparison
+ * table even though they share a kind.
  */
 export class ExperimentKindBreakdown {
     "kind": string;
-    "rows"?: ComparisonBreakdown[];
-    "rowsContribution"?: ComparisonBreakdown[];
-    "experiments"?: ExperimentSampleStatus[];
+    "groups"?: ExperimentGroup[];
 
     /** Creates a new ExperimentKindBreakdown instance. */
     constructor($$source: Partial<ExperimentKindBreakdown> = {}) {
@@ -282,18 +332,10 @@ export class ExperimentKindBreakdown {
      * Creates a new ExperimentKindBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentKindBreakdown {
-        const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType6;
+        const $$createField1_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("rows" in $$parsedSource) {
-            $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
-        }
-        if ("rowsContribution" in $$parsedSource) {
-            $$parsedSource["rowsContribution"] = $$createField2_0($$parsedSource["rowsContribution"]);
-        }
-        if ("experiments" in $$parsedSource) {
-            $$parsedSource["experiments"] = $$createField3_0($$parsedSource["experiments"]);
+        if ("groups" in $$parsedSource) {
+            $$parsedSource["groups"] = $$createField1_0($$parsedSource["groups"]);
         }
         return new ExperimentKindBreakdown($$parsedSource as Partial<ExperimentKindBreakdown>);
     }
@@ -347,7 +389,7 @@ export class ExperimentSampleStatus {
      * Creates a new ExperimentSampleStatus instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentSampleStatus {
-        const $$createField5_0 = $$createType8;
+        const $$createField5_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField5_0($$parsedSource["variants"]);
@@ -392,8 +434,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType10;
-        const $$createField4_0 = $$createType12;
+        const $$createField3_0 = $$createType12;
+        const $$createField4_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -543,14 +585,14 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType13;
-        const $$createField4_0 = $$createType15;
-        const $$createField5_0 = $$createType15;
+        const $$createField3_0 = $$createType15;
+        const $$createField4_0 = $$createType17;
+        const $$createField5_0 = $$createType17;
         const $$createField6_0 = $$createType4;
         const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType17;
-        const $$createField9_0 = $$createType19;
-        const $$createField10_0 = $$createType20;
+        const $$createField8_0 = $$createType19;
+        const $$createField9_0 = $$createType21;
+        const $$createField10_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -785,7 +827,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType21;
+        const $$createField2_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -887,18 +929,20 @@ const $$createType3 = ComparisonBreakdown.createFrom;
 const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = ExperimentSampleStatus.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = VariantSampleStatus.createFrom;
+const $$createType7 = ExperimentGroup.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = PhaseStat.createFrom;
+const $$createType9 = VariantSampleStatus.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = TaskPhases.createFrom;
+const $$createType11 = PhaseStat.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = Scorecard.createFrom;
-const $$createType14 = Breakdown.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = ExperimentKindBreakdown.createFrom;
+const $$createType13 = TaskPhases.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = Scorecard.createFrom;
+const $$createType16 = Breakdown.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = Weakness.createFrom;
+const $$createType18 = ExperimentKindBreakdown.createFrom;
 const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = $Create.Array($Create.Any);
-const $$createType21 = $Create.Map($Create.Any, $Create.Any);
+const $$createType20 = Weakness.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = $Create.Array($Create.Any);
+const $$createType23 = $Create.Map($Create.Any, $Create.Any);

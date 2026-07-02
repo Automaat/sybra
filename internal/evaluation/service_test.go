@@ -45,10 +45,11 @@ func TestServiceScanBuildsVariantParentsWithRoleBreakdowns(t *testing.T) {
 		t.Fatalf("Scan returned error: %v", err)
 	}
 	modelKind := mustExperimentKind(t, got.ByExperimentKind, "model")
-	if len(modelKind.Rows) != 1 {
-		t.Fatalf("model kind rows = %d, want 1 aggregate parent: %+v", len(modelKind.Rows), modelKind.Rows)
+	modelGroup := mustExperimentGroup(t, modelKind.Groups, "exp")
+	if len(modelGroup.Rows) != 1 {
+		t.Fatalf("model kind rows = %d, want 1 aggregate parent: %+v", len(modelGroup.Rows), modelGroup.Rows)
 	}
-	parent := modelKind.Rows[0]
+	parent := modelGroup.Rows[0]
 	if parent.ExperimentID != "exp" || parent.VariantID != "a" || parent.Role != "" || parent.Runs != 2 || parent.Landed != 2 {
 		t.Fatalf("model kind parent = %+v, want aggregate exp/a row across roles", parent)
 	}
