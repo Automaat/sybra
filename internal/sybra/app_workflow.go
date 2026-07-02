@@ -406,8 +406,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return ag.ID, "", baselineRef, nil
 	}
 
-	// For system agents (triage, eval, plan, etc.), build RunConfig directly.
+	// For roles that don't go through StartAgentWithAssignment (triage, eval,
+	// plan, pr-fix, fix-review, test-runner, ...), build RunConfig directly.
 	r := agent.Role(role)
+	if err := a.claimDirectDispatch(taskID); err != nil {
+		return "", "", "", err
+	}
+	defer a.agents.ReleaseTaskDispatch(taskID)
+
 	t, err := a.agentOrch.tasks.Get(taskID)
 	if err != nil {
 		return "", "", "", err
@@ -512,6 +518,20 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+// claimDirectDispatch serializes the direct-run dispatch path (every role
+// that bypasses StartAgentWithAssignment: triage, eval, plan, pr-fix,
+// fix-review, test-runner, ...) per task, closing the same check-then-act
+// race that StartAgentWithAssignment closes for implementation agents above:
+// without it, two dispatchers (e.g. a fast ResumeStalled retry) can each
+// observe no running agent and start a duplicate agent against the same
+// task/worktree.
+func (a *agentAdapter) claimDirectDispatch(taskID string) error {
+	if !a.agents.ClaimTaskDispatch(taskID) {
+		return workflow.ErrDispatchInFlight
+	}
+	return nil
 }
 
 func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
