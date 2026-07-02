@@ -137,6 +137,7 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_weekly_limit", ErrorSample{Content: "you've hit your weekly limit", ContentIsCleanResult: true}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
 		{"clean_content_mentions_rate_limit", ErrorSample{Content: "fixed rate limit handling", ContentIsCleanResult: true}, SignalNone, "", 0},
+		{"clean_content_mentions_weekly_limit_bare", ErrorSample{Content: "implemented workflow fallback for weekly limit handling", ContentIsCleanResult: true}, SignalNone, "", 0},
 		{"overloaded_ignored", ErrorSample{ErrorStatus: 529, ErrorType: "overloaded_error"}, SignalNone, "", 0},
 		{"unrelated", ErrorSample{Stderr: "random crash"}, SignalNone, "", 0},
 		{
@@ -205,6 +206,11 @@ func TestClassifyCodexError(t *testing.T) {
 		{
 			"clean_result_mentioning_backend_host_is_none",
 			ErrorSample{Content: "fixed the retry handling for wss://chatgpt.com/backend-api/codex/responses and failed to refresh available models errors", ContentIsCleanResult: true},
+			SignalNone, "", 0,
+		},
+		{
+			"clean_content_mentions_weekly_limit_bare",
+			ErrorSample{Content: "implemented workflow fallback for weekly limit handling", ContentIsCleanResult: true},
 			SignalNone, "", 0,
 		},
 		{

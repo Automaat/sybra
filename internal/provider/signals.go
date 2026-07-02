@@ -59,7 +59,7 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 	// short-circuit below: providers can attach a generic rate-limit error code
 	// to a weekly-quota-exhaustion message, and the longer weeklyLimitCooldown
 	// park only applies if the text is inspected first.
-	if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
 		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
 	}
 	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
@@ -87,6 +87,31 @@ func isWeeklyLimit(text string) bool {
 	)
 }
 
+// isWeeklyLimitClean is the clean-result-safe variant of isWeeklyLimit: it
+// drops the bare "weekly limit" needle, which a successful run's assistant
+// text can legitimately contain (e.g. describing this very feature) without
+// the run itself having hit a weekly quota.
+func isWeeklyLimitClean(text string) bool {
+	return containsAny(text,
+		"weekly limit reached",
+		"hit your weekly limit",
+		"reached your weekly limit",
+	)
+}
+
+// isWeeklyLimitText applies isWeeklyLimit to stderr (always, since stderr is
+// never a clean success surface) and to content only under the appropriate
+// guard for whether content came from a clean/successful result.
+func isWeeklyLimitText(stderr, content string, contentIsCleanResult bool) bool {
+	if isWeeklyLimit(stderr) {
+		return true
+	}
+	if contentIsCleanResult {
+		return isWeeklyLimitClean(content)
+	}
+	return isWeeklyLimit(content)
+}
+
 // ClassifyCodexError mirrors ClassifyClaudeError for codex runs. Codex error
 // taxonomy is less well-known at design time, so we lean on substring matching
 // and let the runner log SignalNone cases with the raw strings for iterative
@@ -105,7 +130,7 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	// short-circuit below: providers can attach a generic rate-limit error
 	// code to a weekly-quota-exhaustion message, and the longer
 	// weeklyLimitCooldown park only applies if the text is inspected first.
-	if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
 		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
 	}
 	// Host-anchored: a bare "websocket connection" without the codex backend
