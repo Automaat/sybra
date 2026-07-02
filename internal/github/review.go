@@ -166,7 +166,31 @@ type gqlBatchPRResponse struct {
 	Data   map[string]json.RawMessage `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
+		Path    []any  `json:"path"`
 	} `json:"errors"`
+}
+
+// aliasErrors buckets the response's errors by the top-level aliased field
+// (e.g. "repo3") their path points at. Errors without a path, or whose path
+// doesn't start with a string (a query-level error), are global: they apply
+// to every alias since GitHub returned no usable per-alias distinction.
+func (r *gqlBatchPRResponse) aliasErrors() (perAlias map[string]string, global string) {
+	perAlias = make(map[string]string)
+	for _, ge := range r.Errors {
+		if len(ge.Path) == 0 {
+			global = ge.Message
+			continue
+		}
+		alias, ok := ge.Path[0].(string)
+		if !ok {
+			global = ge.Message
+			continue
+		}
+		if _, exists := perAlias[alias]; !exists {
+			perAlias[alias] = ge.Message
+		}
+	}
+	return perAlias, global
 }
 
 func (r *gqlBatchPRResponse) viewerLogin() string {
@@ -284,8 +308,21 @@ func fetchPRsForMonitorWith(e execer, refs []PRRef) []MonitorPRResult {
 	}
 
 	results := make([]MonitorPRResult, 0, len(refs))
+	cacheEnabled := runtimeCacheEnabled(e)
 	for start := 0; start < len(refs); start += maxBatchPRsPerQuery {
 		end := min(start+maxBatchPRsPerQuery, len(refs))
+		// Recheck the gate before every chunk: an earlier chunk in this same
+		// loop can observe rate-limit headers (via runGHAPIWith) and trip the
+		// gate into a low-budget state, in which case the remaining refs
+		// should fall back to REST instead of continuing to spend GraphQL
+		// budget or hitting rate-limit errors.
+		if cacheEnabled && ghGate.shouldSkipOptional("graphql") {
+			for _, ref := range refs[start:] {
+				pr, open, err := fetchPRForMonitorViaREST(e, ref.Repo, ref.Number)
+				results = append(results, MonitorPRResult{Repo: ref.Repo, Number: ref.Number, PR: pr, Open: open, Err: err})
+			}
+			return results
+		}
 		results = append(results, fetchPRBatchWith(e, refs[start:end])...)
 	}
 	return results
@@ -354,8 +391,14 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 		}
 		return results
 	}
-	if len(gqlResp.Errors) > 0 {
-		gqlErr := fmt.Errorf("graphql pr batch: %s", gqlResp.Errors[0].Message)
+	// GitHub GraphQL can return partial data: an error scoped to one alias
+	// (e.g. a deleted/inaccessible repo or PR) alongside valid data for every
+	// other alias in the batch. Only fail the aliases named in a per-alias
+	// error path; a query-level error with no path (global) still fails the
+	// whole batch, since there's no per-alias data to salvage.
+	perAliasErr, globalErr := gqlResp.aliasErrors()
+	if globalErr != "" {
+		gqlErr := fmt.Errorf("graphql pr batch: %s", globalErr)
 		for _, v := range valid {
 			results[v.idx].Err = gqlErr
 		}
@@ -365,6 +408,10 @@ func fetchPRBatchWith(e execer, refs []PRRef) []MonitorPRResult {
 	viewer := gqlResp.viewerLogin()
 	for j, v := range valid {
 		alias := fmt.Sprintf("repo%d", j)
+		if msg, failed := perAliasErr[alias]; failed {
+			results[v.idx].Err = fmt.Errorf("graphql pr batch %s: %s", alias, msg)
+			continue
+		}
 		raw, ok := gqlResp.Data[alias]
 		if !ok {
 			results[v.idx].Err = fmt.Errorf("graphql pr batch: missing %s in response", alias)

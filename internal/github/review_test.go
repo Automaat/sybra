@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFetchReviewsWith_success(t *testing.T) {
@@ -412,5 +413,97 @@ func TestFetchPRsForMonitorWith_invalidRefSkipsQuery(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Err == nil {
 		t.Fatalf("results = %+v, want single error result", results)
+	}
+}
+
+// TestFetchPRBatchWith_partialError locks that a GraphQL error scoped to one
+// alias (via errors[].path) only fails that alias — the other aliases in the
+// same batch, which have valid data alongside the error, must still resolve.
+func TestFetchPRBatchWith_partialError(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{
+		"data": {
+			"viewer": {"login": "me"},
+			"repo0": {
+				"pullRequest": {
+					"number": 1,
+					"title": "one",
+					"url": "https://github.com/o/r/pull/1",
+					"state": "OPEN",
+					"author": {"login": "me", "type": "User"},
+					"repository": {"name": "r", "nameWithOwner": "o/r"},
+					"labels": {"nodes": []},
+					"commits": {"nodes": []},
+					"reviewThreads": {"nodes": []},
+					"latestReviews": {"nodes": []}
+				}
+			},
+			"repo1": null
+		},
+		"errors": [
+			{"message": "Could not resolve to a PullRequest", "path": ["repo1", "pullRequest"]}
+		]
+	}`)}
+
+	refs := []PRRef{{Repo: "o/r", Number: 1}, {Repo: "o/r", Number: 2}}
+	results := fetchPRsForMonitorWith(fe, refs)
+
+	if fe.calls != 1 {
+		t.Fatalf("calls = %d, want 1", fe.calls)
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+	if results[0].Err != nil || !results[0].Open || results[0].PR.Title != "one" {
+		t.Fatalf("results[0] = %+v, want valid open PR unaffected by repo1's error", results[0])
+	}
+	if results[1].Err == nil {
+		t.Fatalf("results[1] = %+v, want error for the aliased PR that GraphQL reported", results[1])
+	}
+}
+
+// TestFetchPRBatchWith_globalErrorFailsWholeBatch locks that a query-level
+// GraphQL error with no path (no per-alias distinction to salvage) still
+// fails every ref in the batch, same as before this change.
+func TestFetchPRBatchWith_globalErrorFailsWholeBatch(t *testing.T) {
+	t.Parallel()
+	fe := &fakeExecer{output: []byte(`{"errors":[{"message":"rate limited"}]}`)}
+	refs := []PRRef{{Repo: "o/r", Number: 1}, {Repo: "o/r", Number: 2}}
+	results := fetchPRsForMonitorWith(fe, refs)
+	if len(results) != 2 || results[0].Err == nil || results[1].Err == nil {
+		t.Fatalf("results = %+v, want both refs to error", results)
+	}
+}
+
+// TestFetchPRBatchWith_updatesGateForNextChunk locks the mechanism
+// fetchPRsForMonitorWith's per-chunk gate recheck depends on: a chunk
+// response carrying low-budget rate-limit headers must update ghGate so that
+// shouldSkipOptional("graphql") reports true immediately after, without
+// waiting for a separate /rate_limit refresh. (The recheck itself is gated on
+// runtimeCacheEnabled(e), i.e. the real defaultExecer, so it cannot be driven
+// end-to-end through a fake execer — see the identical constraint on the
+// pre-loop check a few lines above in fetchPRsForMonitorWith.)
+func TestFetchPRBatchWith_updatesGateForNextChunk(t *testing.T) {
+	orig := ghGate
+	t.Cleanup(func() { ghGate = orig })
+	ghGate = newGHRequestGate()
+
+	resetAt := time.Now().Add(time.Hour).Unix()
+	chunk1 := fmt.Sprintf("HTTP/1.1 200 OK\n"+
+		"x-ratelimit-resource: graphql\n"+
+		"x-ratelimit-remaining: 0\n"+
+		"x-ratelimit-limit: 5000\n"+
+		"x-ratelimit-reset: %d\n\n"+
+		`{"data": {"viewer": {"login": "me"}}}`, resetAt)
+
+	fe := &fakeExecer{output: []byte(chunk1)}
+	refs := []PRRef{{Repo: "o/r", Number: 1}}
+
+	if ghGate.shouldSkipOptional("graphql") {
+		t.Fatal("gate should not skip graphql before any call")
+	}
+	fetchPRBatchWith(fe, refs)
+	if !ghGate.shouldSkipOptional("graphql") {
+		t.Fatal("want gate to skip graphql after a chunk response reports zero remaining budget")
 	}
 }
