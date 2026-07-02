@@ -1,21 +1,20 @@
 <script lang="ts">
-  import { interpretExperiment } from '$lib/evaluation-interpretation.js'
+  import ExperimentGroup from '../components/ExperimentGroup.svelte'
+  import { hours, num, pct, rateCell, seconds } from '$lib/evaluation-format.js'
   import { evaluationStore } from '../stores/evaluation.svelte.js'
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
-  import type {
-    ComparisonBreakdown,
-    ExperimentGroup,
-    ExperimentKindBreakdown,
-  } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
+  import type { ExperimentKindBreakdown } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 
   const report = $derived(evaluationStore.data)
   const phases = $derived(lifecycleStore.data)
+  // Go's PhaseReport.Phases is a nil slice (JSON null, not []) when the cohort
+  // has no landed-task phase data yet, e.g. a fresh install — never index
+  // phases.phases directly.
+  const phaseList = $derived(phases?.phases ?? [])
   // Share is share-of-lead-time across the cohort, so the denominator is the
   // summed time in each phase (totalH) — not meanH, which averages only over
   // tasks that entered the phase and would over-weight phases many tasks skip.
-  const phaseTotalSum = $derived(
-    (phases?.phases ?? []).reduce((acc, p) => acc + p.totalH, 0),
-  )
+  const phaseTotalSum = $derived(phaseList.reduce((acc, p) => acc + p.totalH, 0))
   // Stable colour per phase so the bar and legend agree across renders.
   const phaseColor: Record<string, string> = {
     queued: 'bg-surface-400',
@@ -51,73 +50,6 @@
     return () => evaluationStore.stopListening()
   })
 
-  function pct(x: number | null | undefined): string {
-    return Number.isFinite(x) ? `${((x ?? 0) * 100).toFixed(0)}%` : '—'
-  }
-  type RateEstimateLike = {
-    point?: number
-    wilsonLower?: number
-    wilsonUpper?: number
-    deltaFromBaseline?: number
-    hasDelta?: boolean
-    hasData?: boolean
-  }
-  type EstimateKey =
-    | 'failureEstimate'
-    | 'landedEstimate'
-    | 'mergeEstimate'
-    | 'ciFirstPassEstimate'
-    | 'mergedWithEditsEstimate'
-    | 'reworkEstimate'
-    | 'revertEstimate'
-  type ComparisonRowLike = {
-    failureEstimate?: RateEstimateLike
-    landedEstimate?: RateEstimateLike
-    mergeEstimate?: RateEstimateLike
-    ciFirstPassEstimate?: RateEstimateLike
-    mergedWithEditsEstimate?: RateEstimateLike
-    reworkEstimate?: RateEstimateLike
-    revertEstimate?: RateEstimateLike
-    baseline?: boolean
-    baselineVariantId?: string
-    sampleStatus?: string
-  }
-  function estimate(row: ComparisonRowLike, key: EstimateKey): RateEstimateLike | undefined {
-    return row[key]
-  }
-  function estimatePct(row: ComparisonRowLike, key: EstimateKey, fallback: number | undefined): string {
-    const est = estimate(row, key)
-    return est?.hasData ? pct(est.point) : pct(fallback)
-  }
-  function estimateInterval(row: ComparisonRowLike, key: EstimateKey): string {
-    const est = estimate(row, key)
-    if (!est?.hasData) return ''
-    return `${pct(est.wilsonLower)}-${pct(est.wilsonUpper)}`
-  }
-  function estimateDelta(row: ComparisonRowLike, key: EstimateKey): string {
-    const est = estimate(row, key)
-    if (!est?.hasDelta || est.deltaFromBaseline === undefined) return ''
-    const pp = est.deltaFromBaseline * 100
-    return `${pp >= 0 ? '+' : ''}${pp.toFixed(0)}pp`
-  }
-  function rateCell(row: ComparisonRowLike, key: EstimateKey, fallback: number | undefined, showDelta: boolean): string {
-    const interval = estimateInterval(row, key)
-    const delta = showDelta ? estimateDelta(row, key) : ''
-    return [estimatePct(row, key, fallback), interval ? `CI ${interval}` : '', delta].filter(Boolean).join(' · ')
-  }
-  function hours(x: number | undefined): string {
-    return x === undefined ? '—' : `${x.toFixed(1)}h`
-  }
-  function seconds(x: number | null | undefined): string {
-    if (!Number.isFinite(x)) return '—'
-    x = x ?? 0
-    if (x >= 3600) return `${(x / 3600).toFixed(1)}h`
-    if (x >= 60) return `${(x / 60).toFixed(1)}m`
-    return `${x.toFixed(0)}s`
-  }
-  function num(x: number | null | undefined, digits = 1): string {
-    return Number.isFinite(x) ? (x ?? 0).toFixed(digits) : '—'
-  }
   // Higher is better for these; render the bar/colour accordingly.
   function goodScale(x: number): string {
     if (x >= 0.8) return 'text-success-600 dark:text-success-400'
@@ -129,29 +61,6 @@
       ? 'bg-warning-200 text-warning-800 dark:bg-warning-800 dark:text-warning-200'
       : 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200'
   }
-  function verdictClasses(verdict: string): string {
-    if (verdict === 'promising') return 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'
-    if (verdict === 'risky') return 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-200'
-    if (verdict === 'costly') return 'bg-warning-200 text-warning-800 dark:bg-warning-800 dark:text-warning-200'
-    return 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-200'
-  }
-  function guardrailClasses(status: string): string {
-    if (status === 'breach') return 'border-error-300 text-error-700 dark:border-error-700 dark:text-error-300'
-    if (status === 'watch') return 'border-warning-300 text-warning-700 dark:border-warning-700 dark:text-warning-300'
-    if (status === 'ok') return 'border-success-300 text-success-700 dark:border-success-700 dark:text-success-300'
-    return 'border-surface-300 text-surface-500 dark:border-surface-600 dark:text-surface-300'
-  }
-  function sampleClasses(status: string | undefined): string {
-    if (status === 'actionable') return 'bg-success-100 text-success-700 dark:bg-success-900 dark:text-success-200'
-    if (status === 'directional') return 'bg-warning-100 text-warning-700 dark:bg-warning-900 dark:text-warning-200'
-    if (status === 'low-sample') return 'bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-200'
-    return 'bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-300'
-  }
-  function rowState(row: ComparisonRowLike): string {
-    if (row.baseline) return 'baseline'
-    if (row.baselineVariantId && !estimate(row, 'failureEstimate')?.hasDelta) return 'no baseline'
-    return row.sampleStatus ?? ''
-  }
 
   // Fixed experiment kind order; 'unknown' (orphaned experiment IDs) only
   // renders a section when there is actually orphaned data to show.
@@ -161,11 +70,6 @@
   }
   function kindGroup(kind: string): ExperimentKindBreakdown | undefined {
     return report?.byExperimentKind?.find((g) => g.kind === kind)
-  }
-  function subjectLabel(row: ComparisonBreakdown): string {
-    const s = row.subject
-    if (!s) return ''
-    return [s.workflowId, s.stepId, s.role, s.skillName].filter(Boolean).join(' · ')
   }
 </script>
 
@@ -261,7 +165,7 @@
     </div>
 
     <!-- Where time goes: lead time decomposed by lifecycle phase -->
-    {#if phases && phases.cohort > 0 && phases.phases.length > 0}
+    {#if phases && phases.cohort > 0 && phaseList.length > 0}
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <div class="mb-3 flex items-baseline justify-between">
           <h3 class="text-sm font-semibold text-surface-500">Where time goes</h3>
@@ -270,7 +174,7 @@
 
         <!-- Stacked share-of-lead-time bar -->
         <div class="mb-3 flex h-3 w-full overflow-hidden rounded-full">
-          {#each phases.phases as p (p.phase)}
+          {#each phaseList as p (p.phase)}
             <div
               class="{phaseColor[p.phase] ?? 'bg-surface-300'} h-full"
               style="width: {phaseShare(p.totalH)}%"
@@ -291,7 +195,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each phases.phases as p (p.phase)}
+            {#each phaseList as p (p.phase)}
               <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
                 <td class="py-1.5">
                   <span class="mr-2 inline-block h-2 w-2 rounded-full {phaseColor[p.phase] ?? 'bg-surface-300'}"></span>
@@ -502,213 +406,10 @@
         {/if}
       </div>
 
-      {#snippet experimentCards(experiments: ExperimentGroup['experiments'])}
-        {#if experiments && experiments.length > 0}
-          <div class="mb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {#each experiments as exp (exp.key)}
-              <div class="rounded border border-surface-200 p-3 text-xs dark:border-surface-700">
-                <div class="mb-1 flex items-center justify-between gap-2">
-                  <span class="truncate font-mono">{exp.experimentId} · {exp.role}</span>
-                  <span class="rounded px-1.5 py-0.5 {sampleClasses(exp.status)}">{exp.status}</span>
-                </div>
-                <div class="text-surface-400">
-                  {exp.readyVariants}/{exp.variants.length} ready · {exp.totalRuns} runs · min {exp.minSamplesPerVariant}
-                </div>
-                {#if exp.baselineVariantId}
-                  <div class="mt-1 text-surface-400">baseline {exp.baselineVariantId}</div>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-      {/snippet}
-
-      {#snippet comparisonTable(rows: ComparisonBreakdown[], peers: ComparisonBreakdown[], contribution: boolean)}
-        <table class="w-full min-w-[1180px] text-sm">
-          <thead>
-            <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
-              <th class="pb-2">Variant</th>
-              <th class="pb-2">Role</th>
-              <th class="pb-2 text-right">Runs</th>
-              <th class="pb-2 text-right">Landed</th>
-              <th class="pb-2 text-right">Fail %</th>
-              <th class="pb-2 text-right">Merge %</th>
-              <th class="pb-2 text-right">CI 1st</th>
-              <th class="pb-2 text-right">Edited</th>
-              <th class="pb-2 text-right">Rework</th>
-              <th class="pb-2 text-right">Revert</th>
-              <th class="pb-2 text-right">Duration</th>
-              <th class="pb-2 text-right">Cost</th>
-              <th class="pb-2 text-right">Premium req</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each rows as row (row.key)}
-              {@const interpretation = interpretExperiment(row, peers)}
-              <tr class="border-b border-surface-100 bg-surface-100/60 dark:border-surface-700 dark:bg-surface-700/30">
-                <td class="py-1.5">
-                  <div class="font-mono text-xs">{row.variantId || row.key}</div>
-                  <div class="text-xs text-surface-400">
-                    {row.provider}{row.model ? ` · ${row.model}` : ''}{row.reasoningEffort ? ` · ${row.reasoningEffort}` : ''}
-                  </div>
-                  {#if subjectLabel(row)}
-                    <div class="text-xs text-surface-400">{subjectLabel(row)}</div>
-                  {/if}
-                  <div class="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span class="rounded px-1.5 py-0.5 text-[10px] font-medium {verdictClasses(interpretation.verdict)}">
-                      {interpretation.verdictLabel}
-                    </span>
-                    <span class="text-[10px] text-surface-500">
-                      {interpretation.primaryLabel}: {interpretation.primaryValue} ({interpretation.primaryDetail})
-                    </span>
-                  </div>
-                  <p class="mt-1 text-[10px] text-surface-400">{interpretation.verdictReason}</p>
-                </td>
-                <td class="py-1.5 text-xs font-medium">All roles</td>
-                <td class="py-1.5 text-right">
-                  {row.runs}
-                  {#if rowState(row)}
-                    <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)}">{rowState(row)}</span>
-                  {:else if row.insufficientData}
-                    <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                  {/if}
-                </td>
-                <td class="py-1.5 text-right text-xs">
-                  {#if contribution}
-                    {row.landed}
-                    {#if row.qualityAttributionLimited}
-                      <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
-                    {/if}
-                  {:else}
-                    {row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}
-                  {/if}
-                </td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'reworkEstimate', row.reworkRate, true)}</td>
-                <td class="py-1.5 text-right text-xs">{rateCell(row, 'revertEstimate', row.revertRate, true)}</td>
-                <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
-                <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
-                <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
-              </tr>
-              <tr class="border-b border-surface-100 dark:border-surface-700">
-                <td class="pb-2 pt-0" colspan="13">
-                  <div class="flex flex-wrap gap-1.5">
-                    {#each interpretation.guardrails as guardrail (guardrail.key)}
-                      <span
-                        class="rounded border px-1.5 py-0.5 text-[10px] {guardrailClasses(guardrail.status)}"
-                        title={guardrail.detail}
-                      >
-                        {guardrail.label}: {guardrail.status}
-                      </span>
-                    {/each}
-                  </div>
-                  {#if interpretation.limitedSignals.length > 0}
-                    <p class="mt-1 text-[10px] text-surface-400">
-                      Limited signals: {interpretation.limitedSignals.join(' ')}
-                    </p>
-                  {/if}
-                </td>
-              </tr>
-              {#each row.roleBreakdowns ?? [] as child (child.key)}
-                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                  <td class="py-1.5 pl-6">
-                    <div class="font-mono text-xs text-surface-500">{child.variantId || row.variantId || child.key}</div>
-                    <div class="text-xs text-surface-400">
-                      {child.provider}{child.model ? ` · ${child.model}` : ''}{child.reasoningEffort ? ` · ${child.reasoningEffort}` : ''}
-                    </div>
-                  </td>
-                  <td class="py-1.5 text-xs">{child.role || '—'}</td>
-                  <td class="py-1.5 text-right">
-                    {child.runs}
-                    {#if rowState(child)}
-                      <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)}">{rowState(child)}</span>
-                    {:else if child.insufficientData}
-                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
-                    {/if}
-                  </td>
-                  <td class="py-1.5 text-right text-xs">
-                    {#if contribution}
-                      <span class="text-xs">{child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}</span>
-                      {#if child.qualityAttributionLimited}
-                        <span class="ml-1 rounded bg-warning-200 px-1 text-[10px] text-warning-800 dark:bg-warning-800 dark:text-warning-200">limited attribution</span>
-                      {/if}
-                    {:else}
-                      {child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}
-                    {/if}
-                  </td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'reworkEstimate', child.reworkRate, true)}</td>
-                  <td class="py-1.5 text-right text-xs">{rateCell(child, 'revertEstimate', child.revertRate, true)}</td>
-                  <td class="py-1.5 text-right">p50 {seconds(child.durationP50S)} · p90 {seconds(child.durationP90S)}</td>
-                  <td class="py-1.5 text-right">${num(child.totalCostUsd, 2)} · ${num(child.costPerLanded, 2)}/landed</td>
-                  <td class="py-1.5 text-right">{num(child.premiumRequests, 1)} · {num(child.premiumRequestsPerLanded, 1)}/landed</td>
-                </tr>
-              {/each}
-            {/each}
-          </tbody>
-        </table>
-      {/snippet}
-
       {#each experimentKinds as kind (kind)}
         {@const kindBreakdown = kindGroup(kind)}
-        {@const groups = kindBreakdown?.groups ?? []}
         {#if kindBreakdown || kind !== 'unknown'}
-          <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-            <h3 class="mb-1 text-sm font-semibold text-surface-500">{kindLabel(kind)} experiments</h3>
-            {#if kind === 'unknown'}
-              <p class="mb-3 max-w-3xl text-xs text-warning-600 dark:text-warning-400">
-                These rows reference an experiment ID no longer present in configuration (orphaned).
-              </p>
-            {:else}
-              <p class="mb-3 max-w-3xl text-xs text-surface-400">
-                Primary signal: landed/run. Guardrails watch reliability, quality, speed, cost, and premium-model usage.
-              </p>
-            {/if}
-
-            {#if !kindBreakdown}
-              <p class="text-xs text-surface-400">No {kind} experiments configured.</p>
-            {:else if groups.length === 0}
-              <p class="text-xs text-surface-400">{kindLabel(kind)} experiments configured, but no runs recorded yet.</p>
-            {:else}
-              {#each groups as expGroup (expGroup.experimentId)}
-                <div class="mb-4 border-t border-surface-200 pt-3 first:mt-0 first:border-0 first:pt-0 dark:border-surface-700">
-                  <h4 class="mb-1 text-xs font-semibold text-surface-500">
-                    {expGroup.experimentId}
-                    {#if expGroup.subject}
-                      <span class="font-normal text-surface-400">
-                        · {[expGroup.subject.workflowId, expGroup.subject.stepId, expGroup.subject.role, expGroup.subject.skillName].filter(Boolean).join(' · ')}
-                      </span>
-                    {/if}
-                  </h4>
-
-                  {#if (expGroup.rows?.length ?? 0) === 0 && (expGroup.rowsContribution?.length ?? 0) === 0}
-                    <p class="text-xs text-surface-400">Configured, but no runs recorded yet.</p>
-                  {:else}
-                    {@render experimentCards(expGroup.experiments)}
-
-                    {#if expGroup.rows && expGroup.rows.length > 0}
-                      <h5 class="mb-2 mt-2 text-xs font-semibold text-surface-400">Latest author</h5>
-                      {@render comparisonTable(expGroup.rows, expGroup.rows, false)}
-                    {/if}
-
-                    {#if expGroup.rowsContribution && expGroup.rowsContribution.length > 0}
-                      <h5 class="mb-2 mt-4 text-xs font-semibold text-surface-400">Contribution</h5>
-                      <p class="mb-2 max-w-3xl text-xs text-surface-400">
-                        Credits each distinct in-window author group that contributed before landing; totals can exceed landed tasks.
-                      </p>
-                      {@render comparisonTable(expGroup.rowsContribution, expGroup.rowsContribution, true)}
-                    {/if}
-                  {/if}
-                </div>
-              {/each}
-            {/if}
-          </div>
+          <ExperimentGroup kind={kind} title="{kindLabel(kind)} experiments" breakdown={kindBreakdown} />
         {/if}
       {/each}
     </div>
