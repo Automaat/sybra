@@ -289,9 +289,14 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, primary github.PRIssue, han
 	// Dispatch pr.event through the engine so trigger conditions in the
 	// workflow YAML stay authoritative. StartWorkflow would bypass them.
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s%s", t.Title, prompt, prFixResultContract)
+	kinds := make([]string, 0, len(handle))
+	for i := range handle {
+		kinds = append(kinds, string(handle[i].Kind))
+	}
 	vars := map[string]string{
 		"prompt":                fullPrompt,
 		"pr_issue_kind":         string(primary.Kind),
+		"pr_issue_kinds":        strings.Join(kinds, ","),
 		workflow.WorkflowVarDir: dir,
 	}
 	wfID, err := r.workflowEngine.DispatchEvent(t.ID, "pr.event",
@@ -311,10 +316,8 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, primary github.PRIssue, han
 		return false
 	}
 
-	kinds := make([]string, 0, len(handle))
 	for i := range handle {
 		r.prTracker.MarkHandled(t.ID, handle[i].Kind, handle[i].PR.HeadSHA)
-		kinds = append(kinds, string(handle[i].Kind))
 	}
 	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
 		"issue": string(primary.Kind), "kinds": strings.Join(kinds, ","),
