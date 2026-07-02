@@ -334,6 +334,47 @@ func TestParseWorktreePorcelain(t *testing.T) {
 	}
 }
 
+func TestAutoCommitUncommitted(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	dir := initRepoWithCommit(t)
+
+	if got := AutoCommitUncommitted(dir, "wip: nothing to do"); got {
+		t.Fatal("expected no commit on a clean tree")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := AutoCommitUncommitted(dir, "wip: recovered work"); !got {
+		t.Fatal("expected a commit for a dirty tree")
+	}
+
+	statusOut, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree still dirty after commit: %q", statusOut)
+	}
+
+	logOut, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%s").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got := strings.TrimSpace(string(logOut)); got != "wip: recovered work" {
+		t.Errorf("commit message = %q, want %q", got, "wip: recovered work")
+	}
+
+	// Idempotent: nothing left to commit on the now-clean tree.
+	if got := AutoCommitUncommitted(dir, "wip: should not commit"); got {
+		t.Fatal("expected no commit on an already-clean tree")
+	}
+}
+
 func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	t.Parallel()
 	if !hasGit() {

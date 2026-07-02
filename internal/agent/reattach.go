@@ -301,9 +301,21 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 }
 
 func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistry) {
-	if found, isError := a.lastConvoResult(); !found {
-		a.SetExitErr(errReattachedGone)
-	} else if isError {
+	found, isError := a.lastConvoResult()
+	if !found {
+		// The turn was interrupted mid-run (e.g. a Sybra restart) and never
+		// produced a result — there is no completed outcome to report. Unlike
+		// the headless case there is no process or session to reattach/resume,
+		// so finalizing here as done or failed would either report false
+		// success or burn the workflow step's retry budget on a turn that
+		// never ran. Drop the stale record without firing completion and leave
+		// the task's workflow step untouched: RestartStaleInProgress's
+		// interactive-oneshot path re-dispatches a fresh turn instead.
+		m.logger.Warn("agent.reattach.per-turn-oneshot.interrupted", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
+		_ = reg.Delete(r.ID)
+		return
+	}
+	if isError {
 		a.SetExitErr(errReattachedResultError)
 		m.reportProviderHealthSignalConvo(a, "", a.ConvoOutput())
 	} else if m.reportCleanProviderHealthSignalConvo(a, "", a.ConvoOutput()) == providerpkg.SignalRateLimit {

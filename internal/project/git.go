@@ -303,6 +303,35 @@ func resolveRef(barePath, ref string) (string, bool) {
 	return sha, err == nil
 }
 
+// AutoCommitUncommitted stages and commits any uncommitted changes in wtPath
+// with the given message, as a safety net against work an agent finished but
+// forgot to commit. Returns whether a commit was actually made (false when
+// the tree was clean or a git step failed). Best-effort: git errors are
+// swallowed, matching the SanitizeWorktree call site this was extracted
+// from — callers must not depend on the commit having landed.
+func AutoCommitUncommitted(wtPath, message string) bool {
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	statusCmd.Dir = wtPath
+	statusOut, err := statusCmd.Output()
+	if err != nil || len(strings.TrimSpace(string(statusOut))) == 0 {
+		return false
+	}
+	add := exec.Command("git", "add", "-A")
+	add.Dir = wtPath
+	if err := add.Run(); err != nil {
+		return false
+	}
+	// --no-verify skips repo pre-commit hooks (installed from .sybra.yaml) so a
+	// failing hook can't defeat this recovery path. -c user.* supplies a
+	// fallback identity for worktrees where the agent never configured one.
+	commit := exec.Command("git",
+		"-c", "user.name=Sybra",
+		"-c", "user.email=sybra@localhost",
+		"commit", "--no-verify", "--no-gpg-sign", "-m", message)
+	commit.Dir = wtPath
+	return commit.Run() == nil
+}
+
 // SanitizeWorktree cleans up worktree state that would confuse agents:
 //   - aborts any stuck rebase/merge/cherry-pick
 //   - deletes local branches that shadow remote refs (e.g. local "origin/main")
@@ -324,17 +353,7 @@ func SanitizeWorktree(wtPath string) error {
 	// Auto-commit any uncommitted changes before resetting. Agents are expected
 	// to commit before finishing, but if they forget this preserves their work
 	// on the branch rather than destroying it.
-	statusCmd := exec.Command("git", "status", "--porcelain")
-	statusCmd.Dir = wtPath
-	if statusOut, err := statusCmd.Output(); err == nil && len(strings.TrimSpace(string(statusOut))) > 0 {
-		add := exec.Command("git", "add", "-A")
-		add.Dir = wtPath
-		if _ = add.Run(); true {
-			commit := exec.Command("git", "commit", "--no-gpg-sign", "-m", "wip: auto-commit uncommitted agent work\n\nSanitizeWorktree preserved uncommitted changes before reset.")
-			commit.Dir = wtPath
-			_ = commit.Run()
-		}
-	}
+	AutoCommitUncommitted(wtPath, "wip: auto-commit uncommitted agent work\n\nSanitizeWorktree preserved uncommitted changes before reset.")
 
 	// Discard any remaining working-tree dirt (e.g. ignored files, failed
 	// commit) so the rebase can proceed cleanly. Committed work on the branch

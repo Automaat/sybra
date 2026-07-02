@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 // errStepParked is a sentinel returned by a synchronous step that has parked
@@ -299,6 +300,38 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
+	}
+
+	if strings.TrimSpace(string(output)) == "" {
+		// An agent can finish its work but forget to commit (e.g. interrupted
+		// mid-turn, or simply skipped the final `git commit`). Escalating here
+		// on "no commits" would discard that work — recover it first: stage and
+		// commit anything sitting dirty in the worktree, then re-check for
+		// commits before falling through to the escalation paths below.
+		if project.AutoCommitUncommitted(wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
+			e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
+			recovered, recErr := e.gitLogAheadOfBase(wtPath)
+			if recErr != nil {
+				// Treat a post-auto-commit re-check failure like any other git
+				// error above — falling through here would misclassify a
+				// transient git problem as "still no commits".
+				if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+					e.logger.Warn("workflow.verify-commits.canceled", "task_id", taskID, "err", recErr)
+					return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+				}
+				diagnosis := diagnoseWorktreeState(e.ctx, wtPath)
+				e.logger.Warn("workflow.verify-commits.git-error", "task_id", taskID, "worktree", wtPath, "err", recErr, "diagnosis", diagnosis)
+				reason := "worktree git error after auto-commit: " + recErr.Error()
+				if diagnosis != "" {
+					reason += " (" + diagnosis + ")"
+				}
+				if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+					e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
+				}
+				return StepOutput{StepID: step.ID, Status: "completed", Output: "git error: flipped to human-required"}, nil
+			}
+			output = recovered
+		}
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
