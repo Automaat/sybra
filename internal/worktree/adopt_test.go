@@ -260,6 +260,9 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	if adminDir == "" {
 		t.Fatalf("could not parse admin dir from .git file: %q", gitFile)
 	}
+	if !filepath.IsAbs(adminDir) {
+		adminDir = filepath.Join(wtPath, adminDir)
+	}
 	if err := os.RemoveAll(adminDir); err != nil {
 		t.Fatalf("remove admin dir: %v", err)
 	}

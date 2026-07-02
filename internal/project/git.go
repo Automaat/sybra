@@ -741,13 +741,17 @@ func RemoveWorktreeReconcile(barePath, worktreePath string) error {
 	// Drop stale admin entries so a subsequent `worktree add` doesn't trip
 	// over a registration that no longer has a live directory either.
 	_ = PruneWorktrees(barePath)
-	if _, statErr := os.Stat(worktreePath); statErr == nil {
+	_, statErr := os.Stat(worktreePath)
+	switch {
+	case statErr == nil:
 		// Orphan case: the directory survived because git couldn't resolve
 		// its admin entry. Fall back to a raw removal.
 		if err := os.RemoveAll(worktreePath); err != nil {
 			return fmt.Errorf("remove orphan worktree %s: %w", worktreePath, err)
 		}
 		_ = PruneWorktrees(barePath)
+	case !os.IsNotExist(statErr):
+		return fmt.Errorf("stat worktree %s: %w", worktreePath, statErr)
 	}
 	return nil
 }
