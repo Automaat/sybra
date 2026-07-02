@@ -354,20 +354,48 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 }
 
 func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
+	// Group issues per task (first-seen order) so a single poll that surfaces
+	// several fixable kinds for one PR — e.g. a push that both fails CI and drew
+	// review comments — dispatches ONE coalesced fix agent instead of a separate
+	// agent per kind across consecutive cycles.
+	order := make([]string, 0, len(issues))
+	byTask := make(map[string][]github.PRIssue, len(issues))
 	for i := range issues {
-		if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
-			continue
+		id := issues[i].TaskID
+		if _, seen := byTask[id]; !seen {
+			order = append(order, id)
 		}
-		// Gate dispatch on workflow state too: an agent may have just
-		// exited while the workflow is still in verify_commits /
-		// link_pr_and_review. Without this, a fresh issue (e.g.
-		// kind=conflict appearing because main moved during the agent
-		// run) races the in-flight workflow's tail steps and triggers
-		// a layered re-dispatch that DispatchEvent later rejects, but
-		// only after we've prepped a worktree and emitted audit noise.
-		if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
-			continue
-		}
+		byTask[id] = append(byTask[id], issues[i])
+	}
+	for _, id := range order {
+		r.handleTaskPRIssues(id, byTask[id])
+	}
+}
+
+// handleTaskPRIssues applies the running-agent, active-workflow, and
+// retry/cooldown gates for one task, then dispatches at most one action:
+// a coalesced fix agent for every handleable fixable issue, an escalation when
+// the only remaining fixable issue has exhausted its budget, or an auto-merge.
+func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssue) {
+	if r.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	// Gate dispatch on workflow state too: an agent may have just exited while
+	// the workflow is still in verify_commits / link_pr_and_review. Without
+	// this, a fresh issue (e.g. kind=conflict appearing because main moved
+	// during the agent run) races the in-flight workflow's tail steps and
+	// triggers a layered re-dispatch that DispatchEvent later rejects, but only
+	// after we've prepped a worktree and emitted audit noise.
+	if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(taskID) {
+		return
+	}
+
+	var (
+		toHandle  []github.PRIssue
+		exhausted *github.PRIssue
+		merge     *github.PRIssue
+	)
+	for i := range issues {
 		// Only the comments kind carries a feedback fingerprint; conflict,
 		// ci_failure, and ready_to_merge fall back to SHA-only gating.
 		var sig string
@@ -376,19 +404,35 @@ func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
 		}
 		decision := github.DispatchHandle
 		if r.prTracker != nil {
-			decision = r.prTracker.Decide(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
+			decision = r.prTracker.Decide(taskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
 		}
 		switch decision {
 		case github.DispatchHandle:
 			if issues[i].Kind == github.PRIssueReadyToMerge {
-				r.handleAutoMerge(issues[i])
+				if merge == nil {
+					merge = &issues[i]
+				}
 				continue
 			}
-			r.handlePRIssue(issues[i])
+			toHandle = append(toHandle, issues[i])
 		case github.DispatchExhausted:
-			r.escalateExhaustedFix(issues[i])
+			if exhausted == nil {
+				exhausted = &issues[i]
+			}
 		case github.DispatchSkip:
 		}
+	}
+
+	// Prefer making progress: dispatch every handleable fix in one agent. Only
+	// escalate when nothing is handleable and a fix budget is spent — escalating
+	// flips the task to human-required and would strand a still-fixable sibling.
+	switch {
+	case len(toHandle) > 0:
+		r.dispatchFixIssues(taskID, toHandle)
+	case exhausted != nil:
+		r.escalateExhaustedFix(*exhausted)
+	case merge != nil:
+		r.handleAutoMerge(*merge)
 	}
 }
 
@@ -796,16 +840,23 @@ func earliestRunStart(runs []task.AgentRun) time.Time {
 }
 
 // cancelResolvedPRFixWorkflows terminates any in-flight pr-fix workflow
-// whose originating PR issue (`pr_issue_kind` in workflow vars) is no
-// longer present on the live PR. Prevents ResumeStalled from re-spawning
-// fix agents forever when the underlying CI failure or conflict has
-// since been resolved on a newer push.
+// whose originating PR issue(s) (`pr_issue_kinds` in workflow vars, falling
+// back to the single-kind `pr_issue_kind`) are no longer present on the live
+// PR. Prevents ResumeStalled from re-spawning fix agents forever when the
+// underlying CI failure or conflict has since been resolved on a newer push.
 //
 // Without this, a pr-fix workflow remains in state=waiting on the `fix`
 // step until its agent succeeds or the task is deleted — there is no
 // trigger-re-evaluation between dispatch and completion. The orchestrator
 // loop then re-dispatches the step every minute, spawning a fresh agent
 // each time even though the PR is now green.
+//
+// A coalesced fix workflow (dispatchFixIssues) carries every kind it was
+// dispatched for in `pr_issue_kinds`, not just the primary `pr_issue_kind`.
+// The workflow must stay alive as long as ANY of those kinds is still live —
+// cancelling on the primary alone would kill the workflow (and drop the
+// still-unresolved sibling, already marked handled for this SHA) the moment
+// the primary kind resolves first.
 func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue) {
 	if r.workflowEngine == nil {
 		return
@@ -830,35 +881,62 @@ func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues [
 		if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
 			continue
 		}
-		kind := t.Workflow.Variables["pr_issue_kind"]
-		if kind == "" {
+		kinds := coalescedWorkflowKinds(t.Workflow.Variables)
+		if len(kinds) == 0 {
 			continue
 		}
-		if liveByTask[t.ID][kind] {
-			continue // condition still holds — let the workflow proceed
+		if anyKindLive(liveByTask[t.ID], kinds) {
+			continue // at least one coalesced kind still holds — let the workflow proceed
 		}
-		step, err := r.workflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+kind+" resolved")
+		reason := strings.Join(kinds, "+")
+		step, err := r.workflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+reason+" resolved")
 		if err != nil {
-			r.logger.Error("pr-monitor.cancel-resolved", "task_id", t.ID, "kind", kind, "err", err)
+			r.logger.Error("pr-monitor.cancel-resolved", "task_id", t.ID, "kind", reason, "err", err)
 			continue
 		}
-		// Clear cooldown so a future failure of the same kind on a new
-		// SHA re-triggers fresh (the closed-PR path does the same via
-		// prTracker.Cleanup; we need the explicit clear here because
-		// the PR is still open).
-		r.prTracker.Clear(t.ID, github.PRIssueKind(kind))
+		// Clear cooldown for every coalesced kind so a future failure of any
+		// of them on a new SHA re-triggers fresh (the closed-PR path does
+		// the same via prTracker.Cleanup; we need the explicit clear here
+		// because the PR is still open).
+		for _, kind := range kinds {
+			r.prTracker.Clear(t.ID, github.PRIssueKind(kind))
+		}
 		status := task.StatusInReview
-		reason := "pr-fix cancelled: " + kind + " resolved"
+		statusReason := "pr-fix cancelled: " + reason + " resolved"
 		if _, updErr := r.tasks.Update(t.ID, task.Update{
 			Status:       &status,
-			StatusReason: &reason,
+			StatusReason: &statusReason,
 		}); updErr != nil {
-			r.logger.Error("pr-monitor.cancel-resolved.status", "task_id", t.ID, "kind", kind, "err", updErr)
+			r.logger.Error("pr-monitor.cancel-resolved.status", "task_id", t.ID, "kind", reason, "err", updErr)
 			continue
 		}
 		r.logger.Info("pr-monitor.cancel-resolved",
-			"task_id", t.ID, "kind", kind, "step", step, "pr", t.PRNumber)
+			"task_id", t.ID, "kind", reason, "step", step, "pr", t.PRNumber)
 	}
+}
+
+// coalescedWorkflowKinds returns every PR issue kind a pr-fix workflow was
+// dispatched for, preferring the plural `pr_issue_kinds` (comma-joined, set
+// by dispatchPRIssue for coalesced fixes) and falling back to the singular
+// `pr_issue_kind` for single-kind dispatches (e.g. the Renovate fix path).
+func coalescedWorkflowKinds(vars map[string]string) []string {
+	if kinds := vars["pr_issue_kinds"]; kinds != "" {
+		return strings.Split(kinds, ",")
+	}
+	if kind := vars["pr_issue_kind"]; kind != "" {
+		return []string{kind}
+	}
+	return nil
+}
+
+// anyKindLive reports whether at least one of kinds is present in live.
+func anyKindLive(live map[string]bool, kinds []string) bool {
+	for _, kind := range kinds {
+		if live[kind] {
+			return true
+		}
+	}
+	return false
 }
 
 // monitoredPRs returns the union of user-authored PRs (from FetchReviews) and

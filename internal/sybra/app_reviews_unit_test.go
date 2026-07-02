@@ -1011,6 +1011,84 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	}
 }
 
+// TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive is the
+// regression guard for the cancel-vs-coalesce interaction: a workflow
+// dispatched for {ci_failure, comments} with comments as primary must NOT be
+// cancelled just because comments resolved first — ci_failure (recorded in
+// the plural pr_issue_kinds var) is still live and the workflow must keep
+// running to address it.
+func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("coalesced", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := 1352
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables: map[string]string{
+			"pr_issue_kind":  string(github.PRIssueComments),
+			"pr_issue_kinds": string(github.PRIssueCIFailure) + "," + string(github.PRIssueComments),
+		},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		PRNumber: &pr, Status: &status, Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler:  DomainHandler{logger: logger},
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		workflowEngine: engine,
+	}
+	r.prTracker.MarkHandled(created.ID, github.PRIssueComments, "sha1")
+	r.prTracker.MarkHandled(created.ID, github.PRIssueCIFailure, "sha1")
+	// comments has resolved; ci_failure is still live on the same push.
+	issues := []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID},
+	}
+
+	r.cancelResolvedPRFixWorkflows(all, issues)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Errorf("workflow state = %+v, want still waiting while coalesced ci_failure is still live", got.Workflow)
+	}
+}
+
 // TestMonitoredPRs covers the regression where Renovate-bot PRs linked to a
 // task by pr_number were silently skipped by the pr-monitor because
 // FetchReviews uses author:@me. monitoredPRs folds renovatePRsFn output into
