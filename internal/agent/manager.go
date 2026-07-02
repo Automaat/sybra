@@ -53,6 +53,23 @@ type Manager struct {
 	limitPolicy   limits.Policy
 	limitSink     func(limits.Snapshot)
 
+	// liveByProvider tracks in-flight agent counts per provider, incremented
+	// and decremented in lockstep with liveCount (registerRunningAgent,
+	// markAgentDone, and the three ReattachAll restart paths) so
+	// sum(liveByProvider) == liveCount always holds. Read by gateProvider to
+	// steer dispatch away from an at-cap provider.
+	liveByProvider map[string]int
+	// maxInFlightPerProvider caps concurrent in-flight agents per provider.
+	// 0 disables the cap (soft cap: never blocks dispatch, only redirects).
+	maxInFlightPerProvider int
+	// dispatchJitterMs bounds a uniform random delay applied before headless
+	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
+	dispatchJitterMs int
+	// warnInertCapOnce guards the one-time inert-cap warning across both New
+	// and every subsequent ReplaceRuntimeConfig call for this manager's
+	// lifetime.
+	warnInertCapOnce sync.Once
+
 	// reg persists live-agent records so subprocesses can be reattached
 	// after an app restart. nil disables survival (legacy behaviour).
 	// Manager.mu guards only this pointer and survival config; registryStore
@@ -123,6 +140,12 @@ type ManagerRuntimeConfig struct {
 	FallbackModel   string
 	LimitGate       LimitGate
 	LimitPolicy     limits.Policy
+	// MaxInFlightPerProvider caps concurrent in-flight agents per provider.
+	// 0 disables the cap.
+	MaxInFlightPerProvider int
+	// DispatchJitterMs bounds a uniform random delay applied before headless
+	// dispatch. 0 disables jitter.
+	DispatchJitterMs int
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -131,25 +154,29 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		return nil, fmt.Errorf("default provider: %w", err)
 	}
 	m := &Manager{
-		agents:         make(map[string]*Agent),
-		dispatchClaims: make(map[string]struct{}),
-		ctx:            ctx,
-		emit:           emit,
-		onComplete:     cfg.OnComplete,
-		logger:         logger,
-		logDir:         logDir,
-		approvalAddr:   cfg.ApprovalAddr,
-		defaultProv:    defaultProv,
-		maxConcurrent:  cfg.Runtime.MaxConcurrent,
-		bashTimeoutMs:  cfg.Runtime.BashTimeoutMs,
-		retryWatchdog:  cfg.Runtime.RetryWatchdog,
-		fallbackModel:  cfg.Runtime.FallbackModel,
-		limitGate:      cfg.Runtime.LimitGate,
-		limitPolicy:    copyLimitPolicy(cfg.Runtime.LimitPolicy),
-		limitSink:      cfg.LimitSink,
-		sessionSink:    cfg.SessionSink,
-		taskExists:     cfg.TaskExists,
+		agents:                 make(map[string]*Agent),
+		dispatchClaims:         make(map[string]struct{}),
+		liveByProvider:         make(map[string]int),
+		ctx:                    ctx,
+		emit:                   emit,
+		onComplete:             cfg.OnComplete,
+		logger:                 logger,
+		logDir:                 logDir,
+		approvalAddr:           cfg.ApprovalAddr,
+		defaultProv:            defaultProv,
+		maxConcurrent:          cfg.Runtime.MaxConcurrent,
+		bashTimeoutMs:          cfg.Runtime.BashTimeoutMs,
+		retryWatchdog:          cfg.Runtime.RetryWatchdog,
+		fallbackModel:          cfg.Runtime.FallbackModel,
+		limitGate:              cfg.Runtime.LimitGate,
+		limitPolicy:            copyLimitPolicy(cfg.Runtime.LimitPolicy),
+		limitSink:              cfg.LimitSink,
+		sessionSink:            cfg.SessionSink,
+		taskExists:             cfg.TaskExists,
+		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
+		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 	}
+	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
 		s, err := newRegistryStore(cfg.SurviveRestartDir)
 		if err != nil {
@@ -204,8 +231,32 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.fallbackModel = cfg.FallbackModel
 	m.limitGate = cfg.LimitGate
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
+	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
+	m.dispatchJitterMs = cfg.DispatchJitterMs
 	m.mu.Unlock()
+	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil
+}
+
+// warnInertCap logs once, across this manager's whole lifetime, when
+// MaxInFlightPerProvider is configured but no LimitGate is wired up (e.g.
+// limits.NewStore failed at startup), since gateProvider then skips the
+// cap-redirect logic entirely and the cap has zero effect for as long as the
+// gate stays nil.
+func (m *Manager) warnInertCap(logger *slog.Logger, maxInFlightPerProvider int, limitGate LimitGate) {
+	if maxInFlightPerProvider > 0 && limitGate == nil {
+		m.warnInertCapOnce.Do(func() {
+			logger.Warn("agent.max_in_flight_per_provider.inert", "max_in_flight_per_provider", maxInFlightPerProvider)
+		})
+	}
+}
+
+// InFlightByProvider returns a snapshot of in-flight agent counts by
+// provider, kept in lockstep with RunningCount's liveCount.
+func (m *Manager) InFlightByProvider() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return maps.Clone(m.liveByProvider)
 }
 
 func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error {

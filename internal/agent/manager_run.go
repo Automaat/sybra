@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
+	"math/rand/v2"
 	"os"
 	"regexp"
 	"strings"
@@ -27,6 +29,12 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
+	if cfg.Mode == "headless" {
+		if err := m.jitterDispatch(); err != nil {
+			return nil, err
+		}
+	}
+
 	cfg, prov, err := m.prepareRunConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -52,6 +60,31 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+// jitterDispatch sleeps a uniform random [0, dispatchJitterMs] duration so a
+// wave of ready headless dispatches does not all probe the provider health
+// gate in the same tick. Returns the context error if the manager shuts down
+// mid-sleep, so the caller aborts the dispatch instead of racing shutdown.
+func (m *Manager) jitterDispatch() error {
+	m.mu.RLock()
+	ms := m.dispatchJitterMs
+	m.mu.RUnlock()
+	if ms <= 0 {
+		return nil
+	}
+	// Exclusive upper bound (ms, not ms+1) avoids overflow when ms == MaxInt
+	// while keeping the jitter within [0, ms).
+	d := time.Duration(rand.N(ms)) * time.Millisecond
+	if d <= 0 {
+		return nil
+	}
+	select {
+	case <-time.After(d):
+		return nil
+	case <-m.ctx.Done():
+		return m.ctx.Err()
+	}
 }
 
 func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
@@ -149,6 +182,9 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	m.agents[a.ID] = a
 	if a.done != nil {
 		m.liveCount++
+		if a.Provider != "" {
+			m.liveByProvider[a.Provider]++
+		}
 	}
 	m.mu.Unlock()
 	return nil
@@ -192,6 +228,15 @@ func (m *Manager) markAgentDone(a *Agent) {
 		if m.liveCount > 0 {
 			m.liveCount--
 		}
+		if a.Provider != "" {
+			if v, ok := m.liveByProvider[a.Provider]; ok {
+				if v <= 1 {
+					delete(m.liveByProvider, a.Provider)
+				} else {
+					m.liveByProvider[a.Provider] = v - 1
+				}
+			}
+		}
 		m.mu.Unlock()
 	})
 }
@@ -233,10 +278,16 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 	g := m.gate
 	lg := m.limitGate
 	lp := m.limitPolicy
+	maxInFlight := m.maxInFlightPerProvider
+	live := maps.Clone(m.liveByProvider)
 	m.mu.RUnlock()
-	healthy := func(p string) bool {
-		return g == nil || g.IsHealthy(p)
+	underCap := func(p string) bool {
+		return maxInFlight <= 0 || live[p] < maxInFlight
 	}
+	healthy := func(p string) bool {
+		return (g == nil || g.IsHealthy(p)) && underCap(p)
+	}
+	candidateProviders := []string{"claude", "codex", "copilot"}
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
@@ -246,7 +297,17 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 				Reason:   reason,
 			}
 		}
-		if alt := g.Failover(resolved); alt != "" {
+		alt := g.Failover(resolved)
+		if alt != "" && !underCap(alt) {
+			// g.Failover only consults health, so its pick may already be at
+			// its in-flight cap. AutoFailover being enabled is established by
+			// alt != "", so it's safe to look for another peer that is both
+			// healthy and under cap before settling for the at-cap pick.
+			if capAlt := firstHealthyProvider(resolved, candidateProviders, healthy); capAlt != "" {
+				alt = capAlt
+			}
+		}
+		if alt != "" {
 			altProv, err := lookupProvider(alt)
 			if err != nil {
 				return "", err
@@ -267,16 +328,32 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 		return resolved, nil
 	}
 	if ok, reason := lg.ProviderAvailable(resolved, lp); ok {
-		if lp.PreferUnderused && !cfg.DisableProviderFailover {
-			if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
-				metrics.AgentFailover(resolved, alt)
-				m.logger.Info("agent.run.limit_select", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", altReason)
-				return alt, nil
+		if !cfg.DisableProviderFailover {
+			// The soft in-flight cap must redirect regardless of
+			// PreferUnderused and regardless of quota data: the limits
+			// store's ChooseProvider only recommends an alternative from
+			// exact quota-pressure data (see limits.Store.ChooseProvider),
+			// so it silently no-ops when the requested provider merely sits
+			// at its in-flight cap with no quota signal. Picking the first
+			// healthy, under-cap candidate directly — bypassing that
+			// quota heuristic — is what makes the cap actually redirect.
+			if !underCap(resolved) {
+				if alt := firstHealthyProvider(resolved, candidateProviders, healthy); alt != "" {
+					metrics.AgentFailover(resolved, alt)
+					m.logger.Info("agent.run.cap_redirect", "from", resolved, "to", alt, "task", cfg.TaskID)
+					return alt, nil
+				}
+			} else if lp.PreferUnderused {
+				if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
+					metrics.AgentFailover(resolved, alt)
+					m.logger.Info("agent.run.limit_select", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", altReason)
+					return alt, nil
+				}
 			}
 		}
 		return resolved, nil
 	} else if !cfg.DisableProviderFailover {
-		if alt, altReason := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp); alt != "" {
+		if alt, altReason := lg.ChooseProvider(resolved, candidateProviders, healthy, lp); alt != "" {
 			metrics.AgentFailover(resolved, alt)
 			m.logger.Warn("agent.run.limit_failover", "from", resolved, "to", alt, "task", cfg.TaskID, "reason", reason, "alt_reason", altReason)
 			return alt, nil
@@ -293,6 +370,22 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 			Reason:   reason,
 		}
 	}
+}
+
+// firstHealthyProvider returns the first candidate (other than exclude) for
+// which healthy reports true, or "" if none qualify. Used for the in-flight
+// cap redirect, which must pick deterministically without consulting the
+// limits store's quota-pressure heuristics.
+func firstHealthyProvider(exclude string, candidates []string, healthy func(string) bool) string {
+	for _, p := range candidates {
+		if p == exclude {
+			continue
+		}
+		if healthy(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 func (m *Manager) providerForRun(name string) (string, error) {

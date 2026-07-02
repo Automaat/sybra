@@ -94,6 +94,142 @@ func TestGateProvider_IgnoreHealthGateBypasses(t *testing.T) {
 	}
 }
 
+// fakeLimitGate lets a test control ProviderAvailable/ChooseProvider
+// decisions without a real limits.Store.
+type fakeLimitGate struct {
+	available    map[string]bool
+	reasons      map[string]string
+	chooseReason string
+}
+
+func (f *fakeLimitGate) ProviderAvailable(p string, _ limits.Policy) (available bool, reason string) {
+	if f.available == nil {
+		return true, ""
+	}
+	if ok, exists := f.available[p]; exists {
+		return ok, f.reasons[p]
+	}
+	return true, ""
+}
+
+func (f *fakeLimitGate) ChooseProvider(requested string, candidates []string, healthy func(string) bool, _ limits.Policy) (chosen, reason string) {
+	for _, c := range candidates {
+		if c == requested {
+			continue
+		}
+		if healthy(c) {
+			return c, f.chooseReason
+		}
+	}
+	return "", ""
+}
+
+// TestGateProvider_CapRedirectsEvenWhenPreferUnderusedFalse verifies the
+// per-provider in-flight cap steers dispatch away from an at-cap resolved
+// provider regardless of PreferUnderused — otherwise the cap silently no-ops
+// on the common "prefer_underused: false" configuration.
+func TestGateProvider_CapRedirectsEvenWhenPreferUnderusedFalse(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider:        "claude",
+		LimitGate:              &fakeLimitGate{},
+		LimitPolicy:            limits.Policy{PreferUnderused: false},
+		MaxInFlightPerProvider: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.liveByProvider["claude"] = 1
+	m.mu.Unlock()
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Errorf("got %q, want codex (cap must redirect even with PreferUnderused=false)", got)
+	}
+}
+
+// TestGateProvider_CapWithNoHealthyAlternativeFallsBackToResolved verifies the
+// cap is soft: when no other candidate is healthy, dispatch is never blocked
+// — it falls back to the at-cap resolved provider instead.
+func TestGateProvider_CapWithNoHealthyAlternativeFallsBackToResolved(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider:        "claude",
+		LimitGate:              &fakeLimitGate{},
+		LimitPolicy:            limits.Policy{PreferUnderused: false},
+		MaxInFlightPerProvider: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.liveByProvider["claude"] = 1
+	m.mu.Unlock()
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "claude" {
+		t.Errorf("got %q, want claude (no healthy alt: soft cap must not block dispatch)", got)
+	}
+}
+
+// TestGateProvider_PreferUnderusedStillUsesChooseProviderUnderCap verifies
+// the pre-existing PreferUnderused behavior is preserved when the resolved
+// provider is under its cap: selection still goes through the limits store's
+// quota-aware ChooseProvider (unlike the at-cap path, which bypasses it).
+func TestGateProvider_PreferUnderusedStillUsesChooseProviderUnderCap(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitGate:       &fakeLimitGate{chooseReason: "lower quota pressure"},
+		LimitPolicy:     limits.Policy{PreferUnderused: true},
+		// No cap configured — the resolved provider is always "under cap",
+		// so any redirect observed here must come from ChooseProvider.
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "codex" {
+		t.Errorf("got %q, want codex (PreferUnderused path must still route via ChooseProvider)", got)
+	}
+}
+
+// TestGateProvider_CapDisabledByDefaultNeverRedirects verifies
+// MaxInFlightPerProvider=0 (the default) disables the cap entirely.
+func TestGateProvider_CapDisabledByDefaultNeverRedirects(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitGate:       &fakeLimitGate{},
+		LimitPolicy:     limits.Policy{PreferUnderused: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.liveByProvider["claude"] = 1000
+	m.mu.Unlock()
+
+	got, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "claude" {
+		t.Errorf("got %q, want claude (cap disabled, no redirect expected)", got)
+	}
+}
+
 func TestLimitPolicy_DefensiveCopiesMaps(t *testing.T) {
 	m, _ := newTestManager(t)
 	policy := limits.DefaultPolicy()

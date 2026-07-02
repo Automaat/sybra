@@ -115,6 +115,9 @@ func (m *Manager) ReattachAll() []*Agent {
 		}
 		m.agents[a.ID] = a
 		m.liveCount++
+		if a.Provider != "" {
+			m.liveByProvider[a.Provider]++
+		}
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
@@ -223,6 +226,9 @@ func (m *Manager) reattachInteractive(r Record, reg survivalRegistry) *Agent {
 	}
 	m.agents[a.ID] = a
 	m.liveCount++
+	if a.Provider != "" {
+		m.liveByProvider[a.Provider]++
+	}
 	m.mu.Unlock()
 
 	m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "mode", "interactive", "oneshot", oneShot, "events", len(a.ConvoOutput()))
@@ -289,6 +295,9 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	}
 	m.agents[a.ID] = a
 	m.liveCount++
+	if a.Provider != "" {
+		m.liveByProvider[a.Provider]++
+	}
 	m.mu.Unlock()
 
 	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", a.Provider, "events", len(a.ConvoOutput()))
