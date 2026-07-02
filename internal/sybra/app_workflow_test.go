@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -185,5 +187,35 @@ manual_test:
 	got := getter.ManualTestConfig(created.ID)
 	if got.Kind != "cli" || got.Command != "sybra-cli --json list" {
 		t.Fatalf("ManualTestConfig = %+v, want project-level cli config", got)
+	}
+}
+
+// TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim guards against the
+// dispatch-claim race (sybra#1406): a second dispatcher for the same task
+// (e.g. a fast ResumeStalled retry) must be turned away with
+// ErrDispatchInFlight rather than racing a system-role (plan/eval/triage)
+// agent start against an in-flight one. Simulates the race directly by
+// pre-holding the claim the way a concurrent dispatcher would, instead of
+// spawning real concurrent goroutines against a live provider.
+func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
+	a := setupApp(t)
+	created, err := a.tasks.Create("plan race guard", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+
+	if !a.agents.ClaimTaskDispatch(created.ID) {
+		t.Fatal("failed to seed dispatch claim")
+	}
+	defer a.agents.ReleaseTaskDispatch(created.ID)
+
+	agentID, _, _, err := aa.StartAgent(created.ID, string(agent.RolePlan), "headless", "sonnet", "claude", "prompt", "", nil, false, false, "", "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartAgent() err = %v, want ErrDispatchInFlight", err)
+	}
+	if agentID != "" {
+		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
 	}
 }
