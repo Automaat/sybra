@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -180,7 +181,7 @@ func TestLimitGateOrNil_NilStoreYieldsNilInterface(t *testing.T) {
 }
 
 func TestLimitGateOrNil_NonNilStorePassesThrough(t *testing.T) {
-	store, err := limits.NewStore(t.TempDir() + "/limits.json")
+	store, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
