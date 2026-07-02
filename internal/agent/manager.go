@@ -65,6 +65,10 @@ type Manager struct {
 	// dispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
 	dispatchJitterMs int
+	// warnInertCapOnce guards the one-time inert-cap warning across both New
+	// and every subsequent ReplaceRuntimeConfig call for this manager's
+	// lifetime.
+	warnInertCapOnce sync.Once
 
 	// reg persists live-agent records so subprocesses can be reattached
 	// after an app restart. nil disables survival (legacy behaviour).
@@ -172,7 +176,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 	}
-	warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
+	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
 		s, err := newRegistryStore(cfg.SurviveRestartDir)
 		if err != nil {
@@ -230,17 +234,20 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
 	m.mu.Unlock()
-	warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
+	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil
 }
 
-// warnInertCap logs once when MaxInFlightPerProvider is configured but no
-// LimitGate is wired up (e.g. limits.NewStore failed at startup), since
-// gateProvider then skips the cap-redirect logic entirely and the cap has
-// zero effect for as long as the gate stays nil.
-func warnInertCap(logger *slog.Logger, maxInFlightPerProvider int, limitGate LimitGate) {
+// warnInertCap logs once, across this manager's whole lifetime, when
+// MaxInFlightPerProvider is configured but no LimitGate is wired up (e.g.
+// limits.NewStore failed at startup), since gateProvider then skips the
+// cap-redirect logic entirely and the cap has zero effect for as long as the
+// gate stays nil.
+func (m *Manager) warnInertCap(logger *slog.Logger, maxInFlightPerProvider int, limitGate LimitGate) {
 	if maxInFlightPerProvider > 0 && limitGate == nil {
-		logger.Warn("agent.max_in_flight_per_provider.inert", "max_in_flight_per_provider", maxInFlightPerProvider)
+		m.warnInertCapOnce.Do(func() {
+			logger.Warn("agent.max_in_flight_per_provider.inert", "max_in_flight_per_provider", maxInFlightPerProvider)
+		})
 	}
 }
 

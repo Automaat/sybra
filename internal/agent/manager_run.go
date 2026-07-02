@@ -73,7 +73,9 @@ func (m *Manager) jitterDispatch() error {
 	if ms <= 0 {
 		return nil
 	}
-	d := time.Duration(rand.N(ms+1)) * time.Millisecond
+	// Exclusive upper bound (ms, not ms+1) avoids overflow when ms == MaxInt
+	// while keeping the jitter within [0, ms).
+	d := time.Duration(rand.N(ms)) * time.Millisecond
 	if d <= 0 {
 		return nil
 	}
@@ -280,7 +282,7 @@ func (m *Manager) gateProvider(cfg RunConfig) (string, error) {
 	live := maps.Clone(m.liveByProvider)
 	m.mu.RUnlock()
 	underCap := func(p string) bool {
-		return maxInFlight == 0 || live[p] < maxInFlight
+		return maxInFlight <= 0 || live[p] < maxInFlight
 	}
 	healthy := func(p string) bool {
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
