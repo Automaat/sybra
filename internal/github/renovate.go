@@ -89,6 +89,7 @@ func fetchRenovatePRsWith(e execer, author string, repos []string) ([]RenovatePR
 			if stale, ok := renovatePRsCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
+			return nil, ErrBudgetExhausted
 		}
 	}
 

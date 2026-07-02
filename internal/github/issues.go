@@ -196,6 +196,7 @@ func fetchAssignedIssuesWith(e execer) ([]Issue, error) {
 			if stale, ok := assignedIssuesCache.GetStale(query); ok {
 				return stale, nil
 			}
+			return nil, ErrBudgetExhausted
 		}
 	}
 
@@ -234,6 +235,7 @@ func fetchLabeledIssuesForReposWith(e execer, repos []string, label string) ([]I
 			if stale, ok := labeledIssuesCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
+			return nil, ErrBudgetExhausted
 		}
 	}
 
@@ -347,6 +349,7 @@ func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapsh
 			if snapshot.Assigned != nil || snapshot.Labeled != nil {
 				return snapshot, nil
 			}
+			return snapshot, ErrBudgetExhausted
 		}
 	}
 
