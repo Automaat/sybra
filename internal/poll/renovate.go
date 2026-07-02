@@ -98,8 +98,8 @@ func (h *RenovateHandler) Repos() []string {
 
 func (h *RenovateHandler) Name() string { return "renovate" }
 
-func (h *RenovateHandler) Poll(_ context.Context) time.Duration {
-	return h.pollRenovatePRs()
+func (h *RenovateHandler) Poll(ctx context.Context) time.Duration {
+	return h.pollRenovatePRs(ctx)
 }
 
 // LastFetchedCount returns the most recent Renovate PR count observed by a
@@ -108,14 +108,14 @@ func (h *RenovateHandler) LastFetchedCount() int64 {
 	return h.lastPRsCount.Load()
 }
 
-func (h *RenovateHandler) pollRenovatePRs() time.Duration {
+func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 	repos := h.Repos()
 	if len(repos) == 0 {
 		return h.slowInterval()
 	}
 
-	prs, err := github.FetchRenovatePRs(h.cfg.Author, repos)
-	metrics.RenovatePoll(err == nil)
+	prs, err := github.FetchRenovatePRs(ctx, h.cfg.Author, repos)
+	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
 		if github.IsTransientError(err) {
 			h.transientFetchFails++

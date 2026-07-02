@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"os/exec"
 	"sync"
@@ -48,7 +49,7 @@ func (s *InfoService) GetCodexModels() []CodexModel {
 }
 
 func fetchCodexModels() []CodexModel {
-	out, err := exec.Command("codex", "debug", "models").Output()
+	out, err := exec.CommandContext(context.Background(), "codex", "debug", "models").Output()
 	if err != nil {
 		return nil
 	}

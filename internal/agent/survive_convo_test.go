@@ -143,7 +143,7 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 
 func TestSaveRegistry_PreservesOneShot(t *testing.T) {
 	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{SurviveRestartDir: t.TempDir()})
-	m.saveRegistry(&Agent{
+	m.saveRegistry(context.Background(), &Agent{
 		ID:        "cx-one",
 		TaskID:    "t-cx",
 		Mode:      "interactive",
@@ -311,7 +311,7 @@ func TestProcessConvoLine_RegistryGatedByDetached(t *testing.T) {
 
 	// Non-detached one-shot: session captured, NO registry record.
 	a := &Agent{ID: "os1", Mode: "interactive", Provider: "claude"}
-	m.processConvoLine(a, []byte(`{"type":"system","subtype":"init","session_id":"s1"}`), st, true)
+	m.processConvoLine(context.Background(), a, []byte(`{"type":"system","subtype":"init","session_id":"s1"}`), st, true)
 	if a.GetSessionID() != "s1" {
 		t.Fatalf("expected session captured even when not detached, got %q", a.GetSessionID())
 	}
@@ -322,7 +322,7 @@ func TestProcessConvoLine_RegistryGatedByDetached(t *testing.T) {
 	// Detached survival agent: record written.
 	a2 := &Agent{ID: "d1", Mode: "interactive", Provider: "claude", StartedAt: time.Now().UTC()}
 	a2.setDetached(true)
-	m.processConvoLine(a2, []byte(`{"type":"system","subtype":"init","session_id":"s2"}`), st, false)
+	m.processConvoLine(context.Background(), a2, []byte(`{"type":"system","subtype":"init","session_id":"s2"}`), st, false)
 	if list, _ := m.reg.List(); len(list) != 1 {
 		t.Fatalf("detached agent must write a registry record, got %d", len(list))
 	}
@@ -404,7 +404,7 @@ func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
 	rec := Record{
 		ID: "os9", TaskID: "t-os", Mode: "interactive", Provider: "claude",
 		PID: cmd.Process.Pid, LogPath: logPath, StdinPath: "",
-		SessionID: "sess-os", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(cmd.Process.Pid),
+		SessionID: "sess-os", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
 	}
 	if err := m.reg.Save(rec); err != nil {
 		t.Fatalf("save: %v", err)
@@ -474,7 +474,7 @@ func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
 	rec := Record{
 		ID: "ic1", TaskID: "t-ic", Mode: "interactive", Provider: "claude",
 		PID: cmd.Process.Pid, LogPath: logPath, StdinPath: fifoPath,
-		SessionID: "sess-ic", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(cmd.Process.Pid),
+		SessionID: "sess-ic", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
 	}
 	if err := m.reg.Save(rec); err != nil {
 		t.Fatalf("save: %v", err)

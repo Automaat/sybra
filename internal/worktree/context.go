@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -23,7 +24,7 @@ const contextFileName = ".sybra-context.md"
 // commit it. Errors are surfaced to the caller; the beacon is load-bearing
 // for the planner identity-pinning defense and a silent failure would let
 // the same cross-task contamination class recur.
-func writeContextFile(t task.Task, wtPath, branch string) error {
+func writeContextFile(ctx context.Context, t task.Task, wtPath, branch string) error {
 	body := renderContextFile(t, wtPath, branch)
 	path := filepath.Join(wtPath, contextFileName)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -31,7 +32,7 @@ func writeContextFile(t task.Task, wtPath, branch string) error {
 	}
 	// Best-effort for the beacon: it carries only task identity (no work content),
 	// so a failed exclude is a cosmetic git-status nuisance, not a leak.
-	_ = addToInfoExclude(wtPath, contextFileName)
+	_ = addToInfoExclude(ctx, wtPath, contextFileName)
 	return nil
 }
 
@@ -63,8 +64,8 @@ func renderContextFile(t task.Task, wtPath, branch string) string {
 // content (NOTES.md) must fail closed — an unexcluded file would be swept into
 // SanitizeWorktree's `git add -A` auto-commit and pushed to the PR. The
 // "already present" case returns nil.
-func addToInfoExclude(wtPath, entry string) error {
-	cmd := exec.Command("git", "rev-parse", "--git-path", "info/exclude")
+func addToInfoExclude(ctx context.Context, wtPath, entry string) error {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "info/exclude")
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
 	if err != nil {
@@ -106,10 +107,10 @@ func addToInfoExclude(wtPath, entry string) error {
 	return nil
 }
 
-func excludeWorkflowScratchFiles(wtPath string) error {
+func excludeWorkflowScratchFiles(ctx context.Context, wtPath string) error {
 	var errs []error
 	for _, entry := range []string{".sybra-review-*.md", ".sybra-diff-*.patch", ".sybra-plan-*.md", ".sybra-plan-*.json", ".sybra-critique-*.md"} {
-		if err := addToInfoExclude(wtPath, entry); err != nil {
+		if err := addToInfoExclude(ctx, wtPath, entry); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", entry, err))
 		}
 	}

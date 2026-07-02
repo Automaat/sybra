@@ -111,7 +111,7 @@ func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy) error {
 }
 
 func fetchClaudeLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapshot, bool, error) {
-	credentials, ok, err := readClaudeOAuthCredentials()
+	credentials, ok, err := readClaudeOAuthCredentials(ctx)
 	if err != nil || !ok {
 		return Snapshot{}, false, err
 	}
@@ -147,18 +147,18 @@ func fetchClaudeLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapsho
 	return snapshot, true, nil
 }
 
-func readClaudeOAuthCredentials() (claudeCredentials, bool, error) {
+func readClaudeOAuthCredentials(ctx context.Context) (claudeCredentials, bool, error) {
 	if runtime.GOOS == "darwin" {
-		if credentials, ok, err := readClaudeCredentialsFromKeychain(os.Getenv("CLAUDE_CONFIG_DIR")); err != nil || ok {
+		if credentials, ok, err := readClaudeCredentialsFromKeychain(ctx, os.Getenv("CLAUDE_CONFIG_DIR")); err != nil || ok {
 			return credentials, ok, err
 		}
 	}
 	return readClaudeCredentialsFromFile()
 }
 
-func readClaudeCredentialsFromKeychain(configDir string) (claudeCredentials, bool, error) {
+func readClaudeCredentialsFromKeychain(ctx context.Context, configDir string) (claudeCredentials, bool, error) {
 	for _, service := range claudeKeychainServices(configDir) {
-		ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+		ctx, cancel := context.WithTimeout(ctx, keychainTimeout)
 		cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-a", keychainUser(), "-w")
 		out, err := cmd.Output()
 		cancel()

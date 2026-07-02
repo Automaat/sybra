@@ -195,7 +195,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 	if doCopilot {
 		results = append(results, probeResult{provider: "copilot", status: copilotStatus, err: copilotErr})
 	}
-	c.applyProbeResults(results)
+	c.applyProbeResults(ctx, results)
 }
 
 type probeResult struct {
@@ -204,12 +204,12 @@ type probeResult struct {
 	err      error
 }
 
-func (c *Checker) applyProbeResults(results []probeResult) {
+func (c *Checker) applyProbeResults(ctx context.Context, results []probeResult) {
 	if len(results) == 0 {
 		return
 	}
 	for i := range results {
-		metrics.ProviderProbe(results[i].provider, results[i].err == nil)
+		metrics.ProviderProbe(ctx, results[i].provider, results[i].err == nil)
 	}
 
 	var events []HealthEvent
@@ -230,7 +230,7 @@ func (c *Checker) applyProbeResults(results []probeResult) {
 	}
 	c.mu.Unlock()
 
-	c.emitHealthEvents(events)
+	c.emitHealthEvents(ctx, events)
 }
 
 func (c *Checker) normalizeProbeResultLocked(r probeResult) (Status, bool) {
@@ -283,7 +283,9 @@ func (c *Checker) clearExpiredRateLimits() {
 		events = append(events, c.healthEventLocked(st))
 	}
 	c.mu.Unlock()
-	c.emitHealthEvents(events)
+	// context.Background(): clearExpiredRateLimits has no caller-provided ctx
+	// (invoked from tests and, in production, a ticker with no per-tick ctx).
+	c.emitHealthEvents(context.Background(), events)
 }
 
 func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
@@ -317,7 +319,9 @@ func (c *Checker) setStatus(name string, next Status, fromProbe bool) {
 	c.mu.Unlock()
 
 	if flip {
-		c.emitHealthEvents([]HealthEvent{ev})
+		// context.Background(): setStatus implements the fixed
+		// ReportAuthFailure/ReportRateLimit interface methods with no ctx.
+		c.emitHealthEvents(context.Background(), []HealthEvent{ev})
 	}
 }
 
@@ -383,9 +387,9 @@ func (c *Checker) healthEventLocked(s Status) HealthEvent {
 	}
 }
 
-func (c *Checker) emitHealthEvents(events []HealthEvent) {
+func (c *Checker) emitHealthEvents(ctx context.Context, events []HealthEvent) {
 	for _, ev := range events {
-		metrics.ProviderHealthFlip(ev.Provider, ev.Healthy)
+		metrics.ProviderHealthFlip(ctx, ev.Provider, ev.Healthy)
 		args := []any{
 			"provider", ev.Provider,
 			"healthy", ev.Healthy,
@@ -582,7 +586,8 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	snapshot := *s
 	ev := c.healthEventLocked(snapshot)
 	c.mu.Unlock()
-	c.emitHealthEvents([]HealthEvent{ev})
+	// context.Background(): SetProviderEnabled is a Wails-bound method with no ctx.
+	c.emitHealthEvents(context.Background(), []HealthEvent{ev})
 }
 
 // AutoFailover reports the current auto-failover flag.

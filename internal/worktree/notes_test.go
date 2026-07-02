@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,7 @@ func TestEnsureNotesFile_SeedsAndExcludes(t *testing.T) {
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
-	if err := ensureNotesFile(wt); err != nil {
+	if err := ensureNotesFile(context.Background(), wt); err != nil {
 		t.Fatalf("ensureNotesFile: %v", err)
 	}
 
@@ -48,7 +49,7 @@ func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
 
 	// A worktree re-prepare (resume/reuse) must not clobber it.
 	for range 3 {
-		if err := ensureNotesFile(wt); err != nil {
+		if err := ensureNotesFile(context.Background(), wt); err != nil {
 			t.Fatalf("ensureNotesFile: %v", err)
 		}
 	}

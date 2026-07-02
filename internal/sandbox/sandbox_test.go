@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"gopkg.in/yaml.v3"
@@ -321,6 +322,29 @@ func TestManager_StartNilConfig(t *testing.T) {
 	_, err := m.Start(context.TODO(), "task-1", "/worktree", nil)
 	if err == nil {
 		t.Fatal("expected error for nil config")
+	}
+}
+
+// TestRunCmd_ContextCancellationKillsProcess proves runCmd's exec.Command is
+// built with the caller's context (exec.CommandContext): cancelling ctx must
+// kill an in-flight subprocess instead of leaving it to run to completion.
+func TestRunCmd_ContextCancellationKillsProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := runCmd(ctx, "", nil, "sleep", "5")
+	dur := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error when context is cancelled mid-run")
+	}
+	if dur > 3*time.Second {
+		t.Errorf("cancellation did not kill the subprocess quickly: took %s", dur)
 	}
 }
 

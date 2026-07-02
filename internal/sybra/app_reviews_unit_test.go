@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -561,7 +562,7 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		{Number: 1055, HeadRefName: "feat/in-review-orphan", Repository: "o/r"},
 	}
 
-	r.adoptOrphanPRs(all, prs)
+	r.adoptOrphanPRs(context.Background(), all, prs)
 
 	t.Run("orphan adopted and re-activated", func(t *testing.T) {
 		got, _ := tasks.Get(orphan)
@@ -1236,7 +1237,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 
 	// Failures 1–(wtFailureLimit-1): return ("", false) without escalating.
 	for i := range wtFailureLimit - 1 {
-		_, ok := r.prepareWorktree(tk, issue)
+		_, ok := r.prepareWorktree(context.Background(), tk, issue)
 		if ok {
 			t.Fatalf("call %d: want ok=false on worktree error", i+1)
 		}
@@ -1250,7 +1251,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	}
 
 	// wtFailureLimit-th failure opens the circuit and escalates the task.
-	_, ok := r.prepareWorktree(tk, issue)
+	_, ok := r.prepareWorktree(context.Background(), tk, issue)
 	if ok {
 		t.Fatal("circuit-open call: want ok=false")
 	}
@@ -1324,7 +1325,7 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pass empty open-PR list so all eligible tasks fall through to merged check.
-	r.adoptOrphanPRs(all, nil)
+	r.adoptOrphanPRs(context.Background(), all, nil)
 
 	t.Run("orphan advanced to done with merged PR", func(t *testing.T) {
 		got, _ := tasks.Get(orphan)
@@ -1406,7 +1407,7 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 	openPRs := []github.PullRequest{
 		{Number: 42, HeadRefName: "feat/my-branch", Repository: "o/r"},
 	}
-	r.adoptOrphanPRs(all, openPRs)
+	r.adoptOrphanPRs(context.Background(), all, openPRs)
 
 	if mergedCalled {
 		t.Error("findMergedPRFn was called even though an open PR matched")
@@ -1628,7 +1629,7 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 				},
 			}
 
-			r.pollAndMonitorPRs()
+			r.pollAndMonitorPRs(context.Background())
 
 			if reconcileCalled != tt.wantReconcile {
 				t.Errorf("reconcileCalled = %v, want %v", reconcileCalled, tt.wantReconcile)
@@ -1674,7 +1675,7 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 		},
 	}
 
-	r.pollAndMonitorPRs()
+	r.pollAndMonitorPRs(context.Background())
 
 	if reconcileCalls != 1 {
 		t.Fatalf("reconcileCalls = %d, want 1", reconcileCalls)

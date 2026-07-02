@@ -29,14 +29,15 @@ func makeFIFO(path string) error {
 // parent's exit) and whose stdout is the NDJSON log file. The manager reads
 // output by tailing that file; follow-up messages are written to the FIFO,
 // which a reattaching instance reopens.
-func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os.File) (*exec.Cmd, error) {
+func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File) (*exec.Cmd, error) {
 	reg := m.registry()
 	if reg == nil {
 		return nil, fmt.Errorf("survive convo: registry not enabled")
 	}
 
 	args := m.buildConvoArgs(a, cfg)
-	cmd := exec.Command("claude", args...) // no Context: a cancelled ctx must not kill a detached child
+	// no Context: a cancelled ctx must not kill a detached child
+	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
 	configureDetached(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
@@ -92,7 +93,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 
 	a.SetCmd(cmd)
 	a.setDetached(true)
-	m.saveRegistry(a)
+	m.saveRegistry(ctx, a)
 	return cmd, nil
 }
 
@@ -100,7 +101,7 @@ func (m *Manager) startConvoProcessSurvive(a *Agent, cfg RunConfig, outFile **os
 // send the initial prompt, then tail the log file until the process exits or
 // the app shuts down (errSurviveShutdown leaves it running for reattach).
 func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
-	cmd, startErr := m.startConvoProcessSurvive(a, cfg, outFile)
+	cmd, startErr := m.startConvoProcessSurvive(ctx, a, cfg, outFile)
 	if startErr != nil {
 		return false, startErr
 	}
@@ -182,7 +183,8 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 // empty, which is how reattach recognizes a one-shot (tail-only).
 func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
 	args := m.buildOneShotConvoArgs(a, cfg)
-	cmd := exec.Command("claude", args...)
+	// no Context: a cancelled ctx must not kill a detached child
+	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
 	configureDetached(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
@@ -216,7 +218,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	a.setDetached(true)
 	// StdinPath intentionally left unset: reattach treats a record with no
 	// StdinPath as a one-shot (tail-only) agent.
-	m.saveRegistry(a)
+	m.saveRegistry(ctx, a)
 	m.logger.Info("agent.convo.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true, "oneshot", true)
 
 	procDone := make(chan struct{})
@@ -309,7 +311,7 @@ func (m *Manager) tailConvoFile(ctx context.Context, a *Agent, path string, star
 			}
 			line := buf[:i]
 			buf = buf[i+1:]
-			m.processConvoLine(a, line, st, oneShot)
+			m.processConvoLine(ctx, a, line, st, oneShot)
 		}
 	}
 
@@ -424,6 +426,6 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
+	m.fireComplete(ctx, a, a.GetExitErr() == nil)
 	m.markAgentDone(a)
 }

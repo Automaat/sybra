@@ -218,7 +218,7 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		return
 	}
 
-	m.finalizeRun(a, "agent.convo.done")
+	m.finalizeRun(ctx, a, "agent.convo.done")
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -274,7 +274,7 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	}
 
 	prevLen := len(a.ConvoOutput())
-	m.streamConvoOutput(a, stdout, logWriter, cfg.OneShot)
+	m.streamConvoOutput(ctx, a, stdout, logWriter, cfg.OneShot)
 
 	waitErr := cmd.Wait()
 	stderrOut := stderrBuf.String()
@@ -311,7 +311,7 @@ func (m *Manager) flushConvo(a *Agent, st *convoEmitState) {
 	}
 }
 
-func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Writer, oneShot bool) {
+func (m *Manager) streamConvoOutput(ctx context.Context, a *Agent, stdout io.Reader, outFile io.Writer, oneShot bool) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	st := &convoEmitState{}
@@ -321,7 +321,7 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 			_, _ = outFile.Write(line)
 			_, _ = outFile.Write([]byte("\n"))
 		}
-		m.processConvoLine(a, line, st, oneShot)
+		m.processConvoLine(ctx, a, line, st, oneShot)
 	}
 	m.flushConvo(a, st)
 }
@@ -330,7 +330,7 @@ func (m *Manager) streamConvoOutput(a *Agent, stdout io.Reader, outFile io.Write
 // throttle-emits the event, and runs the session/result/queue/one-shot
 // state machine. Shared by the pipe-backed streamer and the survival file
 // tailer; it never writes the log file (caller or child owns that).
-func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, oneShot bool) {
+func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, st *convoEmitState, oneShot bool) {
 	parsed, parseErr := ParseClaudeLine(line)
 	if parseErr != nil {
 		m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
@@ -373,7 +373,7 @@ func (m *Manager) processConvoLine(a *Agent, line []byte, st *convoEmitState, on
 			// mis-recover it as a survivable session and stall the workflow.
 			a.SetSessionID(event.SessionID)
 			if a.isDetached() {
-				m.saveRegistry(a)
+				m.saveRegistry(ctx, a)
 			}
 		}
 	case "result":

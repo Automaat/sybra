@@ -239,7 +239,7 @@ func (m *Manager) startDocker(ctx context.Context, taskID, worktreePath string, 
 	}
 	if hostPort == "" {
 		downArgs := extendArgs(baseArgs, "down", "-v")
-		_, _ = runCmd(context.Background(), worktreePath, nil, "docker", downArgs...)
+		_, _ = runCmd(ctx, worktreePath, nil, "docker", downArgs...)
 		return nil, fmt.Errorf("could not determine host port for service %q after retries", entryService)
 	}
 

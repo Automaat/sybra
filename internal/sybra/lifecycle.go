@@ -309,7 +309,10 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
+	// This callback's DispatchEvent -> execShell eventually derives its
+	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
+	// not an explicit parameter threaded through the closure.
+	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) { //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
 		if a.workflowEngine == nil {
 			return
 		}

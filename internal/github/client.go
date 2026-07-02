@@ -23,7 +23,9 @@ type ghExecer struct{}
 
 func (ghExecer) run(args ...string) ([]byte, error) {
 	return ghGate.execute(func() ([]byte, error) {
-		cmd := exec.Command("gh", args...)
+		// context.Background(): this is the plain, uncancellable fallback path
+		// (see runE below) — callers that want cancellation use runCtx/ghRunCtx.
+		cmd := exec.CommandContext(context.Background(), "gh", args...)
 		if env := ghEnv(); env != nil {
 			cmd.Env = env
 		}

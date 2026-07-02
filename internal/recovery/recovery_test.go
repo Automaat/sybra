@@ -72,7 +72,7 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 		WG:        &wg,
 		LogDir:    t.TempDir(),
 	}
-	r.RunStartupCleanup()
+	r.RunStartupCleanup(context.Background())
 	wg.Wait()
 }
 
@@ -132,7 +132,7 @@ func TestRestartStaleSkipsRecentRun(t *testing.T) {
 		WG:           &wg,
 		LogDir:       t.TempDir(),
 	}
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(context.Background())
 	wg.Wait()
 
 	if stub.startCalls != 0 {
@@ -196,7 +196,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 		WG:           &wg,
 		LogDir:       t.TempDir(),
 	}
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(context.Background())
 	wg.Wait()
 
 	if stub.startCalls != 0 {
@@ -266,7 +266,7 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 		WG:           &wg,
 		LogDir:       t.TempDir(),
 	}
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(context.Background())
 	wg.Wait()
 
 	if stub.startCalls != 1 {
@@ -325,7 +325,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 		WG:           &wg,
 		LogDir:       t.TempDir(),
 	}
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(context.Background())
 	wg.Wait()
 
 	if stub.startCalls != 1 {
@@ -417,7 +417,7 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 		WG:             &wg,
 		LogDir:         t.TempDir(),
 	}
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(context.Background())
 	wg.Wait()
 
 	if stub.startCalls != 0 || stub.prFixCalls != 0 {

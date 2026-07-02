@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +23,7 @@ func TestWriteContextFile_WritesBeacon(t *testing.T) {
 	}
 	branch := "sybra/bk-tree-on-per-base-buckets-fa6919fc"
 
-	if err := writeContextFile(tk, wt, branch); err != nil {
+	if err := writeContextFile(context.Background(), tk, wt, branch); err != nil {
 		t.Fatalf("writeContextFile: %v", err)
 	}
 
@@ -43,7 +44,7 @@ func TestWriteContextFile_AddsToInfoExclude(t *testing.T) {
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
 	tk := task.Task{ID: "fa6919fc", Slug: "x", ProjectID: "p/r"}
-	if err := writeContextFile(tk, wt, "sybra/x-fa6919fc"); err != nil {
+	if err := writeContextFile(context.Background(), tk, wt, "sybra/x-fa6919fc"); err != nil {
 		t.Fatalf("writeContextFile: %v", err)
 	}
 
@@ -62,7 +63,7 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 
 	tk := task.Task{ID: "fa6919fc", Slug: "x", ProjectID: "p/r"}
 	for range 3 {
-		if err := writeContextFile(tk, wt, "sybra/x-fa6919fc"); err != nil {
+		if err := writeContextFile(context.Background(), tk, wt, "sybra/x-fa6919fc"); err != nil {
 			t.Fatalf("writeContextFile: %v", err)
 		}
 	}
@@ -89,7 +90,7 @@ func TestExcludeWorkflowScratchFiles(t *testing.T) {
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
-	if err := excludeWorkflowScratchFiles(wt); err != nil {
+	if err := excludeWorkflowScratchFiles(context.Background(), wt); err != nil {
 		t.Fatalf("excludeWorkflowScratchFiles: %v", err)
 	}
 	for _, file := range []string{

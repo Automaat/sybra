@@ -308,7 +308,7 @@ func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Go(func() {
-			m.fireComplete(a, true)
+			m.fireComplete(context.Background(), a, true)
 		})
 	}
 	wg.Wait()
@@ -1195,7 +1195,7 @@ func TestStreamConvoOutput_FlushesQueueOnResult(t *testing.T) {
 	a.EnqueuePrompt("next turn please")
 
 	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"
-	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
 
 	select {
 	case got := <-lines:
@@ -1223,7 +1223,7 @@ func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
 	a.SetState(StateRunning)
 
 	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.05}` + "\n"
-	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
 
 	if st := a.GetState(); st != StatePaused {
 		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)

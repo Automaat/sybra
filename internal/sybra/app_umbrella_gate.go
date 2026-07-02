@@ -368,12 +368,12 @@ func (a *App) closeUmbrellaIssue(umbRef string) (retry bool) {
 // resolution failure (unregistered repo, unreadable clone) is returned to the
 // caller so grounding fails open rather than silently skipping.
 func buildGroundLister(projStore *project.Store) umbrella.TrackedFilesFunc {
-	return func(_ context.Context, repo string) ([]string, error) {
+	return func(ctx context.Context, repo string) ([]string, error) {
 		p, err := projStore.Get(repo)
 		if err != nil {
 			return nil, fmt.Errorf("ground: project %s: %w", repo, err)
 		}
-		files, err := project.TrackedFilesAtDefaultBranch(p.ClonePath)
+		files, err := project.TrackedFilesAtDefaultBranch(ctx, p.ClonePath)
 		if err != nil {
 			return nil, fmt.Errorf("ground: tracked files for %s: %w", repo, err)
 		}

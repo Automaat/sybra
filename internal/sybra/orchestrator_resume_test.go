@@ -3,6 +3,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -89,7 +90,7 @@ func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *t
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := project.CloneBare(src, barePath); err != nil {
+	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
 	}
 

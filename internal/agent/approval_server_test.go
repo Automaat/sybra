@@ -25,7 +25,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), port)
+	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), port)
 	if err != nil {
 		t.Fatalf("NewApprovalServer pinned: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 		t.Fatalf("addr %q does not use pinned port %d", srv.Addr(), port)
 	}
 
-	rnd, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	rnd, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer random: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 
 func newTestApprovalServer(t *testing.T) *ApprovalServer {
 	t.Helper()
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	mgr.agents["fake-ag-cancel"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 	mgr.agents["fake-ag-1"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 	mgr.agents["fake-ag-2"] = fakeAgent
 	mgr.mu.Unlock()
 
-	srv, err := NewApprovalServer(func(_ string, _ any) {}, discardLogger(), 0)
+	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
 	}

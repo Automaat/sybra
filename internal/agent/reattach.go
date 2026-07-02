@@ -157,7 +157,7 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	}
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.recovered-complete", "id", a.ID, "task", a.TaskID)
-	m.fireComplete(a, a.GetExitErr() == nil)
+	m.fireComplete(m.ctx, a, a.GetExitErr() == nil)
 	return true
 }
 
@@ -333,7 +333,7 @@ func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistr
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.per-turn-oneshot.done", "id", a.ID, "task", a.TaskID, "provider", a.Provider)
 	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
+	m.fireComplete(m.ctx, a, a.GetExitErr() == nil)
 	_ = reg.Delete(r.ID)
 }
 
@@ -369,7 +369,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	a.SetState(StateStopped)
 	m.logger.Info("agent.reattach.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
+	m.fireComplete(ctx, a, a.GetExitErr() == nil)
 	m.markAgentDone(a)
 }
 
@@ -398,7 +398,7 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 			// must NOT be treated as a mismatch, or a still-running agent would
 			// be wrongly marked gone.
 			if procStart != "" {
-				if cur := processStartString(pid); cur != "" && cur != procStart {
+				if cur := processStartString(ctx, pid); cur != "" && cur != procStart {
 					close(done)
 					return
 				}
@@ -472,7 +472,10 @@ func reattachAlive(r Record) bool {
 		return false
 	}
 	if r.ProcStartedAt != "" {
-		if cur := processStartString(r.PID); cur != "" && cur != r.ProcStartedAt {
+		// context.Background(): reattachAlive is a free function called from
+		// ReattachAll/reattachInteractive/reattachPerTurnConvo before any
+		// per-agent ctx exists yet (it decides whether reattach happens at all).
+		if cur := processStartString(context.Background(), r.PID); cur != "" && cur != r.ProcStartedAt {
 			return false
 		}
 	}
@@ -482,11 +485,11 @@ func reattachAlive(r Record) bool {
 // processStartString returns the OS-reported start time of a process as an
 // opaque string, used only for equality comparison to detect PID reuse.
 // Best-effort: an empty result disables the guard for that record.
-func processStartString(pid int) string {
+func processStartString(ctx context.Context, pid int) string {
 	if pid <= 0 {
 		return ""
 	}
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return ""
 	}
