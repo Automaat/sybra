@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // newParseTestManager returns a Manager suitable for unit-testing
@@ -225,6 +226,27 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	streamEvents := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
 	if shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = true on non-transient error, want false")
+	}
+}
+
+// TestClassifyProviderError_CodexConnectivityRoutesToRateLimit pins the
+// acceptance path: a codex backend connectivity error must classify as
+// SignalRateLimit and map to ErrorKind "rate_limit" (not "" / a fatal kind),
+// since signalErrorKind's return value is what the completion handler keys
+// off to failover/park instead of escalating to human-required.
+func TestClassifyProviderError_CodexConnectivityRoutesToRateLimit(t *testing.T) {
+	sample := provider.ErrorSample{
+		Stderr: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses",
+	}
+	sig, reason, _ := classifyProviderError("codex", sample)
+	if sig != provider.SignalRateLimit {
+		t.Fatalf("signal = %v, want SignalRateLimit", sig)
+	}
+	if reason != "connectivity" {
+		t.Fatalf("reason = %q, want connectivity", reason)
+	}
+	if got := signalErrorKind(sig); got != "rate_limit" {
+		t.Fatalf("signalErrorKind = %q, want rate_limit", got)
 	}
 }
 

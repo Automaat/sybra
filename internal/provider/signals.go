@@ -16,6 +16,16 @@ const (
 	SignalAuthFailure
 )
 
+// connectivityCooldown is the retry-after hint for codex backend
+// connectivity signals (websocket refusals, MCP transport failures, model
+// list refresh timeouts) — short, since these tend to clear within a minute.
+const connectivityCooldown = 60 * time.Second
+
+// weeklyLimitCooldown is the retry-after hint for a weekly usage-limit
+// signal — a long park, since the reset is hours away and a short cooldown
+// would just churn retries against the same exhausted limit.
+const weeklyLimitCooldown = time.Hour
+
 // ErrorSample is the runner→classifier DTO. Using a plain struct (instead of
 // agent.StreamEvent directly) prevents an import cycle between internal/agent
 // and internal/provider.
@@ -51,9 +61,26 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
+		if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+			return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+		}
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
+}
+
+// isWeeklyLimit reports whether text contains a weekly-specific limit
+// phrase. A bare "resets ... at" fragment (present on session/usage limits
+// too) is not sufficient — only an explicit "weekly" mention counts, so
+// session/usage limits keep their short default cooldown instead of being
+// parked for an hour.
+func isWeeklyLimit(text string) bool {
+	return containsAny(text,
+		"weekly limit",
+		"weekly limit reached",
+		"hit your weekly limit",
+		"reached your weekly limit",
+	)
 }
 
 // ClassifyCodexError mirrors ClassifyClaudeError for codex runs. Codex error
@@ -73,9 +100,21 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 		containsAny(content, "not logged in", "please run: codex login") {
 		return SignalAuthFailure, "logged_out", 0
 	}
+	// Host-anchored: a bare "websocket connection" without the codex backend
+	// host must NOT match — it would false-positive on unrelated network
+	// errors. Covers websocket refusals to the codex responses endpoint, MCP
+	// transport failures, and model-list refresh timeouts, all of which are
+	// Codex-backend infra blips rather than real task failures.
+	if containsAny(stderr, "chatgpt.com/backend-api", "failed to refresh available models") ||
+		containsAny(content, "chatgpt.com/backend-api", "failed to refresh available models") {
+		return SignalRateLimit, "connectivity", connectivityCooldown
+	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") {
+		if isWeeklyLimit(stderr) || isWeeklyLimit(content) {
+			return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+		}
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
