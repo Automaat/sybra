@@ -63,9 +63,12 @@ func TestListActiveTasks_Error(t *testing.T) {
 // request instead of hitting the server, and never be checked into a build
 // that reverts to http.NewRequest.
 func TestListActiveTasks_ContextCancelled(t *testing.T) {
-	called := false
+	called := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
+		select {
+		case called <- struct{}{}:
+		default:
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -81,8 +84,10 @@ func TestListActiveTasks_ContextCancelled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled in error chain, got: %v", err)
 	}
-	if called {
+	select {
+	case <-called:
 		t.Error("server should not have been contacted with a cancelled context")
+	default:
 	}
 }
 

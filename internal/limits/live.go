@@ -158,8 +158,8 @@ func readClaudeOAuthCredentials(ctx context.Context) (claudeCredentials, bool, e
 
 func readClaudeCredentialsFromKeychain(ctx context.Context, configDir string) (claudeCredentials, bool, error) {
 	for _, service := range claudeKeychainServices(configDir) {
-		ctx, cancel := context.WithTimeout(ctx, keychainTimeout)
-		cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-a", keychainUser(), "-w")
+		attemptCtx, cancel := context.WithTimeout(ctx, keychainTimeout)
+		cmd := exec.CommandContext(attemptCtx, "security", "find-generic-password", "-s", service, "-a", keychainUser(), "-w")
 		out, err := cmd.Output()
 		cancel()
 		if err != nil {
