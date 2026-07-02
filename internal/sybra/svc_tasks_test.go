@@ -683,3 +683,84 @@ func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *tes
 		t.Fatalf("Status = %q, want workflow-owned issue status", got.Status)
 	}
 }
+
+func TestTaskService_ReconcilePendingEnrichment_RetriesOrphanedStub(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	var succeed atomic.Bool
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		if !succeed.Load() {
+			return github.Issue{}, errors.New("gh issue view: API rate limit exceeded")
+		}
+		return github.Issue{
+			Number:     42,
+			Title:      "recovered issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	svc.viewerLogin = func() string { return "me" }
+
+	// The initial async fetch fails, orphaning the stub with the marker intact.
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker after a failed initial fetch", got.Tags)
+	}
+	if got.Title != "https://github.com/owner/repo/issues/42" {
+		t.Fatalf("Title = %q, want the raw URL to survive a failed fetch", got.Title)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("Workflow = %+v, want none while the stub is still enrich-pending", got.Workflow)
+	}
+
+	// gh recovers; the maintenance reconcile pass re-enriches and dispatches.
+	succeed.Store(true)
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+
+	got = waitForWorkflow(t, svc, created.ID)
+	if slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should clear after reconcile", got.Tags)
+	}
+	if got.Title != "recovered issue" {
+		t.Fatalf("Title = %q, want enriched title after reconcile", got.Title)
+	}
+}
+
+func TestTaskService_ReconcilePendingEnrichment_SkipsNonStubs(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	var fetched atomic.Bool
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		fetched.Store(true)
+		return github.Issue{}, errors.New("should not be called")
+	}
+
+	// An ordinary task without the marker must never be touched by reconcile.
+	if _, err := svc.tasks.Create("ordinary task", "", "headless"); err != nil {
+		t.Fatal(err)
+	}
+	// A stub whose title is no longer a URL cannot be re-fetched; reconcile
+	// must skip it rather than crash or spuriously fetch.
+	if _, err := svc.tasks.CreateFull("hand-edited title", "", "headless",
+		task.Update{Tags: task.Ptr([]string{enrichPendingTag})}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+
+	if fetched.Load() {
+		t.Fatal("reconcile fetched GitHub for a non-URL / unmarked task")
+	}
+}
