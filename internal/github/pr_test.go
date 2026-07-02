@@ -660,8 +660,11 @@ func TestSupportsNativeAutoMerge(t *testing.T) {
 		if _, err := supportsNativeAutoMergeWith(se, "owner/repo", "release/base"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(se.lastArgs[len(se.lastArgs)-1], "release/base") {
-			t.Errorf("last call args = %v, want it to reference base branch release/base", se.lastArgs)
+		if !strings.Contains(se.lastArgs[len(se.lastArgs)-1], "release%2Fbase") {
+			t.Errorf("last call args = %v, want it to reference path-escaped base branch release%%2Fbase", se.lastArgs)
+		}
+		if strings.Contains(se.lastArgs[len(se.lastArgs)-1], "branches/release/base/") {
+			t.Errorf("last call args = %v, base branch slash must be escaped, not a raw path separator", se.lastArgs)
 		}
 		for _, a := range se.lastArgs {
 			if strings.Contains(a, "feature/head") {

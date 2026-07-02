@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -817,7 +818,7 @@ func supportsNativeAutoMergeWith(e execer, repo, baseBranch string) (bool, error
 		return setNativeAutoMergeCache(e, key, false), nil
 	}
 
-	protResp, protAPIErr := runGHAPIWith(e, "3m", fmt.Sprintf("repos/%s/branches/%s/protection", repo, baseBranch))
+	protResp, protAPIErr := runGHAPIWith(e, "3m", fmt.Sprintf("repos/%s/branches/%s/protection", repo, url.PathEscape(baseBranch)))
 	supported := false
 	if protAPIErr == nil {
 		var prot ghBranchProtection
