@@ -264,6 +264,25 @@ func TestHasGroundedFailureEvidence_AcceptsNaturalObservedHeader(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_AcceptsKeywordMidHeaderLabel(t *testing.T) {
+	t.Parallel()
+
+	// #1386: evidence keywords that appear mid-label — not as the header's first
+	// token and not among the enumerated natural-language phrases — must still be
+	// recognized. Here the observed header is "Here is the actual output:" and the
+	// expected header is "Per the task requirement:"; both would be rejected by
+	// the old prefix-only (CutPrefix) matcher despite a fully grounded FAIL.
+	report := "## Test Failures\n\n" +
+		"**Reproduction command:** `go test ./internal/limits -run TestDegrade`\n\n" +
+		"**Here is the actual output:**\n\n```text\npanic: assignment to entry in nil map\n```\n\n" +
+		"**Per the task requirement:** the store must degrade to a no-op.\n\n" +
+		"**Code evidence:** internal/limits/store.go:157\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("mid-label evidence keywords rejected as ungrounded; want grounded")
+	}
+}
+
 func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
 	t.Parallel()
 

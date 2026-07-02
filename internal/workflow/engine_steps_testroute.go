@@ -1321,11 +1321,12 @@ func hasGroundedFailureEvidence(report string) bool {
 			"command output", "stdout", "stderr", "output",
 			"verbatim output", "actual behavior", "actual behaviour",
 			"observed behavior", "observed behaviour", "printed", "rendered",
-			// Natural-language observed-evidence headers. hasLabeledSection only
-			// matches a keyword at the START of the line, so a report that writes
-			// "**What actually happened:**" (keyword mid-phrase) would otherwise be
-			// misclassified missing_evidence despite a fully grounded FAIL. Same
-			// class of false rejection #1344/#1345 closed for other markers.
+			// Natural-language observed-evidence headers whose core keyword above
+			// isn't present as a standalone word (e.g. "what happened", "what i
+			// saw"). hasLabeledSection now matches keywords anywhere in a header
+			// label (#1386), so headers like "**What actually happened:**" are
+			// already covered by "actual"/"output"; these catch the phrasings that
+			// carry no core keyword at all.
 			"what actually happened", "what happened", "what i observed",
 			"what i saw", "what the code shows", "what the code does")
 	hasExpected := containsAny(lower,
@@ -1350,6 +1351,70 @@ func hasGroundedFailureEvidence(report string) bool {
 // header — a bare header immediately followed by another header's line (with
 // or without inline content) still has no content of its own.
 var headerLikeLineRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,40}:`)
+
+// evidenceLabelRe matches the label portion (the text before the colon) of a
+// header-like line: a short token of letters, digits and a little punctuation.
+// It keeps keyword matching scoped to real headers instead of arbitrary prose
+// that merely contains a colon (which would carry a comma, longer text, etc.).
+var evidenceLabelRe = regexp.MustCompile(`^[a-z][a-z0-9 '/()-]{0,60}$`)
+
+// labelMatchesKeyword reports whether a header label matches any keyword.
+// Single-word keywords must match at the label's START (as a whole word), so a
+// generic word like "output" is not credited inside a different-category label
+// such as "expected output". Multi-word phrase keywords ("actual output",
+// "what actually happened") may match ANYWHERE in the label — this is what lets
+// natural mid-phrase headers satisfy the gate (#1386) without collapsing the
+// observed/expected distinction.
+func labelMatchesKeyword(label string, keywords []string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(kw, " ") {
+			if labelHasKeyword(label, kw) {
+				return true
+			}
+		} else if labelHasPrefixKeyword(label, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// labelHasPrefixKeyword reports whether label begins with kw as a whole word
+// (kw is the entire label, or is immediately followed by a non-alphanumeric
+// byte). label is expected to be already lower-cased.
+func labelHasPrefixKeyword(label, kw string) bool {
+	if !strings.HasPrefix(label, kw) {
+		return false
+	}
+	return len(label) == len(kw) || !isAlnumByte(label[len(kw)])
+}
+
+// labelHasKeyword reports whether kw occurs in label as a whole word/phrase,
+// bounded by non-alphanumeric characters. This lets "actual output" match
+// mid-label (e.g. "runtime actual output") while "actual" does not match inside
+// "actually". label is expected to be already lower-cased.
+func labelHasKeyword(label, kw string) bool {
+	if kw == "" {
+		return false
+	}
+	for start := 0; start <= len(label); {
+		rel := strings.Index(label[start:], kw)
+		if rel < 0 {
+			return false
+		}
+		i := start + rel
+		beforeOK := i == 0 || !isAlnumByte(label[i-1])
+		afterOK := i+len(kw) >= len(label) || !isAlnumByte(label[i+len(kw)])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+func isAlnumByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
 
 // fileLineCitationRe matches a real file:line citation such as
 // "internal/x.go:42" or "src/App.svelte:10" — a path segment ending in a
@@ -1383,24 +1448,29 @@ func hasLabeledSection(report string, keywords ...string) bool {
 		}
 		lower := strings.ToLower(trimmed)
 		lower = strings.TrimLeft(lower, "*_>#- \t")
-		for _, kw := range keywords {
-			rest, ok := strings.CutPrefix(lower, kw)
-			if !ok {
-				continue
-			}
-			rest = strings.TrimSpace(rest)
-			if strings.HasPrefix(rest, "(") {
-				if idx := strings.Index(rest, ")"); idx >= 0 {
-					rest = strings.TrimSpace(rest[idx+1:])
-				}
-			}
-			if !strings.HasPrefix(rest, ":") {
-				continue
-			}
-			afterColon := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest[1:]), "*_"))
-			if afterColon != "" || hasFollowingContent(rawLines, i) {
-				return true
-			}
+		// A header-like line is "<label>: <content>". Match keywords anywhere in
+		// the label (word-boundary aware) rather than only as its first token, so
+		// natural headers whose evidence keyword is mid-phrase — e.g. "Here is the
+		// actual output:" — are still recognized (#1386). The label must be a
+		// short header-like token and the header must be backed by real content,
+		// which preserves the bare-header rejections.
+		before, after, found := strings.Cut(lower, ":")
+		if !found {
+			continue
+		}
+		label := strings.TrimRight(strings.TrimSpace(before), "*_ ")
+		if p := strings.LastIndex(label, "("); p >= 0 && strings.HasSuffix(label, ")") {
+			label = strings.TrimSpace(label[:p])
+		}
+		if !evidenceLabelRe.MatchString(label) {
+			continue
+		}
+		if !labelMatchesKeyword(label, keywords) {
+			continue
+		}
+		afterColon := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(after), "*_"))
+		if afterColon != "" || hasFollowingContent(rawLines, i) {
+			return true
 		}
 	}
 	return false
