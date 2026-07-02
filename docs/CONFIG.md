@@ -389,6 +389,22 @@ copilot) and their background health-check loop. A missing block defaults to
 | `providers.claude.rate_limit_cooldown_seconds` | `int` | `900` |  |
 | `providers.claude.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
 
+## ProviderEntryConfig (`providers.codex`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `providers.codex.enabled` | `bool` | `true` |  |
+| `providers.codex.rate_limit_cooldown_seconds` | `int` | `900` |  |
+| `providers.codex.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+## ProviderEntryConfig (`providers.copilot`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `providers.copilot.enabled` | `bool` | `true` |  |
+| `providers.copilot.rate_limit_cooldown_seconds` | `int` | `900` |  |
+| `providers.copilot.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
 ## ProviderLimitsConfig (`providers.limits`)
 
 | YAML key | Type | Default | Description |

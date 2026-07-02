@@ -265,15 +265,20 @@ type renderedField struct {
 	doc     string
 }
 
-// walk builds one section per struct type reachable from Config, in
+// walk builds one section per YAML path reachable from Config, in
 // declaration order, skipping types outside the config package (external
 // package types like abtest.Config are shown as opaque leaf fields instead
-// of being expanded).
+// of being expanded). The same local struct type can appear at several YAML
+// paths, so the recursion guard must be path-based rather than type-based.
 func walk(pt *pkgTypes, cfg reflect.Value, typeName, yamlPrefix string, goPath []string, seen map[string]bool, out *[]section) {
-	if seen[typeName] {
+	seenKey := yamlPrefix
+	if seenKey == "" {
+		seenKey = "<root>"
+	}
+	if seen[seenKey] {
 		return
 	}
-	seen[typeName] = true
+	seen[seenKey] = true
 	st, ok := pt.structs[typeName]
 	if !ok {
 		return

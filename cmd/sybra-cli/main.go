@@ -2019,17 +2019,26 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		add("ok", "no issues found")
 	}
 
-	report := configDoctorReport{Findings: findings}
-	if jsonOut {
-		return printJSON(report)
-	}
-
 	errCount := 0
 	for _, f := range findings {
-		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 		if f.Severity == "error" {
 			errCount++
 		}
+	}
+
+	report := configDoctorReport{Findings: findings}
+	if jsonOut {
+		if code := printJSON(report); code != 0 {
+			return code
+		}
+		if errCount > 0 {
+			return 1
+		}
+		return 0
+	}
+
+	for _, f := range findings {
+		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}
 	if errCount > 0 {
 		return 1

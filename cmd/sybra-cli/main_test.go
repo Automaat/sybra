@@ -32,12 +32,18 @@ func setupStore(t *testing.T) string {
 
 func runCLI(t *testing.T, args ...string) (exitCode int, output string) {
 	t.Helper()
+	return captureStdout(t, func() int {
+		return run(args)
+	})
+}
 
+func captureStdout(t *testing.T, fn func() int) (exitCode int, output string) {
+	t.Helper()
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	code := run(args)
+	code := fn()
 
 	_ = w.Close()
 	os.Stdout = old
@@ -241,6 +247,28 @@ func TestDelete(t *testing.T) {
 	mustUnmarshal(t, out, &tasks)
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 tasks after delete, got %d", len(tasks))
+	}
+}
+
+func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.Provider = "nope"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "agent.provider")
+	}) {
+		t.Fatalf("expected agent.provider error in report: %+v", report.Findings)
 	}
 }
 
