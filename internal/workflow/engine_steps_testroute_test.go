@@ -588,6 +588,21 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantStatus: "completed",
 		},
 		{
+			// A structured probe whose only populated field is a command plus a
+			// status explicitly stating it was NOT executed (e.g. "not run",
+			// "could not run") must not count as reproduction evidence — the
+			// probe's own status says it never ran.
+			name:   "structured_product_bug_with_command_and_not_run_status_is_missing_evidence",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` +
+				strconv.Quote("The feature seems broken.") + `,` +
+				`"manual_probes":[{"command":"curl /status","status":"could not run — server was down"}]}`,
+			bodySuffix: "",
+			want:       testOutcomeMissingEvidence,
+			wantStatus: "failed",
+			wantTaint:  testProtocolMissingEvidence,
+		},
+		{
 			name:       "explicit_product_bug_still_requires_evidence",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,

@@ -1269,10 +1269,10 @@ func hasStructuredFailureEvidence(parsed structuredTestOutput) bool {
 // actually ran and what it returned is exactly the evidence we want.
 func hasConcreteProbeEvidence(command string, actual, output, observed, status evidenceText, raw string) bool {
 	if strings.TrimSpace(command) != "" &&
-		(strings.TrimSpace(string(actual)) != "" ||
-			strings.TrimSpace(string(output)) != "" ||
-			strings.TrimSpace(string(observed)) != "" ||
-			strings.TrimSpace(string(status)) != "") {
+		(hasConcreteProbeResult(actual) ||
+			hasConcreteProbeResult(output) ||
+			hasConcreteProbeResult(observed) ||
+			hasConcreteProbeResult(status)) {
 		return true
 	}
 	lower := strings.ToLower(strings.TrimSpace(raw))
@@ -1280,6 +1280,26 @@ func hasConcreteProbeEvidence(command string, actual, output, observed, status e
 		return false
 	}
 	return hasManualActionEvidence(lower) && hasManualObservationEvidence(lower)
+}
+
+// hasConcreteProbeResult reports whether a probe result field (actual/output/
+// observed/status) records a real outcome rather than a not-executed marker
+// (e.g. "not run", "skipped", "could not run"). Applied uniformly to all four
+// fields because fillAliases backfills an empty Actual from Status, so a
+// negative status would otherwise resurface as "concrete" Actual content and
+// let an admittedly-unexecuted probe pass as reproduction evidence. Unlike
+// hasRegressionNegativeEvidence, this must NOT flag "failed"/"failure" — a
+// probe result of "failed" means it ran and failed, which is exactly the
+// reproduction evidence this gate wants.
+func hasConcreteProbeResult(v evidenceText) bool {
+	trimmed := strings.TrimSpace(string(v))
+	if trimmed == "" {
+		return false
+	}
+	return !containsAny(strings.ToLower(trimmed),
+		"not run", "not executed", "never ran", "never run", "did not run", "didn't run",
+		"was not run", "were not run", "wasn't run", "weren't run", "could not run",
+		"cannot run", "skipped", "without running", "n/a", "unknown")
 }
 
 func hasGroundedFailureEvidence(report string) bool {
