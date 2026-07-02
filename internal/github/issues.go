@@ -192,7 +192,7 @@ func fetchAssignedIssuesWith(e execer) ([]Issue, error) {
 		if cached, ok := assignedIssuesCache.Get(query); ok {
 			return cached, nil
 		}
-		if ghGate.shouldSkipOptional("graphql") {
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
 			if stale, ok := assignedIssuesCache.GetStale(query); ok {
 				return stale, nil
 			}
@@ -230,7 +230,7 @@ func fetchLabeledIssuesForReposWith(e execer, repos []string, label string) ([]I
 		if cached, ok := labeledIssuesCache.Get(cacheKey); ok {
 			return cached, nil
 		}
-		if ghGate.shouldSkipOptional("graphql") {
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
 			if stale, ok := labeledIssuesCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}
@@ -337,7 +337,7 @@ func fetchIssueSnapshotWith(e execer, repos []string, label string) (IssueSnapsh
 	labeledCacheKey := "label:" + label + "||" + strings.Join(repos, ",")
 
 	if runtimeCacheEnabled(e) {
-		if ghGate.shouldSkipOptional("graphql") {
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
 			if assigned, ok := assignedIssuesCache.GetStale(assignedQuery); ok {
 				snapshot.Assigned = assigned
 			}

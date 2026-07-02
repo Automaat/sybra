@@ -174,7 +174,7 @@ func fetchPRForMonitorWith(e execer, repo string, number int) (PullRequest, bool
 	// points or hard-failing. The REST result omits thread/review-decision data,
 	// so callers must only act on its conflict/ci_failure/closed signals. Gated
 	// on runtimeCacheEnabled so unit tests (fake execer) keep the GraphQL path.
-	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql") {
+	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql", priorityMergePath) {
 		return fetchPRForMonitorViaREST(e, repo, number)
 	}
 
@@ -219,7 +219,7 @@ func fetchReviewsWith(e execer) (ReviewSummary, error) {
 		// a stale summary if we have one, otherwise back off (ErrBudgetExhausted
 		// is transient) instead of firing three searches that would only be
 		// rejected and burn the last of the shared budget.
-		if ghGate.shouldSkipOptional("graphql") {
+		if ghGate.shouldSkipOptional("graphql", priorityDiscovery) {
 			if stale, ok := reviewSummaryCache.GetStale(cacheKey); ok {
 				return stale, nil
 			}

@@ -15,6 +15,22 @@ const (
 	ghFallbackRateBackoff = 1 * time.Minute
 	ghMaxRetries          = 2
 	ghRetryBaseBackoff    = 500 * time.Millisecond
+
+	// ghDiscoveryReserveFraction is the fraction of a resource bucket's limit
+	// reserved for merge-path polls once budget runs low. Discovery polls
+	// (issue fetch, renovate, review-request search) skip once remaining
+	// budget falls to this fraction, keeping the band between it and
+	// ghLowBudgetThreshold exclusively for merge-path GraphQL.
+	ghDiscoveryReserveFraction = 0.2
+)
+
+// pollPriority distinguishes merge-path advancement (never skip until the
+// hard floor) from discovery polls (skip earlier to reserve budget).
+type pollPriority int
+
+const (
+	priorityMergePath pollPriority = iota
+	priorityDiscovery
 )
 
 // ghRetrySleep waits before a transient-error retry (backoff grows with the
@@ -258,10 +274,13 @@ func (g *ghRequestGate) observe(resp ghHTTPResponse, err error) {
 	}
 }
 
-func (g *ghRequestGate) shouldSkipOptional(resource string) bool {
+func (g *ghRequestGate) shouldSkipOptional(resource string, prio pollPriority) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// The notBefore hard wall (secondary rate limit / bumped backoff) skips
+	// every tier — there is no budget to reserve for merge-path when the API
+	// itself has told us to back off entirely.
 	if time.Until(g.notBefore) > 0 {
 		return true
 	}
@@ -270,7 +289,15 @@ func (g *ghRequestGate) shouldSkipOptional(resource string) bool {
 	if !ok || window.remaining < 0 || window.resetAt.IsZero() {
 		return false
 	}
-	if window.remaining > ghLowBudgetThreshold {
+
+	threshold := ghLowBudgetThreshold
+	if prio == priorityDiscovery && window.limit > 0 {
+		if reserved := int(ghDiscoveryReserveFraction * float64(window.limit)); reserved > threshold {
+			threshold = reserved
+		}
+	}
+
+	if window.remaining > threshold {
 		return false
 	}
 	return time.Until(window.resetAt) > ghOptionalCooldown

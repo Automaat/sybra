@@ -89,7 +89,7 @@ func TestGHRequestGate_ObservesGraphQLRateLimitBody(t *testing.T) {
 		body: []byte(`{"errors":[{"type":"RATE_LIMITED","message":"quota exhausted"}]}`),
 	}, nil)
 
-	if !g.shouldSkipOptional("graphql") {
+	if !g.shouldSkipOptional("graphql", priorityDiscovery) {
 		t.Fatal("want optional GraphQL calls skipped after rate-limit body")
 	}
 }
