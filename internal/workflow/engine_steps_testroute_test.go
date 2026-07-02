@@ -264,6 +264,25 @@ func TestHasGroundedFailureEvidence_AcceptsNaturalObservedHeader(t *testing.T) {
 	}
 }
 
+func TestHasGroundedFailureEvidence_AcceptsKeywordMidHeaderLabel(t *testing.T) {
+	t.Parallel()
+
+	// #1386: evidence keywords that appear mid-label — not as the header's first
+	// token and not among the enumerated natural-language phrases — must still be
+	// recognized. Here the observed header is "Here is the actual output:" and the
+	// expected header is "Per the task requirement:"; both would be rejected by
+	// the old prefix-only (CutPrefix) matcher despite a fully grounded FAIL.
+	report := "## Test Failures\n\n" +
+		"**Reproduction command:** `go test ./internal/limits -run TestDegrade`\n\n" +
+		"**Here is the actual output:**\n\n```text\npanic: assignment to entry in nil map\n```\n\n" +
+		"**Per the task requirement:** the store must degrade to a no-op.\n\n" +
+		"**Code evidence:** internal/limits/store.go:157\n"
+
+	if !hasGroundedFailureEvidence(report) {
+		t.Fatal("mid-label evidence keywords rejected as ungrounded; want grounded")
+	}
+}
+
 func TestHasGroundedFailureEvidence_RejectsUngroundedReport(t *testing.T) {
 	t.Parallel()
 
@@ -299,6 +318,48 @@ func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingNextHeaderContent(
 
 	if hasGroundedFailureEvidence(report) {
 		t.Fatal("bare Command header borrowing next header's content accepted as grounded; want rejected")
+	}
+}
+
+func TestHasGroundedFailureEvidence_RejectsBareHeaderBorrowingLongNextHeaderLabel(t *testing.T) {
+	t.Parallel()
+
+	// Same borrowing bug as RejectsBareHeaderBorrowingNextHeaderContent, but
+	// the following header's label is 41-60 chars long — past the old
+	// headerLikeLineRe's 40-char ceiling but within evidenceLabelRe's 60-char
+	// ceiling used to accept it as an "actual output" header. hasFollowingContent
+	// must recognize that line as a header (not free content) regardless of its
+	// label length, or the bare Command header wrongly borrows it.
+	report := "**Command:**\n\n" +
+		"**Here is the actual output with enough words added:** panic\n\n" +
+		"**Expected:** task says the operation should not panic.\n\n" +
+		"**Code evidence:** internal/limits/store.go:157\n"
+
+	if hasGroundedFailureEvidence(report) {
+		t.Fatal("bare Command header borrowing long next-header label accepted as grounded; want rejected")
+	}
+}
+
+func TestEvidenceLabelRe_EnforcesSixtyCharCeiling(t *testing.T) {
+	t.Parallel()
+
+	// The label ceiling is documented as 60 chars total (1 leading letter +
+	// up to 59 more). A 61-char label must be rejected by both regexes, or a
+	// bare header could borrow an over-long following header's content.
+	sixty := "a" + strings.Repeat("b", 59)
+	sixtyOne := "a" + strings.Repeat("b", 60)
+
+	if !evidenceLabelRe.MatchString(sixty) {
+		t.Fatalf("evidenceLabelRe rejected a 60-char label %q; want accepted", sixty)
+	}
+	if evidenceLabelRe.MatchString(sixtyOne) {
+		t.Fatalf("evidenceLabelRe accepted a 61-char label %q; want rejected", sixtyOne)
+	}
+	if !headerLikeLineRe.MatchString(sixty + ":") {
+		t.Fatalf("headerLikeLineRe rejected a 60-char label header %q; want accepted", sixty)
+	}
+	if headerLikeLineRe.MatchString(sixtyOne + ":") {
+		t.Fatalf("headerLikeLineRe accepted a 61-char label header %q; want rejected", sixtyOne)
 	}
 }
 
