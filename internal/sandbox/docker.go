@@ -16,6 +16,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// cleanupTimeout bounds rollback/teardown commands (docker compose down,
+// k3d cluster delete) run after a failed start. These must not inherit an
+// already-canceled operation context, or the cleanup itself gets skipped.
+const cleanupTimeout = 30 * time.Second
+
 // knownSidecar describes how a well-known sidecar image is wired up.
 type knownSidecar struct {
 	// defaultEnv is injected into the sidecar container itself.
@@ -239,7 +244,9 @@ func (m *Manager) startDocker(ctx context.Context, taskID, worktreePath string, 
 	}
 	if hostPort == "" {
 		downArgs := extendArgs(baseArgs, "down", "-v")
-		_, _ = runCmd(ctx, worktreePath, nil, "docker", downArgs...)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		_, _ = runCmd(cleanupCtx, worktreePath, nil, "docker", downArgs...) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see cleanupTimeout comment
+		cancel()
 		return nil, fmt.Errorf("could not determine host port for service %q after retries", entryService)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/executil"
 	"gopkg.in/yaml.v3"
@@ -828,11 +829,19 @@ func RepairWorktrees(ctx context.Context, barePath string) error {
 	})
 }
 
+// rebaseAbortTimeout bounds the `git rebase --abort` cleanup below. It must
+// not inherit the caller's ctx: if the rebase failed because ctx was
+// canceled or its deadline expired, running the abort on that same ctx would
+// skip cleanup and leave .git/rebase-* state behind in the worktree.
+const rebaseAbortTimeout = 30 * time.Second
+
 // RebaseOnto rebases the worktree's current branch onto the given ref.
 // Aborts and returns an error on conflict.
 func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
 	if err := executil.Run(ctx, worktreePath, "git", "rebase", ref); err != nil {
-		_ = executil.Run(ctx, worktreePath, "git", "rebase", "--abort")
+		abortCtx, cancel := context.WithTimeout(context.Background(), rebaseAbortTimeout)
+		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort") //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see rebaseAbortTimeout comment
+		cancel()
 		return fmt.Errorf("rebase onto %s: %w", ref, err)
 	}
 	return nil
