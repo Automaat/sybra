@@ -169,12 +169,14 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	// Cancel once the handler has registered the pending approval (i.e. is
 	// actually blocked waiting), instead of guessing a sleep duration.
 	go func() {
-		pollUntil(2*time.Second, time.Millisecond, func() bool {
+		if !pollUntil(2*time.Second, time.Millisecond, func() bool {
 			srv.mu.Lock()
 			defer srv.mu.Unlock()
 			_, ok := srv.pending["tuid-cancel"]
 			return ok
-		})
+		}) {
+			t.Errorf("pending approval %q was not registered before cancellation", "tuid-cancel")
+		}
 		cancel()
 	}()
 
@@ -236,12 +238,14 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 	// Respond approve once the pending item is actually registered, instead
 	// of guessing how long registration takes.
 	go func() {
-		pollUntil(2*time.Second, time.Millisecond, func() bool {
+		if !pollUntil(2*time.Second, time.Millisecond, func() bool {
 			srv.mu.Lock()
 			defer srv.mu.Unlock()
 			_, ok := srv.pending["tuid-approve"]
 			return ok
-		})
+		}) {
+			t.Errorf("pending approval %q was not registered before approving", "tuid-approve")
+		}
 		_ = srv.RespondApproval("tuid-approve", true)
 	}()
 
@@ -278,12 +282,14 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
 	go func() {
-		pollUntil(2*time.Second, time.Millisecond, func() bool {
+		if !pollUntil(2*time.Second, time.Millisecond, func() bool {
 			srv.mu.Lock()
 			defer srv.mu.Unlock()
 			_, ok := srv.pending["tuid-deny"]
 			return ok
-		})
+		}) {
+			t.Errorf("pending approval %q was not registered before denying", "tuid-deny")
+		}
 		_ = srv.RespondApproval("tuid-deny", false)
 	}()
 
