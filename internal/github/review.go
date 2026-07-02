@@ -320,7 +320,7 @@ func fetchPRsForMonitorWith(e execer, refs []PRRef) []MonitorPRResult {
 	// fallback per ref instead of batching — same behavior/data tradeoffs as
 	// fetchPRForMonitorWith. Gated on runtimeCacheEnabled so unit tests (fake
 	// execer) keep the GraphQL path.
-	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql") {
+	if runtimeCacheEnabled(e) && ghGate.shouldSkipOptional("graphql", priorityMergePath) {
 		results := make([]MonitorPRResult, len(refs))
 		for i, ref := range refs {
 			pr, open, err := fetchPRForMonitorViaREST(e, ref.Repo, ref.Number)
@@ -338,7 +338,7 @@ func fetchPRsForMonitorWith(e execer, refs []PRRef) []MonitorPRResult {
 		// gate into a low-budget state, in which case the remaining refs
 		// should fall back to REST instead of continuing to spend GraphQL
 		// budget or hitting rate-limit errors.
-		if cacheEnabled && ghGate.shouldSkipOptional("graphql") {
+		if cacheEnabled && ghGate.shouldSkipOptional("graphql", priorityMergePath) {
 			for _, ref := range refs[start:] {
 				pr, open, err := fetchPRForMonitorViaREST(e, ref.Repo, ref.Number)
 				results = append(results, MonitorPRResult{Repo: ref.Repo, Number: ref.Number, PR: pr, Open: open, Err: err})
