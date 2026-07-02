@@ -1108,6 +1108,27 @@ func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID 
 	if strings.TrimSpace(report) == "" {
 		return testOutcomeMissingEvidence, ""
 	}
+
+	// A well-formed structured verdict is authoritative: trust the tester's own
+	// `outcome` field straight off the JSON payload instead of re-deriving a
+	// classification from prose-evidence heuristics the tester's contract never
+	// guaranteed. Without this, a test-runner that reports the identical
+	// {"verdict":"FAIL","outcome":"product_bug"} every retry gets bounced back
+	// as missing_evidence solely because its failures_markdown lacks a
+	// file:line citation or a labeled "Command:"/"Expected:" section, burning
+	// the whole auto-retry budget on a result the first run already reported
+	// correctly (#1382). Reconstructed reports (body-delta fallback, or a bare
+	// "Classification:" line in prose) are NOT covered here — only an outcome
+	// parsed directly off the agent's own structured output.
+	if parsed, ok := parseStructuredTestOutput(output); ok &&
+		strings.EqualFold(strings.TrimSpace(parsed.Verdict), "FAIL") &&
+		strings.TrimSpace(parsed.FailuresMarkdown) != "" {
+		switch normalizeTestOutcome(parsed.Outcome) {
+		case testOutcomeProductBug, testOutcomeAmbiguousRequirement:
+			return normalizeTestOutcome(parsed.Outcome), testFailureFingerprint(report)
+		}
+	}
+
 	if explicit := explicitTestOutcome(report); explicit != "" {
 		if explicit == testOutcomePass {
 			return testOutcomeMissingEvidence, ""

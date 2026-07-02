@@ -553,6 +553,22 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 			wantTaint:  testProtocolMissingEvidence,
 		},
 		{
+			// Literal incident shape (#1382): a well-formed structured
+			// {"verdict":"FAIL","outcome":"product_bug"} whose failures_markdown
+			// is thin narrative prose with no labeled Command/Expected/file:line
+			// evidence section. Trust the tester's own structured outcome field
+			// instead of bouncing it to missing_evidence and burning the
+			// auto-retry budget on an identical result every time.
+			name:   "structured_product_bug_with_thin_narrative_evidence_is_trusted",
+			status: "completed",
+			output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` +
+				strconv.Quote("mise run verify does not mirror CI: it skips the golangci-lint and "+
+					"frontend gates that CI runs, so a change can pass verify locally and still fail CI.") + `}`,
+			bodySuffix: "",
+			want:       testOutcomeProductBug,
+			wantStatus: "completed",
+		},
+		{
 			name:       "explicit_product_bug_still_requires_evidence",
 			status:     "completed",
 			output:     `{"verdict":"FAIL"}`,
