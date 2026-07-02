@@ -307,9 +307,6 @@ func TestParseWorktreePorcelain(t *testing.T) {
 
 func TestAutoCommitUncommitted(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 
 	dir := initRepoWithCommit(t)
 
