@@ -354,20 +354,48 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 }
 
 func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
+	// Group issues per task (first-seen order) so a single poll that surfaces
+	// several fixable kinds for one PR — e.g. a push that both fails CI and drew
+	// review comments — dispatches ONE coalesced fix agent instead of a separate
+	// agent per kind across consecutive cycles.
+	order := make([]string, 0, len(issues))
+	byTask := make(map[string][]github.PRIssue, len(issues))
 	for i := range issues {
-		if r.agents.HasRunningAgentForTask(issues[i].TaskID) {
-			continue
+		id := issues[i].TaskID
+		if _, seen := byTask[id]; !seen {
+			order = append(order, id)
 		}
-		// Gate dispatch on workflow state too: an agent may have just
-		// exited while the workflow is still in verify_commits /
-		// link_pr_and_review. Without this, a fresh issue (e.g.
-		// kind=conflict appearing because main moved during the agent
-		// run) races the in-flight workflow's tail steps and triggers
-		// a layered re-dispatch that DispatchEvent later rejects, but
-		// only after we've prepped a worktree and emitted audit noise.
-		if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(issues[i].TaskID) {
-			continue
-		}
+		byTask[id] = append(byTask[id], issues[i])
+	}
+	for _, id := range order {
+		r.handleTaskPRIssues(id, byTask[id])
+	}
+}
+
+// handleTaskPRIssues applies the running-agent, active-workflow, and
+// retry/cooldown gates for one task, then dispatches at most one action:
+// a coalesced fix agent for every handleable fixable issue, an escalation when
+// the only remaining fixable issue has exhausted its budget, or an auto-merge.
+func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssue) {
+	if r.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	// Gate dispatch on workflow state too: an agent may have just exited while
+	// the workflow is still in verify_commits / link_pr_and_review. Without
+	// this, a fresh issue (e.g. kind=conflict appearing because main moved
+	// during the agent run) races the in-flight workflow's tail steps and
+	// triggers a layered re-dispatch that DispatchEvent later rejects, but only
+	// after we've prepped a worktree and emitted audit noise.
+	if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(taskID) {
+		return
+	}
+
+	var (
+		toHandle  []github.PRIssue
+		exhausted *github.PRIssue
+		merge     *github.PRIssue
+	)
+	for i := range issues {
 		// Only the comments kind carries a feedback fingerprint; conflict,
 		// ci_failure, and ready_to_merge fall back to SHA-only gating.
 		var sig string
@@ -376,19 +404,35 @@ func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
 		}
 		decision := github.DispatchHandle
 		if r.prTracker != nil {
-			decision = r.prTracker.Decide(issues[i].TaskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
+			decision = r.prTracker.Decide(taskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
 		}
 		switch decision {
 		case github.DispatchHandle:
 			if issues[i].Kind == github.PRIssueReadyToMerge {
-				r.handleAutoMerge(issues[i])
+				if merge == nil {
+					merge = &issues[i]
+				}
 				continue
 			}
-			r.handlePRIssue(issues[i])
+			toHandle = append(toHandle, issues[i])
 		case github.DispatchExhausted:
-			r.escalateExhaustedFix(issues[i])
+			if exhausted == nil {
+				exhausted = &issues[i]
+			}
 		case github.DispatchSkip:
 		}
+	}
+
+	// Prefer making progress: dispatch every handleable fix in one agent. Only
+	// escalate when nothing is handleable and a fix budget is spent — escalating
+	// flips the task to human-required and would strand a still-fixable sibling.
+	switch {
+	case len(toHandle) > 0:
+		r.dispatchFixIssues(taskID, toHandle)
+	case exhausted != nil:
+		r.escalateExhaustedFix(*exhausted)
+	case merge != nil:
+		r.handleAutoMerge(*merge)
 	}
 }
 

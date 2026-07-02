@@ -129,63 +129,158 @@ func (r *ReviewHandler) escalateExhaustedFix(issue github.PRIssue) {
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
 }
 
+// ciFailurePrompt is the pr-fix agent prompt for a failing-CI issue.
+func ciFailurePrompt(pr github.PullRequest) string {
+	return fmt.Sprintf(
+		"Fix failing CI on branch `%s` (PR #%d). "+
+			"Check the failing run with `gh run view --log-failed`, "+
+			"fix the code, commit and push. No unrelated changes.\n\n"+
+			"Never weaken, skip, delete, or hardcode tests, snapshots, or "+
+			"fixtures to make CI pass, and never edit CI config to neuter a "+
+			"gate — fix the underlying code. Tampering is detected and blocks "+
+			"the task.\n\n"+
+			"Push to the remote that hosts the PR's head branch:\n"+
+			"```sh\n"+
+			"PUSH_REMOTE=origin\n"+
+			"PR_HEAD=\"$(gh pr view %d --json headRepository --jq '.headRepository.nameWithOwner')\"\n"+
+			"FORK_URL=\"$(git config --get remote.fork.url 2>/dev/null || true)\"\n"+
+			"if [ -n \"$FORK_URL\" ] && echo \"$FORK_URL\" | grep -qF \"$PR_HEAD\"; then PUSH_REMOTE=fork; fi\n"+
+			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
+			"```",
+		pr.HeadRefName, pr.Number, pr.Number, pr.HeadRefName,
+	)
+}
+
+// prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
+// false for kinds with no agent prompt (ready_to_merge), which never reach the
+// dispatch path.
+func prIssueBody(issue github.PRIssue) (string, bool) {
+	switch issue.Kind {
+	case github.PRIssueConflict:
+		return conflictPrompt(issue.PR), true
+	case github.PRIssueCIFailure:
+		return ciFailurePrompt(issue.PR), true
+	case github.PRIssueComments:
+		return commentsPrompt(issue.PR), true
+	default:
+		return "", false
+	}
+}
+
+// fixKindPriority orders fixable kinds for coalesced dispatch. The lowest-priority
+// kind becomes the "primary": it drives worktree prep, the workflow's
+// pr_issue_kind var, and cancel/phase reconciliation. Conflicts sort first so a
+// conflicting PR checks out its branch WITHOUT rebasing (PrepareForFix), then
+// comments so any pair that includes review feedback also prefers the
+// branch-preserving checkout; a lone ci_failure keeps its rebasing PrepareForTask
+// path unchanged.
+func fixKindPriority(kind github.PRIssueKind) int {
+	switch kind {
+	case github.PRIssueConflict:
+		return 0
+	case github.PRIssueComments:
+		return 1
+	case github.PRIssueCIFailure:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func fixKindLabel(kind github.PRIssueKind) string {
+	switch kind {
+	case github.PRIssueConflict:
+		return "Merge conflicts"
+	case github.PRIssueCIFailure:
+		return "Failing CI"
+	case github.PRIssueComments:
+		return "Review comments"
+	default:
+		return string(kind)
+	}
+}
+
+func (r *ReviewHandler) logPRIssueDetected(taskID string, issue github.PRIssue) {
+	var event string
+	switch issue.Kind {
+	case github.PRIssueConflict:
+		event = audit.EventPRConflictDetected
+	case github.PRIssueCIFailure:
+		event = audit.EventPRCIFailureDetected
+	case github.PRIssueComments:
+		event = audit.EventPRCommentsDetected
+	default:
+		return
+	}
+	r.logAudit(event, taskID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository,
+	})
+}
+
+// coalescedFixPrompt composes a single pr-fix agent prompt covering every issue
+// the monitor wants fixed on a PR this cycle. A single issue yields its bare
+// per-kind prompt (behavior unchanged); multiple issues — e.g. a push that both
+// fails CI and drew review comments — are stitched into one pass so exactly one
+// agent runs per review round instead of one agent per kind across cycles.
+func coalescedFixPrompt(issues []github.PRIssue) string {
+	if len(issues) == 1 {
+		body, _ := prIssueBody(issues[0])
+		return body
+	}
+	var b strings.Builder
+	b.WriteString("This PR has multiple open issues from the same push. Address " +
+		"ALL of them in one pass, then push once at the end (the per-section push " +
+		"commands are equivalent — run it a single time).\n\n")
+	for i := range issues {
+		body, ok := prIssueBody(issues[i])
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "=== Issue %d: %s ===\n%s\n\n", i+1, fixKindLabel(issues[i].Kind), body)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (r *ReviewHandler) handlePRIssue(issue github.PRIssue) bool {
-	t, err := r.tasks.Get(issue.TaskID)
+	return r.dispatchFixIssues(issue.TaskID, []github.PRIssue{issue})
+}
+
+// dispatchFixIssues spawns a single pr-fix agent that addresses every handled
+// issue for a task. handle must be non-empty and contain only fixable kinds
+// (conflict, ci_failure, comments); the caller (handleTaskPRIssues) filters out
+// ready_to_merge and applies the retry/cooldown gate. Coalescing avoids the
+// double-dispatch where a CI failure and review comments from the same push each
+// spawned their own sequential agent.
+func (r *ReviewHandler) dispatchFixIssues(taskID string, handle []github.PRIssue) bool {
+	if len(handle) == 0 {
+		return false
+	}
+	t, err := r.tasks.Get(taskID)
 	if err != nil {
 		return false
 	}
-
-	var prompt string
-	switch issue.Kind {
-	case github.PRIssueConflict:
-		prompt = conflictPrompt(issue.PR)
-		r.logAudit(audit.EventPRConflictDetected, t.ID, "", map[string]any{
-			"pr": issue.PR.Number, "repo": issue.PR.Repository,
-		})
-
-	case github.PRIssueCIFailure:
-		prompt = fmt.Sprintf(
-			"Fix failing CI on branch `%s` (PR #%d). "+
-				"Check the failing run with `gh run view --log-failed`, "+
-				"fix the code, commit and push. No unrelated changes.\n\n"+
-				"Never weaken, skip, delete, or hardcode tests, snapshots, or "+
-				"fixtures to make CI pass, and never edit CI config to neuter a "+
-				"gate — fix the underlying code. Tampering is detected and blocks "+
-				"the task.\n\n"+
-				"Push to the remote that hosts the PR's head branch:\n"+
-				"```sh\n"+
-				"PUSH_REMOTE=origin\n"+
-				"PR_HEAD=\"$(gh pr view %d --json headRepository --jq '.headRepository.nameWithOwner')\"\n"+
-				"FORK_URL=\"$(git config --get remote.fork.url 2>/dev/null || true)\"\n"+
-				"if [ -n \"$FORK_URL\" ] && echo \"$FORK_URL\" | grep -qF \"$PR_HEAD\"; then PUSH_REMOTE=fork; fi\n"+
-				"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
-				"```",
-			issue.PR.HeadRefName, issue.PR.Number, issue.PR.Number, issue.PR.HeadRefName,
-		)
-		r.logAudit(audit.EventPRCIFailureDetected, t.ID, "", map[string]any{
-			"pr": issue.PR.Number, "repo": issue.PR.Repository,
-		})
-
-	case github.PRIssueComments:
-		prompt = commentsPrompt(issue.PR)
-		r.logAudit(audit.EventPRCommentsDetected, t.ID, "", map[string]any{
-			"pr": issue.PR.Number, "repo": issue.PR.Repository,
-		})
-
-	case github.PRIssueReadyToMerge:
-		// handled by handleAutoMerge, not by agent spawn
-		return false
+	// Stable-sort by fix priority so the primary (index 0) drives worktree prep
+	// and the prompt reads in execution order (conflicts → comments → CI).
+	slices.SortStableFunc(handle, func(a, b github.PRIssue) int {
+		return fixKindPriority(a.Kind) - fixKindPriority(b.Kind)
+	})
+	for i := range handle {
+		r.logPRIssueDetected(t.ID, handle[i])
 	}
-
-	dir, ok := r.prepareWorktree(t, issue)
+	primary := handle[0]
+	dir, ok := r.prepareWorktree(t, primary)
 	if !ok {
 		return false
 	}
-
-	return r.dispatchPRIssue(t, issue, prompt, dir)
+	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir)
 }
 
-func (r *ReviewHandler) dispatchPRIssue(t task.Task, issue github.PRIssue, prompt, dir string) bool {
+// dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks
+// every coalesced issue in handle as handled so none re-fires next cycle. The
+// primary kind is authoritative for the workflow's pr_issue_kind var (cancel and
+// phase reconciliation key on it); handle carries the full set for the retry
+// tracker.
+func (r *ReviewHandler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string) bool {
 	if r.workflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
 		return false
@@ -196,15 +291,15 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, issue github.PRIssue, promp
 	fullPrompt := fmt.Sprintf("# Task: %s\n\n%s%s", t.Title, prompt, prFixResultContract)
 	vars := map[string]string{
 		"prompt":                fullPrompt,
-		"pr_issue_kind":         string(issue.Kind),
+		"pr_issue_kind":         string(primary.Kind),
 		workflow.WorkflowVarDir: dir,
 	}
 	wfID, err := r.workflowEngine.DispatchEvent(t.ID, "pr.event",
-		map[string]string{"pr.issue_kind": string(issue.Kind)}, vars)
+		map[string]string{"pr.issue_kind": string(primary.Kind)}, vars)
 	if err != nil {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			r.logger.Info("pr-monitor.workflow-already-active",
-				"task_id", t.ID, "kind", string(issue.Kind))
+				"task_id", t.ID, "kind", string(primary.Kind))
 			return false
 		}
 		r.logger.Error("pr-monitor.workflow-dispatch", "task_id", t.ID, "err", err)
@@ -212,18 +307,23 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, issue github.PRIssue, promp
 	}
 	if wfID == "" {
 		r.logger.Warn("pr-monitor.no-matching-workflow",
-			"task_id", t.ID, "kind", string(issue.Kind))
+			"task_id", t.ID, "kind", string(primary.Kind))
 		return false
 	}
 
-	r.prTracker.MarkHandled(t.ID, issue.Kind, issue.PR.HeadSHA)
+	kinds := make([]string, 0, len(handle))
+	for i := range handle {
+		r.prTracker.MarkHandled(t.ID, handle[i].Kind, handle[i].PR.HeadSHA)
+		kinds = append(kinds, string(handle[i].Kind))
+	}
 	r.logAudit(audit.EventPRFixAgentStarted, t.ID, "", map[string]any{
-		"issue": string(issue.Kind), "pr": issue.PR.Number, "workflow": wfID,
+		"issue": string(primary.Kind), "kinds": strings.Join(kinds, ","),
+		"pr": primary.PR.Number, "workflow": wfID,
 	})
 
 	r.logger.Info("pr-monitor.fix-started",
-		"task_id", t.ID, "issue", string(issue.Kind),
-		"pr", issue.PR.Number, "workflow", wfID,
+		"task_id", t.ID, "issue", string(primary.Kind), "kinds", strings.Join(kinds, ","),
+		"pr", primary.PR.Number, "workflow", wfID,
 	)
 	return true
 }
