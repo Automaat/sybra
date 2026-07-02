@@ -85,6 +85,9 @@ func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) in
 	if len(variants) == 0 {
 		return fatal(jsonOut, "--variants must contain at least one candidate variant")
 	}
+	if err := requireSameProviderModel(variants); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
 	cases, err := loadOfflineGoldenCases(*goldenPath)
 	if err != nil {
 		return fatal(jsonOut, "load golden cases: %v", err)
@@ -140,6 +143,23 @@ func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) in
 		return 1
 	}
 	return 0
+}
+
+// requireSameProviderModel enforces the offline runner's "run variants
+// against the same model/provider settings" requirement: a batch is meant to
+// screen prompt/skill variants against each other, and mixing
+// provider/model settings within one run would make the comparison
+// meaningless (or silently confound a prompt regression with a
+// model/provider swap).
+func requireSameProviderModel(variants []prompteval.CandidateVariant) error {
+	provider, model := variants[0].Provider, variants[0].Model
+	for _, v := range variants[1:] {
+		if v.Provider != provider || v.Model != model {
+			return fmt.Errorf("--variants must share the same provider/model: %s uses %s:%s, %s uses %s:%s",
+				variants[0].ID, provider, model, v.ID, v.Provider, v.Model)
+		}
+	}
+	return nil
 }
 
 // runOfflineVariant runs every golden case for one variant and aggregates

@@ -174,6 +174,34 @@ func TestCmdEvaluationOfflineRunRejectsEmptyVariants(t *testing.T) {
 	}
 }
 
+// TestCmdEvaluationOfflineRunRejectsMixedProviderModel is the regression
+// case for the reported bug: the scope requires running variants "against
+// the same model/provider settings" so the batch is a fair comparison, but
+// the CLI accepted a batch mixing providers/models without complaint.
+func TestCmdEvaluationOfflineRunRejectsMixedProviderModel(t *testing.T) {
+	dir := setupStore(t)
+	old := newOfflineRunner
+	defer func() { newOfflineRunner = old }()
+	newOfflineRunner = func(config.OfflineEvalConfig) prompteval.OfflineRunner {
+		return fakeOfflineRunner{score: 1}
+	}
+
+	variantsPath := filepath.Join(dir, "variants.json")
+	goldenPath := filepath.Join(dir, "golden.json")
+	writeJSONFile(t, variantsPath, []prompteval.CandidateVariant{
+		{ID: "variant-a", Prompt: "PROMPT A", Provider: "openai", Model: "gpt-a"},
+		{ID: "variant-b", Prompt: "PROMPT B", Provider: "anthropic", Model: "claude-b"},
+	})
+	writeJSONFile(t, goldenPath, []offlineGoldenCase{
+		{CaseID: "c1", Input: "hi"},
+	})
+
+	code, output := runCLI(t, "evaluation", "offline", "run", "--variants", variantsPath, "--golden", goldenPath, "--json")
+	if code == 0 {
+		t.Fatalf("expected nonzero exit for a batch mixing provider/model settings, got 0. output: %s", output)
+	}
+}
+
 func TestCmdEvaluationOfflineGateDeniesMissingVerdict(t *testing.T) {
 	setupStore(t)
 	code, output := runCLI(t, "evaluation", "offline", "gate", "no-such-variant", "no-such-digest", "--json")
