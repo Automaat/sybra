@@ -14,7 +14,6 @@ func TestShouldSkipOptional_PriorityTiers(t *testing.T) {
 		name          string
 		remaining     int
 		limit         int
-		notBefore     bool
 		wantMerge     bool
 		wantDiscovery bool
 	}{
