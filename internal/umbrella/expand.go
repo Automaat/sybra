@@ -3,6 +3,7 @@ package umbrella
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,6 +15,11 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// errSkipUpdate signals tagTrackerDegraded's UpdateFn callback that the tag
+// is already present, so the read-modify-write should short-circuit without
+// writing (and without firing a task:updated event).
+var errSkipUpdate = errors.New("skip update")
 
 // PlannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
@@ -185,16 +191,18 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 // already present, so a repeated degraded re-expansion against the same
 // tracker doesn't emit a spurious task:updated event.
 func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
-	cur, err := tasks.Get(trackerID)
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, FallbackTag) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{
+			Tags: task.Ptr(append(slices.Clone(cur.Tags), FallbackTag)),
+		}, nil
+	})
 	if err != nil {
-		return fmt.Errorf("get tracker: %w", err)
-	}
-	if slices.Contains(cur.Tags, FallbackTag) {
-		return nil
-	}
-	if _, err := tasks.Update(trackerID, task.Update{
-		Tags: task.Ptr(append(slices.Clone(cur.Tags), FallbackTag)),
-	}); err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
 		return fmt.Errorf("tag tracker degraded: %w", err)
 	}
 	return nil
