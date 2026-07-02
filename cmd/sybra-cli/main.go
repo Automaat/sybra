@@ -505,7 +505,7 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (hand
 		if isExternalPRHandoffStage(stage) {
 			return handoffStageConfig{}, "", false, fmt.Errorf("--stage %s is not supported by handoff: handoff only creates internal Sybra tasks; use --stage ready-pr --pr N to link an existing PR from this worktree", stage)
 		}
-		return handoffStageConfig{}, "", false, fmt.Errorf("invalid --stage %q (valid: implement, review, testing, ready-pr; aliases: in-progress, ready-review, agentic-review, test, open-pr, create-pr)", stage)
+		return handoffStageConfig{}, "", false, handoffStageUsageError(stage)
 	}
 	if pr > 0 && stageCfg.name != "ready-pr" {
 		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
@@ -546,25 +546,57 @@ type handoffStageConfig struct {
 
 const handoffManualTag = "handoff-manual"
 
-// handoffStageConfigFor maps a handoff stage to the tags that route the task
-// into the right Sybra lane on creation, or false for an unknown stage.
-//   - implement: simple-task-handoff → in-progress → implement → review → testing → PR
-//   - review:    simple-task-handoff-review → ready-review → review → testing → PR
-//   - testing:   simple-task-handoff-testing → testing → adversarial test → PR
-//   - ready-pr:  simple-task-handoff-ready-pr → ready-pr → open/update PR
+// handoffStageDef is one entry in the handoff-stage registry: a canonical
+// name, its input aliases, and the tags that route a task into the matching
+// Sybra lane (simple-task-handoff-<name>.yaml) on creation. Adding a stage
+// is a data edit here — handoffStageConfigFor, its error message, and the
+// --stage usage text all derive from this slice, so nothing else needs to
+// change to keep a new stage reachable.
+type handoffStageDef struct {
+	name    string
+	aliases []string
+	tags    []string
+}
+
+var handoffStageRegistry = []handoffStageDef{
+	// implement: simple-task-handoff → in-progress → implement → review → testing → PR
+	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"}},
+	// review: simple-task-handoff-review → ready-review → review → testing → PR
+	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"}},
+	// testing: simple-task-handoff-testing → testing → adversarial test → PR
+	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"}},
+	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
+	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"}},
+}
+
+// handoffStageConfigFor maps a handoff stage (or one of its aliases) to the
+// tags that route the task into the right Sybra lane on creation, or false
+// for an unknown stage. See handoffStageRegistry for the stage definitions.
 func handoffStageConfigFor(stage string) (handoffStageConfig, bool) {
-	switch strings.ToLower(strings.TrimSpace(stage)) {
-	case "", "implement", "in-progress":
-		return handoffStageConfig{name: "implement", tags: []string{"handoff"}}, true
-	case "review", "ready-review", "agentic-review":
-		return handoffStageConfig{name: "review", tags: []string{"handoff", "handoff-review"}}, true
-	case "testing", "test":
-		return handoffStageConfig{name: "testing", tags: []string{"handoff", "handoff-testing"}}, true
-	case "ready-pr", "open-pr", "create-pr":
-		return handoffStageConfig{name: "ready-pr", tags: []string{"handoff", "handoff-ready-pr"}}, true
-	default:
-		return handoffStageConfig{}, false
+	normalized := strings.ToLower(strings.TrimSpace(stage))
+	for _, def := range handoffStageRegistry {
+		if normalized == def.name || slices.Contains(def.aliases, normalized) {
+			return handoffStageConfig{name: def.name, tags: def.tags}, true
+		}
 	}
+	return handoffStageConfig{}, false
+}
+
+// handoffStageUsageError renders the "invalid --stage" error from the same
+// registry that drives handoffStageConfigFor, so the valid-stage/alias list
+// can never drift from what the CLI actually accepts.
+func handoffStageUsageError(stage string) error {
+	names := make([]string, 0, len(handoffStageRegistry))
+	var aliases []string
+	for _, def := range handoffStageRegistry {
+		names = append(names, def.name)
+		for _, a := range def.aliases {
+			if a != "" {
+				aliases = append(aliases, a)
+			}
+		}
+	}
+	return fmt.Errorf("invalid --stage %q (valid: %s; aliases: %s)", stage, strings.Join(names, ", "), strings.Join(aliases, ", "))
 }
 
 func isExternalPRHandoffStage(stage string) bool {
@@ -1681,12 +1713,23 @@ func logHookFailure(cfg *config.Config, taskID, reason string) {
 	})
 }
 
+// statusListForUsage renders task.AllStatuses() as a pipe-joined string so
+// the CLI help text can never drift from the enum's single source of truth.
+func statusListForUsage() string {
+	statuses := task.AllStatuses()
+	names := make([]string, len(statuses))
+	for i, s := range statuses {
+		names[i] = string(s)
+	}
+	return strings.Join(names, "|")
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `Usage: sybra-cli [--json] <command> [flags]
+	fmt.Fprintf(os.Stderr, `Usage: sybra-cli [--json] <command> [flags]
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
-           STATUS: new|todo|planning|plan-review|in-progress|in-review|testing|ready-pr|human-required|done|cancelled
+           STATUS: %s
   get      [--compact] <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
@@ -1745,7 +1788,7 @@ Commands:
   artifact reindex <task-id>   Rebuild index.json from *.meta.json files.
 
 Global flags:
-  --json   Output as JSON`)
+  --json   Output as JSON`, statusListForUsage())
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {

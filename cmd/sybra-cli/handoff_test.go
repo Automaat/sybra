@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,46 @@ func TestHandoffStageConfigForRejectsExternalPRStages(t *testing.T) {
 				t.Fatalf("isExternalPRHandoffStage(%q) = false, want true", stage)
 			}
 		})
+	}
+}
+
+// TestHandoffStageUsageErrorMatchesRegistry pins the error text to
+// handoffStageRegistry so a stage added to the registry without updating a
+// second hand-typed error string can never happen — there is no second
+// string to forget.
+func TestHandoffStageUsageErrorMatchesRegistry(t *testing.T) {
+	t.Parallel()
+
+	err := handoffStageUsageError("bogus")
+	for _, def := range handoffStageRegistry {
+		if !strings.Contains(err.Error(), def.name) {
+			t.Fatalf("handoffStageUsageError() = %q, missing stage name %q", err, def.name)
+		}
+		for _, alias := range def.aliases {
+			if alias == "" {
+				continue
+			}
+			if !strings.Contains(err.Error(), alias) {
+				t.Fatalf("handoffStageUsageError() = %q, missing alias %q", err, alias)
+			}
+		}
+	}
+}
+
+// TestHandoffStageRegistryEveryAliasResolves guards against a registry typo
+// (e.g. an alias that never maps back to its own stage).
+func TestHandoffStageRegistryEveryAliasResolves(t *testing.T) {
+	t.Parallel()
+
+	for _, def := range handoffStageRegistry {
+		for _, alias := range def.aliases {
+			got, ok := handoffStageConfigFor(alias)
+			if !ok {
+				t.Fatalf("handoffStageConfigFor(%q) returned ok=false", alias)
+			}
+			if got.name != def.name {
+				t.Fatalf("handoffStageConfigFor(%q).name = %q, want %q", alias, got.name, def.name)
+			}
+		}
 	}
 }

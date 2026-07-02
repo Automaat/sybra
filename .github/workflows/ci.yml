@@ -164,6 +164,15 @@ jobs:
           git diff --exit-code frontend/bindings/ || \
             (echo "::error::Wails v3 bindings out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...'." && exit 1)
 
+  check-api-shim-sync:
+    name: API Shim Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check HTTP-allowlisted methods have api.ts/api-http.ts shims
+        run: bash scripts/check-api-shim-sync.sh
+
   build:
     name: Build
     runs-on: macos-15
