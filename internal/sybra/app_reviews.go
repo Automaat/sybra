@@ -37,16 +37,19 @@ const transientFetchWarnThreshold = 3
 // linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
 // cycles instead of re-running the full per-PR fetch (reviews, threads,
 // status checks) once a PR has already been observed OPEN + clean +
-// checks-green + approved — as long as a cheap head-SHA-only probe confirms
-// the head commit hasn't moved. A force-push (or any other head-SHA change)
-// invalidates the entry immediately, since the cached approval/CI verdict is
-// pinned to the old commit. handleAutoMerge evicts the entry the moment it
-// acts on the PR (arm native auto-merge or attempt a squash merge), so the
-// next cycle always does a fresh fetch to observe the post-action state
-// (merged/closed, or armed) instead of replaying a stale snapshot.
+// checks-green + approved — as long as a cheap probe confirms neither the
+// head commit nor the PR's updatedAt timestamp has moved. A force-push (any
+// head-SHA change) or a new review/status event at the same head (which
+// bumps updatedAt without moving the head SHA) invalidates the entry
+// immediately, since the cached approval/CI verdict is pinned to the old
+// snapshot. handleAutoMerge evicts the entry the moment it acts on the PR
+// (arm native auto-merge or attempt a squash merge), so the next cycle
+// always does a fresh fetch to observe the post-action state (merged/closed,
+// or armed) instead of replaying a stale snapshot.
 type readyPRState struct {
-	HeadSHA string
-	PR      github.PullRequest
+	HeadSHA   string
+	UpdatedAt string
+	PR        github.PullRequest
 }
 
 // ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
@@ -101,11 +104,11 @@ type ReviewHandler struct {
 	// search polling to the primary instance. Overridable in tests; nil falls
 	// back to github.FetchPRsForMonitor.
 	fetchKnownPRsFn func(refs []github.PRRef) []github.MonitorPRResult
-	// fetchHeadStateFn cheaply probes a PR's current head SHA and open/closed
-	// state, used to validate (or invalidate) a readyPRCache entry without
-	// doing a full per-PR fetch. Overridable in tests; nil falls back to
-	// github.FetchPRHeadState.
-	fetchHeadStateFn func(repo string, number int) (sha string, open bool, err error)
+	// fetchHeadStateFn cheaply probes a PR's current head SHA, open/closed
+	// state, and updatedAt timestamp, used to validate (or invalidate) a
+	// readyPRCache entry without doing a full per-PR fetch. Overridable in
+	// tests; nil falls back to github.FetchPRHeadState.
+	fetchHeadStateFn func(repo string, number int) (sha string, open bool, updatedAt string, err error)
 	// readyPRCache holds known-ready PR snapshots keyed by "repo#number"; see
 	// readyPRState.
 	readyPRCache map[string]readyPRState
@@ -499,13 +502,15 @@ func prRefCacheKey(repo string, number int) string {
 
 // fetchKnownTaskPRs fetches the current state of every task's linked PR. A PR
 // last observed ready-to-merge (readyPRCache) skips the full fetch as long as
-// a cheap head-SHA-plus-state probe confirms the PR is still open at the same
-// head commit — avoiding a wasted full re-poll for PRs that are green but
-// stuck behind an unrelated dispatch gate (a running agent/workflow, or
-// prTracker cooldown). A head-SHA mismatch (force-push), a state other than
-// open (merged/closed, e.g. by a human outside Sybra), or a failed probe
-// evicts the cache entry and falls back to a full fetch, so a stale
-// ready-state is never reused.
+// a cheap head-SHA-plus-state-plus-updatedAt probe confirms the PR is still
+// open at the same head commit with no newer review/status event — avoiding
+// a wasted full re-poll for PRs that are green but stuck behind an unrelated
+// dispatch gate (a running agent/workflow, or prTracker cooldown). A
+// head-SHA mismatch (force-push), a state other than open (merged/closed,
+// e.g. by a human outside Sybra), an updatedAt change (a new review or
+// status/check event at the same head, e.g. a re-run CI job failing), or a
+// failed probe evicts the cache entry and falls back to a full fetch, so a
+// stale ready-state is never reused.
 func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
 	fetchFn := github.FetchPRsForMonitor
 	if r.fetchKnownPRsFn != nil {
@@ -531,8 +536,8 @@ func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []githu
 		seen[key] = struct{}{}
 
 		if cached, ok := r.readyPRCache[key]; ok {
-			sha, open, err := headStateFn(m.ProjectID, m.PRNumber)
-			if err == nil && open && sha != "" && sha == cached.HeadSHA {
+			sha, open, updatedAt, err := headStateFn(m.ProjectID, m.PRNumber)
+			if err == nil && open && sha != "" && sha == cached.HeadSHA && updatedAt == cached.UpdatedAt {
 				prs = append(prs, cached.PR)
 				continue
 			}
@@ -585,7 +590,7 @@ func (r *ReviewHandler) updateReadyPRCache(repo string, number int, pr github.Pu
 	if r.readyPRCache == nil {
 		r.readyPRCache = make(map[string]readyPRState)
 	}
-	r.readyPRCache[key] = readyPRState{HeadSHA: pr.HeadSHA, PR: pr}
+	r.readyPRCache[key] = readyPRState{HeadSHA: pr.HeadSHA, UpdatedAt: pr.UpdatedAt, PR: pr}
 }
 
 // evictReadyPRCache drops a cached ready-state, forcing the next poll cycle

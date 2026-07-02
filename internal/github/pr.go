@@ -447,31 +447,36 @@ func FetchPRStatsContext(ctx context.Context, repo string, number int) (PRStats,
 	return s, nil
 }
 
-// FetchPRHeadState returns the head commit SHA and open/closed state of a PR.
-// Unlike FetchPRHeadSHA, it also detects a PR that was merged or closed at
-// the same head commit it had while open — a head-SHA-only probe cannot tell
-// those apart, since merging or closing a PR does not change its head SHA.
+// FetchPRHeadState returns the head commit SHA, open/closed state, and
+// updatedAt timestamp of a PR. Unlike FetchPRHeadSHA, it also detects a PR
+// that was merged or closed at the same head commit it had while open — a
+// head-SHA-only probe cannot tell those apart, since merging or closing a PR
+// does not change its head SHA. updatedAt further detects a new review or
+// status/check event landing at the same head commit (e.g. a re-run CI
+// job failing, or a reviewer requesting changes) — GitHub bumps a PR's
+// updatedAt on any such event even without a new commit.
 // Deliberately uncached: callers use this to validate a cached ready-PR
 // snapshot, and caching it would reintroduce the same staleness it exists to
 // catch.
-func FetchPRHeadState(repo string, number int) (sha string, open bool, err error) {
+func FetchPRHeadState(repo string, number int) (sha string, open bool, updatedAt string, err error) {
 	return fetchPRHeadStateWith(defaultExecer, repo, number)
 }
 
-func fetchPRHeadStateWith(e execer, repo string, number int) (sha string, open bool, err error) {
+func fetchPRHeadStateWith(e execer, repo string, number int) (sha string, open bool, updatedAt string, err error) {
 	out, err := e.run("pr", "view", strconv.Itoa(number),
-		"--repo", repo, "--json", "headRefOid,state")
+		"--repo", repo, "--json", "headRefOid,state,updatedAt")
 	if err != nil {
-		return "", false, fmt.Errorf("gh pr view %d head state: %s: %w", number, strings.TrimSpace(string(out)), err)
+		return "", false, "", fmt.Errorf("gh pr view %d head state: %s: %w", number, strings.TrimSpace(string(out)), err)
 	}
 	var raw struct {
 		HeadRefOid string `json:"headRefOid"`
 		State      string `json:"state"`
+		UpdatedAt  string `json:"updatedAt"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return "", false, fmt.Errorf("parse pr head state: %w", err)
+		return "", false, "", fmt.Errorf("parse pr head state: %w", err)
 	}
-	return raw.HeadRefOid, raw.State == "OPEN", nil
+	return raw.HeadRefOid, raw.State == "OPEN", raw.UpdatedAt, nil
 }
 
 // FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA for the poll path.

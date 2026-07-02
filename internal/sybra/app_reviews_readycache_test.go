@@ -19,7 +19,7 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
 		Mergeable:      "MERGEABLE",
 		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
-		CIStatus: "SUCCESS", RESTApproved: true,
+		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
 	}
 
 	fullFetches := 0
@@ -33,8 +33,8 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 			}
 			return results
 		},
-		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
-			return "sha50", true, nil
+		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
+			return "sha50", true, "2026-07-02T10:00:00Z", nil
 		},
 	}
 
@@ -65,15 +65,17 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
 		Mergeable:      "MERGEABLE",
 		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
-		CIStatus: "SUCCESS", RESTApproved: true,
+		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
 	}
 	// After the force-push, the new head is no longer approved/clean.
 	forcedPushedPR := readyPR
 	forcedPushedPR.HeadSHA = "sha-forced"
 	forcedPushedPR.RESTApproved = false
+	forcedPushedPR.UpdatedAt = "2026-07-02T11:00:00Z"
 
 	fullFetches := 0
 	currentHeadSHA := "sha50"
+	currentUpdatedAt := "2026-07-02T10:00:00Z"
 	r := &ReviewHandler{
 		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
 		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
@@ -88,8 +90,8 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 			}
 			return results
 		},
-		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
-			return currentHeadSHA, true, nil
+		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
+			return currentHeadSHA, true, currentUpdatedAt, nil
 		},
 	}
 
@@ -104,6 +106,7 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 
 	// Simulate a force-push: the head SHA moves and the cheap probe observes it.
 	currentHeadSHA = "sha-forced"
+	currentUpdatedAt = "2026-07-02T11:00:00Z"
 
 	got := r.fetchKnownTaskPRs(matchers)
 	if len(got) != 1 || got[0].HeadSHA != "sha-forced" {
@@ -141,7 +144,7 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
 		Mergeable:      "MERGEABLE",
 		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
-		CIStatus: "SUCCESS", RESTApproved: true,
+		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
 	}
 
 	fullFetches := 0
@@ -159,11 +162,11 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 		// The cheap probe reports the same head SHA but a closed state — this is
 		// exactly what `gh pr view` returns for a PR merged/closed without a
 		// subsequent push.
-		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
-			return "sha50", false, nil
+		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
+			return "sha50", false, "2026-07-02T10:00:00Z", nil
 		},
 		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", PR: readyPR},
+			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: readyPR},
 		},
 	}
 
@@ -178,6 +181,74 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 	}
 	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
 		t.Fatal("readyPRCache entry must be evicted once the cheap probe reports the PR is no longer open")
+	}
+}
+
+// TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead verifies
+// that a new CI/status or review event at the exact same head SHA the PR had
+// while cached as ready forces a full re-fetch instead of replaying the
+// stale "green" snapshot. A head-SHA-only probe cannot see this: re-running
+// (or newly failing) a check, or a reviewer leaving a fresh review, does not
+// move the head commit, but GitHub bumps the PR's updatedAt on both — the
+// probe must compare updatedAt too, or a PR that regresses to failing CI
+// after being cached ready would be merged anyway.
+func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing.T) {
+	readyPR := github.PullRequest{
+		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
+		Mergeable:      "MERGEABLE",
+		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
+	}
+	// A later CI re-run fails at the same head SHA; GitHub bumps updatedAt.
+	failedCIPR := readyPR
+	failedCIPR.CIStatus = "FAILURE"
+	failedCIPR.UpdatedAt = "2026-07-02T11:00:00Z"
+
+	fullFetches := 0
+	currentUpdatedAt := "2026-07-02T10:00:00Z"
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			fullFetches++
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				pr := readyPR
+				if currentUpdatedAt == failedCIPR.UpdatedAt {
+					pr = failedCIPR
+				}
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: true, PR: pr}
+			}
+			return results
+		},
+		// The cheap probe reports the same head SHA and open state, but the
+		// updatedAt timestamp has moved — exactly what `gh pr view` returns
+		// after a same-head status/review event.
+		fetchHeadStateFn: func(repo string, number int) (string, bool, string, error) {
+			return "sha50", true, currentUpdatedAt, nil
+		},
+	}
+
+	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
+
+	if got := r.fetchKnownTaskPRs(matchers); len(got) != 1 || got[0].CIStatus != "SUCCESS" {
+		t.Fatalf("first cycle: got %+v, want cached ready PR", got)
+	}
+	if fullFetches != 1 {
+		t.Fatalf("full fetches after first cycle = %d, want 1", fullFetches)
+	}
+
+	// Simulate a same-head CI/status event: updatedAt moves, head SHA doesn't.
+	currentUpdatedAt = failedCIPR.UpdatedAt
+
+	got := r.fetchKnownTaskPRs(matchers)
+	if fullFetches != 2 {
+		t.Fatalf("full fetches after same-head status event = %d, want 2 (updatedAt change must invalidate the cache)", fullFetches)
+	}
+	if len(got) != 1 || got[0].CIStatus != "FAILURE" {
+		t.Fatalf("second cycle: got %+v, want fresh failed-CI snapshot, not the stale cached green one", got)
+	}
+	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
+		t.Fatal("readyPRCache must not cache a no-longer-ready (CI failed) snapshot")
 	}
 }
 
@@ -213,7 +284,7 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 	pr := github.PullRequest{
 		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
 		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
-		CIStatus: "SUCCESS", RESTApproved: true,
+		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
 	}
 
 	r := &ReviewHandler{
@@ -225,7 +296,7 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 			return nil
 		},
 		readyPRCache: map[string]readyPRState{
-			"pet-owner/pet-repo#50": {HeadSHA: "sha50", PR: pr},
+			"pet-owner/pet-repo#50": {HeadSHA: "sha50", UpdatedAt: "2026-07-02T10:00:00Z", PR: pr},
 		},
 	}
 
