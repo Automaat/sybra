@@ -295,6 +295,17 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	return nil
 }
 
+// limitGateOrNil returns a genuine nil agent.LimitGate when store is nil.
+// Assigning a nil *limits.Store straight into the interface field produces a
+// non-nil typed-nil interface, which defeats the manager's lg == nil guard and
+// panics on first use whenever the limits store degraded at startup.
+func limitGateOrNil(store *limits.Store) agent.LimitGate {
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
 func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig {
 	policy := limits.DefaultPolicy()
 	if a.limits != nil {
@@ -306,7 +317,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		BashTimeoutMs:          cfg.BashTimeoutMs(),
 		RetryWatchdog:          cfg.RetryWatchdog(),
 		FallbackModel:          cfg.Agent.FallbackModel,
-		LimitGate:              a.limits,
+		LimitGate:              limitGateOrNil(a.limits),
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,

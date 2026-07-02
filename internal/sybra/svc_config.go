@@ -189,7 +189,7 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		BashTimeoutMs:          cfg.BashTimeoutMs(),
 		RetryWatchdog:          cfg.RetryWatchdog(),
 		FallbackModel:          cfg.Agent.FallbackModel,
-		LimitGate:              s.limits,
+		LimitGate:              limitGateOrNil(s.limits),
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
