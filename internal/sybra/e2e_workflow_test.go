@@ -37,6 +37,10 @@ var (
 // SYBRA_HOME is seeded by the package-level init in main_test.go before
 // this runs.
 func TestMain(m *testing.M) {
+	if _, err := exec.LookPath("git"); err != nil {
+		fmt.Fprintln(os.Stderr, "internal/sybra e2e tests require git on PATH:", err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	if testBinDir != "" {
 		_ = os.RemoveAll(testBinDir)

@@ -38,10 +38,6 @@ type bootstrapE2E struct {
 func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E {
 	t.Helper()
 
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "success")

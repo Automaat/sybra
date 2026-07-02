@@ -24,10 +24,6 @@ import (
 // use to simulate PR branches.
 func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "success")

@@ -15,11 +15,6 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func hasGit() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
 // initBareWithCommit creates a bare repo containing a single commit on
 // `main`. PrepareForTask branches off origin/main so the bare repo must
 // have something checked in for the flow to succeed. Returns (bare, src)
@@ -78,10 +73,6 @@ type preparedHarness struct {
 
 func prepareHarness(t *testing.T, setupCommands []string, timeout time.Duration) preparedHarness {
 	t.Helper()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare, src := initBareWithCommitReturnSrc(t)
 	wtDir := t.TempDir()
 	logsDir := t.TempDir()
@@ -633,9 +624,6 @@ func TestHasMiseConfig(t *testing.T) {
 // class of failure where agents start on a worktree missing required
 // toolchain.
 func TestPrepareForTask_RunsBootstrap(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	h := prepareHarness(t, []string{"touch bootstrap-marker"}, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("bootstrap task", "", "headless")
@@ -676,9 +664,6 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 // order must be repo → app so per-machine additions can depend on
 // repo-installed tools.
 func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	// App-level adds one command; repo-level (written to the worktree's
 	// .sybra.yaml below) adds two.
 	h := prepareHarness(t, []string{"echo app > app.marker"}, 30*time.Second)
@@ -734,9 +719,6 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 // refs/heads/<branch> in a bare clone was never updated after FetchOrigin, so
 // selecting "head" silently produced worktrees rooted at the original clone SHA.
 func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	// Switch the project to head mode.
@@ -788,9 +770,6 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 }
 
 func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("conflicting task", "", "headless")
@@ -838,9 +817,6 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 // PrepareForTask rejects a path-traversal slug before calling PathFor.
 // This is defense-in-depth on top of the parse-time guard in ParseBytes.
 func TestPrepareForTask_BadSlugRejected(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	h := prepareHarness(t, nil, 30*time.Second)
 
 	badTask := task.Task{
@@ -875,9 +851,6 @@ func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 // Without this, an agent would start on a broken worktree and waste tokens
 // hitting missing-tool errors.
 func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	h := prepareHarness(t, []string{"exit 42"}, 30*time.Second)
 
 	tk, err := h.tasks.Store().Create("failing bootstrap", "", "headless")

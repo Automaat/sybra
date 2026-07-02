@@ -11,9 +11,6 @@ import (
 )
 
 func TestWriteContextFile_WritesBeacon(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
@@ -42,9 +39,6 @@ func TestWriteContextFile_WritesBeacon(t *testing.T) {
 }
 
 func TestWriteContextFile_AddsToInfoExclude(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
@@ -63,10 +57,6 @@ func TestWriteContextFile_AddsToInfoExclude(t *testing.T) {
 }
 
 func TestWriteContextFile_IdempotentExclude(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
@@ -96,9 +86,6 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 }
 
 func TestExcludeWorkflowScratchFiles(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 

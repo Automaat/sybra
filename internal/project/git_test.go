@@ -96,11 +96,6 @@ func TestSplitOwnerRepo(t *testing.T) {
 	}
 }
 
-func hasGit() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
 func initBareRepo(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "test.git")
@@ -139,10 +134,6 @@ func initRepoWithCommit(t *testing.T) string {
 
 func TestCloneBare(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	dest := filepath.Join(t.TempDir(), "clone.git")
 
@@ -157,10 +148,6 @@ func TestCloneBare(t *testing.T) {
 
 func TestCloneBareInvalidURL(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	dest := filepath.Join(t.TempDir(), "clone.git")
 	if err := CloneBare("/nonexistent/repo", dest); err == nil {
 		t.Fatal("expected error for invalid source")
@@ -169,10 +156,6 @@ func TestCloneBareInvalidURL(t *testing.T) {
 
 func TestDefaultBranch(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
 	branch, err := DefaultBranch(bare)
 	if err != nil {
@@ -185,10 +168,6 @@ func TestDefaultBranch(t *testing.T) {
 
 func TestFetchOriginNoRemote(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
 	err := FetchOrigin(bare)
 	if err == nil {
@@ -198,10 +177,6 @@ func TestFetchOriginNoRemote(t *testing.T) {
 
 func TestWorktreeHealthyAndRepair(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -240,10 +215,6 @@ func TestWorktreeHealthyAndRepair(t *testing.T) {
 
 func TestCreateAndRemoveWorktree(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -336,9 +307,6 @@ func TestParseWorktreePorcelain(t *testing.T) {
 
 func TestAutoCommitUncommitted(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 
 	dir := initRepoWithCommit(t)
 
@@ -377,10 +345,6 @@ func TestAutoCommitUncommitted(t *testing.T) {
 
 func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -443,10 +407,6 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 
 func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -483,10 +443,6 @@ func contains(s, sub string) bool {
 
 func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -538,10 +494,6 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 
 func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -628,10 +580,6 @@ func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testin
 
 func TestCreateWorktreeInvalidBase(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	err := CreateWorktree(bare, wtPath, "test-branch", "nonexistent-base")
@@ -930,9 +878,6 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	// Write .sybra.yaml with a failing pre-commit to prove repo config is used.
@@ -969,9 +914,6 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 	if err := InstallHooks(wtPath, nil); err != nil {
 		t.Fatalf("InstallHooks(nil): %v", err)
@@ -980,9 +922,6 @@ func TestInstallHooks_NilChecks(t *testing.T) {
 
 func TestInstallHooks_EmptySlices(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 	if err := InstallHooks(wtPath, &ChecksConfig{}); err != nil {
 		t.Fatalf("InstallHooks(empty): %v", err)
@@ -1004,9 +943,6 @@ func TestInstallHooks_EmptySlices(t *testing.T) {
 
 func TestInstallHooks_PreCommitBlocksOnFailure(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
@@ -1051,9 +987,6 @@ func TestInstallHooks_PreCommitBlocksOnFailure(t *testing.T) {
 
 func TestInstallHooks_PreCommitPassesOnSuccess(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
@@ -1080,9 +1013,6 @@ func TestInstallHooks_PreCommitPassesOnSuccess(t *testing.T) {
 
 func TestInstallHooks_PrePushInstalled(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
@@ -1115,9 +1045,6 @@ func TestInstallHooks_PrePushInstalled(t *testing.T) {
 
 func TestInstallHooks_Overwrites(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	// Install first version.
@@ -1155,9 +1082,6 @@ func TestInstallHooks_Overwrites(t *testing.T) {
 // failing to start the agent.
 func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -1198,9 +1122,6 @@ func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
 // again, assert the second call errors.
 func TestCreateWorktree_DuplicatePathRejected(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -1230,9 +1151,6 @@ func TestCreateWorktree_DuplicatePathRejected(t *testing.T) {
 
 func TestPushRemote_DefaultOrigin(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 	if got := PushRemote(wtPath); got != "origin" {
 		t.Errorf("PushRemote without fork = %q, want %q", got, "origin")
@@ -1241,9 +1159,6 @@ func TestPushRemote_DefaultOrigin(t *testing.T) {
 
 func TestPushRemote_DetectsFork(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
@@ -1265,9 +1180,6 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 // repo and gh pr create then opens a same-repo PR.
 func TestPushUpstream_RoutesToFork(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1311,9 +1223,6 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 // floor that backs up the prompt-level guidance pointing agents at fork.
 func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1365,9 +1274,6 @@ func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
 // origin must keep working.
 func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1402,9 +1308,6 @@ func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
 // by the user are left untouched.
 func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1451,9 +1354,6 @@ func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 // sentinel value.
 func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	foreignURL := "https://user.example.com/custom-push-url.git"
@@ -1486,9 +1386,6 @@ func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
 // silently drops (or crashes on) orphaned entries is visible.
 func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {
@@ -1644,9 +1541,6 @@ func remoteReflogCount(t *testing.T, remoteBare, branch string) int {
 
 func TestPushSync_BranchMissing(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath, _ := setupPushSyncWorktree(t)
 	if err := PushSync(wtPath, "no-such-branch"); !errors.Is(err, ErrBranchMissing) {
 		t.Fatalf("PushSync missing branch: got %v, want ErrBranchMissing", err)
@@ -1655,9 +1549,6 @@ func TestPushSync_BranchMissing(t *testing.T) {
 
 func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	localSHA := makeCommit(t, wtPath, "first")
 
@@ -1671,9 +1562,6 @@ func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 
 func TestPushSync_NoopWhenSynced(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	if err := PushSync(wtPath, branch); err != nil {
@@ -1695,9 +1583,6 @@ func TestPushSync_NoopWhenSynced(t *testing.T) {
 
 func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	if err := PushSync(wtPath, branch); err != nil {
@@ -1720,9 +1605,6 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 
 func TestPushSync_DivergenceForcePushes(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
@@ -1786,9 +1668,6 @@ func pushRemoteCommit(t *testing.T, remoteBare, branch, content string) string {
 // it is not dropped by a later force-push.
 func TestReconcileWithRemote_FastForwardsStaleLocal(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	if err := PushSync(wtPath, branch); err != nil {
@@ -1819,9 +1698,6 @@ func TestReconcileWithRemote_FastForwardsStaleLocal(t *testing.T) {
 // later force-push silently overwrite remote-only commits.
 func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	if err := PushSync(wtPath, branch); err != nil {
@@ -1844,9 +1720,6 @@ func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 // stale history.
 func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	if err := PushSync(wtPath, branch); err != nil {
@@ -1870,9 +1743,6 @@ func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 // clobber the newer commits (which the lease would wrongly permit).
 func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
@@ -1906,9 +1776,6 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 // remote state.
 func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
@@ -1940,10 +1807,6 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 
 func TestFetchPRHead(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	// Build an upstream whose PR-42 head commit is reachable ONLY via
 	// refs/pull/42/head — never as a normal branch head. This mirrors a fork
 	// PR: the head branch lives in the fork, but GitHub still publishes the
@@ -2007,10 +1870,6 @@ func TestFetchPRHead(t *testing.T) {
 
 func TestListTrackedFiles(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"git", "init", src},
@@ -2093,10 +1952,6 @@ func TestListTrackedFiles(t *testing.T) {
 
 func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	t.Run("falls back to local head before first fetch", func(t *testing.T) {
 		t.Parallel()
 		src := initRepoWithCommit(t)

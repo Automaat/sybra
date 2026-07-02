@@ -11,9 +11,6 @@ import (
 )
 
 func TestEnsureNotesFile_SeedsAndExcludes(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 
@@ -39,9 +36,6 @@ func TestEnsureNotesFile_SeedsAndExcludes(t *testing.T) {
 }
 
 func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")
 

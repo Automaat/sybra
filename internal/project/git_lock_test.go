@@ -159,10 +159,6 @@ func TestWithLockRetry_GivesUpAfterExhaustingBackoffs(t *testing.T) {
 // contention; this proves they now serialize instead of racing.
 func TestCreateWorktree_ConcurrentDistinctPathsSucceed(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(src, bare); err != nil {

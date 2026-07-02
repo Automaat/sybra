@@ -5,7 +5,6 @@ package sybra
 import (
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,10 +52,6 @@ import (
 // asserts that the resulting fake-claude argv does NOT carry --resume
 // pointing at the stale session.
 func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
