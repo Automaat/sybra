@@ -97,28 +97,39 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		return PullRequest{}, false, nil
 	}
 
-	ci, pending := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
+	ci, pending, ciFetchOK := fetchCIStatusViaREST(e, owner, name, pr.Head.SHA)
 
 	out := PullRequest{
-		Number:           pr.Number,
-		Title:            pr.Title,
-		URL:              pr.HTMLURL,
-		Repository:       repo,
-		RepoName:         name,
-		Author:           pr.User.Login,
-		IsDraft:          pr.Draft,
-		HeadRefName:      pr.Head.Ref,
-		HeadSHA:          pr.Head.SHA,
-		BaseRefName:      pr.Base.Ref,
-		Mergeable:        restMergeable(pr.MergeableState),
-		CIStatus:         ci,
-		HasPendingChecks: pending,
-		AutoMergeEnabled: pr.AutoMerge != nil,
-		CreatedAt:        pr.CreatedAt,
-		UpdatedAt:        pr.UpdatedAt,
+		Number:             pr.Number,
+		Title:              pr.Title,
+		URL:                pr.HTMLURL,
+		Repository:         repo,
+		RepoName:           name,
+		Author:             pr.User.Login,
+		IsDraft:            pr.Draft,
+		HeadRefName:        pr.Head.Ref,
+		HeadSHA:            pr.Head.SHA,
+		BaseRefName:        pr.Base.Ref,
+		Mergeable:          restMergeable(pr.MergeableState),
+		CIStatus:           ci,
+		HasPendingChecks:   pending,
+		AutoMergeEnabled:   pr.AutoMerge != nil,
+		CreatedAt:          pr.CreatedAt,
+		UpdatedAt:          pr.UpdatedAt,
+		SourcedViaREST:     true,
+		RESTMergeableState: strings.ToLower(strings.TrimSpace(pr.MergeableState)),
+		RESTCIFetched:      ciFetchOK,
 	}
 	for _, l := range pr.Labels {
 		out.Labels = append(out.Labels, l.Name)
+	}
+	// Approval is only meaningful once GitHub reports a strictly clean merge
+	// state; best-effort — an error leaves RESTApproved false so the merge
+	// gate fails closed rather than blocking the whole REST fetch.
+	if !out.IsDraft && out.RESTMergeableState == "clean" {
+		if resp, reviews, err := fetchRESTReviews(e, repo, pr.Number); err == nil && !hasMoreReviewPages(resp) {
+			out.RESTApproved = restApproval(reviews, pr.Head.SHA)
+		}
 	}
 	return out, true, nil
 }
@@ -175,17 +186,25 @@ func restMergeable(state string) string {
 // fetchCIStatusViaREST aggregates check-runs and legacy commit statuses for a
 // commit into the monitor's CIStatus semantics. It converts REST payloads into
 // the same context shape used by GraphQL so informational-check filtering and
-// cancelled-check handling stay identical across both paths.
-func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending bool) {
+// cancelled-check handling stay identical across both paths. ok reports
+// whether both legs were fetched and parsed successfully — false distinguishes
+// a failed fetch from a genuinely check-free commit, so callers never read an
+// empty CIStatus caused by a failed fetch as green.
+func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pending, ok bool) {
 	if sha == "" {
-		return "", false
+		return "", false, false
 	}
 	contexts := make([]gqlCheckContext, 0)
+	ok = true
 
 	resp, err := runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, name, sha))
-	if err == nil {
+	if err != nil {
+		ok = false
+	} else {
 		var runs restCheckRuns
-		if jErr := json.Unmarshal(resp.body, &runs); jErr == nil {
+		if jErr := json.Unmarshal(resp.body, &runs); jErr != nil {
+			ok = false
+		} else {
 			for _, c := range runs.CheckRuns {
 				contexts = append(contexts, gqlCheckContext{
 					Typename:   "CheckRun",
@@ -198,9 +217,13 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 	}
 
 	resp, err = runGHAPIWith(e, "30s", fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, name, sha))
-	if err == nil {
+	if err != nil {
+		ok = false
+	} else {
 		var statuses restCommitStatuses
-		if jErr := json.Unmarshal(resp.body, &statuses); jErr == nil {
+		if jErr := json.Unmarshal(resp.body, &statuses); jErr != nil {
+			ok = false
+		} else {
 			for _, s := range statuses.Statuses {
 				contexts = append(contexts, gqlCheckContext{
 					Typename: "StatusContext",
@@ -211,5 +234,6 @@ func fetchCIStatusViaREST(e execer, owner, name, sha string) (status string, pen
 		}
 	}
 
-	return rollupFromContexts(contexts)
+	st, pend := rollupFromContexts(contexts)
+	return st, pend, ok
 }

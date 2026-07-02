@@ -841,6 +841,54 @@ func setNativeAutoMergeCache(e execer, key string, val bool) bool {
 	return val
 }
 
+// MergePRViaREST merges a pull request over GitHub's REST API (PUT
+// .../merge), passing the observed head SHA as the sha parameter so GitHub
+// aborts the merge (409) instead of squashing on stale evidence if the head
+// moved since it was fetched. Used by the REST-sourced auto-merge path so the
+// whole merge stays on the idle REST bucket instead of GraphQL's `gh pr
+// merge`. A head-SHA mismatch is terminal — never retried; only the transient
+// base-branch race is retried, mirroring mergePRWith.
+func MergePRViaREST(repo string, number int, headSHA string) error {
+	return mergePRViaRESTWith(defaultExecer, repo, number, headSHA)
+}
+
+func mergePRViaRESTWith(e execer, repo string, number int, headSHA string) error {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || number <= 0 {
+		return fmt.Errorf("invalid repo or PR: %s#%d", repo, number)
+	}
+	var lastResp ghHTTPResponse
+	var lastErr error
+	for attempt := 0; attempt <= len(mergeRetryDelays); attempt++ {
+		resp, err := runGHAPIWith(e, "",
+			fmt.Sprintf("repos/%s/%s/pulls/%d/merge", owner, name, number),
+			"--method", "PUT",
+			"-f", "merge_method=squash",
+			"-f", "sha="+headSHA,
+		)
+		if err == nil {
+			if runtimeCacheEnabled(e) {
+				invalidatePRCaches(repo, number)
+			}
+			return nil
+		}
+		lastResp, lastErr = resp, err
+		if isHeadSHAMismatchErr(resp) || !isBaseBranchModifiedErr(resp.body) || attempt == len(mergeRetryDelays) {
+			break
+		}
+		time.Sleep(mergeRetryDelays[attempt])
+	}
+	return fmt.Errorf("gh api merge %d: %s: %w", number, sanitizeGHOutput(lastResp.body), lastErr)
+}
+
+// isHeadSHAMismatchErr reports whether the REST merge response indicates the
+// supplied sha no longer matches the PR's current head — GitHub returns 409
+// with this message. Terminal: retrying would only re-merge on stale evidence
+// once the head advances further, so the caller must not retry it.
+func isHeadSHAMismatchErr(resp ghHTTPResponse) bool {
+	return resp.statusCode == 409 || strings.Contains(string(resp.body), "Head branch was modified")
+}
+
 // MarkReady marks a draft pull request as ready for review.
 func MarkReady(repo string, number int) error {
 	return markReadyWith(defaultExecer, repo, number)
