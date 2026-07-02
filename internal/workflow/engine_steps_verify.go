@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
 )
 
@@ -91,6 +92,46 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		msg = fmt.Sprintf("edited body to close #%d; last verify err: %s — trusting body contents", issueNum, verifyErr.Error())
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+}
+
+// execStampPRAttribution appends the harness attribution footer to the task's
+// PR body, mirroring the deterministic floor applied to Sybra-authored issue/PR
+// comments (internal/attribution). It is the machine-side guarantee that every
+// Sybra-opened PR is identifiable as harness-generated, independent of whether
+// the create-pr agent honored the prompt-level ceiling instruction.
+//
+// It runs after ensure_pr_closes_issue so the footer lands as the last line,
+// below any `Closes <issue>` reference. attribution.Append is idempotent, so
+// re-runs (retries, re-pushes) never stack duplicate footers. The step is a
+// no-op when the PR linker is unset or the task carries no PR/project, and it
+// never blocks the workflow — a fetch/edit failure is logged and completed.
+func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	if e.prLinker == nil {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
+	}
+	if t.PRNumber == 0 || t.ProjectID == "" {
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
+	}
+
+	_, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	if err != nil {
+		e.logger.Error("workflow.pr-attribution.fetch", "task_id", taskID, "err", err)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
+	}
+
+	stamped := attribution.Append(body)
+	if stamped == body {
+		if strings.TrimSpace(body) == "" {
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: empty pr body"}, nil
+		}
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "already stamped"}, nil
+	}
+	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {
+		e.logger.Error("workflow.pr-attribution.edit", "task_id", taskID, "err", editErr)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "edit failed: " + editErr.Error()}, nil
+	}
+	e.logger.Info("workflow.pr-attribution.stamped", "task_id", taskID, "pr", t.PRNumber)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "stamped attribution footer"}, nil
 }
 
 func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
