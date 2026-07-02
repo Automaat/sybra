@@ -338,9 +338,7 @@ func AutoCommitUncommitted(wtPath, message string) bool {
 func SanitizeWorktree(wtPath string) error {
 	// Abort stuck rebase if any.
 	if _, err := os.Stat(rebaseStateDir(wtPath)); err == nil {
-		cmd := exec.Command("git", "rebase", "--abort")
-		cmd.Dir = wtPath
-		_ = cmd.Run() // best-effort
+		clearRebaseState(wtPath)
 	}
 
 	// Abort stuck merge if any. No harm running this when no merge is in
@@ -395,9 +393,7 @@ func ResetWorktreeForRetry(wtPath, ref string) error {
 	}
 
 	if _, err := os.Stat(rebaseStateDir(wtPath)); err == nil {
-		cmd := exec.Command("git", "rebase", "--abort")
-		cmd.Dir = wtPath
-		_ = cmd.Run()
+		clearRebaseState(wtPath)
 	}
 
 	abort := exec.Command("git", "merge", "--abort")
@@ -415,6 +411,19 @@ func ResetWorktreeForRetry(wtPath, ref string) error {
 		return fmt.Errorf("clean worktree: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// clearRebaseState runs `git rebase --abort` and, if it fails (e.g. a
+// corrupt or stale rebase-state dir git itself can't clean up), forcibly
+// removes the rebase-state directory so it can't block the next git
+// operation in this worktree.
+func clearRebaseState(wtPath string) {
+	dir := rebaseStateDir(wtPath)
+	cmd := exec.Command("git", "rebase", "--abort")
+	cmd.Dir = wtPath
+	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // rebaseStateDir returns the path to the rebase-merge or rebase-apply dir.

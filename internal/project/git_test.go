@@ -441,6 +441,42 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	}
 }
 
+func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(bare)
+	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// Simulate a stale/corrupt rebase-state directory that `git rebase
+	// --abort` cannot clean up on its own (e.g. left behind by a killed
+	// process): a rebase-merge dir with no valid onto/head-name files makes
+	// `git rebase --abort` exit non-zero rather than actually aborting.
+	stateDir := rebaseStateDir(wtPath)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SanitizeWorktree(wtPath); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("expected stale rebase-state dir to be removed, stat err = %v", err)
+	}
+}
+
 func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 	t.Parallel()
 	if !hasGit() {
