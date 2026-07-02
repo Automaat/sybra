@@ -230,6 +230,38 @@ func TestGateProvider_CapDisabledByDefaultNeverRedirects(t *testing.T) {
 	}
 }
 
+// TestResolveProvider_MatchesGateProviderFailover pins ResolveProvider to
+// gateProvider's own decision: a caller predicting the provider a Run(cfg)
+// call will dispatch to (e.g. to scope resume-session selection) must see
+// the same failover target Run itself will use, not the requested/default
+// provider. Without this, a caller that assumes the requested provider
+// always wins can hand a same-provider session to a run that actually
+// failed over to a different provider.
+func TestResolveProvider_MatchesGateProviderFailover(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{
+		healthy:  map[string]bool{"claude": false, "codex": true},
+		failover: map[string]string{"claude": "codex"},
+		reasons:  map[string]string{"claude": "logged_out"},
+	})
+	cfg := RunConfig{Provider: "claude"}
+
+	predicted, err := m.ResolveProvider(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	actual, err := m.gateProvider(cfg)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if predicted != actual {
+		t.Fatalf("ResolveProvider %q disagrees with gateProvider %q", predicted, actual)
+	}
+	if predicted != "codex" {
+		t.Errorf("expected failover to codex, got %q", predicted)
+	}
+}
+
 func TestLimitPolicy_DefensiveCopiesMaps(t *testing.T) {
 	m, _ := newTestManager(t)
 	policy := limits.DefaultPolicy()

@@ -148,6 +148,30 @@ func newAgentOrchestrator(
 	}
 }
 
+// resolveDispatchProvider predicts the provider a Run call for this
+// assignment will actually dispatch to, so resume-session selection can be
+// scoped to it. assignment.Provider carries the provider explicitly picked
+// for this dispatch (e.g. a cross-provider retry); an empty assignment
+// defers to the manager's configured default. Resolving through
+// agent.Manager.ResolveProvider — the same gating logic Run itself uses —
+// reflects health-gate/limit-gate failover before a resumable session is
+// picked; otherwise a session from the requested provider could be handed
+// to a run that actually dispatches to a different one.
+func (o *AgentOrchestrator) resolveDispatchProvider(taskID string, assignment workflow.AgentAssignment) string {
+	resolved, err := o.agents.ResolveProvider(agent.RunConfig{
+		TaskID:                  taskID,
+		Provider:                assignment.Provider,
+		DisableProviderFailover: assignment.ExperimentID != "",
+	})
+	if err == nil {
+		return resolved
+	}
+	if assignment.Provider != "" {
+		return assignment.Provider
+	}
+	return o.agents.DefaultProvider()
+}
+
 // sandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
 // already running for the task; it never starts one. Sandboxes are started
 // lazily by the testing phase (test-runner role), so implementation/review
@@ -292,14 +316,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	if t.Workflow != nil {
 		workflowStart = t.Workflow.StartedAt
 	}
-	// assignment.Provider carries the provider explicitly picked for this
-	// dispatch (e.g. a cross-provider retry); an empty assignment defers to
-	// the manager's configured default, which is what agent.Manager.Run will
-	// also resolve to for an unset RunConfig.Provider.
-	dispatchProvider := assignment.Provider
-	if dispatchProvider == "" {
-		dispatchProvider = o.agents.DefaultProvider()
-	}
+	dispatchProvider := o.resolveDispatchProvider(taskID, assignment)
 	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)

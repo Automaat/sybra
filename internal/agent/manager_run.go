@@ -262,6 +262,18 @@ func (m *Manager) buildCommand(cfg RunConfig) (string, error) {
 	return prov.BuildCommand(cfg, model), nil
 }
 
+// ResolveProvider predicts the provider a Run call with this cfg would
+// dispatch to, applying the same health-gate / limit-gate failover logic as
+// prepareRunConfig. Callers that need to make provider-scoped decisions
+// before Run actually runs (e.g. selecting a resumable session) can use this
+// to avoid assuming the requested/default provider always wins. The gate and
+// limit queries backing this are read-only, so calling it ahead of Run and
+// then again inside Run is safe, though the two calls can in principle
+// disagree if gate state changes in between.
+func (m *Manager) ResolveProvider(cfg RunConfig) (string, error) {
+	return m.gateProvider(cfg)
+}
+
 // gateProvider resolves the run's provider through the health gate. If the
 // configured provider is unhealthy and auto-failover can supply a healthy
 // peer, the peer is returned. Otherwise returns a typed UnhealthyError so
