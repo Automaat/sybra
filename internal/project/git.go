@@ -211,10 +211,14 @@ func TrackedFilesAtDefaultBranch(barePath string) ([]string, error) {
 }
 
 func FetchOrigin(barePath string) error {
-	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
-	// configured, where `git fetch origin` silently skipped updating
-	// refs/remotes/origin/*.
-	return runBare(barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			// Explicit refspec heals bare repos cloned before remote.origin.fetch
+			// was configured, where `git fetch origin` silently skipped updating
+			// refs/remotes/origin/*.
+			return runBare(barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+		})
+	})
 }
 
 // FetchPRHead fetches a pull request's head commit into a stable local ref and
@@ -228,7 +232,12 @@ func FetchPRHead(barePath string, prNumber int) (string, error) {
 	// refs/remotes/origin/pr/<N>) cannot collide with the fetched PR head.
 	localRef := fmt.Sprintf("refs/sybra/pr/%d", prNumber)
 	refspec := fmt.Sprintf("+refs/pull/%d/head:%s", prNumber, localRef)
-	if err := runBare(barePath, "fetch", "origin", refspec); err != nil {
+	err := withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "fetch", "origin", refspec)
+		})
+	})
+	if err != nil {
 		return "", err
 	}
 	return localRef, nil
@@ -242,31 +251,37 @@ func FetchPRHead(barePath string, prNumber int) (string, error) {
 // never updates refs/heads/* after the initial clone, so FetchOrigin alone cannot
 // make head mode reflect current remote state.
 func SyncLocalBranch(barePath, branch string) error {
-	localRef := "refs/heads/" + branch
-	remoteRef := "refs/remotes/origin/" + branch
+	return withBareRepoLock(barePath, func() error {
+		localRef := "refs/heads/" + branch
+		remoteRef := "refs/remotes/origin/" + branch
 
-	remoteSHA, remoteOK := resolveRef(barePath, remoteRef)
-	if !remoteOK {
-		return nil // remote ref absent, nothing to sync
-	}
+		remoteSHA, remoteOK := resolveRef(barePath, remoteRef)
+		if !remoteOK {
+			return nil // remote ref absent, nothing to sync
+		}
 
-	localSHA, localOK := resolveRef(barePath, localRef)
-	if !localOK {
-		// local branch absent — create it at the remote SHA
-		return runBare(barePath, "update-ref", localRef, remoteSHA)
-	}
+		localSHA, localOK := resolveRef(barePath, localRef)
+		if !localOK {
+			// local branch absent — create it at the remote SHA
+			return withLockRetry(func() error {
+				return runBare(barePath, "update-ref", localRef, remoteSHA)
+			})
+		}
 
-	if localSHA == remoteSHA {
+		if localSHA == remoteSHA {
+			return nil
+		}
+
+		// Fast-forward only: advance local if it is a strict ancestor of remote.
+		// merge-base --is-ancestor exits 0 when local IS an ancestor; exits 1 when not.
+		if runBare(barePath, "merge-base", "--is-ancestor", localSHA, remoteSHA) == nil {
+			return withLockRetry(func() error {
+				return runBare(barePath, "update-ref", localRef, remoteSHA)
+			})
+		}
+		// local is not an ancestor (has local-only or diverged commits) — preserve
 		return nil
-	}
-
-	// Fast-forward only: advance local if it is a strict ancestor of remote.
-	// merge-base --is-ancestor exits 0 when local IS an ancestor; exits 1 when not.
-	if runBare(barePath, "merge-base", "--is-ancestor", localSHA, remoteSHA) == nil {
-		return runBare(barePath, "update-ref", localRef, remoteSHA)
-	}
-	// local is not an ancestor (has local-only or diverged commits) — preserve
-	return nil
+	})
 }
 
 // resolveRef resolves a git ref in the bare repo. Returns ("", false) if the
@@ -393,12 +408,20 @@ func rebaseStateDir(wtPath string) string {
 }
 
 func CreateWorktree(barePath, worktreePath, branch, baseBranch string) error {
-	return runBare(barePath, "worktree", "add", worktreePath, "-b", branch, baseBranch)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "add", worktreePath, "-b", branch, baseBranch)
+		})
+	})
 }
 
 // CreateWorktreeExisting checks out an existing branch into a new worktree.
 func CreateWorktreeExisting(barePath, worktreePath, branch string) error {
-	return runBare(barePath, "worktree", "add", worktreePath, branch)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "add", worktreePath, branch)
+		})
+	})
 }
 
 // BranchExists reports whether a local branch exists in the repo.
@@ -417,7 +440,11 @@ func RefExists(barePath, ref string) bool {
 // CreateWorktreeDetached creates a worktree in detached HEAD mode from a remote ref.
 // Used for read-only checkouts like code reviews.
 func CreateWorktreeDetached(barePath, worktreePath, ref string) error {
-	return runBare(barePath, "worktree", "add", "--detach", worktreePath, ref)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "add", "--detach", worktreePath, ref)
+		})
+	})
 }
 
 func ListWorktrees(barePath string) ([]Worktree, error) {
@@ -692,12 +719,20 @@ func PushSync(worktreePath, branch string) error {
 }
 
 func RemoveWorktree(barePath, worktreePath string) error {
-	return runBare(barePath, "worktree", "remove", "--force", worktreePath)
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "remove", "--force", worktreePath)
+		})
+	})
 }
 
 // PruneWorktrees removes stale worktree admin entries from the bare repo.
 func PruneWorktrees(barePath string) error {
-	return runBare(barePath, "worktree", "prune")
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "prune")
+		})
+	})
 }
 
 // WorktreeHealthy reports whether a checked-out worktree's git metadata is
@@ -713,7 +748,11 @@ func WorktreeHealthy(worktreePath string) bool {
 // rewrites the absolute path back-pointers in every checked-out worktree's
 // .git file and the bare's worktrees/<id>/gitdir file. Idempotent.
 func RepairWorktrees(barePath string) error {
-	return runBare(barePath, "worktree", "repair")
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(barePath, "worktree", "repair")
+		})
+	})
 }
 
 // RebaseOnto rebases the worktree's current branch onto the given ref.
