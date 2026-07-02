@@ -1956,7 +1956,7 @@ func cmdConfigDump(cfg *config.Config, jsonOut bool) int {
 }
 
 type configDoctorFinding struct {
-	Severity string `json:"severity"` // "error" or "warning"
+	Severity string `json:"severity"` // "error", "warning", or "ok" (no findings)
 	Message  string `json:"message"`
 }
 
