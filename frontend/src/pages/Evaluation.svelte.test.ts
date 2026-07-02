@@ -84,13 +84,20 @@ function makeReport() {
     byProvider: [],
     byRole: [],
     byAgentModel: [comparisonRow],
-    byVariant: [
+    byExperimentKind: [
       {
-        ...comparisonRow,
-        key: 'exp-a:v1:implementation',
-        experimentId: 'exp-a',
-        variantId: 'v1',
-        durationP90S: 1_500,
+        kind: 'model',
+        rows: [
+          {
+            ...comparisonRow,
+            key: 'exp-a:v1:implementation',
+            experimentId: 'exp-a',
+            variantId: 'v1',
+            durationP90S: 1_500,
+          },
+        ],
+        rowsContribution: [],
+        experiments: [],
       },
     ],
     notes: [],
@@ -114,7 +121,7 @@ describe('Evaluation', () => {
     render(Evaluation, { props: {} })
 
     const agentSection = screen.getByText('Agent / Model').closest('div')
-    const experimentSection = screen.getByText('A/B Experiments').closest('div')
+    const experimentSection = screen.getByText('Model experiments').closest('div')
 
     expect(agentSection).not.toBeNull()
     expect(experimentSection).not.toBeNull()
@@ -130,5 +137,20 @@ describe('Evaluation', () => {
       expect(within(agentSection as HTMLElement).getByText(label)).toBeDefined()
       expect(within(experimentSection as HTMLElement).getByText(label)).toBeDefined()
     }
+  })
+
+  it('shows distinct empty-state messages for unconfigured and zero-runs kinds, and hides unknown when absent', () => {
+    const report = makeReport()
+    report.byExperimentKind.push({ kind: 'skill', rows: [], rowsContribution: [], experiments: [] })
+    mockEvaluationStore.data = report
+
+    render(Evaluation, { props: {} })
+
+    expect(screen.getByText('Model experiments')).toBeDefined()
+    expect(screen.getByText('Prompt experiments')).toBeDefined()
+    expect(screen.getByText('No prompt experiments configured.')).toBeDefined()
+    expect(screen.getByText('Skill experiments')).toBeDefined()
+    expect(screen.getByText('Skill experiments configured, but no runs recorded yet.')).toBeDefined()
+    expect(screen.queryByText('Unknown experiments')).toBeNull()
   })
 })

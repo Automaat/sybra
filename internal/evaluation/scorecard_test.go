@@ -734,7 +734,10 @@ func TestServiceScanPopulatesAttributionReports(t *testing.T) {
 		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: landedAt, Data: map[string]any{"outcome": "merged"}},
 	}
 	svc := NewService(Deps{
-		Cfg:   config.EvaluationConfig{WindowDays: 7},
+		Cfg: config.EvaluationConfig{WindowDays: 7},
+		ABTesting: abtest.Config{Experiments: []abtest.Experiment{
+			{ID: "exp", Variants: []abtest.Variant{{ID: "gpt"}, {ID: "opus"}}},
+		}},
 		Stats: staticStats{records: records},
 		Audit: auditFunc(func(audit.Query) ([]audit.Event, error) { return events, nil }),
 		Now:   func() time.Time { return now },
@@ -743,17 +746,29 @@ func TestServiceScanPopulatesAttributionReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
-	if len(rep.ByAgentModel) == 0 || len(rep.ByAgentModelContribution) == 0 || len(rep.ByVariant) == 0 || len(rep.ByVariantContribution) == 0 {
-		t.Fatalf("missing attribution report slices: agent=%d agentContrib=%d variant=%d variantContrib=%d", len(rep.ByAgentModel), len(rep.ByAgentModelContribution), len(rep.ByVariant), len(rep.ByVariantContribution))
+	modelKind := mustExperimentKind(t, rep.ByExperimentKind, "model")
+	if len(rep.ByAgentModel) == 0 || len(rep.ByAgentModelContribution) == 0 || len(modelKind.Rows) == 0 || len(modelKind.RowsContribution) == 0 {
+		t.Fatalf("missing attribution report slices: agent=%d agentContrib=%d variant=%d variantContrib=%d", len(rep.ByAgentModel), len(rep.ByAgentModelContribution), len(modelKind.Rows), len(modelKind.RowsContribution))
 	}
-	if row := mustComparisonVariant(t, rep.ByVariant, "opus"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionLatestAuthor) {
+	if row := mustComparisonVariant(t, modelKind.Rows, "opus"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionLatestAuthor) {
 		t.Fatalf("latest variant row = %+v, want final-stage opus landing", row)
 	}
-	if row := mustComparisonVariant(t, rep.ByVariantContribution, "gpt"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionAnyContribution) {
+	if row := mustComparisonVariant(t, modelKind.RowsContribution, "gpt"); row.Landed != 1 || row.AttributionMode != string(ComparisonAttributionAnyContribution) {
 		t.Fatalf("contribution variant row = %+v, want gpt contribution landing", row)
 	} else if child := comparisonByRole(t, row.RoleBreakdowns, "implementation"); child.Landed != 1 {
 		t.Fatalf("contribution variant child = %+v, want implementation gpt contribution landing", child)
 	}
+}
+
+func mustExperimentKind(t *testing.T, groups []ExperimentKindBreakdown, kind string) ExperimentKindBreakdown {
+	t.Helper()
+	for i := range groups {
+		if groups[i].Kind == kind {
+			return groups[i]
+		}
+	}
+	t.Fatalf("missing experiment kind %q in %+v", kind, groups)
+	return ExperimentKindBreakdown{}
 }
 
 func TestComputeEmpty(t *testing.T) {
@@ -795,6 +810,110 @@ func comparisonRow(rows []ComparisonBreakdown, key string) (ComparisonBreakdown,
 		}
 	}
 	return ComparisonBreakdown{}, false
+}
+
+func TestGroupByKindSeparatesModelAndPromptExperiments(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "model-exp", VariantID: "a", Outcome: "completed", Timestamp: in},
+		{TaskID: "B", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "prompt-exp", VariantID: "p1", Outcome: "completed", Timestamp: in},
+	}
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "B", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+	}
+	exps := []abtest.Experiment{
+		{ID: "model-exp", Roles: []string{"implementation"}, Variants: []abtest.Variant{{ID: "a", Weight: 1}}},
+		{ID: "prompt-exp", Kind: "prompt", Roles: []string{"implementation"}, Variants: []abtest.Variant{{ID: "p1", Provider: "claude", Model: "sonnet", Weight: 1}}},
+	}
+	opts := CompareOptions{Experiments: exps}
+	latest := compareVariantsByAttribution(records, events, since, base, opts, ComparisonAttributionLatestAuthor)
+	contrib := compareVariantsByAttribution(records, events, since, base, opts, ComparisonAttributionAnyContribution)
+
+	groups := GroupByKind(latest, contrib, exps)
+	model := mustExperimentKind(t, groups, "model")
+	prompt := mustExperimentKind(t, groups, "prompt")
+	if len(model.Rows) != 1 || model.Rows[0].ExperimentID != "model-exp" || model.Rows[0].Kind != "model" {
+		t.Fatalf("model group = %+v", model)
+	}
+	if len(prompt.Rows) != 1 || prompt.Rows[0].ExperimentID != "prompt-exp" || prompt.Rows[0].Kind != "prompt" {
+		t.Fatalf("prompt group = %+v", prompt)
+	}
+}
+
+func TestGroupByKindUnresolvedExperimentIsUnknown(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", ExperimentID: "retired-exp", VariantID: "x", Outcome: "completed", Timestamp: in},
+	}
+	opts := CompareOptions{}
+	latest := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionLatestAuthor)
+	contrib := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionAnyContribution)
+
+	groups := GroupByKind(latest, contrib, nil)
+	unknown := mustExperimentKind(t, groups, "unknown")
+	if len(unknown.Rows) != 1 || unknown.Rows[0].ExperimentID != "retired-exp" || unknown.Rows[0].Kind != "unknown" {
+		t.Fatalf("unknown group = %+v", unknown)
+	}
+}
+
+func TestGroupByKindPromptSkillRowsExposeFixedProviderModel(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", ExperimentID: "skill-exp", VariantID: "s1", Outcome: "completed", Timestamp: in},
+	}
+	exps := []abtest.Experiment{
+		{
+			ID:       "skill-exp",
+			Kind:     "skill",
+			Subject:  &abtest.Subject{SkillName: "sybra-tasks"},
+			Roles:    []string{"implementation"},
+			Variants: []abtest.Variant{{ID: "s1", Provider: "claude", Model: "sonnet", Weight: 1}},
+		},
+	}
+	opts := CompareOptions{Experiments: exps}
+	latest := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionLatestAuthor)
+	contrib := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionAnyContribution)
+
+	groups := GroupByKind(latest, contrib, exps)
+	skill := mustExperimentKind(t, groups, "skill")
+	if len(skill.Rows) != 1 {
+		t.Fatalf("skill rows = %+v", skill.Rows)
+	}
+	row := skill.Rows[0]
+	if row.Provider != "claude" || row.Model != "sonnet" {
+		t.Fatalf("skill row provider/model = %+v, want fixed claude/sonnet visible", row)
+	}
+	if row.Subject == nil || row.Subject.SkillName != "sybra-tasks" {
+		t.Fatalf("skill row subject = %+v", row.Subject)
+	}
+}
+
+func TestGroupByKindLowSampleRowsFlagged(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", ExperimentID: "prompt-exp", VariantID: "p1", Outcome: "completed", Timestamp: in},
+	}
+	exps := []abtest.Experiment{
+		{ID: "prompt-exp", Kind: "prompt", Roles: []string{"implementation"}, Variants: []abtest.Variant{{ID: "p1", Weight: 1}}},
+	}
+	opts := CompareOptions{MinSamples: 20, Experiments: exps}
+	latest := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionLatestAuthor)
+	contrib := compareVariantsByAttribution(records, nil, since, base, opts, ComparisonAttributionAnyContribution)
+
+	groups := GroupByKind(latest, contrib, exps)
+	prompt := mustExperimentKind(t, groups, "prompt")
+	if len(prompt.Rows) != 1 || !prompt.Rows[0].InsufficientData {
+		t.Fatalf("prompt rows = %+v, want a visible low-sample row", prompt.Rows)
+	}
 }
 
 func TestPercentile(t *testing.T) {

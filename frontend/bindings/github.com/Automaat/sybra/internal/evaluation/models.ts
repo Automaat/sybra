@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as abtest$0 from "../abtest/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
 /**
@@ -69,6 +72,8 @@ export class ComparisonBreakdown {
     "reasoningEffort"?: string;
     "experimentId"?: string;
     "variantId"?: string;
+    "kind"?: string;
+    "subject"?: abtest$0.Subject | null;
     "runs": number;
     "failures": number;
     "failureRate": number;
@@ -210,40 +215,87 @@ export class ComparisonBreakdown {
      * Creates a new ComparisonBreakdown instance from a string or object.
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
-        const $$createField11_0 = $$createType0;
-        const $$createField13_0 = $$createType0;
-        const $$createField22_0 = $$createType0;
-        const $$createField23_0 = $$createType0;
-        const $$createField24_0 = $$createType0;
-        const $$createField25_0 = $$createType0;
-        const $$createField26_0 = $$createType0;
-        const $$createField41_0 = $$createType2;
+        const $$createField9_0 = $$createType1;
+        const $$createField13_0 = $$createType2;
+        const $$createField15_0 = $$createType2;
+        const $$createField24_0 = $$createType2;
+        const $$createField25_0 = $$createType2;
+        const $$createField26_0 = $$createType2;
+        const $$createField27_0 = $$createType2;
+        const $$createField28_0 = $$createType2;
+        const $$createField43_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("subject" in $$parsedSource) {
+            $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
+        }
         if ("failureEstimate" in $$parsedSource) {
-            $$parsedSource["failureEstimate"] = $$createField11_0($$parsedSource["failureEstimate"]);
+            $$parsedSource["failureEstimate"] = $$createField13_0($$parsedSource["failureEstimate"]);
         }
         if ("landedEstimate" in $$parsedSource) {
-            $$parsedSource["landedEstimate"] = $$createField13_0($$parsedSource["landedEstimate"]);
+            $$parsedSource["landedEstimate"] = $$createField15_0($$parsedSource["landedEstimate"]);
         }
         if ("mergeEstimate" in $$parsedSource) {
-            $$parsedSource["mergeEstimate"] = $$createField22_0($$parsedSource["mergeEstimate"]);
+            $$parsedSource["mergeEstimate"] = $$createField24_0($$parsedSource["mergeEstimate"]);
         }
         if ("ciFirstPassEstimate" in $$parsedSource) {
-            $$parsedSource["ciFirstPassEstimate"] = $$createField23_0($$parsedSource["ciFirstPassEstimate"]);
+            $$parsedSource["ciFirstPassEstimate"] = $$createField25_0($$parsedSource["ciFirstPassEstimate"]);
         }
         if ("mergedWithEditsEstimate" in $$parsedSource) {
-            $$parsedSource["mergedWithEditsEstimate"] = $$createField24_0($$parsedSource["mergedWithEditsEstimate"]);
+            $$parsedSource["mergedWithEditsEstimate"] = $$createField26_0($$parsedSource["mergedWithEditsEstimate"]);
         }
         if ("reworkEstimate" in $$parsedSource) {
-            $$parsedSource["reworkEstimate"] = $$createField25_0($$parsedSource["reworkEstimate"]);
+            $$parsedSource["reworkEstimate"] = $$createField27_0($$parsedSource["reworkEstimate"]);
         }
         if ("revertEstimate" in $$parsedSource) {
-            $$parsedSource["revertEstimate"] = $$createField26_0($$parsedSource["revertEstimate"]);
+            $$parsedSource["revertEstimate"] = $$createField28_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField41_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField43_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
+    }
+}
+
+/**
+ * ExperimentKindBreakdown groups A/B comparison rows by experiment kind
+ * (model, prompt, skill) so a prompt/skill rewrite is never compared against a
+ * model swap in the same table. "unknown" collects rows whose ExperimentID no
+ * longer resolves against the configured abtest.Config (e.g. a retired
+ * experiment) so orphaned data stays visible instead of silently vanishing.
+ */
+export class ExperimentKindBreakdown {
+    "kind": string;
+    "rows"?: ComparisonBreakdown[];
+    "rowsContribution"?: ComparisonBreakdown[];
+    "experiments"?: ExperimentSampleStatus[];
+
+    /** Creates a new ExperimentKindBreakdown instance. */
+    constructor($$source: Partial<ExperimentKindBreakdown> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ExperimentKindBreakdown instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ExperimentKindBreakdown {
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("rows" in $$parsedSource) {
+            $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
+        }
+        if ("rowsContribution" in $$parsedSource) {
+            $$parsedSource["rowsContribution"] = $$createField2_0($$parsedSource["rowsContribution"]);
+        }
+        if ("experiments" in $$parsedSource) {
+            $$parsedSource["experiments"] = $$createField3_0($$parsedSource["experiments"]);
+        }
+        return new ExperimentKindBreakdown($$parsedSource as Partial<ExperimentKindBreakdown>);
     }
 }
 
@@ -295,7 +347,7 @@ export class ExperimentSampleStatus {
      * Creates a new ExperimentSampleStatus instance from a string or object.
      */
     static createFrom($$source: any = {}): ExperimentSampleStatus {
-        const $$createField5_0 = $$createType4;
+        const $$createField5_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField5_0($$parsedSource["variants"]);
@@ -340,8 +392,8 @@ export class PhaseReport {
      * Creates a new PhaseReport instance from a string or object.
      */
     static createFrom($$source: any = {}): PhaseReport {
-        const $$createField3_0 = $$createType6;
-        const $$createField4_0 = $$createType8;
+        const $$createField3_0 = $$createType10;
+        const $$createField4_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
@@ -465,9 +517,7 @@ export class Report {
     "byRole"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
     "byAgentModelContribution"?: ComparisonBreakdown[];
-    "byVariant"?: ComparisonBreakdown[];
-    "byVariantContribution"?: ComparisonBreakdown[];
-    "variantExperiments"?: ExperimentSampleStatus[];
+    "byExperimentKind"?: ExperimentKindBreakdown[];
     "weaknesses"?: Weakness[];
     "notes"?: string[];
 
@@ -493,16 +543,14 @@ export class Report {
      * Creates a new Report instance from a string or object.
      */
     static createFrom($$source: any = {}): Report {
-        const $$createField3_0 = $$createType9;
-        const $$createField4_0 = $$createType11;
-        const $$createField5_0 = $$createType11;
-        const $$createField6_0 = $$createType2;
-        const $$createField7_0 = $$createType2;
-        const $$createField8_0 = $$createType2;
-        const $$createField9_0 = $$createType2;
-        const $$createField10_0 = $$createType13;
-        const $$createField11_0 = $$createType15;
-        const $$createField12_0 = $$createType16;
+        const $$createField3_0 = $$createType13;
+        const $$createField4_0 = $$createType15;
+        const $$createField5_0 = $$createType15;
+        const $$createField6_0 = $$createType4;
+        const $$createField7_0 = $$createType4;
+        const $$createField8_0 = $$createType17;
+        const $$createField9_0 = $$createType19;
+        const $$createField10_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -519,20 +567,14 @@ export class Report {
         if ("byAgentModelContribution" in $$parsedSource) {
             $$parsedSource["byAgentModelContribution"] = $$createField7_0($$parsedSource["byAgentModelContribution"]);
         }
-        if ("byVariant" in $$parsedSource) {
-            $$parsedSource["byVariant"] = $$createField8_0($$parsedSource["byVariant"]);
-        }
-        if ("byVariantContribution" in $$parsedSource) {
-            $$parsedSource["byVariantContribution"] = $$createField9_0($$parsedSource["byVariantContribution"]);
-        }
-        if ("variantExperiments" in $$parsedSource) {
-            $$parsedSource["variantExperiments"] = $$createField10_0($$parsedSource["variantExperiments"]);
+        if ("byExperimentKind" in $$parsedSource) {
+            $$parsedSource["byExperimentKind"] = $$createField8_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField11_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField9_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField12_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField10_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -743,7 +785,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType17;
+        const $$createField2_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -838,21 +880,25 @@ export class Weakness {
 }
 
 // Private type creation functions
-const $$createType0 = RateEstimate.createFrom;
-const $$createType1 = ComparisonBreakdown.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = VariantSampleStatus.createFrom;
+const $$createType0 = abtest$0.Subject.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = RateEstimate.createFrom;
+const $$createType3 = ComparisonBreakdown.createFrom;
 const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = PhaseStat.createFrom;
+const $$createType5 = ExperimentSampleStatus.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = TaskPhases.createFrom;
+const $$createType7 = VariantSampleStatus.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = Scorecard.createFrom;
-const $$createType10 = Breakdown.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = ExperimentSampleStatus.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = Weakness.createFrom;
+const $$createType9 = PhaseStat.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = TaskPhases.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = Scorecard.createFrom;
+const $$createType14 = Breakdown.createFrom;
 const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $Create.Array($Create.Any);
-const $$createType17 = $Create.Map($Create.Any, $Create.Any);
+const $$createType16 = ExperimentKindBreakdown.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = Weakness.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = $Create.Array($Create.Any);
+const $$createType21 = $Create.Map($Create.Any, $Create.Any);
