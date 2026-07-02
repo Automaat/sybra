@@ -28,6 +28,7 @@ export class Digest {
     "authorModel"?: string;
     "worked"?: string[];
     "notWorked"?: string[];
+    "uncertain"?: string[];
     "nextBets"?: string[];
     "promptTakeaways"?: Takeaway[];
     "skillTakeaways"?: Takeaway[];
@@ -62,10 +63,11 @@ export class Digest {
         const $$createField8_0 = $$createType0;
         const $$createField9_0 = $$createType0;
         const $$createField10_0 = $$createType0;
-        const $$createField11_0 = $$createType2;
+        const $$createField11_0 = $$createType0;
         const $$createField12_0 = $$createType2;
         const $$createField13_0 = $$createType2;
-        const $$createField14_0 = $$createType4;
+        const $$createField14_0 = $$createType2;
+        const $$createField15_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("worked" in $$parsedSource) {
             $$parsedSource["worked"] = $$createField8_0($$parsedSource["worked"]);
@@ -73,20 +75,23 @@ export class Digest {
         if ("notWorked" in $$parsedSource) {
             $$parsedSource["notWorked"] = $$createField9_0($$parsedSource["notWorked"]);
         }
+        if ("uncertain" in $$parsedSource) {
+            $$parsedSource["uncertain"] = $$createField10_0($$parsedSource["uncertain"]);
+        }
         if ("nextBets" in $$parsedSource) {
-            $$parsedSource["nextBets"] = $$createField10_0($$parsedSource["nextBets"]);
+            $$parsedSource["nextBets"] = $$createField11_0($$parsedSource["nextBets"]);
         }
         if ("promptTakeaways" in $$parsedSource) {
-            $$parsedSource["promptTakeaways"] = $$createField11_0($$parsedSource["promptTakeaways"]);
+            $$parsedSource["promptTakeaways"] = $$createField12_0($$parsedSource["promptTakeaways"]);
         }
         if ("skillTakeaways" in $$parsedSource) {
-            $$parsedSource["skillTakeaways"] = $$createField12_0($$parsedSource["skillTakeaways"]);
+            $$parsedSource["skillTakeaways"] = $$createField13_0($$parsedSource["skillTakeaways"]);
         }
         if ("modelTakeaways" in $$parsedSource) {
-            $$parsedSource["modelTakeaways"] = $$createField13_0($$parsedSource["modelTakeaways"]);
+            $$parsedSource["modelTakeaways"] = $$createField14_0($$parsedSource["modelTakeaways"]);
         }
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField14_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField15_0($$parsedSource["evidence"]);
         }
         return new Digest($$parsedSource as Partial<Digest>);
     }
@@ -123,6 +128,41 @@ export class EvidenceRef {
 }
 
 /**
+ * Status summarizes the service's current state for the dashboard: whether
+ * it is enabled, the most recently persisted digest, and an estimate of the
+ * next scheduled run.
+ */
+export class Status {
+    "enabled": boolean;
+    "last"?: Digest | null;
+    "nextRun": time$0.Time;
+
+    /** Creates a new Status instance. */
+    constructor($$source: Partial<Status> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("nextRun" in $$source)) {
+            this["nextRun"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Status instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Status {
+        const $$createField1_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("last" in $$parsedSource) {
+            $$parsedSource["last"] = $$createField1_0($$parsedSource["last"]);
+        }
+        return new Status($$parsedSource as Partial<Status>);
+    }
+}
+
+/**
  * Takeaway is a single distilled lesson, optionally traceable back to the
  * A/B experiment and variant it was derived from.
  */
@@ -155,3 +195,5 @@ const $$createType1 = Takeaway.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = EvidenceRef.createFrom;
 const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = Digest.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);

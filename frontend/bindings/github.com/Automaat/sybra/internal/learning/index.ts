@@ -4,5 +4,6 @@
 export {
     Digest,
     EvidenceRef,
+    Status,
     Takeaway
 } from "./models.js";

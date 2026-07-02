@@ -19,6 +19,9 @@ import * as bgop$0 from "../bgop/models.js";
 import * as evaluation$0 from "../evaluation/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as learning$0 from "../learning/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as notification$0 from "../notification/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -46,13 +49,24 @@ export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> 
 }
 
 /**
+ * GetLearningDigestStatus returns the Learning Digest service's current
+ * state: whether it is enabled, the most recently persisted digest, and an
+ * estimate of the next scheduled run.
+ */
+export function GetLearningDigestStatus(): $CancellablePromise<learning$0.Status> {
+    return $Call.ByID(3796704093).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetLifecyclePhases returns the per-phase lifecycle-duration breakdown for
  * tasks that landed in the evaluation window — where end-to-end time is spent
  * (planning vs implementing vs testing vs review vs waiting).
  */
 export function GetLifecyclePhases(): $CancellablePromise<evaluation$0.PhaseReport> {
     return $Call.ByID(842035659).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -64,7 +78,7 @@ export function GetLifecyclePhases(): $CancellablePromise<evaluation$0.PhaseRepo
  */
 export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBinding> {
     return $Call.ByID(936556103).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -73,7 +87,7 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
  */
 export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
     return $Call.ByID(729571497).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -82,7 +96,7 @@ export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
  */
 export function ListNotifications(): $CancellablePromise<notification$0.Notification[]> {
     return $Call.ByID(706012029).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -91,6 +105,18 @@ export function ListNotifications(): $CancellablePromise<notification$0.Notifica
  */
 export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
     return $Call.ByID(2283520412);
+}
+
+/**
+ * RunLearningDigestNow synchronously generates and persists a fresh Learning
+ * Digest, returning it or a clear error (insufficient fresh data, a
+ * malformed/invalid summarizer response, or a persist failure). A failed run
+ * leaves the previously-stored digest intact — see internal/learning.
+ */
+export function RunLearningDigestNow(): $CancellablePromise<learning$0.Digest> {
+    return $Call.ByID(1773365246).then(($result: any) => {
+        return $$createType8($result);
+    });
 }
 
 /**
@@ -111,7 +137,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType10($result);
     });
 }
 
@@ -122,7 +148,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
     return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType10($result);
     });
 }
 
@@ -150,19 +176,21 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType12($result);
     });
 }
 
 // Private type creation functions
 const $$createType0 = evaluation$0.Report.createFrom;
-const $$createType1 = evaluation$0.PhaseReport.createFrom;
-const $$createType2 = $models.MonitorReportBinding.createFrom;
-const $$createType3 = bgop$0.Operation.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = notification$0.Notification.createFrom;
-const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = agent$0.Agent.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = application$0.Service.createFrom;
-const $$createType10 = $Create.Array($$createType9);
+const $$createType1 = learning$0.Status.createFrom;
+const $$createType2 = evaluation$0.PhaseReport.createFrom;
+const $$createType3 = $models.MonitorReportBinding.createFrom;
+const $$createType4 = bgop$0.Operation.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = notification$0.Notification.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = learning$0.Digest.createFrom;
+const $$createType9 = agent$0.Agent.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = application$0.Service.createFrom;
+const $$createType12 = $Create.Array($$createType11);

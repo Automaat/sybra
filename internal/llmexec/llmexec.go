@@ -37,6 +37,10 @@ type Options struct {
 type Result struct {
 	Provider string
 	Text     string
+	// CostUSD is the provider-reported spend for this call. Only populated
+	// for claude, whose --output-format json envelope carries total_cost_usd;
+	// codex/copilot leave this zero.
+	CostUSD float64
 }
 
 // RunJSON runs prompt against the preferred provider and falls back to peers
@@ -74,7 +78,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			return Result{}, providerError(p, err, stderrOut)
 		}
 
-		text, parseErr := parseProviderText(p, raw)
+		text, cost, parseErr := parseProviderText(p, raw)
 		if parseErr != nil {
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
@@ -90,7 +94,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			}
 			return Result{}, fmt.Errorf("%s output: %w", p, parseErr)
 		}
-		return Result{Provider: p, Text: text}, nil
+		return Result{Provider: p, Text: text, CostUSD: cost}, nil
 	}
 	if len(failures) == 0 {
 		return Result{}, errors.New("no providers configured")
@@ -170,28 +174,31 @@ func invocation(p, prompt, model string) (name string, args []string, stdin stri
 	}
 }
 
-func parseProviderText(p string, raw []byte) (string, error) {
+func parseProviderText(p string, raw []byte) (text string, costUSD float64, err error) {
 	switch p {
 	case "codex":
-		return parseCodexText(raw)
+		text, err := parseCodexText(raw)
+		return text, 0, err
 	case "copilot":
-		return parseCopilotText(raw)
+		text, err := parseCopilotText(raw)
+		return text, 0, err
 	default:
 		return parseClaudeText(raw)
 	}
 }
 
-func parseClaudeText(raw []byte) (string, error) {
+func parseClaudeText(raw []byte) (text string, costUSD float64, err error) {
 	var env struct {
-		Result string `json:"result"`
+		Result       string  `json:"result"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return "", fmt.Errorf("unmarshal envelope: %w", err)
+		return "", 0, fmt.Errorf("unmarshal envelope: %w", err)
 	}
 	if strings.TrimSpace(env.Result) == "" {
-		return "", errors.New("empty result field")
+		return "", 0, errors.New("empty result field")
 	}
-	return env.Result, nil
+	return env.Result, env.TotalCostUSD, nil
 }
 
 func parseCodexText(raw []byte) (string, error) {

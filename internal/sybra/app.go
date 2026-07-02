@@ -47,53 +47,54 @@ import (
 )
 
 type App struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	tasks           *task.Manager
-	projects        *project.Store
-	loopAgents      *loopagent.Store
-	loopSched       *loopagent.Scheduler
-	agents          *agent.Manager
-	watcher         *watcher.Watcher
-	configWatcher   *confighot.Watcher
-	notifier        *notification.Emitter
-	audit           *audit.Logger
-	artifacts       *artifact.Store
-	experience      *experience.Store
-	learning        *learning.Store
-	stats           *stats.Store
-	limits          *limits.Store
-	tasksDir        string
-	skillsDir       string
-	repoDir         string
-	worktreesDir    string
-	logger          *slog.Logger
-	logDir          string
-	auditDir        string
-	prTracker       *github.IssueTracker
-	providerHealth  *provider.Checker
-	worktrees       *worktree.Manager
-	sandboxes       *sandbox.Manager
-	monitorSvc      *monitor.Service
-	selfMonitorSvc  *selfmonitor.Service
-	evaluationSvc   *evaluation.Service
-	agentOrch       *AgentOrchestrator
-	reviewer        *ReviewHandler
-	workflowEngine  *workflow.Engine
-	workflowStore   *workflow.Store
-	todoist         *todoistCoordinator
-	renovate        *renovateCoordinator
-	promptLab       *promptLabCoordinator
-	triage          *triageCoordinator
-	humanReview     *humanReviewHandler
-	cfg             *config.Config
-	logLevel        *slog.LevelVar
-	emit            func(string, any)
-	emitFactory     func(context.Context) func(string, any)
-	openBrowser     func(string)
-	requestRestart  func()
-	restartStaleErr *logging.ErrorThrottle
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	tasks             *task.Manager
+	projects          *project.Store
+	loopAgents        *loopagent.Store
+	loopSched         *loopagent.Scheduler
+	agents            *agent.Manager
+	watcher           *watcher.Watcher
+	configWatcher     *confighot.Watcher
+	notifier          *notification.Emitter
+	audit             *audit.Logger
+	artifacts         *artifact.Store
+	experience        *experience.Store
+	learning          *learning.Store
+	stats             *stats.Store
+	limits            *limits.Store
+	tasksDir          string
+	skillsDir         string
+	repoDir           string
+	worktreesDir      string
+	logger            *slog.Logger
+	logDir            string
+	auditDir          string
+	prTracker         *github.IssueTracker
+	providerHealth    *provider.Checker
+	worktrees         *worktree.Manager
+	sandboxes         *sandbox.Manager
+	monitorSvc        *monitor.Service
+	selfMonitorSvc    *selfmonitor.Service
+	evaluationSvc     *evaluation.Service
+	learningDigestSvc *learning.Service
+	agentOrch         *AgentOrchestrator
+	reviewer          *ReviewHandler
+	workflowEngine    *workflow.Engine
+	workflowStore     *workflow.Store
+	todoist           *todoistCoordinator
+	renovate          *renovateCoordinator
+	promptLab         *promptLabCoordinator
+	triage            *triageCoordinator
+	humanReview       *humanReviewHandler
+	cfg               *config.Config
+	logLevel          *slog.LevelVar
+	emit              func(string, any)
+	emitFactory       func(context.Context) func(string, any)
+	openBrowser       func(string)
+	requestRestart    func()
+	restartStaleErr   *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
@@ -347,6 +348,52 @@ func (a *App) GetLifecyclePhases() evaluation.PhaseReport {
 		return evaluation.PhaseReport{}
 	}
 	return rep
+}
+
+// RunLearningDigestNow synchronously generates and persists a fresh Learning
+// Digest, returning it or a clear error (insufficient fresh data, a
+// malformed/invalid summarizer response, or a persist failure). A failed run
+// leaves the previously-stored digest intact — see internal/learning.
+func (a *App) RunLearningDigestNow(ctx context.Context) (learning.Digest, error) {
+	if a.learningDigestSvc == nil {
+		return learning.Digest{}, fmt.Errorf("learning digest service unavailable")
+	}
+	return a.learningDigestSvc.RunNow(ctx)
+}
+
+// GetLearningDigestStatus returns the Learning Digest service's current
+// state: whether it is enabled, the most recently persisted digest, and an
+// estimate of the next scheduled run.
+func (a *App) GetLearningDigestStatus() learning.Status {
+	if a.learningDigestSvc == nil {
+		return learning.Status{}
+	}
+	return a.learningDigestSvc.Status()
+}
+
+// fleetWorkBlocklist returns the union of {id, owner, repo, url} over every
+// registered work-typed project, for scrubbing fleet-wide artifacts (e.g. a
+// Learning Digest, which aggregates across all projects rather than a single
+// task) that cannot use the narrower per-task workScrubContextForTask.
+func (a *App) fleetWorkBlocklist() []string {
+	if a.projects == nil {
+		return nil
+	}
+	projs, err := a.projects.List()
+	if err != nil {
+		return nil
+	}
+	var bl []string
+	for i := range projs {
+		if projs[i].Type != project.ProjectTypeWork {
+			continue
+		}
+		bl = append(bl, projs[i].ID, projs[i].Owner, projs[i].Repo)
+		if projs[i].URL != "" {
+			bl = append(bl, projs[i].URL)
+		}
+	}
+	return bl
 }
 
 func (a *App) Shutdown(_ context.Context) {
