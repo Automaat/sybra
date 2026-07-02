@@ -33,8 +33,8 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 			}
 			return results
 		},
-		fetchHeadSHAFn: func(repo string, number int) (string, error) {
-			return "sha50", nil
+		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
+			return "sha50", true, nil
 		},
 	}
 
@@ -88,8 +88,8 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 			}
 			return results
 		},
-		fetchHeadSHAFn: func(repo string, number int) (string, error) {
-			return currentHeadSHA, nil
+		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
+			return currentHeadSHA, true, nil
 		},
 	}
 
@@ -126,6 +126,58 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 	}
 	if len(third) != 1 {
 		t.Fatalf("third cycle: got %+v", third)
+	}
+}
+
+// TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache verifies that a
+// PR merged or closed externally (e.g. by a human outside Sybra) at the exact
+// same head SHA it had while cached as ready is not replayed as still open.
+// A head-SHA-only probe cannot distinguish this from "still open and ready"
+// since merging/closing a PR does not change its head commit — the probe
+// must also check state, or advanceClosedTaskPRs would never see the PR as
+// closed and the task would be stuck in review forever.
+func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
+	readyPR := github.PullRequest{
+		Repository: "pet-owner/pet-repo", Number: 50, HeadSHA: "sha50",
+		Mergeable:      "MERGEABLE",
+		SourcedViaREST: true, RESTMergeableState: "clean", RESTCIFetched: true,
+		CIStatus: "SUCCESS", RESTApproved: true,
+	}
+
+	fullFetches := 0
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			fullFetches++
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				// The PR was merged externally: same head SHA, but no longer open.
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: false, PR: readyPR}
+			}
+			return results
+		},
+		// The cheap probe reports the same head SHA but a closed state — this is
+		// exactly what `gh pr view` returns for a PR merged/closed without a
+		// subsequent push.
+		fetchHeadStateFn: func(repo string, number int) (string, bool, error) {
+			return "sha50", false, nil
+		},
+		readyPRCache: map[string]readyPRState{
+			"pet-owner/pet-repo#50": {HeadSHA: "sha50", PR: readyPR},
+		},
+	}
+
+	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
+
+	got := r.fetchKnownTaskPRs(matchers)
+	if len(got) != 0 {
+		t.Fatalf("got %+v, want no open PRs (the cached PR is now closed)", got)
+	}
+	if fullFetches != 1 {
+		t.Fatalf("full fetches = %d, want 1 (closed state must force a full fetch, not reuse the cache)", fullFetches)
+	}
+	if _, ok := r.readyPRCache["pet-owner/pet-repo#50"]; ok {
+		t.Fatal("readyPRCache entry must be evicted once the cheap probe reports the PR is no longer open")
 	}
 }
 

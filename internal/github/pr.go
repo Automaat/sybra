@@ -447,6 +447,33 @@ func FetchPRStatsContext(ctx context.Context, repo string, number int) (PRStats,
 	return s, nil
 }
 
+// FetchPRHeadState returns the head commit SHA and open/closed state of a PR.
+// Unlike FetchPRHeadSHA, it also detects a PR that was merged or closed at
+// the same head commit it had while open — a head-SHA-only probe cannot tell
+// those apart, since merging or closing a PR does not change its head SHA.
+// Deliberately uncached: callers use this to validate a cached ready-PR
+// snapshot, and caching it would reintroduce the same staleness it exists to
+// catch.
+func FetchPRHeadState(repo string, number int) (sha string, open bool, err error) {
+	return fetchPRHeadStateWith(defaultExecer, repo, number)
+}
+
+func fetchPRHeadStateWith(e execer, repo string, number int) (sha string, open bool, err error) {
+	out, err := e.run("pr", "view", strconv.Itoa(number),
+		"--repo", repo, "--json", "headRefOid,state")
+	if err != nil {
+		return "", false, fmt.Errorf("gh pr view %d head state: %s: %w", number, strings.TrimSpace(string(out)), err)
+	}
+	var raw struct {
+		HeadRefOid string `json:"headRefOid"`
+		State      string `json:"state"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return "", false, fmt.Errorf("parse pr head state: %w", err)
+	}
+	return raw.HeadRefOid, raw.State == "OPEN", nil
+}
+
 // FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA for the poll path.
 func FetchPRHeadSHAContext(ctx context.Context, repo string, number int) (string, error) {
 	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "headRefOid")
