@@ -1,7 +1,9 @@
 <script lang="ts">
   import ExperimentGroup from '../components/ExperimentGroup.svelte'
+  import LearningDigestCard from '../components/LearningDigestCard.svelte'
   import { hours, num, pct, rateCell, seconds } from '$lib/evaluation-format.js'
   import { evaluationStore } from '../stores/evaluation.svelte.js'
+  import { learningStore } from '../stores/learning.svelte.js'
   import { lifecycleStore } from '../stores/lifecycle.svelte.js'
   import type { ExperimentKindBreakdown } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 
@@ -47,7 +49,12 @@
     evaluationStore.load()
     evaluationStore.listen()
     lifecycleStore.load()
-    return () => evaluationStore.stopListening()
+    learningStore.load()
+    learningStore.listen()
+    return () => {
+      evaluationStore.stopListening()
+      learningStore.stopListening()
+    }
   })
 
   // Higher is better for these; render the bar/colour accordingly.
@@ -244,6 +251,13 @@
       </div>
     {/if}
 
+    <LearningDigestCard
+      digests={learningStore.digests}
+      status={learningStore.status}
+      loading={learningStore.loading}
+      error={learningStore.error}
+    />
+
     <!-- Breakdowns -->
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {#each [
@@ -426,5 +440,11 @@
     {/if}
   {:else if !evaluationStore.error}
     <p class="text-sm text-surface-400">No evaluation data yet.</p>
+    <LearningDigestCard
+      digests={learningStore.digests}
+      status={learningStore.status}
+      loading={learningStore.loading}
+      error={learningStore.error}
+    />
   {/if}
 </div>
