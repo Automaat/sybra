@@ -38,6 +38,25 @@ func fetchUmbrellaBounded(ctx context.Context, repo string, number int) (umbrell
 	return github.FetchUmbrella(fctx, repo, number)
 }
 
+// expandConfig holds the optional settings ExpandOption values apply.
+type expandConfig struct {
+	lister  TrackedFilesFunc
+	minSubs int
+}
+
+// ExpandOption configures an optional Expand behavior.
+type ExpandOption func(*expandConfig)
+
+// WithExpandGrounder threads a tracked-file lister into the planner's
+// grounding step (see WithGrounder). Omitting this option leaves Expand's
+// behavior unchanged (today's LLM-only touches).
+func WithExpandGrounder(lister TrackedFilesFunc, minSubs int) ExpandOption {
+	return func(c *expandConfig) {
+		c.lister = lister
+		c.minSubs = minSubs
+	}
+}
+
 // Result summarizes an expansion.
 type Result struct {
 	UmbrellaURL string
@@ -53,7 +72,11 @@ type Result struct {
 // re-run skips the planner entirely. The planner run is bounded by
 // PlannerTimeout. Shared by the `sybra-cli umbrella` command and the GitHub
 // issue fetcher's auto-detect path.
-func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string) (Result, error) {
+func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
+	var cfg expandConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	repo, number, ok := ParseRef(issueURL)
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
@@ -89,9 +112,14 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		return Result{UmbrellaURL: umb.URL, Skipped: len(subs)}, nil
 	}
 
+	var genOpts []GenerateOption
+	if cfg.lister != nil {
+		genOpts = append(genOpts, WithGrounder(cfg.lister, cfg.minSubs))
+	}
+
 	pctx, cancel := context.WithTimeout(ctx, PlannerTimeout)
 	defer cancel()
-	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs)
+	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
 		return Result{}, fmt.Errorf("plan umbrella: %w", err)
 	}

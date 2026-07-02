@@ -155,6 +155,29 @@ func DefaultBranch(barePath string) (string, error) {
 	return filepath.Base(ref), nil
 }
 
+// ListTrackedFiles returns every file path tracked at ref in the bare repo,
+// via `git ls-tree -r --name-only`. An empty tree yields an empty (non-nil
+// wanted) slice; a missing ref returns an error.
+func ListTrackedFiles(barePath, ref string) ([]string, error) {
+	out, err := outputBare(barePath, "ls-tree", "-r", "--name-only", ref)
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	lines := strings.Split(out, "\n")
+	files := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			files = append(files, l)
+		}
+	}
+	return files, nil
+}
+
 func FetchOrigin(barePath string) error {
 	// Explicit refspec heals bare repos cloned before remote.origin.fetch was
 	// configured, where `git fetch origin` silently skipped updating

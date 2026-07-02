@@ -125,8 +125,14 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	f.SetPollInterval(a.cfg.GitHub.Issues())
 	if a.cfg.Umbrella.Enabled {
 		model := a.cfg.Umbrella.Model
+		ground := a.cfg.Umbrella.Ground
+		minSubs := a.cfg.Umbrella.GroundMinSubIssues
 		f.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
-			return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL)
+			var opts []umbrella.ExpandOption
+			if ground {
+				opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), minSubs))
+			}
+			return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL, opts...)
 		})
 		a.logger.Info("umbrella.autodetect.enabled")
 	}

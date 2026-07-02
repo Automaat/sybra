@@ -1,6 +1,7 @@
 package umbrella
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -116,6 +117,30 @@ func TestScanExisting_ReturnsTrackerID(t *testing.T) {
 	if trackerID != tracker.ID {
 		t.Fatalf("trackerID = %q, want %q", trackerID, tracker.ID)
 	}
+}
+
+func TestExpandThreadsGrounder(t *testing.T) {
+	t.Parallel()
+	t.Run("WithExpandGrounder sets the lister and threshold", func(t *testing.T) {
+		t.Parallel()
+		lister := func(_ context.Context, _ string) ([]string, error) { return nil, nil }
+		var cfg expandConfig
+		WithExpandGrounder(lister, 5)(&cfg)
+		if cfg.lister == nil {
+			t.Fatal("lister not set")
+		}
+		if cfg.minSubs != 5 {
+			t.Fatalf("minSubs = %d, want 5", cfg.minSubs)
+		}
+	})
+
+	t.Run("no option leaves the grounder unset", func(t *testing.T) {
+		t.Parallel()
+		var cfg expandConfig
+		if cfg.lister != nil {
+			t.Fatal("lister should be nil without WithExpandGrounder")
+		}
+	})
 }
 
 func TestIsUmbrellaIssue(t *testing.T) {

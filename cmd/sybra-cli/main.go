@@ -98,7 +98,7 @@ func run(args []string) int {
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
-		return cmdUmbrella(store, rest, jsonOut)
+		return cmdUmbrella(cfg, store, projStore, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, rest, jsonOut)
 	case "link-pr":

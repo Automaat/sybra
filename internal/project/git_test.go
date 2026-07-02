@@ -1776,3 +1776,86 @@ func TestFetchPRHead(t *testing.T) {
 		t.Fatalf("CreateWorktreeDetached from PR head: %v", err)
 	}
 }
+
+func TestListTrackedFiles(t *testing.T) {
+	t.Parallel()
+	if !hasGit() {
+		t.Skip("git not available")
+	}
+
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", src},
+		{"git", "-C", src, "config", "user.email", "test@test.com"},
+		{"git", "-C", src, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(src, "internal", "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "internal", "foo", "bar.go"), []byte("package foo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", src, "add", "."},
+		{"git", "-C", src, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	branch, err := exec.Command("git", "-C", src, "branch", "--show-current").CombinedOutput()
+	if err != nil {
+		t.Fatalf("branch --show-current: %v: %s", err, branch)
+	}
+	branchName := strings.TrimSpace(string(branch))
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(src, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+
+	t.Run("tracked files", func(t *testing.T) {
+		t.Parallel()
+		files, err := ListTrackedFiles(bare, "refs/heads/"+branchName)
+		if err != nil {
+			t.Fatalf("ListTrackedFiles: %v", err)
+		}
+		want := map[string]bool{"internal/foo/bar.go": true, "README.md": true}
+		if len(files) != len(want) {
+			t.Fatalf("files = %v, want %v", files, want)
+		}
+		for _, f := range files {
+			if !want[f] {
+				t.Errorf("unexpected file %q", f)
+			}
+		}
+	})
+
+	t.Run("empty tree", func(t *testing.T) {
+		t.Parallel()
+		empty := initBareRepo(t)
+		// The well-known empty-tree SHA1 is valid in every git repo without
+		// needing any commits.
+		files, err := ListTrackedFiles(empty, "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+		if err != nil {
+			t.Fatalf("ListTrackedFiles on empty tree: %v", err)
+		}
+		if len(files) != 0 {
+			t.Errorf("files = %v, want empty", files)
+		}
+	})
+
+	t.Run("missing ref", func(t *testing.T) {
+		t.Parallel()
+		if _, err := ListTrackedFiles(bare, "refs/heads/does-not-exist"); err == nil {
+			t.Fatal("expected error for missing ref")
+		}
+	})
+}

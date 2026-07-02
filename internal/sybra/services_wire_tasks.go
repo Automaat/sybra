@@ -24,6 +24,10 @@ func (a *App) wireTaskService() {
 	// Read a.cfg inside the closure so config reloads update the planner model.
 	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
 	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
-		return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL)
+		var opts []umbrella.ExpandOption
+		if a.cfg.Umbrella.Ground {
+			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), a.cfg.Umbrella.GroundMinSubIssues))
+		}
+		return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
 	}
 }
