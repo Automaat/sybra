@@ -107,9 +107,29 @@ awk -v dockerfile="${DOCKERFILE}" '
 # pinning or checksum verification — a changed or compromised endpoint can
 # alter the image with no diff in this repo. Require direct artifact
 # downloads verified against a checksum instead (see Layer B, Layer D).
+#
+# RUN instructions commonly split a pipeline across backslash-continuation
+# lines, so join continued lines into one logical line (tagged with the
+# starting line number) before matching — a line-at-a-time grep misses
+# `curl ... \` / `| \` / `sh` split across three lines.
+installer_pipe_re='\|[[:space:]]*(sudo[[:space:]]+)?(/usr/bin/env[[:space:]]+)?(/bin/)?(sh|bash)([[:space:]]+-s)?([[:space:]]|$)'
 while IFS=: read -r lineno content; do
   err "unverified remote installer pipe (curl|sh / curl|bash) at line ${lineno}: ${content}"
-done < <(grep -nE '\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash)([[:space:]]|$)' "${DOCKERFILE}" || true)
+done < <(
+  awk '
+    {
+      line = $0
+      cont = (line ~ /\\[[:space:]]*$/)
+      gsub(/\\[[:space:]]*$/, "", line)
+      if (buf == "") { start = NR }
+      buf = (buf == "" ? line : buf " " line)
+      if (!cont) {
+        print start ":" buf
+        buf = ""
+      }
+    }
+  ' "${DOCKERFILE}" | grep -E "${installer_pipe_re}" || true
+)
 
 # --- 5. Healthcheck uses curl, not node ----------------------------------
 # Node-based healthchecks are fragile: they depend on the node runtime
