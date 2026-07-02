@@ -327,7 +327,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 ### Testing
 
 - Go: `go test ./...` — this does **not** compile or run the e2e suite (see below).
-- E2E: `go test -tags e2e ./internal/sybra/...` — 8 files behind `//go:build e2e`, run separately in CI (`test-go-e2e` job). Add `-short` for a ~45s smoke pass that skips the slowest retry-backoff and chaos tests.
+- E2E: `go test -race -tags e2e -timeout 10m ./internal/sybra/...` — matches the CI `test-go-e2e` job exactly; 8 files behind `//go:build e2e`. Add `-short` for a ~45s smoke pass that skips the slowest retry-backoff and chaos tests.
 - Use table-driven tests for Go packages
 - Frontend: `cd frontend && npm run check` (svelte-check)
 - Manual runtime smoke tests: see `docs/manual-testing.md` for the isolated
@@ -337,7 +337,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
-**`mise run verify` is the pre-commit gate — it runs every deterministic, offline gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, Wails bindings drift check, hadolint). It intentionally excludes the CI jobs that need network downloads or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash
 mise run verify
