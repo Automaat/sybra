@@ -20,6 +20,7 @@ type Config struct {
 	SelfMonitor   SelfMonitorConfig   `yaml:"self_monitor" json:"selfMonitor"`
 	Evaluation    EvaluationConfig    `yaml:"evaluation" json:"evaluation"`
 	HarnessEvolve HarnessEvolveConfig `yaml:"harness_evolution" json:"harnessEvolution"`
+	PromptLab     PromptLabConfig     `yaml:"prompt_lab" json:"promptLab"`
 	Experience    ExperienceConfig    `yaml:"experience" json:"experience"`
 	ABTesting     abtest.Config       `yaml:"ab_testing" json:"abTesting"`
 	Providers     ProvidersConfig     `yaml:"providers" json:"providers"`

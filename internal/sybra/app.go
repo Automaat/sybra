@@ -84,6 +84,7 @@ type App struct {
 	workflowStore   *workflow.Store
 	todoist         *todoistCoordinator
 	renovate        *renovateCoordinator
+	promptLab       *promptLabCoordinator
 	triage          *triageCoordinator
 	humanReview     *humanReviewHandler
 	cfg             *config.Config

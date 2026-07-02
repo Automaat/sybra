@@ -54,6 +54,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startMonitorService(ctx, emit)
 	lm.startSelfMonitorService(ctx, emit)
 	lm.startEvaluationService(ctx, emit)
+	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.registerMetricsObservers()
@@ -410,6 +411,19 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	svc := evaluation.NewService(deps)
 	a.evaluationSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// startPromptLabService launches the deterministic (non-LLM) Prompt Lab
+// ticker built by initPromptLab. No-op when the coordinator is nil (Startup
+// not yet through initAutomations) or cfg.PromptLab.Enabled is false — the
+// disabled check lives inside promptLabCoordinator.run so this stays a thin
+// launch point, consistent with the other startX helpers in this file.
+func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(string, any)) {
+	a := lm.app
+	if a.promptLab == nil {
+		return
+	}
+	a.wg.Go(func() { a.promptLab.run(ctx) })
 }
 
 // startPollHub registers all enabled poll handlers and starts the hub.

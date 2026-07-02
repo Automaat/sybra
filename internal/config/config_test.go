@@ -228,6 +228,57 @@ func TestLoadHarnessEvolutionPreservesExplicitDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadPromptLabDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unlike harness evolution, prompt lab must default disabled: a config
+	// predating this feature (or a fresh install) must not start filing
+	// proposal tasks until an operator opts in.
+	if cfg.PromptLab.Enabled {
+		t.Fatal("prompt lab should default disabled")
+	}
+	if cfg.PromptLab.IntervalHours != 24 {
+		t.Fatalf("interval = %.0f, want 24", cfg.PromptLab.IntervalHours)
+	}
+	if cfg.PromptLab.LookbackHours != 168 {
+		t.Fatalf("lookback = %.0f, want 168", cfg.PromptLab.LookbackHours)
+	}
+	if cfg.PromptLab.MinSamples != 5 {
+		t.Fatalf("min samples = %d, want 5", cfg.PromptLab.MinSamples)
+	}
+	if cfg.PromptLab.MinEffectSize != 0.15 {
+		t.Fatalf("min effect size = %v, want 0.15", cfg.PromptLab.MinEffectSize)
+	}
+	if cfg.PromptLab.MaxProposalsPerRun != 3 {
+		t.Fatalf("max proposals per run = %d, want 3", cfg.PromptLab.MaxProposalsPerRun)
+	}
+}
+
+func TestLoadPromptLabPreservesExplicitDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	yaml := []byte("prompt_lab:\n  enabled: true\n  min_samples: 10\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PromptLab.Enabled {
+		t.Fatal("explicit prompt_lab.enabled=true was not preserved")
+	}
+	if cfg.PromptLab.MinSamples != 10 {
+		t.Fatalf("explicit prompt_lab.min_samples=10 was not preserved, got %d", cfg.PromptLab.MinSamples)
+	}
+}
+
 func TestHumanReviewSybraBugAction(t *testing.T) {
 	cases := []struct {
 		name string
