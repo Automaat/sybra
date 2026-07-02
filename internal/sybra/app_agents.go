@@ -66,9 +66,9 @@ func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, err
 
 // pickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
-// to the current workflow execution.
+// to the current workflow execution and provider.
 //
-// Two filters are applied:
+// Three filters are applied:
 //
 //  1. Role must be implementation. Other roles (triage, plan, eval, …) own
 //     their own session state, often run in a different cwd, and resuming
@@ -83,7 +83,16 @@ func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, err
 //     and verify_commits flip the task to human-required without ever
 //     running the implementation prompt. workflowStart=zero disables the
 //     time filter (useful for callers that have no execution context).
-func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time) string {
+//  3. Provider must match the provider about to dispatch. A session id is
+//     only valid within the CLI session store of the provider that created
+//     it — a codex session_id means nothing to claude and vice versa. On a
+//     mid-workflow provider failover (e.g. codex → claude retry), a run on
+//     the new provider must never adopt the old provider's session_id, or
+//     the retry fails instantly with "No conversation found" before the
+//     prompt is ever sent. Empty run.Provider is allowed only for legacy
+//     runs predating provider recording; provider="" disables the filter
+//     (useful for callers that have no provider context).
+func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time, dispatchProvider string) string {
 	for i := range slices.Backward(runs) {
 		run := &runs[i]
 		if run.SessionID == "" {
@@ -93,6 +102,9 @@ func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 			continue
 		}
 		if !workflowStart.IsZero() && run.StartedAt.Before(workflowStart) {
+			continue
+		}
+		if dispatchProvider != "" && run.Provider != "" && run.Provider != dispatchProvider {
 			continue
 		}
 		return run.SessionID
@@ -280,7 +292,15 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	if t.Workflow != nil {
 		workflowStart = t.Workflow.StartedAt
 	}
-	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart)
+	// assignment.Provider carries the provider explicitly picked for this
+	// dispatch (e.g. a cross-provider retry); an empty assignment defers to
+	// the manager's configured default, which is what agent.Manager.Run will
+	// also resolve to for an unset RunConfig.Provider.
+	dispatchProvider := assignment.Provider
+	if dispatchProvider == "" {
+		dispatchProvider = o.agents.DefaultProvider()
+	}
+	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
 
 	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
