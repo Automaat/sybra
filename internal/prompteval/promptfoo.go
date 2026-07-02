@@ -62,7 +62,16 @@ func (r *PromptfooRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("promptfoo runner: mkdir temp: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	// Only cleaned up on success (or a failure before the run.log path is
+	// referenced in an error) — on eval failure the dir is left behind so
+	// the "(see <dir>/run.log)" error message points at a file that still
+	// exists for the operator to inspect.
+	cleanupDir := dir
+	defer func() {
+		if cleanupDir != "" {
+			_ = os.RemoveAll(cleanupDir)
+		}
+	}()
 
 	configPath := filepath.Join(dir, "promptfooconfig.yaml")
 	outPath := filepath.Join(dir, "out.json")
@@ -88,6 +97,7 @@ func (r *PromptfooRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if runErr := cmd.Run(); runErr != nil {
+		cleanupDir = ""
 		return Result{}, fmt.Errorf("promptfoo runner: eval: %w (see %s)", runErr, logPath)
 	}
 
