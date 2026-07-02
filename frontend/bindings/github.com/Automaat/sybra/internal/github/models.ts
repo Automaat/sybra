@@ -175,6 +175,20 @@ export class PullRequest {
     "createdAt": string;
     "updatedAt": string;
 
+    /**
+     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
+     * native auto-merge eligibility against the base branch's protection —
+     * never the head branch.
+     */
+    "baseRefName": string;
+
+    /**
+     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
+     * armed on this PR (derived live from `autoMergeRequest` being non-null —
+     * never persisted on the task model).
+     */
+    "autoMergeEnabled": boolean;
+
     /** Creates a new PullRequest instance. */
     constructor($$source: Partial<PullRequest> = {}) {
         if (!("number" in $$source)) {
@@ -239,6 +253,12 @@ export class PullRequest {
         }
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
+        }
+        if (!("baseRefName" in $$source)) {
+            this["baseRefName"] = "";
+        }
+        if (!("autoMergeEnabled" in $$source)) {
+            this["autoMergeEnabled"] = false;
         }
 
         Object.assign(this, $$source);
@@ -318,6 +338,20 @@ export class RenovatePR {
     "copilotReviewed": boolean;
     "createdAt": string;
     "updatedAt": string;
+
+    /**
+     * BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight
+     * native auto-merge eligibility against the base branch's protection —
+     * never the head branch.
+     */
+    "baseRefName": string;
+
+    /**
+     * AutoMergeEnabled reports whether GitHub's native auto-merge is currently
+     * armed on this PR (derived live from `autoMergeRequest` being non-null —
+     * never persisted on the task model).
+     */
+    "autoMergeEnabled": boolean;
     "checkRuns": CheckRunInfo[];
 
     /** Creates a new RenovatePR instance. */
@@ -385,6 +419,12 @@ export class RenovatePR {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "";
         }
+        if (!("baseRefName" in $$source)) {
+            this["baseRefName"] = "";
+        }
+        if (!("autoMergeEnabled" in $$source)) {
+            this["autoMergeEnabled"] = false;
+        }
         if (!("checkRuns" in $$source)) {
             this["checkRuns"] = [];
         }
@@ -397,13 +437,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField21_0 = $$createType2;
+        const $$createField23_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField21_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField23_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }

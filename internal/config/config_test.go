@@ -492,6 +492,27 @@ func TestDefaultGitHubEnabled(t *testing.T) {
 	if !cfg.GitHub.Enabled {
 		t.Error("default GitHub.Enabled should be true for backward compat")
 	}
+	if cfg.GitHub.NativeAutoMerge {
+		t.Error("default GitHub.NativeAutoMerge should be false (kill-switch, opt-in)")
+	}
+}
+
+func TestLoadGitHubNativeAutoMerge(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("github:\n  native_auto_merge: true\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GitHub.NativeAutoMerge {
+		t.Error("NativeAutoMerge = false, want true after round-tripping through yaml")
+	}
 }
 
 func TestDefaultRequirePermissions(t *testing.T) {

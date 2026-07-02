@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -178,6 +179,183 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			merged := mergedNum != 0
 			if merged != tt.wantMerged {
 				t.Fatalf("merged=%v (repo=%q num=%d), want merged=%v", merged, mergedRepo, mergedNum, tt.wantMerged)
+			}
+		})
+	}
+}
+
+func TestReadyToArmNativeAutoMerge(t *testing.T) {
+	t.Parallel()
+	base := github.PullRequest{
+		Mergeable:       "MERGEABLE",
+		CIStatus:        "PENDING",
+		CopilotReviewed: true,
+		UnresolvedCount: 0,
+		ReviewDecision:  "",
+	}
+	ciFail := base
+	ciFail.CIStatus = "FAILURE"
+	alreadyArmed := base
+	alreadyArmed.AutoMergeEnabled = true
+	notMergeable := base
+	notMergeable.Mergeable = "CONFLICTING"
+	renovate := base
+	renovate.Author = "renovate[bot]"
+	draft := base
+	draft.IsDraft = true
+	noCopilot := base
+	noCopilot.CopilotReviewed = false
+	unresolved := base
+	unresolved.UnresolvedCount = 1
+	changesRequested := base
+	changesRequested.ReviewDecision = "CHANGES_REQUESTED"
+	ciSuccess := base
+	ciSuccess.CIStatus = "SUCCESS"
+
+	tests := []struct {
+		name string
+		pr   github.PullRequest
+		want bool
+	}{
+		{"all eligible (CI still pending)", base, true},
+		{"CI already green also eligible", ciSuccess, true},
+		{"CI FAILURE blocks", ciFail, false},
+		{"already armed blocks", alreadyArmed, false},
+		{"not mergeable blocks", notMergeable, false},
+		{"renovate-fix (bot author) blocks", renovate, false},
+		{"draft blocks", draft, false},
+		{"no copilot review blocks", noCopilot, false},
+		{"unresolved threads block", unresolved, false},
+		{"changes requested blocks", changesRequested, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := readyToArmNativeAutoMerge(tt.pr); got != tt.want {
+				t.Errorf("readyToArmNativeAutoMerge() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleAutoMerge_ArmsNative verifies handleAutoMerge prefers arming
+// GitHub's native auto-merge over Sybra's own squash merge when the config
+// flag is on, the project is pet, the base-branch capability check passes,
+// and the PR is otherwise ready — and that it falls back to the legacy
+// green-gated merge whenever any of those conditions doesn't hold.
+func TestHandleAutoMerge_ArmsNative(t *testing.T) {
+	tests := []struct {
+		name           string
+		nativeEnabled  bool
+		projectType    project.ProjectType
+		supportsNative bool
+		wantArmed      bool
+		wantMerged     bool
+	}{
+		{
+			name:           "config on + pet + capability true + gate true -> arms native",
+			nativeEnabled:  true,
+			projectType:    project.ProjectTypePet,
+			supportsNative: true,
+			wantArmed:      true,
+			wantMerged:     false,
+		},
+		{
+			name:           "config off -> legacy merge",
+			nativeEnabled:  false,
+			projectType:    project.ProjectTypePet,
+			supportsNative: true,
+			wantArmed:      false,
+			wantMerged:     true,
+		},
+		{
+			name:           "work-typed project -> legacy merge",
+			nativeEnabled:  true,
+			projectType:    project.ProjectTypeWork,
+			supportsNative: true,
+			wantArmed:      false,
+			wantMerged:     false, // handleAutoMerge never merges work-typed projects at all
+		},
+		{
+			name:           "capability false -> legacy merge",
+			nativeEnabled:  true,
+			projectType:    project.ProjectTypePet,
+			supportsNative: false,
+			wantArmed:      false,
+			wantMerged:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projDir := t.TempDir()
+			projStore, err := project.NewStore(projDir, t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", tt.projectType)
+
+			taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+			if err != nil {
+				t.Fatalf("task NewStore: %v", err)
+			}
+			tasks := task.NewManager(taskStore, nil)
+			created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if _, err := tasks.Update(created.ID, task.Update{
+				Status:    task.Ptr(task.StatusInReview),
+				PRNumber:  task.Ptr(11),
+				ProjectID: task.Ptr("pet-owner/pet-repo"),
+			}); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+
+			pr := github.PullRequest{
+				Repository: "pet-owner/pet-repo", Number: 11, BaseRefName: "main",
+				Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: true,
+			}
+
+			var mergedRepo string
+			var mergedNum int
+			var armedRepo string
+			var armedNum int
+			r := &ReviewHandler{
+				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+				tasks:         tasks,
+				projects:      projStore,
+				prTracker:     github.NewIssueTracker(time.Minute),
+				cfg:           &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: tt.nativeEnabled}},
+				mergePR: func(repo string, number int) error {
+					mergedRepo, mergedNum = repo, number
+					return nil
+				},
+				supportsAutoMergeFn: func(repo, baseBranch string) (bool, error) {
+					if baseBranch != "main" {
+						t.Errorf("supportsAutoMergeFn called with baseBranch = %q, want %q", baseBranch, "main")
+					}
+					return tt.supportsNative, nil
+				},
+				enableAutoMergeFn: func(repo string, number int) error {
+					armedRepo, armedNum = repo, number
+					return nil
+				},
+			}
+
+			r.handleAutoMerge(github.PRIssue{
+				Kind:   github.PRIssueReadyToMerge,
+				TaskID: created.ID,
+				PR:     pr,
+			})
+
+			armed := armedNum != 0
+			merged := mergedNum != 0
+			if armed != tt.wantArmed {
+				t.Errorf("armed=%v (repo=%q num=%d), want armed=%v", armed, armedRepo, armedNum, tt.wantArmed)
+			}
+			if merged != tt.wantMerged {
+				t.Errorf("merged=%v (repo=%q num=%d), want merged=%v", merged, mergedRepo, mergedNum, tt.wantMerged)
 			}
 		})
 	}

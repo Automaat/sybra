@@ -56,6 +56,13 @@ type ReviewHandler struct {
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
+	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
+	// tests. nil falls back to github.EnableAutoMerge.
+	enableAutoMergeFn func(repo string, number int) error
+	// supportsAutoMergeFn reports whether a repo/base-branch combination
+	// supports arming native auto-merge; overridable in tests. nil falls back
+	// to github.SupportsNativeAutoMerge.
+	supportsAutoMergeFn func(repo, baseBranch string) (bool, error)
 	// fetchThreads / resolveThread back the Copilot-thread auto-resolver;
 	// overridable in tests. nil falls back to the github package functions.
 	fetchThreads  func(repo string, number int) ([]github.ReviewThread, error)
@@ -128,19 +135,21 @@ func newReviewHandler(
 	experienceStore *experience.Store,
 ) *ReviewHandler {
 	return &ReviewHandler{
-		DomainHandler: DomainHandler{audit: al, logger: logger, emit: emit},
-		tasks:         tasks,
-		projects:      projects,
-		agents:        agents,
-		prTracker:     prTracker,
-		worktrees:     worktrees,
-		renovatePRsFn: renovatePRsFn,
-		wtFailures:    make(map[string]int),
-		mergePR:       github.MergePR,
-		fetchThreads:  github.FetchReviewThreads,
-		resolveThread: github.ResolveReviewThread,
-		cfg:           cfg,
-		experience:    experienceStore,
+		DomainHandler:       DomainHandler{audit: al, logger: logger, emit: emit},
+		tasks:               tasks,
+		projects:            projects,
+		agents:              agents,
+		prTracker:           prTracker,
+		worktrees:           worktrees,
+		renovatePRsFn:       renovatePRsFn,
+		wtFailures:          make(map[string]int),
+		mergePR:             github.MergePR,
+		enableAutoMergeFn:   github.EnableAutoMerge,
+		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
+		fetchThreads:        github.FetchReviewThreads,
+		resolveThread:       github.ResolveReviewThread,
+		cfg:                 cfg,
+		experience:          experienceStore,
 	}
 }
 
@@ -179,8 +188,9 @@ func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
 	}
 
 	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	var issues []github.PRIssue
 	if len(matchers) > 0 {
-		issues := github.MatchTaskPRs(monitoredPRs, matchers)
+		issues = github.MatchTaskPRs(monitoredPRs, matchers)
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
@@ -196,6 +206,7 @@ func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
+	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
 	if prNeedsAttention(monitoredPRs) {
 		return r.pollFast()
@@ -283,8 +294,9 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 		}
 	}
 
+	var issues []github.PRIssue
 	if len(matchers) > 0 {
-		issues := github.MatchTaskPRs(monitoredPRs, matchers)
+		issues = github.MatchTaskPRs(monitoredPRs, matchers)
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
@@ -302,6 +314,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	r.reconcileReviewPhases(tasks, summary)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
+	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
 	if prNeedsAttention(monitoredPRs) {
 		return r.pollFast()
@@ -1212,6 +1225,82 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 	return prs[0].Number, nil
 }
 
+// maybeArmNativeAutoMerge arms GitHub's native auto-merge on pet-project PRs
+// that had no actionable PR issue emitted this same poll cycle (so it never
+// races a fix agent Sybra just dispatched, or double-processes a PR
+// handleAutoMerge's own gate already decided on) — e.g. a PR still waiting on
+// CI to go green, which produces no PRIssue at all. Reuses monitoredPRs
+// already fetched this cycle rather than issuing fresh GraphQL calls.
+func (r *ReviewHandler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
+	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
+		return
+	}
+	handled := make(map[string]bool, len(issues))
+	for i := range issues {
+		handled[issues[i].TaskID] = true
+	}
+
+	byNumber := make(map[int]*github.PullRequest, len(monitoredPRs))
+	byBranch := make(map[string]*github.PullRequest, len(monitoredPRs))
+	for i := range monitoredPRs {
+		if monitoredPRs[i].Number > 0 {
+			byNumber[monitoredPRs[i].Number] = &monitoredPRs[i]
+		}
+		if monitoredPRs[i].HeadRefName != "" {
+			byBranch[monitoredPRs[i].HeadRefName] = &monitoredPRs[i]
+		}
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		if handled[t.ID] || t.Status != task.StatusInReview || !prMonitorEligible(t) {
+			continue
+		}
+		if t.ProjectID == "" {
+			continue
+		}
+		pr := byNumber[t.PRNumber]
+		if pr == nil {
+			pr = byBranch[t.Branch]
+		}
+		if pr == nil || pr.Repository != t.ProjectID {
+			continue
+		}
+		if !readyToArmNativeAutoMerge(*pr) {
+			continue
+		}
+		proj, err := r.projects.Get(t.ProjectID)
+		if err != nil || proj.Type != project.ProjectTypePet {
+			continue
+		}
+		if slices.Contains(t.Tags, "renovate-fix") {
+			continue
+		}
+
+		supportsFn := r.supportsAutoMergeFn
+		if supportsFn == nil {
+			supportsFn = github.SupportsNativeAutoMerge
+		}
+		ok, serr := supportsFn(pr.Repository, pr.BaseRefName)
+		if serr != nil || !ok {
+			continue
+		}
+
+		enableFn := r.enableAutoMergeFn
+		if enableFn == nil {
+			enableFn = github.EnableAutoMerge
+		}
+		if aerr := enableFn(pr.Repository, pr.Number); aerr != nil {
+			r.logger.Error("auto-merge.native-arm-failed", "task_id", t.ID, "pr", pr.Number, "err", aerr)
+			continue
+		}
+		r.logAudit(audit.EventAutoMergeEnabled, t.ID, "", map[string]any{
+			"pr": pr.Number, "repo": pr.Repository,
+		})
+		r.logger.Info("auto-merge.native-armed", "task_id", t.ID, "pr", pr.Number)
+	}
+}
+
 func prNeedsAttention(prs []github.PullRequest) bool {
 	for i := range prs {
 		if prs[i].CIStatus == "PENDING" || prs[i].CIStatus == "FAILURE" {
@@ -1225,7 +1314,12 @@ func prNeedsAttention(prs []github.PullRequest) bool {
 		if !prs[i].IsDraft && (prs[i].ReviewDecision == "CHANGES_REQUESTED" || prs[i].UnresolvedCount > 0) {
 			return true
 		}
-		if !prs[i].IsDraft && prs[i].Mergeable == "MERGEABLE" && (prs[i].CIStatus == "SUCCESS" || prs[i].CIStatus == "") {
+		// A green, mergeable PR that's already armed for native auto-merge
+		// doesn't need Sybra's fast cadence — GitHub finishes the last mile on
+		// its own. If auto-merge was since disabled (self-heal: AutoMergeEnabled
+		// re-evaluates live every cycle), this falls back through to pinning
+		// fast polling again.
+		if !prs[i].IsDraft && prs[i].Mergeable == "MERGEABLE" && (prs[i].CIStatus == "SUCCESS" || prs[i].CIStatus == "") && !prs[i].AutoMergeEnabled {
 			return true
 		}
 	}

@@ -34,6 +34,9 @@ type restPR struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -42,6 +45,12 @@ type restPR struct {
 	} `json:"labels"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// AutoMerge is non-nil when GitHub's native auto-merge is armed.
+	AutoMerge *struct {
+		EnabledBy struct {
+			Login string `json:"login"`
+		} `json:"enabled_by"`
+	} `json:"auto_merge"`
 }
 
 type restCheckRuns struct {
@@ -64,6 +73,12 @@ type restCommitStatuses struct {
 // review-thread fields stay zero — REST does not expose thread resolution — so
 // the caller must only act on conflict/ci_failure/closed signals from the
 // result, never auto-merge or comments.
+//
+// REST-sourced PRs also carry zero Copilot-review and unresolved-thread
+// fields (CopilotReviewed, UnresolvedCount, ActionableCount), so a caller must
+// never use one to decide whether to ARM native auto-merge — only to observe
+// already-known state (e.g. AutoMergeEnabled already armed, or a terminal
+// MERGED/CLOSED transition).
 func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, bool, error) {
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" || number <= 0 {
@@ -94,9 +109,11 @@ func fetchPRForMonitorViaREST(e execer, repo string, number int) (PullRequest, b
 		IsDraft:          pr.Draft,
 		HeadRefName:      pr.Head.Ref,
 		HeadSHA:          pr.Head.SHA,
+		BaseRefName:      pr.Base.Ref,
 		Mergeable:        restMergeable(pr.MergeableState),
 		CIStatus:         ci,
 		HasPendingChecks: pending,
+		AutoMergeEnabled: pr.AutoMerge != nil,
 		CreatedAt:        pr.CreatedAt,
 		UpdatedAt:        pr.UpdatedAt,
 	}

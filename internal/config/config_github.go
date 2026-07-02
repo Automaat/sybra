@@ -21,6 +21,13 @@ type GitHubConfig struct {
 	// subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
 	// back to gh's own auth.
 	App GitHubAppConfig `yaml:"app" json:"app"`
+	// NativeAutoMerge is a kill-switch for arming GitHub's native
+	// `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix
+	// cycle is done and the base branch's protection supports it. It is an
+	// accelerator on top of the existing green-gated MergePR path, not a
+	// replacement — when unsupported or disabled the legacy merge stays the
+	// fallback. Default off (zero value = false).
+	NativeAutoMerge bool `yaml:"native_auto_merge" json:"nativeAutoMerge"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private
