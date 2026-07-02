@@ -1,0 +1,28 @@
+{
+  "results": {
+    "results": [
+      {
+        "success": true,
+        "score": 1,
+        "latencyMs": 842,
+        "cost": 0.0021,
+        "response": {
+          "output": "The answer is 42."
+        },
+        "gradingResult": {
+          "pass": true,
+          "componentResults": [
+            {
+              "assertion": {
+                "type": "contains",
+                "value": "42"
+              },
+              "pass": true,
+              "reason": "Output contains substring \"42\""
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

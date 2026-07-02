@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -149,6 +150,7 @@ func (a *App) logAutomationsSummary() {
 	if len(projectTypes) == 0 {
 		projectTypes = []string{"*"}
 	}
+	promptevalRunner := prompteval.SelectRunner(a.cfg.Evaluation.Offline)
 	a.logger.Info("app.automations",
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
@@ -157,6 +159,8 @@ func (a *App) logAutomationsSummary() {
 		"human_review", a.humanReview != nil,
 		"project_types", projectTypes,
 		"loop_agents_enabled", loopAgentsEnabled,
+		"prompteval_runner", promptevalRunner.Name(),
+		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
 	)
 }
 
@@ -657,6 +661,9 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	if a.cfg.Evaluation.Offline.Enabled {
+		a.workflowEngine.SetEvalGate(prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline))
+	}
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})
 	}

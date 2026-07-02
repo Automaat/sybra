@@ -661,3 +661,66 @@ func TestConfigValidateDuplicateVariantIDOnlyChecksPositiveWeight(t *testing.T) 
 		t.Fatal("Validate should reject duplicate positive-weight variant ids")
 	}
 }
+
+func TestSelectEligibleEvalPassedSeam(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "exp",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "failing", Provider: "claude", Model: "opus", Digest: "digest-fail", Weight: 1},
+			{ID: "passing", Provider: "claude", Model: "opus", Digest: "digest-pass", Weight: 1},
+		},
+	}}}
+	evalPassed := func(variantID, digest string) bool {
+		return variantID == "passing"
+	}
+	for range 10 {
+		a, ok, err := SelectEligibleWithEval(cfg, "task-1", "implementation", "implement", nil, evalPassed)
+		if err != nil || !ok {
+			t.Fatalf("SelectEligibleWithEval: ok=%v err=%v", ok, err)
+		}
+		if a.VariantID != "passing" {
+			t.Fatalf("VariantID = %q, want passing (failing digest must be excluded)", a.VariantID)
+		}
+	}
+}
+
+func TestSelectEligibleNilEvalPassedUnchanged(t *testing.T) {
+	cfg := DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("DefaultConfig().Validate: %v", err)
+	}
+	want, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", nil)
+	if err != nil || !ok {
+		t.Fatalf("SelectEligible: ok=%v err=%v", ok, err)
+	}
+	got, ok, err := SelectEligibleWithEval(cfg, "task-1", "implementation", "implement", nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("SelectEligibleWithEval(evalPassed=nil): ok=%v err=%v", ok, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("evalPassed=nil changed selection: got %+v want %+v", got, want)
+	}
+}
+
+func TestEligibleVariantsSkipsOnlyDigestedFailures(t *testing.T) {
+	exp := Experiment{Variants: []Variant{
+		{ID: "no-digest", Provider: "claude", Model: "opus", Weight: 1}, // model-only, no digest
+		{ID: "has-digest-fail", Provider: "claude", Model: "opus", Digest: "d1", Weight: 1},
+		{ID: "has-digest-pass", Provider: "claude", Model: "opus", Digest: "d2", Weight: 1},
+	}}
+	evalPassed := func(variantID, digest string) bool { return digest == "d2" }
+	eligible, total := EligibleVariants(exp, nil, evalPassed)
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (digest-less variant + the passing digested one)", total)
+	}
+	ids := map[string]bool{}
+	for _, v := range eligible {
+		ids[v.ID] = true
+	}
+	if !ids["no-digest"] || !ids["has-digest-pass"] || ids["has-digest-fail"] {
+		t.Fatalf("eligible = %+v", eligible)
+	}
+}

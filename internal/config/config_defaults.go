@@ -530,6 +530,15 @@ func applyEvaluationDefaults(cfg *Config) {
 	if e.WindowDays <= 0 {
 		e.WindowDays = 30
 	}
+	if e.Offline.Runner == "" {
+		e.Offline.Runner = "auto"
+	}
+	if e.Offline.MinScore <= 0 {
+		e.Offline.MinScore = 1.0
+	}
+	if e.Offline.UnavailablePolicy == "" {
+		e.Offline.UnavailablePolicy = "fail"
+	}
 }
 
 // applyHarnessEvolveDefaults fills zero values while preserving Enabled from
@@ -792,6 +801,12 @@ func SelfMonitorDir() string {
 // records and run snapshots.
 func HarnessEvolveDir() string {
 	return filepath.Join(HomeDir(), "harness-evolution")
+}
+
+// PromptEvalDir is the local store for offline prompt/skill eval verdicts
+// (internal/prompteval). Layout: <dir>/<variantID>/<digest>.json.
+func PromptEvalDir() string {
+	return filepath.Join(HomeDir(), "prompteval")
 }
 
 // SelfMonitorLedgerPath is the append-only ledger file selfmonitor.Open uses.

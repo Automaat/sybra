@@ -20,6 +20,11 @@ func Select(cfg Config, taskID, role, stepID string) (Assignment, bool, error) {
 	return SelectEligible(cfg, taskID, role, stepID, nil)
 }
 
+// EvalPassed reports whether a variant's offline eval verdict allows online
+// enrollment (e.g. internal/prompteval.Gate.AllowEnrollment). Implementations
+// must only read a precomputed verdict — never run an eval on this call path.
+type EvalPassed func(variantID, digest string) bool
+
 // SelectionContext identifies the workflow step currently being assigned.
 type SelectionContext struct {
 	TaskID     string
@@ -34,11 +39,20 @@ type SelectionContext struct {
 // without a CLI do not silently fall back to a different provider while keeping
 // stale experiment attribution.
 func SelectEligible(cfg Config, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
-	return SelectEligibleForContext(cfg, SelectionContext{TaskID: taskID, Role: role, StepID: stepID}, providerAllowed)
+	return SelectEligibleWithEval(cfg, taskID, role, stepID, providerAllowed, nil)
+}
+
+// SelectEligibleWithEval is SelectEligible with an additional nil-safe
+// offline-eval predicate. A positive-weight variant is skipped only when
+// evalPassed is non-nil AND the variant carries a non-empty Digest AND
+// evalPassed returns false — so callers that pass nil (or variants without a
+// digest) see byte-for-byte unchanged selection.
+func SelectEligibleWithEval(cfg Config, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
+	return SelectEligibleForContext(cfg, SelectionContext{TaskID: taskID, Role: role, StepID: stepID}, providerAllowed, evalPassed)
 }
 
 // SelectEligibleForContext is SelectEligible with workflow subject context.
-func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool) (Assignment, bool, error) {
+func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
 	if !cfg.EnabledValue() {
 		return Assignment{}, false, nil
 	}
@@ -47,12 +61,12 @@ func SelectEligibleForContext(cfg Config, ctx SelectionContext, providerAllowed 
 		if !exp.EnabledValue() || !roleMatches(exp.Roles, ctx.Role) || !subjectMatches(exp.Subject, ctx) {
 			continue
 		}
-		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed)
+		return selectFromExperiment(exp, ctx.TaskID, ctx.Role, ctx.StepID, providerAllowed, evalPassed)
 	}
 	return Assignment{}, false, nil
 }
 
-func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool) (Assignment, bool, error) {
+func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerAllowed func(string) bool, evalPassed EvalPassed) (Assignment, bool, error) {
 	if err := validateExperiment(exp, providerAllowed); err != nil {
 		return Assignment{}, false, err
 	}
@@ -64,7 +78,7 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 	if unit == "stage" {
 		key = strings.Join([]string{taskID, role, stepID}, "|")
 	}
-	eligible, total := EligibleVariants(exp, providerAllowed)
+	eligible, total := EligibleVariants(exp, providerAllowed, evalPassed)
 	if total <= 0 {
 		return Assignment{}, false, fmt.Errorf("abtest: experiment %q has no eligible positive-weight variants", exp.ID)
 	}
@@ -93,7 +107,10 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 }
 
 // EligibleVariants returns the positive-weight variants that can be assigned.
-func EligibleVariants(exp Experiment, providerAllowed func(string) bool) (eligible []Variant, totalWeight int) {
+// A variant is skipped when evalPassed is non-nil AND it carries a non-empty
+// Digest AND evalPassed(v.ID, v.Digest) returns false — evalPassed=nil or a
+// digest-less variant (e.g. model-only experiments) never changes the result.
+func EligibleVariants(exp Experiment, providerAllowed func(string) bool, evalPassed EvalPassed) (eligible []Variant, totalWeight int) {
 	eligible = make([]Variant, 0, len(exp.Variants))
 	for i := range exp.Variants {
 		v := exp.Variants[i]
@@ -101,6 +118,9 @@ func EligibleVariants(exp Experiment, providerAllowed func(string) bool) (eligib
 			continue
 		}
 		if providerAllowed != nil && !providerAllowed(v.Provider) {
+			continue
+		}
+		if evalPassed != nil && v.Digest != "" && !evalPassed(v.ID, v.Digest) {
 			continue
 		}
 		totalWeight += v.Weight
@@ -215,7 +235,7 @@ func validatePromptSkillHomogeneity(exp Experiment, providerAllowed func(string)
 	default:
 		return nil
 	}
-	eligible, _ := EligibleVariants(exp, providerAllowed)
+	eligible, _ := EligibleVariants(exp, providerAllowed, nil)
 	if len(eligible) < 2 {
 		return nil
 	}

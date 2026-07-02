@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,13 +12,14 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 )
 
 func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: evaluation <scan|judge|golden> [args] [--json]")
+		return fatal(jsonOut, "usage: evaluation <scan|judge|golden|offline> [args] [--json]")
 	}
 	switch args[0] {
 	case "scan":
@@ -26,9 +28,251 @@ func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonO
 		return cmdEvaluationJudge(store, args[1:], jsonOut)
 	case "golden":
 		return cmdEvaluationGolden(args[1:], jsonOut)
+	case "offline":
+		return cmdEvaluationOffline(cfg, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown evaluation subcommand: %s", args[0])
 	}
+}
+
+// newOfflineRunner is overridable in tests so they can inject a fake runner
+// instead of shelling out to a live provider CLI.
+var newOfflineRunner = prompteval.SelectRunner
+
+// offlineGoldenCase is the on-disk shape of one entry in --golden: a case
+// input plus the assertions a variant's output must satisfy.
+type offlineGoldenCase struct {
+	CaseID     string                 `json:"caseId"`
+	Input      string                 `json:"input"`
+	Assertions []prompteval.Assertion `json:"assertions"`
+}
+
+func cmdEvaluationOffline(cfg *config.Config, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: evaluation offline <run|gate> [args]")
+	}
+	switch args[0] {
+	case "run":
+		return cmdEvaluationOfflineRun(cfg, args[1:], jsonOut)
+	case "gate":
+		return cmdEvaluationOfflineGate(cfg, args[1:], jsonOut)
+	default:
+		return fatal(jsonOut, "unknown evaluation offline subcommand: %s", args[0])
+	}
+}
+
+// cmdEvaluationOfflineRun evaluates every candidate variant in --variants
+// against every golden case in --golden, writes a VariantVerdict per variant,
+// and exits non-zero if any variant scores FAIL (AC1: failed offline evals
+// must be visible to CI, not swallowed). An empty/missing --variants list is
+// a usage error, never a vacuous pass.
+func cmdEvaluationOfflineRun(cfg *config.Config, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("offline run", flag.ContinueOnError)
+	variantsPath := fs.String("variants", "", "path to a JSON array of candidate variants (required)")
+	goldenPath := fs.String("golden", "", "path to a JSON array of golden cases (required)")
+	outPath := fs.String("out", "", "optional path to write the run summary JSON")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if *variantsPath == "" || *goldenPath == "" {
+		return fatal(jsonOut, "usage: evaluation offline run --variants <v.json> --golden <g.json> [--out <path>]")
+	}
+
+	variants, err := loadOfflineVariants(*variantsPath)
+	if err != nil {
+		return fatal(jsonOut, "load variants: %v", err)
+	}
+	if len(variants) == 0 {
+		return fatal(jsonOut, "--variants must contain at least one candidate variant")
+	}
+	if err := requireSameProviderModel(variants); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	cases, err := loadOfflineGoldenCases(*goldenPath)
+	if err != nil {
+		return fatal(jsonOut, "load golden cases: %v", err)
+	}
+	if len(cases) == 0 {
+		return fatal(jsonOut, "--golden must contain at least one golden case")
+	}
+
+	runner := newOfflineRunner(cfg.Evaluation.Offline)
+	store := prompteval.New(config.PromptEvalDir())
+
+	unavailablePolicyPass := strings.EqualFold(strings.TrimSpace(cfg.Evaluation.Offline.UnavailablePolicy), "pass")
+
+	ctx := context.Background()
+	verdicts := make([]prompteval.VariantVerdict, 0, len(variants))
+	anyFail := false
+	for _, v := range variants {
+		verdict := runOfflineVariant(ctx, runner, v, cases, cfg.Evaluation.Offline.MinScore)
+		if err := store.Write(verdict); err != nil {
+			return fatal(jsonOut, "write verdict for %s: %v", v.ID, err)
+		}
+		verdicts = append(verdicts, verdict)
+		if verdict.Status == prompteval.StatusFail {
+			anyFail = true
+		}
+		if verdict.Status == prompteval.StatusUnavailable && !unavailablePolicyPass {
+			anyFail = true
+		}
+	}
+
+	if *outPath != "" {
+		data, mErr := json.MarshalIndent(verdicts, "", "  ")
+		if mErr != nil {
+			return fatal(jsonOut, "marshal summary: %v", mErr)
+		}
+		if wErr := os.WriteFile(*outPath, data, 0o644); wErr != nil {
+			return fatal(jsonOut, "write summary: %v", wErr)
+		}
+	}
+
+	if jsonOut {
+		printJSON(map[string]any{"verdicts": verdicts})
+	} else {
+		for i := range verdicts {
+			v := &verdicts[i]
+			fmt.Printf("%s %s: %s (score %.2f)\n", v.VariantID, v.Digest[:min(12, len(v.Digest))], v.Status, v.Score)
+			if v.Reason != "" {
+				fmt.Printf("  %s\n", v.Reason)
+			}
+		}
+	}
+	if anyFail {
+		return 1
+	}
+	return 0
+}
+
+// requireSameProviderModel enforces the offline runner's "run variants
+// against the same model/provider settings" requirement: a batch is meant to
+// screen prompt/skill variants against each other, and mixing
+// provider/model settings within one run would make the comparison
+// meaningless (or silently confound a prompt regression with a
+// model/provider swap).
+func requireSameProviderModel(variants []prompteval.CandidateVariant) error {
+	provider, model := variants[0].Provider, variants[0].Model
+	for _, v := range variants[1:] {
+		if v.Provider != provider || v.Model != model {
+			return fmt.Errorf("--variants must share the same provider/model: %s uses %s:%s, %s uses %s:%s",
+				variants[0].ID, provider, model, v.ID, v.Provider, v.Model)
+		}
+	}
+	return nil
+}
+
+// runOfflineVariant runs every golden case for one variant and aggregates
+// into a single VariantVerdict. A runner error on any case (could not
+// measure the run at all) marks the whole variant unavailable rather than a
+// silent pass; otherwise the verdict is pass/fail against cfg.MinScore.
+func runOfflineVariant(ctx context.Context, runner prompteval.OfflineRunner, v prompteval.CandidateVariant, cases []offlineGoldenCase, minScore float64) prompteval.VariantVerdict {
+	digest := prompteval.Digest([]byte(v.Prompt))
+	base := prompteval.VariantVerdict{
+		VariantID: v.ID,
+		Digest:    digest,
+		Runner:    runner.Name(),
+		CreatedAt: time.Now().UTC(),
+	}
+	if minScore <= 0 {
+		minScore = 1.0
+	}
+
+	var totalScore, totalCost float64
+	var totalLatency int64
+	var assertions []prompteval.AssertionResult
+	failedCase := ""
+	for _, c := range cases {
+		spec := prompteval.Spec{
+			CaseID:     c.CaseID,
+			Variant:    v,
+			Input:      c.Input,
+			Assertions: c.Assertions,
+		}
+		res, err := runner.Run(ctx, spec)
+		if err != nil {
+			base.Status = prompteval.StatusUnavailable
+			base.Reason = fmt.Sprintf("case %s: %v", c.CaseID, err)
+			return base
+		}
+		totalScore += res.Score
+		totalCost += res.CostUSD
+		totalLatency += res.LatencyMS
+		assertions = append(assertions, res.Assertions...)
+		if !res.Passed && failedCase == "" {
+			failedCase = c.CaseID
+		}
+	}
+
+	base.Score = totalScore / float64(len(cases))
+	base.CostUSD = totalCost
+	base.LatencyMS = totalLatency
+	base.Assertions = assertions
+	switch {
+	case failedCase != "":
+		// The runner's own pass/fail signal (e.g. promptfoo's
+		// success/gradingResult.pass) is authoritative over Score — a runner
+		// can report a high average score while still failing a hard
+		// assertion on one case, and that must never aggregate to PASS.
+		base.Status = prompteval.StatusFail
+		base.Reason = fmt.Sprintf("case %s: runner reported failure", failedCase)
+	case base.Score >= minScore:
+		base.Status = prompteval.StatusPass
+	default:
+		base.Status = prompteval.StatusFail
+		base.Reason = fmt.Sprintf("score %.2f below min %.2f", base.Score, minScore)
+	}
+	return base
+}
+
+// cmdEvaluationOfflineGate reads the stored verdict for (variantID, digest)
+// and exits non-zero when AllowEnrollment blocks it (AC2 enforcement point).
+func cmdEvaluationOfflineGate(cfg *config.Config, args []string, jsonOut bool) int {
+	if len(args) != 2 {
+		return fatal(jsonOut, "usage: evaluation offline gate <variant-id> <digest>")
+	}
+	store := prompteval.New(config.PromptEvalDir())
+	gate := prompteval.NewGate(store, cfg.Evaluation.Offline)
+	allow, reason, err := gate.AllowEnrollment(args[0], args[1])
+	if err != nil {
+		return fatal(jsonOut, "gate: %v", err)
+	}
+	switch {
+	case jsonOut:
+		printJSON(map[string]any{"allow": allow, "reason": reason})
+	case allow:
+		fmt.Println("allow")
+	default:
+		fmt.Printf("deny: %s\n", reason)
+	}
+	if !allow {
+		return 1
+	}
+	return 0
+}
+
+func loadOfflineVariants(path string) ([]prompteval.CandidateVariant, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var variants []prompteval.CandidateVariant
+	if err := json.Unmarshal(data, &variants); err != nil {
+		return nil, fmt.Errorf("parse variants: %w", err)
+	}
+	return variants, nil
+}
+
+func loadOfflineGoldenCases(path string) ([]offlineGoldenCase, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cases []offlineGoldenCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		return nil, fmt.Errorf("parse golden cases: %w", err)
+	}
+	return cases, nil
 }
 
 // cmdEvaluationGolden scores a golden-set run's results against expectations and,

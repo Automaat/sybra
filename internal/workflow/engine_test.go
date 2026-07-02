@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
@@ -2399,6 +2401,57 @@ func TestExecRunAgentVariantPrompt(t *testing.T) {
 	}
 	if call.Assignment.PromptTransform == nil || call.Assignment.PromptTransform.Op != "template" {
 		t.Fatalf("assignment prompt transform = %+v", call.Assignment.PromptTransform)
+	}
+}
+
+// TestExecRunAgent_EvalGateBlocksFailingDigestedVariant wires a real
+// prompteval.Gate (not a nil predicate) into the engine and proves a stored
+// FAIL verdict for a digested variant keeps it out of online A/B enrollment
+// on the production selectABVariant path — closing the gap where
+// abtest.SelectEligibleWithEval existed but nothing in the dispatch hot path
+// called it.
+func TestExecRunAgent_EvalGateBlocksFailingDigestedVariant(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	evalStore := prompteval.New(t.TempDir())
+	failingDigest := prompteval.Digest([]byte("failing prompt"))
+	if err := evalStore.Write(prompteval.VariantVerdict{
+		VariantID: "failing-variant",
+		Digest:    failingDigest,
+		Status:    prompteval.StatusFail,
+		Runner:    "native",
+	}); err != nil {
+		t.Fatalf("Write verdict: %v", err)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetEvalGate(prompteval.NewGate(evalStore, config.OfflineEvalConfig{}))
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
+		ID:             "gated-exp",
+		AssignmentUnit: "stage",
+		Roles:          []string{"implementation"},
+		Variants: []abtest.Variant{
+			{ID: "failing-variant", Provider: "codex", Model: "gpt-5.5", Digest: failingDigest, Weight: 1},
+			{ID: "clean-variant", Provider: "claude", Model: "sonnet", Weight: 1},
+		},
+	}}})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Assignment.VariantID != "clean-variant" {
+		t.Fatalf("assignment = %+v, want clean-variant (failing-variant must be excluded by the eval gate)", call.Assignment)
 	}
 }
 
