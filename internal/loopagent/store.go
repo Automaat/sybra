@@ -84,7 +84,19 @@ func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
 
 // Update overwrites mutable fields on an existing record. ID and CreatedAt
 // are preserved from the on-disk version regardless of caller input.
+//
+// The Get-then-writeFile sequence is a read-modify-write, so it is flocked
+// across the whole critical section: sybra-cli and the GUI server run
+// separate Store instances in separate OS processes against the same dir,
+// and without a cross-process lock a concurrent Update from the other
+// process can be read here, then clobbered by this write's stale CreatedAt.
 func (s *Store) Update(la LoopAgent) (LoopAgent, error) {
+	unlock, err := fsutil.LockFile(s.filePath(la.ID))
+	if err != nil {
+		return LoopAgent{}, fmt.Errorf("lock loop agent: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
 	existing, err := s.Get(la.ID)
 	if err != nil {
 		return LoopAgent{}, err

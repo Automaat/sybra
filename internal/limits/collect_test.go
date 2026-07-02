@@ -361,6 +361,41 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	}
 }
 
+// TestRecordUsageCrossProcessSimulatesConcurrentWriters models two OS
+// processes (e.g. the GUI server and sybra-cli) each holding their own
+// *Store over the same path. s.events/s.snapshots are loaded once at
+// NewStore time and never re-read on the query paths, so without
+// RecordUsage reloading from disk under the flock before recording, s2's
+// write would overwrite s1's not-yet-visible-to-s2 event entirely instead of
+// merging with it.
+func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.RecordUsage(UsageEvent{ID: "e1", Provider: ProviderClaude, Timestamp: time.Now()}); err != nil {
+		t.Fatalf("s1.RecordUsage: %v", err)
+	}
+	if err := s2.RecordUsage(UsageEvent{ID: "e2", Provider: ProviderCodex, Timestamp: time.Now()}); err != nil {
+		t.Fatalf("s2.RecordUsage: %v", err)
+	}
+
+	s3, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s3.events) != 2 {
+		t.Fatalf("events = %d, want 2 — an event was dropped by concurrent cross-process writes", len(s3.events))
+	}
+}
+
 func TestSessionImport_DedupesEventsAndKeepsLatestSnapshot(t *testing.T) {
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	batch := newSessionImport()

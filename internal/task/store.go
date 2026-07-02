@@ -95,9 +95,16 @@ func (s *Store) CodeReviews() *CodeReviewStore {
 	return s.codeReviews
 }
 
-// lockTask serializes in-process read/modify/write calls for a single task
-// file. It is deliberately ref-counted so deleted or one-off task IDs do not
-// leave lock entries behind for the lifetime of a long-running server.
+// lockTask serializes read/modify/write calls for a single task file, both
+// within this process and across others. sybra-cli and the recovery sweep
+// run task.Store in separate OS processes from the GUI server against the
+// same tasks dir, so the in-process sync.Mutex alone cannot prevent two
+// processes from interleaving a read and a write and silently dropping
+// fields. The in-process lock is acquired first (cheap, avoids paying flock
+// syscalls for intra-process contention) and the cross-process flock second;
+// they are released in reverse order. It is deliberately ref-counted so
+// deleted or one-off task IDs do not leave lock entries behind for the
+// lifetime of a long-running server.
 func (s *Store) lockTask(id string) func() {
 	s.writeLocksMu.Lock()
 	if s.writeLocks == nil {
@@ -112,7 +119,22 @@ func (s *Store) lockTask(id string) func() {
 	s.writeLocksMu.Unlock()
 
 	lock.mu.Lock()
+
+	var unlockFile func() error
+	if path, err := s.safePath(id); err == nil {
+		if uf, ferr := fsutil.LockFile(path); ferr == nil {
+			unlockFile = uf
+		} else {
+			slog.Default().Warn("task.lockTask.flock_failed", "id", id, "err", ferr)
+		}
+	}
+
 	return func() {
+		if unlockFile != nil {
+			if err := unlockFile(); err != nil {
+				slog.Default().Warn("task.lockTask.unlock_failed", "id", id, "err", err)
+			}
+		}
 		lock.mu.Unlock()
 
 		s.writeLocksMu.Lock()

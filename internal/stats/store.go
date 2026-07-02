@@ -20,29 +20,58 @@ type Store struct {
 
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
-		}
+	if err := s.reloadLocked(); err != nil {
 		return nil, err
-	}
-
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &s.runs); err != nil {
-			return nil, err
-		}
 	}
 	return s, nil
 }
 
+// Record appends r and persists it. s.runs is populated once at NewStore
+// time and never re-read afterward on the query paths, so a naive
+// append-and-flush here would silently drop any run written by another
+// process (sybra-cli and the GUI server each hold their own Store over the
+// same path) in the gap since this process last loaded the file. Reloading
+// from disk under the cross-process flock, immediately before appending,
+// closes that gap: the in-memory s.runs is resynced to the authoritative
+// on-disk state before this run is added.
 func (s *Store) Record(r RunRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	unlock, err := fsutil.LockFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
 	s.runs = append(s.runs, r)
 	return s.flush()
+}
+
+// reloadLocked re-reads s.path into s.runs. Callers must hold s.mu and the
+// cross-process file lock.
+func (s *Store) reloadLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.runs = nil
+			return nil
+		}
+		return err
+	}
+	if len(data) == 0 {
+		s.runs = nil
+		return nil
+	}
+	var runs []RunRecord
+	if err := json.Unmarshal(data, &runs); err != nil {
+		return err
+	}
+	s.runs = runs
+	return nil
 }
 
 func (s *Store) Len() int {

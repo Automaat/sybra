@@ -135,6 +135,41 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+// TestRecordCrossProcessSimulatesConcurrentWriters models two OS processes
+// (e.g. the GUI server and sybra-cli) each holding their own *Store over the
+// same path. s.runs is loaded once at NewStore time and never re-read on the
+// query paths, so without Record reloading from disk under the flock before
+// appending, s2.Record would overwrite s1's not-yet-visible-to-s2 run
+// entirely instead of merging with it.
+func TestRecordCrossProcessSimulatesConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.json")
+
+	s1, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s1.Record(RunRecord{ID: "a1", TaskID: "t1", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("s1.Record: %v", err)
+	}
+	if err := s2.Record(RunRecord{ID: "a2", TaskID: "t2", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("s2.Record: %v", err)
+	}
+
+	s3, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s3.Len() != 2 {
+		t.Fatalf("Len() = %d, want 2 — a run was dropped by concurrent cross-process writes", s3.Len())
+	}
+}
+
 func TestReasoningTokensPersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stats.json")
