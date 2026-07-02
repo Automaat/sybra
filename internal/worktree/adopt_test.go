@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -201,6 +202,93 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
 		t.Errorf("worktree HEAD = %q, want PR head %q", got, prSHA)
+	}
+}
+
+// TestPrepareForFix_ReconcilesOrphanWorktreeDir is the regression for the
+// human-required strand described in issue 1373 / task be14dfd3: a fix
+// worktree directory survives on disk (e.g. `worktree prune`, or a crash
+// mid-cleanup, dropped the admin entry under the bare repo's worktrees/ dir)
+// while the checkout dir remains. `git worktree remove --force` alone fails
+// on that orphan ("not a git repository (null)"), the error used to be
+// swallowed, and every retry of PrepareForFix hit `already exists` until the
+// circuit breaker escalated to human-required — for a failure mode that is
+// mechanically self-healing. PrepareForFix must reconcile the orphan and
+// succeed instead.
+func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const branch = "fix-branch"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "fix.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "fix commit")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("orphan fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(tk, 1)
+	if err != nil {
+		t.Fatalf("PrepareForFix (initial): %v", err)
+	}
+
+	// Simulate the orphan: drop the bare repo's admin entry for this worktree
+	// while leaving the checkout directory on disk. The .git file inside a
+	// linked worktree points at its admin dir via "gitdir: <bare>/worktrees/<name>".
+	gitFile, err := os.ReadFile(filepath.Join(wtPath, ".git"))
+	if err != nil {
+		t.Fatalf("read .git file: %v", err)
+	}
+	adminDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(gitFile)), "gitdir:"))
+	if adminDir == "" {
+		t.Fatalf("could not parse admin dir from .git file: %q", gitFile)
+	}
+	if !filepath.IsAbs(adminDir) {
+		adminDir = filepath.Join(wtPath, adminDir)
+	}
+	if err := os.RemoveAll(adminDir); err != nil {
+		t.Fatalf("remove admin dir: %v", err)
+	}
+	if project.WorktreeHealthy(wtPath) {
+		t.Fatalf("expected worktree to be unhealthy after dropping its admin entry")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("expected orphan checkout dir to still exist: %v", err)
+	}
+
+	got, err := h.m.PrepareForFix(tk, 1)
+	if err != nil {
+		t.Fatalf("PrepareForFix (orphan reconcile): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("reconciled path = %q, want %q", got, wtPath)
+	}
+	if !project.WorktreeHealthy(got) {
+		t.Fatalf("expected reconciled worktree to be healthy")
+	}
+	headBranch, err := exec.Command("git", "-C", got, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD branch: %v: %s", err, headBranch)
+	}
+	if gotBranch := strings.TrimSpace(string(headBranch)); gotBranch != branch {
+		t.Errorf("worktree branch = %q, want %q", gotBranch, branch)
 	}
 }
 

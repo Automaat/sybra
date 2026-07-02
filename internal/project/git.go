@@ -726,6 +726,36 @@ func RemoveWorktree(barePath, worktreePath string) error {
 	})
 }
 
+// RemoveWorktreeReconcile removes a worktree directory, reconciling the
+// orphan case where the directory exists on disk but its admin entry under
+// the bare repo's worktrees/ dir is already gone (e.g. after a prior
+// `worktree prune`, or a crash mid-cleanup). Plain `worktree remove --force`
+// fails on an orphan ("not a git repository (null)") because git can't
+// resolve its admin entry, leaving the directory behind to collide with the
+// next `worktree add`. This tries the registered-removal path first, then
+// prunes stale admin entries, then falls back to a raw directory removal if
+// the path still exists.
+func RemoveWorktreeReconcile(barePath, worktreePath string) error {
+	// Registered case: this alone succeeds and removes the directory.
+	_ = RemoveWorktree(barePath, worktreePath)
+	// Drop stale admin entries so a subsequent `worktree add` doesn't trip
+	// over a registration that no longer has a live directory either.
+	_ = PruneWorktrees(barePath)
+	_, statErr := os.Stat(worktreePath)
+	switch {
+	case statErr == nil:
+		// Orphan case: the directory survived because git couldn't resolve
+		// its admin entry. Fall back to a raw removal.
+		if err := os.RemoveAll(worktreePath); err != nil {
+			return fmt.Errorf("remove orphan worktree %s: %w", worktreePath, err)
+		}
+		_ = PruneWorktrees(barePath)
+	case !os.IsNotExist(statErr):
+		return fmt.Errorf("stat worktree %s: %w", worktreePath, statErr)
+	}
+	return nil
+}
+
 // PruneWorktrees removes stale worktree admin entries from the bare repo.
 func PruneWorktrees(barePath string) error {
 	return withBareRepoLock(barePath, func() error {
