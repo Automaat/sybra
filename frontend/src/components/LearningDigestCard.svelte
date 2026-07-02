@@ -75,7 +75,6 @@
 
 {#snippet chip(text: string, tone: 'neutral' | 'warning' = 'neutral')}
   <span
-    class:class={false}
     class={[
       'inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 text-[10px] font-medium',
       tone === 'warning'
@@ -97,7 +96,7 @@
         {/if}
       </div>
       <ul class="flex flex-col gap-1.5">
-        {#each items as item (item)}
+        {#each items as item, index (`${index}-${item}`)}
           <li class="rounded border border-surface-200 bg-white px-3 py-2 text-sm dark:border-surface-700 dark:bg-surface-900">
             {item}
           </li>
