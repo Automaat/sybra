@@ -317,11 +317,12 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestServiceTick_PlanReviewStuck_RemediatesDirectly(t *testing.T) {
+// A plan-review task, however long it dwells, must not be flagged, remediated,
+// dispatched, or filed — it waits indefinitely for the human's plan review.
+func TestServiceTick_PlanReviewStuck_NotFlagged(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 	tasks := &fakeTasks{tasks: []task.Task{
-		// plan-review stuck: service must set it to human-required in-process.
 		mkTask("pr-stuck", task.StatusPlanReview, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		}),
@@ -344,32 +345,19 @@ func TestServiceTick_PlanReviewStuck_RemediatesDirectly(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
-		t.Fatalf("want 1 stuck_human_blocked anomaly, got %v", report.Anomalies)
+	for _, a := range report.Anomalies {
+		if a.Kind == KindStuckHumanBlocked {
+			t.Fatalf("plan-review must not produce a stuck_human_blocked anomaly, got %v", report.Anomalies)
+		}
 	}
-
-	// Remediator must have set the task to human-required.
-	if len(tasks.updates) != 1 {
-		t.Fatalf("want 1 task update, got %d", len(tasks.updates))
+	if len(tasks.updates) != 0 {
+		t.Fatalf("plan-review must be left untouched, got %d task updates", len(tasks.updates))
 	}
-	u := tasks.updates[0]
-	if u.id != "pr-stuck" {
-		t.Errorf("updated wrong task: %q", u.id)
-	}
-	if u.u.Status == nil || *u.u.Status != task.StatusHumanRequired {
-		t.Errorf("status = %v, want human-required", u.u.Status)
-	}
-
-	// Sink must NOT receive the plan-review anomaly — no meta-task created.
 	if len(sink.submissions) != 0 {
-		t.Fatalf("sink must not see plan-review anomaly, got %d submissions", len(sink.submissions))
+		t.Fatalf("sink must not see plan-review, got %d submissions", len(sink.submissions))
 	}
 	if len(disp.calls) != 0 {
-		t.Fatalf("dispatcher must not be called for plan-review anomaly, got %d calls", len(disp.calls))
-	}
-
-	if len(report.Remediated) != 1 {
-		t.Fatalf("want 1 remediated, got %d", len(report.Remediated))
+		t.Fatalf("dispatcher must not be called for plan-review, got %d calls", len(disp.calls))
 	}
 }
 

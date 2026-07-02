@@ -155,7 +155,10 @@ func detectUntriaged(t *task.Task, now time.Time) *Anomaly {
 }
 
 func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) *Anomaly {
-	if t.Status != task.StatusPlanReview && t.Status != task.StatusHumanRequired {
+	// plan-review is intentionally excluded: a plan awaits the human's approval
+	// indefinitely and must never be auto-escalated to human-required. Only tasks
+	// already in human-required are flagged when they exceed their dwell budget.
+	if t.Status != task.StatusHumanRequired {
 		return nil
 	}
 	dwell := now.Sub(t.UpdatedAt)
@@ -190,9 +193,10 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["human_review_verdict"] = verdict
 		}
 	}
-	// plan-review is always deterministic: human must approve or reject the plan.
-	// For human-required, skip LLM only when human-review confirmed verdict=human.
-	requiresLLM := t.Status != task.StatusPlanReview && ev["human_review_verdict"] != "human"
+	// Skip the LLM only when human-review already confirmed verdict=human;
+	// otherwise an LLM investigates whether the block is a real human need or a
+	// Sybra misfire.
+	requiresLLM := ev["human_review_verdict"] != "human"
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,

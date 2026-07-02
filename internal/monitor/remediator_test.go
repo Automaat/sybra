@@ -75,7 +75,10 @@ func TestRemediator_LostAgent_NoRunningRun_SkipsRunUpdate(t *testing.T) {
 	}
 }
 
-func TestRemediator_PlanReviewStuck_SetsHumanRequired(t *testing.T) {
+// A plan-review task must wait indefinitely for the human — the remediator has
+// no plan-review action, so a plan-review-shaped anomaly is an error, never an
+// escalation to human-required.
+func TestRemediator_PlanReviewStuck_NotRemediated(t *testing.T) {
 	t.Parallel()
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("pr1", task.StatusPlanReview),
@@ -88,25 +91,11 @@ func TestRemediator_PlanReviewStuck_SetsHumanRequired(t *testing.T) {
 			"status": "plan-review",
 		},
 	}
-	label, err := rem.Apply(context.Background(), a)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
+	if _, err := rem.Apply(context.Background(), a); err == nil {
+		t.Fatal("expected error: plan-review must not be remediated to human-required")
 	}
-	if label == "" {
-		t.Fatal("expected non-empty label")
-	}
-	if len(ft.updates) != 1 {
-		t.Fatalf("want 1 update, got %d", len(ft.updates))
-	}
-	u := ft.updates[0]
-	if u.id != "pr1" {
-		t.Errorf("updated wrong task: %q", u.id)
-	}
-	if u.u.Status == nil || *u.u.Status != task.StatusHumanRequired {
-		t.Errorf("status = %v, want human-required", u.u.Status)
-	}
-	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
-		t.Error("status_reason should be set")
+	if len(ft.updates) != 0 {
+		t.Fatalf("want 0 updates (plan-review left untouched), got %d", len(ft.updates))
 	}
 }
 
@@ -165,43 +154,6 @@ func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
 	}
 	if len(ft.updates) != 0 {
 		t.Fatalf("want 0 updates, got %d", len(ft.updates))
-	}
-}
-
-func TestIsPlanReviewStuck(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		a    Anomaly
-		want bool
-	}{
-		{
-			name: "plan-review stuck",
-			a:    Anomaly{Kind: KindStuckHumanBlocked, Evidence: map[string]any{"status": "plan-review"}},
-			want: true,
-		},
-		{
-			name: "human-required stuck",
-			a:    Anomaly{Kind: KindStuckHumanBlocked, Evidence: map[string]any{"status": "human-required"}},
-			want: false,
-		},
-		{
-			name: "different kind",
-			a:    Anomaly{Kind: KindLostAgent, Evidence: map[string]any{"status": "plan-review"}},
-			want: false,
-		},
-		{
-			name: "no evidence",
-			a:    Anomaly{Kind: KindStuckHumanBlocked},
-			want: false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isPlanReviewStuck(tc.a); got != tc.want {
-				t.Errorf("isPlanReviewStuck = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 

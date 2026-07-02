@@ -141,10 +141,21 @@ func TestDetect(t *testing.T) {
 			want: []AnomalyKind{KindUntriaged},
 		},
 		{
-			name: "stuck_human_blocked on plan-review past budget",
+			name: "plan-review past budget is NOT flagged — waits indefinitely for human",
 			in: DetectInput{
 				Now: now,
 				Tasks: []task.Task{mkTask("a", task.StatusPlanReview, func(t *task.Task) {
+					t.UpdatedAt = now.Add(-9 * time.Hour)
+				})},
+				Cfg: cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "stuck_human_blocked on human-required past budget",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
 					t.UpdatedAt = now.Add(-9 * time.Hour)
 				})},
 				Cfg: cfg,
@@ -801,17 +812,16 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 
-	t.Run("RequiresLLM=false when status is plan-review", func(t *testing.T) {
+	t.Run("plan-review is never flagged, regardless of dwell", func(t *testing.T) {
 		tk := mkTask("a", task.StatusPlanReview, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
 		report := Detect(in)
-		if len(report.Anomalies) != 1 {
-			t.Fatalf("want 1 anomaly, got %d", len(report.Anomalies))
-		}
-		if report.Anomalies[0].RequiresLLM {
-			t.Error("RequiresLLM must be false for plan-review — action is deterministic")
+		for _, a := range report.Anomalies {
+			if a.Kind == KindStuckHumanBlocked {
+				t.Fatal("plan-review must not produce a stuck_human_blocked anomaly — it waits indefinitely")
+			}
 		}
 	})
 
@@ -936,8 +946,10 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
-				{AgentID: "rev2", Role: "human-review", State: "stopped",
-					Result: "API Error: 529 Overloaded."},
+				{
+					AgentID: "rev2", Role: "human-review", State: "stopped",
+					Result: "API Error: 529 Overloaded.",
+				},
 			}
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
