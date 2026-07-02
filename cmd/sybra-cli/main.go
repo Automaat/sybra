@@ -573,7 +573,7 @@ var handoffStageRegistry = []handoffStageDef{
 	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
 	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
 		usage: "tested locally -> Sybra opens or updates the PR; pass --pr N\n" +
-			strings.Repeat(" ", 27) + "only to link an existing same-branch PR"},
+			strings.Repeat(" ", 19) + "only to link an existing same-branch PR"},
 }
 
 // handoffStageConfigFor maps a handoff stage (or one of its aliases) to the
@@ -644,8 +644,8 @@ func handoffStageUsageLines() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// handoffStageSourceRequirementList renders the comma-separated list of
-// stages that require --source-provider, derived from handoffStageRegistry.
+// handoffStageSourceRequirementList renders the "|"-joined list of stages
+// that require --source-provider, derived from handoffStageRegistry.
 func handoffStageSourceRequirementList() string {
 	var required []string
 	for _, def := range handoffStageRegistry {
@@ -1823,7 +1823,8 @@ Commands:
   artifact reindex <task-id>   Rebuild index.json from *.meta.json files.
 
 Global flags:
-  --json   Output as JSON`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+  --json   Output as JSON
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {

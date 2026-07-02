@@ -25,19 +25,30 @@ for f in "${SERVICES_GO}" "${API_TS}" "${API_HTTP_TS}"; do
   fi
 done
 
+# Reads newline-delimited stdin into the named array. Used instead of
+# `mapfile -t` (bash 4+) so this also runs on the default macOS /bin/bash (3.2).
+read_lines_into() {
+  local __arr_name="$1"
+  eval "${__arr_name}=()"
+  local line
+  while IFS= read -r line; do
+    eval "${__arr_name}+=(\"\${line}\")"
+  done
+}
+
 # Exported Go method names allowlisted for HTTP dispatch, e.g. `"GetTask",`.
 # Restricted to capitalized identifiers so this doesn't also match unrelated
 # quoted strings (import paths, package names) elsewhere in the file. Uses
 # BRE grep + sed instead of PCRE (-P) so this also runs on macOS/BSD grep.
-mapfile -t methods < <(grep -oE '^[[:space:]]*"[A-Z][A-Za-z0-9_]*",?$' "${SERVICES_GO}" | sed -E 's/^[[:space:]]*"([A-Za-z0-9_]+)",?$/\1/' | sort -u)
+read_lines_into methods < <(grep -oE '^[[:space:]]*"[A-Z][A-Za-z0-9_]*",?$' "${SERVICES_GO}" | sed -E 's/^[[:space:]]*"([A-Za-z0-9_]+)",?$/\1/' | sort -u)
 
 if [[ "${#methods[@]}" -eq 0 ]]; then
   echo "::error::no methods parsed from ${SERVICES_GO} — check the extraction regex" >&2
   exit 1
 fi
 
-mapfile -t api_ts_exports < <(grep -oE '^export const [A-Za-z0-9_]+' "${API_TS}" | sed -E 's/^export const //' | sort -u)
-mapfile -t api_http_exports < <(grep -oE '^export (async )?function [A-Za-z0-9_]+' "${API_HTTP_TS}" | sed -E 's/^export (async )?function //' | sort -u)
+read_lines_into api_ts_exports < <(grep -oE '^export const [A-Za-z0-9_]+' "${API_TS}" | sed -E 's/^export const //' | sort -u)
+read_lines_into api_http_exports < <(grep -oE '^export (async )?function [A-Za-z0-9_]+' "${API_HTTP_TS}" | sed -E 's/^export (async )?function //' | sort -u)
 
 fail=0
 
