@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/Automaat/sybra/internal/task"
 )
 
 // DeterministicIssueBody renders the issue body the IssueSink files for
@@ -60,7 +58,8 @@ func prGapPrompt(a Anomaly, pushRemote string) string {
 	if pushRemote == "" {
 		pushRemote = "origin"
 	}
-	return fmt.Sprintf(`You are the sybra monitor PR-gap remediator.
+	return fmt.Sprintf(
+		`You are the sybra monitor PR-gap remediator.
 
 Task: %s — %q
 This task is in 'in-review' but has no PR number recorded.
@@ -137,7 +136,8 @@ func stuckPrompt(a Anomaly, issueRepo string) string {
 			doneCmd
 	}
 
-	return fmt.Sprintf(`You are the sybra monitor stuck-task investigator.
+	return fmt.Sprintf(
+		`You are the sybra monitor stuck-task investigator.
 
 Task: %s — %q
 Status: %s   Dwell: %.1fh
@@ -164,7 +164,8 @@ Output exactly one final JSON line:
 func failureSpikePrompt(a Anomaly, issueRepo string) string {
 	rate, _ := a.Evidence["failure_rate"].(float64)
 	runs, _ := a.Evidence["agent_runs"].(int)
-	return fmt.Sprintf(`You are the sybra monitor failure-spike investigator.
+	return fmt.Sprintf(
+		`You are the sybra monitor failure-spike investigator.
 
 Audit summary (last 1h):
   failure_rate=%.2f  agent_runs=%d
@@ -191,7 +192,8 @@ func bottleneckPrompt(a Anomaly, issueRepo string) string {
 	status, _ := a.Evidence["status"].(string)
 	dwell, _ := a.Evidence["dwell_h"].(float64)
 	threshold, _ := a.Evidence["threshold"].(float64)
-	return fmt.Sprintf(`You are the sybra monitor bottleneck investigator.
+	return fmt.Sprintf(
+		`You are the sybra monitor bottleneck investigator.
 
 Status %q has average dwell %.1fh, exceeding threshold %.1fh.
 
@@ -215,7 +217,8 @@ Output exactly one final JSON line:
 // investigatePrompt is the catch-all handler for kinds that have no specific
 // template — should never run today, but keeps DispatchPrompt total.
 func investigatePrompt(a Anomaly, issueRepo string) string {
-	return fmt.Sprintf(`You are the sybra monitor anomaly investigator.
+	return fmt.Sprintf(
+		`You are the sybra monitor anomaly investigator.
 
 Anomaly: %s
 Fingerprint: %s
@@ -248,9 +251,6 @@ func suggestedInvestigation(a Anomaly) string {
 	case KindUntriaged:
 		return "- Run `/sybra-triage` against the affected task to fill `agent_mode` and `tags`.\n"
 	case KindStuckHumanBlocked:
-		if status, _ := a.Evidence["status"].(string); status == string(task.StatusPlanReview) {
-			return "- Approve or reject the plan to advance the task.\n"
-		}
 		hint := "- Review the task file and `status_reason`, then provide the required human input to unblock progress.\n"
 		if reason, _ := a.Evidence["status_reason"].(string); reason != "" {
 			hint += "- Blocking reason: " + reason + "\n"

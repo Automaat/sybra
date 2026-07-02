@@ -145,7 +145,8 @@ func (s *Service) tickAndLog(ctx context.Context) {
 		s.logger.Warn("monitor.tick.failed", "err", err)
 		return
 	}
-	s.logger.Info("monitor.tick",
+	s.logger.Info(
+		"monitor.tick",
 		"in_progress", report.Counts.InProgress,
 		"todo", report.Counts.Todo,
 		"anomalies", len(report.Anomalies),
@@ -222,7 +223,8 @@ func (s *Service) logPRGapGraceSuppressions(tasks []task.Task, now time.Time) {
 		if dwell < 0 || dwell >= grace {
 			continue
 		}
-		s.logger.Debug("monitor.pr_gap.grace_suppressed",
+		s.logger.Debug(
+			"monitor.pr_gap.grace_suppressed",
 			"task_id", t.ID,
 			"updated_at", t.UpdatedAt.Format(time.RFC3339),
 			"grace", grace.String(),
@@ -291,7 +293,7 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) []stri
 		if a.RequiresLLM {
 			continue
 		}
-		if a.Kind != KindLostAgent && a.Kind != KindUntriaged && !isPlanReviewStuck(a) && !isHumanRequiredStuck(a) {
+		if a.Kind != KindLostAgent && a.Kind != KindUntriaged && !isHumanRequiredStuck(a) {
 			continue
 		}
 		label, err := s.rem.Apply(ctx, a)
@@ -343,7 +345,7 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	for i := range anoms {
 		a := anoms[i]
-		if a.RequiresLLM || isPlanReviewStuck(a) || isHumanRequiredStuck(a) {
+		if a.RequiresLLM || isHumanRequiredStuck(a) {
 			continue
 		}
 		if !s.state.canIssue(a.Fingerprint, now, cooldown) {
