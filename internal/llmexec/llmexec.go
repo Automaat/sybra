@@ -29,8 +29,15 @@ type Options struct {
 	Provider string
 	// Models maps provider name to the model slug passed to that provider's CLI.
 	Models map[string]string
-	Logger *slog.Logger
-	Gate   provider.HealthGate
+	// DisableTools runs the call with no tool access instead of the default
+	// full-tool bypass. Use for classifiers/summarizers whose prompt embeds
+	// any text a prior model turn authored — without this, that text runs in
+	// a tool-enabled session and a prompt-injected instruction could act on
+	// it. Claude denies every tool (--disallowedTools "*"); other providers
+	// are invoked unchanged (RunJSON has no tool-enabled peer path today).
+	DisableTools bool
+	Logger       *slog.Logger
+	Gate         provider.HealthGate
 }
 
 // Result is the normalized final assistant text.
@@ -61,7 +68,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p])
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools)
 		if err != nil {
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
@@ -136,8 +143,8 @@ func binaryName(p string) string {
 	return p
 }
 
-func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, stderrOut string, err error) {
-	name, args, stdin := invocation(p, prompt, model)
+func runProvider(ctx context.Context, p, prompt, model string, disableTools bool) (stdout []byte, stderrOut string, err error) {
+	name, args, stdin := invocation(p, prompt, model, disableTools)
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -148,7 +155,7 @@ func runProvider(ctx context.Context, p, prompt, model string) (stdout []byte, s
 	return out, stderr.String(), err
 }
 
-func invocation(p, prompt, model string) (name string, args []string, stdin string) {
+func invocation(p, prompt, model string, disableTools bool) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
 		args := []string{
@@ -166,7 +173,12 @@ func invocation(p, prompt, model string) (name string, args []string, stdin stri
 		}
 		return "copilot", args, ""
 	default:
-		args := []string{"-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"}
+		args := []string{"-p", prompt, "--output-format", "json"}
+		if disableTools {
+			args = append(args, "--disallowedTools", "*")
+		} else {
+			args = append(args, "--dangerously-skip-permissions")
+		}
 		if model != "" {
 			args = append(args, "--model", model)
 		}

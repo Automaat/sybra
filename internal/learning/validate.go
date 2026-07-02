@@ -115,7 +115,11 @@ func validateDigest(rd rawDigest, pkt Packet) (Digest, error) {
 		if tw.VariantRef == "" {
 			return Digest{}, fmt.Errorf("takeaway references experiment %q without a variantRef", tw.ExperimentRef)
 		}
-		if insufficient, ok := insufficientByRef[tw.ExperimentRef+"|"+tw.VariantRef]; ok && insufficient && !mentionsLowSample(tw.Text) {
+		insufficient, ok := insufficientByRef[tw.ExperimentRef+"|"+tw.VariantRef]
+		if !ok {
+			return Digest{}, fmt.Errorf("takeaway references unknown experiment/variant %s/%s not present in the packet", tw.ExperimentRef, tw.VariantRef)
+		}
+		if insufficient && !mentionsLowSample(tw.Text) {
 			return Digest{}, fmt.Errorf("takeaway for low-sample variant %s/%s must state the sample caveat", tw.ExperimentRef, tw.VariantRef)
 		}
 	}

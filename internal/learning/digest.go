@@ -175,6 +175,13 @@ func (s *Service) RunNow(ctx context.Context) (Digest, error) {
 	}()
 
 	prev := s.previous()
+	if prev != nil && !prev.Until.IsZero() {
+		if elapsed := start.Sub(prev.Until); elapsed < s.interval() {
+			reason := fmt.Sprintf("only %s elapsed since last digest (need >= %s)", elapsed.Round(time.Second), s.interval())
+			s.recordFailure(start, reason)
+			return Digest{}, fmt.Errorf("learning: %s", reason)
+		}
+	}
 	since, until := windowFor(start, prev, s.windowDays(), s.maxWindowDays())
 
 	recs := s.allRuns()
@@ -285,13 +292,17 @@ func (s *Service) readAudit(since, until time.Time) ([]audit.Event, error) {
 // only: the digest is a read-only aggregate summary with no mutation
 // powers, and claude is the only provider this feature has been validated
 // against. claudeOnlyGate masks every other provider unhealthy so
-// llmexec.RunJSON's fallback loop never reaches them.
+// llmexec.RunJSON's fallback loop never reaches them. DisableTools keeps
+// that "no mutation powers" claim true even though the prompt embeds the
+// previous digest's model-authored NextBets text — a prompt-injected
+// instruction in that text has no tool to act through.
 func (s *Service) callSummarizer(ctx context.Context, prompt string) (llmexec.Result, error) {
 	res, err := s.runJSON(ctx, prompt, llmexec.Options{
-		Provider: "claude",
-		Models:   map[string]string{"claude": s.cfg.Model},
-		Logger:   s.logger,
-		Gate:     claudeOnlyGate{base: s.gate},
+		Provider:     "claude",
+		Models:       map[string]string{"claude": s.cfg.Model},
+		DisableTools: true,
+		Logger:       s.logger,
+		Gate:         claudeOnlyGate{base: s.gate},
 	})
 	if err != nil {
 		return llmexec.Result{}, err
