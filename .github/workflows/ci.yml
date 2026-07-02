@@ -148,12 +148,15 @@ jobs:
         # Upstream v3 module has a relative `replace` directive that breaks a
         # plain `go install ...@version`. Pulling the deps via `go get` first
         # (so they land in the local module cache without the replace), then
-        # installing, is the workaround. go.mod/go.sum may shift here but we
-        # only diff frontend/bindings/ below, so it does not poison the check.
+        # installing, is the workaround. The Wails version is read from go.mod
+        # so the bindings job follows the app's pinned module version.
+        # go.mod/go.sum may shift here but we only diff frontend/bindings/
+        # below, so it does not poison the check.
         run: |
-          go get github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87
-          go get github.com/wailsapp/wails/v3/internal/commands@v3.0.0-alpha.87
-          go get github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@v3.0.0-alpha.87
+          WAILS_VERSION="$(go list -m -f '{{ .Version }}' github.com/wailsapp/wails/v3)"
+          go get "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/internal/commands@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@${WAILS_VERSION}"
           go install github.com/wailsapp/wails/v3/cmd/wails3
 
       - name: Regenerate bindings
