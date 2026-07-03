@@ -113,3 +113,19 @@ func TestDiffConfig_MetricsRestart(t *testing.T) {
 		t.Errorf("expected metrics in restart, got %v", restart)
 	}
 }
+
+func TestDiffConfig_BrowserRestart(t *testing.T) {
+	t.Parallel()
+	old := config.DefaultConfig()
+	next := *old
+	disabled := false
+	next.Browser.InApp = &disabled
+
+	hot, restart := diffConfig(*old, next)
+	if len(hot) != 0 {
+		t.Errorf("expected no hot keys, got %v", hot)
+	}
+	if !slices.Contains(restart, "browser") {
+		t.Errorf("expected browser in restart, got %v", restart)
+	}
+}

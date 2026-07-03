@@ -52,6 +52,32 @@ func TestLoadFromYAML(t *testing.T) {
 	}
 }
 
+func TestInAppBrowserEnabled(t *testing.T) {
+	t.Parallel()
+
+	truthy, falsy := true, false
+
+	cases := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{Browser: BrowserConfig{InApp: &truthy}}, true},
+		{"explicit false", &Config{Browser: BrowserConfig{InApp: &falsy}}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.cfg.InAppBrowserEnabled(); got != tc.want {
+				t.Errorf("InAppBrowserEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

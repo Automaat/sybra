@@ -52,6 +52,7 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
 	s.cfg.AutoUpdate = next.AutoUpdate
+	s.cfg.Browser = next.Browser
 	s.cfg.ProjectTypes = next.ProjectTypes
 	if err := s.refreshAgentRuntimeConfig(*next); err != nil {
 		return nil, err

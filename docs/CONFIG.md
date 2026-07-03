@@ -42,6 +42,7 @@ machine.
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
 | `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
+| `browser` | `BrowserConfig` | _(see below)_ |  |
 | `project_types` | `[]string` |  |  |
 | `tasks_dir` | `string` | `~/.sybra/tasks` |  |
 | `skills_dir` | `string` |  |  |
@@ -462,4 +463,14 @@ fast-forward update is applied and Sybra requests a supervisor restart.
 | `auto_update.mode` | `string` | `notify` |  |
 | `auto_update.poll_seconds` | `int` | `300` |  |
 | `auto_update.restart_delay_seconds` | `int` | `2` | Deprecated: ignored. Kept so existing config files continue to load. |
+
+## BrowserConfig (`browser`)
+
+BrowserConfig controls how the desktop app opens external links (GitHub,
+PRs, issues). Read once at startup — flipping this value requires an app
+restart, since the opener closure is wired into the app at boot in main.go.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `browser.in_app` | `*bool` | _(nil)_ | InApp opens links in an in-app Sybra Browser webview window backed by a persistent, app-wide cookie store, so a login is reused across windows and survives restarts. Nil/unset defaults to true (current behavior). Set to false to always open links in the default system browser instead. |
 
