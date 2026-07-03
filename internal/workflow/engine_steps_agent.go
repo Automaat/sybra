@@ -181,8 +181,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// completion arriving mid-dispatch (e.g. a reattached agent from a prior
 	// step) sees this step as claimed instead of falling through to the
 	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. Cleared once StartAgent returns, at which point
-	// either agentSteps (success) or the parked/failed step state takes over.
+	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
+	// returns, at which point either agentSteps (success) or the parked/failed
+	// step state takes over.
 	e.markStepDispatching(taskID, step.ID)
 	defer e.unmarkStepDispatching(taskID, step.ID)
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)

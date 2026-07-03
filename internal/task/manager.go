@@ -359,9 +359,6 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		return err
 	}
 	t, err := m.store.Get(taskID)
-	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	}
 	var (
 		fireHook  bool
 		newStatus string
@@ -376,6 +373,14 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		m.recordFiredStatus(taskID, newStatus)
 	}
 	mu.Unlock()
+	// Emit after releasing the lock, same as UpdateFn: OnExternalUpdate takes
+	// the same per-task lock, and this Manager is its own emitter's target
+	// (app.go routes task:updated back into OnExternalUpdate), so firing
+	// while still holding the lock self-deadlocks the goroutine on its own
+	// non-reentrant mutex.
+	if err == nil {
+		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	}
 	if fireHook {
 		m.onStatusHook(taskID, prevStatus, newStatus)
 	}
@@ -386,11 +391,13 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
-	defer mu.Unlock()
 	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
+		mu.Unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
+	mu.Unlock()
+	// Emit after releasing the lock — see AddRunWithStatus for why.
 	if err == nil {
 		m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	}
