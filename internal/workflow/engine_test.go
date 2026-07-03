@@ -69,10 +69,17 @@ type memTasks struct {
 	tasks   map[string]*TaskInfo
 	reasons map[string]string
 	steers  map[string]string
+	gets    map[string]int
+	onGet   func(id string, t *TaskInfo, count int)
 }
 
 func newMemTasks() *memTasks {
-	return &memTasks{tasks: make(map[string]*TaskInfo), reasons: make(map[string]string), steers: make(map[string]string)}
+	return &memTasks{
+		tasks:   make(map[string]*TaskInfo),
+		reasons: make(map[string]string),
+		steers:  make(map[string]string),
+		gets:    make(map[string]int),
+	}
 }
 
 // SetSteer arms a pending supervisor steer for a task, as the watchdog's
@@ -100,12 +107,22 @@ func (m *memTasks) Put(t TaskInfo) {
 	m.tasks[t.ID] = &t
 }
 
+func (m *memTasks) SetGetTaskHook(hook func(id string, t *TaskInfo, count int)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onGet = hook
+}
+
 func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
 	if !ok {
 		return TaskInfo{}, fmt.Errorf("task %s not found", id)
+	}
+	m.gets[id]++
+	if m.onGet != nil {
+		m.onGet(id, t, m.gets[id])
 	}
 	cp := *t
 	// Shallow-copy the Execution struct so concurrent callers each get their
@@ -2222,6 +2239,115 @@ func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
 
 	if agents.CallCount() != 0 {
 		t.Fatalf("expected 0 agent starts for done task, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "done", status: "done"},
+		{name: "cancelled", status: "cancelled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			tasks.Put(TaskInfo{
+				ID:        "t1",
+				Status:    "in-review",
+				AgentMode: "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecRunning,
+					Variables:   make(map[string]string),
+				},
+			})
+			tasks.SetGetTaskHook(func(id string, task *TaskInfo, count int) {
+				if id == "t1" && count == 1 {
+					task.Status = tc.status
+				}
+			})
+
+			engine.ResumeStalled()
+
+			if got := agents.CallCount(); got != 0 {
+				t.Fatalf("expected 0 agent starts after status flipped to %s, got %d", tc.status, got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.status {
+				t.Fatalf("status = %q, want %q", got.Status, tc.status)
+			}
+		})
+	}
+}
+
+func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+	}{
+		{name: "done", status: "done"},
+		{name: "cancelled", status: "cancelled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStoreWith(t, "test-parallel.yaml")
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			tasks.Put(TaskInfo{
+				ID:        "t1",
+				Status:    "in-progress",
+				AgentMode: "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-parallel",
+					CurrentStep: "plan",
+					State:       ExecWaiting,
+					Variables:   make(map[string]string),
+					ParallelInflight: map[string]*ParallelChildren{
+						"plan": {
+							ParentStepID: "plan",
+							Children: map[string]*ChildStatus{
+								"plan_a": {Status: "pending", AgentID: "limited-agent", Provider: "claude"},
+								"plan_b": {Status: "pending", AgentID: "other-agent", Provider: "codex"},
+							},
+						},
+					},
+				},
+			})
+			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+			tasks.SetGetTaskHook(func(id string, task *TaskInfo, count int) {
+				if id == "t1" && count == 2 {
+					task.Status = tc.status
+				}
+			})
+
+			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+			if got := agents.CallCount(); got != 0 {
+				t.Fatalf("expected 0 replacement agent starts after status flipped to %s, got %d", tc.status, got)
+			}
+			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+				t.Fatal("rate-limited child step mapping was not cleared")
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.status {
+				t.Fatalf("status = %q, want %q", got.Status, tc.status)
+			}
+		})
 	}
 }
 

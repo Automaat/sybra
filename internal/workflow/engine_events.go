@@ -419,7 +419,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		e.clearAgentStep(agentID)
 		return
 	}
-	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || t.Status == "human-required" {
+	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
 		e.clearAgentStep(agentID)
 		return
 	}
@@ -503,7 +503,8 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	defer e.releaseInflight(taskID)
 
 	fresh, err := e.tasks.GetTask(taskID)
-	if err != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != parent.ID || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || fresh.Status == "human-required" {
+	_, skip := resumeSkipReasonForStatus(fresh.Status)
+	if err != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != parent.ID || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || skip {
 		e.clearAgentStep(agentID)
 		return
 	}
@@ -682,7 +683,8 @@ func (e *Engine) ResumeStalled() {
 		// calls: by the time we acquire dispatching, a prior goroutine may have
 		// already advanced the workflow past this step.
 		fresh, fErr := e.tasks.GetTask(t.ID)
-		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || fresh.Status == "human-required" {
+		_, skip := resumeSkipReasonForStatus(fresh.Status)
+		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || skip {
 			e.mu.Lock()
 			delete(e.dispatching, t.ID)
 			e.mu.Unlock()
