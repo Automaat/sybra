@@ -18,6 +18,14 @@ import (
 // internal/task -> internal/workflow).
 var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
 
+// ErrTaskBranchMissing indicates a task's own branch does not exist locally
+// or on origin, so PrepareForBranchFix cannot check it out for no-PR conflict
+// recovery. Unlike PrepareForFix (which falls back to the PR head ref via
+// refs/pull/<N>/head), there is no PR yet to fall back to — a missing branch
+// here is a hard failure the caller must escalate to human-required rather
+// than guess at.
+var ErrTaskBranchMissing = errors.New("task branch does not exist locally or on origin")
+
 // SyncResult classifies the outcome of a proactive branch sync
 // (Manager.SyncTaskBranch). String values are stable — they are recorded as
 // workflow step output and generic artifacts, so renaming a constant changes
@@ -462,6 +470,80 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
+	}
+	return wtPath, nil
+}
+
+// PrepareForBranchFix creates a worktree checking out the task's OWN branch
+// (resolved by name via branchNameForTask, not via a PR lookup) so a no-PR
+// conflict-recovery agent can merge base in and push. Sibling of
+// PrepareForFix for tasks with no PR yet (still in
+// implementation/review/testing, or at create_pr): the same non-rebasing
+// checkout dance, minus PrepareForFix's PR-head fallback — a task's own
+// branch either exists (locally or on origin) or this is a hard failure
+// (ErrTaskBranchMissing) that must escalate rather than guess at a ref to
+// check out. Does not change PrepareForFix's behavior for its own PR-keyed
+// callers.
+func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
+	// Adopt an externally-created worktree as-is, mirroring PrepareForFix.
+	if t.WorktreeDir != "" {
+		return m.adoptWorktree(ctx, t, nil)
+	}
+
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return "", fmt.Errorf("get project: %w", err)
+	}
+	var fetchErr error
+	if fetchErr = project.FetchOrigin(ctx, proj.ClonePath); fetchErr != nil {
+		m.logger.Warn("branch-fix.worktree.fetch", "project", proj.ID, "err", fetchErr)
+	}
+
+	branch := branchNameForTask(t)
+	wtPath := m.PathFor(t)
+
+	// Remove stale worktree, same rationale as PrepareForFix.
+	switch _, statErr := os.Stat(wtPath); {
+	case statErr == nil:
+		if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
+			return "", fmt.Errorf("remove stale branch-fix worktree: %w", err)
+		}
+	case !os.IsNotExist(statErr):
+		return "", fmt.Errorf("stat branch-fix worktree %s: %w", wtPath, statErr)
+	}
+
+	originRef := "refs/remotes/origin/" + branch
+	switch {
+	case project.BranchExists(ctx, proj.ClonePath, branch):
+		if err := project.CreateWorktreeExisting(ctx, proj.ClonePath, wtPath, branch); err != nil {
+			return "", fmt.Errorf("checkout task branch %s: %w", branch, err)
+		}
+	case project.RefExists(ctx, proj.ClonePath, originRef):
+		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, originRef); err != nil {
+			return "", fmt.Errorf("create branch-fix worktree: %w", err)
+		}
+	default:
+		if fetchErr != nil {
+			return "", fmt.Errorf("fetch origin for task branch %s: %w", branch, fetchErr)
+		}
+		// No PR to fall back to (unlike PrepareForFix) — the branch is
+		// genuinely missing. Escalate rather than guess.
+		return "", fmt.Errorf("%w: %s", ErrTaskBranchMissing, branch)
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	m.ensureBranch(t, branch)
+	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
+	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return "", fmt.Errorf("branch-fix setup: %w", err)
+	}
+	// pr-fix-role recovery runs must push straight to origin (the task's own
+	// branch lives there, no fork), mirroring PrepareForFix's RunRole guard.
+	if t.RunRole != "pr-fix" {
+		if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
+			m.logger.Warn("branch-fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+		}
 	}
 	return wtPath, nil
 }

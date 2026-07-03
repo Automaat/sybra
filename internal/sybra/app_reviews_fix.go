@@ -2,8 +2,10 @@ package sybra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -16,7 +18,23 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+// branchConflictFixWorkflowID is the builtin workflow started directly (by
+// ID, via StartWorkflowWithVars) to recover a no-PR branch conflict. It is
+// never reached via DispatchEvent/trigger matching — see
+// internal/workflow/builtin/branch-conflict-fix.yaml.
+const branchConflictFixWorkflowID = "branch-conflict-fix"
+const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
+
 const wtFailureLimit = 5
+
+type branchConflictResumeState struct {
+	status       string
+	statusReason string
+	workflowID   string
+	workflowStep string
+	workflowVars string
+	prior        *workflow.Execution
+}
 
 const prFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
 	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
@@ -427,7 +445,9 @@ func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, ha
 	// dispatchPRIssue -> workflowEngine.DispatchEvent eventually reaches
 	// execShell, which derives its context from workflow.Engine's own e.ctx
 	// field (Engine.SetContext), not an explicit parameter threaded here.
-	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	// contextcheck no longer flags this call site (verified with a clean
+	// build+lint cache), so no suppression directive is needed here.
+	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir)
 }
 
 // autoResolveConflict attempts the deterministic clean-merge fast-path for a
@@ -639,8 +659,17 @@ func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
 		return false
 	}
 	t, err := r.tasks.Get(taskID)
-	if err != nil || t.PRNumber == 0 || t.ProjectID == "" {
+	if err != nil || t.ProjectID == "" {
 		return false
+	}
+	// No PR yet (still in implementation/review/testing, or at create_pr) —
+	// there is no PR to check out via the PR-numbered path below. Resolve the
+	// task's own branch by name instead. This never re-enters the PR-numbered
+	// branch: recoverBranchConflictNoPR has its own return, so the code below
+	// (and its byte-for-byte behavior for t.PRNumber != 0) is unreachable from
+	// this branch.
+	if t.PRNumber == 0 {
+		return r.recoverBranchConflictNoPR(t)
 	}
 	// Don't loop forever on a genuinely unresolvable conflict — once the
 	// conflict-fix budget is spent the normal exhaustion path escalates.
@@ -673,6 +702,200 @@ func (r *ReviewHandler) recoverStaleBranchConflict(taskID string) bool {
 	return r.handlePRIssue(context.Background(), github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
 }
 
+// recoverBranchConflictNoPR is the no-PR sibling of recoverStaleBranchConflict:
+// the task has no linked PR yet (still in implementation/review/testing, or
+// at create_pr), so there is no PR head to check out. Instead it resolves the
+// task's OWN branch by name (PrepareForBranchFix), merges base into it via a
+// bounded headless pr-fix sub-run (branch-conflict-fix workflow — a merge,
+// never a rebase, so a plain push always succeeds), and on success resumes
+// the task's original interrupted workflow/stage rather than jumping to a
+// terminal status.
+//
+// Guards fail closed exactly like the PR-numbered path: a missing dependency,
+// an exhausted no-PR branch-conflict retry budget, or an already-in-flight
+// recovery for this task
+// (branchRecoveryMu/branchRecoveryInFlight) all return false so the caller
+// (markRebaseBlocked) escalates to human-required as before. Never loops:
+// a conflict discovered while resolving THIS conflict re-enters
+// markRebaseBlocked -> recoverStaleBranchConflict -> here, and the in-flight
+// marker (still held from the outer call, since this method runs
+// synchronously start to finish) makes the re-entrant call bail out
+// immediately.
+func (r *ReviewHandler) recoverBranchConflictNoPR(t task.Task) bool {
+	taskID := t.ID
+	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
+		return false
+	}
+
+	r.branchRecoveryMu.Lock()
+	if r.branchRecoveryInFlight == nil {
+		r.branchRecoveryInFlight = make(map[string]struct{})
+	}
+	if _, busy := r.branchRecoveryInFlight[taskID]; busy {
+		r.branchRecoveryMu.Unlock()
+		return false
+	}
+	r.branchRecoveryInFlight[taskID] = struct{}{}
+	r.branchRecoveryMu.Unlock()
+	defer func() {
+		r.branchRecoveryMu.Lock()
+		delete(r.branchRecoveryInFlight, taskID)
+		r.branchRecoveryMu.Unlock()
+	}()
+
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil {
+		r.logger.Warn("pr-monitor.branch-conflict.project", "task_id", taskID, "err", err)
+		return false
+	}
+	ctx := context.Background()
+	base, err := project.DefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		r.logger.Warn("pr-monitor.branch-conflict.base", "task_id", taskID, "err", err)
+		return false
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		r.logger.Warn("pr-monitor.branch-conflict.base-empty", "task_id", taskID)
+		return false
+	}
+
+	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
+	if err != nil {
+		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
+		r.recordWorktreeFailure(taskID, err)
+		return false
+	}
+	delete(r.wtFailures, taskID)
+	// Refetch: PrepareForBranchFix's ensureBranch call may have just set
+	// t.Branch for the first time (a task whose worktree never got created
+	// before this recovery), and branchConflictPrompt needs the resolved name.
+	if refetched, gerr := r.tasks.Get(taskID); gerr == nil {
+		t = refetched
+	}
+	resume := r.captureBranchConflictResumeState(t)
+	if r.workflowEngine.HasActiveWorkflow(taskID) {
+		if _, cancelErr := r.workflowEngine.CancelWorkflow(taskID, "branch conflict recovery"); cancelErr != nil {
+			r.logger.Error("pr-monitor.branch-conflict.cancel-active-workflow", "task_id", taskID, "err", cancelErr)
+			return false
+		}
+	}
+
+	headSHA, shaErr := project.CurrentCommit(ctx, dir)
+	if shaErr != nil {
+		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
+	}
+	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume)
+}
+
+func (r *ReviewHandler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
+	state := branchConflictResumeState{
+		status:       string(t.Status),
+		statusReason: t.StatusReason,
+		prior:        t.Workflow.Clone(),
+	}
+	if t.Workflow == nil {
+		return state
+	}
+	state.workflowID = t.Workflow.WorkflowID
+	state.workflowStep = t.Workflow.CurrentStep
+	captured := make(map[string]string, len(t.Workflow.Variables))
+	maps.Copy(captured, t.Workflow.Variables)
+	if encoded, err := json.Marshal(captured); err == nil {
+		state.workflowVars = string(encoded)
+	} else {
+		r.logger.Warn("pr-monitor.branch-conflict.resume-vars-encode", "task_id", t.ID, "err", err)
+	}
+	return state
+}
+
+func (r *ReviewHandler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState) bool {
+	vars := map[string]string{
+		"prompt":                branchConflictPrompt(t, base) + prFixResultContract,
+		workflow.WorkflowVarDir: dir,
+		"resume_status":         resume.status,
+		"resume_status_reason":  resume.statusReason,
+	}
+	if resume.workflowID != "" {
+		vars["resume_workflow_id"] = resume.workflowID
+		vars["resume_workflow_step"] = resume.workflowStep
+		vars["resume_workflow_vars"] = resume.workflowVars
+	}
+
+	if err := r.workflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars); err != nil {
+		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
+		if resume.prior != nil {
+			if _, restoreErr := r.tasks.Update(taskID, task.Update{
+				Status:   task.Ptr(task.Status(resume.status)),
+				Workflow: task.Ptr(resume.prior),
+			}); restoreErr != nil {
+				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
+			}
+		}
+		return false
+	}
+
+	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
+	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
+	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
+	return true
+}
+
+func (r *ReviewHandler) recordWorktreeFailure(taskID string, wtErr error) {
+	if r.wtFailures == nil {
+		r.wtFailures = make(map[string]int)
+	}
+	r.wtFailures[taskID]++
+	if r.wtFailures[taskID] >= wtFailureLimit {
+		delete(r.wtFailures, taskID)
+		r.logger.Error("pr-monitor.worktree.circuit-open",
+			"task_id", taskID, "failures", wtFailureLimit, "err", wtErr)
+		if _, uerr := r.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+		}); uerr != nil {
+			r.logger.Error("pr-monitor.worktree.escalate", "task_id", taskID, "err", uerr)
+		}
+		return
+	}
+	r.logger.Error("pr-monitor.worktree", "task_id", taskID, "err", wtErr)
+}
+
+// branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
+// PR head to reference, so it resolves the task's own branch (t.Branch, set
+// by PrepareForBranchFix before this is called) and instructs a plain merge
+// (never a rebase, so a plain push is always expected to succeed).
+func branchConflictPrompt(t task.Task, base string) string {
+	branch := t.Branch
+	if branch == "" {
+		branch = "the task's current branch"
+	}
+	return fmt.Sprintf(
+		"Fix merge conflicts on branch `%s` (this task has no PR yet). "+
+			"Use the task description and current code as context, then merge.\n\n"+
+			"Steps:\n"+
+			"```bash\n"+
+			"git fetch origin\n"+
+			"git merge refs/remotes/origin/%s\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# this branch's intent and the upstream changes, run targeted tests for\n"+
+			"# touched code, then git add and git commit to complete the merge.\n"+
+			"# If the merge already completed on its own (clean/fast-forward, no\n"+
+			"# conflicts), it is already committed — do not run git commit again, it\n"+
+			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
+			"git push origin HEAD:%s\n"+
+			"```\n\n"+
+			"Rules:\n"+
+			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
+			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
+			"- Resolve conflicts keeping BOTH sides' intent\n"+
+			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
+			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
+			"- No investigation, no extra commits, no unrelated changes",
+		branch, base, branch, base, base,
+	)
+}
+
 // prepareWorktree sets up the fix worktree for the given task and PR issue.
 // Returns ("", false) on error, with circuit-breaker escalation after wtFailureLimit
 // consecutive failures. Returns ("", true) when no worktree is needed.
@@ -703,23 +926,7 @@ func (r *ReviewHandler) prepareWorktree(ctx context.Context, t task.Task, issue 
 		if markRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
 			return "", false
 		}
-		if r.wtFailures == nil {
-			r.wtFailures = make(map[string]int)
-		}
-		r.wtFailures[t.ID]++
-		if r.wtFailures[t.ID] >= wtFailureLimit {
-			delete(r.wtFailures, t.ID)
-			r.logger.Error("pr-monitor.worktree.circuit-open",
-				"task_id", t.ID, "failures", wtFailureLimit, "err", wtErr)
-			if _, uerr := r.tasks.Update(t.ID, task.Update{
-				Status:       task.Ptr(task.StatusHumanRequired),
-				StatusReason: task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
-			}); uerr != nil {
-				r.logger.Error("pr-monitor.worktree.escalate", "task_id", t.ID, "err", uerr)
-			}
-			return "", false
-		}
-		r.logger.Error("pr-monitor.worktree", "task_id", t.ID, "err", wtErr)
+		r.recordWorktreeFailure(t.ID, wtErr)
 		return "", false
 	}
 	delete(r.wtFailures, t.ID)

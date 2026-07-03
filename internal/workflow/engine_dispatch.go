@@ -25,11 +25,19 @@ func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 // (restart + UI button, two loop-agent ticks, etc) never both spawn agents
 // for the same task. Second caller gets ErrWorkflowAlreadyActive.
 func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[string]string) error {
+	return e.StartWorkflowFromStepWithVars(taskID, workflowID, "", vars)
+}
+
+// StartWorkflowFromStepWithVars is StartWorkflowWithVars with an optional
+// explicit entry step. An empty startStepID uses the workflow's first step.
+// Used by recovery flows that must resume at the interrupted step rather than
+// replaying the workflow from the beginning.
+func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID string, vars map[string]string) error {
 	// startWorkflowLocked holds the `starting` marker; it is released by the
 	// time this returns, so firing the completion here cannot re-enter against
 	// it. This is what lets a synchronous mechanical workflow (e.g.
 	// simple-task-handoff) cascade into its successor.
-	comp, err := e.startWorkflowLocked(taskID, workflowID, vars)
+	comp, err := e.startWorkflowLocked(taskID, workflowID, startStepID, vars)
 	e.fireComplete(comp)
 	return err
 }
@@ -40,7 +48,7 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 // fireComplete only AFTER releasing its own per-task marker (starting via this
 // function's defer, plus dispatching for DispatchEvent) so the completion's
 // cascade dispatch is not rejected as re-entrant.
-func (e *Engine) startWorkflowLocked(taskID, workflowID string, vars map[string]string) (*CompletionInfo, error) {
+func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
 	e.mu.Lock()
 	if _, busy := e.starting[taskID]; busy {
 		e.mu.Unlock()
@@ -73,8 +81,13 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID string, vars map[string]
 		return nil, fmt.Errorf("get workflow %s: %w", workflowID, err)
 	}
 
-	first := def.FirstStep()
-	if first == nil {
+	start := def.FirstStep()
+	if startStepID != "" {
+		start = def.StepByID(startStepID)
+		if start == nil {
+			return nil, fmt.Errorf("workflow %s step %s not found", workflowID, startStepID)
+		}
+	} else if start == nil {
 		return nil, fmt.Errorf("workflow %s has no steps", workflowID)
 	}
 
@@ -83,7 +96,7 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID string, vars map[string]
 
 	wfExec := &Execution{
 		WorkflowID:  workflowID,
-		CurrentStep: first.ID,
+		CurrentStep: start.ID,
 		State:       ExecRunning,
 		Variables:   variables,
 		StartedAt:   time.Now().UTC(),
@@ -93,8 +106,8 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID string, vars map[string]
 		return nil, fmt.Errorf("set workflow on task: %w", err)
 	}
 
-	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", first.ID)
-	return e.executeSteps(taskID, &def, first, wfExec)
+	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", start.ID)
+	return e.executeSteps(taskID, &def, start, wfExec)
 }
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.
@@ -188,7 +201,7 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	if def == nil {
 		return "", nil
 	}
-	comp, sErr := e.startWorkflowLocked(taskID, def.ID, vars)
+	comp, sErr := e.startWorkflowLocked(taskID, def.ID, "", vars)
 	if sErr != nil {
 		return "", fmt.Errorf("start %s: %w", def.ID, sErr)
 	}

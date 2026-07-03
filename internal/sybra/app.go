@@ -248,7 +248,12 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	emit := func(event string, data any) { //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
+	// This closure's DispatchEvent -> execShell eventually derives its
+	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
+	// not an explicit parameter threaded through the closure. contextcheck
+	// no longer flags this call site (verified with a clean build+lint
+	// cache), so no suppression directive is needed here.
+	emit := func(event string, data any) {
 		switch event {
 		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
 			if path, ok := data.(string); ok {
