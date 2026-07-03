@@ -166,9 +166,17 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Cancel context shortly after handler starts waiting for approval.
+	// Cancel once the handler has registered the pending approval (i.e. is
+	// actually blocked waiting), instead of guessing a sleep duration.
+	registered := make(chan bool, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		ok := pollUntil(2*time.Second, time.Millisecond, func() bool {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			_, ok := srv.pending["tuid-cancel"]
+			return ok
+		})
+		registered <- ok
 		cancel()
 	}()
 
@@ -183,6 +191,10 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler blocked after context cancellation")
+	}
+
+	if !<-registered {
+		t.Errorf("pending approval %q was not registered before cancellation", "tuid-cancel")
 	}
 
 	var out hookResponse
@@ -227,10 +239,20 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 	srv.SetManager(mgr)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
-	// Respond approve concurrently after the pending item is registered.
+	// Respond approve once the pending item is actually registered, instead
+	// of guessing how long registration takes.
+	registered := make(chan bool, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = srv.RespondApproval("tuid-approve", true)
+		ok := pollUntil(2*time.Second, time.Millisecond, func() bool {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			_, ok := srv.pending["tuid-approve"]
+			return ok
+		})
+		if ok {
+			_ = srv.RespondApproval("tuid-approve", true)
+		}
+		registered <- ok
 	}()
 
 	resp := postHook(t, srv.Addr(), map[string]any{
@@ -239,6 +261,10 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 		"tool_use_id": "tuid-approve",
 		"tool_input":  map[string]any{"command": "echo hi"},
 	})
+
+	if !<-registered {
+		t.Errorf("pending approval %q was not registered before approving", "tuid-approve")
+	}
 	if resp.HookSpecificOutput.PermissionDecision != "allow" {
 		t.Errorf("expected allow after approve, got %q", resp.HookSpecificOutput.PermissionDecision)
 	}
@@ -265,9 +291,18 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 	srv.SetManager(mgr)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 
+	registered := make(chan bool, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = srv.RespondApproval("tuid-deny", false)
+		ok := pollUntil(2*time.Second, time.Millisecond, func() bool {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			_, ok := srv.pending["tuid-deny"]
+			return ok
+		})
+		if ok {
+			_ = srv.RespondApproval("tuid-deny", false)
+		}
+		registered <- ok
 	}()
 
 	resp := postHook(t, srv.Addr(), map[string]any{
@@ -276,6 +311,10 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 		"tool_use_id": "tuid-deny",
 		"tool_input":  map[string]any{"file_path": "/tmp/x"},
 	})
+
+	if !<-registered {
+		t.Errorf("pending approval %q was not registered before denying", "tuid-deny")
+	}
 	if resp.HookSpecificOutput.PermissionDecision != "deny" {
 		t.Errorf("expected deny, got %q", resp.HookSpecificOutput.PermissionDecision)
 	}

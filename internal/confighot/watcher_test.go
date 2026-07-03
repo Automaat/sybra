@@ -76,7 +76,10 @@ func TestWatcher_BurstCoalescesToOne(t *testing.T) {
 	}
 
 	waitForCount(t, &calls, 1, 3*time.Second)
-	// Pause to ensure no extra calls arrive
+	// Absence check: confirm no further debounced call arrives once the
+	// real 500ms debounce window has elapsed. There is no event to poll for
+	// here — the real-time window itself is the behavior under test — so a
+	// bounded sleep past it is the correct wait, not a guess.
 	time.Sleep(700 * time.Millisecond)
 	if got := calls.Load(); got != 1 {
 		t.Errorf("burst produced %d calls, want 1", got)
@@ -134,7 +137,8 @@ func TestWatcher_DeleteIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait long enough to see if any spurious call comes through
+	// Absence check bound by the real 500ms debounce window — see comment in
+	// TestWatcher_BurstCoalescesToOne.
 	time.Sleep(700 * time.Millisecond)
 	if got := calls.Load(); got != 0 {
 		t.Errorf("delete triggered %d calls, want 0", got)
@@ -162,6 +166,8 @@ func TestWatcher_SiblingFileIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Absence check bound by the real 500ms debounce window — see comment in
+	// TestWatcher_BurstCoalescesToOne.
 	time.Sleep(700 * time.Millisecond)
 	if got := calls.Load(); got != 0 {
 		t.Errorf("sibling write triggered %d calls, want 0", got)

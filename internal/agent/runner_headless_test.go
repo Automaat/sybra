@@ -581,8 +581,13 @@ func TestStreamHeadlessOutput_ContextCancelReturns(t *testing.T) {
 		close(done)
 	}()
 
-	// Give the reader time to consume the first line.
-	time.Sleep(100 * time.Millisecond)
+	// Wait until the reader has actually consumed the first line, instead of
+	// guessing how long that takes.
+	if !pollUntil(2*time.Second, time.Millisecond, func() bool {
+		return len(a.Output()) >= 1
+	}) {
+		t.Error("stream never recorded the first event before cancellation")
+	}
 	cancel()
 	// Closing the writer is what actually unblocks bufio.Scanner — this is
 	// the same effect as the subprocess dying after ctx cancel propagates.
@@ -758,12 +763,21 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 	// Respond to the escalation immediately: send false (kill) so the stream
 	// exits cleanly without hanging the test.
 	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	raised := make(chan bool, 1)
 	go func() {
-		// Wait briefly for the escalation to be raised, then cancel.
-		time.Sleep(50 * time.Millisecond)
+		// Wait until the escalation has actually been raised, then cancel.
+		raised <- pollUntil(2*time.Second, time.Millisecond, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return blocked > 0
+		})
 		cancel()
 	}()
 	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+
+	if !<-raised {
+		t.Error("turns escalation was never raised before cancellation")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
