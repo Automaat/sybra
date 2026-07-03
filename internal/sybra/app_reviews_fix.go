@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -389,14 +390,94 @@ func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, ha
 		r.logPRIssueDetected(t.ID, handle[i])
 	}
 	primary := handle[0]
+
+	// Early mutation guard: a workflow may already be active for this task
+	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
+	// or a fresh worktree prep race it. handleTaskPRIssues already applies this
+	// gate for its own callers, but dispatchFixIssues is also reached via
+	// handlePRIssue/recoverStaleBranchConflict, so it is repeated here.
+	if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(t.ID) {
+		return false
+	}
+
 	dir, ok := r.prepareWorktree(ctx, t, primary)
 	if !ok {
 		return false
 	}
+
+	if r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
+		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
+		r.autoResolveConflict(ctx, t, primary.PR, dir) {
+		return true
+	}
+
 	// dispatchPRIssue -> workflowEngine.DispatchEvent eventually reaches
 	// execShell, which derives its context from workflow.Engine's own e.ctx
 	// field (Engine.SetContext), not an explicit parameter threaded here.
 	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+}
+
+// autoResolveConflict attempts the deterministic clean-merge fast-path for a
+// single conflict-only PR issue: fetch the base branch, run a real git merge
+// via tryCleanMergeFn, and — only when that merge creates a new commit with no
+// conflicting hunks — push it via pushSyncFn and mark the issue handled.
+// Returns false for a conflicting merge, a no-op merge (branch was already up
+// to date — nothing to push, so the agent still needs to look at why GitHub
+// reports a conflict), or any fetch/merge/push error; the caller then falls
+// through to the agent-assisted recovery path unchanged.
+func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr github.PullRequest, dir string) bool {
+	base := pr.BaseRefName
+	if base == "" && t.ProjectID != "" {
+		if proj, err := r.projects.Get(t.ProjectID); err == nil {
+			if db, dbErr := project.DefaultBranch(ctx, proj.ClonePath); dbErr == nil {
+				base = db
+			}
+		}
+	}
+	if base == "" {
+		base = "main"
+	}
+
+	if err := executil.Run(ctx, dir, "git", "fetch", "origin", base); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+		return false
+	}
+
+	mergeFn := r.tryCleanMergeFn
+	if mergeFn == nil {
+		mergeFn = project.TryCleanMerge
+	}
+	result, err := mergeFn(ctx, dir, "refs/remotes/origin/"+base)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.merge", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+		return false
+	}
+	if result != project.CleanMergeCreated {
+		return false
+	}
+
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+
+	pushFn := r.pushSyncFn
+	if pushFn == nil {
+		pushFn = project.PushSync
+	}
+	if err := pushFn(ctx, dir, branch); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.push", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+		return false
+	}
+
+	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, pr.HeadSHA)
+	r.evictReadyPRCache(pr.Repository, pr.Number)
+	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
+		"pr": pr.Number, "issue": string(github.PRIssueConflict), "base_ref": base,
+	})
+	r.logger.Info("pr-monitor.auto-resolved", "task_id", t.ID, "pr", pr.Number, "base_ref", base)
+	return true
 }
 
 // dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks

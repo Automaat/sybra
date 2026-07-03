@@ -1,6 +1,7 @@
 package project
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -2160,6 +2161,185 @@ func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 		}
 		if len(staleFiles) != 1 {
 			t.Fatalf("expected stale local head to remain at 1 file, got %v", staleFiles)
+		}
+	})
+}
+
+// initSecondWorktree adds a second worktree from the same bare repo, checked
+// out on branch (created off baseBranch when it doesn't already exist as a
+// local branch), so a commit made there is immediately visible to sibling
+// worktrees via the shared git dir — no push required.
+func initSecondWorktree(t *testing.T, bare, branch, baseBranch string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "wt2")
+	var err error
+	if BranchExists(context.Background(), bare, branch) {
+		err = CreateWorktreeExisting(context.Background(), bare, dir, branch)
+	} else {
+		err = CreateWorktree(context.Background(), bare, dir, branch, baseBranch)
+	}
+	if err != nil {
+		t.Fatalf("create second worktree: %v", err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func writeAndCommit(t *testing.T, dir, file, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", file, err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", message},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+func TestTryCleanMerge(t *testing.T) {
+	t.Parallel()
+
+	t.Run("created: clean merge advances the branch", func(t *testing.T) {
+		t.Parallel()
+		bare, wtPath := initWorktree(t)
+		branch, err := DefaultBranch(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("DefaultBranch: %v", err)
+		}
+
+		// Advance base with an unrelated file in a sibling worktree.
+		basePath := initSecondWorktree(t, bare, branch, branch)
+		writeAndCommit(t, basePath, "unrelated.txt", "unrelated change", "advance base")
+
+		preHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse pre HEAD: %v", err)
+		}
+
+		result, err := TryCleanMerge(context.Background(), wtPath, "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("TryCleanMerge: %v", err)
+		}
+		if result != CleanMergeCreated {
+			t.Fatalf("result = %v, want CleanMergeCreated", result)
+		}
+
+		postHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse post HEAD: %v", err)
+		}
+		if bytes.Equal(postHEAD, preHEAD) {
+			t.Fatal("HEAD did not move after a created clean merge")
+		}
+		if _, err := os.Stat(filepath.Join(wtPath, "unrelated.txt")); err != nil {
+			t.Errorf("merged file missing after clean merge: %v", err)
+		}
+		statusOut, _ := exec.Command("git", "-C", wtPath, "status", "--porcelain").Output()
+		if strings.TrimSpace(string(statusOut)) != "" {
+			t.Errorf("worktree not clean after created merge: %s", statusOut)
+		}
+	})
+
+	t.Run("conflict: worktree is left clean", func(t *testing.T) {
+		t.Parallel()
+		bare, wtPath := initWorktree(t)
+		branch, err := DefaultBranch(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("DefaultBranch: %v", err)
+		}
+
+		// Conflicting edits to README.md on both sides.
+		writeAndCommit(t, wtPath, "README.md", "task branch change", "task edit")
+		basePath := initSecondWorktree(t, bare, branch, branch)
+		writeAndCommit(t, basePath, "README.md", "base branch change", "base edit")
+
+		preHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse pre HEAD: %v", err)
+		}
+
+		result, err := TryCleanMerge(context.Background(), wtPath, "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("TryCleanMerge: %v", err)
+		}
+		if result != CleanMergeConflict {
+			t.Fatalf("result = %v, want CleanMergeConflict", result)
+		}
+
+		postHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse post HEAD: %v", err)
+		}
+		if !bytes.Equal(postHEAD, preHEAD) {
+			t.Error("HEAD moved after a conflicting merge, want unchanged")
+		}
+		statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").Output()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if strings.TrimSpace(string(statusOut)) != "" {
+			t.Fatalf("worktree not clean after conflicting merge: %s", statusOut)
+		}
+		if _, err := os.Stat(filepath.Join(wtPath, ".git", "MERGE_HEAD")); err == nil {
+			t.Error("MERGE_HEAD still present after conflict cleanup")
+		}
+	})
+
+	t.Run("no-op: branch already contains base", func(t *testing.T) {
+		t.Parallel()
+		bare, wtPath := initWorktree(t)
+		branch, err := DefaultBranch(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("DefaultBranch: %v", err)
+		}
+
+		preHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse pre HEAD: %v", err)
+		}
+
+		result, err := TryCleanMerge(context.Background(), wtPath, "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("TryCleanMerge: %v", err)
+		}
+		if result != CleanMergeNoop {
+			t.Fatalf("result = %v, want CleanMergeNoop", result)
+		}
+
+		postHEAD, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("rev-parse post HEAD: %v", err)
+		}
+		if !bytes.Equal(postHEAD, preHEAD) {
+			t.Error("HEAD moved on a no-op merge")
+		}
+	})
+
+	t.Run("invalid base ref returns an error", func(t *testing.T) {
+		t.Parallel()
+		_, wtPath := initWorktree(t)
+
+		result, err := TryCleanMerge(context.Background(), wtPath, "refs/heads/does-not-exist")
+		if err == nil {
+			t.Fatal("expected error for unresolvable base ref")
+		}
+		if result != CleanMergeConflict {
+			t.Errorf("result = %v, want CleanMergeConflict on error", result)
 		}
 	})
 }

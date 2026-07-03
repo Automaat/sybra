@@ -552,6 +552,32 @@ func TestLoadGitHubNativeAutoMerge(t *testing.T) {
 	}
 }
 
+func TestDefaultGitHubAutoResolveCleanMerges(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	if cfg.GitHub.AutoResolveCleanMerges {
+		t.Error("default GitHub.AutoResolveCleanMerges should be false (kill-switch, opt-in)")
+	}
+}
+
+func TestLoadGitHubAutoResolveCleanMerges(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("github:\n  auto_resolve_clean_merges: true\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GitHub.AutoResolveCleanMerges {
+		t.Error("AutoResolveCleanMerges = false, want true after round-tripping through yaml")
+	}
+}
+
 func TestDefaultRequirePermissions(t *testing.T) {
 	t.Parallel()
 	boolPtr := func(b bool) *bool { return &b }

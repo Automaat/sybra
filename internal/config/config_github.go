@@ -28,6 +28,13 @@ type GitHubConfig struct {
 	// replacement — when unsupported or disabled the legacy merge stays the
 	// fallback. Default off (zero value = false).
 	NativeAutoMerge bool `yaml:"native_auto_merge" json:"nativeAutoMerge"`
+	// AutoResolveCleanMerges is a kill-switch for the deterministic
+	// clean-merge fast-path: before dispatching a conflict-recovery agent,
+	// Sybra attempts a plain `git merge` of the PR's base branch in Go. When
+	// that merge creates a commit with no conflicting hunks, it is pushed and
+	// no agent is spawned; conflicts, no-op merges, and errors still fall
+	// through to the agent-assisted path. Default off (zero value = false).
+	AutoResolveCleanMerges bool `yaml:"auto_resolve_clean_merges" json:"autoResolveCleanMerges"`
 }
 
 // GitHubAppConfig holds GitHub App installation-token credentials. The private

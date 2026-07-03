@@ -32,22 +32,27 @@ const (
 	EventAutoMergeEnabled         = "pr_monitor.auto_merge_enabled"
 	EventPROrphanAdopted          = "pr_monitor.orphan_adopted"
 	EventPRCopilotThreadsResolved = "pr_monitor.copilot_threads_resolved"
-	EventReviewStarted            = "review.agent_started"
-	EventFixReviewStarted         = "fix_review.agent_started"
-	EventReviewPublished          = "review.published"
-	EventTodoistImported          = "todoist.imported"
-	EventTodoistCompleted         = "todoist.completed"
-	EventRenovateCIFix            = "renovate.ci_fix_started"
-	EventHealthReport             = "health.report"
-	EventAgentStartFailed         = "agent.start_failed"
-	EventProviderGateBlocked      = "provider.gate_blocked"
-	EventHumanReviewSpawned       = "human_review.spawned"
-	EventHumanReviewVerdict       = "human_review.verdict"
-	EventHumanReviewIssue         = "human_review.issue_filed"
-	EventHumanReviewSkipped       = "human_review.skipped"
-	EventExperienceRecorded       = "experience.recorded"
-	EventExperienceSkipped        = "experience.skipped"
-	EventExperienceInjected       = "experience.injected"
+	// EventPRConflictAutoResolved records that a conflict-recovery agent was
+	// skipped because a deterministic git merge of the base branch succeeded
+	// cleanly and was pushed. Data carries only pr, issue kind, and base_ref —
+	// never PR titles, branch names, or agent output.
+	EventPRConflictAutoResolved = "pr_monitor.conflict_auto_resolved"
+	EventReviewStarted          = "review.agent_started"
+	EventFixReviewStarted       = "fix_review.agent_started"
+	EventReviewPublished        = "review.published"
+	EventTodoistImported        = "todoist.imported"
+	EventTodoistCompleted       = "todoist.completed"
+	EventRenovateCIFix          = "renovate.ci_fix_started"
+	EventHealthReport           = "health.report"
+	EventAgentStartFailed       = "agent.start_failed"
+	EventProviderGateBlocked    = "provider.gate_blocked"
+	EventHumanReviewSpawned     = "human_review.spawned"
+	EventHumanReviewVerdict     = "human_review.verdict"
+	EventHumanReviewIssue       = "human_review.issue_filed"
+	EventHumanReviewSkipped     = "human_review.skipped"
+	EventExperienceRecorded     = "experience.recorded"
+	EventExperienceSkipped      = "experience.skipped"
+	EventExperienceInjected     = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.
