@@ -391,6 +391,32 @@ func (m *Manager) ProviderRateLimited(name string) bool {
 	return g.RateLimited(name)
 }
 
+// ProviderHealthy reports whether the named provider is currently usable —
+// false for a probe-detected outage (health gate) or a config-disabled
+// provider (providers.<name>.enabled=false, via limitPolicy.ProviderEnabled).
+// The config-disabled check is independent of the health gate so it still
+// holds when providers.health_check.enabled=false and the gate is nil (checks
+// disabled, tests) — otherwise ProviderHealthy would report true for a
+// provider the admin explicitly disabled. Empty name resolves to the default
+// provider. A/B variant selection consults this so a disabled or unhealthy
+// provider is never picked as an eligible weighted variant.
+func (m *Manager) ProviderHealthy(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	lp := m.limitPolicy
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	if enabled, ok := lp.ProviderEnabled[name]; ok && !enabled {
+		return false
+	}
+	if g == nil {
+		return true
+	}
+	return g.IsHealthy(name)
+}
+
 // ProviderCanFailover reports whether the health/limit gates can route work
 // away from the named provider right now.
 func (m *Manager) ProviderCanFailover(name string) bool {

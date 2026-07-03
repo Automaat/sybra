@@ -693,6 +693,10 @@ func (a *agentAdapter) ProviderCanFailover(provider string) bool {
 	return a.agents.ProviderCanFailover(provider)
 }
 
+func (a *agentAdapter) ProviderHealthy(provider string) bool {
+	return a.agents.ProviderHealthy(provider)
+}
+
 func firstNonEmpty(a, b string) string {
 	if a != "" {
 		return a
