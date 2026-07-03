@@ -37,6 +37,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed browser_chrome.js
+var browserChromeJS string
+
 func main() {
 	code, err := run()
 	if err != nil {
@@ -190,12 +193,15 @@ func desktopBrowserOptions(cfg *config.Config, opener func(string)) []sybra.Opti
 // once and stays in a single app. One window per call by design.
 func openInAppBrowser(app *application.App, url string) {
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Sybra Browser",
-		URL:              url,
-		Width:            1100,
-		Height:           850,
-		MinWidth:         480,
-		MinHeight:        360,
+		Title:     "Sybra Browser",
+		URL:       url,
+		Width:     1100,
+		Height:    850,
+		MinWidth:  480,
+		MinHeight: 360,
+		// Throwaway JS-injected toolbar (address bar + back/forward/reload)
+		// pending a native NSToolbar — see docs on openInAppBrowser above.
+		JS:               browserChromeJS,
 		BackgroundColour: application.RGBA{Red: 255, Green: 255, Blue: 255, Alpha: 1},
 	})
 }
