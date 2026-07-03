@@ -885,8 +885,11 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	}
 
 	// Commit A: append a line — this is the commit whose patch context will
-	// no longer match once upstream edits the same file.
-	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), append(base, []byte("line2\n")...), 0o644); err != nil {
+	// no longer match once upstream edits the same file. Clone base before
+	// appending: append can mutate base's backing array in place if it has
+	// spare capacity, which would corrupt commit B's revert below.
+	withLine2 := append(append([]byte{}, base...), []byte("line2\n")...)
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), withLine2, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
