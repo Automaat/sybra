@@ -6,6 +6,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // startReasonMaxLen caps the human-facing reason written to task.StatusReason.
@@ -50,6 +51,9 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
+	case errors.Is(err, worktreeerr.ErrRebaseFailed):
+		permanent = true
+		reason = worktreeerr.RebaseBlockedReason
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		reason = "agent start blocked: " + err.Error()
 	default:
