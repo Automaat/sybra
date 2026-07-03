@@ -332,8 +332,7 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 			return true
 		}
 	}
-	_, dispatching := e.dispatchingStep[dispatchingStepKey(taskID, stepID)]
-	return dispatching
+	return e.dispatchingStep[dispatchingStepKey(taskID, stepID)] > 0
 }
 
 func dispatchingStepKey(taskID, stepID string) string {
@@ -346,13 +345,20 @@ func dispatchingStepKey(taskID, stepID string) string {
 // unmarkStepDispatching, always via defer, on every return path.
 func (e *Engine) markStepDispatching(taskID, stepID string) {
 	e.mu.Lock()
-	e.dispatchingStep[dispatchingStepKey(taskID, stepID)] = struct{}{}
+	key := dispatchingStepKey(taskID, stepID)
+	e.dispatchingStep[key]++
 	e.mu.Unlock()
 }
 
 func (e *Engine) unmarkStepDispatching(taskID, stepID string) {
 	e.mu.Lock()
-	delete(e.dispatchingStep, dispatchingStepKey(taskID, stepID))
+	key := dispatchingStepKey(taskID, stepID)
+	if e.dispatchingStep[key] <= 1 {
+		delete(e.dispatchingStep, key)
+		e.mu.Unlock()
+		return
+	}
+	e.dispatchingStep[key]--
 	e.mu.Unlock()
 }
 

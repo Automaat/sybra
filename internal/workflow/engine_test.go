@@ -311,6 +311,12 @@ type mockAgents struct {
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 }
 
+type panicStartAgents struct{ *mockAgents }
+
+func (p *panicStartAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	panic("boom")
+}
+
 func newMockAgents() *mockAgents {
 	return &mockAgents{
 		running: make(map[string]string),
@@ -2869,6 +2875,51 @@ func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
 	}
 }
 
+func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "implement" {
+		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
+	}
+	realAgentID := agents.LastID()
+	engine.clearAgentStep(realAgentID)
+
+	// Two concurrent dispatchers race for the same step: the eventual loser
+	// must not clear the winner's in-flight claim.
+	engine.markStepDispatching("t1", "implement")
+	engine.markStepDispatching("t1", "implement")
+	engine.unmarkStepDispatching("t1", "implement")
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
+
+	tiAfter, _ := tasks.GetTask("t1")
+	if tiAfter.Workflow.CurrentStep != "implement" {
+		t.Fatalf("CurrentStep = %q, want implement — one losing dispatcher must not clear the winner's claim",
+			tiAfter.Workflow.CurrentStep)
+	}
+
+	engine.unmarkStepDispatching("t1", "implement")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
+
+	tiFinal, _ := tasks.GetTask("t1")
+	if tiFinal.Workflow.CurrentStep == "implement" {
+		t.Fatalf("CurrentStep still implement — claim should clear after final unmark")
+	}
+}
+
 // TestAdvanceStep_EmptyStepIDIsNoop covers the direct-call variant: a caller
 // that passes an empty StepID (e.g. because t.Workflow.CurrentStep was reset
 // to "" by a previous completion) used to error with "step not found in
@@ -4308,6 +4359,27 @@ func TestExecRunAgent_DispatchInFlightWaits(t *testing.T) {
 	}
 	if agents.CallCount() != 0 {
 		t.Errorf("no agent should have been recorded as started, got %d calls", agents.CallCount())
+	}
+}
+
+func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := &panicStartAgents{mockAgents: newMockAgents()}
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_ = engine.StartWorkflow("t1", "test-simple")
+	}()
+
+	if recovered == nil {
+		t.Fatal("expected StartWorkflow to panic when StartAgent panics")
+	}
+	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
+		t.Fatal("dispatching claim leaked after panic")
 	}
 }
 

@@ -184,8 +184,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// HandleAgentComplete. Cleared once StartAgent returns, at which point
 	// either agentSteps (success) or the parked/failed step state takes over.
 	e.markStepDispatching(taskID, step.ID)
+	defer e.unmarkStepDispatching(taskID, step.ID)
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
-	e.unmarkStepDispatching(taskID, step.ID)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
 		// recovery loop won the race for this task). That agent will run and its
