@@ -125,6 +125,13 @@ type ReviewHandler struct {
 	findMergedPRFn func(repo, branch string) (int, error)
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
+	// tryCleanMergeFn attempts the deterministic clean-merge fast-path before a
+	// conflict-recovery agent is dispatched. Overridable in tests; nil falls
+	// back to project.TryCleanMerge.
+	tryCleanMergeFn func(ctx context.Context, wtPath, baseRef string) (project.CleanMergeResult, error)
+	// pushSyncFn pushes the fast-path's clean merge commit. Overridable in
+	// tests; nil falls back to project.PushSync.
+	pushSyncFn func(ctx context.Context, worktreePath, branch string) error
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
@@ -184,6 +191,8 @@ func newReviewHandler(
 		readyPRCache:        make(map[string]readyPRState),
 		cfg:                 cfg,
 		experience:          experienceStore,
+		tryCleanMergeFn:     project.TryCleanMerge,
+		pushSyncFn:          project.PushSync,
 	}
 }
 

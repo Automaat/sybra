@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -389,14 +391,155 @@ func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, ha
 		r.logPRIssueDetected(t.ID, handle[i])
 	}
 	primary := handle[0]
+
+	// Early mutation guard: a workflow may already be active for this task
+	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
+	// or a fresh worktree prep race it. handleTaskPRIssues already applies this
+	// gate for its own callers, but dispatchFixIssues is also reached via
+	// handlePRIssue/recoverStaleBranchConflict, so it is repeated here.
+	if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(t.ID) {
+		return false
+	}
+
 	dir, ok := r.prepareWorktree(ctx, t, primary)
 	if !ok {
 		return false
 	}
+
+	if r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
+		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
+		r.autoResolveConflict(ctx, t, primary.PR, dir) {
+		return true
+	}
+
 	// dispatchPRIssue -> workflowEngine.DispatchEvent eventually reaches
 	// execShell, which derives its context from workflow.Engine's own e.ctx
 	// field (Engine.SetContext), not an explicit parameter threaded here.
 	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+}
+
+// autoResolveConflict attempts the deterministic clean-merge fast-path for a
+// single conflict-only PR issue: fetch the base branch, run a real git merge
+// via tryCleanMergeFn, and — only when that merge creates a new commit with no
+// conflicting hunks — push it via pushSyncFn and mark the issue handled.
+// Returns false for a conflicting merge, a no-op merge (branch was already up
+// to date — nothing to push, so the agent still needs to look at why GitHub
+// reports a conflict), or any fetch/merge/push error; the caller then falls
+// through to the agent-assisted recovery path unchanged.
+func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr github.PullRequest, dir string) bool {
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.Type != project.ProjectTypePet {
+		return false
+	}
+
+	base, err := resolveAutoResolveBase(ctx, dir, pr, proj)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.base", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+
+	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+	preMergeHead = strings.TrimSpace(preMergeHead)
+
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base)
+	if err := executil.Run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+
+	mergeFn := r.tryCleanMergeFn
+	if mergeFn == nil {
+		mergeFn = project.TryCleanMerge
+	}
+	result, err := mergeFn(ctx, dir, "refs/remotes/origin/"+base)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.merge", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+	if result != project.CleanMergeCreated {
+		return false
+	}
+
+	mergedHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head")
+		return false
+	}
+	mergedHead = strings.TrimSpace(mergedHead)
+	if mergedHead == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head-empty", "task_id", t.ID, "pr", pr.Number)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head-empty")
+		return false
+	}
+
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch")
+		return false
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch-empty")
+		return false
+	}
+
+	pushFn := r.pushSyncFn
+	if pushFn == nil {
+		pushFn = project.PushSync
+	}
+	if err := pushFn(ctx, dir, branch); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.push", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "push")
+		return false
+	}
+
+	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, mergedHead)
+	r.evictReadyPRCache(pr.Repository, pr.Number)
+	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
+		"pr": pr.Number, "issue": string(github.PRIssueConflict),
+	})
+	r.logger.Info("pr-monitor.auto-resolved", "task_id", t.ID, "pr", pr.Number)
+	return true
+}
+
+func resolveAutoResolveBase(ctx context.Context, dir string, pr github.PullRequest, proj project.Project) (string, error) {
+	base := pr.BaseRefName
+	if base == "" {
+		db, err := project.DefaultBranch(ctx, proj.ClonePath)
+		if err != nil {
+			return "", fmt.Errorf("resolve default branch for %s: %w", proj.ID, err)
+		}
+		base = strings.TrimSpace(db)
+	}
+	if base == "" {
+		return "", errors.New("base branch is empty")
+	}
+	if err := executil.Run(ctx, dir, "git", "check-ref-format", "--branch", base); err != nil {
+		return "", fmt.Errorf("validate base branch %q: %w", base, err)
+	}
+	return base, nil
+}
+
+func (r *ReviewHandler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, prNumber int, dir, preMergeHead, reason string) {
+	if preMergeHead == "" {
+		return
+	}
+	resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	if err := executil.Run(resetCtx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
+		r.logger.Error("pr-monitor.auto-resolve.rollback-failed",
+			"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead, "err", err)
+		return
+	}
+	r.logger.Info("pr-monitor.auto-resolve.rolled-back",
+		"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead)
 }
 
 // dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks

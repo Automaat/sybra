@@ -149,6 +149,7 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 | `github.renovate_slow_seconds` | `int` |  |  |
 | `github.app` | `GitHubAppConfig` | _(see below)_ | App configures GitHub App installation-token auth. When enabled, Sybra mints a short-lived installation token and injects it into the gh subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall back to gh's own auth. |
 | `github.native_auto_merge` | `bool` |  | NativeAutoMerge is a kill-switch for arming GitHub's native `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix cycle is done and the base branch's protection supports it. It is an accelerator on top of the existing green-gated MergePR path, not a replacement — when unsupported or disabled the legacy merge stays the fallback. Default off (zero value = false). |
+| `github.auto_resolve_clean_merges` | `bool` |  | AutoResolveCleanMerges is a kill-switch for the deterministic clean-merge fast-path: before dispatching a conflict-recovery agent, Sybra attempts a plain `git merge` of the PR's base branch in Go. When that merge creates a commit with no conflicting hunks, it is pushed and no agent is spawned; conflicts, no-op merges, and errors still fall through to the agent-assisted path. Default off (zero value = false). |
 
 ## GitHubAppConfig (`github.app`)
 

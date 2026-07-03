@@ -887,3 +887,92 @@ func MergeOnto(ctx context.Context, worktreePath, ref string) error {
 	}
 	return nil
 }
+
+// CleanMergeResult is the outcome of TryCleanMerge.
+type CleanMergeResult int
+
+const (
+	// CleanMergeCreated: the merge succeeded with no conflicts and produced a
+	// new commit (fast-forward or a merge commit) — the branch moved.
+	CleanMergeCreated CleanMergeResult = iota
+	// CleanMergeNoop: the merge succeeded but produced no new commit — the
+	// branch was already up to date with baseRef.
+	CleanMergeNoop
+	// CleanMergeConflict: the merge reported conflicting hunks. The worktree
+	// is left clean (merge aborted, any leftover state reset) before return.
+	CleanMergeConflict
+)
+
+func (r CleanMergeResult) String() string {
+	switch r {
+	case CleanMergeCreated:
+		return "created"
+	case CleanMergeNoop:
+		return "noop"
+	case CleanMergeConflict:
+		return "conflict"
+	default:
+		return fmt.Sprintf("CleanMergeResult(%d)", int(r))
+	}
+}
+
+// TryCleanMerge attempts a deterministic `git merge baseRef` in wtPath and
+// classifies the result without ever leaving the worktree in a conflicted or
+// dirty state. It never pushes.
+//
+// baseRef is validated up front so an unresolvable ref surfaces as an error
+// rather than being fed to `git merge`, which would otherwise fail with a
+// less specific message. On conflict, the merge is aborted on a context
+// derived via context.WithoutCancel (mirrors MergeOnto/RebaseOnto: cleanup
+// must survive a caller ctx that was cancelled or deadlined out, or
+// MERGE_HEAD state is left behind), then the worktree is verified clean via
+// `git status --porcelain`; if not, it falls back to a hard reset to the
+// pre-merge HEAD plus `git clean -fd` so the caller's agent fallback always
+// starts from a clean tree.
+func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResult, error) {
+	if err := executil.Run(ctx, wtPath, "git", "rev-parse", "--verify", baseRef); err != nil {
+		return CleanMergeConflict, fmt.Errorf("resolve base ref %s: %w", baseRef, err)
+	}
+
+	preMergeHEAD, err := executil.Output(ctx, wtPath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return CleanMergeConflict, fmt.Errorf("resolve pre-merge HEAD: %w", err)
+	}
+	preMergeHEAD = strings.TrimSpace(preMergeHEAD)
+
+	mergeErr := executil.Run(ctx, wtPath, "git",
+		"-c", "user.name=Sybra",
+		"-c", "user.email=sybra@localhost",
+		"-c", "commit.gpgsign=false",
+		"merge", "--no-edit", "--no-verify", baseRef)
+	if mergeErr != nil {
+		conflict := false
+		var exitErr *exec.ExitError
+		if errors.As(mergeErr, &exitErr) && exitErr.ExitCode() == 1 {
+			conflict = true
+		}
+
+		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
+		defer cancel()
+		_ = executil.Run(abortCtx, wtPath, "git", "merge", "--abort")
+
+		statusOut, statusErr := executil.Output(abortCtx, wtPath, "git", "status", "--porcelain")
+		if statusErr != nil || strings.TrimSpace(statusOut) != "" {
+			_ = executil.Run(abortCtx, wtPath, "git", "reset", "--hard", preMergeHEAD)
+			_ = executil.Run(abortCtx, wtPath, "git", "clean", "-fd")
+		}
+		if !conflict {
+			return CleanMergeConflict, fmt.Errorf("merge %s into worktree: %w", baseRef, mergeErr)
+		}
+		return CleanMergeConflict, nil
+	}
+
+	postMergeHEAD, err := executil.Output(ctx, wtPath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return CleanMergeConflict, fmt.Errorf("resolve post-merge HEAD: %w", err)
+	}
+	if strings.TrimSpace(postMergeHEAD) == preMergeHEAD {
+		return CleanMergeNoop, nil
+	}
+	return CleanMergeCreated, nil
+}
