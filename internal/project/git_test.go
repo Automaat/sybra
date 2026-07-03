@@ -406,6 +406,51 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	}
 }
 
+func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// Simulate a stale/corrupt rebase-state directory that `git rebase
+	// --abort` cannot clean up on its own (e.g. left behind by a killed
+	// process): a rebase-merge dir with no valid onto/head-name files makes
+	// `git rebase --abort` exit non-zero rather than actually aborting.
+	stateDir := rebaseStateDir(context.Background(), wtPath)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Confirm the synthetic state actually defeats `git rebase --abort` on
+	// its own, otherwise this test would pass even without the os.RemoveAll
+	// fallback in clearRebaseState.
+	abortCmd := exec.Command("git", "rebase", "--abort")
+	abortCmd.Dir = wtPath
+	if err := abortCmd.Run(); err == nil {
+		t.Fatal("expected `git rebase --abort` to fail against the simulated stale state")
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("expected stale rebase-state dir to be removed, stat err = %v", err)
+	}
+}
+
 func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 	t.Parallel()
 	src := initRepoWithCommit(t)
