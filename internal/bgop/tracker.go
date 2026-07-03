@@ -124,7 +124,7 @@ func (t *Tracker) List() []Operation {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	cutoff := time.Now().Add(-completionTTL)
-	var out []Operation
+	out := make([]Operation, 0, len(t.ops))
 	for _, op := range t.ops {
 		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
 			continue

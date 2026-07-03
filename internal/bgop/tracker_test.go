@@ -35,6 +35,9 @@ func TestTracker_StartCompleteFail(t *testing.T) {
 
 	tr.UpdatePhase(id, "fetching")
 	ops = tr.List()
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 op after UpdatePhase, got %d", len(ops))
+	}
 	if ops[0].Phase != "fetching" {
 		t.Errorf("expected phase 'fetching', got %q", ops[0].Phase)
 	}
@@ -94,7 +97,12 @@ func TestTracker_List_FiltersExpiredCompletions(t *testing.T) {
 
 	// Manually age the completion past the TTL.
 	tr.mu.Lock()
-	tr.ops[id].CompletedAt = time.Now().Add(-completionTTL - time.Minute)
+	op := tr.ops[id]
+	if op == nil {
+		tr.mu.Unlock()
+		t.Fatalf("expected op %q to exist", id)
+	}
+	op.CompletedAt = time.Now().Add(-completionTTL - time.Minute)
 	tr.mu.Unlock()
 
 	if ops := tr.List(); len(ops) != 0 {
@@ -107,7 +115,12 @@ func TestTracker_List_KeepsRunningRegardlessOfAge(t *testing.T) {
 
 	id := tr.Start(TypeClone, "cloning", "proj1", "task1")
 	tr.mu.Lock()
-	tr.ops[id].StartedAt = time.Now().Add(-completionTTL - time.Hour)
+	op := tr.ops[id]
+	if op == nil {
+		tr.mu.Unlock()
+		t.Fatalf("expected op %q to exist", id)
+	}
+	op.StartedAt = time.Now().Add(-completionTTL - time.Hour)
 	tr.mu.Unlock()
 
 	ops := tr.List()
