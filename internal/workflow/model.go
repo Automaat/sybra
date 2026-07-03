@@ -114,6 +114,13 @@ const (
 	// parent-level Next is evaluated against the parent step record (with the
 	// aggregate failure flag set when any child failed past its retry budget).
 	StepParallel StepType = "parallel"
+	// StepSyncBranch proactively reconciles the task's worktree branch with
+	// the project's default branch before the workflow reaches a PR handoff
+	// point, shrinking the window in which the branch can go stale. Always
+	// non-blocking: conflict, failure, or missing-worktree/syncer outcomes are
+	// recorded but never flip the task to human-required — the workflow
+	// continues to its next step regardless of outcome.
+	StepSyncBranch StepType = "sync_branch"
 )
 
 // Step is one node in the workflow graph.

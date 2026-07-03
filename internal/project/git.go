@@ -634,6 +634,15 @@ func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(branch), nil
 }
 
+// CurrentCommit returns the full SHA of HEAD for a worktree.
+func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
+	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(sha), nil
+}
+
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {

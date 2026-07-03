@@ -353,7 +353,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return nil, e.execWaitHuman(taskID, step, wfExec)
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -451,6 +451,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execRoutePRFixResult(taskID, step, wfExec)
 	case StepRouteTestResult:
 		return e.execRouteTestResult(taskID, step, wfExec, t)
+	case StepSyncBranch:
+		return e.execSyncBranch(taskID, step)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -16,6 +17,99 @@ import (
 // importing internal/worktree (which would create an import cycle via
 // internal/task -> internal/workflow).
 var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
+
+// SyncResult classifies the outcome of a proactive branch sync
+// (Manager.SyncTaskBranch). String values are stable — they are recorded as
+// workflow step output and generic artifacts, so renaming a constant changes
+// what's observable in task history.
+type SyncResult string
+
+const (
+	// SyncSynced means the worktree branch moved (reconciled/rebased and/or
+	// pushed) as a result of the sync.
+	SyncSynced SyncResult = "synced"
+	// SyncNoop means the branch was already up to date with base — nothing to do.
+	SyncNoop SyncResult = "noop"
+	// SyncConflict means reconciling or rebasing onto base hit a genuine content
+	// conflict (ErrRebaseFailed) that requires human or PR-fix-agent recovery.
+	SyncConflict SyncResult = "conflict"
+	// SyncFailed means the sync could not complete for a reason other than a
+	// content conflict (network, auth, push rejection, etc.) — transient, and
+	// safe to retry on the next checkpoint.
+	SyncFailed SyncResult = "failed"
+	// SyncSkipped means there was nothing to sync: no worktree for the task, or
+	// the worktree is externally adopted (not Sybra-managed).
+	SyncSkipped SyncResult = "skipped"
+)
+
+func (r SyncResult) String() string { return string(r) }
+
+// SyncTaskBranch proactively reconciles a task's existing worktree branch with
+// the project's default branch, reusing the exact same reconcile→rebase→merge
+// strategy as PrepareForTask's reused-worktree path (reconcileAndRebase) so
+// there is only ever one merge policy. It is intentionally non-blocking: it
+// never mutates task status, never escalates to human-required, and any
+// error is returned alongside a SyncResult so the caller can log/record the
+// outcome and continue the workflow regardless.
+//
+// Skips (SyncSkipped, nil) when there is no existing worktree for the task, or
+// the worktree is externally adopted (t.WorktreeDir set) — adopted worktrees
+// are not Sybra-managed and PrepareForTask never reconciles them either.
+func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, error) {
+	if t.WorktreeDir != "" {
+		return SyncSkipped, nil
+	}
+	if !m.Exists(t) {
+		return SyncSkipped, nil
+	}
+	wtPath := m.PathFor(t)
+
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return SyncFailed, fmt.Errorf("sync branch: get project: %w", err)
+	}
+	if err := project.FetchOrigin(ctx, proj.ClonePath); err != nil {
+		return SyncFailed, fmt.Errorf("sync branch: fetch origin: %w", err)
+	}
+	branch, err := project.DefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		return SyncFailed, fmt.Errorf("sync branch: default branch: %w", err)
+	}
+
+	wtBranch := branchNameForTask(t)
+	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
+
+	preHEAD, err := project.CurrentCommit(ctx, wtPath)
+	if err != nil {
+		return SyncFailed, fmt.Errorf("sync branch: resolve pre-sync HEAD: %w", err)
+	}
+
+	if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, nil); err != nil {
+		if errors.Is(err, ErrRebaseFailed) {
+			m.logger.Warn("worktree.sync-branch.conflict", "task_id", t.ID, "branch", wtBranch, "err", err)
+			return SyncConflict, err
+		}
+		return SyncFailed, fmt.Errorf("sync branch: reconcile: %w", err)
+	}
+
+	pushErr := project.PushSync(ctx, wtPath, wtBranch)
+	m.logPushSync(t.ID, wtBranch, pushErr)
+	if pushErr != nil && !errors.Is(pushErr, project.ErrBranchMissing) {
+		return SyncFailed, fmt.Errorf("sync branch: push: %w", pushErr)
+	}
+
+	postHEAD, err := project.CurrentCommit(ctx, wtPath)
+	if err != nil {
+		return SyncFailed, fmt.Errorf("sync branch: resolve post-sync HEAD: %w", err)
+	}
+
+	if preHEAD != postHEAD {
+		m.logger.Info("worktree.sync-branch.synced", "task_id", t.ID, "branch", wtBranch, "base", baseRef)
+		return SyncSynced, nil
+	}
+	m.logger.Info("worktree.sync-branch.noop", "task_id", t.ID, "branch", wtBranch, "base", baseRef)
+	return SyncNoop, nil
+}
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.
 // Fetches origin, creates a conventional-prefixed branch off default branch,
