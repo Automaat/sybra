@@ -68,8 +68,11 @@ export function StopChat(arg1: string): Promise<void> { return call('App', 'Stop
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
+export function GetDefaultSettings(): Promise<AppSettings> { return call('ConfigService', 'GetDefaultSettings') }
 export function UpdateSettings(arg1: AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 export function UpdateTodoistToken(arg1: string): Promise<void> { return call('ConfigService', 'UpdateTodoistToken', arg1) }
+export function GetRawConfig(): Promise<string> { return call('ConfigService', 'GetRawConfig') }
+export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
 // InfoService
 export function GetCodexModels(): Promise<CodexModel[]> { return call('InfoService', 'GetCodexModels') }

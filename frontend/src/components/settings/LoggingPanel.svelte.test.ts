@@ -10,27 +10,30 @@ function buildSettings() {
   } as never
 }
 
+function props() {
+  return { settings: buildSettings(), defaults: buildSettings() } as never
+}
+
 describe('LoggingPanel', () => {
   afterEach(cleanup)
 
   it('renders the four numeric/select inputs', () => {
-    render(LoggingPanel, { props: { settings: buildSettings() } })
-    expect(screen.getByLabelText('Log Level')).toBeDefined()
-    expect(screen.getByLabelText('Max Log Size (MB)')).toBeDefined()
-    expect(screen.getByLabelText('Max Log Files')).toBeDefined()
-    expect(screen.getByLabelText('Audit Retention (days)')).toBeDefined()
+    render(LoggingPanel, { props: props() })
+    expect(screen.getByLabelText('Log level')).toBeDefined()
+    expect(screen.getByLabelText('Max log size (MB)')).toBeDefined()
+    expect(screen.getByLabelText('Max log files')).toBeDefined()
+    expect(screen.getByLabelText('Audit retention (days)')).toBeDefined()
   })
 
   it('renders audit toggle reflecting settings', () => {
-    render(LoggingPanel, { props: { settings: buildSettings() } })
+    render(LoggingPanel, { props: props() })
     const cb = screen.getByLabelText('Enable audit logging') as HTMLInputElement
     expect(cb.checked).toBe(true)
   })
 
   it('changing log level updates two-way bound value', async () => {
-    const s = buildSettings()
-    render(LoggingPanel, { props: { settings: s } })
-    const select = screen.getByLabelText('Log Level') as HTMLSelectElement
+    render(LoggingPanel, { props: props() })
+    const select = screen.getByLabelText('Log level') as HTMLSelectElement
     await fireEvent.change(select, { target: { value: 'debug' } })
     expect(select.value).toBe('debug')
   })
