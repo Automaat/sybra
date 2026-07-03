@@ -483,7 +483,7 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // branch either exists (locally or on origin) or this is a hard failure
 // (ErrTaskBranchMissing) that must escalate rather than guess at a ref to
 // check out. Does not change PrepareForFix's behavior for its own PR-keyed
-// callers.
+// callers. Setup failures are non-gating, same rationale as PrepareForFix.
 func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
 	// Adopt an externally-created worktree as-is, mirroring PrepareForFix.
 	if t.WorktreeDir != "" {
@@ -535,7 +535,7 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("branch-fix setup: %w", err)
 	}
 	// pr-fix-role recovery runs must push straight to origin (the task's own
@@ -549,7 +549,10 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 }
 
 // PrepareForFix creates a worktree checking out the PR's head branch
-// so the agent can rebase and push.
+// so the agent can rebase and push. Setup command failures do not abort
+// worktree creation (see runSetupNonGating) — the fixer this worktree is for
+// may exist precisely because that PR broke a gating setup command (e.g. a
+// build step), so refusing to create the worktree would deadlock the task.
 func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) (string, error) {
 	// Adopt an externally-created worktree (e.g. an Orca handoff) as-is instead
 	// of re-creating it. Without this guard PrepareForFix runs
@@ -617,7 +620,7 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)
 	}
 	// pr-fix tasks must push to the existing PR's head branch on origin — not

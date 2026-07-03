@@ -128,6 +128,28 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 	return nil
 }
 
+// runSetupNonGating runs a worktree's setup commands like runSetup, but never
+// aborts worktree creation on failure. Fix-role worktrees (PrepareForFix,
+// PrepareForBranchFix) exist specifically to repair a broken build/CI run, so
+// gating their own creation on that exact breakage is a deadlock: the task can
+// never dispatch an agent to fix what blocks it from starting (issue #1454).
+// A failure is instead captured into the worktree's NOTES.md scratchpad,
+// which SeedWorkingMemory already inlines into fix-role agent prompts, so the
+// fixer sees the setup failure as its starting signal instead of the task
+// silently stranding in todo.
+func (m *Manager) runSetupNonGating(ctx context.Context, taskID, wtPath string, commands []string) error {
+	setupErr := m.runSetup(ctx, taskID, wtPath, commands)
+	if setupErr == nil {
+		return nil
+	}
+	m.logger.Warn("worktree.setup-fail-nonfatal",
+		"task_id", taskID, "path", wtPath, "err", setupErr)
+	if noteErr := appendSetupFailureNote(ctx, wtPath, setupErr); noteErr != nil {
+		m.logger.Warn("worktree.setup-fail-note", "task_id", taskID, "path", wtPath, "err", noteErr)
+	}
+	return nil
+}
+
 // setupLogPath returns the per-task setup log file path. Empty logsDir
 // disables file logging (returns ""), keeping in-memory/test setups working
 // without needing to configure a log dir.
