@@ -137,7 +137,10 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 // clone/machine), so the rebase carries them forward instead of a later
 // force-push dropping them. Rebasing must then succeed before the agent runs —
 // continuing from a stale branch makes downstream diff gates scan historical
-// commits. Both failures wrap ErrRebaseFailed so the caller can surface a
+// commits. If the rebase fails, it falls back to an additive merge (see
+// MergeOnto) before giving up, since most staleness under concurrent agents
+// is not a genuine content conflict. All three failures (reconcile, rebase,
+// and the merge fallback) wrap ErrRebaseFailed so the caller can surface a
 // repairable worktree.
 func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, baseRef string, onPhase func(string)) error {
 	callPhase(onPhase, "Reconciling with remote…")
@@ -145,8 +148,21 @@ func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, base
 		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
 	}
 	callPhase(onPhase, "Rebasing onto origin…")
-	if err := project.RebaseOnto(ctx, wtPath, baseRef); err != nil {
-		return fmt.Errorf("%w: rebase %s onto %s: %w", ErrRebaseFailed, wtBranch, baseRef, err)
+	if rebaseErr := project.RebaseOnto(ctx, wtPath, baseRef); rebaseErr != nil {
+		// A rebase failure here is very often not a genuine content conflict —
+		// under concurrent agents, base moves quickly and the branch's own
+		// history is otherwise clean. Try an additive merge before giving up:
+		// unlike rebase, it never rewrites existing commits, so recovery never
+		// needs a force-push (see MergeOnto). Only when the merge also fails
+		// (a real conflict) does this still surface ErrRebaseFailed for the
+		// caller to escalate — ordinarily to human-required, or to the PR-fix
+		// conflict-recovery agent when a PR is already open.
+		callPhase(onPhase, "Rebase failed, trying merge…")
+		if mergeErr := project.MergeOnto(ctx, wtPath, baseRef); mergeErr != nil {
+			return fmt.Errorf("%w: rebase %s onto %s: %w (merge fallback also failed: %w)",
+				ErrRebaseFailed, wtBranch, baseRef, rebaseErr, mergeErr)
+		}
+		m.logger.Info("worktree.rebase-recovered-via-merge", "branch", wtBranch, "base", baseRef)
 	}
 	return nil
 }

@@ -607,20 +607,25 @@ func conflictPrompt(pr github.PullRequest) string {
 func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 	return fmt.Sprintf(
 		"Fix merge conflicts on branch `%s` (PR #%d). "+
-			"Use the task body, PR diff, changed-file list, and current code as context, then rebase.\n\n"+
+			"Use the task body, PR diff, changed-file list, and current code as context, then merge.\n\n"+
 			"Steps:\n"+
 			"```bash\n"+
 			"git fetch origin\n"+
-			"git rebase refs/remotes/origin/main\n"+
-			"# resolve every conflict preserving the PR intent and upstream changes\n"+
-			"# run targeted tests for touched code, then git add and git rebase --continue\n"+
+			"git merge refs/remotes/origin/main\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
+			"# then git add and git commit to complete the merge.\n"+
+			"# If the merge already completed on its own (clean/fast-forward, no\n"+
+			"# conflicts), it is already committed — do not run git commit again, it\n"+
+			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
 			"PUSH_REMOTE=origin\n"+
 			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
-			"git push --force-with-lease \"$PUSH_REMOTE\" HEAD:%s\n"+
+			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
+			"- Do not force-push or rewrite existing commits — the merge commit and any conflict-resolution commits must be purely additive, and a plain push is expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+

@@ -175,6 +175,17 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// event so claude exits and onComplete fires, unblocking the next step
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
+
+	// Mark the step as dispatching before the (potentially multi-second,
+	// worktree-prep-bound) StartAgent call so a stale/untracked agent
+	// completion arriving mid-dispatch (e.g. a reattached agent from a prior
+	// step) sees this step as claimed instead of falling through to the
+	// "nothing tracked yet, credit the current step" fallback in
+	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
+	// returns, at which point either agentSteps (success) or the parked/failed
+	// step state takes over.
+	e.markStepDispatching(taskID, step.ID)
+	defer e.unmarkStepDispatching(taskID, step.ID)
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
