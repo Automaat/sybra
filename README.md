@@ -43,10 +43,14 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 **Prerequisites:** Go 1.26.4, Node 24, [mise](https://mise.jdx.dev/). Desktop builds run on macOS only (Wails v3 alpha needs gtk3/webkit2gtk-4.1 on Linux, which CI does not install).
 
 ```bash
-# Install tool versions
+# Trust the repo's mise config, then install tool versions
+mise trust
 mise install
 
-# Dev server with hot reload (Go + Svelte)
+# Install frontend deps (mise run dev/build do NOT do this for you)
+cd frontend && npm ci && cd ..
+
+# Rebuild frontend + run the desktop app (no hot reload — restart to pick up changes)
 mise run dev
 
 # Production build
