@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/executil"
@@ -463,10 +464,29 @@ func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr
 		return false
 	}
 
+	mergedHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head")
+		return false
+	}
+	mergedHead = strings.TrimSpace(mergedHead)
+	if mergedHead == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head-empty", "task_id", t.ID, "pr", pr.Number)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head-empty")
+		return false
+	}
+
 	branch, err := project.CurrentBranch(ctx, dir)
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch")
+		return false
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		r.logger.Warn("pr-monitor.auto-resolve.branch-empty", "task_id", t.ID, "pr", pr.Number)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch-empty")
 		return false
 	}
 
@@ -480,7 +500,7 @@ func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr
 		return false
 	}
 
-	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, pr.HeadSHA)
+	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, mergedHead)
 	r.evictReadyPRCache(pr.Repository, pr.Number)
 	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
 		"pr": pr.Number, "issue": string(github.PRIssueConflict),
@@ -511,7 +531,9 @@ func (r *ReviewHandler) rollbackAutoResolvedMerge(ctx context.Context, taskID st
 	if preMergeHead == "" {
 		return
 	}
-	if err := executil.Run(ctx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
+	resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	if err := executil.Run(resetCtx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
 		r.logger.Error("pr-monitor.auto-resolve.rollback-failed",
 			"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead, "err", err)
 		return

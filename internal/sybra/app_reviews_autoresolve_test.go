@@ -203,7 +203,21 @@ func currentHEAD(t *testing.T, dir string) string {
 func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	tk, pr := h.newConflictTask(t)
-	h.r.tryCleanMergeFn = stubMerge(project.CleanMergeCreated, nil)
+	var mergedHead string
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		cmds := [][]string{
+			{"-C", dir, "config", "user.email", "test@test.com"},
+			{"-C", dir, "config", "user.name", "Test"},
+			{"-C", dir, "commit", "--allow-empty", "-m", "synthetic merge"},
+		}
+		for _, args := range cmds {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		mergedHead = currentHEAD(t, dir)
+		return project.CleanMergeCreated, nil
+	}
 	h.r.pushSyncFn = stubPush(nil)
 
 	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
@@ -220,8 +234,11 @@ func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 	if got.Workflow != nil {
 		t.Errorf("workflow dispatched = %+v, want nil (agent must not run)", got.Workflow)
 	}
-	if h.r.prTracker.ShouldHandle(tk.ID, github.PRIssueConflict, pr.HeadSHA) {
-		t.Error("conflict issue not marked handled after auto-resolve")
+	if mergedHead == "" {
+		t.Fatal("mergedHead not captured")
+	}
+	if h.r.prTracker.ShouldHandle(tk.ID, github.PRIssueConflict, mergedHead) {
+		t.Error("conflict issue not marked handled for the pushed merge commit")
 	}
 
 	events := readExperienceAuditEvents(t, h.auditDir)
@@ -509,5 +526,80 @@ func TestAutoResolveConflict_PushFailureRollsBackMerge(t *testing.T) {
 		if ev.Type == audit.EventPRConflictAutoResolved {
 			t.Fatal("EventPRConflictAutoResolved emitted after a failed push")
 		}
+	}
+}
+
+func TestAutoResolveConflict_EmptyBranchRollsBackMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	preMergeHead := currentHEAD(t, worktreeDir)
+
+	if out, err := exec.Command("git", "-C", worktreeDir, "checkout", "--detach").CombinedOutput(); err != nil {
+		t.Fatalf("git checkout --detach: %v: %s", err, out)
+	}
+
+	pushCalled := false
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		cmds := [][]string{
+			{"-C", dir, "config", "user.email", "test@test.com"},
+			{"-C", dir, "config", "user.name", "Test"},
+			{"-C", dir, "commit", "--allow-empty", "-m", "synthetic merge"},
+		}
+		for _, args := range cmds {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	if ok := h.r.autoResolveConflict(context.Background(), tk, pr, worktreeDir); ok {
+		t.Fatal("autoResolveConflict = true, want false for detached HEAD")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn called despite detached HEAD")
+	}
+	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
+		t.Fatalf("HEAD after empty-branch rollback = %s, want %s", got, preMergeHead)
+	}
+}
+
+func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	preMergeHead := currentHEAD(t, worktreeDir)
+
+	cmds := [][]string{
+		{"-C", worktreeDir, "config", "user.email", "test@test.com"},
+		{"-C", worktreeDir, "config", "user.name", "Test"},
+		{"-C", worktreeDir, "commit", "--allow-empty", "-m", "synthetic merge"},
+	}
+	for _, args := range cmds {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if got := currentHEAD(t, worktreeDir); got == preMergeHead {
+		t.Fatal("expected synthetic merge commit before rollback")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.r.rollbackAutoResolvedMerge(ctx, tk.ID, pr.Number, worktreeDir, preMergeHead, "test")
+
+	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
+		t.Fatalf("HEAD after rollback = %s, want %s", got, preMergeHead)
 	}
 }

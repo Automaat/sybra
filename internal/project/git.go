@@ -946,6 +946,12 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		"-c", "commit.gpgsign=false",
 		"merge", "--no-edit", "--no-verify", baseRef)
 	if mergeErr != nil {
+		conflict := false
+		var exitErr *exec.ExitError
+		if errors.As(mergeErr, &exitErr) && exitErr.ExitCode() == 1 {
+			conflict = true
+		}
+
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 		defer cancel()
 		_ = executil.Run(abortCtx, wtPath, "git", "merge", "--abort")
@@ -954,6 +960,9 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		if statusErr != nil || strings.TrimSpace(statusOut) != "" {
 			_ = executil.Run(abortCtx, wtPath, "git", "reset", "--hard", preMergeHEAD)
 			_ = executil.Run(abortCtx, wtPath, "git", "clean", "-fd")
+		}
+		if !conflict {
+			return CleanMergeConflict, fmt.Errorf("merge %s into worktree: %w", baseRef, mergeErr)
 		}
 		return CleanMergeConflict, nil
 	}

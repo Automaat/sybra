@@ -2342,4 +2342,53 @@ func TestTryCleanMerge(t *testing.T) {
 			t.Errorf("result = %v, want CleanMergeConflict on error", result)
 		}
 	})
+
+	t.Run("fatal merge failure returns an error instead of looking like a conflict", func(t *testing.T) {
+		t.Parallel()
+		bare, wtPath := initWorktree(t)
+		branch, err := DefaultBranch(context.Background(), bare)
+		if err != nil {
+			t.Fatalf("DefaultBranch: %v", err)
+		}
+
+		basePath := initSecondWorktree(t, bare, branch, branch)
+		writeAndCommit(t, basePath, "unrelated.txt", "unrelated change", "advance base")
+
+		gitDirOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-dir").CombinedOutput()
+		if err != nil {
+			t.Fatalf("rev-parse --git-dir: %v: %s", err, gitDirOut)
+		}
+		gitDir := strings.TrimSpace(string(gitDirOut))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(wtPath, gitDir)
+		}
+		mergeHeadPath := filepath.Join(gitDir, "MERGE_HEAD")
+		if err := os.WriteFile(mergeHeadPath, []byte("deadbeef\n"), 0o644); err != nil {
+			t.Fatalf("write MERGE_HEAD: %v", err)
+		}
+		defer os.Remove(mergeHeadPath)
+
+		result, err := TryCleanMerge(context.Background(), wtPath, "refs/heads/"+branch)
+		if err == nil {
+			t.Fatal("expected fatal git merge failure to return an error")
+		}
+		if result != CleanMergeConflict {
+			t.Fatalf("result = %v, want CleanMergeConflict on fatal merge error", result)
+		}
+		if !strings.Contains(err.Error(), "MERGE_HEAD") && !strings.Contains(err.Error(), "merge") {
+			t.Fatalf("error = %v, want merge-state context", err)
+		}
+
+		head, headErr := exec.Command("git", "-C", wtPath, "rev-parse", "--verify", "HEAD").CombinedOutput()
+		if headErr != nil {
+			t.Fatalf("rev-parse HEAD after fatal merge failure: %v: %s", headErr, head)
+		}
+		statusOut, statusErr := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+		if statusErr != nil {
+			t.Fatalf("git status after fatal merge failure: %v: %s", statusErr, statusOut)
+		}
+		if strings.TrimSpace(string(statusOut)) != "" {
+			t.Fatalf("worktree not clean after fatal merge failure: %s", statusOut)
+		}
+	})
 }
