@@ -230,6 +230,10 @@ jobs:
           WAILS_RUNTIME_VERSION=$(node -p "require('./frontend/package.json').dependencies['@wailsio/runtime']")
           grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
             (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)
+          MISE_GOLANGCI_LINT_VERSION=$(grep '^golangci-lint = ' mise.toml | awk -F'"' '{print $2}')
+          CI_GOLANGCI_LINT_VERSION=$(grep -A1 'depName=golangci/golangci-lint' .github/workflows/ci.yml | grep 'version:' | awk '{print $2}' | tr -d 'v')
+          [ "$MISE_GOLANGCI_LINT_VERSION" = "$CI_GOLANGCI_LINT_VERSION" ] || \
+            (echo "golangci-lint version mismatch (mise.toml=$MISE_GOLANGCI_LINT_VERSION, ci.yml=$CI_GOLANGCI_LINT_VERSION)" && exit 1)
 
   go-mod-integrity:
     name: Go Module Integrity
