@@ -47,3 +47,6 @@ core.*
 
 # Manual testing artifacts
 .sybra-manual-test-port*
+
+# Web-mode dev mock backend home + fake CLIs
+.dev-mock/
