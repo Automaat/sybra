@@ -81,6 +81,15 @@ func (m *Manager) Store() *Store { return m.store }
 // Without this, status flips written by out-of-process tools never
 // reach engine.HandleStatusChange and interactive plan agents leave
 // their workflow stranded on the plan step.
+//
+// Takes the same per-task lock as UpdateFn/AddRunWithStatus around the
+// read+dedupe-check+record sequence. Without it, an in-process status write
+// (e.g. UpdateTaskStatus from a workflow step) races the file watcher that
+// its own write wakes: the watcher can read the new status and record+fire
+// the hook itself before the writer's own recordFiredStatus call runs,
+// double-firing the SAME transition from two goroutines — one of which then
+// races a legitimate cascade dispatch (e.g. OnWorkflowComplete) into
+// double-dispatching the same successor workflow.
 func (m *Manager) OnExternalUpdate(path string) {
 	base := filepath.Base(path)
 	if IsSidecarFile(base) {
@@ -101,19 +110,25 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 
+	mu := m.lockFor(id)
+	mu.Lock()
 	// Only Status is needed here; use the parse-only read to avoid the
 	// per-call sidecar dir scan on every external file change.
 	t, err := m.store.read(id)
 	if err != nil {
+		mu.Unlock()
 		return
 	}
 	newStatus := string(t.Status)
 
 	prev, ok := m.lastFiredStatus(id)
 	if ok && prev == newStatus {
+		mu.Unlock()
 		return
 	}
 	m.recordFiredStatus(id, newStatus)
+	mu.Unlock()
+
 	m.onStatusHook(id, prev, newStatus)
 }
 
@@ -247,10 +262,17 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 		newStat = string(t.Status)
 		fireHook = newStat != prevStatus
 	}
+	// Record the dedupe entry before releasing the per-task lock, still
+	// covering the same critical section as the write above. Otherwise the
+	// file watcher this write wakes (OnExternalUpdate, serialized on the same
+	// lock) can read the new status and win the dedupe race before this
+	// goroutine gets to record it, double-firing the hook.
+	if fireHook {
+		m.recordFiredStatus(id, newStat)
+	}
 	mu.Unlock()
 
 	if fireHook {
-		m.recordFiredStatus(id, newStat)
 		m.onStatusHook(id, prevStatus, newStat)
 	}
 	metrics.TaskUpdated()
@@ -348,9 +370,13 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		newStatus = string(t.Status)
 		fireHook = newStatus != prevStatus
 	}
-	mu.Unlock()
+	// Record before unlocking — see UpdateFn for why this must stay inside
+	// the per-task critical section that also covers the write.
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
+	}
+	mu.Unlock()
+	if fireHook {
 		m.onStatusHook(taskID, prevStatus, newStatus)
 	}
 	return nil
