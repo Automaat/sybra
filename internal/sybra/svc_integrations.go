@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/todoist"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -139,7 +140,7 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 			"Check the failing run with `gh run view --log-failed`, "+
 			"fix the code, commit and push. No unrelated changes.%s",
 		title, branch, number,
-		prFixResultContract,
+		review.PRFixResultContract,
 	)
 
 	ciFailure := string(github.PRIssueCIFailure)

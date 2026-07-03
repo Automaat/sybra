@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"log/slog"
@@ -11,9 +11,9 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// newOutboundTestHandler builds a ReviewHandler backed by a temp task store and
+// newOutboundTestHandler builds a Handler backed by a temp task store and
 // a real (idle) agent manager — enough to exercise the PR-phase reconciler.
-func newOutboundTestHandler(t *testing.T) (*ReviewHandler, *task.Manager) {
+func newOutboundTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	t.Helper()
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -22,10 +22,10 @@ func newOutboundTestHandler(t *testing.T) (*ReviewHandler, *task.Manager) {
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: logger},
-		tasks:         tasks,
-		agents:        agents,
+	r := &Handler{
+		logger: logger,
+		tasks:  tasks,
+		agents: agents,
 	}
 	return r, tasks
 }

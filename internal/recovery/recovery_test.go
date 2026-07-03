@@ -209,7 +209,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 // TestRestartStaleSteerBypassesRecentRunDebounce verifies the recovery half of
 // a watchdog headless nudge: a pending SupervisorSteer makes a just-stopped task
 // re-dispatch immediately instead of waiting out the recent-run debounce. The
-// steer is consumed + prepended inside AgentOrchestrator.StartAgent (covered by
+// steer is consumed + prepended inside agentorch.Orchestrator.StartAgent (covered by
 // the internal/sybra helper test), not here.
 func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())

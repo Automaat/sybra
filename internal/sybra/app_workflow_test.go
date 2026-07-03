@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -69,9 +70,10 @@ func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	orchCfg := &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}
 	adapter := &agentAdapter{
 		experience: store,
-		agentOrch:  &AgentOrchestrator{cfg: &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}, projects: projects},
+		agentOrch:  agentorch.New(nil, projects, nil, nil, nil, nil, orchCfg),
 	}
 	tk := task.Task{ID: "current", ProjectID: "owner/repo"}
 
@@ -93,7 +95,7 @@ func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 		t.Fatalf("non-retrieval role prompt = %q, want unchanged", nonRetrievalRole.Prompt)
 	}
 
-	adapter.agentOrch.cfg.Experience.Enabled = false
+	orchCfg.Experience.Enabled = false
 	disabled := agent.RunConfig{Prompt: "base"}
 	adapter.withExperiencePrompt(&disabled, agent.RolePlan, tk)
 	if disabled.Prompt != "base" {
@@ -130,7 +132,7 @@ func TestAgentAdapterExperiencePromptUsesOpaqueWorkKey(t *testing.T) {
 	}
 	adapter := &agentAdapter{
 		experience: store,
-		agentOrch:  &AgentOrchestrator{cfg: &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}, projects: projects},
+		agentOrch:  agentorch.New(nil, projects, nil, nil, nil, nil, &config.Config{Experience: config.ExperienceConfig{Enabled: true, MaxRecords: 5}}),
 	}
 
 	cfg := agent.RunConfig{Prompt: "base"}

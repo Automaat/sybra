@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -24,7 +25,7 @@ import (
 //
 // Production timeline (task e1b18401):
 //  1. Workflow ran triage → set_in_progress → implement. The implement agent
-//     was launched via AgentOrchestrator.StartAgent, which records its
+//     was launched via agentorch.Orchestrator.StartAgent, which records its
 //     agent_run with an empty Role and a session_id.
 //  2. The first implement attempt produced no commits and the workflow
 //     stalled. ~25 minutes later the workflow was restarted from triage and
@@ -38,7 +39,7 @@ import (
 //     task to human-required.
 //
 // The fix has two parts:
-//   - AgentOrchestrator.StartAgent now records implementation agent runs
+//   - agentorch.Orchestrator.StartAgent now records implementation agent runs
 //     with Role explicitly set, so the empty-Role escape hatch in
 //     pickImplementationResumeSession can be removed.
 //   - pickImplementationResumeSession only considers runs whose StartedAt
@@ -47,9 +48,9 @@ import (
 //     role check would otherwise match.
 //
 // This test sets up a real bare git repo, a real project store, a real
-// worktree manager, and the real AgentOrchestrator — then exercises the
+// worktree manager, and the real agentorch.Orchestrator — then exercises the
 // exact code path that misbehaved in production. It pre-seeds an aborted
-// prior-execution agent_run, calls AgentOrchestrator.StartAgent, and
+// prior-execution agent_run, calls agentorch.Orchestrator.StartAgent, and
 // asserts that the resulting fake-claude argv does NOT carry --resume
 // pointing at the stale session.
 func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *testing.T) {
@@ -124,7 +125,7 @@ updated_at: 2025-01-01T00:00:00Z
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
 
-	orch := newAgentOrchestrator(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
+	orch := agentorch.New(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
 
 	// Create the task with the project pre-assigned so PrepareForTask succeeds.
 	created, err := taskMgr.Create("stale-resume guard", "", "interactive")

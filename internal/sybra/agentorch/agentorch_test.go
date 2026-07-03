@@ -1,4 +1,4 @@
-package sybra
+package agentorch
 
 import (
 	"strings"
@@ -232,9 +232,9 @@ func TestPickImplementationResumeSession(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := pickImplementationResumeSession(tc.runs, tc.workflowStart, tc.provider)
+			got := PickImplementationResumeSession(tc.runs, tc.workflowStart, tc.provider)
 			if got != tc.want {
-				t.Errorf("pickImplementationResumeSession() = %q, want %q", got, tc.want)
+				t.Errorf("PickImplementationResumeSession() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -245,19 +245,19 @@ func TestBuildTaskStartPrompt(t *testing.T) {
 
 	taskData := task.Task{Title: "My task", Body: "Task body"}
 
-	got := buildTaskStartPrompt(taskData, "do the thing", false)
+	got := BuildTaskStartPrompt(taskData, "do the thing", false)
 	if got != "do the thing" {
-		t.Fatalf("buildTaskStartPrompt(include=false) = %q, want %q", got, "do the thing")
+		t.Fatalf("BuildTaskStartPrompt(include=false) = %q, want %q", got, "do the thing")
 	}
 
-	got = buildTaskStartPrompt(taskData, "do the thing", true)
+	got = BuildTaskStartPrompt(taskData, "do the thing", true)
 	want := "# Task: My task\n\nTask body\n\n---\n\ndo the thing"
 	if got != want {
-		t.Fatalf("buildTaskStartPrompt(include=true) = %q, want %q", got, want)
+		t.Fatalf("BuildTaskStartPrompt(include=true) = %q, want %q", got, want)
 	}
 
-	got = buildTaskStartPrompt(taskData, "   \n\t", true)
+	got = BuildTaskStartPrompt(taskData, "   \n\t", true)
 	if !strings.Contains(got, "# Task: My task") {
-		t.Fatalf("buildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
+		t.Fatalf("BuildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
 	}
 }

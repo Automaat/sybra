@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -55,7 +56,7 @@ func setupApp(t *testing.T) *App {
 		Logger:       logger,
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, mgr, nil, logger, wm, nil)
 
 	return &App{
 		tasks:     taskMgr,
@@ -739,7 +740,7 @@ func TestResolvePermission(t *testing.T) {
 			if tt.cfgPerm != nil {
 				cfg = &config.Config{Agent: config.AgentDefaults{RequirePermissions: tt.cfgPerm}}
 			}
-			if got := resolvePermission(tk, cfg); got != tt.want {
+			if got := agentorch.ResolvePermission(tk, cfg); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -750,7 +751,7 @@ func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
 	t.Parallel()
 	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
 	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
-	_, _, requirePerm, _ := resolveExecution(tk, "headless", "", nil)
+	_, _, requirePerm, _ := agentorch.ResolveExecution(tk, "headless", "", nil)
 	if !requirePerm {
 		t.Error("debug task should always require permissions")
 	}

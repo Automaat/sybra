@@ -1,4 +1,6 @@
-package sybra
+// Package agentorch manages agent lifecycle: worktree setup, project
+// assignment, and agent launching for a task.
+package agentorch
 
 import (
 	"context"
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -24,37 +27,37 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
-// resolveExecution derives the effective mode, directory, permission mode, and
+// ResolveExecution derives the effective mode, directory, permission mode, and
 // whether project worktree setup should be skipped based on the task's type.
 // hintMode is used when the task type does not force a specific mode.
 // Permission priority: task-level override > TaskType hardcoded > config default > true.
-func resolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
+func ResolveExecution(t task.Task, hintMode, researchMachineDir string, cfg *config.Config) (mode, dir string, requirePerm, skipWorktree bool) {
 	switch t.TaskType {
 	case task.TaskTypeDebug:
 		return "interactive", "", true, false
 	case task.TaskTypeResearch:
-		return "headless", researchMachineDir, resolvePermission(t, cfg), true
+		return "headless", researchMachineDir, ResolvePermission(t, cfg), true
 	case task.TaskTypeChat:
-		return "interactive", "", resolvePermission(t, cfg), false
+		return "interactive", "", ResolvePermission(t, cfg), false
 	default:
-		return hintMode, "", resolvePermission(t, cfg), false
+		return hintMode, "", ResolvePermission(t, cfg), false
 	}
 }
 
-// resolvePermission returns the effective require_permissions value for a task.
+// ResolvePermission returns the effective require_permissions value for a task.
 // Priority: task field > config default > true (safe default).
-func resolvePermission(t task.Task, cfg *config.Config) bool {
+func ResolvePermission(t task.Task, cfg *config.Config) bool {
 	if t.RequirePermissions != nil {
 		return *t.RequirePermissions
 	}
 	return cfg.DefaultRequirePermissions()
 }
 
-// resolveHeadlessPermissionMode returns the effective headless permission posture.
+// ResolveHeadlessPermissionMode returns the effective headless permission posture.
 // Priority: task field > config default > "bypass".
 // When the task carries an invalid value, an error is returned and the caller
 // must abort the launch rather than silently falling back to bypass.
-func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, error) {
+func ResolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, error) {
 	if t.HeadlessPermissionMode != "" {
 		mode, err := config.NormalizeHeadlessPermissionMode(t.HeadlessPermissionMode)
 		if err != nil {
@@ -65,7 +68,7 @@ func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, err
 	return cfg.DefaultHeadlessPermissionMode(), nil
 }
 
-// pickImplementationResumeSession walks AgentRuns newest-first and returns
+// PickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
 // to the current workflow execution and provider.
 //
@@ -93,7 +96,7 @@ func resolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, err
 //     prompt is ever sent. Empty run.Provider is allowed only for legacy
 //     runs predating provider recording; provider="" disables the filter
 //     (useful for callers that have no provider context).
-func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time, dispatchProvider string) string {
+func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Time, dispatchProvider string) string {
 	for i := range slices.Backward(runs) {
 		run := &runs[i]
 		if run.SessionID == "" {
@@ -113,10 +116,9 @@ func pickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 	return ""
 }
 
-// AgentOrchestrator manages agent lifecycle: worktree setup, project
+// Orchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
-type AgentOrchestrator struct {
-	DomainHandler
+type Orchestrator struct {
 	tasks     *task.Manager
 	projects  *project.Store
 	agents    *agent.Manager
@@ -124,13 +126,23 @@ type AgentOrchestrator struct {
 	cfg       *config.Config
 	sandboxes *sandbox.Manager
 	bgops     *bgop.Tracker
+	logger    *slog.Logger
+	audit     *audit.Logger
 	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
-	// conflict pr-fix instead of a human escalation. Wired in wireServices after
-	// the ReviewHandler exists; nil keeps the escalate-to-human fallback.
+	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
+	// in wireServices after the review.Handler exists; nil keeps the
+	// escalate-to-human fallback. sandboxes/bgops/conflictRecovery are all set
+	// after New() returns, once the file watcher (initFileWatcher) may already
+	// be running — every read site nil-guards for this reason. Do not remove
+	// the nil guards even if app.go's init order changes to close the window;
+	// the ordering is easy to regress silently.
 	conflictRecovery func(taskID string) bool
 }
 
-func newAgentOrchestrator(
+// New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
+// wired in after construction once those subsystems exist, via SetSandboxes
+// and SetBgops.
+func New(
 	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
@@ -138,15 +150,81 @@ func newAgentOrchestrator(
 	logger *slog.Logger,
 	worktrees *worktree.Manager,
 	cfg *config.Config,
-) *AgentOrchestrator {
-	return &AgentOrchestrator{
-		DomainHandler: DomainHandler{audit: al, logger: logger},
-		tasks:         tasks,
-		projects:      projects,
-		agents:        agents,
-		worktrees:     worktrees,
-		cfg:           cfg,
+) *Orchestrator {
+	return &Orchestrator{
+		audit:     al,
+		logger:    logger,
+		tasks:     tasks,
+		projects:  projects,
+		agents:    agents,
+		worktrees: worktrees,
+		cfg:       cfg,
 	}
+}
+
+// SetSandboxes late-binds the sandbox manager once it exists.
+func (o *Orchestrator) SetSandboxes(sandboxes *sandbox.Manager) {
+	o.sandboxes = sandboxes
+}
+
+// SetBgops late-binds the background-operation tracker once it exists.
+func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
+	o.bgops = bgops
+}
+
+// SetConflictRecovery late-binds the autonomous conflict-recovery callback
+// once the review.Handler that implements it exists.
+func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
+	o.conflictRecovery = fn
+}
+
+// Sandboxes returns the late-bound sandbox manager, for callers (e.g.
+// startup-wiring assertions) that need to verify it was wired correctly.
+func (o *Orchestrator) Sandboxes() *sandbox.Manager {
+	return o.sandboxes
+}
+
+// Bgops returns the late-bound background-operation tracker, for callers
+// (e.g. startup-wiring assertions) that need to verify it was wired
+// correctly.
+func (o *Orchestrator) Bgops() *bgop.Tracker {
+	return o.bgops
+}
+
+// HasConflictRecovery reports whether the autonomous conflict-recovery
+// callback has been wired, without exposing the callback itself.
+func (o *Orchestrator) HasConflictRecovery() bool {
+	return o.conflictRecovery != nil
+}
+
+// Cfg returns the shared config, for callers (e.g. app_workflow.go's
+// agentAdapter) that need to resolve task/config-derived settings the
+// orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Cfg() *config.Config {
+	return o.cfg
+}
+
+// Worktrees returns the shared worktree manager, for callers that need
+// worktree operations the orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Worktrees() *worktree.Manager {
+	return o.worktrees
+}
+
+// Projects returns the shared project store, for callers that need project
+// lookups the orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Projects() *project.Store {
+	return o.projects
+}
+
+// Logger returns the shared logger, for callers that need to log in the
+// same stream as the orchestrator's own logging.
+func (o *Orchestrator) Logger() *slog.Logger {
+	return o.logger
+}
+
+// LogAudit records a structured audit event; a nil audit logger silently no-ops.
+func (o *Orchestrator) LogAudit(eventType, taskID, agentID string, data map[string]any) {
+	audit.LogEvent(o.audit, o.logger, eventType, taskID, agentID, data)
 }
 
 // resolveDispatchProvider predicts the provider a Run call for this
@@ -158,7 +236,7 @@ func newAgentOrchestrator(
 // reflects health-gate/limit-gate failover before a resumable session is
 // picked; otherwise a session from the requested provider could be handed
 // to a run that actually dispatches to a different one.
-func (o *AgentOrchestrator) resolveDispatchProvider(taskID string, assignment workflow.AgentAssignment) string {
+func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflow.AgentAssignment) string {
 	resolved, err := o.agents.ResolveProvider(agent.RunConfig{
 		TaskID:                  taskID,
 		Provider:                assignment.Provider,
@@ -173,11 +251,11 @@ func (o *AgentOrchestrator) resolveDispatchProvider(taskID string, assignment wo
 	return o.agents.DefaultProvider()
 }
 
-// sandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
+// SandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
 // already running for the task; it never starts one. Sandboxes are started
 // lazily by the testing phase (test-runner role), so implementation/review
 // agents inherit one only if testing left it up — they never spin a cluster.
-func (o *AgentOrchestrator) sandboxEnvIfRunning(taskID string) []string {
+func (o *Orchestrator) SandboxEnvIfRunning(taskID string) []string {
 	if o.sandboxes == nil {
 		return nil
 	}
@@ -187,12 +265,12 @@ func (o *AgentOrchestrator) sandboxEnvIfRunning(taskID string) []string {
 	return nil
 }
 
-// sandboxEnv resolves the extra environment variables a task's configured
+// SandboxEnv resolves the extra environment variables a task's configured
 // sandbox injects into its agent subprocess, starting the sandbox on demand.
 // Returns nil when no sandbox applies or startup fails (a failed start is
 // logged, not fatal — the agent runs without the sandbox env). Called from the
 // testing phase so the per-task sandbox spins up only when tests actually run.
-func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string {
+func (o *Orchestrator) SandboxEnv(taskID, dir string, t task.Task) []string {
 	if o.sandboxes == nil || t.ProjectID == "" {
 		return nil
 	}
@@ -202,7 +280,7 @@ func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string
 	}
 	inst := o.sandboxes.Get(taskID)
 	if inst == nil {
-		// context.Background(): sandboxEnv is called from agentAdapter.StartAgent,
+		// context.Background(): SandboxEnv is called from agentAdapter.StartAgent,
 		// which implements workflow.AgentDispatcher — a fixed interface signature
 		// with no ctx parameter (see the comment on the PrepareForTask call in
 		// app_workflow.go).
@@ -216,7 +294,7 @@ func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string
 	return inst.EnvVars()
 }
 
-// prependSupervisorSteer consumes a pending watchdog headless-nudge steer for
+// PrependSupervisorSteer consumes a pending watchdog headless-nudge steer for
 // taskID: it clears the one-shot SupervisorSteer field and returns prompt with
 // the correction prepended. Returns prompt unchanged when none is pending.
 // Called at the head of the headless re-dispatch entry points (this orchestrator,
@@ -231,7 +309,7 @@ func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string
 // applying it twice — preserving the one-shot contract. A start that then fails
 // loses the nudge, which is recoverable: the watchdog re-nudges if the resumed
 // agent loops again.
-func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string, error) {
+func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string, error) {
 	t, err := tasks.Get(taskID)
 	if err != nil {
 		// Cannot read the task → cannot consume a steer; dispatch unsteered and
@@ -248,12 +326,12 @@ func prependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
 }
 
-func (o *AgentOrchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
+func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
 	ag, _, err := o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{})
 	return ag, err
 }
 
-func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
+func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -268,7 +346,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	// Consume a pending watchdog headless-nudge steer (no-op when none). Held
 	// within the dispatch claim so the read-then-clear is serialized per task.
 	// On a clear failure the steer stays pending and we dispatch unsteered.
-	if steered, sErr := prependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+	if steered, sErr := PrependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
 		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
 	} else {
 		prompt = steered
@@ -288,9 +366,9 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, mode, researchDir, o.cfg)
+	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
 	if !skipWT {
-		t = o.autoAssignProject(t)
+		t = o.AutoAssignProject(t)
 		if t.ProjectID == "" {
 			return nil, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
 		}
@@ -306,7 +384,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
-			if _, recovered := markRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
+			if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 				return nil, "", workflow.ErrDispatchInFlight
 			}
 			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
@@ -318,23 +396,23 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	baselineRef := currentWorktreeHead(dir)
+	baselineRef := CurrentWorktreeHead(dir)
 
 	var workflowStart time.Time
 	if t.Workflow != nil {
 		workflowStart = t.Workflow.StartedAt
 	}
 	dispatchProvider := o.resolveDispatchProvider(taskID, assignment)
-	resumeSessionID := pickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
+	resumeSessionID := PickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
 
-	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
+	posture, postureErr := ResolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
 
-	extraEnv := o.sandboxEnvIfRunning(taskID)
+	extraEnv := o.SandboxEnvIfRunning(taskID)
 
-	fullPrompt := buildTaskStartPrompt(t, prompt, includeTaskDescription)
+	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                  taskID,
 		Name:                    t.Title,
@@ -343,7 +421,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		AllowedTools:            t.AllowedTools,
 		Dir:                     dir,
 		Provider:                assignment.Provider,
-		Model:                   firstNonEmpty(assignment.Model, "sonnet"),
+		Model:                   FirstNonEmpty(assignment.Model, "sonnet"),
 		ExperimentID:            assignment.ExperimentID,
 		VariantID:               assignment.VariantID,
 		AssignmentUnit:          assignment.AssignmentUnit,
@@ -356,7 +434,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 		ExtraEnv:                extraEnv,
 		MaxTurns:                t.MaxTurns,
 		ForkSubagent:            t.ForkSubagent,
-		ReasoningEffort:         firstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		ReasoningEffort:         FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
@@ -368,7 +446,7 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 	return ag, baselineRef, nil
 }
 
-func (o *AgentOrchestrator) handleProviderGateStartError(taskID string, err error) {
+func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		return
 	}
@@ -377,11 +455,11 @@ func (o *AgentOrchestrator) handleProviderGateStartError(taskID string, err erro
 	if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
 		o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
 	}
-	o.logAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
+	o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
 	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 }
 
-func (o *AgentOrchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error {
+func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error {
 	resetDir := t.WorktreeDir
 	if resetDir == "" {
 		resetDir = o.worktrees.PathFor(t)
@@ -403,7 +481,7 @@ func (o *AgentOrchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) 
 	return nil
 }
 
-// markRebaseBlocked handles a worktree-prep rebase failure. A rebase abort means
+// MarkRebaseBlocked handles a worktree-prep rebase failure. A rebase abort means
 // the task branch conflicts with base — exactly the case the conflict pr-fix
 // agent resolves (it checks out the PR head without rebasing and resolves
 // conflicts in-agent). So when recoverConflict re-dispatches that fix, the task
@@ -411,7 +489,7 @@ func (o *AgentOrchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) 
 // retry budget is spent) do we fall back to human-required. recoverConflict may
 // be nil (callers without a PR-monitor handle), which preserves the old
 // escalate-to-human behaviour.
-func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) bool {
+func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) bool {
 	if !errors.Is(err, worktree.ErrRebaseFailed) {
 		return false
 	}
@@ -429,22 +507,34 @@ func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	return true
 }
 
-func markRebaseBlockedWithRecoveryResult(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) (handled, recovered bool) {
+// MarkRebaseBlockedWithRecoveryResult behaves like MarkRebaseBlocked but also
+// reports whether recoverConflict actually recovered the task, so callers can
+// distinguish "handled by escalating to human" from "handled by an autonomous
+// conflict recovery" (the latter should not also surface an error to the caller).
+func MarkRebaseBlockedWithRecoveryResult(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) (handled, recovered bool) {
 	if recoverConflict == nil {
-		return markRebaseBlocked(tasks, taskID, err, logger, nil), false
+		return MarkRebaseBlocked(tasks, taskID, err, logger, nil), false
 	}
 	wrappedRecover := func(id string) bool {
 		recovered = recoverConflict(id)
 		return recovered
 	}
-	return markRebaseBlocked(tasks, taskID, err, logger, wrappedRecover), recovered
+	return MarkRebaseBlocked(tasks, taskID, err, logger, wrappedRecover), recovered
+}
+
+// RecoverFromWorktreePrepFailure marks taskID rebase-blocked using this
+// Orchestrator's own logger and late-bound conflict-recovery callback,
+// wrapping MarkRebaseBlockedWithRecoveryResult for callers outside this
+// package that don't have direct access to either.
+func (o *Orchestrator) RecoverFromWorktreePrepFailure(tasks *task.Manager, taskID string, err error) (handled, recovered bool) {
+	return MarkRebaseBlockedWithRecoveryResult(tasks, taskID, err, o.logger, o.conflictRecovery)
 }
 
 // recordImplAgentStart emits the agent.started audit event and persists the
 // initial AgentRun record for an implementation agent.
-func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
+func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
+	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
@@ -474,7 +564,7 @@ func (o *AgentOrchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, t
 	}
 }
 
-func buildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription bool) string {
+func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription bool) string {
 	prompt = strings.TrimSpace(prompt)
 	if !includeTaskDescription {
 		return prompt
@@ -489,7 +579,7 @@ func buildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 // StartChat creates a synthetic chat task bound to projectID, prepares a
 // dedicated (local-only) worktree, and launches an interactive agent with
 // the requested provider. Rolls back on any failure so no orphans leak.
-func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
+func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
 	prov := strings.ToLower(strings.TrimSpace(providerName))
 	if prov != "claude" && prov != "codex" && prov != "copilot" {
 		return nil, fmt.Errorf("invalid provider %q: must be claude, codex, or copilot", providerName)
@@ -519,7 +609,7 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 	}
 	o.completeWorktreeOp(opID)
 
-	requirePerm := resolvePermission(t, o.cfg)
+	requirePerm := ResolvePermission(t, o.cfg)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             t.ID,
 		Name:               t.Title,
@@ -539,7 +629,7 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 		return nil, err
 	}
 
-	o.logAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
+	o.LogAudit(audit.EventAgentStarted, t.ID, ag.ID, map[string]any{
 		"mode": "interactive", "title": t.Title, "role": "chat",
 		"task_type": string(t.TaskType), "provider": ag.Provider,
 		"require_permissions": requirePerm,
@@ -558,7 +648,9 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 	return ag, nil
 }
 
-func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
+// AutoAssignProject assigns the task to the sole registered project when the
+// task has none and exactly one project is registered. No-op otherwise.
+func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
 	if t.ProjectID != "" || o.projects == nil {
 		return t
 	}
@@ -577,7 +669,7 @@ func (o *AgentOrchestrator) autoAssignProject(t task.Task) task.Task {
 
 // StartPRFixAgent starts a headless agent to address review comments on
 // the task's PR. Named "pr-fix:" so handleAgentComplete routes it correctly.
-func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
+func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	// Same per-task dispatch serialization as StartAgent — a pr-fix dispatch
 	// must not race a concurrent implementation/recovery dispatch.
 	if !o.agents.ClaimTaskDispatch(taskID) {
@@ -594,9 +686,9 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := resolveExecution(t, t.AgentMode, researchDir, o.cfg)
+	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
-		t = o.autoAssignProject(t)
+		t = o.AutoAssignProject(t)
 		if t.ProjectID == "" {
 			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree", taskID)
 		}
@@ -616,13 +708,13 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 		return fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	posture, postureErr := resolveHeadlessPermissionMode(t, o.cfg)
+	posture, postureErr := ResolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
 		return postureErr
 	}
 
-	prompt := buildPRFixPrompt(t, o.logger)
-	if steered, sErr := prependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+	prompt := BuildPRFixPrompt(t, o.logger)
+	if steered, sErr := PrependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
 		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
 	} else {
 		prompt = steered
@@ -646,7 +738,7 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	}
 
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
-	o.logAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
+	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture,
@@ -661,11 +753,11 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 	return nil
 }
 
-// buildPRFixPrompt constructs the prompt for a PR fix agent.
+// BuildPRFixPrompt constructs the prompt for a PR fix agent.
 // If the task has an associated PR, it fetches review context (URL, branch,
 // review comments) and includes it so the agent amends the existing PR rather
 // than starting from scratch.
-func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
+func BuildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 	base := fmt.Sprintf("# Task: %s\n\n%s\n\n---\n\nFix the issues raised in the PR review. Push the changes when done.\n\nNever weaken, skip, delete, comment out, or hardcode tests, snapshots, or fixtures to make checks pass, and never edit CI config to neuter a gate. Fix the underlying code; tampering is detected and blocks the task.", t.Title, t.Body)
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return base
@@ -711,8 +803,8 @@ func buildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 }
 
 // startWorktreeOp starts a bgop for worktree preparation and returns the op ID
-// and a phase-update callback. Returns empty string and nil when bgops is nil.
-func (o *AgentOrchestrator) startWorktreeOp(label, projectID, taskID string) (opID string, onPhase func(string)) {
+// and a phase-update callback. Returns empty string and nil when Bgops is nil.
+func (o *Orchestrator) startWorktreeOp(label, projectID, taskID string) (opID string, onPhase func(string)) {
 	if o.bgops == nil {
 		return "", nil
 	}
@@ -721,14 +813,37 @@ func (o *AgentOrchestrator) startWorktreeOp(label, projectID, taskID string) (op
 	return opID, onPhase
 }
 
-func (o *AgentOrchestrator) completeWorktreeOp(opID string) {
+func (o *Orchestrator) completeWorktreeOp(opID string) {
 	if o.bgops != nil && opID != "" {
 		o.bgops.Complete(opID)
 	}
 }
 
-func (o *AgentOrchestrator) failWorktreeOp(opID string, err error) {
+func (o *Orchestrator) failWorktreeOp(opID string, err error) {
 	if o.bgops != nil && opID != "" {
 		o.bgops.Fail(opID, err)
 	}
+}
+
+// CurrentWorktreeHead returns the current HEAD SHA of the git worktree at dir,
+// or "" if dir is empty or the git invocation fails.
+func CurrentWorktreeHead(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--verify", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// FirstNonEmpty returns a if non-empty, else b.
+func FirstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

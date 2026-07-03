@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -32,7 +32,7 @@ const (
 
 const staffCodeReviewProvider = "claude"
 
-const transientFetchWarnThreshold = 3
+const TransientFetchWarnThreshold = 3
 
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's
 // linked PR, keyed by "repo#number". fetchKnownTaskPRs reuses it across poll
@@ -53,15 +53,17 @@ type readyPRState struct {
 	PR        github.PullRequest
 }
 
-// ReviewHandler manages PR review task creation, agent dispatch, and status tracking.
-type ReviewHandler struct {
-	DomainHandler
+// Handler manages PR review task creation, agent dispatch, and status tracking.
+type Handler struct {
+	logger         *slog.Logger
+	audit          *audit.Logger
+	emit           func(string, any)
 	tasks          *task.Manager
 	projects       *project.Store
 	agents         *agent.Manager
 	prTracker      *github.IssueTracker
 	worktrees      *worktree.Manager
-	workflowEngine *workflow.Engine
+	WorkflowEngine *workflow.Engine
 	cfg            *config.Config
 	experience     *experience.Store
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
@@ -147,7 +149,7 @@ type ReviewHandler struct {
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
-func (r *ReviewHandler) agentLogin() string {
+func (r *Handler) agentLogin() string {
 	if r.viewerLoginFn != nil {
 		return r.viewerLoginFn()
 	}
@@ -157,21 +159,21 @@ func (r *ReviewHandler) agentLogin() string {
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
 // falling back to the raised defaults, then scaled by GitHub budget pressure.
 // nil cfg (test construction) uses defaults too.
-func (r *ReviewHandler) pollFast() time.Duration {
+func (r *Handler) pollFast() time.Duration {
 	if r.cfg == nil {
 		return github.ScaleInterval(config.DefaultReviewsFastSeconds * time.Second)
 	}
 	return github.ScaleInterval(r.cfg.GitHub.ReviewsFast())
 }
 
-func (r *ReviewHandler) pollSlow() time.Duration {
+func (r *Handler) pollSlow() time.Duration {
 	if r.cfg == nil {
 		return github.ScaleInterval(config.DefaultReviewsSlowSeconds * time.Second)
 	}
 	return github.ScaleInterval(r.cfg.GitHub.ReviewsSlow())
 }
 
-func newReviewHandler(
+func New(
 	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
@@ -183,9 +185,11 @@ func newReviewHandler(
 	renovatePRsFn func() []github.PullRequest,
 	cfg *config.Config,
 	experienceStore *experience.Store,
-) *ReviewHandler {
-	return &ReviewHandler{
-		DomainHandler:       DomainHandler{audit: al, logger: logger, emit: emit},
+) *Handler {
+	return &Handler{
+		audit:               al,
+		logger:              logger,
+		emit:                emit,
 		tasks:               tasks,
 		projects:            projects,
 		agents:              agents,
@@ -208,16 +212,21 @@ func newReviewHandler(
 	}
 }
 
-func (r *ReviewHandler) Name() string { return "reviews" }
+// logAudit records a structured audit event; a nil audit logger silently no-ops.
+func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]any) {
+	audit.LogEvent(r.audit, r.logger, eventType, taskID, agentID, data)
+}
 
-func (r *ReviewHandler) Poll(ctx context.Context) time.Duration {
+func (r *Handler) Name() string { return "reviews" }
+
+func (r *Handler) Poll(ctx context.Context) time.Duration {
 	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
 		return r.pollKnownTaskPRs(ctx)
 	}
 	return r.pollAndMonitorPRs(ctx)
 }
 
-func (r *ReviewHandler) pollKnownTaskPRs(ctx context.Context) time.Duration {
+func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	tasks, err := r.tasks.List()
 	if err != nil {
 		return r.pollSlow()
@@ -269,7 +278,7 @@ func (r *ReviewHandler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	return r.pollSlow()
 }
 
-func (r *ReviewHandler) pollAndMonitorPRs(ctx context.Context) time.Duration {
+func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// Load tasks up-front so stale review-task reconciliation runs even
 	// when FetchReviews fails (transient errors, rate limits, etc.).
 	tasks, err := r.tasks.List()
@@ -285,7 +294,7 @@ func (r *ReviewHandler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	if fetchErr != nil {
 		if github.IsTransientError(fetchErr) {
 			r.transientFetchFails++
-			if r.transientFetchFails < transientFetchWarnThreshold {
+			if r.transientFetchFails < TransientFetchWarnThreshold {
 				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
 			} else {
 				r.logger.Warn("pr-monitor.fetch", "err", fetchErr, "consecutive", r.transientFetchFails)
@@ -391,7 +400,7 @@ func (r *ReviewHandler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 // once GraphQL recovers. ready_to_merge issues reach handleAutoMerge, which
 // gates a SourcedViaREST PR on the strict REST readiness check
 // (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
-func (r *ReviewHandler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
+func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
 	var matchers, closedMatchers []github.TaskMatcher
 	for i := range tasks {
 		m := github.TaskMatcher{
@@ -438,7 +447,7 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(ctx context.Context, tasks
 	}
 }
 
-func (r *ReviewHandler) handleMatchedPRIssues(ctx context.Context, issues []github.PRIssue) {
+func (r *Handler) handleMatchedPRIssues(ctx context.Context, issues []github.PRIssue) {
 	// Group issues per task (first-seen order) so a single poll that surfaces
 	// several fixable kinds for one PR — e.g. a push that both fails CI and drew
 	// review comments — dispatches ONE coalesced fix agent instead of a separate
@@ -461,7 +470,7 @@ func (r *ReviewHandler) handleMatchedPRIssues(ctx context.Context, issues []gith
 // retry/cooldown gates for one task, then dispatches at most one action:
 // a coalesced fix agent for every handleable fixable issue, an escalation when
 // the only remaining fixable issue has exhausted its budget, or an auto-merge.
-func (r *ReviewHandler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
+func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
 	if r.agents.HasRunningAgentForTask(taskID) {
 		return
 	}
@@ -471,7 +480,7 @@ func (r *ReviewHandler) handleTaskPRIssues(ctx context.Context, taskID string, i
 	// during the agent run) races the in-flight workflow's tail steps and
 	// triggers a layered re-dispatch that DispatchEvent later rejects, but only
 	// after we've prepped a worktree and emitted audit noise.
-	if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(taskID) {
+	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
 		return
 	}
 
@@ -536,7 +545,7 @@ func prRefCacheKey(repo string, number int) string {
 // status/check event at the same head, e.g. a re-run CI job failing), or a
 // failed probe evicts the cache entry and falls back to a full fetch, so a
 // stale ready-state is never reused.
-func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
+func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
 	fetchFn := github.FetchPRsForMonitor
 	if r.fetchKnownPRsFn != nil {
 		fetchFn = r.fetchKnownPRsFn
@@ -605,7 +614,7 @@ func (r *ReviewHandler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []githu
 // handleAutoMerge depends on the task's tags, which TaskMatcher does not
 // carry, so a renovate-fix PR is simply never cached and always gets a fresh
 // fetch — under-caching a narrow case beats risking a stale merge decision.
-func (r *ReviewHandler) updateReadyPRCache(repo string, number int, pr github.PullRequest) {
+func (r *Handler) updateReadyPRCache(repo string, number int, pr github.PullRequest) {
 	key := prRefCacheKey(repo, number)
 	ready := pr.SourcedViaREST && readyForRESTAutoMerge(pr) || !pr.SourcedViaREST && readyForCopilotAutoMerge(pr)
 	if !ready || pr.HeadSHA == "" {
@@ -623,14 +632,14 @@ func (r *ReviewHandler) updateReadyPRCache(repo string, number int, pr github.Pu
 // (arms native auto-merge or attempts a squash merge) since either action
 // makes the cached snapshot stale — the PR may now be merged/closed, or have
 // native auto-merge armed — and only a fresh fetch can observe that.
-func (r *ReviewHandler) evictReadyPRCache(repo string, number int) {
+func (r *Handler) evictReadyPRCache(repo string, number int) {
 	delete(r.readyPRCache, prRefCacheKey(repo, number))
 }
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
 // stamping the terminal outcome and emitting the audit + task.landed events the
 // evaluation scorecard reads. Skips tasks with a still-running agent.
-func (r *ReviewHandler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
+func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
@@ -638,7 +647,7 @@ func (r *ReviewHandler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs [
 	r.advanceClosedTaskPRsWithFetch(ctx, monitoredPRs, closedMatchers, fetchFn)
 }
 
-func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
+func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
@@ -660,8 +669,8 @@ func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(ctx context.Context, monit
 		// Engine.ResumeStalled doesn't pick the done task back up and rebase
 		// its already-merged branch against origin/main, which self-conflicts
 		// and flips the task back to human-required.
-		if r.workflowEngine != nil {
-			if _, cancelErr := r.workflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
+		if r.WorkflowEngine != nil {
+			if _, cancelErr := r.WorkflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
 				r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
 			}
 		}
@@ -714,7 +723,7 @@ const landingEnrichTimeout = 20 * time.Second
 // PR, starting from the base outcome already recorded. Local timing (created/work
 // → land) and the agent's last pushed SHA are always added; for a merge it adds
 // PR size and human-edit signals via GitHub, bounded so the poll can't hang.
-func (r *ReviewHandler) computeLanding(ctx context.Context, taskID string, prNumber int, state, base string) (outcome string, data map[string]any) {
+func (r *Handler) computeLanding(ctx context.Context, taskID string, prNumber int, state, base string) (outcome string, data map[string]any) {
 	outcome = base
 	data = map[string]any{"pr": prNumber, "state": state}
 	t, err := r.tasks.Get(taskID)
@@ -753,7 +762,7 @@ type landingEnrich struct {
 // when the compare is strictly ahead of the agent's SHA (status=="ahead",
 // commits > 0) — so a rebase/force-push (diverged) or unpushed-local divergence
 // doesn't produce a false positive.
-func (r *ReviewHandler) enrichLanding(ctx context.Context, repo string, prNumber int, agentSHA, base string) landingEnrich {
+func (r *Handler) enrichLanding(ctx context.Context, repo string, prNumber int, agentSHA, base string) landingEnrich {
 	enrichCtx, cancel := context.WithTimeout(ctx, landingEnrichTimeout)
 	defer cancel()
 
@@ -798,7 +807,7 @@ func landingOutcome(state, agentSHA, mergedHeadSHA string) string {
 	return "merged"
 }
 
-func (r *ReviewHandler) recordExperienceOnLanding(t task.Task) {
+func (r *Handler) recordExperienceOnLanding(t task.Task) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.logger.Warn("experience.record.panic", "task_id", t.ID, "panic", rec)
@@ -903,7 +912,7 @@ const (
 // pr.reverted (the change-failure signal). Rate-limited and bounded: one gh call
 // per repo with eligible tasks, every revertScanInterval, with each call killed
 // after landingEnrichTimeout. Reuses the already-listed tasks (no extra read).
-func (r *ReviewHandler) scanForReverts(ctx context.Context, tasks []task.Task) {
+func (r *Handler) scanForReverts(ctx context.Context, tasks []task.Task) {
 	now := time.Now()
 	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
 		return
@@ -1028,8 +1037,8 @@ func earliestRunStart(runs []task.AgentRun) time.Time {
 // cancelling on the primary alone would kill the workflow (and drop the
 // still-unresolved sibling, already marked handled for this SHA) the moment
 // the primary kind resolves first.
-func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue) {
-	if r.workflowEngine == nil {
+func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue) {
+	if r.WorkflowEngine == nil {
 		return
 	}
 	// Index live issues per task so we can answer "kind K still present
@@ -1060,7 +1069,7 @@ func (r *ReviewHandler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues [
 			continue // at least one coalesced kind still holds — let the workflow proceed
 		}
 		reason := strings.Join(kinds, "+")
-		step, err := r.workflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+reason+" resolved")
+		step, err := r.WorkflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+reason+" resolved")
 		if err != nil {
 			r.logger.Error("pr-monitor.cancel-resolved", "task_id", t.ID, "kind", reason, "err", err)
 			continue
@@ -1114,7 +1123,7 @@ func anyKindLive(live map[string]bool, kinds []string) bool {
 // Renovate-bot PRs (from renovatePRsFn). Renovate's PRs aren't in author:@me,
 // so without folding them in here the pr-fix monitor would never re-spawn an
 // agent on a Renovate PR whose CI keeps failing.
-func (r *ReviewHandler) monitoredPRs(summary github.ReviewSummary) []github.PullRequest {
+func (r *Handler) monitoredPRs(summary github.ReviewSummary) []github.PullRequest {
 	if r.renovatePRsFn == nil {
 		return summary.CreatedByMe
 	}
@@ -1239,7 +1248,7 @@ func orphanPRAdoptionEligible(t *task.Task) bool {
 //
 // When no open PR is found, falls through to adoptOrphanMergedPR to handle the
 // race where the PR was opened and merged between two poll cycles.
-func (r *ReviewHandler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []github.PullRequest) {
+func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []github.PullRequest) {
 	for i := range tasks {
 		t := &tasks[i]
 		if !orphanPRAdoptionEligible(t) {
@@ -1288,7 +1297,7 @@ func (r *ReviewHandler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, p
 // branch and, if exactly one is found, links it and advances the task to done.
 // Handles the race where a manually-opened PR is merged before the poll loop
 // finds it as an open PR (so adoptOrphanPRs never had a chance to link it).
-func (r *ReviewHandler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
+func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	fn := r.findMergedPRFn
 	if fn == nil {
 		fn = findMergedPRByBranch
@@ -1374,7 +1383,7 @@ func findMergedPRByBranch(repo, branch string) (int, error) {
 // handleAutoMerge's own gate already decided on) — e.g. a PR still waiting on
 // CI to go green, which produces no PRIssue at all. Reuses monitoredPRs
 // already fetched this cycle rather than issuing fresh GraphQL calls.
-func (r *ReviewHandler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
+func (r *Handler) maybeArmNativeAutoMerge(tasks []task.Task, monitoredPRs []github.PullRequest, issues []github.PRIssue) {
 	if r.cfg == nil || !r.cfg.GitHub.NativeAutoMerge {
 		return
 	}

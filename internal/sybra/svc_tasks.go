@@ -19,6 +19,8 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -557,7 +559,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 
 // startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
 func (s *TaskService) startPRReviewAgent(t task.Task) error {
-	posture, postureErr := resolveHeadlessPermissionMode(t, s.cfg)
+	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, s.cfg)
 	if postureErr != nil {
 		return postureErr
 	}
@@ -576,7 +578,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
-	ag, err := s.agents.Run(staffCodeReviewRunConfig(t, prompt, dir, posture))
+	ag, err := s.agents.Run(review.StaffCodeReviewRunConfig(t, prompt, dir, posture))
 	if err != nil {
 		return err
 	}

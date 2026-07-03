@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 }
 
 func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
-	cfg := staffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
+	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
 
 	if cfg.Provider != staffCodeReviewProvider {
 		t.Fatalf("Provider = %q, want %q", cfg.Provider, staffCodeReviewProvider)
@@ -415,9 +415,9 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	tasks := task.NewManager(store, nil)
 	got := make(chan task.Task, 1)
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
 	}
 	r.createReviewTaskWithTriage(github.PullRequest{
 		Number: 2708,
@@ -571,9 +571,9 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		ProjectID: task.Ptr("o/r"),
 	})
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
 	}
 
 	all, err := tasks.List()
@@ -712,11 +712,11 @@ func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
 		URL:   "https://github.com/owner/repo",
 		Type:  project.ProjectTypePet,
 	})
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		projects:      projects,
-		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
-		experience:    store,
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		projects:   projects,
+		cfg:        &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience: store,
 	}
 
 	r.recordExperienceOnLanding(task.Task{ID: "closed", ProjectID: "owner/repo", Outcome: "closed"})
@@ -764,11 +764,11 @@ func TestRecordExperienceOnLandingProjectUnresolvedSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer auditLog.Close()
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
-		projects:      projects,
-		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
-		experience:    store,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler), audit: auditLog,
+		projects:   projects,
+		cfg:        &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience: store,
 	}
 
 	r.recordExperienceOnLanding(task.Task{ID: "missing", ProjectID: "missing/repo", Outcome: "merged"})
@@ -808,11 +808,11 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 		},
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
-		projects:      projects,
-		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
-		experience:    store,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler), audit: auditLog,
+		projects:   projects,
+		cfg:        &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience: store,
 	}
 	r.recordExperienceOnLanding(task.Task{
 		ID:        "work",
@@ -867,11 +867,11 @@ func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
 		Type:  project.ProjectTypeWork,
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), workProject)
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		projects:      projects,
-		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
-		experience:    store,
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		projects:   projects,
+		cfg:        &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience: store,
 	}
 
 	r.recordExperienceOnLanding(task.Task{ID: "workco", ProjectID: "workco/private", Outcome: "merged", Title: "safe title"})
@@ -921,11 +921,11 @@ func TestRecordExperienceOnLandingWriteErrorIsNonBlocking(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "experience-file"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		projects:      projects,
-		cfg:           &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
-		experience:    store,
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		projects:   projects,
+		cfg:        &config.Config{Experience: config.ExperienceConfig{Enabled: true}},
+		experience: store,
 	}
 
 	r.recordExperienceOnLanding(task.Task{ID: "merged", ProjectID: "owner/repo", Outcome: "merged"})
@@ -991,11 +991,11 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler:  DomainHandler{logger: logger},
+	r := &Handler{
+		logger:         logger,
 		tasks:          tasks,
 		prTracker:      github.NewIssueTracker(time.Minute),
-		workflowEngine: engine,
+		WorkflowEngine: engine,
 	}
 	// "live" task's conflict is still detected. "resolved" task has no
 	// matching live issue — that's the case we want to cancel.
@@ -1094,11 +1094,11 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler:  DomainHandler{logger: logger},
+	r := &Handler{
+		logger:         logger,
 		tasks:          tasks,
 		prTracker:      github.NewIssueTracker(time.Minute),
-		workflowEngine: engine,
+		WorkflowEngine: engine,
 	}
 	r.prTracker.MarkHandled(created.ID, github.PRIssueComments, "sha1")
 	r.prTracker.MarkHandled(created.ID, github.PRIssueCIFailure, "sha1")
@@ -1153,7 +1153,7 @@ func TestMonitoredPRs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &ReviewHandler{renovatePRsFn: tt.fn}
+			r := &Handler{renovatePRsFn: tt.fn}
 			got := r.monitoredPRs(summary)
 			if len(got) != len(tt.wantNums) {
 				t.Fatalf("len = %d, want %d (got %+v)", len(got), len(tt.wantNums), got)
@@ -1250,11 +1250,11 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 		LogsDir:      filepath.Join(tmp, "logs"),
 	})
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		worktrees:     wt,
-		wtFailures:    make(map[string]int),
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		tasks:      tasks,
+		worktrees:  wt,
+		wtFailures: make(map[string]int),
 	}
 
 	issue := github.PRIssue{
@@ -1313,10 +1313,10 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		wtFailures:    make(map[string]int),
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		tasks:      tasks,
+		wtFailures: make(map[string]int),
 	}
 
 	wtDir := t.TempDir()
@@ -1388,9 +1388,9 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 	})
 
 	calls := 0
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
 		findMergedPRFn: func(repo, branch string) (int, error) {
 			calls++
 			if repo == "o/r" && branch == "feat/stranded" {
@@ -1474,9 +1474,9 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 	}
 
 	mergedCalled := false
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
 		findMergedPRFn: func(_, _ string) (int, error) {
 			mergedCalled = true
 			return 0, nil
@@ -1499,7 +1499,7 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 }
 
 func TestHasReviewTask_ScopedByProject(t *testing.T) {
-	r := &ReviewHandler{}
+	r := &Handler{}
 	existing := []task.Task{
 		{ProjectID: "org/a", PRNumber: 42, Tags: []string{"review"}},
 		{ProjectID: "org/a", PRNumber: 7, Tags: []string{"backend"}}, // not a review task
@@ -1618,10 +1618,10 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 
 			agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 
-			r := &ReviewHandler{
-				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-				tasks:         tasks,
-				agents:        agentMgr,
+			r := &Handler{
+				logger: slog.New(slog.DiscardHandler),
+				tasks:  tasks,
+				agents: agentMgr,
 				fetchPRStateFn: func(repo string, number int) (github.PRState, error) {
 					if tt.fetchErr != nil {
 						return github.PRState{}, tt.fetchErr
@@ -1696,10 +1696,10 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 
 			reconcileCalled := false
 			agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-			r := &ReviewHandler{
-				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
-				tasks:         tasks,
-				agents:        agentMgr,
+			r := &Handler{
+				logger: slog.New(slog.DiscardHandler), emit: func(string, any) {},
+				tasks:  tasks,
+				agents: agentMgr,
 				fetchReviewsFn: func() (github.ReviewSummary, error) {
 					return github.ReviewSummary{}, tt.fetchErr
 				},
@@ -1739,10 +1739,10 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 
 	reconcileCalls := 0
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
-		tasks:         tasks,
-		agents:        agentMgr,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler), emit: func(string, any) {},
+		tasks:  tasks,
+		agents: agentMgr,
 		fetchReviewsFn: func() (github.ReviewSummary, error) {
 			return github.ReviewSummary{}, github.ErrBudgetExhausted
 		},
@@ -1816,12 +1816,12 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler:  DomainHandler{logger: logger, emit: func(string, any) {}},
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
 		tasks:          tasks,
 		agents:         agentMgr,
 		prTracker:      github.NewIssueTracker(time.Minute),
-		workflowEngine: engine,
+		WorkflowEngine: engine,
 	}
 
 	monitoredPRs := []github.PullRequest{} // PR no longer appears among open PRs
@@ -1891,13 +1891,13 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	fetchReviewsCalled := false
 	knownFetches := 0
 	merged := false
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
-		tasks:         tasks,
-		projects:      projects,
-		agents:        agentMgr,
-		prTracker:     github.NewIssueTracker(0),
-		cfg:           &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}},
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler), emit: func(string, any) {},
+		tasks:     tasks,
+		projects:  projects,
+		agents:    agentMgr,
+		prTracker: github.NewIssueTracker(0),
+		cfg:       &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}},
 		fetchReviewsFn: func() (github.ReviewSummary, error) {
 			fetchReviewsCalled = true
 			return github.ReviewSummary{}, nil

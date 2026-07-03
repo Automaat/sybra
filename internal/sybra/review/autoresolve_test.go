@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -52,13 +52,13 @@ func initAutoResolveSourceRepo(t *testing.T) string {
 	return dir
 }
 
-// autoResolveHarness wires a ReviewHandler backed by a real project/worktree
+// autoResolveHarness wires a Handler backed by a real project/worktree
 // stack and a mechanical pr-fix workflow (mechanicalPRFixYAML, defined in
 // app_reviews_coalesce_test.go) that completes without spawning an agent —
 // enough to distinguish "the fast-path skipped the agent" from "the normal
 // pr-fix workflow was dispatched" without needing a real claude/codex binary.
 type autoResolveHarness struct {
-	r        *ReviewHandler
+	r        *Handler
 	tasks    *task.Manager
 	projects *project.Store
 	auditDir string
@@ -135,14 +135,14 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler:  DomainHandler{logger: logger, audit: al, emit: func(string, any) {}},
+	r := &Handler{
+		logger: logger, audit: al, emit: func(string, any) {},
 		tasks:          tasks,
 		projects:       projStore,
 		agents:         agentMgr,
 		prTracker:      github.NewIssueTracker(time.Minute),
 		worktrees:      wt,
-		workflowEngine: engine,
+		WorkflowEngine: engine,
 		cfg: &config.Config{GitHub: config.GitHubConfig{
 			AutoResolveCleanMerges: autoResolveEnabled,
 		}},

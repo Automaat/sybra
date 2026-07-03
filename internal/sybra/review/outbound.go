@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"slices"
@@ -16,7 +16,7 @@ const linkedPRDriftWindow = 10 * time.Minute
 // task (status in-review/ready-review, not tag `review`) from the live
 // monitored PRs and persists any delta. The phase is a pure overlay on the In
 // Review column — it never changes task.Status.
-func (r *ReviewHandler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.PullRequest) {
+func (r *Handler) reconcilePRPhases(tasks []task.Task, monitoredPRs []github.PullRequest) {
 	byNumber := make(map[int]*github.PullRequest, len(monitoredPRs))
 	byBranch := make(map[string]*github.PullRequest, len(monitoredPRs))
 	for i := range monitoredPRs {
@@ -75,7 +75,7 @@ func matchingPR(t *task.Task, byNumber map[int]*github.PullRequest, byBranch map
 	return pr
 }
 
-func (r *ReviewHandler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
+func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 	if !linkedOwnPRHumanRequiredDrift(t, livePR) {
 		return nil
 	}
@@ -124,7 +124,7 @@ func ownPRColumnTask(t *task.Task) bool {
 }
 
 // applyPRPhase persists the PR phase only when it changed.
-func (r *ReviewHandler) applyPRPhase(t *task.Task, phase string) {
+func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 	if phase == t.PRPhase {
 		return
 	}

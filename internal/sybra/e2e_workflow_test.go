@@ -20,6 +20,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -235,7 +236,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		Logger:       logger,
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, nil, agentMgr, nil, logger, wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, logger, wm, nil)
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
@@ -3185,7 +3186,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 		Logger:       e2eLogger(),
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, nil, agentMgr, nil, e2eLogger(), wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, agentMgr, nil, e2eLogger(), wm, nil)
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}

@@ -131,7 +131,7 @@ export function Shutdown(): $CancellablePromise<void> {
 }
 
 /**
- * StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
+ * StartAgent delegates to agentorch.Orchestrator and is exposed as a Wails-bound method.
  * User-triggered starts are never one-shot — that flag is reserved for workflow
  * steps that expect a single turn.
  */

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -16,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -151,7 +151,7 @@ func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 }
 
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
-	return prependSupervisorSteer(a.tasks, taskID, prompt)
+	return agentorch.PrependSupervisorSteer(a.tasks, taskID, prompt)
 }
 
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
@@ -398,10 +398,10 @@ func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string)
 	return result.String(), err
 }
 
-// agentAdapter bridges agent.Manager + AgentOrchestrator → workflow.AgentLauncher.
+// agentAdapter bridges agent.Manager + agentorch.Orchestrator → workflow.AgentLauncher.
 type agentAdapter struct {
 	agents     *agent.Manager
-	agentOrch  *AgentOrchestrator
+	agentOrch  *agentorch.Orchestrator
 	tasks      *task.Manager
 	projects   *project.Store
 	sandboxes  *sandbox.Manager
@@ -430,7 +430,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 	defer a.agents.ReleaseTaskDispatch(taskID)
 
-	t, err := a.agentOrch.tasks.Get(taskID)
+	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -444,7 +444,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", "", "", err
 	}
 
-	posture, postureErr := resolveHeadlessPermissionMode(t, a.agentOrch.cfg)
+	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, a.agentOrch.Cfg())
 	if postureErr != nil {
 		return "", "", "", postureErr
 	}
@@ -465,9 +465,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Dir:                     dir,
 		OneShot:                 oneShot,
 		MaxTurns:                t.MaxTurns,
-		RequirePermissions:      resolvePermission(t, a.agentOrch.cfg),
+		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
-		ReasoningEffort:         firstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
@@ -478,7 +478,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	cleanRetryReset := false
 	if cfg.Dir == "" && needsWorktree {
-		t = a.agentOrch.autoAssignProject(t)
+		t = a.agentOrch.AutoAssignProject(t)
 		if t.ProjectID == "" {
 			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
 		}
@@ -493,9 +493,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// workflow step-execution call sites); see the Engine.SetContext /
 		// e.ctx pattern for why threading ctx across that interface is out of
 		// scope for this pass.
-		d, wtErr := a.agentOrch.worktrees.PrepareForTask(context.Background(), t, nil)
+		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
-			if _, recovered := markRebaseBlockedWithRecoveryResult(a.tasks, taskID, wtErr, a.agentOrch.logger, a.agentOrch.conflictRecovery); recovered {
+			if _, recovered := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); recovered {
 				return "", "", "", workflow.ErrDispatchInFlight
 			}
 			return "", "", "", wtErr
@@ -516,11 +516,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		cfg.Dir = config.HomeDir()
 	}
 
-	baselineRef = currentWorktreeHead(cfg.Dir)
+	baselineRef = agentorch.CurrentWorktreeHead(cfg.Dir)
 
 	if a.sandboxes != nil {
 		if r == agent.RoleTestRunner {
-			cfg.ExtraEnv = a.agentOrch.sandboxEnv(taskID, cfg.Dir, t)
+			cfg.ExtraEnv = a.agentOrch.SandboxEnv(taskID, cfg.Dir, t)
 		} else if inst := a.sandboxes.Get(taskID); inst != nil {
 			cfg.ExtraEnv = inst.EnvVars()
 		}
@@ -556,7 +556,7 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		if t.WorktreeDir != "" {
 			target = t.WorktreeDir
 		} else {
-			target = a.agentOrch.worktrees.PathFor(t)
+			target = a.agentOrch.Worktrees().PathFor(t)
 		}
 	}
 	if target == "" {
@@ -572,10 +572,10 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
-		a.agentOrch.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
+		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
-	a.agentOrch.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
 	return nil
 }
 
@@ -604,39 +604,26 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 	}
 }
 
-func currentWorktreeHead(dir string) string {
-	if dir == "" {
-		return ""
-	}
-	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Role, t task.Task) {
-	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.cfg == nil {
+	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.Cfg() == nil {
 		return
 	}
-	if !roleReceivesExperience(role) || !a.agentOrch.cfg.Experience.Enabled || t.ProjectID == "" {
+	if !roleReceivesExperience(role) || !a.agentOrch.Cfg().Experience.Enabled || t.ProjectID == "" {
 		return
 	}
 	projStore := a.projects
 	if projStore == nil {
-		projStore = a.agentOrch.projects
+		projStore = a.agentOrch.Projects()
 	}
 	if projStore == nil {
 		return
 	}
 	proj, err := projStore.Get(t.ProjectID)
-	if err != nil || proj.ID == "" || !a.agentOrch.cfg.AllowsProjectType(string(proj.Type)) {
+	if err != nil || proj.ID == "" || !a.agentOrch.Cfg().AllowsProjectType(string(proj.Type)) {
 		return
 	}
 	projectKey := experience.ProjectKey(proj)
-	records, err := a.experience.Query(projectKey, a.agentOrch.cfg.Experience.MaxRecords)
+	records, err := a.experience.Query(projectKey, a.agentOrch.Cfg().Experience.MaxRecords)
 	if err != nil || len(records) == 0 {
 		return
 	}
@@ -655,7 +642,7 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	} else {
 		data["project_id"] = t.ProjectID
 	}
-	a.agentOrch.logAudit(audit.EventExperienceInjected, t.ID, "", data)
+	a.agentOrch.LogAudit(audit.EventExperienceInjected, t.ID, "", data)
 }
 
 func roleReceivesExperience(role agent.Role) bool {
@@ -663,7 +650,7 @@ func roleReceivesExperience(role agent.Role) bool {
 }
 
 func (a *agentAdapter) ensureTestRunnerCapacity(role agent.Role) error {
-	if role == agent.RoleTestRunner && a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.cfg.TestingMaxConcurrent() {
+	if role == agent.RoleTestRunner && a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.Cfg().TestingMaxConcurrent() {
 		return workflow.ErrTestRunnerBusy
 	}
 	return nil
@@ -711,11 +698,4 @@ func (a *agentAdapter) ProviderCanFailover(provider string) bool {
 
 func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

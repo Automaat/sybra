@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"log/slog"
@@ -23,8 +23,8 @@ func TestFetchKnownTaskPRs_SkipsFullFetchForKnownReadyPR(t *testing.T) {
 	}
 
 	fullFetches := 0
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
 		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
 			fullFetches++
 			results := make([]github.MonitorPRResult, len(refs))
@@ -76,8 +76,8 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 	fullFetches := 0
 	currentHeadSHA := "sha50"
 	currentUpdatedAt := "2026-07-02T10:00:00Z"
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
 		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
 			fullFetches++
 			results := make([]github.MonitorPRResult, len(refs))
@@ -148,8 +148,8 @@ func TestFetchKnownTaskPRs_ClosedAtSameHeadInvalidatesReadyCache(t *testing.T) {
 	}
 
 	fullFetches := 0
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
 		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
 			fullFetches++
 			results := make([]github.MonitorPRResult, len(refs))
@@ -206,8 +206,8 @@ func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing
 
 	fullFetches := 0
 	currentUpdatedAt := "2026-07-02T10:00:00Z"
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
 		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
 			fullFetches++
 			results := make([]github.MonitorPRResult, len(refs))
@@ -287,11 +287,11 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 		CIStatus: "SUCCESS", RESTApproved: true, UpdatedAt: "2026-07-02T10:00:00Z",
 	}
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		projects:      projStore,
-		prTracker:     github.NewIssueTracker(0),
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(0),
 		mergePRViaREST: func(repo string, number int, headSHA string) error {
 			return nil
 		},

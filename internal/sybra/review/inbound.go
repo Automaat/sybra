@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -12,14 +12,15 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func (r *ReviewHandler) createReviewTask(pr github.PullRequest, projectID string) {
+func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
 	r.createReviewTaskWithTriage(pr, projectID, r.triageReview)
 }
 
-func (r *ReviewHandler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
+func (r *Handler) createReviewTaskWithTriage(pr github.PullRequest, projectID string, triage func(task.Task)) {
 	title := "Review: " + pr.Title
 	body := fmt.Sprintf("%s\n\nAuthor: @%s", pr.URL, pr.Author)
 
@@ -48,7 +49,7 @@ func triageReviewSmall(additions, changedFiles int) bool {
 	return additions < reviewSmallAdditions && changedFiles < reviewSmallFiles
 }
 
-func (r *ReviewHandler) triageReview(t task.Task) {
+func (r *Handler) triageReview(t task.Task) {
 	stats, err := github.FetchPRStats(t.ProjectID, t.PRNumber)
 	if err != nil {
 		r.logger.Warn("review.triage.stats", "task_id", t.ID, "err", err)
@@ -56,7 +57,7 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 		if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 		}
-		if err := r.startReviewAgent(t, false); err != nil {
+		if err := r.StartReviewAgent(t, false); err != nil {
 			r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 		}
 		return
@@ -79,22 +80,22 @@ func (r *ReviewHandler) triageReview(t task.Task) {
 	if _, err := r.tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		r.logger.Error("review.triage.status", "task_id", t.ID, "err", err)
 	}
-	if err := r.startReviewAgent(t, false); err != nil {
+	if err := r.StartReviewAgent(t, false); err != nil {
 		r.logger.Error("review.triage.start", "task_id", t.ID, "err", err)
 	}
 }
 
-func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
+func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", t.ID)
 	}
 
-	posture, postureErr := resolveHeadlessPermissionMode(t, r.cfg)
+	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, r.cfg)
 	if postureErr != nil {
 		return postureErr
 	}
 
-	// context.Background(): startFixReviewAgent is reached both from a Wails-bound
+	// context.Background(): StartFixReviewAgent is reached both from a Wails-bound
 	// ReviewService method (no ctx) and from an async triage goroutine spawned
 	// with a fixed func(task.Task) signature — no ctx to thread from either path.
 	dir, err := r.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
@@ -135,7 +136,7 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 	return nil
 }
 
-func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
+func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	current := t
 	if force && r.tasks != nil {
 		if latest, err := r.tasks.Get(t.ID); err == nil {
@@ -162,14 +163,14 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 		return nil
 	}
 
-	posture, postureErr := resolveHeadlessPermissionMode(current, r.cfg)
+	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(current, r.cfg)
 	if postureErr != nil {
 		return postureErr
 	}
 
 	dir := config.HomeDir()
 	if current.ProjectID != "" {
-		// context.Background(): same dead end as startFixReviewAgent above —
+		// context.Background(): same dead end as StartFixReviewAgent above —
 		// reached from a Wails-bound service method with no ctx.
 		d, err := r.worktrees.PrepareForReview(context.Background(), current)
 		if err != nil {
@@ -181,7 +182,7 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
-	ag, err := r.agents.Run(staffCodeReviewRunConfig(current, prompt, dir, posture))
+	ag, err := r.agents.Run(StaffCodeReviewRunConfig(current, prompt, dir, posture))
 	if err != nil {
 		return err
 	}
@@ -200,7 +201,7 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 	return nil
 }
 
-func staffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
+func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID:                  t.ID,
 		Name:                    agent.RoleReview.AgentName(t.Title),
@@ -225,7 +226,7 @@ func reviewAgentAlreadyRan(t task.Task) bool {
 	})
 }
 
-func (r *ReviewHandler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
+func (r *Handler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []github.PullRequest) {
 	projects, err := r.projects.List()
 	if err != nil || len(projects) == 0 {
 		return
@@ -254,7 +255,7 @@ func (r *ReviewHandler) maybeCreateReviewTasks(tasks []task.Task, reviewPRs []gi
 	}
 }
 
-func (r *ReviewHandler) hasReviewTask(tasks []task.Task, projectID string, prNumber int) bool {
+func (r *Handler) hasReviewTask(tasks []task.Task, projectID string, prNumber int) bool {
 	for i := range tasks {
 		// PR numbers are per-repo, so a review task only suppresses another
 		// PR with the same number when they belong to the same project.
@@ -276,7 +277,7 @@ func reviewPRKey(projectID string, prNumber int) string {
 // PR-review task (tag `review`) from live GitHub signals and persists any
 // delta. It supersedes the old human-required→in-review "published" detector,
 // folding that transition into the phase machine.
-func (r *ReviewHandler) reconcileReviewPhases(tasks []task.Task, summary github.ReviewSummary) {
+func (r *Handler) reconcileReviewPhases(tasks []task.Task, summary github.ReviewSummary) {
 	requested := indexPRsByKey(summary.ReviewRequested)
 	approved := indexPRsByKey(summary.ReviewedByMe) // reviewed-by:@me is approvals-only
 
@@ -293,7 +294,7 @@ func (r *ReviewHandler) reconcileReviewPhases(tasks []task.Task, summary github.
 }
 
 // reconcileReviewTask computes and applies the phase for a single review task.
-func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
+func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[string]github.PullRequest) {
 	// An agent owning the PR short-circuits: surface "reviewing" without the
 	// extra GitHub round-trips.
 	if r.agents.HasRunningAgentForTask(t.ID) {
@@ -390,7 +391,7 @@ func (r *ReviewHandler) reconcileReviewTask(t *task.Task, requested, approved ma
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
-func (r *ReviewHandler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
+func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	statusChanged := res.Status != "" && res.Status != t.Status
 	phaseChanged := res.Phase != t.ReviewPhase
 	if !statusChanged && !phaseChanged {
@@ -479,7 +480,7 @@ func openReviewPRs(summary github.ReviewSummary) []github.PullRequest {
 	return prs
 }
 
-func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPRs []github.PullRequest) {
+func (r *Handler) closeFinishedReviewTasks(tasks []task.Task, openReviewPRs []github.PullRequest) {
 	matchers := reviewTaskMatchers(tasks)
 	if len(matchers) == 0 {
 		return
@@ -491,7 +492,7 @@ func (r *ReviewHandler) closeFinishedReviewTasks(tasks []task.Task, openReviewPR
 	r.closeFinishedReviewTasksWithFetch(tasks, openReviewPRs, fetchFn)
 }
 
-func (r *ReviewHandler) closeFinishedReviewTasksWithFetch(tasks []task.Task, openReviewPRs []github.PullRequest, fetchFn func(repo string, number int) (github.PRState, error)) {
+func (r *Handler) closeFinishedReviewTasksWithFetch(tasks []task.Task, openReviewPRs []github.PullRequest, fetchFn func(repo string, number int) (github.PRState, error)) {
 	matchers := reviewTaskMatchers(tasks)
 	if len(matchers) == 0 {
 		return

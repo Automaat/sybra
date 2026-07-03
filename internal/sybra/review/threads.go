@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"strings"
@@ -20,7 +20,7 @@ import (
 // detected via isOutdated (the anchored code changed since the comment). Human-
 // authored threads and still-live (non-outdated) Copilot threads are never
 // touched, so genuinely-unaddressed feedback still blocks the merge.
-func (r *ReviewHandler) resolveAddressedCopilotThreads(tasks []task.Task, prs []github.PullRequest) {
+func (r *Handler) resolveAddressedCopilotThreads(tasks []task.Task, prs []github.PullRequest) {
 	byNumber := make(map[int]string, len(tasks))
 	byBranch := make(map[string]string, len(tasks))
 	for i := range tasks {
@@ -60,7 +60,7 @@ func (r *ReviewHandler) resolveAddressedCopilotThreads(tasks []task.Task, prs []
 		if r.agents.HasRunningAgentForTask(taskID) {
 			continue
 		}
-		if r.workflowEngine != nil && r.workflowEngine.HasActiveWorkflow(taskID) {
+		if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
 			continue
 		}
 		r.resolveCopilotThreadsForPR(taskID, *pr, r.agentLogin())
@@ -79,7 +79,7 @@ func blockedOnlyByThreads(pr github.PullRequest) bool {
 		pr.UnresolvedCount > 0
 }
 
-func (r *ReviewHandler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest, agentLogin string) {
+func (r *Handler) resolveCopilotThreadsForPR(taskID string, pr github.PullRequest, agentLogin string) {
 	// ViewerLogin() can fail (returns ""); fall back to the PR author so an
 	// addressed thread is still detected. On own-PRs the author is the agent's
 	// identity, mirroring convertCommonPR's fallback. Without this an empty
