@@ -69,8 +69,6 @@ function baseSettings() {
   }
 }
 
-const mockSettings = baseSettings()
-
 // The settings page is a left-rail of tabbed panes; jump to one by clicking its
 // rail entry, then the pane mounts.
 async function goTo(name: string) {
