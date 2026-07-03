@@ -584,6 +584,14 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 			continue
 		}
 		c.Patch = patch
+		// Base content is only ever consulted to resolve an added-skip finding
+		// (see isEstablishedSkipIdiom), so skip the `git show` round-trip
+		// entirely when the patch adds no skip-pattern candidate line —
+		// avoids the IO cost on every scanned file, including large
+		// snapshot/testdata diffs that never touch a skip idiom.
+		if !tamperAddedSkipRe.MatchString(patch) {
+			continue
+		}
 		// Read the file as it existed on the base side of the diff (pre-change)
 		// to tell an established skip idiom (already used elsewhere in the file
 		// before this change) apart from a genuinely novel one. Reading the
