@@ -227,7 +227,8 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 
 	w.logger.Info("agent.watchdog.verdict",
 		"id", ag.ID, "stuck", verdict.Stuck,
-		"recommendation", verdict.Recommendation, "reason", verdict.Reason)
+		"recommendation", verdict.Recommendation, "reason", verdict.Reason,
+		"reason_kind", verdict.ReasonKind)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
 	w.applyVerdict(ag, trigger, verdict)
