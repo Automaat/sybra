@@ -2,10 +2,12 @@ package sybra
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +60,7 @@ func initAutoResolveSourceRepo(t *testing.T) string {
 type autoResolveHarness struct {
 	r        *ReviewHandler
 	tasks    *task.Manager
+	projects *project.Store
 	auditDir string
 	proj     project.Project
 	branch   string
@@ -144,7 +147,14 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 			AutoResolveCleanMerges: autoResolveEnabled,
 		}},
 	}
-	return &autoResolveHarness{r: r, tasks: tasks, auditDir: auditDir, proj: proj, branch: branch}
+	return &autoResolveHarness{
+		r:        r,
+		tasks:    tasks,
+		projects: projStore,
+		auditDir: auditDir,
+		proj:     proj,
+		branch:   branch,
+	}
 }
 
 func (h *autoResolveHarness) newConflictTask(t *testing.T) (task.Task, github.PullRequest) {
@@ -176,6 +186,15 @@ func stubMerge(result project.CleanMergeResult, err error) func(context.Context,
 
 func stubPush(err error) func(context.Context, string, string) error {
 	return func(context.Context, string, string) error { return err }
+}
+
+func currentHEAD(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // TestAutoResolveConflict_CreatedSkipsAgent is the acceptance criterion at the
@@ -218,11 +237,8 @@ func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 		if ev.Data["issue"] != string(github.PRIssueConflict) {
 			t.Errorf("audit issue = %v, want %v", ev.Data["issue"], github.PRIssueConflict)
 		}
-		if ev.Data["base_ref"] != h.branch {
-			t.Errorf("audit base_ref = %v, want %v", ev.Data["base_ref"], h.branch)
-		}
 		for k := range ev.Data {
-			if k != "pr" && k != "issue" && k != "base_ref" {
+			if k != "pr" && k != "issue" {
 				t.Errorf("audit payload carries unexpected field %q: %v", k, ev.Data)
 			}
 		}
@@ -385,5 +401,113 @@ func TestAutoResolveConflict_ToggleOffSkipsFastPath(t *testing.T) {
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched with the toggle off")
+	}
+}
+
+func TestAutoResolveConflict_WorkProjectSkipsFastPath(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+
+	tk, pr := h.newConflictTask(t)
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for a work-typed project")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for a work-typed project")
+	}
+}
+
+func TestAutoResolveConflict_InvalidBaseFallsThroughToAgent(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	pr.BaseRefName = "-not-a-branch"
+	mergeCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(nil)
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Error("tryCleanMergeFn invoked for an invalid base ref")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched for an invalid base ref")
+	}
+}
+
+func TestAutoResolveConflict_PushFailureRollsBackMerge(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	worktreeDir := h.r.worktrees.PathFor(tk)
+	var preMergeHead string
+	h.r.tryCleanMergeFn = func(_ context.Context, dir, _ string) (project.CleanMergeResult, error) {
+		preMergeHead = currentHEAD(t, dir)
+		cmds := [][]string{
+			{"-C", dir, "config", "user.email", "test@test.com"},
+			{"-C", dir, "config", "user.name", "Test"},
+			{"-C", dir, "commit", "--allow-empty", "-m", "synthetic merge"},
+		}
+		for _, args := range cmds {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = stubPush(fmt.Errorf("push failed"))
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched after rollback)")
+	}
+	if preMergeHead == "" {
+		t.Fatal("preMergeHead not captured")
+	}
+	if got := currentHEAD(t, worktreeDir); got != preMergeHead {
+		t.Fatalf("HEAD after failed push = %s, want rollback to %s", got, preMergeHead)
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched after push failure")
+	}
+	for _, ev := range readExperienceAuditEvents(t, h.auditDir) {
+		if ev.Type == audit.EventPRConflictAutoResolved {
+			t.Fatal("EventPRConflictAutoResolved emitted after a failed push")
+		}
 	}
 }

@@ -426,20 +426,27 @@ func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, ha
 // reports a conflict), or any fetch/merge/push error; the caller then falls
 // through to the agent-assisted recovery path unchanged.
 func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr github.PullRequest, dir string) bool {
-	base := pr.BaseRefName
-	if base == "" && t.ProjectID != "" {
-		if proj, err := r.projects.Get(t.ProjectID); err == nil {
-			if db, dbErr := project.DefaultBranch(ctx, proj.ClonePath); dbErr == nil {
-				base = db
-			}
-		}
-	}
-	if base == "" {
-		base = "main"
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.Type != project.ProjectTypePet {
+		return false
 	}
 
-	if err := executil.Run(ctx, dir, "git", "fetch", "origin", base); err != nil {
-		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+	base, err := resolveAutoResolveBase(ctx, dir, pr, proj)
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.base", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+
+	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
+		return false
+	}
+	preMergeHead = strings.TrimSpace(preMergeHead)
+
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base)
+	if err := executil.Run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
+		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
 	}
 
@@ -449,7 +456,7 @@ func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr
 	}
 	result, err := mergeFn(ctx, dir, "refs/remotes/origin/"+base)
 	if err != nil {
-		r.logger.Warn("pr-monitor.auto-resolve.merge", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+		r.logger.Warn("pr-monitor.auto-resolve.merge", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
 	}
 	if result != project.CleanMergeCreated {
@@ -459,6 +466,7 @@ func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr
 	branch, err := project.CurrentBranch(ctx, dir)
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.branch", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "branch")
 		return false
 	}
 
@@ -467,17 +475,49 @@ func (r *ReviewHandler) autoResolveConflict(ctx context.Context, t task.Task, pr
 		pushFn = project.PushSync
 	}
 	if err := pushFn(ctx, dir, branch); err != nil {
-		r.logger.Warn("pr-monitor.auto-resolve.push", "task_id", t.ID, "pr", pr.Number, "base_ref", base, "err", err)
+		r.logger.Warn("pr-monitor.auto-resolve.push", "task_id", t.ID, "pr", pr.Number, "err", err)
+		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "push")
 		return false
 	}
 
 	r.prTracker.MarkHandled(t.ID, github.PRIssueConflict, pr.HeadSHA)
 	r.evictReadyPRCache(pr.Repository, pr.Number)
 	r.logAudit(audit.EventPRConflictAutoResolved, t.ID, "", map[string]any{
-		"pr": pr.Number, "issue": string(github.PRIssueConflict), "base_ref": base,
+		"pr": pr.Number, "issue": string(github.PRIssueConflict),
 	})
-	r.logger.Info("pr-monitor.auto-resolved", "task_id", t.ID, "pr", pr.Number, "base_ref", base)
+	r.logger.Info("pr-monitor.auto-resolved", "task_id", t.ID, "pr", pr.Number)
 	return true
+}
+
+func resolveAutoResolveBase(ctx context.Context, dir string, pr github.PullRequest, proj project.Project) (string, error) {
+	base := pr.BaseRefName
+	if base == "" {
+		db, err := project.DefaultBranch(ctx, proj.ClonePath)
+		if err != nil {
+			return "", fmt.Errorf("resolve default branch for %s: %w", proj.ID, err)
+		}
+		base = strings.TrimSpace(db)
+	}
+	if base == "" {
+		return "", errors.New("base branch is empty")
+	}
+	if err := executil.Run(ctx, dir, "git", "check-ref-format", "--branch", base); err != nil {
+		return "", fmt.Errorf("validate base branch %q: %w", base, err)
+	}
+	return base, nil
+}
+
+func (r *ReviewHandler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, prNumber int, dir, preMergeHead, reason string) {
+	if preMergeHead == "" {
+		return
+	}
+	if err := executil.Run(ctx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
+		r.logger.Error("pr-monitor.auto-resolve.rollback-failed",
+			"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead, "err", err)
+		return
+	}
+	r.logger.Info("pr-monitor.auto-resolve.rolled-back",
+		"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead)
 }
 
 // dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks

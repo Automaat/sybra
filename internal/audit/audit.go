@@ -34,8 +34,8 @@ const (
 	EventPRCopilotThreadsResolved = "pr_monitor.copilot_threads_resolved"
 	// EventPRConflictAutoResolved records that a conflict-recovery agent was
 	// skipped because a deterministic git merge of the base branch succeeded
-	// cleanly and was pushed. Data carries only pr, issue kind, and base_ref —
-	// never PR titles, branch names, or agent output.
+	// cleanly and was pushed. Data carries only pr and issue kind — never PR
+	// titles, branch names, or agent output.
 	EventPRConflictAutoResolved = "pr_monitor.conflict_auto_resolved"
 	EventReviewStarted          = "review.agent_started"
 	EventFixReviewStarted       = "fix_review.agent_started"

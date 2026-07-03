@@ -903,6 +903,19 @@ const (
 	CleanMergeConflict
 )
 
+func (r CleanMergeResult) String() string {
+	switch r {
+	case CleanMergeCreated:
+		return "created"
+	case CleanMergeNoop:
+		return "noop"
+	case CleanMergeConflict:
+		return "conflict"
+	default:
+		return fmt.Sprintf("CleanMergeResult(%d)", int(r))
+	}
+}
+
 // TryCleanMerge attempts a deterministic `git merge baseRef` in wtPath and
 // classifies the result without ever leaving the worktree in a conflicted or
 // dirty state. It never pushes.
