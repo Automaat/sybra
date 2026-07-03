@@ -287,7 +287,7 @@ func TestParseNameStatus(t *testing.T) {
 	want := []tamperChange{
 		{Status: "M", Path: "internal/foo/foo.go"},
 		{Status: "D", Path: "internal/foo/foo_test.go"},
-		{Status: "R100", Path: "new/x_test.go"},
+		{Status: "R100", Path: "new/x_test.go", OldPath: "old/x_test.go"},
 		{Status: "A", Path: "bar.go"},
 	}
 	if len(got) != len(want) {
@@ -503,6 +503,45 @@ func TestExecDetectTampering_EstablishedSkipIdiomDoesNotFlag(t *testing.T) {
 	}
 	if out.Output == "flagged" {
 		t.Fatalf("Output = %q, want not flagged (established skip idiom)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_EstablishedSkipIdiomSurvivesRename(t *testing.T) {
+	t.Parallel()
+	skipLine := "\tif !hasGit() { t.Skip(\"git not available\") }"
+	base := "package foo\n\nimport \"testing\"\n\nfunc hasGit() bool { return true }\n\n" +
+		"func TestFoo(t *testing.T) {\n" + skipLine + "\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo.go":      "package foo\n\nfunc Foo() int { return 1 }\n",
+		"internal/foo/foo_test.go": base,
+	})
+	// Rename the file carrying the established idiom and add a new test using
+	// the same idiom in the same commit — mirrors a routine `git mv` refactor.
+	// The base commit only has the file under the old path, so the base-content
+	// lookup must follow the rename rather than looking up the new path (which
+	// doesn't exist at the base commit).
+	tampered := base + "\nfunc TestBar(t *testing.T) {\n" + skipLine +
+		"\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	if err := os.Remove(filepath.Join(wt, "internal/foo/foo_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFile(t, wt, "internal/foo/foo_other_test.go", tampered)
+	gitRun(t, wt, "add", "-A")
+	gitRun(t, wt, "commit", "-m", "test: rename foo_test.go and add bar with established skip guard")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (established skip idiom survives rename)", out.Output)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)

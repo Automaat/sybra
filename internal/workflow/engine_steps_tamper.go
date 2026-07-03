@@ -92,7 +92,11 @@ func (r tamperReport) highCount() int {
 type tamperChange struct {
 	Status string // "A", "M", "D", "R100", …
 	Path   string
-	Patch  string
+	// OldPath is the pre-rename path for a rename/copy ("R"/"C" status);
+	// empty otherwise. The base commit only has the file under this path, so
+	// base-content lookups (see BaseContent) must use it instead of Path.
+	OldPath string
+	Patch   string
 	// BaseContent is the file content on the base (pre-change) side of the
 	// diff, when available. Used to tell an added t.Skip (etc.) that follows
 	// an existing, repo-established idiom apart from a genuinely novel skip —
@@ -584,13 +588,19 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		// to tell an established skip idiom (already used elsewhere in the file
 		// before this change) apart from a genuinely novel one. Reading the
 		// post-change file instead would let two brand-new identical skip lines
-		// added in the same commit "establish" each other.
-		content, cErr := gitFileAtRef(ctx, wtPath, base, c.Path)
+		// added in the same commit "establish" each other. For a rename/copy the
+		// base commit only has the file under OldPath (Path doesn't exist there
+		// yet), so look it up under whichever path the base side actually has.
+		basePath := c.Path
+		if c.OldPath != "" {
+			basePath = c.OldPath
+		}
+		content, cErr := gitFileAtRef(ctx, wtPath, base, basePath)
 		if cErr != nil {
 			// Expected for newly added files (no base-side content) — only
 			// exceptional if the context itself died.
 			if ctx.Err() != nil {
-				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", base, c.Path, ctx.Err())
+				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", base, basePath, ctx.Err())
 			}
 			e.logger.Debug("workflow.detect-tampering.base-content",
 				"task_id", taskID, "file", c.Path, "err", cErr)
@@ -649,7 +659,8 @@ func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error)
 
 // parseNameStatus parses `git diff --name-status` output into changes. Renames
 // and copies (R/C) report old and new tab-separated paths; the new path (last
-// field) is used.
+// field) is used as Path, the old path (for R/C) is kept as OldPath so
+// base-content lookups can find the file where it actually lived pre-change.
 func parseNameStatus(out string) []tamperChange {
 	var changes []tamperChange
 	for line := range strings.SplitSeq(out, "\n") {
@@ -661,10 +672,15 @@ func parseNameStatus(out string) []tamperChange {
 		if len(fields) < 2 {
 			continue
 		}
-		changes = append(changes, tamperChange{
-			Status: strings.TrimSpace(fields[0]),
+		status := strings.TrimSpace(fields[0])
+		change := tamperChange{
+			Status: status,
 			Path:   strings.TrimSpace(fields[len(fields)-1]),
-		})
+		}
+		if (strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C")) && len(fields) >= 3 {
+			change.OldPath = strings.TrimSpace(fields[1])
+		}
+		changes = append(changes, change)
 	}
 	return changes
 }
