@@ -23,6 +23,7 @@ type Config struct {
 	Umbrella       UmbrellaConfig       `yaml:"umbrella" json:"umbrella"`
 	Triage         TriageConfig         `yaml:"triage" json:"triage"`
 	HumanReview    HumanReviewConfig    `yaml:"human_review" json:"humanReview"`
+	ReviewHold     ReviewHoldConfig     `yaml:"review_hold" json:"reviewHold"`
 	Monitor        MonitorConfig        `yaml:"monitor" json:"monitor"`
 	Watchdog       WatchdogConfig       `yaml:"watchdog" json:"watchdog"`
 	SelfMonitor    SelfMonitorConfig    `yaml:"self_monitor" json:"selfMonitor"`

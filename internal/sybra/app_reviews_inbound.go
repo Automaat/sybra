@@ -108,7 +108,7 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
 			"Sign the commit with `git commit -s -S`. Push the branch when done.",
 		t.ProjectID, t.PRNumber,
-	)
+	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
 		TaskID:                 t.ID,

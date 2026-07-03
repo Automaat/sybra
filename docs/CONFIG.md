@@ -29,6 +29,7 @@ machine.
 | `umbrella` | `UmbrellaConfig` | _(see below)_ |  |
 | `triage` | `TriageConfig` | _(see below)_ |  |
 | `human_review` | `HumanReviewConfig` | _(see below)_ |  |
+| `review_hold` | `ReviewHoldConfig` | _(see below)_ |  |
 | `monitor` | `MonitorConfig` | _(see below)_ |  |
 | `watchdog` | `WatchdogConfig` | _(see below)_ |  |
 | `self_monitor` | `SelfMonitorConfig` | _(see below)_ |  |
@@ -207,6 +208,25 @@ checkout, leave disabled on the server.
 | `human_review.max_per_hour` | `int` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
 | `human_review.issue_label` | `string` |  | IssueLabel is the label applied to filed issues (in addition to "bug"). Defaults to "sybra-bug". |
 | `human_review.sybra_bug_action` | `string` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: file_issue (default), local_task, block_only, or note_only. |
+
+## ReviewHoldConfig (`review_hold`)
+
+ReviewHoldConfig gates whether Sybra may publish PR comment replies without a
+human check. When enabled, fix-review agents draft the replies they would
+have posted into a single PENDING (draft) pull-request review instead of
+posting live thread replies, never submit it, and the task is parked in
+human-required for the user to verify and submit on GitHub. Inbound reviews of
+a teammate's PR already work this way (a pending review + human-required); this
+extends the same gate to the reply/fix-review flow.
+
+Mode controls how far the hold extends to the agent's own code changes.
+Per-machine toggle: enable on the machine where you review before publishing.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `review_hold.enabled` | `bool` |  | Enabled turns the hold on. Default off — preserves the live-reply behavior. |
+| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. In a coalesced fix this also holds                bundled non-reply changes (e.g. a CI fix), so CI stays red                until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
+| `review_hold.nit_max_lines` | `int` |  | NitMaxLines is the changed-line ceiling that still counts as a "nit" for the push_nits mode. Zero falls back to DefaultReviewHoldNitMaxLines. |
 
 ## MonitorConfig (`monitor`)
 

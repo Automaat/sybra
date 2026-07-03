@@ -345,23 +345,35 @@ func (r *ReviewHandler) logPRIssueDetected(taskID string, issue github.PRIssue) 
 // per-kind prompt (behavior unchanged); multiple issues — e.g. a push that both
 // fails CI and drew review comments — are stitched into one pass so exactly one
 // agent runs per review round instead of one agent per kind across cycles.
-func coalescedFixPrompt(issues []github.PRIssue) string {
+//
+// holdSuffix (from reviewHoldFixSuffix) is appended once at the end when the
+// review-hold setting is on AND the set includes a review-comments issue — the
+// only kind that posts thread replies. It overrides the "reply live and push"
+// instructions above, so it must land after them.
+func coalescedFixPrompt(issues []github.PRIssue, holdSuffix string) string {
+	var prompt string
 	if len(issues) == 1 {
-		body, _ := prIssueBody(issues[0])
-		return body
-	}
-	var b strings.Builder
-	b.WriteString("This PR has multiple open issues from the same push. Address " +
-		"ALL of them in one pass, then push once at the end (the per-section push " +
-		"commands are equivalent — run it a single time).\n\n")
-	for i := range issues {
-		body, ok := prIssueBody(issues[i])
-		if !ok {
-			continue
+		prompt, _ = prIssueBody(issues[0])
+	} else {
+		var b strings.Builder
+		b.WriteString("This PR has multiple open issues from the same push. Address " +
+			"ALL of them in one pass, then push once at the end (the per-section push " +
+			"commands are equivalent — run it a single time).\n\n")
+		for i := range issues {
+			body, ok := prIssueBody(issues[i])
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(&b, "=== Issue %d: %s ===\n%s\n\n", i+1, fixKindLabel(issues[i].Kind), body)
 		}
-		fmt.Fprintf(&b, "=== Issue %d: %s ===\n%s\n\n", i+1, fixKindLabel(issues[i].Kind), body)
+		prompt = strings.TrimRight(b.String(), "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	if holdSuffix != "" && slices.ContainsFunc(issues, func(i github.PRIssue) bool {
+		return i.Kind == github.PRIssueComments
+	}) {
+		prompt += holdSuffix
+	}
+	return prompt
 }
 
 func (r *ReviewHandler) handlePRIssue(ctx context.Context, issue github.PRIssue) bool {
@@ -415,7 +427,7 @@ func (r *ReviewHandler) dispatchFixIssues(ctx context.Context, taskID string, ha
 	// dispatchPRIssue -> workflowEngine.DispatchEvent eventually reaches
 	// execShell, which derives its context from workflow.Engine's own e.ctx
 	// field (Engine.SetContext), not an explicit parameter threaded here.
-	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir) //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
 }
 
 // autoResolveConflict attempts the deterministic clean-merge fast-path for a
@@ -565,6 +577,17 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, primary github.PRIssue, han
 		"pr_issue_kind":         string(primary.Kind),
 		"pr_issue_kinds":        strings.Join(kinds, ","),
 		workflow.WorkflowVarDir: dir,
+	}
+	// Deterministic backstop for review-hold: when the hold is active and this
+	// fix touches review comments, the agent drafted its replies into a pending
+	// review, so route_pr_fix_result must park the task for a human regardless of
+	// the agent's terminal sentinel (in push mode it pushed and would otherwise
+	// emit `continue`). Relying on the prompt sentinel alone is unsafe — the
+	// prFixResultContract appended after the hold suffix re-introduces `continue`.
+	if r.cfg.ReviewHoldEnabled() && slices.ContainsFunc(handle, func(i github.PRIssue) bool {
+		return i.Kind == github.PRIssueComments
+	}) {
+		vars[workflow.ReviewHoldParkVar] = "true"
 	}
 	wfID, err := r.workflowEngine.DispatchEvent(t.ID, "pr.event",
 		map[string]string{"pr.issue_kind": string(primary.Kind)}, vars)
