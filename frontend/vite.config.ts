@@ -10,7 +10,19 @@ export default defineConfig(({ mode }) => {
   const viteMode = env.VITE_MODE ?? 'desktop'
   const outDir = viteMode === 'web' ? 'dist-web' : 'dist'
 
+  // Web-mode dev server proxies the HTTP API (/api) and the SSE event stream
+  // (/events) to a running sybra-server so `npm run dev` gives HMR against a
+  // real backend without CORS. Target overridable via SYBRA_PROXY_TARGET.
+  const proxyTarget = env.SYBRA_PROXY_TARGET || 'http://localhost:8080'
+
   return {
+    server: {
+      proxy: {
+        '/api': { target: proxyTarget, changeOrigin: true },
+        // SSE: disable proxy buffering so events flush to the browser live.
+        '/events': { target: proxyTarget, changeOrigin: true },
+      },
+    },
     plugins: [
       tailwindcss(),
       svelte(),
