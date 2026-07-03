@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -86,6 +87,10 @@ type Watchdog struct {
 	// for agents with no live transport (headless has no mid-stream stdin), in
 	// which case applyVerdict degrades the nudge to an escalate.
 	nudgeAgent func(agentID, text string) error
+	// recordProviderSignal forwards a watchdog-detected provider signal through
+	// the same agent-manager helper the runner uses, so the agent error kind and
+	// provider health gate stay in sync across both paths.
+	recordProviderSignal func(*agent.Agent, provider.Signal, string, time.Duration)
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -99,16 +104,17 @@ func New(
 	cfg config.WatchdogConfig,
 ) *Watchdog {
 	return &Watchdog{
-		agents:        agents,
-		tasks:         tasks,
-		logger:        logger,
-		emit:          emit,
-		wg:            wg,
-		model:         cfg.Model,
-		loopThreshold: cfg.LoopThreshold,
-		inspectAgent:  agent.Inspect,
-		stopAgent:     agents.StopAgent,
-		nudgeAgent:    agents.SendPromptToAgent,
+		agents:               agents,
+		tasks:                tasks,
+		logger:               logger,
+		emit:                 emit,
+		wg:                   wg,
+		model:                cfg.Model,
+		loopThreshold:        cfg.LoopThreshold,
+		inspectAgent:         agent.Inspect,
+		stopAgent:            agents.StopAgent,
+		nudgeAgent:           agents.SendPromptToAgent,
+		recordProviderSignal: agents.RecordProviderSignal,
 	}
 }
 
@@ -239,6 +245,10 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	switch verdict.Recommendation {
 	case "stop":
+		if verdict.ReasonKind == "rate_limit" {
+			w.stopForRateLimit(ag, trigger, verdict)
+			return
+		}
 		// Set the task state before stopping so the completion callback sees the
 		// intended recovery path. A stall stop is a retryable hang; the workflow
 		// engine consumes the marker from ResumeStalled. Loop/budget stops remain
@@ -295,6 +305,40 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 	case "continue":
 		// intentional no-op; debounce suppresses re-check
 	}
+}
+
+// stopForRateLimit handles a "stop" verdict whose ReasonKind is "rate_limit":
+// a provider rate/quota limit, not a genuine hang or reward-hacking loop.
+// This reuses the same recovery machinery already trusted for a structured
+// 429 (internal/agent/runner_headless_retry.go): mark the agent's error kind
+// so the completion handler's isRateLimitedRun check recognizes the stop as
+// rate-limited and calls RescheduleRateLimitedAgent instead of stranding the
+// task in human-required, and report the signal to the provider health gate
+// so it applies the same cooldown/failover as the clean-429 case. The task is
+// left in-progress — human-required is reserved for genuine reward-hacking
+// loops per #1310's scoping.
+func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+	reason := "watchdog: rate limit"
+	if verdict.Reason != "" {
+		reason = "watchdog: rate limit: " + verdict.Reason
+	}
+	if ag.TaskID == "" {
+		w.logger.Warn("agent.watchdog.rate_limit.untracked",
+			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
+	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	if w.recordProviderSignal != nil {
+		w.recordProviderSignal(ag, provider.SignalRateLimit, reason, 0)
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
+	w.logger.Info("agent.watchdog.rate_limit.stop",
+		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
 }
 
 // supervisorNudgePrefix tags a watchdog steer delivered to a live agent so the

@@ -15,6 +15,9 @@ const (
 	watchdogHangRetryVarPrefix      = "watchdog.hang_retry."
 	watchdogHangCleanRetryVarPrefix = "watchdog.hang_clean_retry."
 	maxWatchdogHangRetries          = 2
+	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
+	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
+	maxWatchdogRateLimitRetries     = 2
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -374,6 +377,8 @@ func (e *Engine) ClearAgentStep(agentID string) {
 // running-agent check because headless done closes only after onComplete returns.
 func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	if taskID == "" {
+		e.clearAgentStep(agentID)
+		e.logger.Warn("workflow.rate-limit-reschedule.untracked", "agent_id", agentID)
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
@@ -424,7 +429,6 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
 		return
 	}
-
 	mu := e.taskInflightMutex(taskID)
 	if !mu.TryLock() {
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
@@ -442,6 +446,12 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	e.dispatching[taskID] = struct{}{}
 	e.mu.Unlock()
+	if e.handleWatchdogRateLimitRetry(&t, step) {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
+		return
+	}
 
 	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, &def, step, t.Workflow)
@@ -476,6 +486,10 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		return
 	}
 	e.clearAgentStep(agentID)
+
+	if e.handleWatchdogRateLimitRetry(&fresh, child) {
+		return
+	}
 
 	status.Status = "pending"
 	status.Output = "rate-limited: rescheduled"
@@ -688,12 +702,46 @@ func isWatchdogHangReason(reason string) bool {
 	return reason == watchdogHangStatusReasonPrefix || strings.HasPrefix(reason, watchdogHangStatusReasonPrefix+":")
 }
 
+func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
+	if t == nil || t.Workflow == nil || step == nil || step.Type != StepRunAgent || !isWatchdogRateLimitReason(t.StatusReason) {
+		return false
+	}
+	retryKey := watchdogRateLimitRetryKey(step.ID)
+	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
+	if attempts >= maxWatchdogRateLimitRetries {
+		reason := fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts)
+		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.watchdog-rate-limit.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	e.logger.Info("workflow.watchdog-rate-limit.retry",
+		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxWatchdogRateLimitRetries)
+	return false
+}
+
+func isWatchdogRateLimitReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == watchdogRateLimitStatusPrefix || strings.HasPrefix(reason, watchdogRateLimitStatusPrefix+":")
+}
+
 func watchdogHangRetryKey(stepID string) string {
 	return watchdogHangRetryVarPrefix + stepID
 }
 
 func watchdogHangCleanRetryKey(stepID string) string {
 	return watchdogHangCleanRetryVarPrefix + stepID
+}
+
+func watchdogRateLimitRetryKey(stepID string) string {
+	return watchdogRateLimitRetryVarPrefix + stepID
 }
 
 func parseWorkflowInt(raw string) int {
