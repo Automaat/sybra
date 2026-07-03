@@ -23,6 +23,7 @@ type taskFrontmatter struct {
 	WorktreeDir            string              `yaml:"worktree_dir,omitempty"`
 	PRNumber               int                 `yaml:"pr_number,omitempty"`
 	Issue                  string              `yaml:"issue,omitempty"`
+	RefIssue               string              `yaml:"ref_issue,omitempty"`
 	StatusReason           string              `yaml:"status_reason,omitempty"`
 	HandoffSourceProvider  string              `yaml:"handoff_source_provider,omitempty"`
 	BlockedByIssue         string              `yaml:"blocked_by_issue,omitempty"`
@@ -96,6 +97,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		WorktreeDir:            fm.WorktreeDir,
 		PRNumber:               fm.PRNumber,
 		Issue:                  fm.Issue,
+		RefIssue:               fm.RefIssue,
 		StatusReason:           fm.StatusReason,
 		HandoffSourceProvider:  fm.HandoffSourceProvider,
 		BlockedByIssue:         fm.BlockedByIssue,
@@ -149,6 +151,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		WorktreeDir:            t.WorktreeDir,
 		PRNumber:               t.PRNumber,
 		Issue:                  t.Issue,
+		RefIssue:               t.RefIssue,
 		StatusReason:           t.StatusReason,
 		HandoffSourceProvider:  t.HandoffSourceProvider,
 		BlockedByIssue:         t.BlockedByIssue,

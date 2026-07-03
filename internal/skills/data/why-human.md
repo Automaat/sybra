@@ -116,9 +116,10 @@ rate-limited. Never re-diagnose a task the automation already flagged
      --status-reason "root cause: <one line>; see <issue-url-or-task-id>" \
      --issue <issue-url>   # omit --issue when you filed a local scrubbed task instead
    ```
-   `--issue` only annotates the task record with a reference URL — it doesn't
-   file or link anything by itself, so it's safe to attach alongside either
-   filing path above.
+   `update --issue` writes only the task's `ref_issue` annotation field, never
+   the canonical `issue` field consumed for PR auto-close — it doesn't file or
+   link anything by itself, so it's safe to attach alongside either filing
+   path above.
 
    Two exceptions, both from prior painful experience with this exact flow:
    - **Do not use `link-pr`** here — `link-pr <id> <pr-number>` does exactly

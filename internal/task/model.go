@@ -265,8 +265,14 @@ type Task struct {
 	// for this task runs in this directory, and Sybra never rebases, force-
 	// pushes, or removes it — the external tool owns its lifecycle. Empty =
 	// Sybra-managed worktree (default).
-	WorktreeDir  string `json:"worktreeDir,omitempty"`
-	PRNumber     int    `json:"prNumber"`
+	WorktreeDir string `json:"worktreeDir,omitempty"`
+	PRNumber    int    `json:"prNumber"`
+	// Issue is the canonical originating GitHub issue this task implements —
+	// set once at creation (or by auto-sources like the GitHub poller and
+	// umbrella expansion) and consumed verbatim by execEnsurePRClosesIssue to
+	// append "Closes <url>" to the task's PR body, by findActiveDuplicate for
+	// dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
+	// this after creation to attach an unrelated reference — use RefIssue.
 	Issue        string `json:"issue"`
 	StatusReason string `json:"statusReason"`
 	// HandoffSourceProvider records which local agent provider produced the
@@ -283,6 +289,11 @@ type Task struct {
 	// dependency gate reads it with DependsOn to decide when a child may leave
 	// `blocked`.
 	UmbrellaIssue string `json:"umbrellaIssue,omitempty"`
+	// RefIssue is an ad-hoc reference URL attached after creation — e.g. a
+	// related finding or duplicate noted while diagnosing why a task was
+	// stuck. Purely informational: unlike Issue, nothing reads RefIssue to
+	// drive PR auto-close, dedup, or umbrella state.
+	RefIssue string `json:"refIssue,omitempty"`
 	// DependsOn lists the issue refs (full github.com issue/PR URL or
 	// owner/repo#n shorthand) this task waits on — resolved by issue ref only,
 	// not task IDs. While the task is `blocked`, the gate holds it until every

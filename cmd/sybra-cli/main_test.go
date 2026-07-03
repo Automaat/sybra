@@ -686,6 +686,46 @@ func TestUpdateHandoffSourceProvider(t *testing.T) {
 	}
 }
 
+// TestUpdateIssueDoesNotClobberCanonicalIssue guards against #1450: `update
+// --issue` used to overwrite task.Issue, the field ensure_pr_closes_issue
+// reads verbatim to append "Closes <url>" to a task's PR body. A later
+// `--issue` annotation (e.g. the why-human unblock flow attaching an
+// unrelated finding) must land in RefIssue only, never touch the originating
+// Issue set at creation.
+func TestUpdateIssueDoesNotClobberCanonicalIssue(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create",
+		"--title", "fix auth bug",
+		"--project", "owner/repo",
+		"--issue", "https://github.com/owner/repo/issues/1403",
+	)
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+	if created.Issue != "https://github.com/owner/repo/issues/1403" {
+		t.Fatalf("Issue = %q, want originating issue set at creation", created.Issue)
+	}
+
+	code, out = runCLI(t, "--json", "update", created.ID,
+		"--status", "todo",
+		"--issue", "https://github.com/owner/repo/issues/1428",
+	)
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	var updated task.Task
+	mustUnmarshal(t, out, &updated)
+	if updated.Issue != "https://github.com/owner/repo/issues/1403" {
+		t.Fatalf("Issue = %q, want unchanged originating issue #1403 (update --issue must not clobber it)", updated.Issue)
+	}
+	if updated.RefIssue != "https://github.com/owner/repo/issues/1428" {
+		t.Fatalf("RefIssue = %q, want the update --issue annotation", updated.RefIssue)
+	}
+}
+
 // TestCreateDedupActiveDuplicate covers the orchestrator double-dispatch case:
 // two `sybra-cli create` calls with the same project+issue+title within seconds
 // must collapse onto the first task instead of forking a parallel one.

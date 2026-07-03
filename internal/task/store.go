@@ -729,6 +729,9 @@ func applyLinkFields(t *Task, u Update) {
 	if u.Issue != nil {
 		t.Issue = *u.Issue
 	}
+	if u.RefIssue != nil {
+		t.RefIssue = *u.RefIssue
+	}
 	if u.UmbrellaIssue != nil {
 		t.UmbrellaIssue = *u.UmbrellaIssue
 	}

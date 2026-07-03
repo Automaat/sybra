@@ -30,6 +30,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		WorktreeDir:            "/tmp/worktree",
 		PRNumber:               42,
 		Issue:                  "https://github.com/owner/repo/issues/1",
+		RefIssue:               "https://github.com/owner/repo/issues/9",
 		StatusReason:           "testing",
 		HandoffSourceProvider:  "codex",
 		BlockedByIssue:         "https://github.com/owner/repo/issues/2",
@@ -210,6 +211,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.PRNumber = 123
 	case "Issue":
 		task.Issue = "owner/repo#123"
+	case "RefIssue":
+		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
 	case "HandoffSourceProvider":
