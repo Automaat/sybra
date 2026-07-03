@@ -296,6 +296,81 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	}
 }
 
+func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	seed := config.DefaultConfig()
+	cfgPath := filepath.Join(home, "config.yaml")
+	writeConfigYAML(t, cfgPath, seed)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	records := make([]slog.Record, 0)
+	handler := &recordHandler{records: &records}
+	logger := slog.New(handler)
+
+	emit := func(string, any) {}
+	logLevel := new(slog.LevelVar)
+	logLevel.Set(slog.LevelInfo)
+	logDir := filepath.Join(home, "logs")
+	mgr := newTestAgentManager(t, context.Background(), emit, logger, logDir, agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{
+			MaxConcurrent:   cfg.Agent.MaxConcurrent,
+			DefaultProvider: cfg.Agent.Provider,
+		},
+	})
+	mgr.SetGuardrails(agent.Guardrails{MaxCostUSD: cfg.Agent.MaxCostUSD, MaxTurns: cfg.Agent.MaxTurns})
+	notifier := notification.New(emit)
+
+	svc := &ConfigService{
+		cfg:      cfg,
+		logLevel: logLevel,
+		notifier: notifier,
+		agents:   mgr,
+		logger:   logger,
+	}
+
+	next := *cfg
+	disabled := false
+	next.Browser.InApp = &disabled
+	writeConfigYAML(t, cfgPath, &next)
+
+	hot, err := svc.ReloadFromDisk()
+	if err != nil {
+		t.Fatalf("ReloadFromDisk: %v", err)
+	}
+	if len(hot) != 0 {
+		t.Errorf("expected no hot keys, got %v", hot)
+	}
+
+	found := false
+	for _, r := range records {
+		if r.Message == "config.reload.restart_required" {
+			var field string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "field" {
+					field = a.Value.String()
+				}
+				return true
+			})
+			if field == "browser" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("expected browser restart warning, got none")
+	}
+	if svc.cfg.Browser.InApp == nil || *svc.cfg.Browser.InApp {
+		t.Error("s.cfg browser settings not updated after reload")
+	}
+}
+
 func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
