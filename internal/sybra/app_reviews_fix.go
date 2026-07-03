@@ -612,8 +612,12 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"```bash\n"+
 			"git fetch origin\n"+
 			"git merge refs/remotes/origin/main\n"+
-			"# resolve every conflict preserving the PR intent and upstream changes\n"+
-			"# run targeted tests for touched code, then git add and git commit to complete the merge\n"+
+			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
+			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
+			"# then git add and git commit to complete the merge.\n"+
+			"# If the merge already completed on its own (clean/fast-forward, no\n"+
+			"# conflicts), it is already committed — do not run git commit again, it\n"+
+			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
 			"PUSH_REMOTE=origin\n"+
 			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
 			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+

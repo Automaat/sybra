@@ -71,6 +71,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	for _, want := range []string{
 		"git merge refs/remotes/origin/main",
 		"Do not force-push or rewrite existing commits",
+		"nothing to commit",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
