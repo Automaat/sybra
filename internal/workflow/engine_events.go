@@ -578,6 +578,67 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	}
 }
 
+func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, acquired bool) {
+	// Skip tasks whose step is currently being dispatched. Interactive spawns
+	// (worktree creation, rebase, agent process start) take several seconds
+	// during which no agent is yet registered — without this guard the ticker
+	// would spawn a duplicate and the second agent's completion would corrupt
+	// the workflow at the wait_human gate.
+	// inflightMutexes is a non-blocking probe: TryLock distinguishes "another
+	// goroutine currently holds the advance lock" from "free". We only set
+	// dispatching when both the advance lock and prior dispatching guard are
+	// free.
+	mu := e.taskInflightMutex(taskID)
+	advancing := !mu.TryLock()
+	if !advancing {
+		mu.Unlock()
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	_, dispatching := e.dispatching[taskID]
+	// agentSteps holds outstanding agents the engine spawned but hasn't yet
+	// routed completion for. Required because interactive agents pass through
+	// StatePaused after their first result event (one-shot path closes stdin →
+	// state Paused → process exits → onComplete fires → AdvanceStep), and
+	// HasRunningAgent returns false during that window. Without this check a
+	// tight ResumeStalled loop dispatches a duplicate.
+	hasOutstandingAgent := false
+	for _, entry := range e.agentSteps {
+		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID)) {
+			hasOutstandingAgent = true
+			break
+		}
+	}
+
+	if !advancing && !dispatching && !hasOutstandingAgent {
+		e.dispatching[taskID] = struct{}{}
+		return "", true
+	}
+
+	switch {
+	case advancing:
+		return "inflight", false
+	case hasOutstandingAgent:
+		return "agent-pending-completion", false
+	default:
+		return "dispatching", false
+	}
+}
+
+func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (TaskInfo, bool) {
+	fresh, err := e.tasks.GetTask(taskID)
+	if err != nil || fresh.Workflow == nil {
+		return fresh, true
+	}
+	if fresh.Workflow.CurrentStep != wf.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed {
+		return fresh, true
+	}
+	_, skip := resumeSkipReasonForStatus(fresh.Status)
+	return fresh, skip
+}
+
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
@@ -631,49 +692,8 @@ func (e *Engine) ResumeStalled() {
 		if e.handleWatchdogHangRetry(t, step) {
 			continue
 		}
-		// Skip tasks whose step is currently being dispatched. Interactive
-		// spawns (worktree creation, rebase, agent process start) take
-		// several seconds during which no agent is yet registered — without
-		// this guard the ticker would spawn a duplicate and the second
-		// agent's completion would corrupt the workflow at the wait_human
-		// gate.
-		// inflightMutexes is a non-blocking probe: TryLock distinguishes
-		// "another goroutine currently holds the advance lock" from "free".
-		// We only set dispatching when both the advance lock and prior
-		// dispatching guard are free.
-		mu := e.taskInflightMutex(t.ID)
-		advancing := !mu.TryLock()
-		if !advancing {
-			mu.Unlock()
-		}
-		e.mu.Lock()
-		_, dispatching := e.dispatching[t.ID]
-		// agentSteps holds outstanding agents the engine spawned but hasn't
-		// yet routed completion for. Required because interactive agents pass
-		// through StatePaused after their first result event (one-shot path
-		// closes stdin → state Paused → process exits → onComplete fires →
-		// AdvanceStep), and HasRunningAgent returns false during that window.
-		// Without this check a tight ResumeStalled loop dispatches a duplicate.
-		hasOutstandingAgent := false
-		for _, entry := range e.agentSteps {
-			if entry.taskID == t.ID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID)) {
-				hasOutstandingAgent = true
-				break
-			}
-		}
-
-		if !advancing && !dispatching && !hasOutstandingAgent {
-			e.dispatching[t.ID] = struct{}{}
-		}
-		e.mu.Unlock()
-		if advancing || dispatching || hasOutstandingAgent {
-			reason := "dispatching"
-			switch {
-			case advancing:
-				reason = "inflight"
-			case hasOutstandingAgent:
-				reason = "agent-pending-completion"
-			}
+		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+		if !acquired {
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", reason, "step", step.ID)
 			continue
@@ -682,9 +702,8 @@ func (e *Engine) ResumeStalled() {
 		// Re-read to guard against stale snapshots from concurrent ResumeStalled
 		// calls: by the time we acquire dispatching, a prior goroutine may have
 		// already advanced the workflow past this step.
-		fresh, fErr := e.tasks.GetTask(t.ID)
-		_, skip := resumeSkipReasonForStatus(fresh.Status)
-		if fErr != nil || fresh.Workflow == nil || fresh.Workflow.CurrentStep != t.Workflow.CurrentStep || fresh.Workflow.State == ExecCompleted || fresh.Workflow.State == ExecFailed || skip {
+		fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
+		if skip {
 			e.mu.Lock()
 			delete(e.dispatching, t.ID)
 			e.mu.Unlock()
