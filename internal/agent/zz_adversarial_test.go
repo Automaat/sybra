@@ -47,6 +47,7 @@ func TestAdversarial_ProviderHealthy_AbsentFromMapButProbeUnhealthy(t *testing.T
 func TestAdversarial_ProviderHealthy_EmptyNameResolvesDefault(t *testing.T) {
 	m, _ := newTestManager(t, ManagerConfig{
 		Runtime: ManagerRuntimeConfig{
+			DefaultProvider: "claude",
 			LimitPolicy: limits.Policy{
 				ProviderEnabled: map[string]bool{
 					"claude": false,
@@ -54,9 +55,6 @@ func TestAdversarial_ProviderHealthy_EmptyNameResolvesDefault(t *testing.T) {
 			},
 		},
 	})
-	if m.defaultProv != "claude" {
-		t.Skipf("default provider is %q, not claude - adjust test", m.defaultProv)
-	}
 	if m.ProviderHealthy("") {
 		t.Error("empty provider name should resolve to config-disabled default provider and report false")
 	}
