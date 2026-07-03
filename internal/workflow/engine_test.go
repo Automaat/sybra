@@ -308,6 +308,7 @@ type mockAgents struct {
 	providerRateLimit bool            // when true, ProviderRateLimited reports true for every provider
 	providerFailover  bool            // when true, ProviderCanFailover reports true
 	rateLimited       map[string]bool // provider -> rate-limited
+	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 }
 
 func newMockAgents() *mockAgents {
@@ -377,6 +378,23 @@ func (m *mockAgents) ProviderCanFailover(string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.providerFailover
+}
+
+func (m *mockAgents) ProviderHealthy(provider string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.unhealthy[provider]
+}
+
+// SetProviderUnhealthy marks a provider as unhealthy (e.g. config-disabled),
+// simulating the health gate's IsHealthy returning false.
+func (m *mockAgents) SetProviderUnhealthy(provider string, v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.unhealthy == nil {
+		m.unhealthy = make(map[string]bool)
+	}
+	m.unhealthy[provider] = v
 }
 
 func (m *mockAgents) SetProviderRateLimited(v bool) {
@@ -2679,6 +2697,57 @@ func TestExecRunAgent_ABTestingSkipsRateLimitedProvider(t *testing.T) {
 	call := agents.LastCall()
 	if call.Provider == "codex" {
 		t.Fatalf("rate-limited provider was selected: %+v", call)
+	}
+	if call.Provider != "claude" || call.Assignment.VariantID != "claude-opus" {
+		t.Fatalf("provider/assignment = %q/%q, want claude/claude-opus", call.Provider, call.Assignment.VariantID)
+	}
+}
+
+func TestExecRunAgent_ABTestingSkipsConfigDisabledProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	// copilot's CLI is on PATH and it isn't rate-limited, but it is
+	// administratively disabled via config — the health gate reports it
+	// unhealthy. selectABVariant must not deterministically wedge every
+	// task on this step onto a provider that will always fail to start.
+	agents.SetProviderUnhealthy("copilot", true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "copilot-variant", Provider: "copilot", Model: "gpt-5.5", Weight: 1},
+				{ID: "claude-opus", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Prompt: "test prompt",
+		},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	call := agents.LastCall()
+	if call.Provider == "copilot" {
+		t.Fatalf("config-disabled provider was selected: %+v", call)
 	}
 	if call.Provider != "claude" || call.Assignment.VariantID != "claude-opus" {
 		t.Fatalf("provider/assignment = %q/%q, want claude/claude-opus", call.Provider, call.Assignment.VariantID)
