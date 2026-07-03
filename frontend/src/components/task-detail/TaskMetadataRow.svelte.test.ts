@@ -49,13 +49,22 @@ describe('TaskMetadataRow', () => {
   afterEach(cleanup)
 
   it('keeps the per-run knobs editable even at their default value', () => {
-    // They render quietly at default (muted "disabled"/"global default") but
-    // stay present — they are the only place to set max turns / fork.
+    // They render quietly at default (muted "global default") but stay present —
+    // they are the only place to set max turns / reasoning effort.
     render(TaskMetadataRow, { props: { task: baseTask as never } })
-    expect(screen.getByText('Fork Subagents')).toBeDefined()
-    expect(screen.getByText('disabled')).toBeDefined()
     expect(screen.getByText('Max Turns')).toBeDefined()
     expect(screen.getByText('global default')).toBeDefined()
+  })
+
+  it('shows the per-run knobs inline in the properties list (no Advanced disclosure)', () => {
+    render(TaskMetadataRow, { props: { task: baseTask as never } })
+    // No Advanced wrapper — the knobs sit directly among Project/Branch/etc.
+    expect(screen.queryByText('Advanced')).toBeNull()
+    expect(document.querySelector('details')).toBeNull()
+    expect(screen.getByText('Reasoning Effort')).toBeDefined()
+    expect(screen.getByText('Max Turns')).toBeDefined()
+    // Fork Subagents was removed from the task UI.
+    expect(screen.queryByText('Fork Subagents')).toBeNull()
   })
 
   it('describes reasoning effort as provider-wide', () => {
@@ -69,7 +78,7 @@ describe('TaskMetadataRow', () => {
 
   it('renders agent mode + tags + project + branch + issue + allowed tools', () => {
     render(TaskMetadataRow, { props: { task: baseTask as never } })
-    expect(screen.getByText('Agent Mode')).toBeDefined()
+    expect(screen.getByText('Mode')).toBeDefined()
     expect(screen.getByText('headless')).toBeDefined()
     expect(screen.getByText('backend')).toBeDefined()
     expect(screen.getByText('foo/bar')).toBeDefined()

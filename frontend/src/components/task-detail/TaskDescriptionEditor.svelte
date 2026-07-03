@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { ChevronRight } from '@lucide/svelte'
+  import { Pencil } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
-  import { renderMarkdown, renderChecklistMarkdown } from '../../lib/markdown.js'
+  import { renderChecklistMarkdown } from '../../lib/markdown.js'
 
   interface Props {
     task: Task
@@ -10,23 +10,13 @@
 
   const { task }: Props = $props()
 
-  const PLAN_COLLAPSED_KEY = 'task-detail:plan-collapsed'
-
   let editing = $state(false)
   let draft = $state('')
   let error = $state('')
-  let planCollapsed = $state(typeof localStorage !== 'undefined' && localStorage.getItem(PLAN_COLLAPSED_KEY) === '1')
 
-  function togglePlan() {
-    planCollapsed = !planCollapsed
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(PLAN_COLLAPSED_KEY, planCollapsed ? '1' : '0')
-    }
-  }
-
+  // The read-only Plan and Code Review artifacts moved to the Plan/Review tabs
+  // (TaskPlanPanel / TaskReviewPanel); this editor is now only the task body.
   const renderedBody = $derived(renderChecklistMarkdown(task.body))
-  const renderedPlan = $derived(renderMarkdown(task.plan))
-  const renderedCodeReview = $derived(renderMarkdown(task.codeReview))
 
   function startEditing() {
     draft = task.body ?? ''
@@ -64,11 +54,21 @@
 
 <div class="flex flex-col gap-1">
   <div class="flex items-center justify-between">
-    <span class="text-sm font-medium text-surface-500">Description</span>
+    <span class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Description</span>
     {#if editing}
       <span class="text-xs text-surface-400">
         {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+Enter to save · Esc to cancel
       </span>
+    {:else}
+      <button
+        type="button"
+        class="text-surface-400 transition-colors hover:text-surface-600 dark:hover:text-surface-300"
+        onclick={startEditing}
+        title="Edit description (e)"
+        aria-label="Edit description"
+      >
+        <Pencil size={14} />
+      </button>
     {/if}
   </div>
   {#if error}
@@ -84,9 +84,10 @@
       autofocus
     ></textarea>
   {:else}
+    <!-- Low-chrome, content-first: borderless until hover signals it's editable. -->
     <button
       type="button"
-      class="w-full cursor-text rounded-lg border border-surface-300 bg-surface-100 p-4 text-left transition-colors hover:border-primary-400 dark:border-surface-600 dark:bg-surface-900 dark:hover:border-primary-500"
+      class="w-full cursor-text rounded-lg p-3 text-left transition-colors hover:bg-surface-100 dark:hover:bg-surface-900"
       onclick={startEditing}
     >
       {#if task.body}
@@ -97,36 +98,3 @@
     </button>
   {/if}
 </div>
-
-<!-- For a plan-review task the plan is shown (and decided on) at the top in
-     PlanReviewPanel, so the lower read-only copy here would duplicate it. -->
-{#if task.plan && task.status !== 'plan-review'}
-  <div class="flex flex-col gap-1">
-    <button
-      type="button"
-      class="flex w-fit items-center gap-2 text-left"
-      onclick={togglePlan}
-      aria-expanded={!planCollapsed}
-    >
-      <ChevronRight size={14} class="text-surface-400 transition-transform {planCollapsed ? '' : 'rotate-90'}" />
-      <span class="text-sm font-medium text-surface-500">Plan</span>
-      <span class="text-xs text-surface-400 italic">read-only</span>
-    </button>
-    {#if !planCollapsed}
-      <div class="rounded-lg border border-surface-300 bg-surface-100 p-4 dark:border-surface-600 dark:bg-surface-900">
-        <div class="markdown-body text-sm text-surface-900 dark:text-surface-100">{@html renderedPlan}</div>
-      </div>
-    {/if}
-  </div>
-{/if}
-
-{#if task.codeReview}
-  <details open class="rounded-lg border border-warning-300 bg-warning-50 dark:border-warning-700 dark:bg-warning-900/20">
-    <summary class="cursor-pointer px-4 py-2 text-sm font-semibold text-warning-800 dark:text-warning-200">
-      Code Review (auto-generated)
-    </summary>
-    <div class="markdown-body px-4 pb-4 text-sm text-surface-900 dark:text-surface-100">
-      {@html renderedCodeReview}
-    </div>
-  </details>
-{/if}

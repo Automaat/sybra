@@ -126,6 +126,9 @@ test.describe('TaskDetail agent history', () => {
     await page.getByRole('button', { name: 'Board view' }).click()
     await page.locator('button:has(h3)', { hasText: 'history fixture task' }).first().click()
 
+    // Agent history now lives in the Runs tab (Overview is the default tab).
+    await page.locator('[data-part="item"]', { hasText: 'Runs' }).click()
+
     // Agent history section must be present with the fixture agent.
     const historyHeading = page.getByText('Agent History', { exact: true })
     await expect(historyHeading).toBeVisible({ timeout: 10_000 })

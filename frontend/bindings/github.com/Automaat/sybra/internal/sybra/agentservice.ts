@@ -115,16 +115,6 @@ export function RespondEscalation(agentID: string, continueRun: boolean): $Cance
 }
 
 /**
- * ResumeInClaudeCode opens a Ghostty terminal tab with a Claude Code session
- * resumed for taskID. If Sybra has a session_id from a prior implementation
- * run, it passes --resume directly. Otherwise the PR URL is copied to the
- * clipboard so the user can paste it into /resume manually.
- */
-export function ResumeInClaudeCode(taskID: string): $CancellablePromise<void> {
-    return $Call.ByID(1675184245, taskID);
-}
-
-/**
  * SendMessage sends a follow-up message to a conversational agent.
  */
 export function SendMessage(agentID: string, text: string): $CancellablePromise<void> {

@@ -69,6 +69,27 @@ describe('AgentHistoryList', () => {
     expect(screen.getByText('a-old-2')).toBeDefined()
   })
 
+  it('shows a friendly role badge for runs that carry a role', () => {
+    const task = {
+      ...baseTask,
+      agentRuns: [
+        { ...headlessRun, agentId: 'a-plan', role: 'plan' },
+        { ...headlessRun, agentId: 'a-review', role: 'review' },
+      ],
+    }
+    render(AgentHistoryList, { props: { task: task as never } })
+    expect(screen.getByText('Plan')).toBeDefined()
+    expect(screen.getByText('Review')).toBeDefined()
+    // The opaque id stays visible (demoted) alongside the role.
+    expect(screen.getByText('a-plan')).toBeDefined()
+  })
+
+  it('omits the role badge for a run with no role', () => {
+    // baseTask runs carry no role — only mode/state chips, no role label.
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    expect(screen.queryByText('Implementation')).toBeNull()
+  })
+
   it('expanding headless run fetches stream log', async () => {
     mockGetRunLog.mockResolvedValue([{ type: 'assistant', content: 'hello' }])
     render(AgentHistoryList, { props: { task: baseTask as never } })

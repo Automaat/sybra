@@ -12,9 +12,10 @@ function loadStored(): ViewMode {
   } catch {
     // localStorage unavailable (SSR / restricted context)
   }
-  // List is the most scannable surface and stays useful even when the board's
-  // columns are mostly empty, so it's the default first paint.
-  return 'list'
+  // Board is the default first paint — the pipeline columns give the clearest
+  // at-a-glance picture of where work sits. Users can switch to list (⌘B) and
+  // that choice is remembered.
+  return 'board'
 }
 
 function createViewModeStore() {
