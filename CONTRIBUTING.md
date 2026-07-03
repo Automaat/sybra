@@ -52,7 +52,7 @@ Pin to an exact version when drift is dangerous:
 - **Pre-release runtimes** — caret semantics give no compatibility guarantee between `alpha.N` versions, so pin exactly:
 
   ```json
-  "@wailsio/runtime": "3.0.0-alpha.94"
+  "@wailsio/runtime": "3.0.0-alpha.95"
   ```
 
 ### Enforcement
