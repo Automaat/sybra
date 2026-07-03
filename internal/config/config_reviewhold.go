@@ -19,7 +19,9 @@ type ReviewHoldConfig struct {
 	//   push_nits  — reply held; code pushed only when the diff is at most
 	//                NitMaxLines changed lines (a nit), otherwise held for review.
 	//   hold       — reply held AND code held; nothing is pushed, the human
-	//                reviews the diff too.
+	//                reviews the diff too. In a coalesced fix this also holds
+	//                bundled non-reply changes (e.g. a CI fix), so CI stays red
+	//                until the human pushes — the "review everything" tradeoff.
 	// Unknown/empty values fall back to "push".
 	Mode string `yaml:"mode" json:"mode"`
 	// NitMaxLines is the changed-line ceiling that still counts as a "nit" for

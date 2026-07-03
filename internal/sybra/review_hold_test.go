@@ -11,18 +11,23 @@ func TestReviewHoldFixSuffix(t *testing.T) {
 	t.Parallel()
 
 	// Common assertions for any enabled suffix: never post live, draft a pending
-	// review, and end with the human-required sentinel that routes the task.
+	// review, and note that Sybra parks the task (routing is deterministic — the
+	// suffix must not itself instruct a sentinel that the appended contract can
+	// override).
 	assertEnabled := func(t *testing.T, s string) {
 		t.Helper()
 		for _, want := range []string{
 			"REVIEW HOLD",
 			"Do NOT post live thread replies",
 			"PENDING",
-			"SYBRA_PR_FIX_RESULT: human-required",
+			"human-required",
 		} {
 			if !strings.Contains(s, want) {
 				t.Errorf("suffix missing %q:\n%s", want, s)
 			}
+		}
+		if strings.Contains(s, "SYBRA_PR_FIX_RESULT") {
+			t.Errorf("suffix must not instruct the result sentinel (routing is deterministic):\n%s", s)
 		}
 	}
 

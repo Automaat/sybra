@@ -113,6 +113,46 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	}
 }
 
+func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	// The agent pushed in review-hold push mode and reported `continue`; the
+	// deterministic park var must still route the task to human-required so the
+	// drafted pending review isn't silently left unsubmitted.
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID:    "fix",
+			Status:    "completed",
+			Output:    "Pushed the fix.\nSYBRA_PR_FIX_RESULT: continue",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{ReviewHoldParkVar: "true"},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1446, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf)
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue; review-hold park must force human-required")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+}
+
 func TestPRFixRequiresHuman_UsesLastAgentStepVars(t *testing.T) {
 	t.Parallel()
 

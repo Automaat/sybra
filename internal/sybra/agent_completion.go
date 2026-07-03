@@ -290,37 +290,47 @@ func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr er
 	}
 }
 
-// handleFixReviewCompletion routes a finished manual fix-review agent. Under
-// review-hold the agent drafted its replies into a pending review and owns the
-// push decision per the configured mode, so Sybra must not force a push — it
-// parks the task for a human instead. Otherwise it auto-pushes the branch as
-// before.
+// handleFixReviewCompletion routes a finished manual fix-review agent. Without
+// the hold it auto-pushes the branch as before. Under review-hold the agent
+// drafted its replies into a pending review; Sybra still runs the deterministic
+// push backstop in `push` mode so a fix isn't stranded when the agent forgot to
+// push, then parks the task for a human. In `push_nits`/`hold` the push is
+// conditional/none and owned by the agent per its prompt (a blind backstop would
+// push a non-nit diff or break the "hold everything" contract), so Sybra parks
+// without forcing one.
 func (h *AgentCompletionHandler) handleFixReviewCompletion(ag *agent.Agent) {
-	if h.cfg.ReviewHoldEnabled() {
-		h.holdFixReviewForHuman(ag)
+	if !h.cfg.ReviewHoldEnabled() {
+		h.pushFixReviewBranch(ag)
 		return
 	}
-	h.pushFixReviewBranch(ag)
+	if h.cfg.ReviewHoldMode() == config.ReviewHoldModePush {
+		h.pushFixReviewBranch(ag)
+	}
+	h.holdFixReviewForHuman(ag)
 }
 
 // holdFixReviewForHuman parks a completed manual fix-review task in
-// human-required instead of auto-pushing its branch. Under review-hold the agent
-// has drafted its replies into a pending review (never posted live) and decided
-// the push itself per the configured mode, so the human verifies the pending
-// review and any local diff, then submits on GitHub.
+// human-required. Under review-hold the agent has drafted its replies into a
+// pending review (never posted live), so the human verifies the pending review
+// and any local diff, then submits on GitHub. Logs the mode and branch so a
+// stranded fix is diagnosable — whether a push was expected (push vs hold) and
+// which branch may hold unpushed commits.
 func (h *AgentCompletionHandler) holdFixReviewForHuman(ag *agent.Agent) {
 	if h.tasks == nil {
 		return
 	}
 	const reason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{
+	t, err := h.tasks.Update(ag.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
-	}); err != nil {
+	})
+	if err != nil {
 		h.logger.Error("fix-review.hold.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 		return
 	}
-	h.logger.Info("fix-review.hold", "task_id", ag.TaskID, "agent_id", ag.ID)
+	h.logger.Info("fix-review.hold",
+		"task_id", ag.TaskID, "agent_id", ag.ID,
+		"mode", h.cfg.ReviewHoldMode(), "branch", t.Branch)
 }
 
 func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {

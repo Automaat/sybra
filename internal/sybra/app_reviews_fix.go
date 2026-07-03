@@ -435,6 +435,17 @@ func (r *ReviewHandler) dispatchPRIssue(t task.Task, primary github.PRIssue, han
 		"pr_issue_kinds":        strings.Join(kinds, ","),
 		workflow.WorkflowVarDir: dir,
 	}
+	// Deterministic backstop for review-hold: when the hold is active and this
+	// fix touches review comments, the agent drafted its replies into a pending
+	// review, so route_pr_fix_result must park the task for a human regardless of
+	// the agent's terminal sentinel (in push mode it pushed and would otherwise
+	// emit `continue`). Relying on the prompt sentinel alone is unsafe — the
+	// prFixResultContract appended after the hold suffix re-introduces `continue`.
+	if r.cfg.ReviewHoldEnabled() && slices.ContainsFunc(handle, func(i github.PRIssue) bool {
+		return i.Kind == github.PRIssueComments
+	}) {
+		vars[workflow.ReviewHoldParkVar] = "true"
+	}
 	wfID, err := r.workflowEngine.DispatchEvent(t.ID, "pr.event",
 		map[string]string{"pr.issue_kind": string(primary.Kind)}, vars)
 	if err != nil {

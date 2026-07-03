@@ -9,8 +9,25 @@ import (
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
 var prFixReasonRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*(.+?)\s*$`)
 
+// ReviewHoldParkVar, when set to "true" on the execution, forces the pr-fix
+// result to human-required regardless of the agent's sentinel. It's a
+// deterministic backstop for the review-hold setting: the fix-review agent
+// drafted its replies into a pending review, so the task must park for a human
+// to submit even if the agent (correctly, in push mode) reported that it pushed
+// and would otherwise route to `continue`. Set by the dispatcher when the hold
+// is active and the handled issue set includes review comments.
+const ReviewHoldParkVar = "review_hold_park"
+
+const reviewHoldParkReason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
+
 func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
 	requiresHuman, reason := prFixRequiresHuman(wfExec)
+	// Deterministic park wins over the sentinel: in push mode the agent pushed
+	// and its own sentinel says `continue`, which must NOT release the hold.
+	if !requiresHuman && wfExec != nil && wfExec.Variables[ReviewHoldParkVar] == "true" {
+		requiresHuman = true
+		reason = reviewHoldParkReason
+	}
 	if !requiresHuman {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
 	}

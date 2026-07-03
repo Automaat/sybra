@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -58,6 +59,79 @@ func TestCoalescedFixPrompt(t *testing.T) {
 		if !strings.Contains(multi, want) {
 			t.Errorf("coalesced prompt missing %q:\n%s", want, multi)
 		}
+	}
+}
+
+// TestDispatchFixIssues_ReviewHoldSetsParkVar is the regression guard for the
+// blocking review finding: relying on the prompt sentinel is unsafe because
+// dispatchPRIssue appends prFixResultContract AFTER the hold suffix, and in push
+// mode the agent pushes and emits `continue`, which classifyPRFixResult would
+// pick as the last sentinel. So parking must be deterministic — a review-hold +
+// comments dispatch sets the ReviewHoldParkVar workflow var that
+// route_pr_fix_result honors regardless of agent output.
+func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusInReview),
+		PRNumber: task.Ptr(1446),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler:  DomainHandler{logger: logger},
+		tasks:          tasks,
+		agents:         agentMgr,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		workflowEngine: engine,
+		// push mode: the agent pushes and would emit `continue`; the park var
+		// must still force human-required.
+		cfg: &config.Config{ReviewHold: config.ReviewHoldConfig{Enabled: true, Mode: config.ReviewHoldModePush}},
+	}
+
+	pr := github.PullRequest{
+		Number: 1446, Repository: "o/r", HeadRefName: "feat", HeadSHA: "sha1",
+		URL: "https://github.com/o/r/pull/1446", FeedbackSig: "sig",
+	}
+	r.handleMatchedPRIssues(context.Background(), []github.PRIssue{
+		{Kind: github.PRIssueComments, TaskID: created.ID, PR: pr},
+	})
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched")
+	}
+	if v := got.Workflow.Variables[workflow.ReviewHoldParkVar]; v != "true" {
+		t.Errorf("%s = %q, want \"true\" (deterministic park backstop must be set)", workflow.ReviewHoldParkVar, v)
 	}
 }
 

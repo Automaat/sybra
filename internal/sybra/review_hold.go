@@ -20,8 +20,12 @@ func reviewHoldFixSuffix(cfg *config.Config) string {
 	var push string
 	switch cfg.ReviewHoldMode() {
 	case config.ReviewHoldModeHold:
-		push = "- Do NOT push. Commit your code fixes locally only (or leave them " +
-			"uncommitted) so a human reviews the diff before anything reaches the PR branch."
+		// hold also holds any non-reply code fix in a coalesced set (e.g. a
+		// bundled CI fix), so CI stays red until a human pushes — the intended
+		// "human reviews everything" tradeoff.
+		push = "- Do NOT push anything — not even a bundled CI or conflict fix. Commit your " +
+			"changes locally only (or leave them uncommitted) so a human reviews the whole " +
+			"diff before it reaches the PR branch."
 	case config.ReviewHoldModePushNits:
 		push = fmt.Sprintf("- Push your code fixes ONLY if the whole diff is at most %d "+
 			"changed lines (a nit). If it is larger, commit locally but do NOT push — "+
@@ -39,6 +43,6 @@ func reviewHoldFixSuffix(cfg *config.Config) string {
 		"and add each thread reply to it (e.g. `gh api graphql` `addPullRequestReview` with " +
 		"no event, then `addPullRequestReviewComment` with `inReplyTo` per thread). Leave it pending.\n" +
 		push + "\n" +
-		"- When done, end your final message with `SYBRA_PR_FIX_RESULT: human-required` and " +
-		"`SYBRA_PR_FIX_REASON: replies drafted as a pending review — awaiting human check`."
+		"- Sybra parks the task in human-required automatically; do not re-request review, " +
+		"submit the review, or merge. A human verifies the pending review and submits it."
 }

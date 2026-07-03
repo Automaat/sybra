@@ -224,7 +224,7 @@ Per-machine toggle: enable on the machine where you review before publishing.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `review_hold.enabled` | `bool` |  | Enabled turns the hold on. Default off — preserves the live-reply behavior. |
-| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. Unknown/empty values fall back to "push". |
+| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. In a coalesced fix this also holds                bundled non-reply changes (e.g. a CI fix), so CI stays red                until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
 | `review_hold.nit_max_lines` | `int` |  | NitMaxLines is the changed-line ceiling that still counts as a "nit" for the push_nits mode. Zero falls back to DefaultReviewHoldNitMaxLines. |
 
 ## MonitorConfig (`monitor`)
