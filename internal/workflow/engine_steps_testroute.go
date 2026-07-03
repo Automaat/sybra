@@ -495,9 +495,16 @@ func parseStructuredTestOutput(output string) (structuredTestOutput, bool) {
 		if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
 			// The corruption (e.g. an unescaped quote inside failures_markdown)
 			// is almost never in the verdict field itself, so regex-extract it
-			// directly rather than discarding a confirmed verdict.
+			// directly rather than discarding a confirmed verdict. Recover
+			// outcome/failures_markdown the same way — without them a
+			// confirmed FAIL still loses its report and gets misclassified as
+			// missing_evidence instead of the diagnosed product_bug/etc.
 			if v := extractVerdictFieldRegex(candidate); v != "" {
-				return structuredTestOutput{Verdict: v}, true
+				return structuredTestOutput{
+					Verdict:          v,
+					Outcome:          extractOutcomeFieldRegex(candidate),
+					FailuresMarkdown: extractFailuresMarkdownFieldRegex(candidate),
+				}, true
 			}
 			continue
 		}
@@ -543,6 +550,71 @@ func extractVerdictFieldRegex(s string) string {
 		return ""
 	}
 	return strings.ToUpper(m[1])
+}
+
+// testOutcomeFieldRe pulls "outcome": "..." out of raw text, used alongside
+// testVerdictFieldRe when a full JSON unmarshal fails.
+var testOutcomeFieldRe = regexp.MustCompile(`(?i)"outcome"\s*:\s*"([^"]*)"`)
+
+func extractOutcomeFieldRegex(s string) string {
+	m := testOutcomeFieldRe.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// testFailuresMarkdownFieldRe recovers the failures_markdown field's value
+// when json.Unmarshal fails because of an unescaped quote inside it — the
+// corruption this fallback exists for. Since the value's own quotes can no
+// longer be trusted to delimit it, this captures greedily from the field's
+// opening quote through to the last quote before the object's closing brace,
+// on the assumption that failures_markdown is the last field the agent wrote.
+var testFailuresMarkdownFieldRe = regexp.MustCompile(`(?s)"failures_markdown"\s*:\s*"(.*)"\s*\}\s*$`)
+
+func extractFailuresMarkdownFieldRegex(s string) string {
+	m := testFailuresMarkdownFieldRe.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return unescapeJSONStringBestEffort(m[1])
+}
+
+// unescapeJSONStringBestEffort decodes the common JSON string escapes
+// (\n, \t, \r, \", \\) in text that couldn't be run through json.Unmarshal
+// because the surrounding JSON was malformed. It is intentionally lenient:
+// unrecognized escape sequences are left as-is rather than treated as errors.
+func unescapeJSONStringBestEffort(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case 't':
+				b.WriteByte('\t')
+				i++
+				continue
+			case 'r':
+				b.WriteByte('\r')
+				i++
+				continue
+			case '"':
+				b.WriteByte('"')
+				i++
+				continue
+			case '\\':
+				b.WriteByte('\\')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func normalizeStructuredFailuresMarkdown(report, outcome string) string {

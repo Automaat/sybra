@@ -235,6 +235,56 @@ func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
 	}
 }
 
+func TestClassifyTestOutcome_RecoversFailuresMarkdownFromMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	// Reproduces task 086fb283: an unescaped quote inside failures_markdown
+	// (a "negative" probability, quoted in the agent's own prose) breaks
+	// json.Unmarshal for the whole payload. Regex-recovering only the verdict
+	// field (and dropping failures_markdown/outcome) used to make
+	// currentTestFailureReport return "", which routed a confirmed,
+	// well-evidenced product_bug through the missing_evidence path instead —
+	// the same practical escalation the verdict-only fallback was meant to
+	// avoid. Recovering failures_markdown/outcome too must reach the same
+	// classification a well-formed equivalent payload would.
+	report := "## Test Failures\n\n" +
+		"**Command run:** `go run repro.go`\n\n" +
+		"**Verbatim output:**\n\n```text\nWilson CI lower bound was -0.02, a \"negative\" probability\n```\n\n" +
+		"**Expected:** the task says the bound must be >= 0.\n\n" +
+		"**Code evidence:** internal/stats/wilson.go:42 does not clamp the lower bound.\n"
+
+	wellFormed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+	wantOutcome, wantFingerprint := classifyTestOutcome("completed", wellFormed, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if wantOutcome != testOutcomeProductBug {
+		t.Fatalf("sanity: well-formed payload outcome = %q, want %q", wantOutcome, testOutcomeProductBug)
+	}
+
+	// Same content, but with the quotes around "negative" left unescaped
+	// (matching how the real agent output broke) — json.Unmarshal on this
+	// fails, forcing the regex-fallback path.
+	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
+		`**Command run:** ` + "`go run repro.go`" + `\n\n**Verbatim output:**\n\n` + "```text\nWilson CI lower bound was -0.02, a \"negative\" probability\n```" + `\n\n` +
+		`**Expected:** the task says the bound must be >= 0.\n\n` +
+		`**Code evidence:** internal/stats/wilson.go:42 does not clamp the lower bound.\n"}`
+	var sanity structuredTestOutput
+	if err := json.Unmarshal([]byte(malformed), &sanity); err == nil {
+		t.Fatal("sanity: malformed payload must fail json.Unmarshal directly")
+	}
+
+	report2 := currentTestFailureReport(malformed, "", nil, testVerdictSourceStep)
+	if report2 == "" {
+		t.Fatal("currentTestFailureReport is empty for malformed JSON with a recoverable failures_markdown field")
+	}
+
+	gotOutcome, gotFingerprint := classifyTestOutcome("completed", malformed, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if gotOutcome != wantOutcome {
+		t.Fatalf("malformed-JSON outcome = %q, want parity with well-formed payload outcome %q", gotOutcome, wantOutcome)
+	}
+	if gotFingerprint == "" || gotFingerprint != wantFingerprint {
+		t.Fatalf("malformed-JSON fingerprint = %q, want parity with well-formed payload fingerprint %q (report content must match after unescaping)", gotFingerprint, wantFingerprint)
+	}
+}
+
 func TestHasGroundedFailureEvidence_AcceptsAnnotatedLabels(t *testing.T) {
 	t.Parallel()
 
