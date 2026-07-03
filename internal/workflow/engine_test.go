@@ -1658,6 +1658,98 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 	}
 }
 
+func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+	}{
+		{
+			name:       "first watchdog rate limit reruns",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantRetry:  "1",
+		},
+		{
+			name:       "budget exhausted escalates",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog: rate limit retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: "watchdog: rate limit: org-level quota exhausted",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+				},
+			})
+			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+
+			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("expected replacement agent starts = %d, got %d", tc.wantStarts, got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != tc.wantRetry {
+				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")], tc.wantRetry)
+			}
+			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+				t.Fatal("rate-limited agent step mapping was not cleared")
+			}
+		})
+	}
+}
+
+func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleRateLimitedAgent("", "limited-agent")
+
+	if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+		t.Fatal("tracked agent step mapping should be cleared for empty task IDs")
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("unexpected replacement agent start count = %d, want 0", got)
+	}
+}
+
 func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()

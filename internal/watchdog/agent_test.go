@@ -144,8 +144,9 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 				tasks:     tasks,
 				logger:    slog.New(slog.DiscardHandler),
 				stopAgent: func(string) error { stopped = true; return nil },
-				reportProviderSignal: func(name string, sig provider.Signal, reason string, _ time.Duration) {
-					signaledName, signaledKind, signaledReason = name, sig, reason
+				recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+					ag.SetError("rate_limit", reason)
+					signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
 				},
 			}
 
@@ -180,6 +181,41 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 				t.Fatalf("signaled reason = %q, want it to include the verdict reason", signaledReason)
 			}
 		})
+	}
+}
+
+func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T) {
+	stopped := false
+	var signaledName string
+	var signaledKind provider.Signal
+	w := &Watchdog{
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+			ag.SetError("rate_limit", reason)
+			signaledName, signaledKind = ag.Provider, sig
+			if reason == "" {
+				t.Fatal("reason should not be empty")
+			}
+		},
+	}
+
+	ag := &agent.Agent{ID: "a1", Provider: "claude"}
+	w.applyVerdict(ag, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "org-level rate limit exhausted",
+		Recommendation: "stop",
+		ReasonKind:     "rate_limit",
+	})
+
+	if !stopped {
+		t.Fatal("stopAgent not called on taskless rate-limit stop verdict")
+	}
+	if ag.GetErrorKind() != "rate_limit" {
+		t.Fatalf("agent error kind = %q, want rate_limit", ag.GetErrorKind())
+	}
+	if signaledName != "claude" || signaledKind != provider.SignalRateLimit {
+		t.Fatalf("recordProviderSignal(provider=%q, sig=%v), want (claude, SignalRateLimit)", signaledName, signaledKind)
 	}
 }
 
