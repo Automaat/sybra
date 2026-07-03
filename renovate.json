@@ -118,6 +118,15 @@
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\nARG\\s+[A-Z0-9_]+=(?<currentValue>[^\\s]+)"
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update pinned analyzer tool versions annotated with `# renovate: datasource=… depName=…` in the CI workflow",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\n\\s*run:.*@(?<currentValue>[^\\s]+)",
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\n\\s*version:\\s*(?<currentValue>[^\\s]+)"
+      ]
     }
   ]
 }

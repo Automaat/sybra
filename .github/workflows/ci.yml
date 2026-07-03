@@ -75,7 +75,8 @@ jobs:
 
       - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
-          version: latest
+          # renovate: datasource=github-releases depName=golangci/golangci-lint
+          version: v2.12.2
 
   lint-nilaway:
     name: Nilaway
@@ -89,7 +90,8 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Install nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@latest
+        # renovate: datasource=go depName=go.uber.org/nilaway
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260702211033-e66cfc93566b
 
       - name: Run nilaway
         run: |
@@ -272,7 +274,8 @@ jobs:
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
       - name: Run govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+        # renovate: datasource=go depName=golang.org/x/vuln
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.5.0 && govulncheck ./...
 
       - name: Run npm audit
         run: cd frontend && npm ci && npm audit --audit-level moderate
