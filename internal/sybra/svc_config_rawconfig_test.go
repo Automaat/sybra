@@ -84,6 +84,35 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_TodoistPollInterval(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	svc.cfg.Todoist.APIToken = "tok"
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	s := svc.GetSettings()
+	s.Todoist.Enabled = true
+
+	// Out-of-range is rejected (no silent by-value coercion).
+	s.Todoist.PollSeconds = 5
+	if err := svc.UpdateSettings(s); err == nil {
+		t.Error("expected error for poll interval below 30, got nil")
+	}
+	s.Todoist.PollSeconds = 99999
+	if err := svc.UpdateSettings(s); err == nil {
+		t.Error("expected error for poll interval above 3600, got nil")
+	}
+
+	// 0 means "use default" and is accepted; in-range values pass.
+	s.Todoist.PollSeconds = 0
+	if err := svc.UpdateSettings(s); err != nil {
+		t.Errorf("poll interval 0 should be accepted: %v", err)
+	}
+	s.Todoist.PollSeconds = 300
+	if err := svc.UpdateSettings(s); err != nil {
+		t.Errorf("poll interval 300 should be accepted: %v", err)
+	}
+}
+
 func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)

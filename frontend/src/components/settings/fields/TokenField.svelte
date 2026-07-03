@@ -72,11 +72,13 @@
         />
         <button
           type="button"
-          title={reveal ? 'Hide' : 'Reveal'}
+          title={reveal ? 'Hide token' : 'Reveal token'}
+          aria-label={reveal ? 'Hide token' : 'Reveal token'}
+          aria-pressed={reveal}
           class="rounded-lg px-2.5 py-2 text-sm text-surface-500 hover:bg-surface-200 dark:hover:bg-surface-700"
           onclick={() => (reveal = !reveal)}
         >
-          {reveal ? '🙈' : '👁'}
+          <span aria-hidden="true">{reveal ? '🙈' : '👁'}</span>
         </button>
         <button
           type="button"

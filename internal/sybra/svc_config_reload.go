@@ -17,9 +17,14 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		return nil, err
 	}
 
+	// validateSettings reads s.cfg (stored-token check); guard it under the read
+	// lock, released before the write lock below (RWMutex is not reentrant).
 	nextSettings := configToSettings(next)
-	if err := s.validateSettings(nextSettings); err != nil {
-		return nil, err
+	s.mu.RLock()
+	verr := s.validateSettings(nextSettings)
+	s.mu.RUnlock()
+	if verr != nil {
+		return nil, verr
 	}
 
 	s.mu.Lock()
@@ -96,7 +101,9 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 
 // configToSettings converts a *config.Config into AppSettings for validation
 // and for the default-settings baseline the UI diffs against. It mirrors every
-// editable section GetSettings exposes (minus the redacted Todoist token).
+// editable section GetSettings exposes. Unlike GetSettings it copies the
+// Todoist token verbatim — validateSettings needs to know whether a token is
+// present — so its result must never be returned to the UI unredacted.
 func configToSettings(c *config.Config) AppSettings {
 	return AppSettings{
 		Agent:        c.Agent,

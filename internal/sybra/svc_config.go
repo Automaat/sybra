@@ -110,13 +110,18 @@ func (s *ConfigService) SaveRawConfig(raw string) error {
 	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
 		return validationError(fmt.Sprintf("invalid YAML: %s", err))
 	}
-	if err := s.validateSettings(configToSettings(parsed)); err != nil {
+	// validateSettings reads s.cfg (stored-token check); guard it. ReloadFromDisk
+	// below takes the write lock itself, so release before calling it.
+	s.mu.RLock()
+	err := s.validateSettings(configToSettings(parsed))
+	s.mu.RUnlock()
+	if err != nil {
 		return err
 	}
 	if err := config.WriteRawConfig([]byte(raw)); err != nil {
 		return err
 	}
-	_, err := s.ReloadFromDisk()
+	_, err = s.ReloadFromDisk()
 	return err
 }
 
@@ -169,8 +174,12 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
 		return validationError("todoist API token required when enabled")
 	}
-	if settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600 {
-		settings.Todoist.PollSeconds = 120
+	// 0 means "use the default" (config.Load coerces it to 120); any other
+	// out-of-range value is rejected. AppSettings is passed by value, so we
+	// cannot silently coerce here — the caller would never see the change.
+	if settings.Todoist.PollSeconds != 0 &&
+		(settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600) {
+		return validationError("todoist poll interval must be 30–3600 seconds")
 	}
 	return nil
 }
