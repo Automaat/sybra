@@ -20,7 +20,7 @@ async function cleanupCreatedTasks() {
 async function goToTaskList(page: Page) {
   await page.goto('/')
   await page.locator('[data-part="trigger"]', { hasText: /Board/ }).click()
-  // List is the default view now; switch to the board for these column-based tests.
+  // Board is the default view; make sure we're on it for these column-based tests.
   await page.getByRole('button', { name: 'Board view' }).click()
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
 }
@@ -121,8 +121,8 @@ test.describe('Task Detail', () => {
 
     const main = page.getByRole('main')
 
-    // Agent mode
-    await expect(main.getByText('Agent Mode', { exact: true })).toBeVisible()
+    // Agent mode (labelled "Mode" in the properties rail)
+    await expect(main.getByText('Mode', { exact: true })).toBeVisible()
     await expect(main.getByText('headless').first()).toBeVisible()
 
     // Tags
@@ -133,9 +133,9 @@ test.describe('Task Detail', () => {
     // Body
     await expect(main.getByText('Add JWT middleware to the API router.')).toBeVisible()
 
-    // Timestamps
-    await expect(main.getByText(/Created:/)).toBeVisible()
-    await expect(main.getByText(/Updated:/)).toBeVisible()
+    // Timestamps (relative values under quiet Created / Updated labels)
+    await expect(main.getByText('Created', { exact: true })).toBeVisible()
+    await expect(main.getByText('Updated', { exact: true })).toBeVisible()
   })
 
   test('navigates back to list', async ({ page }) => {
@@ -208,9 +208,9 @@ test.describe('Create Task', () => {
     await expect(page.locator('h1', { hasText: 'E2E Test Task' })).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('Created by Playwright e2e test')).toBeVisible()
 
-    // Agent mode should show interactive in the detail metadata
+    // Agent mode should show interactive in the detail metadata (Mode row)
     const main = page.getByRole('main')
-    await expect(main.getByText('Agent Mode').locator('..').getByText('interactive')).toBeVisible()
+    await expect(main.getByText('Mode', { exact: true }).locator('..').getByText('interactive')).toBeVisible()
 
     // Go back — new task should appear in list
     await page.getByText('Back to tasks').click()

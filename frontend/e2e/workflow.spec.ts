@@ -86,6 +86,9 @@ test.describe('Plan Review Workflow', () => {
       page.locator('h1', { hasText: 'Refactor logging system' }),
     ).toBeVisible()
 
+    // Plan review lives in the Plan tab (Overview is the default tab).
+    await page.locator('[data-part="item"]', { hasText: 'Plan' }).click()
+
     // Plan review actions should be visible
     await expect(
       page.getByRole('button', { name: 'Approve Plan' }),
@@ -104,6 +107,9 @@ test.describe('Plan Review Workflow', () => {
     await expect(
       page.locator('h1', { hasText: 'Refactor logging system' }),
     ).toBeVisible()
+
+    // Plan content lives in the Plan tab (Overview is the default tab).
+    await page.locator('[data-part="item"]', { hasText: 'Plan' }).click()
 
     // Plan content should be rendered
     await expect(

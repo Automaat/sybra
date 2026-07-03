@@ -125,6 +125,8 @@ for (const theme of ['light', 'dark'] as const) {
       await goToTaskList(page)
       await page.getByRole('button', { name: 'Refactor logging system' }).click()
       await page.locator('h1', { hasText: 'Refactor logging system' }).waitFor()
+      // Plan review lives in the Plan tab (Overview is the default tab).
+      await page.locator('[data-part="item"]', { hasText: 'Plan' }).click()
       await page.getByRole('button', { name: 'Approve Plan' }).waitFor()
       await shot(page, theme, 'task-detail-plan-review')
     })
