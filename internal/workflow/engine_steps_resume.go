@@ -17,6 +17,7 @@ const (
 	resumeWorkflowStepVar = "resume_workflow_step"
 	resumeWorkflowVarsVar = "resume_workflow_vars"
 	resumeStatusVar       = "resume_status"
+	resumeStatusReasonVar = "resume_status_reason"
 )
 
 // execResumeWorkflow is the terminal step of a recovery workflow: it restores
@@ -40,7 +41,7 @@ const (
 // resume_workflow step, so no additional claim/lock is needed here.
 func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
 	if status := wfExec.Variables[resumeStatusVar]; status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, status, ""); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, status, wfExec.Variables[resumeStatusReasonVar]); err != nil {
 			e.logger.Warn("workflow.resume.restore-status", "task_id", taskID, "status", status, "err", err)
 		}
 	}

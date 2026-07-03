@@ -494,8 +494,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
 	}
-	if err := project.FetchOrigin(ctx, proj.ClonePath); err != nil {
-		m.logger.Warn("branch-fix.worktree.fetch", "project", proj.ID, "err", err)
+	var fetchErr error
+	if fetchErr = project.FetchOrigin(ctx, proj.ClonePath); fetchErr != nil {
+		m.logger.Warn("branch-fix.worktree.fetch", "project", proj.ID, "err", fetchErr)
 	}
 
 	branch := branchNameForTask(t)
@@ -522,6 +523,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 			return "", fmt.Errorf("create branch-fix worktree: %w", err)
 		}
 	default:
+		if fetchErr != nil {
+			return "", fmt.Errorf("fetch origin for task branch %s: %w", branch, fetchErr)
+		}
 		// No PR to fall back to (unlike PrepareForFix) — the branch is
 		// genuinely missing. Escalate rather than guess.
 		return "", fmt.Errorf("%w: %s", ErrTaskBranchMissing, branch)

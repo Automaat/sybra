@@ -29,6 +29,7 @@ const wtFailureLimit = 5
 
 type branchConflictResumeState struct {
 	status       string
+	statusReason string
 	workflowID   string
 	workflowStep string
 	workflowVars string
@@ -789,8 +790,9 @@ func (r *ReviewHandler) recoverBranchConflictNoPR(t task.Task) bool {
 
 func (r *ReviewHandler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
 	state := branchConflictResumeState{
-		status: string(t.Status),
-		prior:  t.Workflow.Clone(),
+		status:       string(t.Status),
+		statusReason: t.StatusReason,
+		prior:        t.Workflow.Clone(),
 	}
 	if t.Workflow == nil {
 		return state
@@ -812,6 +814,7 @@ func (r *ReviewHandler) dispatchBranchConflictRecovery(taskID, dir, base string,
 		"prompt":                branchConflictPrompt(t, base) + prFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
+		"resume_status_reason":  resume.statusReason,
 	}
 	if resume.workflowID != "" {
 		vars["resume_workflow_id"] = resume.workflowID

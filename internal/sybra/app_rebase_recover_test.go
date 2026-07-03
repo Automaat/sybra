@@ -504,6 +504,10 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 		Variables:   map[string]string{"attempt": "1"},
 	}
 	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusTesting, priorWorkflow)
+	tk, err := r.tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr("paused for testing before recovery")})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !r.recoverStaleBranchConflict(tk.ID) {
 		t.Fatal("recoverStaleBranchConflict returned false for a no-PR task with a real branch")
@@ -539,6 +543,9 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	}
 	if resumeStatus := got.Workflow.Variables["resume_status"]; resumeStatus != string(task.StatusTesting) {
 		t.Fatalf("resume_status = %q, want captured %q", resumeStatus, task.StatusTesting)
+	}
+	if resumeStatusReason := got.Workflow.Variables["resume_status_reason"]; resumeStatusReason != "paused for testing before recovery" {
+		t.Fatalf("resume_status_reason = %q, want captured pre-recovery reason", resumeStatusReason)
 	}
 	if resumeVars := got.Workflow.Variables["resume_workflow_vars"]; resumeVars != `{"attempt":"1"}` {
 		t.Fatalf("resume_workflow_vars = %q, want captured prior workflow vars", resumeVars)

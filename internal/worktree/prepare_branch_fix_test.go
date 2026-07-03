@@ -93,6 +93,54 @@ func TestPrepareForBranchFix_MissingBranch(t *testing.T) {
 	}
 }
 
+// TestPrepareForBranchFix_FetchFailureDoesNotMasqueradeAsMissingBranch verifies
+// that a transient fetch failure is surfaced as such when the task branch is
+// only discoverable via origin, rather than being misclassified as
+// ErrTaskBranchMissing.
+func TestPrepareForBranchFix_FetchFailureDoesNotMasqueradeAsMissingBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+
+	const branch = "fix/fetch-needed"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "fetch-needed.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "fetch-needed branch")
+	srcGit("checkout", "main")
+
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-origin.git")).CombinedOutput(); err != nil {
+		t.Fatalf("git remote set-url: %v: %s", err, out)
+	}
+
+	tk, err := h.tasks.Create("fetch failure branch fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": h.proj.ID,
+		"branch":     branch,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	_, err = h.m.PrepareForBranchFix(context.Background(), tk)
+	if err == nil {
+		t.Fatal("PrepareForBranchFix error = nil, want fetch failure")
+	}
+	if errors.Is(err, ErrTaskBranchMissing) {
+		t.Fatalf("PrepareForBranchFix error = %v, must not be ErrTaskBranchMissing when fetch failed", err)
+	}
+}
+
 // TestPrepareForBranchFix_AdoptsExternalWorktree mirrors
 // TestPrepareForFix_AdoptsExternalWorktree: a task carrying an explicit
 // WorktreeDir must be reused as-is, never re-created with `git worktree add`.

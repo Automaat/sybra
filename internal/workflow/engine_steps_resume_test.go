@@ -51,12 +51,14 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 			"resume_workflow_id":   "resume-target",
 			"resume_workflow_step": "resume_here",
 			"resume_status":        "testing",
+			"resume_status_reason": "waiting for branch-conflict recovery",
 		},
 	}
 	tasks.Put(TaskInfo{
-		ID:       "t1",
-		Status:   "in-progress", // set by branch-conflict-fix's own set_recovering step
-		Workflow: wf,
+		ID:           "t1",
+		Status:       "in-progress", // set by branch-conflict-fix's own set_recovering step
+		StatusReason: "recovering branch conflict",
+		Workflow:     wf,
 	})
 
 	_, err := engine.execResumeWorkflow("t1", &Step{ID: "resume_original"}, wf)
@@ -70,6 +72,9 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 	}
 	if got.Status != "testing" {
 		t.Fatalf("status = %q, want restored %q", got.Status, "testing")
+	}
+	if got.StatusReason != "waiting for branch-conflict recovery" {
+		t.Fatalf("status_reason = %q, want restored reason", got.StatusReason)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "resume-target" {
 		t.Fatalf("workflow = %+v, want resumed resume-target", got.Workflow)
@@ -98,13 +103,15 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 		CurrentStep: "resume_original",
 		State:       ExecRunning,
 		Variables: map[string]string{
-			"resume_status": "in-progress",
+			"resume_status":        "in-progress",
+			"resume_status_reason": "keep me",
 		},
 	}
 	tasks.Put(TaskInfo{
-		ID:       "t2",
-		Status:   "in-progress",
-		Workflow: wf,
+		ID:           "t2",
+		Status:       "in-progress",
+		StatusReason: "recovering branch conflict",
+		Workflow:     wf,
 	})
 
 	out, err := engine.execResumeWorkflow("t2", &Step{ID: "resume_original"}, wf)
@@ -121,6 +128,9 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want restored in-progress", got.Status)
+	}
+	if got.StatusReason != "keep me" {
+		t.Fatalf("status_reason = %q, want restored reason", got.StatusReason)
 	}
 	// No workflow was started — the (still-branch-conflict-fix) execution is
 	// left for the caller (executeSteps) to finalize via the normal
