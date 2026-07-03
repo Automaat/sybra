@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -96,11 +97,6 @@ func TestSplitOwnerRepo(t *testing.T) {
 	}
 }
 
-func hasGit() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
 func initBareRepo(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "test.git")
@@ -139,14 +135,10 @@ func initRepoWithCommit(t *testing.T) string {
 
 func TestCloneBare(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	dest := filepath.Join(t.TempDir(), "clone.git")
 
-	if err := CloneBare(src, dest); err != nil {
+	if err := CloneBare(context.Background(), src, dest); err != nil {
 		t.Fatalf("CloneBare: %v", err)
 	}
 
@@ -157,24 +149,16 @@ func TestCloneBare(t *testing.T) {
 
 func TestCloneBareInvalidURL(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	dest := filepath.Join(t.TempDir(), "clone.git")
-	if err := CloneBare("/nonexistent/repo", dest); err == nil {
+	if err := CloneBare(context.Background(), "/nonexistent/repo", dest); err == nil {
 		t.Fatal("expected error for invalid source")
 	}
 }
 
 func TestDefaultBranch(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("DefaultBranch: %v", err)
 	}
@@ -185,12 +169,8 @@ func TestDefaultBranch(t *testing.T) {
 
 func TestFetchOriginNoRemote(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
-	err := FetchOrigin(bare)
+	err := FetchOrigin(context.Background(), bare)
 	if err == nil {
 		t.Fatal("expected error fetching from repo with no origin")
 	}
@@ -198,25 +178,21 @@ func TestFetchOriginNoRemote(t *testing.T) {
 
 func TestWorktreeHealthyAndRepair(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 	wtPath := filepath.Join(t.TempDir(), "worktree")
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
-	if !WorktreeHealthy(wtPath) {
+	if !WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatal("fresh worktree should be healthy")
 	}
 
@@ -226,37 +202,33 @@ func TestWorktreeHealthyAndRepair(t *testing.T) {
 	if err := os.WriteFile(dotGit, []byte("gitdir: /nonexistent/path/that/does/not/exist\n"), 0o644); err != nil {
 		t.Fatalf("write .git: %v", err)
 	}
-	if WorktreeHealthy(wtPath) {
+	if WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatal("broken worktree should not be healthy")
 	}
 
-	if err := RepairWorktrees(bare); err != nil {
+	if err := RepairWorktrees(context.Background(), bare); err != nil {
 		t.Fatalf("RepairWorktrees: %v", err)
 	}
-	if !WorktreeHealthy(wtPath) {
+	if !WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatal("worktree should be healthy after repair")
 	}
 }
 
 func TestCreateAndRemoveWorktree(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "worktree")
-	if err := CreateWorktree(bare, wtPath, "sybra/test-task", branch); err != nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test-task", branch); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
@@ -264,7 +236,7 @@ func TestCreateAndRemoveWorktree(t *testing.T) {
 		t.Error("worktree missing README.md")
 	}
 
-	if err := RemoveWorktree(bare, wtPath); err != nil {
+	if err := RemoveWorktree(context.Background(), bare, wtPath); err != nil {
 		t.Fatalf("RemoveWorktree: %v", err)
 	}
 
@@ -336,20 +308,17 @@ func TestParseWorktreePorcelain(t *testing.T) {
 
 func TestAutoCommitUncommitted(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 
 	dir := initRepoWithCommit(t)
 
-	if got := AutoCommitUncommitted(dir, "wip: nothing to do"); got {
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: nothing to do"); got {
 		t.Fatal("expected no commit on a clean tree")
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("finished work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := AutoCommitUncommitted(dir, "wip: recovered work"); !got {
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: recovered work"); !got {
 		t.Fatal("expected a commit for a dirty tree")
 	}
 
@@ -370,26 +339,22 @@ func TestAutoCommitUncommitted(t *testing.T) {
 	}
 
 	// Idempotent: nothing left to commit on the now-clean tree.
-	if got := AutoCommitUncommitted(dir, "wip: should not commit"); got {
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: should not commit"); got {
 		t.Fatal("expected no commit on an already-clean tree")
 	}
 }
 
 func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -430,7 +395,7 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 		t.Skip("could not create rebase conflict state")
 	}
 
-	if err := SanitizeWorktree(wtPath); err != nil {
+	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
 		t.Fatalf("SanitizeWorktree: %v", err)
 	}
 
@@ -443,19 +408,16 @@ func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 
 func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -463,12 +425,12 @@ func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
 	// --abort` cannot clean up on its own (e.g. left behind by a killed
 	// process): a rebase-merge dir with no valid onto/head-name files makes
 	// `git rebase --abort` exit non-zero rather than actually aborting.
-	stateDir := rebaseStateDir(wtPath)
+	stateDir := rebaseStateDir(context.Background(), wtPath)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := SanitizeWorktree(wtPath); err != nil {
+	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
 		t.Fatalf("SanitizeWorktree: %v", err)
 	}
 
@@ -479,19 +441,15 @@ func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
 
 func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -502,7 +460,7 @@ func TestSanitizeWorktree_DeletesShadowBranches(t *testing.T) {
 		t.Fatalf("create shadow branch: %v: %s", err, out)
 	}
 
-	if err := SanitizeWorktree(wtPath); err != nil {
+	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
 		t.Fatalf("SanitizeWorktree: %v", err)
 	}
 
@@ -519,19 +477,15 @@ func contains(s, sub string) bool {
 
 func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 
@@ -552,7 +506,7 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := SanitizeWorktree(wtPath); err != nil {
+	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
 		t.Fatalf("SanitizeWorktree: %v", err)
 	}
 
@@ -574,19 +528,15 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 
 func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	branch, _ := DefaultBranch(bare)
-	if err := CreateWorktree(bare, wtPath, "sybra/test", branch); err != nil {
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
 	for _, args := range [][]string{
@@ -636,7 +586,7 @@ func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testin
 		t.Fatalf("write untracked: %v", err)
 	}
 
-	if err := ResetWorktreeForRetry(wtPath, baseline); err != nil {
+	if err := ResetWorktreeForRetry(context.Background(), wtPath, baseline); err != nil {
 		t.Fatalf("ResetWorktreeForRetry: %v", err)
 	}
 
@@ -664,13 +614,9 @@ func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testin
 
 func TestCreateWorktreeInvalidBase(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	bare := initBareRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	err := CreateWorktree(bare, wtPath, "test-branch", "nonexistent-base")
+	err := CreateWorktree(context.Background(), bare, wtPath, "test-branch", "nonexistent-base")
 	if err == nil {
 		t.Fatal("expected error for invalid base branch")
 	}
@@ -680,15 +626,15 @@ func initWorktree(t *testing.T) (bare, wtPath string) {
 	t.Helper()
 	src := initRepoWithCommit(t)
 	bare = filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 	wtPath = filepath.Join(t.TempDir(), "wt")
-	if err := CreateWorktree(bare, wtPath, "synapse/test", branch); err != nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "synapse/test", branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
 	for _, args := range [][]string{
@@ -966,9 +912,6 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	// Write .sybra.yaml with a failing pre-commit to prove repo config is used.
@@ -984,7 +927,7 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 		t.Fatalf("LoadRepoConfig: %v", err)
 	}
 	merged := MergeChecks(repoCfg.Checks, appChecks)
-	if err := InstallHooks(wtPath, merged); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, merged); err != nil {
 		t.Fatalf("InstallHooks: %v", err)
 	}
 
@@ -1005,23 +948,17 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
-	if err := InstallHooks(wtPath, nil); err != nil {
-		t.Fatalf("InstallHooks(nil): %v", err)
+	if err := InstallHooks(context.Background(), wtPath, nil); err != nil {
+		t.Fatalf("InstallHooks(context.Background(), nil): %v", err)
 	}
 }
 
 func TestInstallHooks_EmptySlices(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
-	if err := InstallHooks(wtPath, &ChecksConfig{}); err != nil {
-		t.Fatalf("InstallHooks(empty): %v", err)
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{}); err != nil {
+		t.Fatalf("InstallHooks(context.Background(), empty): %v", err)
 	}
 
 	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
@@ -1040,15 +977,12 @@ func TestInstallHooks_EmptySlices(t *testing.T) {
 
 func TestInstallHooks_PreCommitBlocksOnFailure(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
 		PreCommit: []string{"exit 1"},
 	}
-	if err := InstallHooks(wtPath, checks); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
 		t.Fatalf("InstallHooks: %v", err)
 	}
 
@@ -1087,15 +1021,12 @@ func TestInstallHooks_PreCommitBlocksOnFailure(t *testing.T) {
 
 func TestInstallHooks_PreCommitPassesOnSuccess(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
 		PreCommit: []string{"exit 0"},
 	}
-	if err := InstallHooks(wtPath, checks); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
 		t.Fatalf("InstallHooks: %v", err)
 	}
 
@@ -1116,15 +1047,12 @@ func TestInstallHooks_PreCommitPassesOnSuccess(t *testing.T) {
 
 func TestInstallHooks_PrePushInstalled(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	checks := &ChecksConfig{
 		PrePush: []string{"echo pre-push ok"},
 	}
-	if err := InstallHooks(wtPath, checks); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
 		t.Fatalf("InstallHooks: %v", err)
 	}
 
@@ -1151,18 +1079,15 @@ func TestInstallHooks_PrePushInstalled(t *testing.T) {
 
 func TestInstallHooks_Overwrites(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	// Install first version.
-	if err := InstallHooks(wtPath, &ChecksConfig{PreCommit: []string{"echo v1"}}); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{PreCommit: []string{"echo v1"}}); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
 	// Overwrite with second version.
-	if err := InstallHooks(wtPath, &ChecksConfig{PreCommit: []string{"echo v2"}}); err != nil {
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{PreCommit: []string{"echo v2"}}); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
 
@@ -1191,15 +1116,12 @@ func TestInstallHooks_Overwrites(t *testing.T) {
 // failing to start the agent.
 func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
@@ -1212,7 +1134,7 @@ func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = CreateWorktree(bare, wtPath, "sybra/stale-path", branch)
+	err = CreateWorktree(context.Background(), bare, wtPath, "sybra/stale-path", branch)
 	if err == nil {
 		t.Fatal("CreateWorktree into non-empty directory should error; got nil")
 	}
@@ -1234,22 +1156,19 @@ func TestCreateWorktree_PathExistsWithFiles(t *testing.T) {
 // again, assert the second call errors.
 func TestCreateWorktree_DuplicatePathRejected(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "race-wt")
 
-	if err := CreateWorktree(bare, wtPath, "sybra/first", branch); err != nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/first", branch); err != nil {
 		t.Fatalf("first CreateWorktree: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "README.md")); err != nil {
@@ -1259,27 +1178,21 @@ func TestCreateWorktree_DuplicatePathRejected(t *testing.T) {
 	// Second attempt with a different branch but the same target path must
 	// fail — this is the guard against app-layer regressions that swallow
 	// the error and leave phantom worktree metadata.
-	if err := CreateWorktree(bare, wtPath, "sybra/second", branch); err == nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/second", branch); err == nil {
 		t.Errorf("second CreateWorktree on occupied path returned nil; expected error")
 	}
 }
 
 func TestPushRemote_DefaultOrigin(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
-	if got := PushRemote(wtPath); got != "origin" {
+	if got := PushRemote(context.Background(), wtPath); got != "origin" {
 		t.Errorf("PushRemote without fork = %q, want %q", got, "origin")
 	}
 }
 
 func TestPushRemote_DetectsFork(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
@@ -1290,7 +1203,7 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 		t.Fatalf("add fork remote: %v: %s", err, out)
 	}
 
-	if got := PushRemote(wtPath); got != "fork" {
+	if got := PushRemote(context.Background(), wtPath); got != "fork" {
 		t.Errorf("PushRemote with fork = %q, want %q", got, "fork")
 	}
 }
@@ -1301,9 +1214,6 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 // repo and gh pr create then opens a same-repo PR.
 func TestPushUpstream_RoutesToFork(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1326,7 +1236,7 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 		}
 	}
 
-	if err := PushUpstream(wtPath, "sybra/route-test"); err != nil {
+	if err := PushUpstream(context.Background(), wtPath, "sybra/route-test"); err != nil {
 		t.Fatalf("PushUpstream: %v", err)
 	}
 
@@ -1347,9 +1257,6 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 // floor that backs up the prompt-level guidance pointing agents at fork.
 func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1372,7 +1279,7 @@ func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
 		}
 	}
 
-	if err := EnforceForkOnlyPush(wtPath); err != nil {
+	if err := EnforceForkOnlyPush(context.Background(), wtPath); err != nil {
 		t.Fatalf("EnforceForkOnlyPush: %v", err)
 	}
 
@@ -1401,9 +1308,6 @@ func TestEnforceForkOnlyPush_BlocksOriginPush(t *testing.T) {
 // origin must keep working.
 func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1421,7 +1325,7 @@ func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
 		}
 	}
 
-	if err := EnforceForkOnlyPush(wtPath); err != nil {
+	if err := EnforceForkOnlyPush(context.Background(), wtPath); err != nil {
 		t.Fatalf("EnforceForkOnlyPush: %v", err)
 	}
 
@@ -1438,9 +1342,6 @@ func TestEnforceForkOnlyPush_NoForkLeavesOriginPushable(t *testing.T) {
 // by the user are left untouched.
 func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	originBare := filepath.Join(t.TempDir(), "origin.git")
@@ -1462,7 +1363,7 @@ func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 		}
 	}
 
-	if err := EnforceForkOnlyPush(wtPath); err != nil {
+	if err := EnforceForkOnlyPush(context.Background(), wtPath); err != nil {
 		t.Fatalf("EnforceForkOnlyPush (with fork): %v", err)
 	}
 
@@ -1472,7 +1373,7 @@ func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 		t.Fatalf("remove fork: %v: %s", err, out)
 	}
 
-	if err := EnforceForkOnlyPush(wtPath); err != nil {
+	if err := EnforceForkOnlyPush(context.Background(), wtPath); err != nil {
 		t.Fatalf("EnforceForkOnlyPush (after fork removed): %v", err)
 	}
 
@@ -1487,9 +1388,6 @@ func TestEnforceForkOnlyPush_RestoresAfterForkRemoved(t *testing.T) {
 // sentinel value.
 func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath := initWorktree(t)
 
 	foreignURL := "https://user.example.com/custom-push-url.git"
@@ -1503,7 +1401,7 @@ func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
 		}
 	}
 
-	if err := EnforceForkOnlyPush(wtPath); err != nil {
+	if err := EnforceForkOnlyPush(context.Background(), wtPath); err != nil {
 		t.Fatalf("EnforceForkOnlyPush: %v", err)
 	}
 
@@ -1522,20 +1420,17 @@ func TestEnforceForkOnlyPush_PreservesForeignPushURL(t *testing.T) {
 // silently drops (or crashes on) orphaned entries is visible.
 func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 	wtPath := filepath.Join(t.TempDir(), "orphan-wt")
-	if err := CreateWorktree(bare, wtPath, "sybra/orphan", branch); err != nil {
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/orphan", branch); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -1545,7 +1440,7 @@ func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wts, err := ListWorktrees(bare)
+	wts, err := ListWorktrees(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("ListWorktrees: %v", err)
 	}
@@ -1566,10 +1461,10 @@ func TestListWorktrees_OrphanedAdminDir(t *testing.T) {
 	}
 
 	// PruneWorktrees must succeed and leave no orphan entry behind.
-	if err := PruneWorktrees(bare); err != nil {
+	if err := PruneWorktrees(context.Background(), bare); err != nil {
 		t.Fatalf("PruneWorktrees: %v", err)
 	}
-	wts2, err := ListWorktrees(bare)
+	wts2, err := ListWorktrees(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("ListWorktrees after prune: %v", err)
 	}
@@ -1604,16 +1499,16 @@ func setupPushSyncWorktree(t *testing.T) (remoteBare, wtPath, wtBranch string) {
 	}
 
 	sybraBare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(remoteBare, sybraBare); err != nil {
+	if err := CloneBare(context.Background(), remoteBare, sybraBare); err != nil {
 		t.Fatalf("clone bare: %v", err)
 	}
-	branch, err := DefaultBranch(sybraBare)
+	branch, err := DefaultBranch(context.Background(), sybraBare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
 	wtPath = filepath.Join(t.TempDir(), "wt")
 	wtBranch = "sybra/push-test"
-	if err := CreateWorktree(sybraBare, wtPath, wtBranch, branch); err != nil {
+	if err := CreateWorktree(context.Background(), sybraBare, wtPath, wtBranch, branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
 	for _, args := range [][]string{
@@ -1680,24 +1575,18 @@ func remoteReflogCount(t *testing.T, remoteBare, branch string) int {
 
 func TestPushSync_BranchMissing(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath, _ := setupPushSyncWorktree(t)
-	if err := PushSync(wtPath, "no-such-branch"); !errors.Is(err, ErrBranchMissing) {
+	if err := PushSync(context.Background(), wtPath, "no-such-branch"); !errors.Is(err, ErrBranchMissing) {
 		t.Fatalf("PushSync missing branch: got %v, want ErrBranchMissing", err)
 	}
 }
 
 func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	localSHA := makeCommit(t, wtPath, "first")
 
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync first push: %v", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != localSHA {
@@ -1707,12 +1596,9 @@ func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 
 func TestPushSync_NoopWhenSynced(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync first: %v", err)
 	}
 	entriesBefore := remoteReflogCount(t, remoteBare, branch)
@@ -1721,7 +1607,7 @@ func TestPushSync_NoopWhenSynced(t *testing.T) {
 	}
 
 	// Second sync with no local changes must not touch the remote.
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync second (no-op): %v", err)
 	}
 	if got := remoteReflogCount(t, remoteBare, branch); got != entriesBefore {
@@ -1731,12 +1617,9 @@ func TestPushSync_NoopWhenSynced(t *testing.T) {
 
 func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
@@ -1746,7 +1629,7 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	}
 
 	newSHA := makeCommit(t, wtPath, "two")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync fast-forward: %v", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != newSHA {
@@ -1756,13 +1639,10 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 
 func TestPushSync_DivergenceForcePushes(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
@@ -1779,7 +1659,7 @@ func TestPushSync_DivergenceForcePushes(t *testing.T) {
 		t.Fatalf("expected regular push to be rejected on divergence; succeeded: %s", out)
 	}
 
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync divergence: %v", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != divergedSHA {
@@ -1822,19 +1702,16 @@ func pushRemoteCommit(t *testing.T, remoteBare, branch, content string) string {
 // it is not dropped by a later force-push.
 func TestReconcileWithRemote_FastForwardsStaleLocal(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
 	// Another clone pushes a fix; wtPath's local branch is now stale.
 	fixSHA := pushRemoteCommit(t, remoteBare, branch, "review-fix")
 
-	if err := ReconcileWithRemote(wtPath, branch); err != nil {
+	if err := ReconcileWithRemote(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("ReconcileWithRemote: %v", err)
 	}
 
@@ -1855,12 +1732,9 @@ func TestReconcileWithRemote_FastForwardsStaleLocal(t *testing.T) {
 // later force-push silently overwrite remote-only commits.
 func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
@@ -1868,7 +1742,7 @@ func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 	pushRemoteCommit(t, remoteBare, branch, "remote-side")
 	makeCommit(t, wtPath, "local-side")
 
-	err := ReconcileWithRemote(wtPath, branch)
+	err := ReconcileWithRemote(context.Background(), wtPath, branch)
 	if !errors.Is(err, ErrBranchDiverged) {
 		t.Fatalf("ReconcileWithRemote diverged = %v, want ErrBranchDiverged", err)
 	}
@@ -1880,12 +1754,9 @@ func TestReconcileWithRemote_DivergedReturnsError(t *testing.T) {
 // stale history.
 func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	_, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
@@ -1895,7 +1766,7 @@ func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 		t.Fatalf("remote set-url: %v: %s", err, out)
 	}
 
-	if err := ReconcileWithRemote(wtPath, branch); err == nil {
+	if err := ReconcileWithRemote(context.Background(), wtPath, branch); err == nil {
 		t.Fatal("ReconcileWithRemote with broken remote = nil error, want propagated fetch failure")
 	}
 }
@@ -1906,13 +1777,10 @@ func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 // clobber the newer commits (which the lease would wrongly permit).
 func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 
@@ -1926,7 +1794,7 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	// fetches, so its tracking ref stays behind the live remote head.
 	advancedSHA := pushRemoteCommit(t, remoteBare, branch, "concurrent-fix")
 
-	err := PushSync(wtPath, branch)
+	err := PushSync(context.Background(), wtPath, branch)
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
 	}
@@ -1942,13 +1810,10 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 // remote state.
 func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
 	makeCommit(t, wtPath, "two")
-	if err := PushSync(wtPath, branch); err != nil {
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
 	beforeSHA := remoteRefSHA(t, remoteBare, branch)
@@ -1965,7 +1830,7 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 		t.Fatalf("remote set-url: %v: %s", err, out)
 	}
 
-	err := PushSync(wtPath, branch)
+	err := PushSync(context.Background(), wtPath, branch)
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced (fail closed)", err)
 	}
@@ -1976,10 +1841,6 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 
 func TestFetchPRHead(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	// Build an upstream whose PR-42 head commit is reachable ONLY via
 	// refs/pull/42/head — never as a normal branch head. This mirrors a fork
 	// PR: the head branch lives in the fork, but GitHub still publishes the
@@ -2014,11 +1875,11 @@ func TestFetchPRHead(t *testing.T) {
 	// A plain bare clone copies heads only — not refs/pull/* — so the PR
 	// commit is absent until FetchPRHead pulls it on demand.
 	bare := filepath.Join(t.TempDir(), "clone.git")
-	if err := CloneBare(upstream, bare); err != nil {
+	if err := CloneBare(context.Background(), upstream, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
 	}
 
-	ref, err := FetchPRHead(bare, 42)
+	ref, err := FetchPRHead(context.Background(), bare, 42)
 	if err != nil {
 		t.Fatalf("FetchPRHead: %v", err)
 	}
@@ -2036,17 +1897,13 @@ func TestFetchPRHead(t *testing.T) {
 	// The detached worktree that PrepareForReview creates must succeed from
 	// the fetched PR head — the original failure mode.
 	wtPath := filepath.Join(t.TempDir(), "wt")
-	if err := CreateWorktreeDetached(bare, wtPath, ref); err != nil {
+	if err := CreateWorktreeDetached(context.Background(), bare, wtPath, ref); err != nil {
 		t.Fatalf("CreateWorktreeDetached from PR head: %v", err)
 	}
 }
 
 func TestListTrackedFiles(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"git", "init", src},
@@ -2081,13 +1938,13 @@ func TestListTrackedFiles(t *testing.T) {
 	branchName := strings.TrimSpace(string(branch))
 
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
 	}
 
 	t.Run("tracked files", func(t *testing.T) {
 		t.Parallel()
-		files, err := ListTrackedFiles(bare, "refs/heads/"+branchName)
+		files, err := ListTrackedFiles(context.Background(), bare, "refs/heads/"+branchName)
 		if err != nil {
 			t.Fatalf("ListTrackedFiles: %v", err)
 		}
@@ -2107,7 +1964,7 @@ func TestListTrackedFiles(t *testing.T) {
 		empty := initBareRepo(t)
 		// The well-known empty-tree SHA1 is valid in every git repo without
 		// needing any commits.
-		files, err := ListTrackedFiles(empty, "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+		files, err := ListTrackedFiles(context.Background(), empty, "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
 		if err != nil {
 			t.Fatalf("ListTrackedFiles on empty tree: %v", err)
 		}
@@ -2121,7 +1978,7 @@ func TestListTrackedFiles(t *testing.T) {
 
 	t.Run("missing ref", func(t *testing.T) {
 		t.Parallel()
-		if _, err := ListTrackedFiles(bare, "refs/heads/does-not-exist"); err == nil {
+		if _, err := ListTrackedFiles(context.Background(), bare, "refs/heads/does-not-exist"); err == nil {
 			t.Fatal("expected error for missing ref")
 		}
 	})
@@ -2129,21 +1986,17 @@ func TestListTrackedFiles(t *testing.T) {
 
 func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 	t.Parallel()
-	if !hasGit() {
-		t.Skip("git not available")
-	}
-
 	t.Run("falls back to local head before first fetch", func(t *testing.T) {
 		t.Parallel()
 		src := initRepoWithCommit(t)
 		bare := filepath.Join(t.TempDir(), "bare.git")
-		if err := CloneBare(src, bare); err != nil {
+		if err := CloneBare(context.Background(), src, bare); err != nil {
 			t.Fatalf("CloneBare: %v", err)
 		}
 		// git clone --bare only populates refs/heads/*, not
 		// refs/remotes/origin/* (that requires a subsequent fetch), so this
 		// must resolve via the refs/heads/<branch> fallback.
-		files, err := TrackedFilesAtDefaultBranch(bare)
+		files, err := TrackedFilesAtDefaultBranch(context.Background(), bare)
 		if err != nil {
 			t.Fatalf("TrackedFilesAtDefaultBranch: %v", err)
 		}
@@ -2156,10 +2009,10 @@ func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 		t.Parallel()
 		src := initRepoWithCommit(t)
 		bare := filepath.Join(t.TempDir(), "bare.git")
-		if err := CloneBare(src, bare); err != nil {
+		if err := CloneBare(context.Background(), src, bare); err != nil {
 			t.Fatalf("CloneBare: %v", err)
 		}
-		branch, err := DefaultBranch(bare)
+		branch, err := DefaultBranch(context.Background(), bare)
 		if err != nil {
 			t.Fatalf("DefaultBranch: %v", err)
 		}
@@ -2178,11 +2031,11 @@ func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 				t.Fatalf("%v: %v: %s", args, err, out)
 			}
 		}
-		if err := FetchOrigin(bare); err != nil {
+		if err := FetchOrigin(context.Background(), bare); err != nil {
 			t.Fatalf("FetchOrigin: %v", err)
 		}
 
-		files, err := TrackedFilesAtDefaultBranch(bare)
+		files, err := TrackedFilesAtDefaultBranch(context.Background(), bare)
 		if err != nil {
 			t.Fatalf("TrackedFilesAtDefaultBranch: %v", err)
 		}
@@ -2196,7 +2049,7 @@ func TestTrackedFilesAtDefaultBranch(t *testing.T) {
 			}
 		}
 		// The stale local head must not have been consulted.
-		staleFiles, err := ListTrackedFiles(bare, "refs/heads/"+branch)
+		staleFiles, err := ListTrackedFiles(context.Background(), bare, "refs/heads/"+branch)
 		if err != nil {
 			t.Fatalf("ListTrackedFiles on stale head: %v", err)
 		}

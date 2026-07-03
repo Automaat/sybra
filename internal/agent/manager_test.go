@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/limits"
 )
 
 func discardLogger() *slog.Logger {
@@ -308,7 +309,7 @@ func TestFireComplete_IdempotentUnderConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Go(func() {
-			m.fireComplete(a, true)
+			m.fireComplete(context.Background(), a, true)
 		})
 	}
 	wg.Wait()
@@ -575,6 +576,50 @@ func TestProviderRateLimited(t *testing.T) {
 	m.SetHealthGate(stubGate{rateLimited: false})
 	if m.ProviderRateLimited("claude") {
 		t.Error("healthy gate should report false")
+	}
+}
+
+func TestProviderHealthy(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// No gate, no policy → always healthy.
+	if !m.ProviderHealthy("copilot") {
+		t.Error("nil gate and empty policy should report healthy")
+	}
+
+	m.SetHealthGate(stubGate{rateLimited: false})
+	if !m.ProviderHealthy("copilot") {
+		t.Error("healthy gate should report true")
+	}
+
+	m.SetHealthGate(stubGate{rateLimited: true})
+	if m.ProviderHealthy("copilot") {
+		t.Error("unhealthy gate should report false")
+	}
+}
+
+// TestProviderHealthy_ConfigDisabledWithNilGate guards the case where an
+// admin disables providers.health_check.enabled (nil gate, no probing) but
+// still config-disables a specific provider — ProviderHealthy must keep
+// reporting false for it via limitPolicy.ProviderEnabled, independent of the
+// health gate.
+func TestProviderHealthy_ConfigDisabledWithNilGate(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			LimitPolicy: limits.Policy{
+				ProviderEnabled: map[string]bool{
+					"claude":  true,
+					"copilot": false,
+				},
+			},
+		},
+	})
+
+	if m.ProviderHealthy("copilot") {
+		t.Error("config-disabled provider should report unhealthy even with nil health gate")
+	}
+	if !m.ProviderHealthy("claude") {
+		t.Error("config-enabled provider should report healthy with nil health gate")
 	}
 }
 
@@ -1195,7 +1240,7 @@ func TestStreamConvoOutput_FlushesQueueOnResult(t *testing.T) {
 	a.EnqueuePrompt("next turn please")
 
 	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}` + "\n"
-	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
 
 	select {
 	case got := <-lines:
@@ -1223,7 +1268,7 @@ func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
 	a.SetState(StateRunning)
 
 	resultLine := `{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.05}` + "\n"
-	m.streamConvoOutput(a, strings.NewReader(resultLine), nil, false)
+	m.streamConvoOutput(context.Background(), a, strings.NewReader(resultLine), nil, false)
 
 	if st := a.GetState(); st != StatePaused {
 		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)

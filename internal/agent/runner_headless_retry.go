@@ -37,12 +37,21 @@ func (m *Manager) reportProviderHealthSample(a *Agent, sample provider.ErrorSamp
 		}
 		return sig
 	}
-	// Record the classification on the agent so the completion handler can tell
-	// a transient provider limit apart from a real crash and retry instead of
-	// stranding the task in human-required.
-	a.SetError(signalErrorKind(sig), reason)
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
+	m.RecordProviderSignal(a, sig, reason, retryAfter)
 	return sig
+}
+
+// RecordProviderSignal stores a provider-health classification on the agent
+// and forwards it to the shared health gate so all recovery paths maintain the
+// same "agent error kind + gate signal" invariant.
+func (m *Manager) RecordProviderSignal(a *Agent, sig provider.Signal, reason string, retryAfter time.Duration) {
+	if a == nil {
+		return
+	}
+	if kind := signalErrorKind(sig); kind != "" {
+		a.SetError(kind, reason)
+	}
+	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter)
 }
 
 // signalErrorKind maps a provider health signal to the short error-kind tag

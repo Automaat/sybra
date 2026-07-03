@@ -1,8 +1,6 @@
 package sybra
 
 import (
-	"context"
-
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
@@ -28,6 +26,6 @@ func (a *App) wireTaskService() {
 		if a.cfg.Umbrella.Ground {
 			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), a.cfg.Umbrella.GroundMinSubIssues))
 		}
-		return umbrella.Expand(context.Background(), a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
+		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
 	}
 }

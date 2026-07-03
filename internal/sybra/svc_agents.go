@@ -243,7 +243,7 @@ func (s *AgentService) OpenWorktree(taskID string) error {
 	if !s.worktrees.Exists(t) {
 		return fmt.Errorf("no worktree for task %s", taskID)
 	}
-	return sysopen.Dir(s.worktrees.PathFor(t))
+	return sysopen.Dir(context.Background(), s.worktrees.PathFor(t))
 }
 
 // ResumeInClaudeCode opens a Ghostty terminal tab with a Claude Code session

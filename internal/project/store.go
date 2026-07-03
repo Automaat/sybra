@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -88,7 +89,10 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	}
 
 	clonePath := filepath.Join(s.clonesDir, owner, repo+".git")
-	if err := CloneBare(rawURL, clonePath); err != nil {
+	// context.Background(): Create is a synchronous CLI/Wails-bound entry
+	// point (cmd/sybra-cli and ProjectService.CreateProject) with no ctx to
+	// thread through.
+	if err := CloneBare(context.Background(), rawURL, clonePath); err != nil {
 		return Project{}, fmt.Errorf("clone: %w", err)
 	}
 

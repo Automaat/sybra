@@ -41,11 +41,11 @@ func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg
 	// Write kubeconfig.
 	kubeconfigData, err := runCmd(ctx, "", nil, "k3d", "kubeconfig", "get", clusterName)
 	if err != nil {
-		_ = stopK3dCluster(clusterName)
+		_ = stopK3dClusterCleanup(clusterName) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see stopK3dClusterCleanup comment
 		return nil, fmt.Errorf("k3d kubeconfig get: %w", err)
 	}
 	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfigData), 0o600); err != nil {
-		_ = stopK3dCluster(clusterName)
+		_ = stopK3dClusterCleanup(clusterName) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see stopK3dClusterCleanup comment
 		return nil, fmt.Errorf("write kubeconfig: %w", err)
 	}
 
@@ -60,16 +60,16 @@ func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg
 		deployEnv := append([]string{fmt.Sprintf("KUBECONFIG=%s", kubeconfigPath)}, envFileEntries...)
 		out, deployErr := runCmd(ctx, worktreePath, deployEnv, "sh", "-c", cfg.Deploy)
 		if deployErr != nil {
-			_ = stopK3dCluster(clusterName)
+			_ = stopK3dClusterCleanup(clusterName) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see stopK3dClusterCleanup comment
 			_ = os.Remove(kubeconfigPath)
 			return nil, fmt.Errorf("deploy command %q: %w\n%s", cfg.Deploy, deployErr, out)
 		}
 	}
 
 	// Find a free local port.
-	localPort, err := findFreePort()
+	localPort, err := findFreePort(ctx)
 	if err != nil {
-		_ = stopK3dCluster(clusterName)
+		_ = stopK3dClusterCleanup(clusterName) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see stopK3dClusterCleanup comment
 		_ = os.Remove(kubeconfigPath)
 		return nil, fmt.Errorf("find free port: %w", err)
 	}
@@ -89,7 +89,7 @@ func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg
 	pfCmd := exec.CommandContext(ctx, "kubectl", pfArgs...)
 	pfCmd.Env = append(os.Environ(), fmt.Sprintf("KUBECONFIG=%s", kubeconfigPath))
 	if err := pfCmd.Start(); err != nil {
-		_ = stopK3dCluster(clusterName)
+		_ = stopK3dClusterCleanup(clusterName) //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see stopK3dClusterCleanup comment
 		_ = os.Remove(kubeconfigPath)
 		return nil, fmt.Errorf("kubectl port-forward: %w", err)
 	}
@@ -116,7 +116,7 @@ func (m *Manager) stopK8s(inst *Instance) {
 
 	// Delete cluster.
 	if inst.clusterName != "" {
-		if err := stopK3dCluster(inst.clusterName); err != nil {
+		if err := stopK3dCluster(context.Background(), inst.clusterName); err != nil {
 			m.logger.Warn("sandbox.k8s.cluster-delete", "task_id", inst.TaskID, "err", err)
 		}
 	}
@@ -136,16 +136,27 @@ func k3dClusterExists(ctx context.Context, name string) (bool, error) {
 	return strings.Contains(out, `"`+name+`"`), nil
 }
 
-func stopK3dCluster(name string) error {
-	out, err := runCmd(context.Background(), "", nil, "k3d", "cluster", "delete", name)
+// stopK3dClusterCleanup deletes a partially-started cluster on a startK8s
+// failure path. It uses its own bounded context rather than the caller's
+// operation ctx, since a canceled/expired ctx is often the reason the
+// failure path was reached in the first place and must not also skip cleanup.
+func stopK3dClusterCleanup(name string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	return stopK3dCluster(cleanupCtx, name)
+}
+
+func stopK3dCluster(ctx context.Context, name string) error {
+	out, err := runCmd(ctx, "", nil, "k3d", "cluster", "delete", name)
 	if err != nil {
 		return fmt.Errorf("k3d cluster delete %s: %w\n%s", name, err, out)
 	}
 	return nil
 }
 
-func findFreePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+func findFreePort(ctx context.Context) (int, error) {
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}

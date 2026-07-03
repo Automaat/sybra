@@ -246,10 +246,6 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 
 func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manager, string) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	home, err := os.MkdirTemp("", "sybra-fix-review-*")
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +269,7 @@ func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manage
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := project.CloneBare(src, barePath); err != nil {
+	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
 	}
 
@@ -299,7 +295,7 @@ updated_at: 2025-01-01T00:00:00Z
 		Tasks:        taskMgr,
 		Logger:       logger,
 		PRBranchResolver: func(repo string, prNumber int) (string, error) {
-			return project.DefaultBranch(barePath)
+			return project.DefaultBranch(context.Background(), barePath)
 		},
 	})
 
@@ -343,7 +339,7 @@ func initFixReviewSourceRepo(t *testing.T) string {
 
 func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	h, taskMgr, barePath := setupFixReviewPushTest(t)
-	branch, err := project.DefaultBranch(barePath)
+	branch, err := project.DefaultBranch(context.Background(), barePath)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
@@ -362,7 +358,7 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	}
 	tk = updated
 
-	wtPath, err := h.worktrees.PrepareForFix(tk, 42)
+	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
 	}

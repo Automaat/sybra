@@ -16,6 +16,16 @@ const (
 	SignalAuthFailure
 )
 
+// connectivityCooldown is the retry-after hint for codex backend
+// connectivity signals (websocket refusals, MCP transport failures, model
+// list refresh timeouts) — short, since these tend to clear within a minute.
+const connectivityCooldown = 60 * time.Second
+
+// weeklyLimitCooldown is the retry-after hint for a weekly usage-limit
+// signal — a long park, since the reset is hours away and a short cooldown
+// would just churn retries against the same exhausted limit.
+const weeklyLimitCooldown = time.Hour
+
 // ErrorSample is the runner→classifier DTO. Using a plain struct (instead of
 // agent.StreamEvent directly) prevents an import cycle between internal/agent
 // and internal/provider.
@@ -39,14 +49,21 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 	if s.ErrorStatus == 401 || s.ErrorType == "authentication_error" || s.ErrorType == "invalid_api_key" {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
-	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run claude auth login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run claude auth login") {
 		return SignalAuthFailure, "logged_out", 0
+	}
+	// Weekly-limit phrasing is checked before the structured 429/rate_limit_error
+	// short-circuit below: providers can attach a generic rate-limit error code
+	// to a weekly-quota-exhaustion message, and the longer weeklyLimitCooldown
+	// park only applies if the text is inspected first.
+	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
+		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+	}
+	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
@@ -54,6 +71,58 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 		return SignalRateLimit, "rate_limited", 0
 	}
 	return SignalNone, "", 0
+}
+
+// isWeeklyLimit reports whether text contains a weekly-specific limit
+// phrase. A bare "resets ... at" fragment (present on session/usage limits
+// too) is not sufficient — only an explicit "weekly" mention counts, so
+// session/usage limits keep their short default cooldown instead of being
+// parked for an hour.
+func isWeeklyLimit(text string) bool {
+	return containsAny(text,
+		"weekly limit",
+		"weekly limit reached",
+		"hit your weekly limit",
+		"reached your weekly limit",
+	)
+}
+
+// isWeeklyLimitClean is the clean-result-safe variant of isWeeklyLimit: it
+// drops the bare "weekly limit" needle, which a successful run's assistant
+// text can legitimately contain (e.g. describing this very feature) without
+// the run itself having hit a weekly quota.
+func isWeeklyLimitClean(text string) bool {
+	return containsAny(text,
+		"weekly limit reached",
+		"hit your weekly limit",
+		"reached your weekly limit",
+	)
+}
+
+// isWeeklyLimitText applies isWeeklyLimit to stderr (always, since stderr is
+// never a clean success surface) and to content only under the appropriate
+// guard for whether content came from a clean/successful result.
+func isWeeklyLimitText(stderr, content string, contentIsCleanResult bool) bool {
+	if isWeeklyLimit(stderr) {
+		return true
+	}
+	if contentIsCleanResult {
+		return isWeeklyLimitClean(content)
+	}
+	return isWeeklyLimit(content)
+}
+
+// isCodexConnectivityText reports whether text names a Codex-backend
+// connectivity failure. "failed to refresh available models" matches on its
+// own; the backend host string only counts alongside a connectivity-specific
+// phrase (websocket/MCP transport), since a bare host mention can appear in
+// unrelated errors that merely quote a URL.
+func isCodexConnectivityText(text string) bool {
+	if strings.Contains(text, "failed to refresh available models") {
+		return true
+	}
+	return strings.Contains(text, "chatgpt.com/backend-api") &&
+		containsAny(text, "websocket connection", "mcp transport")
 }
 
 // ClassifyCodexError mirrors ClassifyClaudeError for codex runs. Codex error
@@ -64,14 +133,41 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	if s.ErrorStatus == 401 || strings.EqualFold(s.ErrorType, "unauthorized") {
 		return SignalAuthFailure, "logged_out", 0
 	}
-	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
-	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run: codex login", "please run codex login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run: codex login") {
 		return SignalAuthFailure, "logged_out", 0
+	}
+	// Weekly-limit phrasing is checked before the structured 429/rate_limit
+	// short-circuit below: providers can attach a generic rate-limit error
+	// code to a weekly-quota-exhaustion message, and the longer
+	// weeklyLimitCooldown park only applies if the text is inspected first.
+	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
+		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+	}
+	// Host-anchored: a bare "websocket connection" without the codex backend
+	// host must NOT match — it would false-positive on unrelated network
+	// errors. The host string alone is too broad the other way — text merely
+	// mentioning the backend host without a connectivity-specific phrase
+	// (e.g. quoting a URL in an unrelated error) must not match either — so
+	// the host and a connectivity phrase are both required together.
+	// "failed to refresh available models" is host-independent and matches
+	// on its own. Together these cover websocket refusals to the codex
+	// responses endpoint, MCP transport failures, and model-list refresh
+	// timeouts, all of which are Codex-backend infra blips rather than real
+	// task failures.
+	//
+	// The content-side match is restricted to non-clean results: a
+	// successful (exit-0) run's assistant text can legitimately mention the
+	// Codex backend host or quote a log line without that meaning the run
+	// itself hit a connectivity failure — see containsRateLimitContent for
+	// the same distinction on the rate-limit path.
+	if isCodexConnectivityText(stderr) || (!s.ContentIsCleanResult && isCodexConnectivityText(content)) {
+		return SignalRateLimit, "connectivity", connectivityCooldown
+	}
+	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,

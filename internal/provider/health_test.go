@@ -115,31 +115,53 @@ func TestCodexVersionRegexExtracts(t *testing.T) {
 
 func TestClassifyClaudeError(t *testing.T) {
 	cases := []struct {
-		name string
-		in   ErrorSample
-		want Signal
+		name           string
+		in             ErrorSample
+		want           Signal
+		wantReason     string
+		wantRetryAfter time.Duration
 	}{
-		{"auth_401", ErrorSample{ErrorStatus: 401}, SignalAuthFailure},
-		{"auth_type", ErrorSample{ErrorType: "authentication_error"}, SignalAuthFailure},
-		{"rate_429", ErrorSample{ErrorStatus: 429}, SignalRateLimit},
-		{"rate_type", ErrorSample{ErrorType: "rate_limit_error"}, SignalRateLimit},
-		{"credit", ErrorSample{ErrorType: "credit_balance_too_low"}, SignalRateLimit},
-		{"stderr_not_logged", ErrorSample{Stderr: "Error: Not logged in"}, SignalAuthFailure},
-		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit},
-		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit},
-		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit},
-		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit},
-		{"clean_content_rate_limit_exceeded", ErrorSample{Content: "rate limit exceeded", ContentIsCleanResult: true}, SignalRateLimit},
-		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit},
-		{"clean_content_mentions_rate_limit", ErrorSample{Content: "fixed rate limit handling", ContentIsCleanResult: true}, SignalNone},
-		{"overloaded_ignored", ErrorSample{ErrorStatus: 529, ErrorType: "overloaded_error"}, SignalNone},
-		{"unrelated", ErrorSample{Stderr: "random crash"}, SignalNone},
+		{"auth_401", ErrorSample{ErrorStatus: 401}, SignalAuthFailure, "logged_out", 0},
+		{"auth_type", ErrorSample{ErrorType: "authentication_error"}, SignalAuthFailure, "logged_out", 0},
+		{"rate_429", ErrorSample{ErrorStatus: 429}, SignalRateLimit, "rate_limited", 0},
+		{"rate_type", ErrorSample{ErrorType: "rate_limit_error"}, SignalRateLimit, "rate_limit_error", 0},
+		{"credit", ErrorSample{ErrorType: "credit_balance_too_low"}, SignalRateLimit, "credit_balance_too_low", 0},
+		{"stderr_not_logged", ErrorSample{Stderr: "Error: Not logged in"}, SignalAuthFailure, "logged_out", 0},
+		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit, "rate_limited", 0},
+		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit, "rate_limited", 0},
+		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit, "rate_limited", 0},
+		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"weekly_word_without_specific_phrase_stays_rate_limited", ErrorSample{Content: "usage limit reached · resets weekly on Monday"}, SignalRateLimit, "rate_limited", 0},
+		{"clean_content_rate_limit_exceeded", ErrorSample{Content: "rate limit exceeded", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
+		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
+		{"clean_content_weekly_limit", ErrorSample{Content: "you've hit your weekly limit", ContentIsCleanResult: true}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"clean_content_mentions_rate_limit", ErrorSample{Content: "fixed rate limit handling", ContentIsCleanResult: true}, SignalNone, "", 0},
+		{"clean_content_mentions_weekly_limit_bare", ErrorSample{Content: "implemented workflow fallback for weekly limit handling", ContentIsCleanResult: true}, SignalNone, "", 0},
+		{"overloaded_ignored", ErrorSample{ErrorStatus: 529, ErrorType: "overloaded_error"}, SignalNone, "", 0},
+		{"unrelated", ErrorSample{Stderr: "random crash"}, SignalNone, "", 0},
+		{
+			"structured_429_with_weekly_content_stays_weekly",
+			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
+		{
+			"structured_rate_limit_error_type_with_weekly_stderr_stays_weekly",
+			ErrorSample{ErrorType: "rate_limit_error", Stderr: "you've hit your weekly limit"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := ClassifyClaudeError(tc.in)
+			got, reason, retryAfter := ClassifyClaudeError(tc.in)
 			if got != tc.want {
-				t.Errorf("got %v want %v", got, tc.want)
+				t.Errorf("signal: got %v want %v", got, tc.want)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason: got %q want %q", reason, tc.wantReason)
+			}
+			if retryAfter != tc.wantRetryAfter {
+				t.Errorf("retryAfter: got %v want %v", retryAfter, tc.wantRetryAfter)
 			}
 		})
 	}
@@ -147,22 +169,77 @@ func TestClassifyClaudeError(t *testing.T) {
 
 func TestClassifyCodexError(t *testing.T) {
 	cases := []struct {
-		name string
-		in   ErrorSample
-		want Signal
+		name           string
+		in             ErrorSample
+		want           Signal
+		wantReason     string
+		wantRetryAfter time.Duration
 	}{
-		{"auth_401", ErrorSample{ErrorStatus: 401}, SignalAuthFailure},
-		{"auth_unauthorized", ErrorSample{ErrorType: "unauthorized"}, SignalAuthFailure},
-		{"rate_429", ErrorSample{ErrorStatus: 429}, SignalRateLimit},
-		{"stderr_not_logged", ErrorSample{Stderr: "Not logged in. Please run: codex login"}, SignalAuthFailure},
-		{"stderr_quota", ErrorSample{Stderr: "insufficient_quota"}, SignalRateLimit},
-		{"unrelated", ErrorSample{Stderr: "panic goroutine"}, SignalNone},
+		{"auth_401", ErrorSample{ErrorStatus: 401}, SignalAuthFailure, "logged_out", 0},
+		{"auth_unauthorized", ErrorSample{ErrorType: "unauthorized"}, SignalAuthFailure, "logged_out", 0},
+		{"rate_429", ErrorSample{ErrorStatus: 429}, SignalRateLimit, "rate_limited", 0},
+		{"stderr_not_logged", ErrorSample{Stderr: "Not logged in. Please run: codex login"}, SignalAuthFailure, "logged_out", 0},
+		{"stderr_quota", ErrorSample{Stderr: "insufficient_quota"}, SignalRateLimit, "rate_limited", 0},
+		{"stderr_weekly_limit", ErrorSample{Stderr: "you've hit your weekly limit"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{
+			"connectivity_websocket_refused",
+			ErrorSample{Stderr: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses"},
+			SignalRateLimit, "connectivity", connectivityCooldown,
+		},
+		{
+			"connectivity_mcp_transport",
+			ErrorSample{Stderr: "MCP transport failure: chatgpt.com/backend-api/ps/mcp unreachable"},
+			SignalRateLimit, "connectivity", connectivityCooldown,
+		},
+		{
+			"connectivity_models_refresh",
+			ErrorSample{Stderr: "failed to refresh available models: timeout"},
+			SignalRateLimit, "connectivity", connectivityCooldown,
+		},
+		{
+			"connectivity_via_content",
+			ErrorSample{Content: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses"},
+			SignalRateLimit, "connectivity", connectivityCooldown,
+		},
+		{"bare_websocket_no_host_is_none", ErrorSample{Stderr: "websocket connection closed unexpectedly"}, SignalNone, "", 0},
+		{
+			"bare_host_without_connectivity_phrase_is_none",
+			ErrorSample{Stderr: "unexpected error calling chatgpt.com/backend-api/codex/responses: internal server error"},
+			SignalNone, "", 0,
+		},
+		{"unrelated", ErrorSample{Stderr: "panic goroutine"}, SignalNone, "", 0},
+		{
+			"clean_result_mentioning_backend_host_is_none",
+			ErrorSample{Content: "fixed the retry handling for wss://chatgpt.com/backend-api/codex/responses and failed to refresh available models errors", ContentIsCleanResult: true},
+			SignalNone, "", 0,
+		},
+		{
+			"clean_content_mentions_weekly_limit_bare",
+			ErrorSample{Content: "implemented workflow fallback for weekly limit handling", ContentIsCleanResult: true},
+			SignalNone, "", 0,
+		},
+		{
+			"structured_429_with_weekly_content_stays_weekly",
+			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
+		{
+			"structured_rate_limit_type_with_weekly_stderr_stays_weekly",
+			ErrorSample{ErrorType: "rate_limit", Stderr: "you've hit your weekly limit"},
+			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := ClassifyCodexError(tc.in)
+			got, reason, retryAfter := ClassifyCodexError(tc.in)
 			if got != tc.want {
-				t.Errorf("got %v want %v", got, tc.want)
+				t.Errorf("signal: got %v want %v", got, tc.want)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason: got %q want %q", reason, tc.wantReason)
+			}
+			if retryAfter != tc.wantRetryAfter {
+				t.Errorf("retryAfter: got %v want %v", retryAfter, tc.wantRetryAfter)
 			}
 		})
 	}

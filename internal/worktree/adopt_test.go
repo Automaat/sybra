@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +39,7 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	got, err := h.m.PrepareForTask(tk, nil)
+	got, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	}
 
 	// Remove must not delete an adopted worktree.
-	h.m.Remove(tk.ID)
+	h.m.Remove(context.Background(), tk.ID)
 	if _, err := os.Stat(ext); err != nil {
 		t.Errorf("adopted worktree removed by cleanup: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	got, err := h.m.PrepareForFix(tk, 1)
+	got, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	wtPath, err := h.m.PrepareForFix(tk, prNumber)
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	wtPath, err := h.m.PrepareForFix(tk, 1)
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
 	}
@@ -266,21 +267,21 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	if err := os.RemoveAll(adminDir); err != nil {
 		t.Fatalf("remove admin dir: %v", err)
 	}
-	if project.WorktreeHealthy(wtPath) {
+	if project.WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatalf("expected worktree to be unhealthy after dropping its admin entry")
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected orphan checkout dir to still exist: %v", err)
 	}
 
-	got, err := h.m.PrepareForFix(tk, 1)
+	got, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix (orphan reconcile): %v", err)
 	}
 	if got != wtPath {
 		t.Fatalf("reconciled path = %q, want %q", got, wtPath)
 	}
-	if !project.WorktreeHealthy(got) {
+	if !project.WorktreeHealthy(context.Background(), got) {
 		t.Fatalf("expected reconciled worktree to be healthy")
 	}
 	headBranch, err := exec.Command("git", "-C", got, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
@@ -303,7 +304,7 @@ func TestPrepareForTask_AdoptRejectsMissingDir(t *testing.T) {
 		ProjectID:   h.proj.ID,
 		WorktreeDir: filepath.Join(t.TempDir(), "does-not-exist"),
 	}
-	if _, err := h.m.PrepareForTask(tk, nil); err == nil {
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error for missing adopted worktree dir, got nil")
 	}
 }
@@ -320,7 +321,7 @@ func TestPrepareForTask_AdoptRejectsDefaultBranch(t *testing.T) {
 	}
 
 	tk := task.Task{ID: "cafe1234", Title: "adopt main", ProjectID: h.proj.ID, WorktreeDir: ext}
-	if _, err := h.m.PrepareForTask(tk, nil); err == nil {
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error adopting a worktree on the default branch, got nil")
 	}
 }
@@ -337,7 +338,7 @@ func TestPrepareForTask_AdoptRejectsDetachedHead(t *testing.T) {
 	}
 
 	tk := task.Task{ID: "beef5678", Title: "adopt detached", ProjectID: h.proj.ID, WorktreeDir: ext}
-	if _, err := h.m.PrepareForTask(tk, nil); err == nil {
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error adopting a detached-HEAD worktree, got nil")
 	}
 }

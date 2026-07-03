@@ -19,6 +19,14 @@ type InspectorVerdict struct {
 	// Nudge is the short corrective message the supervisor should deliver to the
 	// agent when Recommendation == "nudge". Empty for other recommendations.
 	Nudge string `json:"nudge,omitempty"`
+	// ReasonKind classifies *why* the agent looks stuck, separately from
+	// Trigger (which only says *how* the watchdog noticed). "rate_limit" lets
+	// applyVerdict route a "stop" recommendation through the same
+	// provider-health cooldown/reschedule path used for structured 429s,
+	// instead of unconditional human-required, regardless of whether the
+	// trigger was "loop" or "stall". Empty (older judges, or a genuine
+	// reward-hacking loop) keeps the existing behavior.
+	ReasonKind string `json:"reason_kind,omitempty"` // "rate_limit" | "generic_stall" | "reward_hacking" | ""
 }
 
 // InspectInput holds the context handed to the inspector about the target agent.
@@ -68,9 +76,14 @@ func claudeModelOverride(model string) map[string]string {
 func validateInspectorVerdict(v *InspectorVerdict) error {
 	switch v.Recommendation {
 	case "stop", "continue", "escalate", "nudge":
-		return nil
 	default:
 		return fmt.Errorf("invalid recommendation: %q", v.Recommendation)
+	}
+	switch v.ReasonKind {
+	case "", "rate_limit", "generic_stall", "reward_hacking":
+		return nil
+	default:
+		return fmt.Errorf("invalid reason_kind: %q", v.ReasonKind)
 	}
 }
 
@@ -94,8 +107,14 @@ Read the log file (last ~200 lines are most relevant). Look for:
 - Thrashing between the same files or commands
 - No forward progress toward the task goal
 
+Also look for signs the agent is stuck because it exhausted a provider rate
+limit rather than because it is genuinely confused or looping pointlessly:
+repeated tool calls returning empty results, very short assistant messages
+(a handful of tokens), high cache_read_input_tokens with no forward
+progress, or explicit rate-limit/quota/overage text in the log.
+
 Output ONLY a single JSON object on the final line, nothing else:
-{"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"|"nudge", "nudge": "corrective steer (only when recommendation is nudge)"}
+{"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"|"nudge", "nudge": "corrective steer (only when recommendation is nudge)", "reason_kind": "rate_limit"|"generic_stall"|"reward_hacking"|""}
 
 Recommendations:
 - "stop": agent is clearly looping/stuck with no recovery, kill it
@@ -103,7 +122,16 @@ Recommendations:
   steer that redirects it (e.g. "stop retrying the failing command; read the
   error and fix the root cause first")
 - "escalate": ambiguous or needs human judgment, flag for human
-- "continue": agent is making progress, leave it alone`,
+- "continue": agent is making progress, leave it alone
+
+reason_kind (only meaningful when recommendation is "stop"):
+- "rate_limit": the agent is stuck because a provider rate limit/quota/
+  overage is exhausted (empty tool results, tiny repeated messages, explicit
+  rate-limit text) — this is a transient infra condition, not a real hang
+- "reward_hacking": the agent is repeating the same failing action or
+  fabricating progress with no rate-limit signal — a genuine stuck loop
+- "generic_stall": stuck for some other reason (or unclear) — leave empty if
+  unsure`,
 		in.AgentID, in.TaskTitle, trigger, in.StallSec, in.TotalSec, in.LogPath)
 }
 

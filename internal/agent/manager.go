@@ -308,13 +308,13 @@ func (m *Manager) registryDir() string {
 }
 
 // saveRegistry snapshots the agent to disk. No-op when survival is off.
-func (m *Manager) saveRegistry(a *Agent) {
+func (m *Manager) saveRegistry(ctx context.Context, a *Agent) {
 	reg := m.registry()
 	if reg == nil || a == nil {
 		return
 	}
 	rec := a.toRecord()
-	rec.ProcStartedAt = processStartString(rec.PID)
+	rec.ProcStartedAt = processStartString(ctx, rec.PID)
 	if err := reg.Save(rec); err != nil {
 		m.logger.Warn(
 			"agent.registry.save",
@@ -389,6 +389,32 @@ func (m *Manager) ProviderRateLimited(name string) bool {
 		return false
 	}
 	return g.RateLimited(name)
+}
+
+// ProviderHealthy reports whether the named provider is currently usable —
+// false for a probe-detected outage (health gate) or a config-disabled
+// provider (providers.<name>.enabled=false, via limitPolicy.ProviderEnabled).
+// The config-disabled check is independent of the health gate so it still
+// holds when providers.health_check.enabled=false and the gate is nil (checks
+// disabled, tests) — otherwise ProviderHealthy would report true for a
+// provider the admin explicitly disabled. Empty name resolves to the default
+// provider. A/B variant selection consults this so a disabled or unhealthy
+// provider is never picked as an eligible weighted variant.
+func (m *Manager) ProviderHealthy(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	lp := m.limitPolicy
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	if enabled, ok := lp.ProviderEnabled[name]; ok && !enabled {
+		return false
+	}
+	if g == nil {
+		return true
+	}
+	return g.IsHealthy(name)
 }
 
 // ProviderCanFailover reports whether the health/limit gates can route work
@@ -512,22 +538,22 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 
 // recordCompletion records duration + result into the metrics pipeline.
 // Call through fireComplete — do not call directly from runner terminal sites.
-func (m *Manager) recordCompletion(a *Agent, ok bool) {
+func (m *Manager) recordCompletion(ctx context.Context, a *Agent, ok bool) {
 	dur := time.Since(a.StartedAt)
 	result := "ok"
 	if !ok {
 		result = "error"
 	}
-	metrics.AgentCompleted(result, dur)
+	metrics.AgentCompleted(ctx, result, dur)
 }
 
 // fireComplete records completion metrics and fires onComplete exactly once
 // per agent. The guard prevents a second runner goroutine (e.g.
 // runner_convo_survive whose tail is still live when runner_convo exits) from
 // calling onComplete a second time and double-advancing the workflow.
-func (m *Manager) fireComplete(a *Agent, ok bool) {
+func (m *Manager) fireComplete(ctx context.Context, a *Agent, ok bool) {
 	a.completedOnce.Do(func() {
-		m.recordCompletion(a, ok)
+		m.recordCompletion(ctx, a, ok)
 		if m.onComplete != nil {
 			m.onComplete(a)
 		}

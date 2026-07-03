@@ -8,6 +8,30 @@ import (
 	"testing"
 )
 
+func TestValidateInspectorVerdict(t *testing.T) {
+	tests := []struct {
+		name    string
+		v       InspectorVerdict
+		wantErr bool
+	}{
+		{"valid stop with rate_limit kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "rate_limit"}, false},
+		{"valid stop with generic_stall kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "generic_stall"}, false},
+		{"valid stop with reward_hacking kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "reward_hacking"}, false},
+		{"valid stop with empty kind (backwards compat)", InspectorVerdict{Recommendation: "stop", ReasonKind: ""}, false},
+		{"valid continue", InspectorVerdict{Recommendation: "continue"}, false},
+		{"invalid recommendation", InspectorVerdict{Recommendation: "bogus"}, true},
+		{"invalid reason_kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "bogus"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateInspectorVerdict(&tc.v)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateInspectorVerdict(%+v) err = %v, wantErr %v", tc.v, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestParseInspectorOutput(t *testing.T) {
 	tests := []struct {
 		name    string

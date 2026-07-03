@@ -1,6 +1,8 @@
 package recovery
 
 import (
+	"context"
+
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -38,7 +40,7 @@ func (r *Recovery) cleanStaleRuns() {
 // Chats are ephemeral by design; a stale chat-task is always noise left
 // over from a crash or kill. Runs before worktree orphan cleanup so the
 // task file is gone by the time the worktree sweeper looks.
-func (r *Recovery) gcOrphanChats() {
+func (r *Recovery) gcOrphanChats(ctx context.Context) {
 	tasks, err := r.Tasks.List()
 	if err != nil {
 		return
@@ -52,7 +54,7 @@ func (r *Recovery) gcOrphanChats() {
 			continue
 		}
 		r.Logger.Info("chat.gc.orphan", "task_id", t.ID, "title", t.Title)
-		r.Worktrees.Remove(t.ID)
+		r.Worktrees.Remove(ctx, t.ID)
 		if err := r.Tasks.Delete(t.ID); err != nil {
 			r.Logger.Error("chat.gc.delete", "task_id", t.ID, "err", err)
 		}

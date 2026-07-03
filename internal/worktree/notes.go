@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -22,8 +23,8 @@ import (
 // accumulated notes. Exclusion is idempotent (dedup'd on the line) and shared
 // across a clone's linked worktrees, so re-asserting it every call is cheap and
 // safe.
-func ensureNotesFile(wtPath string) error {
-	if err := addToInfoExclude(wtPath, notes.FileName); err != nil {
+func ensureNotesFile(ctx context.Context, wtPath string) error {
+	if err := addToInfoExclude(ctx, wtPath, notes.FileName); err != nil {
 		return fmt.Errorf("exclude %s (refusing to seed an unignored scratchpad): %w", notes.FileName, err)
 	}
 	path := filepath.Join(wtPath, notes.FileName)

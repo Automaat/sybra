@@ -48,12 +48,12 @@ func cmdUmbrella(cfg *config.Config, s *task.Manager, projStore *project.Store, 
 // tracked files at that branch, no network fetch. Any resolution failure
 // propagates so grounding fails open rather than silently skipping.
 func cliGroundLister(projStore *project.Store) umbrella.TrackedFilesFunc {
-	return func(_ context.Context, repo string) ([]string, error) {
+	return func(ctx context.Context, repo string) ([]string, error) {
 		p, err := projStore.Get(repo)
 		if err != nil {
 			return nil, fmt.Errorf("ground: project %s: %w", repo, err)
 		}
-		files, err := project.TrackedFilesAtDefaultBranch(p.ClonePath)
+		files, err := project.TrackedFilesAtDefaultBranch(ctx, p.ClonePath)
 		if err != nil {
 			return nil, fmt.Errorf("ground: tracked files for %s: %w", repo, err)
 		}

@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,7 +48,7 @@ func (s *IntegrationService) GetTodoistProjects() ([]todoist.Project, error) {
 		return nil, fmt.Errorf("todoist API token not configured")
 	}
 	c := todoist.NewClient(token)
-	return c.ListProjects()
+	return c.ListProjects(context.Background())
 }
 
 // TodoistEnabled returns whether the todoist handler is active.
@@ -61,7 +62,7 @@ func (s *IntegrationService) FetchRenovatePRs() ([]github.RenovatePR, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	return github.FetchRenovatePRs(s.cfg.Renovate.Author, repos)
+	return github.FetchRenovatePRs(context.Background(), s.cfg.Renovate.Author, repos)
 }
 
 // MergeRenovatePR merges a Renovate PR.
@@ -108,7 +109,9 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 
 	dir := ""
 	if t.ProjectID != "" {
-		d, wtErr := s.worktrees.PrepareForFix(t, number)
+		// context.Background(): FixRenovatePR is a Wails-bound method with no
+		// ctx parameter (see GetTodoistProjects above for the same pattern).
+		d, wtErr := s.worktrees.PrepareForFix(context.Background(), t, number)
 		if wtErr != nil {
 			s.logger.Error("renovate-fix.worktree", "task_id", t.ID, "err", wtErr)
 			return fmt.Errorf("prepare worktree: %w", wtErr)

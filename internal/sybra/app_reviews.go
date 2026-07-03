@@ -189,14 +189,14 @@ func newReviewHandler(
 
 func (r *ReviewHandler) Name() string { return "reviews" }
 
-func (r *ReviewHandler) Poll(_ context.Context) time.Duration {
+func (r *ReviewHandler) Poll(ctx context.Context) time.Duration {
 	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
-		return r.pollKnownTaskPRs()
+		return r.pollKnownTaskPRs(ctx)
 	}
-	return r.pollAndMonitorPRs()
+	return r.pollAndMonitorPRs(ctx)
 }
 
-func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
+func (r *ReviewHandler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	tasks, err := r.tasks.List()
 	if err != nil {
 		return r.pollSlow()
@@ -229,14 +229,14 @@ func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
 			r.prTracker.Cleanup()
 		}
 		r.cancelResolvedPRFixWorkflows(tasks, issues)
-		r.handleMatchedPRIssues(issues)
+		r.handleMatchedPRIssues(ctx, issues)
 	}
 
 	if len(closedMatchers) > 0 {
-		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
+		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(tasks)
+	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
@@ -248,7 +248,7 @@ func (r *ReviewHandler) pollKnownTaskPRs() time.Duration {
 	return r.pollSlow()
 }
 
-func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
+func (r *ReviewHandler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// Load tasks up-front so stale review-task reconciliation runs even
 	// when FetchReviews fails (transient errors, rate limits, etc.).
 	tasks, err := r.tasks.List()
@@ -274,7 +274,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			// until the hourly reset. Thread-driven kinds are skipped (REST lacks
 			// thread data) and resume when GraphQL recovers.
 			if errors.Is(fetchErr, github.ErrBudgetExhausted) {
-				r.handleKnownPRConflictsViaREST(tasks)
+				r.handleKnownPRConflictsViaREST(ctx, tasks)
 				fetchState := github.FetchPRStateViaREST
 				if r.fetchPRStateFn != nil {
 					fetchState = r.fetchPRStateFn
@@ -305,7 +305,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 	// PR (PRNumber never recorded). Re-link by branch and re-activate so the
 	// normal pr-fix/auto-merge path resumes. Runs before matcher assembly so an
 	// adopted task is monitored in this same poll.
-	r.adoptOrphanPRs(tasks, monitoredPRs)
+	r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
 
 	var (
 		matchers       []github.TaskMatcher
@@ -335,17 +335,21 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 			r.prTracker.Cleanup()
 		}
 		r.cancelResolvedPRFixWorkflows(tasks, issues)
-		r.handleMatchedPRIssues(issues)
+		r.handleMatchedPRIssues(ctx, issues)
 	}
 
 	if len(closedMatchers) > 0 {
-		r.advanceClosedTaskPRs(monitoredPRs, closedMatchers)
+		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
 
-	r.scanForReverts(tasks)
+	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
-	r.reconcileReviewPhases(tasks, summary)
+	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
+	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,
+	// shared by many other github package callers; re-plumbing ctx through
+	// that whole package is out of scope for this pass.
+	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
@@ -366,7 +370,7 @@ func (r *ReviewHandler) pollAndMonitorPRs() time.Duration {
 // once GraphQL recovers. ready_to_merge issues reach handleAutoMerge, which
 // gates a SourcedViaREST PR on the strict REST readiness check
 // (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
-func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
+func (r *ReviewHandler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
 	var matchers, closedMatchers []github.TaskMatcher
 	for i := range tasks {
 		m := github.TaskMatcher{
@@ -402,18 +406,18 @@ func (r *ReviewHandler) handleKnownPRConflictsViaREST(tasks []task.Task) {
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
-		r.handleMatchedPRIssues(handled)
+		r.handleMatchedPRIssues(ctx, handled)
 	}
 	if len(closedMatchers) > 0 {
 		fetchState := github.FetchPRStateViaREST
 		if r.fetchPRStateFn != nil {
 			fetchState = r.fetchPRStateFn
 		}
-		r.advanceClosedTaskPRsWithFetch(monitoredPRs, closedMatchers, fetchState)
+		r.advanceClosedTaskPRsWithFetch(ctx, monitoredPRs, closedMatchers, fetchState)
 	}
 }
 
-func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
+func (r *ReviewHandler) handleMatchedPRIssues(ctx context.Context, issues []github.PRIssue) {
 	// Group issues per task (first-seen order) so a single poll that surfaces
 	// several fixable kinds for one PR — e.g. a push that both fails CI and drew
 	// review comments — dispatches ONE coalesced fix agent instead of a separate
@@ -428,7 +432,7 @@ func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
 		byTask[id] = append(byTask[id], issues[i])
 	}
 	for _, id := range order {
-		r.handleTaskPRIssues(id, byTask[id])
+		r.handleTaskPRIssues(ctx, id, byTask[id])
 	}
 }
 
@@ -436,7 +440,7 @@ func (r *ReviewHandler) handleMatchedPRIssues(issues []github.PRIssue) {
 // retry/cooldown gates for one task, then dispatches at most one action:
 // a coalesced fix agent for every handleable fixable issue, an escalation when
 // the only remaining fixable issue has exhausted its budget, or an auto-merge.
-func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssue) {
+func (r *ReviewHandler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
 	if r.agents.HasRunningAgentForTask(taskID) {
 		return
 	}
@@ -488,7 +492,7 @@ func (r *ReviewHandler) handleTaskPRIssues(taskID string, issues []github.PRIssu
 	// flips the task to human-required and would strand a still-fixable sibling.
 	switch {
 	case len(toHandle) > 0:
-		r.dispatchFixIssues(taskID, toHandle)
+		r.dispatchFixIssues(ctx, taskID, toHandle)
 	case exhausted != nil:
 		r.escalateExhaustedFix(*exhausted)
 	case merge != nil:
@@ -605,15 +609,15 @@ func (r *ReviewHandler) evictReadyPRCache(repo string, number int) {
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
 // stamping the terminal outcome and emitting the audit + task.landed events the
 // evaluation scorecard reads. Skips tasks with a still-running agent.
-func (r *ReviewHandler) advanceClosedTaskPRs(monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
+func (r *ReviewHandler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
 		fetchFn = r.fetchPRStateFn
 	}
-	r.advanceClosedTaskPRsWithFetch(monitoredPRs, closedMatchers, fetchFn)
+	r.advanceClosedTaskPRsWithFetch(ctx, monitoredPRs, closedMatchers, fetchFn)
 }
 
-func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
+func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher, fetchFn func(repo string, number int) (github.PRState, error)) {
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
@@ -637,7 +641,7 @@ func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(monitoredPRs []github.Pull
 		r.logAudit(eventType, c.TaskID, "", map[string]any{"pr": c.PRNumber, "state": c.State})
 		// Enrich (bounded GitHub I/O); refine the outcome if a human edited the PR
 		// and persist the merge commit for later revert detection.
-		outcome, landData := r.computeLanding(c.TaskID, c.PRNumber, c.State, base)
+		outcome, landData := r.computeLanding(ctx, c.TaskID, c.PRNumber, c.State, base)
 		upd := task.Update{}
 		refine := false
 		if outcome != base {
@@ -679,7 +683,7 @@ const landingEnrichTimeout = 20 * time.Second
 // PR, starting from the base outcome already recorded. Local timing (created/work
 // → land) and the agent's last pushed SHA are always added; for a merge it adds
 // PR size and human-edit signals via GitHub, bounded so the poll can't hang.
-func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state, base string) (outcome string, data map[string]any) {
+func (r *ReviewHandler) computeLanding(ctx context.Context, taskID string, prNumber int, state, base string) (outcome string, data map[string]any) {
 	outcome = base
 	data = map[string]any{"pr": prNumber, "state": state}
 	t, err := r.tasks.Get(taskID)
@@ -698,7 +702,7 @@ func (r *ReviewHandler) computeLanding(taskID string, prNumber int, state, base 
 		data["agent_head_sha"] = agentSHA
 	}
 	if t.ProjectID != "" && prNumber > 0 {
-		enr := r.enrichLanding(t.ProjectID, prNumber, agentSHA, base)
+		enr := r.enrichLanding(ctx, t.ProjectID, prNumber, agentSHA, base)
 		outcome = enr.outcome
 		maps.Copy(data, enr.data)
 	}
@@ -718,12 +722,12 @@ type landingEnrich struct {
 // when the compare is strictly ahead of the agent's SHA (status=="ahead",
 // commits > 0) — so a rebase/force-push (diverged) or unpushed-local divergence
 // doesn't produce a false positive.
-func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA, base string) landingEnrich {
-	ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
+func (r *ReviewHandler) enrichLanding(ctx context.Context, repo string, prNumber int, agentSHA, base string) landingEnrich {
+	enrichCtx, cancel := context.WithTimeout(ctx, landingEnrichTimeout)
 	defer cancel()
 
 	enr := landingEnrich{outcome: base, data: map[string]any{}}
-	if s, err := github.FetchPRStatsContext(ctx, repo, prNumber); err == nil {
+	if s, err := github.FetchPRStatsContext(enrichCtx, repo, prNumber); err == nil {
 		enr.data["additions"] = s.Additions
 		enr.data["deletions"] = s.Deletions
 		enr.data["changed_files"] = s.ChangedFiles
@@ -732,17 +736,17 @@ func (r *ReviewHandler) enrichLanding(repo string, prNumber int, agentSHA, base 
 		return enr // closed (unmerged): size only, no edit detection
 	}
 	// Record the merge commit so the revert scanner can later detect a revert.
-	if mc, err := github.FetchPRMergeCommitContext(ctx, repo, prNumber); err == nil && mc != "" {
+	if mc, err := github.FetchPRMergeCommitContext(enrichCtx, repo, prNumber); err == nil && mc != "" {
 		enr.data["merge_commit"] = mc
 	}
-	head, err := github.FetchPRHeadSHAContext(ctx, repo, prNumber)
+	head, err := github.FetchPRHeadSHAContext(enrichCtx, repo, prNumber)
 	if err != nil {
 		return enr // couldn't read the merged head; keep base outcome + size
 	}
 	if landingOutcome("MERGED", agentSHA, head) != "merged_with_edits" {
 		return enr
 	}
-	if cmp, err := github.FetchPRCompare(ctx, repo, agentSHA, head); err == nil && cmp.Status == "ahead" && cmp.Commits > 0 {
+	if cmp, err := github.FetchPRCompare(enrichCtx, repo, agentSHA, head); err == nil && cmp.Status == "ahead" && cmp.Commits > 0 {
 		enr.outcome = "merged_with_edits"
 		enr.data["human_edit_lines"] = cmp.Additions + cmp.Deletions
 		enr.data["human_edit_commits"] = cmp.Commits
@@ -868,7 +872,7 @@ const (
 // pr.reverted (the change-failure signal). Rate-limited and bounded: one gh call
 // per repo with eligible tasks, every revertScanInterval, with each call killed
 // after landingEnrichTimeout. Reuses the already-listed tasks (no extra read).
-func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
+func (r *ReviewHandler) scanForReverts(ctx context.Context, tasks []task.Task) {
 	now := time.Now()
 	if !r.lastRevertScan.IsZero() && now.Sub(r.lastRevertScan) < revertScanInterval {
 		return
@@ -899,8 +903,8 @@ func (r *ReviewHandler) scanForReverts(tasks []task.Task) {
 
 	scannedAny := false
 	for repo, cands := range byRepo {
-		ctx, cancel := context.WithTimeout(context.Background(), landingEnrichTimeout)
-		msgs, err := github.FetchRecentCommitMessages(ctx, repo, revertScanCommits)
+		scanCtx, cancel := context.WithTimeout(ctx, landingEnrichTimeout)
+		msgs, err := github.FetchRecentCommitMessages(scanCtx, repo, revertScanCommits)
 		cancel()
 		if err != nil {
 			r.logger.Warn("pr-monitor.revert-scan", "repo", repo, "err", err)
@@ -1204,7 +1208,7 @@ func orphanPRAdoptionEligible(t *task.Task) bool {
 //
 // When no open PR is found, falls through to adoptOrphanMergedPR to handle the
 // race where the PR was opened and merged between two poll cycles.
-func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullRequest) {
+func (r *ReviewHandler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []github.PullRequest) {
 	for i := range tasks {
 		t := &tasks[i]
 		if !orphanPRAdoptionEligible(t) {
@@ -1245,7 +1249,7 @@ func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullReque
 		}
 		// No open PR found. Check for a recently merged PR: handles the race
 		// where the PR was opened and merged between poll cycles.
-		r.adoptOrphanMergedPR(t)
+		r.adoptOrphanMergedPR(ctx, t)
 	}
 }
 
@@ -1253,7 +1257,7 @@ func (r *ReviewHandler) adoptOrphanPRs(tasks []task.Task, prs []github.PullReque
 // branch and, if exactly one is found, links it and advances the task to done.
 // Handles the race where a manually-opened PR is merged before the poll loop
 // finds it as an open PR (so adoptOrphanPRs never had a chance to link it).
-func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
+func (r *ReviewHandler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	fn := r.findMergedPRFn
 	if fn == nil {
 		fn = findMergedPRByBranch
@@ -1286,7 +1290,7 @@ func (r *ReviewHandler) adoptOrphanMergedPR(t *task.Task) {
 	r.logAudit(audit.EventPRMerged, taskID, "", map[string]any{"pr": prNum, "state": state})
 	// Enrich with PR size, timing, human-edit data, and merge_commit for revert
 	// detection — same side effects as the normal advanceClosedTaskPRs path.
-	outcome, landData := r.computeLanding(taskID, prNum, state, base)
+	outcome, landData := r.computeLanding(ctx, taskID, prNum, state, base)
 	upd := task.Update{}
 	refine := false
 	if outcome != base {

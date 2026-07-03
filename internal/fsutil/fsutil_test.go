@@ -47,6 +47,46 @@ func TestAtomicWrite_Overwrite(t *testing.T) {
 	}
 }
 
+func TestAtomicWrite_PreservesExistingMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := AtomicWrite(path, []byte("new")); err != nil {
+		t.Fatalf("AtomicWrite: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("mode after overwrite = %o, want %o", got, 0o644)
+	}
+}
+
+func TestAtomicWrite_NewFileKeepsRestrictiveTempMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+
+	if err := AtomicWrite(path, []byte("data")); err != nil {
+		t.Fatalf("AtomicWrite: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode for new file = %o, want %o", got, 0o600)
+	}
+}
+
 func TestAtomicWrite_BadDir(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent", "file.txt")

@@ -10,6 +10,13 @@ import (
 // partial reads from concurrent goroutines. The temp file is removed on
 // every error path — including a failed rename into a read-only target
 // directory — so repeated write failures don't fill the disk with orphans.
+//
+// The rename preserves whatever mode the temp file has, which os.CreateTemp
+// sets to 0600 regardless of the target's existing permissions. To avoid
+// silently changing an existing file's mode on every write, AtomicWrite chmods
+// the temp file to match path's current mode before renaming. Newly created
+// files keep CreateTemp's restrictive default, which avoids overriding the
+// caller's umask with a broader mode.
 func AtomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
@@ -26,6 +33,14 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+
+	if info, err := os.Stat(path); err == nil {
+		if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err

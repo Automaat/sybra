@@ -102,7 +102,7 @@ func (d *agentDispatcher) Dispatchable(a Anomaly) (ok bool, skipReason string) {
 // For board-wide anomalies (no taskId) the agent runs in repoDir without a
 // task association — the existing manager.Run rejects an empty Dir, so the
 // caller must supply a non-empty repoDir.
-func (d *agentDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error) {
+func (d *agentDispatcher) Dispatch(ctx context.Context, a Anomaly) (string, error) {
 	dir, taskID, name := d.resolveTarget(a)
 	if dir == "" {
 		return "", fmt.Errorf("dispatch %s: working directory unresolved", a.Kind)
@@ -111,7 +111,7 @@ func (d *agentDispatcher) Dispatch(_ context.Context, a Anomaly) (string, error)
 		TaskID:                 taskID,
 		Name:                   name,
 		Mode:                   "headless",
-		Prompt:                 DispatchPrompt(a, d.issueRepo, project.PushRemote(dir)),
+		Prompt:                 DispatchPrompt(a, d.issueRepo, project.PushRemote(ctx, dir)),
 		AllowedTools:           []string{"Bash", "Read"},
 		Dir:                    dir,
 		Model:                  d.model,

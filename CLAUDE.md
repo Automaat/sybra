@@ -338,6 +338,12 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
   `SYBRA_HOME` + fake-provider CLI harness that exercises the real HTTP server,
   workflows, agent runners, stats, audit, and Evaluation report without
   touching local user data or spending model credits.
+- Never guard a git-dependent test with a per-test `t.Skip("git not
+  available")` — a broken environment then reports green while silently
+  dropping coverage. `internal/project`, `internal/worktree`, and
+  `internal/sybra` each enforce this via a package-level `TestMain` that
+  `os.Exit(1)`s immediately if `git` is missing from `PATH`; add new
+  git-dependent test packages to that pattern instead of a local skip.
 
 ## Quality Gates
 

@@ -53,8 +53,18 @@ func TestExtractTestVerdict(t *testing.T) {
 		{"json_array_not_object", `[{"verdict":"PASS"}]`, ""},
 		{"fenced_json_no_marker", "```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
 		{"prose_then_fenced_json", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
+		{"non_json_fence_with_verdict_substring_ignored", "Observed log output:\n```text\npayload={\"verdict\":\"FAIL\"}\n```\nNo final report emitted.", ""},
 		// app_started emitted as a quoted string must not break the verdict parse.
 		{"json_string_app_started", `{"verdict":"PASS","app_started":"true"}`, "PASS"},
+		// Malformed object-shaped JSON (e.g. an unescaped quote inside
+		// failures_markdown breaks the whole unmarshal) must still yield the
+		// verdict via regex fallback rather than silently becoming "" (→FAIL,
+		// burning retry budget on an already-diagnosed real bug).
+		{"json_malformed_but_verdict_recoverable", `{"verdict":"FAIL","failures_markdown":"saw a "quoted" value that broke parsing"}`, "FAIL"},
+		{"json_malformed_pass_recoverable", `{"verdict":"PASS","summary":"all good but "oops" unescaped"}`, "PASS"},
+		// A closing fence glued directly to the last content byte (no newline
+		// before the ```) must still be recognized as the end of the block.
+		{"fenced_json_closing_fence_no_newline", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}```", "PASS"},
 	}
 
 	for _, tc := range cases {
@@ -223,6 +233,95 @@ func TestClassifyTestOutcome_AcceptsVerbatimOutputEvidence(t *testing.T) {
 	}
 	if fingerprint == "" {
 		t.Fatal("fingerprint is empty")
+	}
+}
+
+func TestClassifyTestOutcome_RecoversFailuresMarkdownFromMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	// Reproduces task 086fb283: an unescaped quote inside failures_markdown
+	// (a "negative" probability, quoted in the agent's own prose) breaks
+	// json.Unmarshal for the whole payload. Regex-recovering only the verdict
+	// field (and dropping failures_markdown/outcome) used to make
+	// currentTestFailureReport return "", which routed a confirmed,
+	// well-evidenced product_bug through the missing_evidence path instead —
+	// the same practical escalation the verdict-only fallback was meant to
+	// avoid. Recovering failures_markdown/outcome too must reach the same
+	// classification a well-formed equivalent payload would.
+	report := "## Test Failures\n\n" +
+		"**Command run:** `go run repro.go`\n\n" +
+		"**Verbatim output:**\n\n```text\nWilson CI lower bound was -0.02, a \"negative\" probability\n```\n\n" +
+		"**Expected:** the task says the bound must be >= 0.\n\n" +
+		"**Code evidence:** internal/stats/wilson.go:42 does not clamp the lower bound.\n"
+
+	wellFormed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+	wantOutcome, wantFingerprint := classifyTestOutcome("completed", wellFormed, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if wantOutcome != testOutcomeProductBug {
+		t.Fatalf("sanity: well-formed payload outcome = %q, want %q", wantOutcome, testOutcomeProductBug)
+	}
+
+	// Same content, but with the quotes around "negative" left unescaped
+	// (matching how the real agent output broke) — json.Unmarshal on this
+	// fails, forcing the regex-fallback path.
+	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n` +
+		`**Command run:** ` + "`go run repro.go`" + `\n\n**Verbatim output:**\n\n` + "```text\nWilson CI lower bound was -0.02, a \"negative\" probability\n```" + `\n\n` +
+		`**Expected:** the task says the bound must be >= 0.\n\n` +
+		`**Code evidence:** internal/stats/wilson.go:42 does not clamp the lower bound.\n"}`
+	var sanity structuredTestOutput
+	if err := json.Unmarshal([]byte(malformed), &sanity); err == nil {
+		t.Fatal("sanity: malformed payload must fail json.Unmarshal directly")
+	}
+
+	report2 := currentTestFailureReport(malformed, "", nil, testVerdictSourceStep)
+	if report2 == "" {
+		t.Fatal("currentTestFailureReport is empty for malformed JSON with a recoverable failures_markdown field")
+	}
+
+	gotOutcome, gotFingerprint := classifyTestOutcome("completed", malformed, "", &Execution{Variables: map[string]string{}}, testVerdictSourceStep)
+	if gotOutcome != wantOutcome {
+		t.Fatalf("malformed-JSON outcome = %q, want parity with well-formed payload outcome %q", gotOutcome, wantOutcome)
+	}
+	if gotFingerprint == "" || gotFingerprint != wantFingerprint {
+		t.Fatalf("malformed-JSON fingerprint = %q, want parity with well-formed payload fingerprint %q (report content must match after unescaping)", gotFingerprint, wantFingerprint)
+	}
+}
+
+func TestExtractFailuresMarkdownFieldRegex_StopsAtTrailingSchemaFields(t *testing.T) {
+	t.Parallel()
+
+	// The test-runner's documented output contract writes failures_markdown
+	// followed by further fields (surface_kind, app_started, manual_probes,
+	// unable_to_run_reason, ...), so it is essentially never the last key in
+	// realistic output. A fallback that assumes otherwise absorbs those
+	// trailing fields' raw JSON into the recovered report.
+	report := `## Test Failures` + "\n\n" +
+		`- Command: go run repro.go` + "\n" +
+		`- Output: got a "negative" bound` + "\n" +
+		`- Expected: bound >= 0 per internal/stats/wilson.go:42`
+
+	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"` +
+		`## Test Failures\n\n- Command: go run repro.go\n- Output: got a "negative" bound\n- Expected: bound >= 0 per internal/stats/wilson.go:42` +
+		`","surface_kind":"cli","app_started":"true","unable_to_run_reason":""}`
+
+	got := extractFailuresMarkdownFieldRegex(malformed)
+	if got != report {
+		t.Fatalf("extractFailuresMarkdownFieldRegex = %q, want %q (trailing fields leaked into the report)", got, report)
+	}
+
+	// A manual_probes array (containing its own braces) after
+	// failures_markdown must not leak into the recovered report either.
+	malformedWithArray := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"` +
+		`## Test Failures\n\n- Command: go run repro.go\n- Output: got a "negative" bound\n- Expected: bound >= 0` +
+		`","manual_probes":[{"command":"go run repro.go","actual":"-0.02"}],"surface_kind":"cli"}`
+
+	wantWithArray := `## Test Failures` + "\n\n" +
+		`- Command: go run repro.go` + "\n" +
+		`- Output: got a "negative" bound` + "\n" +
+		`- Expected: bound >= 0`
+
+	gotWithArray := extractFailuresMarkdownFieldRegex(malformedWithArray)
+	if gotWithArray != wantWithArray {
+		t.Fatalf("extractFailuresMarkdownFieldRegex (manual_probes) = %q, want %q", gotWithArray, wantWithArray)
 	}
 }
 

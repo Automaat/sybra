@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // resolveExecution derives the effective mode, directory, permission mode, and
@@ -201,6 +202,10 @@ func (o *AgentOrchestrator) sandboxEnv(taskID, dir string, t task.Task) []string
 	}
 	inst := o.sandboxes.Get(taskID)
 	if inst == nil {
+		// context.Background(): sandboxEnv is called from agentAdapter.StartAgent,
+		// which implements workflow.AgentDispatcher — a fixed interface signature
+		// with no ctx parameter (see the comment on the PrepareForTask call in
+		// app_workflow.go).
 		newInst, startErr := o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
 		if startErr != nil {
 			o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
@@ -295,7 +300,10 @@ func (o *AgentOrchestrator) StartAgentWithAssignment(taskID, mode, prompt string
 			}
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
+		// context.Background(): StartAgentWithAssignment is reached from both
+		// App.StartAgent (Wails-bound, no ctx) and workflow.AgentDispatcher.StartAgent
+		// (fixed interface signature, no ctx) — no real context to thread here.
+		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
 			if _, recovered := markRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
@@ -384,7 +392,10 @@ func (o *AgentOrchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) 
 		}
 		return fmt.Errorf("stat clean retry worktree: %w", statErr)
 	}
-	if err := project.ResetWorktreeForRetry(resetDir, ref); err != nil {
+	// context.Background(): reached from StartAgentWithAssignment, which is
+	// itself reached from Wails-bound / workflow.AgentDispatcher dead ends
+	// (see comments elsewhere in this file).
+	if err := project.ResetWorktreeForRetry(context.Background(), resetDir, ref); err != nil {
 		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
 		return err
 	}
@@ -408,7 +419,7 @@ func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
 		return true
 	}
-	reason := "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
+	reason := worktreeerr.RebaseBlockedReason
 	if _, uerr := tasks.Update(taskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
@@ -496,7 +507,9 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 	}
 
 	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
-	dir, err := o.worktrees.PrepareForChat(t, onPhase)
+	// context.Background(): StartChat is reached from App.StartChat, a
+	// Wails-bound method with no ctx parameter.
+	dir, err := o.worktrees.PrepareForChat(context.Background(), t, onPhase)
 	if err != nil {
 		o.failWorktreeOp(opID, err)
 		if delErr := o.tasks.Delete(t.ID); delErr != nil {
@@ -518,7 +531,8 @@ func (o *AgentOrchestrator) StartChat(projectID, providerName, prompt string) (*
 		RequirePermissions: requirePerm,
 	})
 	if err != nil {
-		o.worktrees.Remove(t.ID)
+		// context.Background(): StartChat is a Wails-bound method with no ctx.
+		o.worktrees.Remove(context.Background(), t.ID)
 		if delErr := o.tasks.Delete(t.ID); delErr != nil {
 			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
 		}
@@ -587,7 +601,10 @@ func (o *AgentOrchestrator) StartPRFixAgent(taskID string) error {
 			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree", taskID)
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-		d, wtErr := o.worktrees.PrepareForTask(t, onPhase)
+		// context.Background(): StartPRFixAgent implements the recovery package's
+		// Orchestrator interface, a fixed func(taskID string) error signature
+		// invoked from the background stale-agent recovery loop with no ctx.
+		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
 			return fmt.Errorf("worktree required: %w", wtErr)

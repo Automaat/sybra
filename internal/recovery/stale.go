@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ const restartStaleMinAge = 5 * time.Minute
 // tasks drive the workflow engine forward via recoverStaleInteractive.
 // Safe to call concurrently with the startup pass — each re-dispatch is
 // guarded by HasRunningAgentForTask + the recent-run debounce.
-func (r *Recovery) RestartStaleInProgress() {
+func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 	tasks, err := r.Tasks.List()
 	if err != nil {
 		return
@@ -116,7 +117,7 @@ func (r *Recovery) RestartStaleInProgress() {
 			currentStatus := t.Status
 			r.WG.Go(func() {
 				err := r.Orchestrator.StartPRFixAgent(taskID)
-				metrics.OrchestratorStaleRestart(err == nil)
+				metrics.OrchestratorStaleRestart(ctx, err == nil)
 				r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 				if err != nil {
 					r.surfaceStartFailure(taskID, currentStatus, err)
@@ -138,7 +139,7 @@ func (r *Recovery) RestartStaleInProgress() {
 		currentStatus := t.Status
 		r.WG.Go(func() {
 			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
-			metrics.OrchestratorStaleRestart(err == nil)
+			metrics.OrchestratorStaleRestart(ctx, err == nil)
 			r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
 			if err != nil {
 				r.surfaceStartFailure(taskID, currentStatus, err)

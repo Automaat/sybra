@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 
@@ -75,7 +76,7 @@ func (c *renovateCoordinator) prsForMonitor() []github.PullRequest {
 	if len(repos) == 0 {
 		return nil
 	}
-	rps, err := github.FetchRenovatePRs(c.cfg.Renovate.Author, repos)
+	rps, err := github.FetchRenovatePRs(context.Background(), c.cfg.Renovate.Author, repos)
 	if err != nil {
 		c.recordMonitorFetchError(err)
 		return nil

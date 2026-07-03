@@ -81,6 +81,15 @@ func (m *Manager) Store() *Store { return m.store }
 // Without this, status flips written by out-of-process tools never
 // reach engine.HandleStatusChange and interactive plan agents leave
 // their workflow stranded on the plan step.
+//
+// Takes the same per-task lock as UpdateFn/AddRunWithStatus around the
+// read+dedupe-check+record sequence. Without it, an in-process status write
+// (e.g. UpdateTaskStatus from a workflow step) races the file watcher that
+// its own write wakes: the watcher can read the new status and record+fire
+// the hook itself before the writer's own recordFiredStatus call runs,
+// double-firing the SAME transition from two goroutines — one of which then
+// races a legitimate cascade dispatch (e.g. OnWorkflowComplete) into
+// double-dispatching the same successor workflow.
 func (m *Manager) OnExternalUpdate(path string) {
 	base := filepath.Base(path)
 	if IsSidecarFile(base) {
@@ -101,19 +110,25 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 
+	mu := m.lockFor(id)
+	mu.Lock()
 	// Only Status is needed here; use the parse-only read to avoid the
 	// per-call sidecar dir scan on every external file change.
 	t, err := m.store.read(id)
 	if err != nil {
+		mu.Unlock()
 		return
 	}
 	newStatus := string(t.Status)
 
 	prev, ok := m.lastFiredStatus(id)
 	if ok && prev == newStatus {
+		mu.Unlock()
 		return
 	}
 	m.recordFiredStatus(id, newStatus)
+	mu.Unlock()
+
 	m.onStatusHook(id, prev, newStatus)
 }
 
@@ -247,10 +262,17 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 		newStat = string(t.Status)
 		fireHook = newStat != prevStatus
 	}
+	// Record the dedupe entry before releasing the per-task lock, still
+	// covering the same critical section as the write above. Otherwise the
+	// file watcher this write wakes (OnExternalUpdate, serialized on the same
+	// lock) can read the new status and win the dedupe race before this
+	// goroutine gets to record it, double-firing the hook.
+	if fireHook {
+		m.recordFiredStatus(id, newStat)
+	}
 	mu.Unlock()
 
 	if fireHook {
-		m.recordFiredStatus(id, newStat)
 		m.onStatusHook(id, prevStatus, newStat)
 	}
 	metrics.TaskUpdated()
@@ -337,9 +359,6 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		return err
 	}
 	t, err := m.store.Get(taskID)
-	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	}
 	var (
 		fireHook  bool
 		newStatus string
@@ -348,9 +367,21 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		newStatus = string(t.Status)
 		fireHook = newStatus != prevStatus
 	}
-	mu.Unlock()
+	// Record before unlocking — see UpdateFn for why this must stay inside
+	// the per-task critical section that also covers the write.
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
+	}
+	mu.Unlock()
+	// Emit after releasing the lock, same as UpdateFn: OnExternalUpdate takes
+	// the same per-task lock, and this Manager is its own emitter's target
+	// (app.go routes task:updated back into OnExternalUpdate), so firing
+	// while still holding the lock self-deadlocks the goroutine on its own
+	// non-reentrant mutex.
+	if err == nil {
+		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	}
+	if fireHook {
 		m.onStatusHook(taskID, prevStatus, newStatus)
 	}
 	return nil
@@ -360,11 +391,13 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	mu := m.lockFor(taskID)
 	mu.Lock()
-	defer mu.Unlock()
 	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
+		mu.Unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
+	mu.Unlock()
+	// Emit after releasing the lock — see AddRunWithStatus for why.
 	if err == nil {
 		m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	}

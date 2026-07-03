@@ -94,7 +94,10 @@ func (r *ReviewHandler) startFixReviewAgent(t task.Task) error {
 		return postureErr
 	}
 
-	dir, err := r.worktrees.PrepareForFix(t, t.PRNumber)
+	// context.Background(): startFixReviewAgent is reached both from a Wails-bound
+	// ReviewService method (no ctx) and from an async triage goroutine spawned
+	// with a fixed func(task.Task) signature — no ctx to thread from either path.
+	dir, err := r.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
 	if err != nil {
 		return fmt.Errorf("prepare worktree: %w", err)
 	}
@@ -166,7 +169,9 @@ func (r *ReviewHandler) startReviewAgent(t task.Task, force bool) error {
 
 	dir := config.HomeDir()
 	if current.ProjectID != "" {
-		d, err := r.worktrees.PrepareForReview(current)
+		// context.Background(): same dead end as startFixReviewAgent above —
+		// reached from a Wails-bound service method with no ctx.
+		d, err := r.worktrees.PrepareForReview(context.Background(), current)
 		if err != nil {
 			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
 		} else {

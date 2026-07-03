@@ -5,6 +5,7 @@
 package recovery
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -60,20 +61,25 @@ type Recovery struct {
 // each step see the output of the previous one: chats first so their
 // worktrees show up as orphans to the subsequent sweep; stale run state
 // next so restart-stale sees a clean slate.
-func (r *Recovery) RunStartupCleanup() {
+func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// Reattach to surviving agent subprocesses FIRST so the sweeps below —
 	// which all key off HasRunningAgentForTask — see them as live and do
 	// not remove their worktrees, gc their chat tasks, mark their runs
 	// stale, or restart them.
-	if reattached := r.Agents.ReattachAll(); len(reattached) > 0 {
+	// ReattachAll derives its per-agent contexts from agent.Manager's own
+	// m.ctx field (bound once at Manager construction from this same App
+	// root context), not from a threaded parameter — see the Engine.SetContext
+	// / e.ctx pattern for why re-plumbing that across ReattachAll's whole
+	// reattach fan-out is out of scope here.
+	if reattached := r.Agents.ReattachAll(); len(reattached) > 0 { //nolint:contextcheck // agent.Manager uses its own m.ctx field, see comment above
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
-	r.Worktrees.RepairAll()
-	r.gcOrphanChats()
-	r.Worktrees.CleanupOrphaned()
+	r.Worktrees.RepairAll(ctx)
+	r.gcOrphanChats(ctx)
+	r.Worktrees.CleanupOrphaned(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
-	r.RestartStaleInProgress()
+	r.RestartStaleInProgress(ctx)
 }
 
 // pruneAgentLogs removes stale per-agent NDJSON files. Safe to call with
