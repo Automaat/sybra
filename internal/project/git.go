@@ -418,10 +418,16 @@ func ResetWorktreeForRetry(ctx context.Context, wtPath, ref string) error {
 // clearRebaseState runs `git rebase --abort` and, if it fails (e.g. a
 // corrupt or stale rebase-state dir git itself can't clean up), forcibly
 // removes the rebase-state directory so it can't block the next git
-// operation in this worktree.
+// operation in this worktree. The abort runs on a context derived from ctx
+// via context.WithoutCancel, bounded by its own timeout: if the caller's ctx
+// is already canceled or its deadline expired, running the abort on that
+// same ctx would skip cleanup and leave stale rebase state behind (mirrors
+// RebaseOnto's cleanup contract, see rebaseAbortTimeout comment).
 func clearRebaseState(ctx context.Context, wtPath string) {
 	dir := rebaseStateDir(ctx, wtPath)
-	cmd := exec.CommandContext(ctx, "git", "rebase", "--abort")
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(abortCtx, "git", "rebase", "--abort")
 	cmd.Dir = wtPath
 	if err := cmd.Run(); err != nil {
 		_ = os.RemoveAll(dir)

@@ -430,6 +430,18 @@ func TestSanitizeWorktree_ClearsStaleRebaseStateWhenAbortFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Confirm the synthetic state actually defeats `git rebase --abort` on
+	// its own, otherwise this test would pass even without the os.RemoveAll
+	// fallback in clearRebaseState.
+	abortCmd := exec.Command("git", "rebase", "--abort")
+	abortCmd.Dir = wtPath
+	if err := abortCmd.Run(); err == nil {
+		t.Fatal("expected `git rebase --abort` to fail against the simulated stale state")
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
 		t.Fatalf("SanitizeWorktree: %v", err)
 	}
