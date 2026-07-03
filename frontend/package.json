@@ -44,7 +44,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@lucide/svelte": "^1.8.0",
-    "@wailsio/runtime": "3.0.0-alpha.94",
+    "@wailsio/runtime": "3.0.0-alpha.95",
     "@xyflow/svelte": "^1.5.2",
     "dompurify": "^3.4.3",
     "highlight.js": "^11.11.1",
@@ -54,6 +54,6 @@
     "snarkdown": "^2.0.0"
   },
   "overrides": {
-    "esrap": "2.2.11"
+    "esrap": "2.2.13"
   }
 }
