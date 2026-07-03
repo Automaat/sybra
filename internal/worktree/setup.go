@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -140,12 +141,23 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 func (m *Manager) runSetupNonGating(ctx context.Context, taskID, wtPath string, commands []string) error {
 	setupErr := m.runSetup(ctx, taskID, wtPath, commands)
 	if setupErr == nil {
+		if err := clearSetupFailureMarker(wtPath); err != nil {
+			m.logger.Warn("worktree.setup-fail-marker-clear", "task_id", taskID, "path", wtPath, "err", err)
+		}
 		return nil
 	}
 	m.logger.Warn("worktree.setup-fail-nonfatal",
 		"task_id", taskID, "path", wtPath, "err", setupErr)
-	if noteErr := appendSetupFailureNote(ctx, wtPath, setupErr); noteErr != nil {
+	noteErr := appendSetupFailureNote(ctx, wtPath, setupErr)
+	if noteErr != nil {
 		m.logger.Warn("worktree.setup-fail-note", "task_id", taskID, "path", wtPath, "err", noteErr)
+	}
+	markerErr := writeSetupFailureMarker(ctx, wtPath, setupErr)
+	if markerErr != nil {
+		m.logger.Warn("worktree.setup-fail-marker", "task_id", taskID, "path", wtPath, "err", markerErr)
+	}
+	if persistErr := errors.Join(noteErr, markerErr); persistErr != nil {
+		return fmt.Errorf("persist setup failure context: %w", persistErr)
 	}
 	return nil
 }

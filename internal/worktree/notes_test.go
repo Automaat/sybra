@@ -142,3 +142,35 @@ func TestAppendSetupFailureNote_PreservesExisting(t *testing.T) {
 		t.Errorf("scratchpad missing setup failure note: %q", got)
 	}
 }
+
+func TestSetupFailureMarker_WriteReadClear(t *testing.T) {
+	wt := t.TempDir()
+	mustRunInDir(t, wt, "git", "init", "-b", "main")
+
+	setupErr := errors.New("exit status 1")
+	if err := writeSetupFailureMarker(context.Background(), wt, setupErr); err != nil {
+		t.Fatalf("writeSetupFailureMarker: %v", err)
+	}
+
+	got, ok, err := ReadSetupFailureMarker(wt)
+	if err != nil {
+		t.Fatalf("ReadSetupFailureMarker: %v", err)
+	}
+	if !ok {
+		t.Fatal("ReadSetupFailureMarker reported no marker")
+	}
+	if got != setupErr.Error() {
+		t.Fatalf("ReadSetupFailureMarker = %q, want %q", got, setupErr.Error())
+	}
+
+	if err := clearSetupFailureMarker(wt); err != nil {
+		t.Fatalf("clearSetupFailureMarker: %v", err)
+	}
+	got, ok, err = ReadSetupFailureMarker(wt)
+	if err != nil {
+		t.Fatalf("ReadSetupFailureMarker after clear: %v", err)
+	}
+	if ok || got != "" {
+		t.Fatalf("ReadSetupFailureMarker after clear = (%q, %v), want empty,false", got, ok)
+	}
+}

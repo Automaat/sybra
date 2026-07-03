@@ -474,6 +474,31 @@ func TestRunSetupNonGating_SuccessLeavesNoNote(t *testing.T) {
 	}
 }
 
+// TestRunSetupNonGating_PersistFailureReturnsError proves the prepare still
+// fails closed when Sybra cannot persist the non-fatal setup failure context.
+// Without this, fix-role worktrees would silently start with neither the note
+// nor the marker that downstream circuit breakers rely on.
+func TestRunSetupNonGating_PersistFailureReturnsError(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	if err := os.Mkdir(filepath.Join(wtDir, notes.FileName), 0o755); err != nil {
+		t.Fatalf("mkdir fake NOTES.md: %v", err)
+	}
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	err := m.runSetupNonGating(context.Background(), "task-fix-persist-fail", wtDir, []string{
+		"echo broken build >&2 && exit 1",
+	})
+	if err == nil {
+		t.Fatal("expected error when failure context cannot be persisted")
+	}
+	if !strings.Contains(err.Error(), "persist setup failure context") {
+		t.Fatalf("error = %v, want persistence failure context", err)
+	}
+}
+
 // TestRunSetup_CwdIsWorktreeRoot guards against cwd leaks: a bootstrap
 // script that writes `pwd > .cwd` must see the worktree path, not the
 // caller's cwd.

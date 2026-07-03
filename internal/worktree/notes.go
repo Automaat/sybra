@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/notes"
 )
+
+const setupFailureMarkerName = ".sybra-setup-failure"
 
 // ensureNotesFile seeds the agent working-memory scratchpad (notes.FileName) at
 // the worktree root and git-excludes it, mirroring the identity beacon. Unlike
@@ -68,4 +71,38 @@ func appendSetupFailureNote(ctx context.Context, wtPath string, setupErr error) 
 		return fmt.Errorf("append %s: %w", notes.FileName, err)
 	}
 	return nil
+}
+
+func writeSetupFailureMarker(ctx context.Context, wtPath string, setupErr error) error {
+	if err := addToInfoExclude(ctx, wtPath, setupFailureMarkerName); err != nil {
+		return fmt.Errorf("exclude %s: %w", setupFailureMarkerName, err)
+	}
+	path := filepath.Join(wtPath, setupFailureMarkerName)
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(setupErr.Error())+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", setupFailureMarkerName, err)
+	}
+	return nil
+}
+
+func clearSetupFailureMarker(wtPath string) error {
+	path := filepath.Join(wtPath, setupFailureMarkerName)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", setupFailureMarkerName, err)
+	}
+	return nil
+}
+
+// ReadSetupFailureMarker reports whether a fix-role worktree carried a
+// non-fatal setup failure during prepare, without requiring callers to parse
+// NOTES.md. The returned text is advisory context for logs/circuit breakers.
+func ReadSetupFailureMarker(wtPath string) (message string, exists bool, err error) {
+	data, err := os.ReadFile(filepath.Join(wtPath, setupFailureMarkerName))
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(data)), true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("read %s: %w", setupFailureMarkerName, err)
+	}
 }
