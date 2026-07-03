@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 func TestClassifyAgentStartError(t *testing.T) {
@@ -31,6 +32,12 @@ func TestClassifyAgentStartError(t *testing.T) {
 			name:         "generic error is transient",
 			err:          errors.New("fetch origin: connection refused"),
 			wantContains: "agent start failed: fetch origin: connection refused",
+		},
+		{
+			name:          "rebase failed is permanent",
+			err:           fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed),
+			wantPermanent: true,
+			wantContains:  "branch stale: rebase failed before agent start",
 		},
 		{
 			name:         "provider unhealthy is transient",
@@ -131,6 +138,26 @@ func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "project not registered") {
 		t.Errorf("reason %q missing permanent classification", reason)
+	}
+}
+
+func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
+	// Regression: ResumeStalled must escalate on the first rebase-conflict
+	// retry instead of hammering the doomed rebase every ~60s forever.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("rebase failure should flip to human-required, got %q", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "branch stale") {
+		t.Errorf("reason %q missing rebase-failed classification", reason)
 	}
 }
 
