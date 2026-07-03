@@ -855,3 +855,29 @@ func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
 	}
 	return nil
 }
+
+// MergeOnto merges ref into the worktree's current branch. Unlike RebaseOnto,
+// it never rewrites existing commits — the branch's prior history is
+// preserved and any subsequent push is a plain fast-forward, never a
+// force-push. Aborts and returns an error on conflict. The abort runs on a
+// context derived from ctx via context.WithoutCancel, bounded by its own
+// timeout: if the merge failed because ctx was canceled or its deadline
+// expired, running the abort on that same ctx would skip cleanup and leave
+// MERGE_HEAD state behind in the worktree (mirrors RebaseOnto's cleanup
+// contract). -c user.name/user.email/commit.gpgsign=false mirror
+// AutoCommitUncommitted's fallback identity for worktrees where the agent
+// never configured one; --no-verify skips repo pre-commit hooks the same
+// way, so a failing hook can't defeat this recovery path.
+func MergeOnto(ctx context.Context, worktreePath, ref string) error {
+	if err := executil.Run(ctx, worktreePath, "git",
+		"-c", "user.name=Sybra",
+		"-c", "user.email=sybra@localhost",
+		"-c", "commit.gpgsign=false",
+		"merge", "--no-edit", "--no-verify", ref); err != nil {
+		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
+		_ = executil.Run(abortCtx, worktreePath, "git", "merge", "--abort")
+		cancel()
+		return fmt.Errorf("merge %s: %w", ref, err)
+	}
+	return nil
+}
