@@ -32,7 +32,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 
 | Layer | Stack |
 |-------|-------|
-| Backend | Go 1.26.4, Wails v3 alpha (`v3.0.0-alpha2.106`) — darwin desktop |
+| Backend | Go 1.26.4, Wails v3 alpha (`v3.0.0-alpha2.111`) — darwin desktop |
 | Frontend | Svelte 5, TypeScript 6, Skeleton UI v4, Tailwind v4 |
 | IPC | Wails v3 services + typed events (no HTTP, no WebSocket on desktop) |
 | File format | YAML frontmatter + GFM markdown |
