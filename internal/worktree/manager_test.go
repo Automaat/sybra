@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -843,6 +844,99 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	}
 	if gotPath != "" {
 		t.Fatalf("PrepareForTask path = %q, want empty path on rebase failure", gotPath)
+	}
+}
+
+// TestPrepareForTask_RebaseFailureRecoversViaMerge proves the merge fallback
+// in reconcileAndRebase: a task branch whose commits, replayed individually,
+// hit an intermediate patch-apply conflict against the new base — even though
+// the branch's *net* content change doesn't actually overlap with upstream's
+// edit — fails a plain rebase but succeeds via merge. The branch adds then
+// reverts a line (net no-op) while upstream edits a different line the
+// now-stale intermediate commit's patch context no longer matches; rebasing
+// commit-by-commit conflicts on that mismatched context, but a single
+// three-way merge of final states has nothing to reconcile.
+func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("recoverable task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+
+	base, err := os.ReadFile(filepath.Join(wtPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Commit A: append a line — this is the commit whose patch context will
+	// no longer match once upstream edits the same file. Clone base before
+	// appending: append can mutate base's backing array in place if it has
+	// spare capacity, which would corrupt commit B's revert below.
+	withLine2 := append(append([]byte{}, base...), []byte("line2\n")...)
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), withLine2, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "add line2")
+
+	// Commit B: revert it — net effect on the branch is byte-identical to
+	// base, so a three-way merge against upstream has nothing to reconcile.
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), base, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "revert line2")
+
+	// Upstream edits the same file commit A touched — unrelated to the
+	// branch's net (no-op) change, but enough to break commit A's patch
+	// context during a commit-by-commit rebase replay.
+	upstream := append(append([]byte{}, base...), []byte("upstream addition\n")...)
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), upstream, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask should recover via merge fallback, got err: %v", err)
+	}
+	if gotPath == "" {
+		t.Fatal("PrepareForTask path is empty, want a recovered worktree path")
+	}
+
+	got, err := os.ReadFile(filepath.Join(gotPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, upstream) {
+		t.Fatalf("README.md = %q, want upstream's content %q (branch's net change was a no-op)", got, upstream)
+	}
+
+	// The recovery must be a real merge commit, not a rebase — a subsequent
+	// push must never need to force.
+	out, err := exec.Command("git", "-C", gotPath, "log", "--merges", "-1", "--format=%H").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		t.Fatal("expected a merge commit on the recovered branch, found none")
 	}
 }
 
