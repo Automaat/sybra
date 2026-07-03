@@ -21,3 +21,34 @@ export function runStateClasses(state: string): string {
       return 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-300'
   }
 }
+
+// Human-friendly label for an agent run's role (what the agent was doing).
+// The backend persists the role prefix from the agent name; "" and
+// "implementation" are the same thing. Returns "" for roles we don't want to
+// surface as a badge (plain implementation carries no extra signal).
+export function roleLabel(role: string | undefined): string {
+  switch (role) {
+    case 'triage':
+      return 'Triage'
+    case 'plan':
+      return 'Plan'
+    case 'plan-critic':
+      return 'Plan Critic'
+    case 'eval':
+      return 'Eval'
+    case 'pr-fix':
+      return 'PR Fix'
+    case 'review':
+      return 'Review'
+    case 'fix-review':
+      return 'Fix Review'
+    case 'test-runner':
+      return 'Testing'
+    case 'human-review':
+      return 'Human Review'
+    case 'chat':
+      return 'Chat'
+    default: // "" / "implementation" / unknown — no distinct role signal
+      return ''
+  }
+}
