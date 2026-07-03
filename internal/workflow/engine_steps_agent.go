@@ -221,7 +221,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
 	providerAllowed := func(provider string) bool {
-		return providerAvailable(provider) && !e.agents.ProviderRateLimited(provider)
+		return providerAvailable(provider) && e.agents.ProviderHealthy(provider) && !e.agents.ProviderRateLimited(provider)
 	}
 	var evalPassed abtest.EvalPassed
 	if e.evalGate != nil {
