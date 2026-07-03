@@ -53,6 +53,7 @@ func TestExtractTestVerdict(t *testing.T) {
 		{"json_array_not_object", `[{"verdict":"PASS"}]`, ""},
 		{"fenced_json_no_marker", "```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
 		{"prose_then_fenced_json", "All probes passed.\n\n```json\n{\"verdict\":\"PASS\"}\n```", "PASS"},
+		{"non_json_fence_with_verdict_substring_ignored", "Observed log output:\n```text\npayload={\"verdict\":\"FAIL\"}\n```\nNo final report emitted.", ""},
 		// app_started emitted as a quoted string must not break the verdict parse.
 		{"json_string_app_started", `{"verdict":"PASS","app_started":"true"}`, "PASS"},
 		// Malformed object-shaped JSON (e.g. an unescaped quote inside

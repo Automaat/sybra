@@ -521,7 +521,16 @@ func structuredTestOutputCandidates(output string) []string {
 	if strings.HasPrefix(s, "{") {
 		return []string{s}
 	}
-	return fencedCodeBlockCandidates(s)
+	var candidates []string
+	for _, candidate := range fencedCodeBlockCandidates(s) {
+		// The structured test report is always a JSON object. Ignore fenced
+		// snippets/logs that merely mention `"verdict":"PASS|FAIL"` so the
+		// regex fallback cannot misclassify unrelated blocks as the final report.
+		if strings.HasPrefix(strings.TrimSpace(candidate), "{") {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
 }
 
 // testVerdictFencedBlockRe extracts the contents of a fenced code block
