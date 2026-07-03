@@ -40,6 +40,12 @@ type AgentLauncher interface {
 	// ProviderCanFailover reports whether a currently blocked provider has a
 	// healthy peer available for this run.
 	ProviderCanFailover(provider string) bool
+	// ProviderHealthy reports whether the named provider is currently usable
+	// per the health gate — false for both a probe-detected outage and a
+	// config-disabled provider. selectABVariant consults it so a
+	// config-disabled provider is never picked as an eligible weighted
+	// variant. Empty name = default provider.
+	ProviderHealthy(provider string) bool
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.

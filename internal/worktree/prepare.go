@@ -2,17 +2,20 @@ package worktree
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // ErrRebaseFailed indicates a reused task worktree could not be rebased onto
-// the project base ref and must be repaired before another agent run.
-var ErrRebaseFailed = errors.New("worktree rebase failed")
+// the project base ref and must be repaired before another agent run. Alias
+// of worktreeerr.ErrRebaseFailed so internal/workflow can classify it without
+// importing internal/worktree (which would create an import cycle via
+// internal/task -> internal/workflow).
+var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
 
 // PrepareForTask creates (or reuses) a worktree for implementation work.
 // Fetches origin, creates a conventional-prefixed branch off default branch,

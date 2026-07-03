@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // resolveExecution derives the effective mode, directory, permission mode, and
@@ -418,7 +419,7 @@ func markRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
 		return true
 	}
-	reason := "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
+	reason := worktreeerr.RebaseBlockedReason
 	if _, uerr := tasks.Update(taskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
