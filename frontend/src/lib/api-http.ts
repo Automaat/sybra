@@ -51,7 +51,6 @@ export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { 
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
 export function OpenWorktree(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
-export function ResumeInClaudeCode(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }

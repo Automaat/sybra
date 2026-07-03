@@ -10,10 +10,6 @@ vi.mock('../../stores/reviews.svelte.js', () => ({
   },
 }))
 
-vi.mock('$lib/api', () => ({
-  ResumeInClaudeCode: vi.fn(),
-}))
-
 vi.mock('$lib/browser.svelte.js', () => ({
   openLink: (...args: unknown[]) => mockOpenURL(...args),
 }))
