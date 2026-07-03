@@ -43,7 +43,7 @@ type startupDegradedEvent struct {
 }
 
 func (a *App) initBgops(emit func(string, any)) {
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"))
+	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"), a.logger)
 	a.bgops.LoadFromDisk()
 }
 
