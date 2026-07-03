@@ -15,22 +15,24 @@
 
   const { task, onviewagent }: Props = $props()
 
-  // The currently-running agent for this task, tracked off the reactive store so
-  // this panel can live *outside* the tabbed body: StreamOutput subscribes to a
-  // live SSE feed with local state, so unmounting it on a tab switch would drop
-  // the stream. Pinning it above the tabs keeps live output visible on every tab.
-  let runningAgent = $state<Agent | null>(null)
+  // The running agent for this task, derived off the reactive store. Scan the
+  // running set (not the most-recent agent for the task, which may be stopped
+  // while an older run is still live) so the pinned live view never misses it.
+  // Derived, not $state, so store updates flow straight through — this panel
+  // lives *outside* the tabbed body so StreamOutput's live SSE subscription is
+  // never torn down by a tab switch.
+  const runningAgent = $derived(
+    agentStore.byState('running').find((a) => a.taskId === task.id) ?? null,
+  )
+  // Key the subscription on the id alone: a same-id state update keeps this
+  // value stable, so the effect does not churn unsubscribe/resubscribe on every
+  // event — it only re-subscribes when a different agent starts running.
+  const runningAgentId = $derived(runningAgent?.id)
 
   $effect(() => {
-    const existing = agentStore.byTask(task.id)
-    runningAgent = existing && existing.state === 'running' ? existing : null
-  })
-
-  $effect(() => {
-    if (!runningAgent) return
-    const id = runningAgent.id
+    const id = runningAgentId
+    if (!id) return
     const unsub = EventsOn(agentState(id), (data: Agent) => {
-      runningAgent = data
       agentStore.updateAgent(data.id, data)
     })
     return () => { unsub() }

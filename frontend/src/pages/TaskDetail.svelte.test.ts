@@ -7,6 +7,7 @@ const mockRemove = vi.fn()
 const mockStart = vi.fn()
 const mockStop = vi.fn()
 const mockByTask = vi.fn()
+const mockByState = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
@@ -24,6 +25,7 @@ vi.mock('../stores/agents.svelte.js', () => ({
     start: (...args: unknown[]) => mockStart(...args),
     stop: (...args: unknown[]) => mockStop(...args),
     byTask: (...args: unknown[]) => mockByTask(...args),
+    byState: (...args: unknown[]) => mockByState(...args),
     updateAgent: (...args: unknown[]) => mockUpdateAgent(...args),
   },
 }))
@@ -105,6 +107,7 @@ describe('TaskDetail', () => {
     mockStart.mockReset()
     mockStop.mockReset()
     mockByTask.mockReturnValue(null)
+    mockByState.mockReturnValue([])
     mockUpdateAgent.mockReset()
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
@@ -307,7 +310,7 @@ describe('TaskDetail', () => {
     })
 
     it('pins a live running agent above the tabs', async () => {
-      mockByTask.mockReturnValue({ id: 'a1', state: 'running', mode: 'headless', taskId: 'task-1' })
+      mockByState.mockReturnValue([{ id: 'a1', state: 'running', mode: 'headless', taskId: 'task-1' }])
       mockGet.mockResolvedValue({ ...mockTask, status: 'in-progress' })
       render(TaskDetail, {
         props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
