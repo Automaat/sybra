@@ -127,6 +127,80 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang covers #1456: a
+// "stop" verdict on the "loop" trigger whose ReasonKind is "generic_stall" (a
+// benign command-repetition flake, not reward-hacking) must route through the
+// same retryable watchdog-hang path as a "stall" stop, not straight to
+// human-required.
+func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "repeating identical investigation commands",
+		Recommendation: "stop",
+		ReasonKind:     "generic_stall",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "watchdog hang: repeating identical investigation commands" {
+		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on generic_stall loop stop verdict")
+	}
+}
+
+// TestApplyVerdict_LoopStopWithRewardHackingEscalates covers #1456: a "stop"
+// verdict on the "loop" trigger whose ReasonKind is "reward_hacking" (a
+// genuine stuck loop, not a benign flake) must still escalate straight to
+// human-required, not take the retryable watchdog-hang path reserved for
+// "generic_stall".
+func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "repeating the same failing fix with fabricated progress",
+		Recommendation: "stop",
+		ReasonKind:     "reward_hacking",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != "watchdog: repeating the same failing fix with fabricated progress" {
+		t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on reward_hacking loop stop verdict")
+	}
+}
+
 // TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating covers #1428:
 // a "stop" verdict with ReasonKind "rate_limit" must route through the
 // provider-health signal path and leave the task in-progress, regardless of
