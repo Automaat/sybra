@@ -31,6 +31,8 @@
     "@testing-library/svelte": "5.3.1",
     "@types/dompurify": "3.2.0",
     "@types/js-yaml": "4.0.9",
+    "@types/jsdom": "28.0.3",
+    "@types/node": "24.13.2",
     "@vitest/coverage-v8": "4.1.9",
     "jsdom": "29.1.1",
     "oxlint": "1.63.0",
