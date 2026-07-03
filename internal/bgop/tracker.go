@@ -2,11 +2,14 @@ package bgop
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
 )
 
@@ -20,14 +23,20 @@ type Tracker struct {
 	ops      map[string]*Operation
 	emit     func(string, any)
 	diskPath string
+	logger   *slog.Logger
 }
 
 // NewTracker creates a Tracker that broadcasts events via emit and persists to diskPath.
-func NewTracker(emit func(string, any), diskPath string) *Tracker {
+// A nil logger falls back to slog.Default().
+func NewTracker(emit func(string, any), diskPath string, logger *slog.Logger) *Tracker {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Tracker{
 		ops:      make(map[string]*Operation),
 		emit:     emit,
 		diskPath: diskPath,
+		logger:   logger,
 	}
 }
 
@@ -53,7 +62,10 @@ func (t *Tracker) Start(opType Type, label, projectID, taskID string) string {
 	return id
 }
 
-// UpdatePhase updates the current phase text of a running operation.
+// UpdatePhase updates the current phase text of a running operation. Phase is
+// in-memory/event-only — it is not persisted to disk, so a restart loses the
+// last phase text but keeps the operation's lifecycle status (see Start,
+// Complete, Fail).
 func (t *Tracker) UpdatePhase(id, phase string) {
 	t.mu.Lock()
 	op, ok := t.ops[id]
@@ -128,10 +140,14 @@ func (t *Tracker) List() []Operation {
 func (t *Tracker) LoadFromDisk() {
 	data, err := os.ReadFile(t.diskPath)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.logger.Error("bgop.load.read", "path", t.diskPath, "err", err)
+		}
 		return
 	}
 	var ops []Operation
 	if err := json.Unmarshal(data, &ops); err != nil {
+		t.logger.Error("bgop.load.unmarshal", "path", t.diskPath, "err", err)
 		return
 	}
 	cutoff := time.Now().Add(-completionTTL)
@@ -162,7 +178,10 @@ func (t *Tracker) saveToDisk() {
 
 	data, err := json.MarshalIndent(ops, "", "  ")
 	if err != nil {
+		t.logger.Error("bgop.save.marshal", "path", t.diskPath, "err", err)
 		return
 	}
-	_ = os.WriteFile(t.diskPath, data, 0o644)
+	if err := fsutil.AtomicWrite(t.diskPath, data); err != nil {
+		t.logger.Error("bgop.save.write", "path", t.diskPath, "err", err)
+	}
 }
