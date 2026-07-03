@@ -153,6 +153,9 @@ func TestTracker_SaveAndLoadFromDisk_RoundTrip(t *testing.T) {
 	if ops[0].Status != StatusDone {
 		t.Errorf("expected restored status done, got %s", ops[0].Status)
 	}
+	if ops[0].Phase != "" {
+		t.Errorf("expected restored phase to remain non-persistent, got %q", ops[0].Phase)
+	}
 }
 
 func TestTracker_LoadFromDisk_MarksRunningOpsFailed(t *testing.T) {
@@ -189,6 +192,24 @@ func TestTracker_LoadFromDisk_MarksRunningOpsFailed(t *testing.T) {
 	}
 	if loaded[0].CompletedAt.IsZero() {
 		t.Error("expected CompletedAt to be set for the reclassified op")
+	}
+
+	data, err = os.ReadFile(diskPath)
+	if err != nil {
+		t.Fatalf("read persisted file: %v", err)
+	}
+	var persisted []Operation
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal persisted file: %v", err)
+	}
+	if len(persisted) != 1 {
+		t.Fatalf("expected 1 persisted op after rewrite, got %d", len(persisted))
+	}
+	if persisted[0].Status != StatusFailed {
+		t.Errorf("expected rewritten op status failed, got %s", persisted[0].Status)
+	}
+	if persisted[0].Phase != "" {
+		t.Errorf("expected rewritten op phase to be cleared, got %q", persisted[0].Phase)
 	}
 }
 
@@ -227,6 +248,60 @@ func TestTracker_LoadFromDisk_DiscardsExpiredCompletions(t *testing.T) {
 	}
 	if loaded[0].ID != "recent-done" {
 		t.Errorf("expected recent-done to survive, got %s", loaded[0].ID)
+	}
+
+	data, err = os.ReadFile(diskPath)
+	if err != nil {
+		t.Fatalf("read rewritten file: %v", err)
+	}
+	var persisted []Operation
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal rewritten file: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].ID != "recent-done" {
+		t.Fatalf("expected rewritten file to keep only recent-done, got %+v", persisted)
+	}
+}
+
+func TestTracker_SaveToDisk_DropsTransientState(t *testing.T) {
+	tr := newTestTracker(t)
+
+	id := tr.Start(TypeClone, "cloning", "proj1", "task1")
+	tr.UpdatePhase(id, "fetching")
+
+	tr.mu.Lock()
+	op := tr.ops[id]
+	if op == nil {
+		tr.mu.Unlock()
+		t.Fatalf("expected op %q to exist", id)
+	}
+	op.Status = StatusDone
+	op.CompletedAt = time.Now().Add(-completionTTL - time.Minute)
+	tr.mu.Unlock()
+
+	doneID := tr.Start(TypeWorktreePrep, "prep", "proj1", "task1")
+	tr.UpdatePhase(doneID, "phase should not persist")
+	tr.Complete(doneID)
+
+	data, err := os.ReadFile(tr.diskPath)
+	if err != nil {
+		t.Fatalf("read persisted file: %v", err)
+	}
+	var persisted []Operation
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal persisted file: %v", err)
+	}
+	if len(persisted) != 1 {
+		t.Fatalf("expected only the non-expired op to persist, got %d", len(persisted))
+	}
+	if persisted[0].ID != doneID {
+		t.Fatalf("expected persisted op %q, got %q", doneID, persisted[0].ID)
+	}
+	if persisted[0].Phase != "" {
+		t.Errorf("expected phase to stay non-persistent, got %q", persisted[0].Phase)
+	}
+	if _, ok := tr.ops[id]; ok {
+		t.Fatalf("expected expired op %q to be pruned from memory during save", id)
 	}
 }
 

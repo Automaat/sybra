@@ -151,30 +151,46 @@ func (t *Tracker) LoadFromDisk() {
 		return
 	}
 	cutoff := time.Now().Add(-completionTTL)
+	now := time.Now().UTC()
+	changed := false
 	t.mu.Lock()
 	for i := range ops {
 		op := ops[i]
 		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
+			changed = true
 			continue
 		}
 		// Running ops at shutdown are now stale — mark failed.
 		if op.Status == StatusRunning {
 			op.Status = StatusFailed
 			op.Error = "interrupted by restart"
-			op.CompletedAt = time.Now().UTC()
+			op.CompletedAt = now
+			op.Phase = ""
+			changed = true
 		}
 		t.ops[op.ID] = &op
 	}
 	t.mu.Unlock()
+
+	if changed {
+		t.saveToDisk()
+	}
 }
 
 func (t *Tracker) saveToDisk() {
-	t.mu.RLock()
+	cutoff := time.Now().Add(-completionTTL)
+	t.mu.Lock()
 	ops := make([]Operation, 0, len(t.ops))
 	for _, op := range t.ops {
-		ops = append(ops, *op)
+		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
+			delete(t.ops, op.ID)
+			continue
+		}
+		snapshot := *op
+		snapshot.Phase = ""
+		ops = append(ops, snapshot)
 	}
-	t.mu.RUnlock()
+	t.mu.Unlock()
 
 	data, err := json.MarshalIndent(ops, "", "  ")
 	if err != nil {

@@ -69,7 +69,7 @@ func TestAtomicWrite_PreservesExistingMode(t *testing.T) {
 	}
 }
 
-func TestAtomicWrite_NewFileDefaultsTo0644(t *testing.T) {
+func TestAtomicWrite_NewFileKeepsRestrictiveTempMode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file.txt")
@@ -82,8 +82,8 @@ func TestAtomicWrite_NewFileDefaultsTo0644(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o644 {
-		t.Errorf("mode for new file = %o, want %o", got, 0o644)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode for new file = %o, want %o", got, 0o600)
 	}
 }
 
