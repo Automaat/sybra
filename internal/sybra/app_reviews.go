@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -98,6 +99,17 @@ type ReviewHandler struct {
 	// Used by the single-PR conflict-recovery path. Overridable in tests; nil
 	// falls back to github.FetchPRForMonitor.
 	fetchKnownPRFn func(repo string, number int) (github.PullRequest, bool, error)
+	// branchRecoveryMu guards branchRecoveryInFlight, the in-flight marker set
+	// for recoverBranchConflictNoPR (the no-PR sibling of the PR-numbered
+	// conflict recovery above). recoverBranchConflictNoPR runs synchronously
+	// end-to-end (worktree prep, workflow dispatch), so acquiring the marker on
+	// entry and releasing it via defer brackets the whole attempt: a second
+	// worktree-prep rebase failure for the same task arriving mid-recovery
+	// (e.g. two dispatch paths both hitting markRebaseBlocked) sees the marker
+	// set and bails out to human-required instead of starting a duplicate
+	// recovery workflow.
+	branchRecoveryMu       sync.Mutex
+	branchRecoveryInFlight map[string]struct{}
 	// fetchKnownPRsFn batches the linked-PR fetch for every task monitored by
 	// fetchKnownTaskPRs into as few GraphQL requests as possible. Secondary
 	// pollers use this to keep local task PRs moving while leaving global

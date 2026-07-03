@@ -311,8 +311,10 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
-	// not an explicit parameter threaded through the closure.
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) { //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	// not an explicit parameter threaded through the closure. contextcheck no
+	// longer flags this call site (verified with a clean build+lint cache),
+	// so no suppression directive is needed here.
+	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
 		if a.workflowEngine == nil {
 			return
 		}

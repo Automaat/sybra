@@ -718,6 +718,18 @@ export enum StepType {
      * continues to its next step regardless of outcome.
      */
     StepSyncBranch = "sync_branch",
+
+    /**
+     * StepResumeWorkflow is the terminal step of a recovery workflow
+     * (branch-conflict-fix) that re-enters the task's original interrupted
+     * workflow/stage. Reads resume_workflow_id/resume_workflow_vars/
+     * resume_status vars captured before the recovery workflow was started;
+     * a missing resume_workflow_id is a no-op (the workflow simply ends, and
+     * normal status-driven cascade dispatch — see
+     * AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+     * matches the restored task status).
+     */
+    StepResumeWorkflow = "resume_workflow",
 };
 
 /**

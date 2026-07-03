@@ -323,6 +323,281 @@ func setupRebaseRecoveryReviewHandler(t *testing.T, withConflictWorkflow bool) (
 	return r, tk
 }
 
+// mechanicalBranchConflictFixYAML is a stand-in for the real
+// branch-conflict-fix builtin (internal/workflow/builtin/branch-conflict-fix.yaml)
+// with its run_agent step removed, mirroring the existing
+// mechanicalPRFixYAML/wait_human convention used elsewhere in this package's
+// tests (see setupRebaseRecoveryReviewHandler's "pr-conflict-fix-test"
+// stand-in) to dispatch a real recovery workflow deterministically without
+// spawning a real agent process. Exercises the same set_status ->
+// resume_workflow chain the real workflow ends with; the run_agent/
+// route_pr_fix_result/verify_commits/detect_tampering steps this omits are
+// covered by the workflow package's own tests (TestBuiltinDefinitions_Valid
+// validates the real production YAML parses; TestExecResumeWorkflow_*
+// exercises resume_workflow directly).
+const branchConflictFixTestWorkflowID = "branch-conflict-fix"
+
+// setupBranchConflictNoPRReviewHandler mirrors setupRebaseRecoveryReviewHandler
+// but for the no-PR path: the task carries no PRNumber, and its branch
+// already exists (checked out, then returned to main so a managed worktree
+// can be added for it) so PrepareForBranchFix can resolve it by name instead
+// of via a PR lookup.
+func setupBranchConflictNoPRReviewHandler(t *testing.T, initialStatus task.Status, priorWorkflow *workflow.Execution) (*ReviewHandler, task.Task) {
+	t.Helper()
+
+	a := setupApp(t)
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	runGit(t, "", "init", "-b", "main", repo)
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	runGit(t, repo, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "initial")
+	runGit(t, repo, "checkout", "-b", "feature/no-pr-recover")
+	if err := os.WriteFile(filepath.Join(repo, "work.md"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "work.md")
+	runGit(t, repo, "commit", "-m", "task work")
+	// Leave the branch un-checked-out so a managed worktree can be added for
+	// it (git refuses to check out a branch already checked out elsewhere).
+	runGit(t, repo, "checkout", "main")
+
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
+		ID:        "owner/repo",
+		Name:      "repo",
+		Owner:     "owner",
+		Repo:      "repo",
+		URL:       "https://github.com/owner/repo",
+		ClonePath: repo,
+		Type:      project.ProjectTypePet,
+	})
+
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wfStore.Save(workflow.Definition{
+		ID:   branchConflictFixTestWorkflowID,
+		Name: "Branch conflict fix (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_branch_conflict_fix_test__",
+		}}},
+		Steps: []workflow.Step{
+			{
+				ID:   "set_recovering",
+				Name: "Mark Recovering",
+				Type: workflow.StepSetStatus,
+				Config: workflow.StepConfig{
+					Status:       "in-progress",
+					StatusReason: "recovering from a branch conflict (no PR yet)",
+				},
+				Next: []workflow.Transition{{GoTo: "await_fix"}},
+			},
+			// A wait_human stand-in for the real workflow's run_agent "fix"
+			// step: like run_agent, it is an async step that breaks the
+			// synchronous chain, matching the real workflow's structure
+			// (resume_original always sits behind an async step) closely
+			// enough for this test — StartWorkflowWithVars returns once it
+			// parks here instead of running resume_original nested inside its
+			// own "starting" marker, exactly like the real "fix" run_agent
+			// step does in production.
+			{
+				ID:   "await_fix",
+				Name: "Await Fix",
+				Type: workflow.StepWaitHuman,
+				Config: workflow.StepConfig{
+					HumanActions: []string{"done"},
+				},
+				Next: []workflow.Transition{{GoTo: "resume_original"}},
+			},
+			{
+				ID:   "resume_original",
+				Name: "Resume Interrupted Workflow",
+				Type: workflow.StepResumeWorkflow,
+				Next: []workflow.Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Mechanical stand-in resume target (no run_agent step, same rationale as
+	// above): lets the happy-path test assert that resume_workflow actually
+	// re-entered and ran the captured workflow, deterministically and without
+	// spawning a real agent.
+	if err := wfStore.Save(workflow.Definition{
+		ID:   "resume-target-test",
+		Name: "Resume target (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_resume_target_test__",
+		}}},
+		Steps: []workflow.Step{{
+			ID:   "mark_resumed",
+			Name: "Mark Resumed",
+			Type: workflow.StepSetStatus,
+			Config: workflow.StepConfig{
+				Status: "in-review",
+			},
+			Next: []workflow.Transition{{GoTo: ""}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: a.tasks},
+		&agentAdapter{agents: a.agents, tasks: a.tasks},
+		a.logger,
+	)
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), emit: func(string, any) {}},
+		tasks:         a.tasks,
+		projects:      projects,
+		agents:        a.agents,
+		prTracker:     github.NewIssueTracker(0),
+		worktrees: worktree.New(worktree.Config{
+			WorktreesDir: filepath.Join(tmp, "worktrees"),
+			Projects:     projects,
+			Tasks:        a.tasks,
+			Logger:       slog.New(slog.DiscardHandler),
+		}),
+		workflowEngine: engine,
+		wtFailures:     make(map[string]int),
+	}
+
+	tk, err := a.tasks.Create("no pr rebase recover", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = a.tasks.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feature/no-pr-recover"),
+		Status:    task.Ptr(initialStatus),
+		Workflow:  &priorWorkflow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, tk
+}
+
+// TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow
+// verifies the happy path: a task with no PR yet, whose branch already
+// exists, gets its worktree prepared via PrepareForBranchFix, the recovery
+// workflow is dispatched (never jumped straight to a terminal status), the
+// captured interrupted workflow is resumed by resume_workflow (not skipped),
+// and the conflict-issue retry budget is marked handled so the same
+// conflict doesn't immediately re-trigger.
+func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *testing.T) {
+	priorWorkflow := &workflow.Execution{
+		WorkflowID:  "resume-target-test",
+		CurrentStep: "mark_resumed",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{"attempt": "1"},
+	}
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusTesting, priorWorkflow)
+
+	if !r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("recoverStaleBranchConflict returned false for a no-PR task with a real branch")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want dispatched recovery instead of human-required", got.Status)
+	}
+	// set_recovering (sync) ran and the workflow parked at the async
+	// await_fix step (the stand-in for the real workflow's run_agent "fix"
+	// step) — the same shape as production, where resume_workflow only ever
+	// runs after that async step's own completion drives AdvanceStep forward.
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixTestWorkflowID {
+		t.Fatalf("workflow = %+v, want %s dispatched", got.Workflow, branchConflictFixTestWorkflowID)
+	}
+	if got.Workflow.CurrentStep != "await_fix" {
+		t.Fatalf("current step = %q, want await_fix", got.Workflow.CurrentStep)
+	}
+	// The captured interrupted workflow (ID + a copy of its vars) and the
+	// task's pre-recovery status travel with the recovery execution so
+	// resume_workflow can re-enter the exact interrupted stage once the fix
+	// lands — proven directly (without a real agent) by
+	// TestExecResumeWorkflow_ResumesCapturedTarget in the workflow package.
+	if resumeID := got.Workflow.Variables["resume_workflow_id"]; resumeID != "resume-target-test" {
+		t.Fatalf("resume_workflow_id = %q, want captured resume-target-test", resumeID)
+	}
+	if resumeStatus := got.Workflow.Variables["resume_status"]; resumeStatus != string(task.StatusTesting) {
+		t.Fatalf("resume_status = %q, want captured %q", resumeStatus, task.StatusTesting)
+	}
+	if resumeVars := got.Workflow.Variables["resume_workflow_vars"]; resumeVars != `{"attempt":"1"}` {
+		t.Fatalf("resume_workflow_vars = %q, want captured prior workflow vars", resumeVars)
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
+		t.Fatal("conflict issue was not marked handled after recovery dispatch")
+	}
+}
+
+// TestRecoverBranchConflictNoPR_AtCapEscalates verifies the retry-budget
+// guard: an exhausted github.PRIssueConflict budget (reused, not a new kind)
+// returns false so the caller escalates to human-required instead of
+// retrying forever on a genuinely unresolvable conflict.
+func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusInProgress, nil)
+	for range github.MaxRetries {
+		r.prTracker.MarkHandled(tk.ID, github.PRIssueConflict, "somesha")
+	}
+
+	if r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("recoverStaleBranchConflict returned true despite exhausted retry budget")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want no recovery workflow dispatched", got.Workflow)
+	}
+}
+
+// TestRecoverBranchConflictNoPR_MissingBranchEscalates verifies that a task
+// whose branch does not exist (PrepareForBranchFix returns
+// worktree.ErrTaskBranchMissing) fails closed rather than guessing at a ref.
+func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusInProgress, nil)
+	if _, err := r.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("branch/does-not-exist")}); err != nil {
+		t.Fatal(err)
+	}
+
+	if r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("recoverStaleBranchConflict returned true for a missing branch")
+	}
+}
+
+// TestRecoverBranchConflictNoPR_InFlightGuardPreventsDoubleDispatch verifies
+// that a second recovery attempt for a task already mid-recovery bails out
+// instead of starting a duplicate worktree prep / workflow dispatch.
+func TestRecoverBranchConflictNoPR_InFlightGuardPreventsDoubleDispatch(t *testing.T) {
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusInProgress, nil)
+	r.branchRecoveryMu.Lock()
+	r.branchRecoveryInFlight = map[string]struct{}{tk.ID: {}}
+	r.branchRecoveryMu.Unlock()
+
+	if r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("recoverStaleBranchConflict returned true while a recovery was already marked in-flight")
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
+		t.Fatal("conflict issue was marked handled despite the in-flight guard rejecting the attempt")
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
