@@ -285,6 +285,45 @@ func TestClassifyTestOutcome_RecoversFailuresMarkdownFromMalformedJSON(t *testin
 	}
 }
 
+func TestExtractFailuresMarkdownFieldRegex_StopsAtTrailingSchemaFields(t *testing.T) {
+	t.Parallel()
+
+	// The test-runner's documented output contract writes failures_markdown
+	// followed by further fields (surface_kind, app_started, manual_probes,
+	// unable_to_run_reason, ...), so it is essentially never the last key in
+	// realistic output. A fallback that assumes otherwise absorbs those
+	// trailing fields' raw JSON into the recovered report.
+	report := `## Test Failures` + "\n\n" +
+		`- Command: go run repro.go` + "\n" +
+		`- Output: got a "negative" bound` + "\n" +
+		`- Expected: bound >= 0 per internal/stats/wilson.go:42`
+
+	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"` +
+		`## Test Failures\n\n- Command: go run repro.go\n- Output: got a "negative" bound\n- Expected: bound >= 0 per internal/stats/wilson.go:42` +
+		`","surface_kind":"cli","app_started":"true","unable_to_run_reason":""}`
+
+	got := extractFailuresMarkdownFieldRegex(malformed)
+	if got != report {
+		t.Fatalf("extractFailuresMarkdownFieldRegex = %q, want %q (trailing fields leaked into the report)", got, report)
+	}
+
+	// A manual_probes array (containing its own braces) after
+	// failures_markdown must not leak into the recovered report either.
+	malformedWithArray := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"` +
+		`## Test Failures\n\n- Command: go run repro.go\n- Output: got a "negative" bound\n- Expected: bound >= 0` +
+		`","manual_probes":[{"command":"go run repro.go","actual":"-0.02"}],"surface_kind":"cli"}`
+
+	wantWithArray := `## Test Failures` + "\n\n" +
+		`- Command: go run repro.go` + "\n" +
+		`- Output: got a "negative" bound` + "\n" +
+		`- Expected: bound >= 0`
+
+	gotWithArray := extractFailuresMarkdownFieldRegex(malformedWithArray)
+	if gotWithArray != wantWithArray {
+		t.Fatalf("extractFailuresMarkdownFieldRegex (manual_probes) = %q, want %q", gotWithArray, wantWithArray)
+	}
+}
+
 func TestHasGroundedFailureEvidence_AcceptsAnnotatedLabels(t *testing.T) {
 	t.Parallel()
 

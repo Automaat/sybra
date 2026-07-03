@@ -567,10 +567,14 @@ func extractOutcomeFieldRegex(s string) string {
 // testFailuresMarkdownFieldRe recovers the failures_markdown field's value
 // when json.Unmarshal fails because of an unescaped quote inside it — the
 // corruption this fallback exists for. Since the value's own quotes can no
-// longer be trusted to delimit it, this captures greedily from the field's
-// opening quote through to the last quote before the object's closing brace,
-// on the assumption that failures_markdown is the last field the agent wrote.
-var testFailuresMarkdownFieldRe = regexp.MustCompile(`(?s)"failures_markdown"\s*:\s*"(.*)"\s*\}\s*$`)
+// longer be trusted to delimit it, this captures non-greedily up to whichever
+// comes first: the object's closing brace, or the start of the next known
+// structuredTestOutput field (per the test-runner's documented output
+// contract, failures_markdown is rarely the last field written — surface_kind,
+// app_started, manual_probes, etc. commonly follow it). Stopping at the first
+// recognized boundary avoids absorbing those trailing fields' raw JSON into
+// the recovered report.
+var testFailuresMarkdownFieldRe = regexp.MustCompile(`(?s)"failures_markdown"\s*:\s*"(.*?)"\s*(?:,\s*"(?:surface_kind|app_started|start_command|readiness_probe|manual_probes|automated_checks|unable_to_run_reason)"\s*:|\s*\})`)
 
 func extractFailuresMarkdownFieldRegex(s string) string {
 	m := testFailuresMarkdownFieldRe.FindStringSubmatch(s)
