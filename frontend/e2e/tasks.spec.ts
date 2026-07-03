@@ -121,9 +121,10 @@ test.describe('Task Detail', () => {
 
     const main = page.getByRole('main')
 
-    // Agent mode (labelled "Mode" in the properties rail)
+    // Agent mode (labelled "Mode" in the properties rail). Exact match avoids
+    // the case-insensitive collision with the "Headless" run-launcher checkbox.
     await expect(main.getByText('Mode', { exact: true })).toBeVisible()
-    await expect(main.getByText('headless').first()).toBeVisible()
+    await expect(main.getByText('headless', { exact: true }).first()).toBeVisible()
 
     // Tags
     await expect(main.getByText('Tags')).toBeVisible()

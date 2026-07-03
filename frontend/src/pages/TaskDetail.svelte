@@ -35,6 +35,9 @@
   const hasPlan = $derived(
     !!(t && (t.plan || t.planBrief || t.planDecisions || t.planCritique || t.planResearch)),
   )
+  // A plan-review task always needs a Plan tab to host the approve/reject
+  // decision, even when its plan lives in the body rather than a sidecar.
+  const showPlanTab = $derived(hasPlan || t?.status === 'plan-review')
   const hasReview = $derived(
     !!(t && (t.codeReview || (t.agentRuns ?? []).some((r) => REVIEW_ROLES.has(r.role)))),
   )
@@ -42,7 +45,7 @@
 
   const tabs = $derived([
     { value: 'overview', label: 'Overview' },
-    ...(hasPlan ? [{ value: 'plan', label: t?.status === 'plan-review' ? 'Plan ●' : 'Plan' }] : []),
+    ...(showPlanTab ? [{ value: 'plan', label: t?.status === 'plan-review' ? 'Plan ●' : 'Plan' }] : []),
     ...(hasReview ? [{ value: 'review', label: 'Review' }] : []),
     { value: 'runs', label: runsCount > 0 ? `Runs · ${runsCount}` : 'Runs' },
   ])
@@ -182,7 +185,7 @@
             <TaskDescriptionEditor task={t} />
           </section>
 
-          {#if hasPlan}
+          {#if showPlanTab}
             <section class={panelClass('plan', 'flex flex-col gap-4')}>
               {#if t.status === 'plan-review'}
                 <PlanReviewPanel task={t} {onreviewplan} />

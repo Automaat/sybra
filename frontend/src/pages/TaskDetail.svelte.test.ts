@@ -319,6 +319,18 @@ describe('TaskDetail', () => {
         expect(screen.getByText('Stop')).toBeDefined()
       })
     })
+
+    it('offers a Plan tab with approve/reject for plan-review, even with no plan sidecar', async () => {
+      // A plan-review task keeps its decision even when the plan is in the body.
+      mockGet.mockResolvedValue({ ...mockTask, status: 'plan-review' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Approve Plan')).toBeDefined()
+        expect(screen.getByText('Reject Plan')).toBeDefined()
+      })
+    })
   })
 
   describe('copyId', () => {
