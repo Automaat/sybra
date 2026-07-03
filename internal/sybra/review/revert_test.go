@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import "testing"
 

@@ -1,4 +1,4 @@
-package sybra
+package review
 
 // PR phases for outbound own-PR tasks (status in-review/ready-review, not tag
 // `review`). Persisted on task.PRPhase and rendered as the phase glyph on the

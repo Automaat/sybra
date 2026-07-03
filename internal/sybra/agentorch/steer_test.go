@@ -1,4 +1,4 @@
-package sybra
+package agentorch
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ func TestPrependSupervisorSteer(t *testing.T) {
 	}
 
 	// No pending steer → prompt unchanged, no error.
-	if got, err := prependSupervisorSteer(tasks, tk.ID, "DO X"); err != nil || got != "DO X" {
+	if got, err := PrependSupervisorSteer(tasks, tk.ID, "DO X"); err != nil || got != "DO X" {
 		t.Fatalf("no-steer = (%q, %v), want (\"DO X\", nil)", got, err)
 	}
 
@@ -31,7 +31,7 @@ func TestPrependSupervisorSteer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := prependSupervisorSteer(tasks, tk.ID, "DO X")
+	got, err := PrependSupervisorSteer(tasks, tk.ID, "DO X")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -48,13 +48,13 @@ func TestPrependSupervisorSteer(t *testing.T) {
 	if reread.SupervisorSteer != "" {
 		t.Fatalf("steer not cleared after use: %q", reread.SupervisorSteer)
 	}
-	if again, err := prependSupervisorSteer(tasks, tk.ID, "DO Y"); err != nil || again != "DO Y" {
+	if again, err := PrependSupervisorSteer(tasks, tk.ID, "DO Y"); err != nil || again != "DO Y" {
 		t.Fatalf("second call = (%q, %v), want (\"DO Y\", nil) — steer already consumed", again, err)
 	}
 
 	// Unknown task: prompt is returned unchanged and the read error surfaces so
 	// the caller dispatches unsteered rather than silently swallowing it.
-	if got, err := prependSupervisorSteer(tasks, "does-not-exist", "DO Z"); err == nil || got != "DO Z" {
+	if got, err := PrependSupervisorSteer(tasks, "does-not-exist", "DO Z"); err == nil || got != "DO Z" {
 		t.Fatalf("unknown-task = (%q, %v), want (\"DO Z\", <error>)", got, err)
 	}
 }

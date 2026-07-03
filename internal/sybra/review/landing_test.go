@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -83,9 +83,9 @@ func TestComputeLanding_LocalOnly(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler),
+		tasks:  tasks,
 	}
 	outcome, data := r.computeLanding(context.Background(), created.ID, 42, "MERGED", "merged")
 

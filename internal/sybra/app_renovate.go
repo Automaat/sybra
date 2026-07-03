@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/review"
 )
 
 // renovateCoordinator owns the Renovate poll handler. Its handler lifetime is
@@ -94,7 +95,7 @@ func (c *renovateCoordinator) recordMonitorFetchError(err error) {
 	defer c.mu.Unlock()
 	if github.IsTransientError(err) {
 		c.monitorTransientFails++
-		if c.monitorTransientFails < transientFetchWarnThreshold {
+		if c.monitorTransientFails < review.TransientFetchWarnThreshold {
 			c.logger.Info("pr-monitor.renovate-fetch", "err", err)
 		} else {
 			c.logger.Warn("pr-monitor.renovate-fetch", "err", err, "consecutive", c.monitorTransientFails)

@@ -18,9 +18,9 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// Orchestrator is the subset of *sybra.AgentOrchestrator that recovery
-// uses. Defined here so the package does not import internal/sybra (which
-// would form a cycle: sybra → recovery → sybra).
+// Orchestrator is the subset of *agentorch.Orchestrator that recovery
+// uses. Defined here so the package does not import internal/sybra/agentorch
+// directly, keeping recovery a low-level leaf package.
 type Orchestrator interface {
 	StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error)
 	StartPRFixAgent(taskID string) error

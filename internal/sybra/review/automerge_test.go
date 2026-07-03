@@ -1,4 +1,4 @@
-package sybra
+package review
 
 import (
 	"context"
@@ -214,11 +214,11 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 
 			var mergedRepo string
 			var mergedNum int
-			r := &ReviewHandler{
-				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-				tasks:         tasks,
-				projects:      projStore,
-				prTracker:     github.NewIssueTracker(time.Minute),
+			r := &Handler{
+				logger:    slog.New(slog.DiscardHandler),
+				tasks:     tasks,
+				projects:  projStore,
+				prTracker: github.NewIssueTracker(time.Minute),
 				mergePR: func(repo string, number int) error {
 					mergedRepo, mergedNum = repo, number
 					return nil
@@ -376,12 +376,12 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 			var mergedNum int
 			var armedRepo string
 			var armedNum int
-			r := &ReviewHandler{
-				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-				tasks:         tasks,
-				projects:      projStore,
-				prTracker:     github.NewIssueTracker(time.Minute),
-				cfg:           &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: tt.nativeEnabled}},
+			r := &Handler{
+				logger:    slog.New(slog.DiscardHandler),
+				tasks:     tasks,
+				projects:  projStore,
+				prTracker: github.NewIssueTracker(time.Minute),
+				cfg:       &config.Config{GitHub: config.GitHubConfig{NativeAutoMerge: tt.nativeEnabled}},
 				mergePR: func(repo string, number int) error {
 					mergedRepo, mergedNum = repo, number
 					return nil
@@ -493,11 +493,11 @@ func TestHandleAutoMerge_REST(t *testing.T) {
 			var restMergedRepo, restMergedSHA string
 			var restMergedNum int
 			var gqlMergeCalled bool
-			r := &ReviewHandler{
-				DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-				tasks:         tasks,
-				projects:      projStore,
-				prTracker:     github.NewIssueTracker(time.Minute),
+			r := &Handler{
+				logger:    slog.New(slog.DiscardHandler),
+				tasks:     tasks,
+				projects:  projStore,
+				prTracker: github.NewIssueTracker(time.Minute),
 				mergePR: func(repo string, number int) error {
 					gqlMergeCalled = true
 					return nil
@@ -565,11 +565,11 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler), audit: auditLog},
-		tasks:         tasks,
-		projects:      projStore,
-		prTracker:     github.NewIssueTracker(time.Minute),
+	r := &Handler{
+		logger: slog.New(slog.DiscardHandler), audit: auditLog,
+		tasks:     tasks,
+		projects:  projStore,
+		prTracker: github.NewIssueTracker(time.Minute),
 		mergePRViaREST: func(repo string, number int, headSHA string) error {
 			return nil
 		},
@@ -639,12 +639,12 @@ func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
 
 	var restMergedNum int
 	var gqlMergeCalled bool
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		projects:      projStore,
-		agents:        agentMgr,
-		prTracker:     github.NewIssueTracker(time.Minute),
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		projects:  projStore,
+		agents:    agentMgr,
+		prTracker: github.NewIssueTracker(time.Minute),
 		mergePR: func(repo string, number int) error {
 			gqlMergeCalled = true
 			return nil
@@ -763,11 +763,11 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 	}
 	var resolvedIDs []string
 	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		projects:      projStore,
-		agents:        agents,
+	r := &Handler{
+		logger:   slog.New(slog.DiscardHandler),
+		tasks:    tasks,
+		projects: projStore,
+		agents:   agents,
 		fetchThreads: func(repo string, number int) ([]github.ReviewThread, error) {
 			if repo != "pet-owner/pet-repo" || number != 21 {
 				t.Errorf("fetchThreads(%q,%d) unexpected", repo, number)
@@ -805,8 +805,8 @@ func TestResolveCopilotThreads_humanReplyNotDismissed(t *testing.T) {
 		{ID: "A1", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "agent-bot"},
 	}
 	var resolvedIDs []string
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger:        slog.New(slog.DiscardHandler),
 		fetchThreads:  func(string, int) ([]github.ReviewThread, error) { return threads, nil },
 		resolveThread: func(id string) error { resolvedIDs = append(resolvedIDs, id); return nil },
 	}
@@ -829,8 +829,8 @@ func TestResolveCopilotThreads_emptyAgentLoginFallsBackToAuthor(t *testing.T) {
 		{ID: "A1", AuthorLogin: "Copilot", IsOutdated: false, LastAuthorLogin: "me"},
 	}
 	var resolvedIDs []string
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+	r := &Handler{
+		logger:        slog.New(slog.DiscardHandler),
 		fetchThreads:  func(string, int) ([]github.ReviewThread, error) { return threads, nil },
 		resolveThread: func(id string) error { resolvedIDs = append(resolvedIDs, id); return nil },
 	}
@@ -849,7 +849,7 @@ func TestResolveCopilotThreads_emptyAgentLoginFallsBackToAuthor(t *testing.T) {
 // strand it (capped, never retried, never surfaced). ready_to_merge never
 // escalates, and an already-parked task is left untouched.
 func TestEscalateExhaustedFix(t *testing.T) {
-	newHandler := func(t *testing.T) (*ReviewHandler, *task.Manager, string) {
+	newHandler := func(t *testing.T) (*Handler, *task.Manager, string) {
 		t.Helper()
 		store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 		if err != nil {
@@ -866,10 +866,10 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("update: %v", err)
 		}
-		r := &ReviewHandler{
-			DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-			tasks:         tasks,
-			prTracker:     github.NewIssueTracker(30 * time.Minute),
+		r := &Handler{
+			logger:    slog.New(slog.DiscardHandler),
+			tasks:     tasks,
+			prTracker: github.NewIssueTracker(30 * time.Minute),
 		}
 		return r, tasks, created.ID
 	}

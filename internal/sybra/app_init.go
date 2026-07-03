@@ -29,6 +29,7 @@ import (
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
@@ -486,10 +487,10 @@ func expectedHumanKind(t task.Task) string {
 		return ""
 	}
 	switch {
-	case t.ReviewPhase == ReviewPhaseDrafted ||
+	case t.ReviewPhase == review.ReviewPhaseDrafted ||
 		strings.HasPrefix(t.StatusReason, "Draft review ready"):
 		return "review_draft"
-	case t.ReviewPhase == ReviewPhaseManual ||
+	case t.ReviewPhase == review.ReviewPhaseManual ||
 		strings.HasPrefix(t.StatusReason, "PR too small for agent review"):
 		return "review_manual"
 	default:
@@ -682,7 +683,7 @@ func (a *App) initWorkflowEngine() {
 	// escalating to a human. Wired here (not at construction) because the
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
-		a.agentOrch.conflictRecovery = a.reviewer.recoverStaleBranchConflict
+		a.agentOrch.ConflictRecovery = a.reviewer.RecoverStaleBranchConflict
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
