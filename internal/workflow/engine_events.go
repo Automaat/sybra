@@ -429,10 +429,6 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
 		return
 	}
-	if e.handleWatchdogRateLimitRetry(&t, step) {
-		return
-	}
-
 	mu := e.taskInflightMutex(taskID)
 	if !mu.TryLock() {
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
@@ -450,6 +446,12 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	e.dispatching[taskID] = struct{}{}
 	e.mu.Unlock()
+	if e.handleWatchdogRateLimitRetry(&t, step) {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
+		return
+	}
 
 	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, &def, step, t.Workflow)
