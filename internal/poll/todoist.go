@@ -54,22 +54,22 @@ func NewTodoistHandler(
 
 func (h *TodoistHandler) Name() string { return "todoist" }
 
-func (h *TodoistHandler) Poll(_ context.Context) time.Duration {
-	return h.PollAndSync()
+func (h *TodoistHandler) Poll(ctx context.Context) time.Duration {
+	return h.PollAndSync(ctx)
 }
 
 // PollAndSync runs one import+completion cycle and returns the next poll interval.
-func (h *TodoistHandler) PollAndSync() time.Duration {
+func (h *TodoistHandler) PollAndSync(ctx context.Context) time.Duration {
 	interval := time.Duration(h.cfg.PollSeconds) * time.Second
 
-	imported, importErr := h.ImportNewTasks()
+	imported, importErr := h.ImportNewTasks(ctx)
 	h.throttle.Log(h.logger, "todoist.import", "import", importErr)
-	metrics.TodoistPoll(importErr == nil)
-	metrics.TodoistImported(imported)
+	metrics.TodoistPoll(ctx, importErr == nil)
+	metrics.TodoistImported(ctx, imported)
 
-	completed, compErr := h.syncCompletions()
+	completed, compErr := h.syncCompletions(ctx)
 	h.throttle.Log(h.logger, "todoist.complete", "complete", compErr)
-	metrics.TodoistCompleted(completed)
+	metrics.TodoistCompleted(ctx, completed)
 
 	if imported > 0 || completed > 0 {
 		h.logger.Info("todoist.synced", "imported", imported, "completed", completed)
@@ -83,8 +83,8 @@ func (h *TodoistHandler) PollAndSync() time.Duration {
 }
 
 // ImportNewTasks fetches active Todoist tasks and creates missing ones in Sybra.
-func (h *TodoistHandler) ImportNewTasks() (int, error) {
-	remote, err := h.client.ListActiveTasks(h.cfg.ProjectID)
+func (h *TodoistHandler) ImportNewTasks(ctx context.Context) (int, error) {
+	remote, err := h.client.ListActiveTasks(ctx, h.cfg.ProjectID)
 	if err != nil {
 		return 0, err
 	}
@@ -138,7 +138,7 @@ func (h *TodoistHandler) ImportNewTasks() (int, error) {
 	return imported, nil
 }
 
-func (h *TodoistHandler) syncCompletions() (int, error) {
+func (h *TodoistHandler) syncCompletions(ctx context.Context) (int, error) {
 	tasks, err := h.tasks.List()
 	if err != nil {
 		return 0, err
@@ -150,7 +150,7 @@ func (h *TodoistHandler) syncCompletions() (int, error) {
 		if t.TodoistID == "" || t.Status != task.StatusDone {
 			continue
 		}
-		closeErr := h.client.CloseTask(t.TodoistID)
+		closeErr := h.client.CloseTask(ctx, t.TodoistID)
 		h.throttle.Log(h.logger, "todoist.close", "close:"+t.TodoistID, closeErr,
 			"task_id", t.ID, "todoist_id", t.TodoistID)
 		if closeErr != nil {

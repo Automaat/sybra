@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -120,7 +121,7 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 		{Kind: github.PRIssueComments, TaskID: created.ID, PR: pr},
 	}
 
-	r.handleMatchedPRIssues(issues)
+	r.handleMatchedPRIssues(context.Background(), issues)
 
 	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); got != 1 {
 		t.Errorf("ci_failure retries = %d, want 1", got)

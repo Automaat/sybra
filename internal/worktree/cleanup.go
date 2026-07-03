@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 )
 
 // Remove cleans up the worktree for a task via git worktree remove.
-func (m *Manager) Remove(taskID string) {
+func (m *Manager) Remove(ctx context.Context, taskID string) {
 	t, err := m.tasks.Get(taskID)
 	if err != nil || t.ProjectID == "" {
 		return
@@ -29,7 +30,7 @@ func (m *Manager) Remove(taskID string) {
 	if err != nil {
 		return
 	}
-	if err := project.RemoveWorktree(proj.ClonePath, wtPath); err != nil {
+	if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
 		m.logger.Error("worktree.cleanup", "path", wtPath, "err", err)
 	} else {
 		m.logger.Info("worktree.cleaned", "path", wtPath)
@@ -38,7 +39,7 @@ func (m *Manager) Remove(taskID string) {
 
 // CleanupOrphaned removes worktree directories for deleted or completed tasks
 // that have no running agent.
-func (m *Manager) CleanupOrphaned() {
+func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
 		return
@@ -73,7 +74,7 @@ func (m *Manager) CleanupOrphaned() {
 		removed := false
 		if exists && t.ProjectID != "" {
 			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
-				if err := project.RemoveWorktree(proj.ClonePath, wtPath); err != nil {
+				if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
 					m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
 				} else {
 					removed = true
@@ -99,19 +100,19 @@ func (m *Manager) CleanupOrphaned() {
 		return
 	}
 	for i := range projects {
-		if err := project.PruneWorktrees(projects[i].ClonePath); err != nil {
+		if err := project.PruneWorktrees(ctx, projects[i].ClonePath); err != nil {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
 }
 
 // List returns all git worktrees for the given project.
-func (m *Manager) List(projectID string) ([]project.Worktree, error) {
+func (m *Manager) List(ctx context.Context, projectID string) ([]project.Worktree, error) {
 	proj, err := m.projects.Get(projectID)
 	if err != nil {
 		return nil, err
 	}
-	return project.ListWorktrees(proj.ClonePath)
+	return project.ListWorktrees(ctx, proj.ClonePath)
 }
 
 // RepairAll runs `git worktree repair` against every project's bare clone.
@@ -119,7 +120,7 @@ func (m *Manager) List(projectID string) ([]project.Worktree, error) {
 // in-container mount point of the bare clone leaves every worktree with a
 // stale absolute back-pointer. `git worktree repair` rewrites both sides of
 // the pointer pair and is a no-op when paths are already correct.
-func (m *Manager) RepairAll() {
+func (m *Manager) RepairAll(ctx context.Context) {
 	if m.projects == nil {
 		return
 	}
@@ -129,7 +130,7 @@ func (m *Manager) RepairAll() {
 		return
 	}
 	for i := range projects {
-		if err := project.RepairWorktrees(projects[i].ClonePath); err != nil {
+		if err := project.RepairWorktrees(ctx, projects[i].ClonePath); err != nil {
 			m.logger.Warn("worktree.repair-all", "project", projects[i].ID, "err", err)
 			continue
 		}
@@ -140,23 +141,23 @@ func (m *Manager) RepairAll() {
 // healOrRecreate ensures the worktree at wtPath has resolvable git metadata.
 // Returns (true, nil) if the worktree is usable on return, (false, nil) if it
 // was wiped and the caller should re-create it, or (_, err) on a hard error.
-func (m *Manager) healOrRecreate(taskID, clonePath, wtPath string) (bool, error) {
-	if project.WorktreeHealthy(wtPath) {
+func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath string) (bool, error) {
+	if project.WorktreeHealthy(ctx, wtPath) {
 		return true, nil
 	}
 	m.logger.Warn("worktree.unhealthy", "task_id", taskID, "path", wtPath)
-	if err := project.RepairWorktrees(clonePath); err != nil {
+	if err := project.RepairWorktrees(ctx, clonePath); err != nil {
 		m.logger.Warn("worktree.repair", "task_id", taskID, "err", err)
 	}
-	if project.WorktreeHealthy(wtPath) {
+	if project.WorktreeHealthy(ctx, wtPath) {
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
 	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
-	_ = project.RemoveWorktree(clonePath, wtPath)
+	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 	if err := os.RemoveAll(wtPath); err != nil {
 		return false, fmt.Errorf("remove unhealthy worktree %s: %w", wtPath, err)
 	}
-	_ = project.PruneWorktrees(clonePath)
+	_ = project.PruneWorktrees(ctx, clonePath)
 	return false, nil
 }

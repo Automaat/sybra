@@ -1,6 +1,7 @@
 package todoist
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,7 +33,7 @@ func NewClientWith(token string, doer HTTPDoer, baseURL string) *Client {
 }
 
 // ListActiveTasks returns all active (non-completed) tasks in the given project.
-func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
+func (c *Client) ListActiveTasks(ctx context.Context, projectID string) ([]Task, error) {
 	var all []Task
 	cursor := ""
 	for {
@@ -40,7 +41,7 @@ func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
 		if cursor != "" {
 			rawURL += "&cursor=" + cursor
 		}
-		req, err := http.NewRequest(http.MethodGet, rawURL, http.NoBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}
@@ -76,9 +77,9 @@ func (c *Client) ListActiveTasks(projectID string) ([]Task, error) {
 }
 
 // CloseTask marks a Todoist task as completed.
-func (c *Client) CloseTask(todoistID string) error {
+func (c *Client) CloseTask(ctx context.Context, todoistID string) error {
 	url := fmt.Sprintf("%s/tasks/%s/close", c.baseURL, todoistID)
-	req, err := http.NewRequest(http.MethodPost, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
@@ -98,7 +99,7 @@ func (c *Client) CloseTask(todoistID string) error {
 }
 
 // ListProjects returns all projects visible to the authenticated user.
-func (c *Client) ListProjects() ([]Project, error) {
+func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	var all []Project
 	cursor := ""
 	for {
@@ -106,7 +107,7 @@ func (c *Client) ListProjects() ([]Project, error) {
 		if cursor != "" {
 			rawURL += "?cursor=" + cursor
 		}
-		req, err := http.NewRequest(http.MethodGet, rawURL, http.NoBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 		if err != nil {
 			return nil, fmt.Errorf("build request: %w", err)
 		}

@@ -34,6 +34,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 #   - `COPY --from=<builder>` only inside Layer F+G
 #   - HEALTHCHECK uses curl (not node -e)
 #   - Every FROM is sha256-pinned
+#   - No `curl|sh`/`curl|bash` remote-installer pipes (verify checksums instead)
 #
 # Why it matters: bumping sybra invalidates only the last COPY layers;
 # bumping a tool ARG invalidates just that tool's layer. If `apt-get
@@ -63,10 +64,30 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Layer B: klaudiush binary ---
+# Downloads the release archive directly from GitHub and verifies it
+# against the release's published checksums.txt, instead of piping the
+# klaudiu.sh installer script into `sh` (an unpinned, unverified remote
+# script that could change or be compromised without any diff in this
+# repo).
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
 ARG KLAUDIUSH_VERSION=v1.32.4
-RUN curl -sSfL https://klaudiu.sh/install.sh \
-         | sh -s -- -b /usr/local/bin -v "${KLAUDIUSH_VERSION}"
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "${ARCH}" in \
+         amd64|arm64) KLAUDIUSH_ARCH="${ARCH}" ;; \
+         *) echo "unsupported arch: ${ARCH}" >&2 && exit 1 ;; \
+       esac \
+    && VERSION_NUM="${KLAUDIUSH_VERSION#v}" \
+    && ARCHIVE="klaudiush_${VERSION_NUM}_linux_${KLAUDIUSH_ARCH}.tar.gz" \
+    && BASE_URL="https://github.com/smykla-skalski/klaudiush/releases/download/${KLAUDIUSH_VERSION}" \
+    && TMPDIR="$(mktemp -d)" \
+    && curl -sSfL -o "${TMPDIR}/${ARCHIVE}" "${BASE_URL}/${ARCHIVE}" \
+    && curl -sSfL -o "${TMPDIR}/checksums.txt" "${BASE_URL}/checksums.txt" \
+    && grep "  ${ARCHIVE}\$" "${TMPDIR}/checksums.txt" \
+       | sed "s#  ${ARCHIVE}\$#  ${TMPDIR}/${ARCHIVE}#" \
+       | sha256sum -c - \
+    && tar -xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}" klaudiush \
+    && install -m 0755 "${TMPDIR}/klaudiush" /usr/local/bin/klaudiush \
+    && rm -rf "${TMPDIR}"
 
 # --- Layer C: node CLIs (claude code + codex), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code

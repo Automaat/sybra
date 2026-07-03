@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"os/exec"
 	"sync"
@@ -48,7 +49,9 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 	s.logger.Info("project.clone.started", "id", p.ID, "op", opID)
 
 	s.wg.Go(func() {
-		if err := project.CloneBare(p.URL, p.ClonePath); err != nil {
+		// context.Background(): CreateProject is a Wails-bound method; this
+		// runs in a detached background goroutine with no ctx to thread.
+		if err := project.CloneBare(context.Background(), p.URL, p.ClonePath); err != nil {
 			s.logger.Error("project.clone.failed", "id", p.ID, "err", err)
 			if markErr := s.projects.MarkError(p.ID); markErr != nil {
 				s.logger.Error("project.mark-error", "id", p.ID, "err", markErr)
@@ -133,7 +136,8 @@ func (s *ProjectService) DeleteProject(id string) error {
 
 // ListWorktrees returns all git worktrees for the given project's bare clone.
 func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, error) {
-	return s.worktrees.List(projectID)
+	// context.Background(): Wails-bound method with no ctx.
+	return s.worktrees.List(context.Background(), projectID)
 }
 
 // OpenInTerminal opens a worktree path in a new Ghostty terminal tab.
@@ -149,5 +153,5 @@ func (s *ProjectService) OpenInEditor(path string) error {
 	if err := s.worktrees.ValidatePath(path); err != nil {
 		return err
 	}
-	return exec.Command("zed", path).Start()
+	return exec.CommandContext(context.Background(), "zed", path).Start()
 }

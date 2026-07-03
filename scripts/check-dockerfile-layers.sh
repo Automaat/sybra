@@ -102,7 +102,44 @@ awk -v dockerfile="${DOCKERFILE}" '
   END { exit bad ? 1 : 0 }
 ' "${DOCKERFILE}" || fail=1
 
-# --- 4. Healthcheck uses curl, not node ----------------------------------
+# --- 4. No unverified remote installer pipes ------------------------------
+# `curl ... | sh` (or `| bash`) executes a mutable remote script with no
+# pinning or checksum verification — a changed or compromised endpoint can
+# alter the image with no diff in this repo. Require direct artifact
+# downloads verified against a checksum instead (see Layer B, Layer D).
+#
+# RUN instructions commonly split a pipeline across backslash-continuation
+# lines, so join continued lines into one logical line (tagged with the
+# starting line number) before matching — a line-at-a-time grep misses
+# `curl ... \` / `| \` / `sh` split across three lines. Limit the match to
+# RUN instructions where curl/wget appears before the pipe, so unrelated
+# `| sh` pipelines and comments do not trigger this rule.
+installer_pipe_re='\\|[[:space:]]*(sudo[[:space:]]+)?(/usr/bin/env[[:space:]]+)?(/bin/)?(sh|bash)([[:space:]]+-s)?([[:space:]]|$)'
+while IFS=: read -r lineno content; do
+  err "unverified remote installer pipe (curl|sh / curl|bash) at line ${lineno}: ${content}"
+done < <(
+  awk -v installer_pipe_re="${installer_pipe_re}" '
+    {
+      line = $0
+      cont = (line ~ /\\[[:space:]]*$/)
+      gsub(/\\[[:space:]]*$/, "", line)
+      if (buf == "") { start = NR }
+      buf = (buf == "" ? line : buf " " line)
+      if (!cont) {
+        if (buf ~ /^[[:space:]]*RUN([[:space:]]|\\)/ && buf ~ installer_pipe_re) {
+          pipe_start = match(buf, installer_pipe_re)
+          prefix = substr(buf, 1, pipe_start - 1)
+          if (prefix ~ /(^|[[:space:](&;])(curl|wget)([[:space:]]|$)/) {
+            print start ":" buf
+          }
+        }
+        buf = ""
+      }
+    }
+  ' "${DOCKERFILE}" || true
+)
+
+# --- 5. Healthcheck uses curl, not node ----------------------------------
 # Node-based healthchecks are fragile: they depend on the node runtime
 # being on PATH inside the runtime stage. curl is installed in Layer A
 # and is the portable choice. HEALTHCHECK spans line-continuations, so

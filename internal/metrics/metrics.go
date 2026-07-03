@@ -471,8 +471,7 @@ func AgentStarted(provider, mode string) {
 		))
 }
 
-func AgentCompleted(result string, dur time.Duration) {
-	ctx := context.Background()
+func AgentCompleted(ctx context.Context, result string, dur time.Duration) {
 	attrs := metric.WithAttributes(attribute.String("result", result))
 	if agentsCompleted != nil {
 		agentsCompleted.Add(ctx, 1, attrs)
@@ -503,88 +502,88 @@ func TaskDeleted() {
 	tasksDeleted.Add(context.Background(), 1)
 }
 
-func TodoistPoll(ok bool) {
+func TodoistPoll(ctx context.Context, ok bool) {
 	if todoistPolls == nil {
 		return
 	}
-	todoistPolls.Add(context.Background(), 1,
+	todoistPolls.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
-func TodoistImported(n int) {
+func TodoistImported(ctx context.Context, n int) {
 	if todoistImported == nil || n <= 0 {
 		return
 	}
-	todoistImported.Add(context.Background(), int64(n))
+	todoistImported.Add(ctx, int64(n))
 }
 
-func TodoistCompleted(n int) {
+func TodoistCompleted(ctx context.Context, n int) {
 	if todoistCompleted == nil || n <= 0 {
 		return
 	}
-	todoistCompleted.Add(context.Background(), int64(n))
+	todoistCompleted.Add(ctx, int64(n))
 }
 
-func GitHubFetch(ok bool) {
+func GitHubFetch(ctx context.Context, ok bool) {
 	if githubFetches == nil {
 		return
 	}
-	githubFetches.Add(context.Background(), 1,
+	githubFetches.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
-func GitHubIssuesImported(n int) {
+func GitHubIssuesImported(ctx context.Context, n int) {
 	if githubImported == nil || n <= 0 {
 		return
 	}
-	githubImported.Add(context.Background(), int64(n))
+	githubImported.Add(ctx, int64(n))
 }
 
-func RenovatePoll(ok bool) {
+func RenovatePoll(ctx context.Context, ok bool) {
 	if renovatePolls == nil {
 		return
 	}
-	renovatePolls.Add(context.Background(), 1,
+	renovatePolls.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
 // MonitorTick records one completed tick of the in-process monitor service.
-func MonitorTick() {
+func MonitorTick(ctx context.Context) {
 	if monitorTicks == nil {
 		return
 	}
-	monitorTicks.Add(context.Background(), 1)
+	monitorTicks.Add(ctx, 1)
 }
 
 // MonitorAnomaly records one detected anomaly by kind.
-func MonitorAnomaly(kind string) {
+func MonitorAnomaly(ctx context.Context, kind string) {
 	if monitorAnomalies == nil {
 		return
 	}
-	monitorAnomalies.Add(context.Background(), 1,
+	monitorAnomalies.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("kind", kind)))
 }
 
-func OrchestratorTick() {
+func OrchestratorTick(ctx context.Context) {
 	if orchestratorTicks == nil {
 		return
 	}
-	orchestratorTicks.Add(context.Background(), 1)
+	orchestratorTicks.Add(ctx, 1)
 }
 
-func OrchestratorStaleRestart(ok bool) {
+func OrchestratorStaleRestart(ctx context.Context, ok bool) {
 	if orchestratorStaleRestarts == nil {
 		return
 	}
-	orchestratorStaleRestarts.Add(context.Background(), 1,
+	orchestratorStaleRestarts.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", resultLabel(ok))))
 }
 
-func ProviderProbe(name string, ok bool) {
+func ProviderProbe(ctx context.Context, name string, ok bool) {
 	if providerProbes == nil {
 		return
 	}
-	providerProbes.Add(context.Background(), 1,
+	providerProbes.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("provider", name),
 			attribute.String("result", resultLabel(ok)),
@@ -593,7 +592,7 @@ func ProviderProbe(name string, ok bool) {
 
 // ProviderHealthFlip records a health state transition. direction is "healthy"
 // or "unhealthy", matching the new state after the flip.
-func ProviderHealthFlip(name string, healthy bool) {
+func ProviderHealthFlip(ctx context.Context, name string, healthy bool) {
 	if providerHealthFlips == nil {
 		return
 	}
@@ -601,7 +600,7 @@ func ProviderHealthFlip(name string, healthy bool) {
 	if healthy {
 		direction = "healthy"
 	}
-	providerHealthFlips.Add(context.Background(), 1,
+	providerHealthFlips.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("provider", name),
 			attribute.String("direction", direction),

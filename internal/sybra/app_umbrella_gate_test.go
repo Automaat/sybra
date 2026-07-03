@@ -596,7 +596,7 @@ func newBareRepoWithTrackedFile(t *testing.T) (barePath, branch string) {
 	branch = strings.TrimSpace(string(branchOut))
 
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := project.CloneBare(src, bare); err != nil {
+	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
 	}
 	return bare, branch

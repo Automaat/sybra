@@ -702,7 +702,7 @@ func resolveWorktreeDir(wtDir string) (string, error) {
 // push) or on the repo's default branch (would push agent commits to origin's
 // default branch with no PR).
 func assertFeatureBranch(dir string, proj project.Project) error {
-	branch, err := project.CurrentBranch(dir)
+	branch, err := project.CurrentBranch(context.Background(), dir)
 	if err != nil {
 		return fmt.Errorf("resolve worktree branch: %w", err)
 	}
@@ -712,7 +712,7 @@ func assertFeatureBranch(dir string, proj project.Project) error {
 	// Fail closed: if the default branch can't be determined we can't prove the
 	// worktree isn't on it, so refuse rather than risk pushing agent commits to
 	// the default branch with no PR.
-	def, dErr := project.DefaultBranch(proj.ClonePath)
+	def, dErr := project.DefaultBranch(context.Background(), proj.ClonePath)
 	if dErr != nil {
 		return fmt.Errorf("cannot determine default branch for %q: %w", proj.ID, dErr)
 	}
@@ -769,7 +769,7 @@ func printHandoffStatusResult(t task.Task, status task.Status, projectID, dir st
 // deriveProjectID reads the origin remote of a git worktree and converts it to
 // a Sybra project id (owner/repo).
 func deriveProjectID(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	out, err := exec.CommandContext(context.Background(), "git", "-C", dir, "remote", "get-url", "origin").Output()
 	if err != nil {
 		return "", fmt.Errorf("git remote get-url origin: %w", err)
 	}

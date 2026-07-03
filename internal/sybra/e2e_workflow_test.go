@@ -3305,8 +3305,10 @@ func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "plan_wait" && tk.Workflow.State == workflow.ExecWaiting
 	})
 
+	// HandleStatusChange returns synchronously on a mismatched status (it
+	// bails out before scheduling any async work), so the workflow state can
+	// be asserted immediately with no wait.
 	env.engine.HandleStatusChange(created.ID, "in-progress")
-	time.Sleep(250 * time.Millisecond)
 
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
@@ -3345,8 +3347,9 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	recordsBefore := len(tk.Workflow.StepHistory)
+	// The workflow is already terminal, so HandleStatusChange bails out
+	// synchronously without scheduling any async work — no wait needed.
 	env.engine.HandleStatusChange(created.ID, "plan-review")
-	time.Sleep(150 * time.Millisecond)
 	tkAfter, _ := env.tasks.Get(created.ID)
 	if len(tkAfter.Workflow.StepHistory) != recordsBefore {
 		t.Fatalf("duplicate advancement on repeated status: before=%d after=%d", recordsBefore, len(tkAfter.Workflow.StepHistory))
@@ -4577,7 +4580,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "cooldown run1 stops", func() bool { return ag1.GetState() == agent.StateStopped })
 
-	time.Sleep(250 * time.Millisecond)
+	waitFor(t, 2*time.Second, "cooldown window elapses", func() bool { return g.IsHealthy("claude") })
 	ag2, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "cooldown-2",
 		Name:     "cooldown 2",
@@ -5045,8 +5048,9 @@ func TestE2E_StatusChange_AfterTerminal_NoMutation(t *testing.T) {
 
 	tk, _ := env.tasks.Get(created.ID)
 	historyBefore := len(tk.Workflow.StepHistory)
+	// The workflow is already terminal, so HandleStatusChange bails out
+	// synchronously without scheduling any async work — no wait needed.
 	env.engine.HandleStatusChange(created.ID, "plan-review")
-	time.Sleep(150 * time.Millisecond)
 	after, _ := env.tasks.Get(created.ID)
 	if len(after.Workflow.StepHistory) != historyBefore {
 		t.Fatalf("terminal status change mutated history: before=%d after=%d", historyBefore, len(after.Workflow.StepHistory))

@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -27,7 +28,7 @@ func openCommandInGhostty(dir, claudeCmd string) error {
 		new window with configuration cfg
 	end if
 end tell`, executil.EscapeAppleScript(shellCmd))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), "osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("osascript: %w: %s", err, string(out))
 	}
@@ -36,7 +37,7 @@ end tell`, executil.EscapeAppleScript(shellCmd))
 
 // copyToClipboard copies text to the macOS system clipboard via pbcopy.
 func copyToClipboard(text string) error {
-	cmd := exec.Command("pbcopy")
+	cmd := exec.CommandContext(context.Background(), "pbcopy")
 	cmd.Stdin = strings.NewReader(text)
 	return cmd.Run()
 }
@@ -54,7 +55,7 @@ func openDirInGhostty(dir string) error {
 		new window with configuration cfg
 	end if
 end tell`, executil.EscapeAppleScript(dir))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), "osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("osascript: %w: %s", err, string(out))
 	}

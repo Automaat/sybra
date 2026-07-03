@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -405,8 +406,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return ag.ID, "", baselineRef, nil
 	}
 
-	// For system agents (triage, eval, plan, etc.), build RunConfig directly.
+	// For roles that don't go through StartAgentWithAssignment (triage, eval,
+	// plan, pr-fix, fix-review, test-runner, ...), build RunConfig directly.
 	r := agent.Role(role)
+	if err := a.claimDirectDispatch(taskID); err != nil {
+		return "", "", "", err
+	}
+	defer a.agents.ReleaseTaskDispatch(taskID)
+
 	t, err := a.agentOrch.tasks.Get(taskID)
 	if err != nil {
 		return "", "", "", err
@@ -465,7 +472,12 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 			}
 			cleanRetryReset = true
 		}
-		d, wtErr := a.agentOrch.worktrees.PrepareForTask(t, nil)
+		// context.Background(): StartAgent implements workflow.AgentDispatcher,
+		// a fixed interface signature with no ctx parameter (invoked from many
+		// workflow step-execution call sites); see the Engine.SetContext /
+		// e.ctx pattern for why threading ctx across that interface is out of
+		// scope for this pass.
+		d, wtErr := a.agentOrch.worktrees.PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
 			if _, recovered := markRebaseBlockedWithRecoveryResult(a.tasks, taskID, wtErr, a.agentOrch.logger, a.agentOrch.conflictRecovery); recovered {
 				return "", "", "", workflow.ErrDispatchInFlight
@@ -508,6 +520,20 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	return ag.ID, cfg.Dir, baselineRef, nil
 }
 
+// claimDirectDispatch serializes the direct-run dispatch path (every role
+// that bypasses StartAgentWithAssignment: triage, eval, plan, pr-fix,
+// fix-review, test-runner, ...) per task, closing the same check-then-act
+// race that StartAgentWithAssignment closes for implementation agents above:
+// without it, two dispatchers (e.g. a fast ResumeStalled retry) can each
+// observe no running agent and start a duplicate agent against the same
+// task/worktree.
+func (a *agentAdapter) claimDirectDispatch(taskID string) error {
+	if !a.agents.ClaimTaskDispatch(taskID) {
+		return workflow.ErrDispatchInFlight
+	}
+	return nil
+}
+
 func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {
 	target := dir
 	if target == "" {
@@ -526,7 +552,10 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		}
 		return fmt.Errorf("stat clean retry worktree: %w", err)
 	}
-	if err := project.ResetWorktreeForRetry(target, ref); err != nil {
+	// context.Background(): StartAgent implements workflow.AgentDispatcher,
+	// a fixed interface signature with no ctx parameter (see the earlier
+	// comment on the PrepareForTask call in this file).
+	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
 		a.agentOrch.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
@@ -563,7 +592,7 @@ func currentWorktreeHead(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.Command("git", "rev-parse", "--verify", "HEAD")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--verify", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

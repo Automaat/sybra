@@ -92,7 +92,7 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// HasRunningAgentForTask gates ResumeStalled; releasing it before the
 	// workflow advance handler runs lets a tight ResumeStalled loop dispatch
 	// a duplicate agent.
-	m.finalizeRun(a, "agent.headless.done")
+	m.finalizeRun(ctx, a, "agent.headless.done")
 }
 
 func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -241,7 +241,8 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	}
 	logPath := (*outFile).Name()
 
-	cmd := exec.Command(name, args...) // no Context: a cancelled ctx must not kill a detached child
+	// no Context: a cancelled ctx must not kill a detached child
+	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
 	configureDetached(cmd)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
@@ -264,7 +265,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	}
 	a.SetCmd(cmd)
 	a.setDetached(true)
-	m.saveRegistry(a)
+	m.saveRegistry(ctx, a)
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
 
 	procDone := make(chan struct{})
@@ -617,7 +618,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if (event.Type == "init" || event.Type == "system") && event.SessionID != "" {
 		if a.GetSessionID() != event.SessionID {
 			a.SetSessionID(event.SessionID)
-			m.saveRegistry(a)
+			m.saveRegistry(ctx, a)
 		}
 		if p := provider.SessionFilePath(event.SessionID); p != "" {
 			a.SetSessionFilePath(p)
@@ -657,7 +658,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.
 		if event.SessionID != "" {
-			m.saveRegistry(a)
+			m.saveRegistry(ctx, a)
 		}
 		m.mu.RLock()
 		maxCost := m.guardrails.MaxCostUSD
@@ -744,14 +745,14 @@ func (m *Manager) effectiveMaxTurns(a *Agent) int {
 	return global
 }
 
-func (m *Manager) handleError(a *Agent, err error) {
+func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 	kind := classifyAgentError(err)
 	a.SetError(kind, err.Error())
 	a.SetState(StateStopped)
 	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
 	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, false)
+	m.fireComplete(ctx, a, false)
 	m.markAgentDone(a)
 }
 

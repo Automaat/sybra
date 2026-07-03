@@ -1,6 +1,7 @@
 package project
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -161,10 +162,10 @@ func TestCreateWorktree_ConcurrentDistinctPathsSucceed(t *testing.T) {
 	t.Parallel()
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	if err := CloneBare(src, bare); err != nil {
+	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	branch, err := DefaultBranch(bare)
+	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestCreateWorktree_ConcurrentDistinctPathsSucceed(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			wtPath := filepath.Join(t.TempDir(), fmt.Sprintf("wt-%d", i))
-			errs[i] = CreateWorktree(bare, wtPath, fmt.Sprintf("sybra/concurrent-%d", i), branch)
+			errs[i] = CreateWorktree(context.Background(), bare, wtPath, fmt.Sprintf("sybra/concurrent-%d", i), branch)
 		}(i)
 	}
 	wg.Wait()

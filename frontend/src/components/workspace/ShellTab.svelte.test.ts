@@ -7,6 +7,8 @@ vi.mock('$lib/bash-activity.js', () => ({
   truncateOutput: (s: string) => s,
 }))
 
+vi.mock('../PlanSteps.svelte', () => ({ default: () => {} }))
+
 const { extractBashActivity } = await import('$lib/bash-activity.js')
 const ShellTab = (await import('./ShellTab.svelte')).default
 
@@ -66,7 +68,6 @@ describe('PlannerTab', () => {
   afterEach(() => { cleanup() })
 
   it('shows empty state when no plan steps', async () => {
-    vi.mock('../PlanSteps.svelte', () => ({ default: () => {} }))
     const PlannerTab = (await import('./PlannerTab.svelte')).default
     render(PlannerTab, { props: { planSteps: [] } })
     expect(screen.getByText('No plan yet')).toBeDefined()

@@ -64,6 +64,8 @@ run = [
   "cd frontend && npx oxlint .",
   "cd frontend && node scripts/check-pin-strategy.mjs",
   "bash scripts/check-api-shim-sync.sh",
+  "bash scripts/resolve-release-version.test.sh",
+  "bash scripts/generate-release-notes.test.sh",
   "command -v wails3 >/dev/null 2>&1 || (echo 'wails3 not found — install with: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87 (see .github/workflows/ci.yml for the full workaround)' && exit 1)",
   "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
   "hadolint Dockerfile",

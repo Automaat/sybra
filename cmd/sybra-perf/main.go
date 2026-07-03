@@ -297,7 +297,7 @@ func resolveFakeClaude(explicit string) (string, error) {
 		src = abs
 	} else {
 		src = filepath.Join(dir, "fake-claude")
-		cmd := exec.Command("go", "build", "-o", src, "./cmd/fake-claude")
+		cmd := exec.CommandContext(context.Background(), "go", "build", "-o", src, "./cmd/fake-claude")
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -348,7 +348,7 @@ func startServer(o options, home, fakeDir string, port int) (*serverProc, error)
 	// invocation keeps gosec G204 silent and avoids the footgun of a stale
 	// pre-built binary masking recent server changes. Go build caching
 	// makes repeat runs of the same scenario pay the compile cost only once.
-	cmd := exec.Command("go", "run", "./cmd/sybra-server")
+	cmd := exec.CommandContext(context.Background(), "go", "run", "./cmd/sybra-server")
 
 	perfPath := fakeDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	env := os.Environ()
@@ -416,7 +416,8 @@ func filterEnv(env, drop []string) []string {
 }
 
 func pickFreePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -492,7 +493,7 @@ func newAPIClient(baseURL string) *apiClient {
 // call invokes POST /api/{service}/{method} with the given positional args.
 // Args are JSON-encoded as an array per httpapi.Mount's contract. out may be
 // nil when the caller does not care about the response body.
-func (c *apiClient) call(service, method string, args []any, out any) error {
+func (c *apiClient) call(ctx context.Context, service, method string, args []any, out any) error {
 	var body []byte
 	var err error
 	if len(args) > 0 {
@@ -502,7 +503,7 @@ func (c *apiClient) call(service, method string, args []any, out any) error {
 		}
 	}
 	url := fmt.Sprintf("%s/api/%s/%s", c.baseURL, service, method)
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -533,9 +534,9 @@ type taskPayload struct {
 // createResearchTask creates a task then flips its task_type to "research"
 // so StartAgent takes the skipWorktree path and runs against the configured
 // research_machine_dir. Avoids the cost of real git-worktree setup.
-func (c *apiClient) createResearchTask(i int) (string, error) {
+func (c *apiClient) createResearchTask(ctx context.Context, i int) (string, error) {
 	var t taskPayload
-	if err := c.call("TaskService", "CreateTask", []any{
+	if err := c.call(ctx, "TaskService", "CreateTask", []any{
 		fmt.Sprintf("perf task %d", i),
 		"## Description\nperf harness body\n",
 		"headless",
@@ -545,7 +546,7 @@ func (c *apiClient) createResearchTask(i int) (string, error) {
 	if t.ID == "" {
 		return "", errors.New("CreateTask returned empty id")
 	}
-	if err := c.call("TaskService", "UpdateTask", []any{t.ID, map[string]any{"task_type": "research"}}, nil); err != nil {
+	if err := c.call(ctx, "TaskService", "UpdateTask", []any{t.ID, map[string]any{"task_type": "research"}}, nil); err != nil {
 		return "", fmt.Errorf("UpdateTask task_type=research: %w", err)
 	}
 	return t.ID, nil
@@ -553,18 +554,18 @@ func (c *apiClient) createResearchTask(i int) (string, error) {
 
 // startAgent invokes App.StartAgent and returns the spawned agent's in-memory
 // ID so the caller can correlate SSE output/state events back to this run.
-func (c *apiClient) startAgent(taskID string) (string, error) {
+func (c *apiClient) startAgent(ctx context.Context, taskID string) (string, error) {
 	var resp struct {
 		ID string `json:"id"`
 	}
-	if err := c.call("App", "StartAgent", []any{taskID, "headless", "perf harness prompt"}, &resp); err != nil {
+	if err := c.call(ctx, "App", "StartAgent", []any{taskID, "headless", "perf harness prompt"}, &resp); err != nil {
 		return "", err
 	}
 	return resp.ID, nil
 }
 
-func (c *apiClient) deleteTask(id string) error {
-	return c.call("TaskService", "DeleteTask", []any{id}, nil)
+func (c *apiClient) deleteTask(ctx context.Context, id string) error {
+	return c.call(ctx, "TaskService", "DeleteTask", []any{id}, nil)
 }
 
 // ==================== Scenarios ====================
@@ -773,16 +774,16 @@ func runConcurrentAgents(ctx context.Context, c *apiClient, o options, report *R
 // runOneAgent creates a research task, starts a headless agent against it,
 // and measures only the HTTP startup latency. Per-agent event counts are
 // collected separately via the SSE listener in the caller.
-func runOneAgent(_ context.Context, c *apiClient, i int) agentResult {
+func runOneAgent(ctx context.Context, c *apiClient, i int) agentResult {
 	r := agentResult{startedAt: time.Now()}
-	id, err := c.createResearchTask(i)
+	id, err := c.createResearchTask(ctx, i)
 	if err != nil {
 		r.err = err.Error()
 		return r
 	}
 	r.taskID = id
 	callStart := time.Now()
-	agentID, err := c.startAgent(id)
+	agentID, err := c.startAgent(ctx, id)
 	if err != nil {
 		r.err = err.Error()
 		return r
@@ -835,7 +836,7 @@ func runChurn(ctx context.Context, c *apiClient, o options, report *Report) erro
 
 			cStart := time.Now()
 			var t taskPayload
-			if err := c.call("TaskService", "CreateTask", []any{
+			if err := c.call(ctx, "TaskService", "CreateTask", []any{
 				fmt.Sprintf("churn task %d", seq),
 				"## body\nchurn body\n",
 				"headless",
@@ -849,7 +850,7 @@ func runChurn(ctx context.Context, c *apiClient, o options, report *Report) erro
 			// Update only the body field: tags / status transitions would
 			// trigger hooks (orchestrator, notifier, workflow engine) and
 			// contaminate pure CRUD latency. Body edits are side-effect-free.
-			if err := c.call("TaskService", "UpdateTask", []any{t.ID, map[string]any{
+			if err := c.call(ctx, "TaskService", "UpdateTask", []any{t.ID, map[string]any{
 				"body": fmt.Sprintf("## Description\nupdated body %d\n", seq),
 			}}, nil); err != nil {
 				errCount.Add(1)
@@ -858,7 +859,7 @@ func runChurn(ctx context.Context, c *apiClient, o options, report *Report) erro
 			uDur := time.Since(uStart)
 
 			dStart := time.Now()
-			if err := c.deleteTask(t.ID); err != nil {
+			if err := c.deleteTask(ctx, t.ID); err != nil {
 				errCount.Add(1)
 				return
 			}

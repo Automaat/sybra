@@ -51,7 +51,7 @@ func (m *Manager) runRetryLoop(ctx context.Context, a *Agent, logTag string, att
 			return true
 		}
 		if fatalErr != nil {
-			m.handleError(a, fatalErr)
+			m.handleError(ctx, a, fatalErr)
 			return true
 		}
 		if !retry {
@@ -67,10 +67,10 @@ func (m *Manager) runRetryLoop(ctx context.Context, a *Agent, logTag string, att
 // finalizeRun marks a completed run stopped, emits the terminal state/events,
 // and releases the agent. Shared tail of runHeadless and runConversational
 // once runRetryLoop has broken out normally.
-func (m *Manager) finalizeRun(a *Agent, doneLogEvent string) {
+func (m *Manager) finalizeRun(ctx context.Context, a *Agent, doneLogEvent string) {
 	a.SetState(StateStopped)
 	m.logger.Info(doneLogEvent, "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
-	m.fireComplete(a, a.GetExitErr() == nil)
+	m.fireComplete(ctx, a, a.GetExitErr() == nil)
 	m.markAgentDone(a)
 }

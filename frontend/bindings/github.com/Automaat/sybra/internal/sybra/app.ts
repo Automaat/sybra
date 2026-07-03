@@ -155,6 +155,19 @@ export function StartChat(projectID: string, providerName: string, prompt: strin
 /**
  * Startup initializes all subsystems. Returns an error if a critical subsystem
  * fails; callers (Wails OnStartup, HTTP server main) handle the error.
+ * contextcheck note: several call chains below (emit's task.created dispatch,
+ * initStatusHook, initLimits, RegisterSpotlightHotkey) eventually reach a
+ * consumer — workflow.Engine's execShell, App.ctx-derived backfill, or
+ * agent.Manager's dispatch chain — that already derives its context from
+ * this same Startup(ctx) via a long-lived field (Engine.SetContext(a.ctx),
+ * a.ctx itself, or agent.Manager's own m.ctx) rather than an explicit
+ * parameter threaded through every intermediate call. Each field is bound
+ * exactly once from this ctx, so cancellation still propagates correctly;
+ * contextcheck cannot see field-based propagation and flags the gap between
+ * this ctx and the eventual consumer. Re-plumbing ctx as an explicit
+ * parameter through the entire event/dispatch/workflow fan-out these chains
+ * pass through is out of scope for this pass — nolint annotations below
+ * point back to this comment.
  */
 export function Startup(): $CancellablePromise<void> {
     return $Call.ByID(2295615836);

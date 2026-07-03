@@ -254,7 +254,7 @@ func TestConfigureDetached_SetsSid(t *testing.T) {
 
 func TestReattachAlive_PIDReuseGuard(t *testing.T) {
 	self := os.Getpid()
-	start := processStartString(self)
+	start := processStartString(context.Background(), self)
 	if start == "" {
 		t.Skip("processStartString unavailable on this platform")
 	}
@@ -323,7 +323,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 		PID:           cmd.Process.Pid,
 		LogPath:       logPath,
 		StartedAt:     time.Now().UTC(),
-		ProcStartedAt: processStartString(cmd.Process.Pid),
+		ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
 	}
 	if err := m.reg.Save(rec); err != nil {
 		t.Fatalf("save record: %v", err)

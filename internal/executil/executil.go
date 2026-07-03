@@ -1,6 +1,7 @@
 package executil
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -15,8 +16,8 @@ func EscapeAppleScript(s string) string {
 }
 
 // Run executes a command in dir, returning a formatted error with stderr on failure.
-func Run(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+func Run(ctx context.Context, dir, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, string(out))
@@ -25,8 +26,8 @@ func Run(dir, name string, args ...string) error {
 }
 
 // Output executes a command in dir and returns its trimmed stdout.
-func Output(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+func Output(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

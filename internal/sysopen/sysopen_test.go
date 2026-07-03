@@ -1,6 +1,7 @@
 package sysopen
 
 import (
+	"context"
 	"runtime"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestDir_UnsupportedOS(t *testing.T) {
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		t.Skip("skipped on supported platforms")
 	}
-	if err := Dir("/tmp"); err == nil {
+	if err := Dir(context.Background(), "/tmp"); err == nil {
 		t.Error("expected error for unsupported OS, got nil")
 	}
 }

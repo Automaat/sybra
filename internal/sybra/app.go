@@ -203,6 +203,19 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 
 // Startup initializes all subsystems. Returns an error if a critical subsystem
 // fails; callers (Wails OnStartup, HTTP server main) handle the error.
+// contextcheck note: several call chains below (emit's task.created dispatch,
+// initStatusHook, initLimits, RegisterSpotlightHotkey) eventually reach a
+// consumer — workflow.Engine's execShell, App.ctx-derived backfill, or
+// agent.Manager's dispatch chain — that already derives its context from
+// this same Startup(ctx) via a long-lived field (Engine.SetContext(a.ctx),
+// a.ctx itself, or agent.Manager's own m.ctx) rather than an explicit
+// parameter threaded through every intermediate call. Each field is bound
+// exactly once from this ctx, so cancellation still propagates correctly;
+// contextcheck cannot see field-based propagation and flags the gap between
+// this ctx and the eventual consumer. Re-plumbing ctx as an explicit
+// parameter through the entire event/dispatch/workflow fan-out these chains
+// pass through is out of scope for this pass — nolint annotations below
+// point back to this comment.
 func (a *App) Startup(ctx context.Context) error {
 	ctx, a.cancel = context.WithCancel(ctx)
 	a.ctx = ctx
@@ -235,7 +248,7 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	emit := func(event string, data any) {
+	emit := func(event string, data any) { //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 		switch event {
 		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
 			if path, ok := data.(string); ok {
@@ -263,11 +276,11 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
-	a.initStatusHook()
+	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
-	a.initLimits()
+	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
 	if err := a.initAgentManager(ctx, emit); err != nil {
 		return err
 	}
@@ -299,10 +312,12 @@ func (a *App) Startup(ctx context.Context) error {
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit)
 
-	a.syncSkillsBundle()
+	// syncSkillsBundle's deep diagnostic logging uses context.Background()
+	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
+	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.recovery = a.newRecovery()
-	a.recovery.RunStartupCleanup()
-	a.RegisterSpotlightHotkey()
+	a.recovery.RunStartupCleanup(ctx)
+	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
 	lm.StartManagers(ctx, emit)

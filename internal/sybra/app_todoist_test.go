@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,7 @@ func TestTodoistImport_SetsDefaultProjectID(t *testing.T) {
 		cfg,
 	)
 
-	imported, err := h.ImportNewTasks()
+	imported, err := h.ImportNewTasks(context.Background())
 	if err != nil {
 		t.Fatalf("importNewTasks: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestTodoistImport_EmptyDefaultProjectIDLeavesUnset(t *testing.T) {
 		cfg,
 	)
 
-	if _, err := h.ImportNewTasks(); err != nil {
+	if _, err := h.ImportNewTasks(context.Background()); err != nil {
 		t.Fatalf("importNewTasks: %v", err)
 	}
 

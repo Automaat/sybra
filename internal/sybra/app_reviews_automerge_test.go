@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -673,7 +674,7 @@ func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.handleKnownPRConflictsViaREST(got)
+	r.handleKnownPRConflictsViaREST(context.Background(), got)
 
 	if restMergedNum != 50 {
 		t.Fatalf("restMergedNum = %d, want 50 (ready_to_merge must reach handleAutoMerge)", restMergedNum)

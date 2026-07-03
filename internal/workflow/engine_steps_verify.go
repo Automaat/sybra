@@ -308,7 +308,7 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		// on "no commits" would discard that work — recover it first: stage and
 		// commit anything sitting dirty in the worktree, then re-check for
 		// commits before falling through to the escalation paths below.
-		if project.AutoCommitUncommitted(wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
+		if project.AutoCommitUncommitted(e.ctx, wtPath, "wip: auto-commit uncommitted implementation work\n\nverify_commits recovered work an agent finished without committing.") {
 			e.logger.Warn("workflow.verify-commits.auto-committed", "task_id", taskID)
 			recovered, recErr := e.gitLogAheadOfBase(wtPath)
 			if recErr != nil {
