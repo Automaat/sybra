@@ -1738,6 +1738,99 @@ func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 	}
 }
 
+// TestMergeOnto_MergesNonConflictingHistories proves the core "additive, no
+// force-push" property: merging two branches whose commits touch different
+// files produces a merge commit carrying both sides' content, and pushing the
+// result afterward is a plain fast-forward (the remote SHA remains an
+// ancestor of the merge commit).
+func TestMergeOnto_MergesNonConflictingHistories(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+	remoteHead := pushRemoteCommit(t, remoteBare, branch, "remote-side")
+
+	// A local commit on a different file — nothing for the merge to conflict
+	// on with remote-side's data.txt change.
+	if err := os.WriteFile(filepath.Join(wtPath, "other.txt"), []byte("local-side"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "add", "other.txt"},
+		{"-C", wtPath, "commit", "-m", "local-side"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if out, err := exec.Command("git", "-C", wtPath, "fetch", "origin").CombinedOutput(); err != nil {
+		t.Fatalf("fetch: %v: %s", err, out)
+	}
+	if err := MergeOnto(context.Background(), wtPath, "origin/"+branch); err != nil {
+		t.Fatalf("MergeOnto: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(wtPath, "data.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "remote-side" {
+		t.Fatalf("data.txt = %q, want remote-side's content", got)
+	}
+	got, err = os.ReadFile(filepath.Join(wtPath, "other.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "local-side" {
+		t.Fatalf("other.txt = %q, want local-side's content", got)
+	}
+
+	// The remote's pre-merge head must remain an ancestor of the merge commit
+	// — the property PushSync relies on to always take the fast-forward path,
+	// never --force-with-lease, after a MergeOnto recovery.
+	if out, err := exec.Command("git", "-C", wtPath, "merge-base", "--is-ancestor", remoteHead, "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("remote head %s is not an ancestor of the merge commit: %v: %s", remoteHead, err, out)
+	}
+}
+
+// TestMergeOnto_ConflictReturnsErrorAndCleansUp proves MergeOnto fails closed
+// on a genuine conflict and leaves the worktree in a clean, non-merging state
+// (mirroring RebaseOnto's --abort-on-failure contract) rather than stranding
+// a half-applied merge for the next operation to trip over.
+func TestMergeOnto_ConflictReturnsErrorAndCleansUp(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+	pushRemoteCommit(t, remoteBare, branch, "remote-side")
+	makeCommit(t, wtPath, "local-side")
+
+	if out, err := exec.Command("git", "-C", wtPath, "fetch", "origin").CombinedOutput(); err != nil {
+		t.Fatalf("fetch: %v: %s", err, out)
+	}
+
+	err := MergeOnto(context.Background(), wtPath, "origin/"+branch)
+	if err == nil {
+		t.Fatal("MergeOnto with conflicting data.txt = nil error, want conflict")
+	}
+
+	if out, mergeErr := exec.Command("git", "-C", wtPath, "rev-parse", "-q", "--verify", "MERGE_HEAD").CombinedOutput(); mergeErr == nil {
+		t.Fatalf("MERGE_HEAD still present after MergeOnto failure, want abort to have cleaned it up: %s", out)
+	}
+	out, statusErr := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, out)
+	}
+	if len(strings.TrimSpace(string(out))) != 0 {
+		t.Fatalf("worktree not clean after MergeOnto failure: %s", out)
+	}
+}
+
 // TestPushSync_RefusesForceWhenRemoteAdvanced is the defense-in-depth net: when
 // the live remote head no longer matches the stale tracking ref the push
 // decision was based on, PushSync must refuse the --force-with-lease rather than
