@@ -67,8 +67,8 @@ task() {
     echo "created_at: ${EARLIER}"
     echo "updated_at: ${NOW}"
     echo "---"
-    echo "## Description"
-    echo ""
+    # The UI already labels this section "Description"; the body is just the
+    # markdown, no redundant "## Description" heading.
     echo "${body}"
   } >"$TASKS/${id}.md"
 }
@@ -396,4 +396,132 @@ task task-cxl01 cancelled "Rewrite frontend in React" low "" "frontend" \
   "outcome: wontfix" \
   "closed_at: ${OLDER}"
 
-echo "Seeded $(find "$TASKS" -name '*.md' | wc -l | tr -d ' ') tasks + $(find "$PROJECTS" -name '*.yaml' | wc -l | tr -d ' ') projects into $SYBRA_HOME"
+# ---------------------------------------------------------------------------
+# Planning / review sidecars
+# The plan, critique, decisions, and code review live in per-task sidecar files
+# (loaded onto Task.Plan/PlanCritique/PlanDecisions/PlanBrief/CodeReview on read,
+# not the frontmatter) — so the Plan and Review tabs have real content to render.
+# task-done01 = a shipped task with a plan + critique + code review.
+# task-plan02 = a plan-review task awaiting approval, with open decisions.
+# ---------------------------------------------------------------------------
+cat >"$TASKS/task-done01.plan.md" <<'EOF'
+# Plan: SSE multiplexing for web mode
+
+## Goal
+
+Collapse the per-subscription EventSource connections into a single multiplexed `/events` stream so the web build stops exhausting the browser's 6-connection-per-origin cap.
+
+## Approach
+
+1. Add a server-side broker that fans one upstream feed out to N subscribers keyed by event name.
+2. Replace the client's N EventSource objects with one connection to `/events`, demultiplexing by the `event:` field.
+3. Keep the desktop (Wails) path untouched — it already uses native events.
+
+## Steps
+
+- [x] Introduce `broker.ServeAll` for the multiplexed endpoint
+- [x] Client `eventBus` subscribes once, dispatches by name
+- [x] Backpressure: drop-oldest per slow subscriber
+- [x] Reconnect with `Last-Event-ID` replay
+- [ ] Load test: 200 concurrent tabs (deferred)
+
+## Risks
+
+- Slow consumers stalling the shared stream — mitigated by per-subscriber bounded channels.
+- Reconnect storms on server restart — jittered backoff on the client.
+EOF
+
+cat >"$TASKS/task-done01.plan-critique.md" <<'EOF'
+# Plan critique
+
+Strengths: the single-broker approach is the standard fix and keeps the desktop path isolated.
+
+Concerns:
+
+- The drop-oldest policy can silently lose task-updated events during a burst. Consider a coalescing buffer keyed by event name instead.
+- `Last-Event-ID` replay needs a bounded ring buffer or a server restart will attempt an unbounded backfill.
+- No mention of auth/session scoping on the shared stream — confirm the broker does not leak another session's events.
+
+Verdict: approve with the coalescing-buffer note folded into the implementation.
+EOF
+
+cat >"$TASKS/task-done01.review.md" <<'EOF'
+# Code Review
+
+**Summary:** Implementation matches the approved plan. One blocking issue, two nits.
+
+## Blocking
+
+- `broker.go:88` — the per-subscriber channel is unbuffered, so a slow tab blocks the fan-out goroutine and stalls every other subscriber. Give it a bounded buffer + drop-oldest as the plan specified.
+
+## Nits
+
+- `eventBus.ts:41` — reconnect backoff is fixed at 1s; add jitter to avoid a thundering herd on server restart.
+- `broker_test.go` — no test covers the slow-consumer path. Add one that never reads and asserts the others still receive.
+
+## Verdict
+
+Request changes — fix the unbuffered channel, then good to merge.
+EOF
+
+cat >"$TASKS/task-plan02.plan.md" <<'EOF'
+# Plan: Introduce a project archive state
+
+## Goal
+
+Let a project be archived so it drops out of the active board and automations without deleting its history.
+
+## Approach
+
+- Add `archived: bool` to the project record (default false).
+- Filter archived projects out of the board, pickers, and every project-scoped automation.
+- Add an Archive / Unarchive action in the Project → Setup tab.
+
+## Steps
+
+- [ ] Schema + migration (empty = active, no backfill needed)
+- [ ] Board + picker filters
+- [ ] Automation `AllowsProject` guard
+- [ ] Setup-tab toggle + confirm dialog
+
+## Out of scope
+
+- Bulk archive
+- Auto-archive on inactivity
+EOF
+
+cat >"$TASKS/task-plan02.plan-brief.md" <<'EOF'
+Archiving hides a project everywhere without data loss. Two open decisions below need a call before implementation starts.
+EOF
+
+cat >"$TASKS/task-plan02.plan-decisions.md" <<'EOF'
+## Archived tasks visibility
+
+Question: What happens to in-flight tasks when their project is archived?
+
+Recommended: Freeze
+
+Options:
+
+- Freeze — leave tasks as-is but hide them; unarchive restores them.
+- Cancel — mark all non-done tasks cancelled on archive.
+- Block archive — refuse to archive while active tasks exist.
+
+## Storage location
+
+Question: Where should the archived flag live?
+
+Recommended: Project record
+
+Options:
+
+- Project record — one `archived` field on the YAML, simplest.
+- Separate archive index — a dedicated file listing archived ids.
+EOF
+
+# Count only task frontmatter files, not the .plan/.review/etc. sidecars.
+task_count=$(find "$TASKS" -name '*.md' \
+  ! -name '*.plan.md' ! -name '*.plan-critique.md' ! -name '*.plan-research.md' \
+  ! -name '*.plan-decisions.md' ! -name '*.plan-brief.md' ! -name '*.review.md' \
+  | wc -l | tr -d ' ')
+echo "Seeded ${task_count} tasks + $(find "$PROJECTS" -name '*.yaml' | wc -l | tr -d ' ') projects into $SYBRA_HOME"
