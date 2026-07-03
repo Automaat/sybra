@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -422,6 +423,79 @@ func TestRunSetup_FailureBlocks(t *testing.T) {
 	data, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(data), "exit err=") {
 		t.Errorf("setup log missing failure record; got:\n%s", string(data))
+	}
+}
+
+// TestRunSetupNonGating_FailureDoesNotBlock proves the fix-role setup path
+// (issue #1454) never returns an error on a failing setup command — a fixer
+// worktree must always be creatable even when the PR under repair broke the
+// project's build step, since that's exactly what the fixer exists to
+// repair. The failure must instead be captured into NOTES.md.
+func TestRunSetupNonGating_FailureDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	err := m.runSetupNonGating(context.Background(), "task-fix-fail", wtDir, []string{
+		"echo broken build >&2 && exit 1",
+	})
+	if err != nil {
+		t.Fatalf("runSetupNonGating must not fail worktree creation: %v", err)
+	}
+
+	content, readErr := os.ReadFile(filepath.Join(wtDir, notes.FileName))
+	if readErr != nil {
+		t.Fatalf("read scratchpad: %v", readErr)
+	}
+	if !strings.Contains(string(content), "Setup failure") {
+		t.Errorf("scratchpad missing setup failure note: %q", content)
+	}
+}
+
+// TestRunSetupNonGating_SuccessLeavesNoNote confirms a clean setup run does
+// not create a spurious NOTES.md — the scratchpad is only seeded on failure
+// for fix-role worktrees (implementation worktrees seed it separately via
+// seedWorktree).
+func TestRunSetupNonGating_SuccessLeavesNoNote(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	if err := m.runSetupNonGating(context.Background(), "task-fix-ok", wtDir, []string{"true"}); err != nil {
+		t.Fatalf("runSetupNonGating: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(wtDir, notes.FileName)); !os.IsNotExist(statErr) {
+		t.Errorf("expected no NOTES.md on successful setup, stat err: %v", statErr)
+	}
+}
+
+// TestRunSetupNonGating_PersistFailureReturnsError proves the prepare still
+// fails closed when Sybra cannot persist the non-fatal setup failure context.
+// Without this, fix-role worktrees would silently start with neither the note
+// nor the marker that downstream circuit breakers rely on.
+func TestRunSetupNonGating_PersistFailureReturnsError(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
+	if err := os.Mkdir(filepath.Join(wtDir, notes.FileName), 0o755); err != nil {
+		t.Fatalf("mkdir fake NOTES.md: %v", err)
+	}
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	err := m.runSetupNonGating(context.Background(), "task-fix-persist-fail", wtDir, []string{
+		"echo broken build >&2 && exit 1",
+	})
+	if err == nil {
+		t.Fatal("expected error when failure context cannot be persisted")
+	}
+	if !strings.Contains(err.Error(), "persist setup failure context") {
+		t.Fatalf("error = %v, want persistence failure context", err)
 	}
 }
 

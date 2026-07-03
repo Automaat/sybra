@@ -1297,6 +1297,58 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	}
 }
 
+// TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker verifies the
+// non-fatal fix-role setup-failure path still contributes to the same
+// per-task circuit breaker as hard worktree-prepare errors.
+func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
+		tasks:         tasks,
+		wtFailures:    make(map[string]int),
+	}
+
+	wtDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wtDir, ".sybra-setup-failure"), []byte("npm run build failed\n"), 0o600); err != nil {
+		t.Fatalf("write setup failure marker: %v", err)
+	}
+
+	for i := range wtFailureLimit - 1 {
+		if ok := r.allowPreparedWorktree(tk.ID, wtDir); !ok {
+			t.Fatalf("call %d: want ok=true below circuit threshold", i+1)
+		}
+		got, err := tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: task escalated too early", i+1)
+		}
+	}
+
+	if ok := r.allowPreparedWorktree(tk.ID, wtDir); ok {
+		t.Fatal("threshold call: want ok=false when circuit opens")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q after setup-failure circuit break, want human-required", got.Status)
+	}
+}
+
 // TestAdoptOrphanMergedPR verifies that a task stranded in human-required with
 // a known branch is advanced to done when a merged PR is found on that branch
 // via the findMergedPRFn hook, and that the slice entry is updated in place.

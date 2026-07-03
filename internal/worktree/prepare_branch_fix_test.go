@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -65,6 +66,56 @@ func TestPrepareForBranchFix_ExistingBranch(t *testing.T) {
 	}
 	if reloaded.Branch != branch {
 		t.Errorf("task branch = %q, want %q", reloaded.Branch, branch)
+	}
+}
+
+// TestPrepareForBranchFix_SetupFailureDoesNotBlock is the regression test for
+// issue #1454: a project whose setup: command fails (e.g. a broken build)
+// must not prevent PrepareForBranchFix from creating the fix worktree — that
+// would deadlock the task, since the fixer this worktree is for exists
+// specifically to repair the breakage.
+func TestPrepareForBranchFix_SetupFailureDoesNotBlock(t *testing.T) {
+	h := prepareHarness(t, []string{"exit 1"}, 0)
+
+	const branch = "fix/broken-setup-branch"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "branch commit")
+	srcGit("checkout", "main")
+
+	tk, err := h.tasks.Create("broken setup branch fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": h.proj.ID,
+		"branch":     branch,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForBranchFix(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchFix must succeed despite a failing setup command: %v", err)
+	}
+
+	content, readErr := os.ReadFile(filepath.Join(wtPath, notes.FileName))
+	if readErr != nil {
+		t.Fatalf("read scratchpad: %v", readErr)
+	}
+	if !strings.Contains(string(content), "Setup failure") {
+		t.Errorf("scratchpad missing setup failure note: %q", content)
 	}
 }
 

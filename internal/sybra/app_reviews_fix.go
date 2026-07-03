@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // branchConflictFixWorkflowID is the builtin workflow started directly (by
@@ -766,7 +767,9 @@ func (r *ReviewHandler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.recordWorktreeFailure(taskID, err)
 		return false
 	}
-	delete(r.wtFailures, taskID)
+	if !r.allowPreparedWorktree(taskID, dir) {
+		return false
+	}
 	// Refetch: PrepareForBranchFix's ensureBranch call may have just set
 	// t.Branch for the first time (a task whose worktree never got created
 	// before this recovery), and branchConflictPrompt needs the resolved name.
@@ -861,6 +864,31 @@ func (r *ReviewHandler) recordWorktreeFailure(taskID string, wtErr error) {
 	r.logger.Error("pr-monitor.worktree", "task_id", taskID, "err", wtErr)
 }
 
+func (r *ReviewHandler) allowPreparedWorktree(taskID, dir string) bool {
+	setupFailure, ok, err := worktree.ReadSetupFailureMarker(dir)
+	if err != nil {
+		r.logger.Error("pr-monitor.worktree.setup-fail-read", "task_id", taskID, "dir", dir, "err", err)
+		r.recordWorktreeFailure(taskID, err)
+		return false
+	}
+	if !ok {
+		delete(r.wtFailures, taskID)
+		return true
+	}
+	if setupFailure == "" {
+		setupFailure = "worktree setup failed before the fix agent started"
+	}
+	err = errors.New(setupFailure)
+	r.logger.Warn("pr-monitor.worktree.setup-fail-nonfatal", "task_id", taskID, "dir", dir, "err", err)
+	r.recordWorktreeFailure(taskID, err)
+	got, err := r.tasks.Get(taskID)
+	if err != nil {
+		r.logger.Error("pr-monitor.worktree.setup-fail-refetch", "task_id", taskID, "err", err)
+		return false
+	}
+	return got.Status != task.StatusHumanRequired
+}
+
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no
 // PR head to reference, so it resolves the task's own branch (t.Branch, set
 // by PrepareForBranchFix before this is called) and instructs a plain merge
@@ -929,7 +957,9 @@ func (r *ReviewHandler) prepareWorktree(ctx context.Context, t task.Task, issue 
 		r.recordWorktreeFailure(t.ID, wtErr)
 		return "", false
 	}
-	delete(r.wtFailures, t.ID)
+	if !r.allowPreparedWorktree(t.ID, d) {
+		return "", false
+	}
 	return d, true
 }
 

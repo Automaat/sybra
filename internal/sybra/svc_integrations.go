@@ -114,6 +114,16 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 		d, wtErr := s.worktrees.PrepareForFix(context.Background(), t, number)
 		if wtErr != nil {
 			s.logger.Error("renovate-fix.worktree", "task_id", t.ID, "err", wtErr)
+			// The task already exists (created above) but no agent will ever
+			// start on it now — flip to human-required instead of leaving it
+			// silently stranded in its initial status (issue #1454).
+			reason := fmt.Sprintf("renovate-fix: worktree prepare failed: %v", wtErr)
+			if _, uerr := s.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: &reason,
+			}); uerr != nil {
+				s.logger.Error("renovate-fix.worktree.escalate", "task_id", t.ID, "err", uerr)
+			}
 			return fmt.Errorf("prepare worktree: %w", wtErr)
 		}
 		dir = d
