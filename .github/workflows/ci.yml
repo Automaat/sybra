@@ -231,7 +231,7 @@ jobs:
           grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
             (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)
           MISE_GOLANGCI_LINT_VERSION=$(grep '^golangci-lint = ' mise.toml | awk -F'"' '{print $2}')
-          CI_GOLANGCI_LINT_VERSION=$(grep -A1 '^\s*# renovate: datasource=github-releases depName=golangci/golangci-lint$' .github/workflows/ci.yml | grep 'version:' | awk '{print $2}' | tr -d 'v')
+          CI_GOLANGCI_LINT_VERSION=$(grep -A1 '^[[:space:]]*# renovate: datasource=github-releases depName=golangci/golangci-lint$' .github/workflows/ci.yml | grep 'version:' | awk '{print $2}' | tr -d 'v')
           [ "$MISE_GOLANGCI_LINT_VERSION" = "$CI_GOLANGCI_LINT_VERSION" ] || \
             (echo "golangci-lint version mismatch (mise.toml=$MISE_GOLANGCI_LINT_VERSION, ci.yml=$CI_GOLANGCI_LINT_VERSION)" && exit 1)
 
