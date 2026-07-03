@@ -274,6 +274,50 @@ describe('TaskDetail', () => {
     })
   })
 
+  describe('tabs', () => {
+    it('defaults to the Overview tab (metadata visible)', async () => {
+      mockGet.mockResolvedValue(mockTask)
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Mode')).toBeDefined()
+      })
+    })
+
+    it('shows the read-only Plan panel when the task has a plan', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'done', plan: '# Plan\n\ndo it' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        // TaskPlanPanel renders a static "read-only" marker beside the plan.
+        expect(screen.getByText('read-only')).toBeDefined()
+      })
+    })
+
+    it('shows the Review panel when the task has a code review', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'done', codeReview: '# Code Review\n\nlgtm' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('auto-generated')).toBeDefined()
+      })
+    })
+
+    it('pins a live running agent above the tabs', async () => {
+      mockByTask.mockReturnValue({ id: 'a1', state: 'running', mode: 'headless', taskId: 'task-1' })
+      mockGet.mockResolvedValue({ ...mockTask, status: 'in-progress' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Stop')).toBeDefined()
+      })
+    })
+  })
+
   describe('copyId', () => {
     beforeEach(() => {
       Object.defineProperty(navigator, 'clipboard', {
