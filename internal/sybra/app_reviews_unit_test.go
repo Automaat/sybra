@@ -1717,6 +1717,84 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 	}
 }
 
+// TestAdvanceClosedTaskPRs_CancelsStaleWorkflow is the regression guard for
+// the self-conflict bug: a merge that flips a task to done while its
+// workflow is still Running/Waiting at an earlier step (e.g.
+// code_review_staff) must have that workflow cancelled so
+// Engine.ResumeStalled never re-dispatches a rebase against the
+// already-merged branch and flips the task back to human-required.
+func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("Task with merged PR", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "test-simple",
+		CurrentStep: "code_review_staff",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(1443),
+		Workflow:  &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &ReviewHandler{
+		DomainHandler:  DomainHandler{logger: logger, emit: func(string, any) {}},
+		tasks:          tasks,
+		agents:         agentMgr,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		workflowEngine: engine,
+	}
+
+	monitoredPRs := []github.PullRequest{} // PR no longer appears among open PRs
+	closedMatchers := []github.TaskMatcher{{ID: created.ID, PRNumber: 1443, ProjectID: "o/r"}}
+	fetchFn := func(repo string, number int) (github.PRState, error) {
+		return github.PRState{State: "MERGED"}, nil
+	}
+
+	r.advanceClosedTaskPRsWithFetch(context.Background(), monitoredPRs, closedMatchers, fetchFn)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone {
+		t.Errorf("status = %q, want done", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Errorf("workflow state = %+v, want completed", got.Workflow)
+	}
+	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
+		t.Errorf("workflow CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+}
+
 func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {

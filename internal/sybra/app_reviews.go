@@ -643,6 +643,16 @@ func (r *ReviewHandler) advanceClosedTaskPRsWithFetch(ctx context.Context, monit
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
 			continue
 		}
+		// The task just landed; any still-Running/Waiting workflow (e.g.
+		// paused at code_review_staff) is now stale. Cancel it so
+		// Engine.ResumeStalled doesn't pick the done task back up and rebase
+		// its already-merged branch against origin/main, which self-conflicts
+		// and flips the task back to human-required.
+		if r.workflowEngine != nil {
+			if _, cancelErr := r.workflowEngine.CancelWorkflow(c.TaskID, "pr-monitor: task landed ("+base+")"); cancelErr != nil {
+				r.logger.Error("pr-monitor.closed-cancel-workflow", "task_id", c.TaskID, "err", cancelErr)
+			}
+		}
 		eventType := audit.EventPRMerged
 		if c.State == "CLOSED" {
 			eventType = audit.EventPRClosed
