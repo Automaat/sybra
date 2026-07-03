@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -93,6 +95,10 @@ type tamperChange struct {
 	Status string // "A", "M", "D", "R100", …
 	Path   string
 	Patch  string
+	// FullContent is the post-change file content, when available. Used to
+	// tell an added t.Skip (etc.) that follows an existing, repo-established
+	// idiom apart from a genuinely novel skip — see isEstablishedSkipIdiom.
+	FullContent string
 }
 
 type tamperPatchResult struct {
@@ -187,6 +193,31 @@ var (
 		`\b(?:assert|if)\s+(.+?)\s*={2,3}\s*(.+?)\s*[:{]?\s*$`)
 )
 
+// isEstablishedSkipIdiom reports whether the added skip line is already a
+// repeated, pre-existing idiom in the file rather than a novel tampering
+// attempt: an identical (trimmed) line appears at least twice in the
+// post-change file content — once for the newly added occurrence and at
+// least once more already established elsewhere (e.g. the repo-wide
+// `if !hasGit() { t.Skip("git not available") }` guard). fileContent is the
+// full post-change file; empty when unavailable, in which case the added
+// line is always treated as novel (fail toward flagging, not toward silence).
+func isEstablishedSkipIdiom(addedLine, fileContent string) bool {
+	target := strings.TrimSpace(addedLine)
+	if target == "" || fileContent == "" {
+		return false
+	}
+	count := 0
+	for line := range strings.SplitSeq(fileContent, "\n") {
+		if strings.TrimSpace(line) == target {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // looksLikeComment reports whether a (diff-stripped) line is a source comment.
 // Commenting code out adds nothing of substance, so commented additions are
 // ignored — a commented-out assertion then counts as a removal, not an offset.
@@ -239,12 +270,12 @@ func splitTopArgs(s string) []string {
 // `--`/`++` is still classified by its leading diff marker rather than mistaken
 // for a header. Comment-only additions are ignored, so commenting out a test or
 // assertion registers as a removal (the deletion side) with no offsetting add.
-func scanTamperPatch(path string, cat tamperCategory, patch string) []tamperFinding {
-	return scanTamperPatchResult(path, cat, patch).Findings
+func scanTamperPatch(path string, cat tamperCategory, patch, fileContent string) []tamperFinding {
+	return scanTamperPatchResult(path, cat, patch, fileContent).Findings
 }
 
-func scanTamperPatchResult(path string, cat tamperCategory, patch string) tamperPatchResult {
-	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}}
+func scanTamperPatchResult(path string, cat tamperCategory, patch, fileContent string) tamperPatchResult {
+	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}, fileContent: fileContent}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
@@ -277,17 +308,18 @@ func isDiffHeaderLine(line string) bool {
 
 // tamperScan accumulates findings and net token counts while walking a patch.
 type tamperScan struct {
-	path      string
-	cat       tamperCategory
-	isCI      bool
-	seen      map[string]bool
-	findings  []tamperFinding
-	addAssert int
-	delAssert int
-	addDecl   int
-	delDecl   int
-	addRun    int
-	delRun    int
+	path        string
+	cat         tamperCategory
+	isCI        bool
+	fileContent string
+	seen        map[string]bool
+	findings    []tamperFinding
+	addAssert   int
+	delAssert   int
+	addDecl     int
+	delDecl     int
+	addRun      int
+	delRun      int
 }
 
 func (s *tamperScan) add(rule, detail string) {
@@ -310,7 +342,7 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	if tamperAddedSkipRe.MatchString(content) {
+	if tamperAddedSkipRe.MatchString(content) && !isEstablishedSkipIdiom(content, s.fileContent) {
 		s.add("added-skip", trimDiffLine(content))
 	}
 	if tamperAddedExitRe.MatchString(content) {
@@ -400,7 +432,7 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 			continue
 		}
 		scanned++
-		res := scanTamperPatchResult(c.Path, cat, c.Patch)
+		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.FullContent)
 		totalAddedAssertions += res.AddAssert
 		report.Findings = append(report.Findings, res.Findings...)
 	}
@@ -548,6 +580,13 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 			continue
 		}
 		c.Patch = patch
+		// The worktree's working tree is checked out at HEAD, the "new" side of
+		// rangeSpec in both resolveTamperRange branches, so the on-disk file is
+		// the post-change content — read it to tell an established skip idiom
+		// (already used elsewhere in the file) apart from a genuinely novel one.
+		if content, rErr := os.ReadFile(filepath.Join(wtPath, c.Path)); rErr == nil {
+			c.FullContent = string(content)
+		}
 	}
 	report := buildTamperReport(taskID, base, changes)
 	report.Range = rangeSpec

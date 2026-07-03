@@ -47,15 +47,29 @@ func TestClassifyTamperPath(t *testing.T) {
 func TestScanTamperPatch(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name      string
-		cat       tamperCategory // defaults to test when empty
-		patch     string
-		wantRules []string // high-severity rules expected (order-insensitive subset)
+		name        string
+		cat         tamperCategory // defaults to test when empty
+		patch       string
+		fileContent string
+		wantRules   []string // high-severity rules expected (order-insensitive subset)
 	}{
 		{
 			name:      "added_go_skip",
 			patch:     "@@ -1,3 +1,4 @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n \tif x != 1 {\n",
 			wantRules: []string{"added-skip"},
+		},
+		{
+			name:  "added_skip_matches_established_idiom_elsewhere_in_file",
+			patch: "@@ @@\n func TestBar(t *testing.T) {\n+\tif !hasGit() { t.Skip(\"git not available\") }\n",
+			fileContent: "func TestFoo(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n\n" +
+				"func TestBar(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n",
+			wantRules: nil, // identical skip guard already used elsewhere in the file — established idiom
+		},
+		{
+			name:        "added_skip_no_matching_content_line_still_flags",
+			patch:       "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			fileContent: "func TestBar(t *testing.T) {\n\tt.Skip(\"flaky\")\n}\n", // only the added occurrence itself
+			wantRules:   []string{"added-skip"},
 		},
 		{
 			name:      "added_pytest_skip",
@@ -167,7 +181,7 @@ func TestScanTamperPatch(t *testing.T) {
 			if cat == "" {
 				cat = tamperCatTest
 			}
-			got := scanTamperPatch("x_test.go", cat, tc.patch)
+			got := scanTamperPatch("x_test.go", cat, tc.patch, tc.fileContent)
 			gotRules := map[string]bool{}
 			for _, f := range got {
 				if f.Severity != tamperHigh {
@@ -452,6 +466,39 @@ func TestExecDetectTampering_AddedSkipFlags(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); reason == "" {
 		t.Errorf("expected a non-empty status reason")
+	}
+}
+
+func TestExecDetectTampering_EstablishedSkipIdiomDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	skipLine := "\tif !hasGit() { t.Skip(\"git not available\") }"
+	base := "package foo\n\nimport \"testing\"\n\nfunc hasGit() bool { return true }\n\n" +
+		"func TestFoo(t *testing.T) {\n" + skipLine + "\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo.go":      "package foo\n\nfunc Foo() int { return 1 }\n",
+		"internal/foo/foo_test.go": base,
+	})
+	// New test follows the exact same, pre-existing hasGit() skip guard idiom
+	// already used by TestFoo — this is an established repo convention, not a
+	// novel tampering attempt, so it must not flag.
+	tampered := base + "\nfunc TestBar(t *testing.T) {\n" + skipLine +
+		"\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/foo/foo_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: add bar with established skip guard")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output == "flagged" {
+		t.Fatalf("Output = %q, want not flagged (established skip idiom)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
 	}
 }
 
