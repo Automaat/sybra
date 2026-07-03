@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"sync"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
@@ -38,6 +40,7 @@ func (s *ConfigService) GetSettings() AppSettings {
 	defer s.mu.RUnlock()
 	c := s.cfg
 	todoist := c.Todoist
+	tokenSet := todoist.APIToken != ""
 	todoist.APIToken = "" // never leak the token over the read API
 	return AppSettings{
 		Agent:        c.Agent,
@@ -48,11 +51,22 @@ func (s *ConfigService) GetSettings() AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:       c.Audit,
-		Todoist:     todoist,
-		Renovate:    c.Renovate,
-		Providers:   c.Providers,
-		Directories: c.Directories(),
+		Audit:           c.Audit,
+		Todoist:         todoist,
+		Renovate:        c.Renovate,
+		Providers:       c.Providers,
+		GitHub:          c.GitHub,
+		Monitor:         c.Monitor,
+		SelfMonitor:     c.SelfMonitor,
+		Triage:          c.Triage,
+		Umbrella:        c.Umbrella,
+		Testing:         c.Testing,
+		Experience:      c.Experience,
+		Metrics:         c.Metrics,
+		Browser:         c.Browser,
+		ProjectTypes:    c.ProjectTypes,
+		Directories:     c.Directories(),
+		TodoistTokenSet: tokenSet,
 	}
 }
 
@@ -70,6 +84,40 @@ func (s *ConfigService) UpdateTodoistToken(token string) error {
 		s.reloadHook()
 	}
 	return nil
+}
+
+// GetDefaultSettings returns the settings a fresh install would have. The UI
+// diffs live values against these to flag "modified from default" fields and to
+// power per-field reset-to-default, without hardcoding defaults in TypeScript.
+func (s *ConfigService) GetDefaultSettings() AppSettings {
+	return configToSettings(config.DefaultConfig())
+}
+
+// GetRawConfig returns the raw config.yaml text for the Advanced (YAML) editor.
+// Unlike GetSettings this is NOT redacted — it is the user's own local file,
+// surfaced behind an explicit Advanced disclosure with a secrets warning.
+func (s *ConfigService) GetRawConfig() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return config.ReadRawConfig()
+}
+
+// SaveRawConfig validates raw YAML, atomically writes it (preserving the user's
+// formatting and comments), then hot-reloads. Invalid YAML or a value that
+// fails validation is rejected without touching disk.
+func (s *ConfigService) SaveRawConfig(raw string) error {
+	parsed := config.DefaultConfig()
+	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
+		return validationError(fmt.Sprintf("invalid YAML: %s", err))
+	}
+	if err := s.validateSettings(configToSettings(parsed)); err != nil {
+		return err
+	}
+	if err := config.WriteRawConfig([]byte(raw)); err != nil {
+		return err
+	}
+	_, err := s.ReloadFromDisk()
+	return err
 }
 
 // UpdateSettings validates, persists, and hot-reloads the provided settings.
@@ -147,6 +195,10 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	s.cfg.Triage = next.Triage
 	s.cfg.Monitor = next.Monitor
 	s.cfg.SelfMonitor = next.SelfMonitor
+	s.cfg.Umbrella = next.Umbrella
+	s.cfg.Testing = next.Testing
+	s.cfg.Experience = next.Experience
+	s.cfg.Browser = next.Browser
 	s.cfg.ABTesting = next.ABTesting
 	s.cfg.Metrics = next.Metrics
 	s.cfg.ProjectTypes = next.ProjectTypes
@@ -214,5 +266,15 @@ func settingsToConfig(existing *config.Config, settings AppSettings) config.Conf
 	}
 	next.Renovate = settings.Renovate
 	next.Providers = settings.Providers
+	next.GitHub = settings.GitHub
+	next.Monitor = settings.Monitor
+	next.SelfMonitor = settings.SelfMonitor
+	next.Triage = settings.Triage
+	next.Umbrella = settings.Umbrella
+	next.Testing = settings.Testing
+	next.Experience = settings.Experience
+	next.Metrics = settings.Metrics
+	next.Browser = settings.Browser
+	next.ProjectTypes = settings.ProjectTypes
 	return next
 }

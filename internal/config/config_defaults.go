@@ -351,15 +351,62 @@ func (c *Config) AuditDir() string {
 
 // Save writes the current config to disk.
 func (c *Config) Save() error {
-	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return WriteRawConfig(data)
+}
+
+// ConfigPath is the absolute path of the config file on disk
+// (~/.sybra/config.yaml, or $SYBRA_HOME/config.yaml).
+func ConfigPath() string {
+	return configPath()
+}
+
+// ReadRawConfig returns config.yaml verbatim from disk, preserving user
+// formatting and comments. Falls back to marshalled defaults when the file is
+// absent so the editor is never handed an empty buffer on first run.
+func ReadRawConfig() (string, error) {
+	data, err := os.ReadFile(configPath())
+	if err == nil {
+		return string(data), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	data, err = yaml.Marshal(DefaultConfig())
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// WriteRawConfig persists bytes to config.yaml through a temp file + rename, so
+// the file watcher and concurrent readers never observe a partial write.
+func WriteRawConfig(data []byte) error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // harmless once the rename below consumes it
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // Directories returns the resolved paths for all sybra data directories.

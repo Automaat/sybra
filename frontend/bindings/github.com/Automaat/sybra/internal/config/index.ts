@@ -4,6 +4,12 @@
 export {
     AgentDefaults,
     AuditConfig,
+    BrowserConfig,
+    ExperienceConfig,
+    GitHubAppConfig,
+    GitHubConfig,
+    MetricsConfig,
+    MonitorConfig,
     NotificationConfig,
     OrchestratorConfig,
     ProviderEntryConfig,
@@ -11,5 +17,9 @@ export {
     ProviderLimitsConfig,
     ProvidersConfig,
     RenovateConfig,
-    TodoistConfig
+    SelfMonitorConfig,
+    TestingConfig,
+    TodoistConfig,
+    TriageConfig,
+    UmbrellaConfig
 } from "./models.js";

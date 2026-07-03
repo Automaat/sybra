@@ -65,8 +65,11 @@ export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
+export const GetDefaultSettings = pick(ConfigSvc.GetDefaultSettings, http.GetDefaultSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
 export const UpdateTodoistToken = pick(ConfigSvc.UpdateTodoistToken, http.UpdateTodoistToken)
+export const GetRawConfig = pick(ConfigSvc.GetRawConfig, http.GetRawConfig)
+export const SaveRawConfig = pick(ConfigSvc.SaveRawConfig, http.SaveRawConfig)
 
 // InfoService
 export const GetCodexModels = pick(InfoSvc.GetCodexModels, http.GetCodexModels)

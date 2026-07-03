@@ -94,7 +94,9 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 	return hot, nil
 }
 
-// configToSettings converts a *config.Config into AppSettings for validation.
+// configToSettings converts a *config.Config into AppSettings for validation
+// and for the default-settings baseline the UI diffs against. It mirrors every
+// editable section GetSettings exposes (minus the redacted Todoist token).
 func configToSettings(c *config.Config) AppSettings {
 	return AppSettings{
 		Agent:        c.Agent,
@@ -105,9 +107,19 @@ func configToSettings(c *config.Config) AppSettings {
 			MaxSizeMB: c.Logging.MaxSizeMB,
 			MaxFiles:  c.Logging.MaxFiles,
 		},
-		Audit:     c.Audit,
-		Todoist:   c.Todoist,
-		Renovate:  c.Renovate,
-		Providers: c.Providers,
+		Audit:        c.Audit,
+		Todoist:      c.Todoist,
+		Renovate:     c.Renovate,
+		Providers:    c.Providers,
+		GitHub:       c.GitHub,
+		Monitor:      c.Monitor,
+		SelfMonitor:  c.SelfMonitor,
+		Triage:       c.Triage,
+		Umbrella:     c.Umbrella,
+		Testing:      c.Testing,
+		Experience:   c.Experience,
+		Metrics:      c.Metrics,
+		Browser:      c.Browser,
+		ProjectTypes: c.ProjectTypes,
 	}
 }

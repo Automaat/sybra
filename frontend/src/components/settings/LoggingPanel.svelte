@@ -1,74 +1,52 @@
 <script lang="ts">
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import Section from './fields/Section.svelte'
+  import ToggleField from './fields/ToggleField.svelte'
+  import NumberField from './fields/NumberField.svelte'
+  import SelectField from './fields/SelectField.svelte'
 
   interface Props {
     settings: AppSettings
+    defaults: AppSettings
   }
 
-  const { settings }: Props = $props()
+  let { settings = $bindable(), defaults }: Props = $props()
+  const l = $derived(settings.logging)
+  const ld = $derived(defaults.logging)
+  const au = $derived(settings.audit)
+  const ad = $derived(defaults.audit)
 </script>
 
-<div class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
-  <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Logging & Audit</h2>
+<Section title="Logging & audit" description="Log verbosity, rotation, and audit-trail retention.">
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-    <div class="flex flex-col gap-1">
-      <label class="text-sm font-medium" for="log-level">Log Level</label>
-      <select
-        id="log-level"
-        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-        bind:value={settings.logging.level}
-      >
-        <option value="debug">Debug</option>
-        <option value="info">Info</option>
-        <option value="warn">Warn</option>
-        <option value="error">Error</option>
-      </select>
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-sm font-medium" for="log-max-size">Max Log Size (MB)</label>
-      <input
-        id="log-max-size"
-        type="number"
-        min="1"
-        max="500"
-        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-        bind:value={settings.logging.maxSizeMB}
-      />
-      <span class="text-xs text-surface-500 dark:text-surface-400">1–500 MB</span>
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-sm font-medium" for="log-max-files">Max Log Files</label>
-      <input
-        id="log-max-files"
-        type="number"
-        min="1"
-        max="50"
-        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-        bind:value={settings.logging.maxFiles}
-      />
-      <span class="text-xs text-surface-500 dark:text-surface-400">1–50 files</span>
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-sm font-medium" for="audit-retention">Audit Retention (days)</label>
-      <input
-        id="audit-retention"
-        type="number"
-        min="1"
-        max="365"
-        class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-        bind:value={settings.audit.retentionDays}
-      />
-      <span class="text-xs text-surface-500 dark:text-surface-400">1–365 days</span>
-    </div>
+    <SelectField id="log-level" label="Log level" keyPath="logging.level"
+      options={[
+        { value: 'debug', label: 'Debug' },
+        { value: 'info', label: 'Info' },
+        { value: 'warn', label: 'Warn' },
+        { value: 'error', label: 'Error' },
+      ]}
+      bind:value={settings.logging.level}
+      modified={l.level !== ld.level}
+      onreset={() => (settings.logging.level = ld.level)} />
+    <NumberField id="log-max-size" label="Max log size (MB)" keyPath="logging.max_size_mb" min={1} max={500}
+      description="1–500 MB"
+      bind:value={settings.logging.maxSizeMB}
+      modified={l.maxSizeMB !== ld.maxSizeMB}
+      onreset={() => (settings.logging.maxSizeMB = ld.maxSizeMB)} />
+    <NumberField id="log-max-files" label="Max log files" keyPath="logging.max_files" min={1} max={50}
+      description="1–50 files"
+      bind:value={settings.logging.maxFiles}
+      modified={l.maxFiles !== ld.maxFiles}
+      onreset={() => (settings.logging.maxFiles = ld.maxFiles)} />
+    <NumberField id="audit-retention" label="Audit retention (days)" keyPath="audit.retention_days" min={1} max={365}
+      description="1–365 days"
+      bind:value={settings.audit.retentionDays}
+      modified={au.retentionDays !== ad.retentionDays}
+      onreset={() => (settings.audit.retentionDays = ad.retentionDays)} />
   </div>
-  <div class="mt-4">
-    <label class="flex cursor-pointer items-center gap-3">
-      <input
-        type="checkbox"
-        class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
-        bind:checked={settings.audit.enabled}
-      />
-      <span class="text-sm">Enable audit logging</span>
-    </label>
-  </div>
-</div>
+  <ToggleField label="Enable audit logging" keyPath="audit.enabled"
+    bind:checked={settings.audit.enabled}
+    modified={au.enabled !== ad.enabled}
+    onreset={() => (settings.audit.enabled = ad.enabled)} />
+</Section>

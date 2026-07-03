@@ -203,6 +203,302 @@ export class AuditConfig {
     }
 }
 
+/**
+ * BrowserConfig controls how the desktop app opens external links (GitHub,
+ * PRs, issues). Read once at startup — flipping this value requires an app
+ * restart, since the opener closure is wired into the app at boot in main.go.
+ */
+export class BrowserConfig {
+    /**
+     * InApp opens links in an in-app Sybra Browser webview window backed by a
+     * persistent, app-wide cookie store, so a login is reused across windows
+     * and survives restarts. Nil/unset defaults to true (current behavior).
+     * Set to false to always open links in the default system browser instead.
+     */
+    "inApp": boolean | null;
+
+    /** Creates a new BrowserConfig instance. */
+    constructor($$source: Partial<BrowserConfig> = {}) {
+        if (!("inApp" in $$source)) {
+            this["inApp"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BrowserConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BrowserConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BrowserConfig($$parsedSource as Partial<BrowserConfig>);
+    }
+}
+
+export class ExperienceConfig {
+    "enabled": boolean;
+    "maxRecords": number;
+
+    /** Creates a new ExperienceConfig instance. */
+    constructor($$source: Partial<ExperienceConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("maxRecords" in $$source)) {
+            this["maxRecords"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ExperienceConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ExperienceConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ExperienceConfig($$parsedSource as Partial<ExperienceConfig>);
+    }
+}
+
+/**
+ * GitHubAppConfig holds GitHub App installation-token credentials. The private
+ * key never leaves disk as plaintext config — only its path is stored.
+ */
+export class GitHubAppConfig {
+    "enabled": boolean;
+    "appId": number;
+    "installationId": number;
+    "privateKeyPath": string;
+
+    /** Creates a new GitHubAppConfig instance. */
+    constructor($$source: Partial<GitHubAppConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("appId" in $$source)) {
+            this["appId"] = 0;
+        }
+        if (!("installationId" in $$source)) {
+            this["installationId"] = 0;
+        }
+        if (!("privateKeyPath" in $$source)) {
+            this["privateKeyPath"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubAppConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubAppConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GitHubAppConfig($$parsedSource as Partial<GitHubAppConfig>);
+    }
+}
+
+export class GitHubConfig {
+    "enabled": boolean;
+
+    /**
+     * PollerRole splits GitHub search polling (reviews/issues/renovate) across
+     * machines sharing one token. "primary" (or empty) runs the search pollers;
+     * "secondary" skips them so a sibling instance owns the searches and the
+     * shared token isn't billed twice. On-demand per-PR/issue calls still run on
+     * every machine — only the periodic searches are gated.
+     */
+    "pollerRole": string;
+
+    /**
+     * Poll-interval overrides in seconds. Zero falls back to the built-in
+     * default. Raised defaults (vs. the original 1m/5m) cut steady-state request
+     * volume; lower them only on a high-limit (App-token) instance.
+     */
+    "reviewsFastSeconds": number;
+    "reviewsSlowSeconds": number;
+    "issuesSeconds": number;
+    "renovateFastSeconds": number;
+    "renovateSlowSeconds": number;
+
+    /**
+     * App configures GitHub App installation-token auth. When enabled, Sybra
+     * mints a short-lived installation token and injects it into the gh
+     * subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
+     * back to gh's own auth.
+     */
+    "app": GitHubAppConfig;
+
+    /**
+     * NativeAutoMerge is a kill-switch for arming GitHub's native
+     * `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix
+     * cycle is done and the base branch's protection supports it. It is an
+     * accelerator on top of the existing green-gated MergePR path, not a
+     * replacement — when unsupported or disabled the legacy merge stays the
+     * fallback. Default off (zero value = false).
+     */
+    "nativeAutoMerge": boolean;
+
+    /**
+     * AutoResolveCleanMerges is a kill-switch for the deterministic
+     * clean-merge fast-path: before dispatching a conflict-recovery agent,
+     * Sybra attempts a plain `git merge` of the PR's base branch in Go. When
+     * that merge creates a commit with no conflicting hunks, it is pushed and
+     * no agent is spawned; conflicts, no-op merges, and errors still fall
+     * through to the agent-assisted path. Default off (zero value = false).
+     */
+    "autoResolveCleanMerges": boolean;
+
+    /** Creates a new GitHubConfig instance. */
+    constructor($$source: Partial<GitHubConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("pollerRole" in $$source)) {
+            this["pollerRole"] = "";
+        }
+        if (!("reviewsFastSeconds" in $$source)) {
+            this["reviewsFastSeconds"] = 0;
+        }
+        if (!("reviewsSlowSeconds" in $$source)) {
+            this["reviewsSlowSeconds"] = 0;
+        }
+        if (!("issuesSeconds" in $$source)) {
+            this["issuesSeconds"] = 0;
+        }
+        if (!("renovateFastSeconds" in $$source)) {
+            this["renovateFastSeconds"] = 0;
+        }
+        if (!("renovateSlowSeconds" in $$source)) {
+            this["renovateSlowSeconds"] = 0;
+        }
+        if (!("app" in $$source)) {
+            this["app"] = (new GitHubAppConfig());
+        }
+        if (!("nativeAutoMerge" in $$source)) {
+            this["nativeAutoMerge"] = false;
+        }
+        if (!("autoResolveCleanMerges" in $$source)) {
+            this["autoResolveCleanMerges"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitHubConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitHubConfig {
+        const $$createField7_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("app" in $$parsedSource) {
+            $$parsedSource["app"] = $$createField7_0($$parsedSource["app"]);
+        }
+        return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
+    }
+}
+
+/**
+ * MetricsConfig controls the OpenTelemetry metrics pipeline. When Enabled is
+ * true, sybra-server mounts /metrics on its existing mux and emits
+ * Prometheus-format output for external scrapers.
+ */
+export class MetricsConfig {
+    "enabled": boolean;
+
+    /** Creates a new MetricsConfig instance. */
+    constructor($$source: Partial<MetricsConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MetricsConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MetricsConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MetricsConfig($$parsedSource as Partial<MetricsConfig>);
+    }
+}
+
+/**
+ * MonitorConfig controls the in-process monitor service that replaces the
+ * /loop 5m /sybra-monitor skill. Each tick snapshots the board + audit
+ * window, detects anomalies (lost agents, PR gaps, dwell, failure spikes,
+ * bottlenecks), runs idempotent remediations directly, and dispatches a
+ * focused headless agent for anomalies that need LLM judgment.
+ */
+export class MonitorConfig {
+    "enabled": boolean;
+    "intervalSeconds": number;
+    "model": string;
+    "issueCooldownMinutes": number;
+    "dispatchLimit": number;
+    "stuckHumanHours": number;
+    "lostAgentMinutes": number;
+    "prGapGraceMinutes": number;
+    "failureRateThreshold": number;
+    "bottleneckHours": { [_ in string]?: number };
+    "issueLabel": string;
+    "issueRepo": string;
+
+    /** Creates a new MonitorConfig instance. */
+    constructor($$source: Partial<MonitorConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("intervalSeconds" in $$source)) {
+            this["intervalSeconds"] = 0;
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("issueCooldownMinutes" in $$source)) {
+            this["issueCooldownMinutes"] = 0;
+        }
+        if (!("dispatchLimit" in $$source)) {
+            this["dispatchLimit"] = 0;
+        }
+        if (!("stuckHumanHours" in $$source)) {
+            this["stuckHumanHours"] = 0;
+        }
+        if (!("lostAgentMinutes" in $$source)) {
+            this["lostAgentMinutes"] = 0;
+        }
+        if (!("prGapGraceMinutes" in $$source)) {
+            this["prGapGraceMinutes"] = 0;
+        }
+        if (!("failureRateThreshold" in $$source)) {
+            this["failureRateThreshold"] = 0;
+        }
+        if (!("bottleneckHours" in $$source)) {
+            this["bottleneckHours"] = {};
+        }
+        if (!("issueLabel" in $$source)) {
+            this["issueLabel"] = "";
+        }
+        if (!("issueRepo" in $$source)) {
+            this["issueRepo"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MonitorConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MonitorConfig {
+        const $$createField9_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("bottleneckHours" in $$parsedSource) {
+            $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
+        }
+        return new MonitorConfig($$parsedSource as Partial<MonitorConfig>);
+    }
+}
+
 export class NotificationConfig {
     "desktop": boolean;
 
@@ -420,11 +716,11 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType1;
-        const $$createField3_0 = $$createType1;
-        const $$createField4_0 = $$createType2;
+        const $$createField0_0 = $$createType2;
+        const $$createField1_0 = $$createType3;
+        const $$createField2_0 = $$createType3;
+        const $$createField3_0 = $$createType3;
+        const $$createField4_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -470,6 +766,135 @@ export class RenovateConfig {
     }
 }
 
+/**
+ * SelfMonitorConfig controls the in-process selfmonitor service that
+ * replaces the /loop 6h /sybra-self-monitor skill. Each tick snapshots
+ * the latest health report, distills per-finding agent logs into a
+ * LogSummary, runs a two-stage LLM judge + synthesizer (Phase C), files
+ * deduped issues via the shared monitor.IssueSink, and autonomously
+ * remediates a whitelisted set of categories (Phase D). Enabled stays
+ * false until users opt in.
+ */
+export class SelfMonitorConfig {
+    "enabled": boolean;
+    "intervalHours": number;
+    "judgeModel": string;
+    "synthesizerModel": string;
+    "maxIssuesPerRun": number;
+    "maxAutoActionsPerDay": number;
+    "autoActCategories": string[];
+    "dryRun": boolean;
+    "issueCooldownHours": number;
+    "issueLabel": string;
+    "maxCostPerTickUsd": number;
+    "judgeParallelism": number;
+    "suppressionDays": number;
+    "suppressionThreshold": number;
+
+    /** Creates a new SelfMonitorConfig instance. */
+    constructor($$source: Partial<SelfMonitorConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("intervalHours" in $$source)) {
+            this["intervalHours"] = 0;
+        }
+        if (!("judgeModel" in $$source)) {
+            this["judgeModel"] = "";
+        }
+        if (!("synthesizerModel" in $$source)) {
+            this["synthesizerModel"] = "";
+        }
+        if (!("maxIssuesPerRun" in $$source)) {
+            this["maxIssuesPerRun"] = 0;
+        }
+        if (!("maxAutoActionsPerDay" in $$source)) {
+            this["maxAutoActionsPerDay"] = 0;
+        }
+        if (!("autoActCategories" in $$source)) {
+            this["autoActCategories"] = [];
+        }
+        if (!("dryRun" in $$source)) {
+            this["dryRun"] = false;
+        }
+        if (!("issueCooldownHours" in $$source)) {
+            this["issueCooldownHours"] = 0;
+        }
+        if (!("issueLabel" in $$source)) {
+            this["issueLabel"] = "";
+        }
+        if (!("maxCostPerTickUsd" in $$source)) {
+            this["maxCostPerTickUsd"] = 0;
+        }
+        if (!("judgeParallelism" in $$source)) {
+            this["judgeParallelism"] = 0;
+        }
+        if (!("suppressionDays" in $$source)) {
+            this["suppressionDays"] = 0;
+        }
+        if (!("suppressionThreshold" in $$source)) {
+            this["suppressionThreshold"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SelfMonitorConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SelfMonitorConfig {
+        const $$createField6_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("autoActCategories" in $$parsedSource) {
+            $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
+        }
+        return new SelfMonitorConfig($$parsedSource as Partial<SelfMonitorConfig>);
+    }
+}
+
+/**
+ * TestingConfig controls the autonomous manual-testing phase. A task entering
+ * status=testing spawns a single adversarial test-runner agent that starts the
+ * real app/cluster in an isolated per-task sandbox and tries to prove the
+ * implementation does not satisfy the task. Each test-runner holds its own
+ * sandbox (Docker compose project / k3d cluster), so MaxConcurrent bounds
+ * real-app/cluster load independently of Agent.MaxConcurrent.
+ */
+export class TestingConfig {
+    /**
+     * MaxConcurrent caps simultaneously-running test-runner agents on this
+     * machine. 0 falls back to DefaultTestingMaxConcurrent.
+     */
+    "maxConcurrent": number;
+
+    /**
+     * MaxAttempts caps how many times a task may fail testing and bounce back
+     * to in-progress for re-implementation before it is escalated to
+     * human-required instead. 0 falls back to DefaultTestingMaxAttempts.
+     */
+    "maxAttempts": number;
+
+    /** Creates a new TestingConfig instance. */
+    constructor($$source: Partial<TestingConfig> = {}) {
+        if (!("maxConcurrent" in $$source)) {
+            this["maxConcurrent"] = 0;
+        }
+        if (!("maxAttempts" in $$source)) {
+            this["maxAttempts"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TestingConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TestingConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TestingConfig($$parsedSource as Partial<TestingConfig>);
+    }
+}
+
 export class TodoistConfig {
     "enabled": boolean;
     "apiToken": string;
@@ -507,7 +932,98 @@ export class TodoistConfig {
     }
 }
 
+/**
+ * TriageConfig controls the background auto-triage worker. When Enabled,
+ * sybra periodically classifies tasks in status=new via claude -p and
+ * atomically applies the verdict (title, tags, size/type, mode, project).
+ */
+export class TriageConfig {
+    "enabled": boolean;
+    "pollSeconds": number;
+    "model": string;
+
+    /** Creates a new TriageConfig instance. */
+    constructor($$source: Partial<TriageConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("pollSeconds" in $$source)) {
+            this["pollSeconds"] = 0;
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TriageConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TriageConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TriageConfig($$parsedSource as Partial<TriageConfig>);
+    }
+}
+
+/**
+ * UmbrellaConfig governs auto-expansion of ☂️ umbrella issues by the GitHub
+ * issue fetcher. Disabled by default; project-scoped via the top-level
+ * project_types allowlist so only one machine expands a given umbrella.
+ */
+export class UmbrellaConfig {
+    "enabled": boolean;
+
+    /**
+     * Model overrides the planner model (empty = claude default).
+     */
+    "model": string;
+
+    /**
+     * Ground gates the optional grounding step that confirms each
+     * sub-issue's touches against the real repo's tracked files. Disabled
+     * by default (extra git/tool calls); additive on top of planner output.
+     */
+    "ground": boolean;
+
+    /**
+     * GroundMinSubIssues gates grounding on umbrella size: grounding only
+     * runs when the umbrella has at least this many sub-issues. Zero or
+     * negative means always ground when Ground is enabled.
+     */
+    "groundMinSubIssues": number;
+
+    /** Creates a new UmbrellaConfig instance. */
+    constructor($$source: Partial<UmbrellaConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("ground" in $$source)) {
+            this["ground"] = false;
+        }
+        if (!("groundMinSubIssues" in $$source)) {
+            this["groundMinSubIssues"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UmbrellaConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UmbrellaConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UmbrellaConfig($$parsedSource as Partial<UmbrellaConfig>);
+    }
+}
+
 // Private type creation functions
-const $$createType0 = ProviderHealthCheckConfig.createFrom;
-const $$createType1 = ProviderEntryConfig.createFrom;
-const $$createType2 = ProviderLimitsConfig.createFrom;
+const $$createType0 = GitHubAppConfig.createFrom;
+const $$createType1 = $Create.Map($Create.Any, $Create.Any);
+const $$createType2 = ProviderHealthCheckConfig.createFrom;
+const $$createType3 = ProviderEntryConfig.createFrom;
+const $$createType4 = ProviderLimitsConfig.createFrom;
+const $$createType5 = $Create.Array($Create.Any);
