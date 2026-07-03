@@ -126,6 +126,16 @@ func (c *Config) SurviveRestartEnabled() bool {
 	return true
 }
 
+// InAppBrowserEnabled reports whether the desktop app should open external
+// links in the in-app Sybra Browser webview. Defaults to true when unset so
+// existing installs keep their current behavior without migration.
+func (c *Config) InAppBrowserEnabled() bool {
+	if c != nil && c.Browser.InApp != nil {
+		return *c.Browser.InApp
+	}
+	return true
+}
+
 // DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns
 // an isolated sandbox) when TestingConfig.MaxConcurrent is unset.
 const DefaultTestingMaxConcurrent = 3

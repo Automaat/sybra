@@ -36,6 +36,7 @@ type Config struct {
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`
+	Browser        BrowserConfig        `yaml:"browser" json:"browser"`
 	ProjectTypes   []string             `yaml:"project_types" json:"projectTypes"`
 	TasksDir       string               `yaml:"tasks_dir" json:"tasksDir"`
 	SkillsDir      string               `yaml:"skills_dir" json:"skillsDir"`
