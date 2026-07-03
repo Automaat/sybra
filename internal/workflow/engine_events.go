@@ -552,6 +552,31 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	}
 }
 
+// resumeSkipReasonForStatus reports whether ResumeStalled must not resume a
+// task in the given status, and why.
+//
+// human-required: the task was halted by a competing path (e.g. the inline
+// review triage deciding the PR is too small). Resuming would override the
+// triage verdict and re-dispatch an agent the operator already suppressed.
+//
+// done/cancelled: the task reached a terminal status (e.g. its PR merged)
+// while its Workflow record was still Running/Waiting from before that
+// transition landed. Resuming would reprep the worktree and rebase an
+// already-merged branch against origin/main, which self-conflicts and flips
+// the task back to human-required. The cancel-on-landing path clears
+// Workflow going forward; this guard covers any terminal status this ticker
+// still finds stale.
+func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
+	switch status {
+	case "human-required":
+		return "human_required", true
+	case "done", "cancelled":
+		return "terminal_status", true
+	default:
+		return "", false
+	}
+}
+
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
@@ -591,13 +616,9 @@ func (e *Engine) ResumeStalled() {
 				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAt.Format(time.RFC3339), "step", step.ID)
 			continue
 		}
-		// A task in human-required was halted by a competing path (e.g. the
-		// inline review triage deciding the PR is too small). Do not resume its
-		// workflow: that would override the triage verdict and re-dispatch an
-		// agent that the operator already suppressed.
-		if t.Status == "human-required" {
+		if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
 			e.logger.Debug("workflow.resume-stalled.skip",
-				"task_id", t.ID, "reason", "human_required", "step", step.ID)
+				"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
 			continue
 		}
 		if e.agents.HasRunningAgent(t.ID) {

@@ -2194,6 +2194,37 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	// Simulate a task whose PR merged (flipping Status to done) while its
+	// workflow was still paused Running/Waiting at an earlier step — e.g.
+	// advanceClosedTaskPRsWithFetch racing ResumeStalled before the workflow
+	// is cancelled. Resuming would rebase the already-merged branch against
+	// origin/main and self-conflict, flipping the done task back to
+	// human-required.
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "done",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected 0 agent starts for done task, got %d", agents.CallCount())
+	}
+}
+
 func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
