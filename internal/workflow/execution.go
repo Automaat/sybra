@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"maps"
 	"slices"
 	"time"
 )
@@ -52,6 +53,44 @@ type ChildStatus struct {
 	Status  string `yaml:"status" json:"status"`
 	Output  string `yaml:"output,omitempty" json:"output,omitempty"`
 	Retries int    `yaml:"retries,omitempty" json:"retries,omitempty"`
+}
+
+// Clone returns a deep copy of the execution so callers can persist or restore
+// workflow state without aliasing mutable maps/slices from the original.
+func (e *Execution) Clone() *Execution {
+	if e == nil {
+		return nil
+	}
+	cloned := *e
+	if e.StepHistory != nil {
+		cloned.StepHistory = slices.Clone(e.StepHistory)
+	}
+	if e.Variables != nil {
+		cloned.Variables = maps.Clone(e.Variables)
+	}
+	if e.ParallelInflight != nil {
+		cloned.ParallelInflight = make(map[string]*ParallelChildren, len(e.ParallelInflight))
+		for key, child := range e.ParallelInflight {
+			if child == nil {
+				cloned.ParallelInflight[key] = nil
+				continue
+			}
+			childClone := *child
+			if child.Children != nil {
+				childClone.Children = make(map[string]*ChildStatus, len(child.Children))
+				for childID, status := range child.Children {
+					if status == nil {
+						childClone.Children[childID] = nil
+						continue
+					}
+					statusClone := *status
+					childClone.Children[childID] = &statusClone
+				}
+			}
+			cloned.ParallelInflight[key] = &childClone
+		}
+	}
+	return &cloned
 }
 
 // AllChildrenDone reports whether every child reached a terminal status.

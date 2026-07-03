@@ -14,6 +14,7 @@ import (
 // AgentCompletionHandler.OnWorkflowComplete) picks up wherever it left off.
 const (
 	resumeWorkflowIDVar   = "resume_workflow_id"
+	resumeWorkflowStepVar = "resume_workflow_step"
 	resumeWorkflowVarsVar = "resume_workflow_vars"
 	resumeStatusVar       = "resume_status"
 )
@@ -48,6 +49,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 	if resumeID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "no resume target"}, nil
 	}
+	resumeStep := wfExec.Variables[resumeWorkflowStepVar]
 
 	var resumeVars map[string]string
 	if raw := wfExec.Variables[resumeWorkflowVarsVar]; raw != "" {
@@ -71,13 +73,15 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 		return StepOutput{}, err
 	}
 
-	if err := e.StartWorkflowWithVars(taskID, resumeID, resumeVars); err != nil {
+	if err := e.StartWorkflowFromStepWithVars(taskID, resumeID, resumeStep, resumeVars); err != nil {
 		// Not fatal to the recovery itself — the branch conflict is already
 		// resolved and pushed. Leave the task at its restored status; a human
 		// or the next monitor pass can re-drive it.
-		e.logger.Error("workflow.resume.start-failed", "task_id", taskID, "resume_workflow", resumeID, "err", err)
+		e.logger.Error("workflow.resume.start-failed",
+			"task_id", taskID, "resume_workflow", resumeID, "resume_step", resumeStep, "err", err)
 		return StepOutput{}, errStepParked
 	}
-	e.logger.Info("workflow.resume.started", "task_id", taskID, "resume_workflow", resumeID)
+	e.logger.Info("workflow.resume.started",
+		"task_id", taskID, "resume_workflow", resumeID, "resume_step", resumeStep)
 	return StepOutput{}, errStepParked
 }

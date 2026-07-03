@@ -6,10 +6,15 @@ import "strconv"
 type PRIssueKind string
 
 const (
-	PRIssueConflict     PRIssueKind = "conflict"
-	PRIssueCIFailure    PRIssueKind = "ci_failure"
-	PRIssueComments     PRIssueKind = "comments"
-	PRIssueReadyToMerge PRIssueKind = "ready_to_merge"
+	PRIssueConflict PRIssueKind = "conflict"
+	// PRIssueBranchConflictNoPR is a tracker-only kind for branch-conflict
+	// recovery before a task has opened a PR. It is never emitted by PR monitor
+	// matching and exists only to keep its retry budget separate from PR-backed
+	// conflicts.
+	PRIssueBranchConflictNoPR PRIssueKind = "branch_conflict_no_pr"
+	PRIssueCIFailure          PRIssueKind = "ci_failure"
+	PRIssueComments           PRIssueKind = "comments"
+	PRIssueReadyToMerge       PRIssueKind = "ready_to_merge"
 )
 
 // PRIssue represents a detected problem on a PR linked to a task.

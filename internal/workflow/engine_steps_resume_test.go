@@ -13,7 +13,33 @@ import (
 func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t) // seeds "test-simple" workflow
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "resume-target",
+		Name: "resume target",
+		Steps: []Step{
+			{
+				ID:   "triage",
+				Name: "Triage",
+				Type: StepSetStatus,
+				Config: StepConfig{
+					Status: "in-progress",
+				},
+				Next: []Transition{{GoTo: "resume_here"}},
+			},
+			{
+				ID:   "resume_here",
+				Name: "Resume Here",
+				Type: StepWaitHuman,
+				Config: StepConfig{
+					HumanActions: []string{"done"},
+				},
+				Next: []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	tasks := newMemTasks()
 	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
 
@@ -22,8 +48,9 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 		CurrentStep: "resume_original",
 		State:       ExecRunning,
 		Variables: map[string]string{
-			"resume_workflow_id": "test-simple",
-			"resume_status":      "testing",
+			"resume_workflow_id":   "resume-target",
+			"resume_workflow_step": "resume_here",
+			"resume_status":        "testing",
 		},
 	}
 	tasks.Put(TaskInfo{
@@ -44,13 +71,11 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 	if got.Status != "testing" {
 		t.Fatalf("status = %q, want restored %q", got.Status, "testing")
 	}
-	if got.Workflow == nil || got.Workflow.WorkflowID != "test-simple" {
-		t.Fatalf("workflow = %+v, want resumed test-simple", got.Workflow)
+	if got.Workflow == nil || got.Workflow.WorkflowID != "resume-target" {
+		t.Fatalf("workflow = %+v, want resumed resume-target", got.Workflow)
 	}
-	// test-simple's first step (triage) is a run_agent step — an async step,
-	// so the resumed workflow should be parked there waiting for the agent.
-	if got.Workflow.CurrentStep != "triage" {
-		t.Fatalf("current step = %q, want triage (test-simple's first step)", got.Workflow.CurrentStep)
+	if got.Workflow.CurrentStep != "resume_here" {
+		t.Fatalf("current step = %q, want captured resume_here step", got.Workflow.CurrentStep)
 	}
 }
 

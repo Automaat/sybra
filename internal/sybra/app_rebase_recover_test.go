@@ -534,25 +534,31 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	if resumeID := got.Workflow.Variables["resume_workflow_id"]; resumeID != "resume-target-test" {
 		t.Fatalf("resume_workflow_id = %q, want captured resume-target-test", resumeID)
 	}
+	if resumeStep := got.Workflow.Variables["resume_workflow_step"]; resumeStep != "mark_resumed" {
+		t.Fatalf("resume_workflow_step = %q, want captured mark_resumed", resumeStep)
+	}
 	if resumeStatus := got.Workflow.Variables["resume_status"]; resumeStatus != string(task.StatusTesting) {
 		t.Fatalf("resume_status = %q, want captured %q", resumeStatus, task.StatusTesting)
 	}
 	if resumeVars := got.Workflow.Variables["resume_workflow_vars"]; resumeVars != `{"attempt":"1"}` {
 		t.Fatalf("resume_workflow_vars = %q, want captured prior workflow vars", resumeVars)
 	}
-	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
-		t.Fatal("conflict issue was not marked handled after recovery dispatch")
+	if r.prTracker.Retries(tk.ID, github.PRIssueBranchConflictNoPR) == 0 {
+		t.Fatal("branch-conflict retry budget was not marked handled after recovery dispatch")
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
+		t.Fatal("PR conflict retry budget should stay untouched for no-PR recovery")
 	}
 }
 
 // TestRecoverBranchConflictNoPR_AtCapEscalates verifies the retry-budget
-// guard: an exhausted github.PRIssueConflict budget (reused, not a new kind)
+// guard: an exhausted branch-conflict-no-PR budget
 // returns false so the caller escalates to human-required instead of
 // retrying forever on a genuinely unresolvable conflict.
 func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
 	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusInProgress, nil)
 	for range github.MaxRetries {
-		r.prTracker.MarkHandled(tk.ID, github.PRIssueConflict, "somesha")
+		r.prTracker.MarkHandled(tk.ID, github.PRIssueBranchConflictNoPR, "somesha")
 	}
 
 	if r.recoverStaleBranchConflict(tk.ID) {
@@ -593,8 +599,78 @@ func TestRecoverBranchConflictNoPR_InFlightGuardPreventsDoubleDispatch(t *testin
 	if r.recoverStaleBranchConflict(tk.ID) {
 		t.Fatal("recoverStaleBranchConflict returned true while a recovery was already marked in-flight")
 	}
-	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
-		t.Fatal("conflict issue was marked handled despite the in-flight guard rejecting the attempt")
+	if r.prTracker.Retries(tk.ID, github.PRIssueBranchConflictNoPR) != 0 {
+		t.Fatal("branch-conflict retry budget was marked handled despite the in-flight guard rejecting the attempt")
+	}
+}
+
+func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testing.T) {
+	priorWorkflow := &workflow.Execution{
+		WorkflowID:  "resume-target-test",
+		CurrentStep: "mark_resumed",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{"attempt": "2"},
+	}
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusTesting, priorWorkflow)
+	emptyStore, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.workflowEngine = workflow.NewEngine(emptyStore, &taskAdapter{tasks: r.tasks}, &agentAdapter{agents: r.agents, tasks: r.tasks}, slog.New(slog.DiscardHandler))
+
+	if r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("recoverBranchConflictNoPR returned true despite dispatch failure")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusTesting {
+		t.Fatalf("status = %q, want restored %q", got.Status, task.StatusTesting)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != priorWorkflow.WorkflowID {
+		t.Fatalf("workflow = %+v, want restored prior workflow", got.Workflow)
+	}
+	if got.Workflow.CurrentStep != priorWorkflow.CurrentStep {
+		t.Fatalf("current step = %q, want restored %q", got.Workflow.CurrentStep, priorWorkflow.CurrentStep)
+	}
+	if got.Workflow.State != priorWorkflow.State {
+		t.Fatalf("state = %q, want restored %q", got.Workflow.State, priorWorkflow.State)
+	}
+}
+
+func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing.T) {
+	r, tk := setupBranchConflictNoPRReviewHandler(t, task.StatusInProgress, nil)
+	if _, err := r.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("branch/does-not-exist")}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range wtFailureLimit - 1 {
+		if r.recoverStaleBranchConflict(tk.ID) {
+			t.Fatalf("call %d: want false on worktree failure", i+1)
+		}
+		got, err := r.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: escalated too early", i+1)
+		}
+	}
+
+	if r.recoverStaleBranchConflict(tk.ID) {
+		t.Fatal("circuit-open call: want false")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q after circuit break, want human-required", got.Status)
+	}
+	if n := r.wtFailures[tk.ID]; n != 0 {
+		t.Fatalf("wtFailures[%s] = %d after circuit trip, want 0", tk.ID, n)
 	}
 }
 
