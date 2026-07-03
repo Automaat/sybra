@@ -3,6 +3,7 @@ package recovery_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 func discardLogger() *slog.Logger {
@@ -336,6 +338,93 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	}
 	if !stub.lastOneShot {
 		t.Fatal("interactive one-shot stale restart must preserve oneShot=true")
+	}
+}
+
+// TestRestartStalePRFixRebaseFailedFlipsToHumanRequired covers the actual
+// path that had the infinite-retry bug this PR fixes: run_role=="pr-fix"
+// skips markRebaseBlocked (unlike the other three agent-start call sites) and
+// returns worktreeerr.ErrRebaseFailed straight through to
+// Recovery.surfaceStartFailure. Before ClassifyAgentStartError learned to
+// treat it as permanent, RestartStaleInProgress would keep re-dispatching
+// StartPRFixAgent against the same doomed rebase every restartStaleMinAge
+// tick, forever.
+func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("pr-fix rebase failed", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	runRole := "pr-fix"
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    &inProg,
+		ProjectID: &projID,
+		RunRole:   &runRole,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Old run → debounce passes so the pr-fix branch actually re-dispatches.
+	// Role is deliberately NOT "pr-fix" here: a last run with Role=="pr-fix"
+	// hits the earlier revert-to-in-review shortcut (stale.go) before this
+	// dispatch is ever reached — task.RunRole (not AgentRun.Role) is what
+	// selects the StartPRFixAgent branch under test.
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-impl",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{prFixErr: fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.prFixCalls != 1 {
+		t.Fatalf("StartPRFixAgent calls = %d, want 1", stub.prFixCalls)
+	}
+
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status = %s, want %s (rebase failure must escalate, not retry forever)", updated.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(updated.StatusReason, "branch stale") {
+		t.Errorf("status reason = %q, want rebase-failed classification", updated.StatusReason)
 	}
 }
 

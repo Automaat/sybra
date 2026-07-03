@@ -28,6 +28,7 @@ Thumbs.db
 # Test
 frontend/test-results/
 frontend/playwright-report/
+frontend/coverage/
 
 # Binary
 /sybra
@@ -42,3 +43,6 @@ core.*
 
 # Perf artifacts
 /perf-profiles/
+
+# Manual testing artifacts
+.sybra-manual-test-port*
