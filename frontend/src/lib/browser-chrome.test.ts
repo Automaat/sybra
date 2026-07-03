@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
 import { JSDOM } from 'jsdom'
 import { describe, expect, it, vi } from 'vitest'
 
-const browserChromePath = resolve(process.cwd(), '..', 'browser_chrome.js')
+const browserChromePath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'browser_chrome.js')
 const browserChromeSource = readFileSync(browserChromePath, 'utf8')
 
 function runBrowserChrome(url: string, source = browserChromeSource) {
@@ -21,7 +22,7 @@ describe('browser chrome url normalization', () => {
       'function normalizeURL(raw) {',
       'window.__normalizeURL = function normalizeURL(raw) {',
     )
-    const window = runBrowserChrome('https://github.com/Automaat/sybra', instrumented) as Window & {
+    const window = runBrowserChrome('https://github.com/Automaat/sybra', instrumented) as unknown as Window & {
       __normalizeURL: (value: string) => string | null
     }
 

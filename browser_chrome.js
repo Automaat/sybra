@@ -84,10 +84,10 @@
     var toolbar = document.createElement("div");
     toolbar.className = "toolbar";
     toolbar.innerHTML =
-      '<button id="back" title="Back">◀</button>' +
-      '<button id="forward" title="Forward">▶</button>' +
-      '<button id="reload" title="Reload">⟳</button>' +
-      '<input id="address" type="text" spellcheck="false" />';
+      '<button id="back" type="button" title="Back" aria-label="Back">◀</button>' +
+      '<button id="forward" type="button" title="Forward" aria-label="Forward">▶</button>' +
+      '<button id="reload" type="button" title="Reload" aria-label="Reload">⟳</button>' +
+      '<input id="address" type="text" spellcheck="false" aria-label="Address" />';
     shadow.appendChild(toolbar);
 
     if (isGitHubPage()) {
