@@ -5,7 +5,7 @@
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
   import { formatDateTime } from '../../lib/dates.js'
   import { formatCostShort } from '../../lib/cost.js'
-  import { runStateClasses } from '../../lib/agent-run.js'
+  import { runStateClasses, roleLabel } from '../../lib/agent-run.js'
   import StreamOutput from '../StreamOutput.svelte'
   import MessageBubble from '../MessageBubble.svelte'
   import ProviderLogo from '../ProviderLogo.svelte'
@@ -105,6 +105,9 @@
               <ProviderLogo provider={run.provider} class="h-3.5 w-3.5 text-surface-400" />
             {/if}
             <span class="font-mono text-surface-400">{run.agentId}</span>
+            {#if roleLabel(run.role)}
+              <span class="rounded bg-tertiary-100 px-1.5 py-0.5 font-medium text-tertiary-700 dark:bg-tertiary-900/50 dark:text-tertiary-300">{roleLabel(run.role)}</span>
+            {/if}
             <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{run.mode}</span>
             <span class="rounded px-1.5 py-0.5 {runStateClasses(run.state || 'running')}">
               {run.state || 'running'}
