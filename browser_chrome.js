@@ -5,9 +5,29 @@
   try {
     var HOST_ID = "sybra-nav-host";
     var TOOLBAR_HEIGHT = 40;
+    var GITHUB_HOST = "github.com";
 
     function sync(input) {
       input.value = location.href;
+    }
+
+    function hasExplicitScheme(value) {
+      return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+    }
+
+    function isBareIPv6Literal(value) {
+      if (value.indexOf("[") !== -1 || value.indexOf("]") !== -1) return false;
+      if ((value.match(/:/g) || []).length < 2) return false;
+      try {
+        new URL("https://[" + value + "]");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function isGitHubPage() {
+      return location.hostname === GITHUB_HOST || location.hostname.slice(-(GITHUB_HOST.length + 1)) === "." + GITHUB_HOST;
     }
 
     var existingHost = document.getElementById(HOST_ID);
@@ -22,16 +42,21 @@
     function normalizeURL(raw) {
       var value = (raw || "").trim();
       if (!value) return null;
+      if (value.charAt(0) === "#") return null;
 
-      var schemeMatch = /^[a-z][a-z0-9+.-]*:/i.exec(value);
-      if (schemeMatch) {
-        var scheme = schemeMatch[0].toLowerCase();
-        if (scheme === "http:" || scheme === "https:") return value;
-        return null;
+      var candidate = value;
+      if (!hasExplicitScheme(candidate)) {
+        candidate = isBareIPv6Literal(candidate) ? "https://[" + candidate + "]" : "https://" + candidate;
       }
 
-      if (value.charAt(0) === "#") return null;
-      return "https://" + value;
+      try {
+        var parsed = new URL(candidate);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+        if (!parsed.host) return null;
+        return parsed.toString();
+      } catch {
+        return null;
+      }
     }
 
     var host = document.createElement("div");
@@ -65,7 +90,9 @@
       '<input id="address" type="text" spellcheck="false" />';
     shadow.appendChild(toolbar);
 
-    document.documentElement.style.setProperty("padding-top", TOOLBAR_HEIGHT + "px", "important");
+    if (isGitHubPage()) {
+      document.documentElement.style.setProperty("padding-top", TOOLBAR_HEIGHT + "px");
+    }
 
     var addressInput = shadow.getElementById("address");
     addressInput.addEventListener("keydown", function (event) {
@@ -84,7 +111,7 @@
       location.reload();
     });
 
-    if (!history.__sybraPatched) {
+    if (isGitHubPage() && !history.__sybraPatched) {
       history.__sybraPatched = true;
       ["pushState", "replaceState"].forEach(function (method) {
         var original = history[method];
@@ -103,7 +130,8 @@
     }
 
     sync(addressInput);
-  } catch {
+  } catch (error) {
+    console.warn("[Sybra Browser] toolbar injection failed", error);
     // Swallow — a broken toolbar must never break the underlying page.
   }
 })();

@@ -190,7 +190,9 @@ func desktopBrowserOptions(cfg *config.Config, opener func(string)) []sybra.Opti
 // openInAppBrowser opens url in a fresh in-app webview window. The window uses
 // the app's default (persistent, app-wide) WKWebsiteDataStore, so a GitHub
 // login here is reused across windows and survives restarts — the user logs in
-// once and stays in a single app. One window per call by design.
+// once and stays in a single app. The injected toolbar also allows the user to
+// navigate elsewhere inside that same persistent browser profile. One window
+// per call by design.
 func openInAppBrowser(app *application.App, url string) {
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Sybra Browser",
@@ -202,7 +204,7 @@ func openInAppBrowser(app *application.App, url string) {
 		// Throwaway JS-injected toolbar (address bar + back/forward/reload)
 		// pending a native NSToolbar — see docs on openInAppBrowser above.
 		JS:               browserChromeJS,
-		BackgroundColour: application.RGBA{Red: 255, Green: 255, Blue: 255, Alpha: 1},
+		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
 	})
 }
 
