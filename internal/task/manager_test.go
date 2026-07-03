@@ -166,6 +166,71 @@ func TestManagerAddRunEmitsUpdated(t *testing.T) {
 	}
 }
 
+// TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite guards
+// against the exact race behind the "two independent cascade sources" bug: an
+// in-process status write (e.g. UpdateTaskStatus from a workflow step) and
+// the file watcher event it wakes both observe the same transition and both
+// try to fire the status-change hook. Before the fix, OnExternalUpdate read +
+// deduped + recorded without holding the per-task lock UpdateFn writes under,
+// so a watcher call landing between the write and the writer's own
+// recordFiredStatus call could win the dedupe race and fire a second,
+// concurrent hook invocation for the same transition — which is exactly what
+// let a status-change hook and a legitimate cascade both dispatch the same
+// successor workflow. Hammer both entry points concurrently and assert the
+// hook only ever fires once per distinct transition.
+func TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	created, err := m.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := filepath.Join(m.store.dir, created.ID+".md")
+
+	var (
+		mu   sync.Mutex
+		fire []string
+	)
+	m.SetStatusChangeHook(func(id, from, to string) {
+		mu.Lock()
+		fire = append(fire, from+"->"+to)
+		mu.Unlock()
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if _, updErr := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)}); updErr != nil {
+			t.Errorf("Update: %v", updErr)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			m.OnExternalUpdate(path)
+		}
+	}()
+	wg.Wait()
+
+	// Give any straggling OnExternalUpdate call (from the loop above, racing
+	// past the writer) a chance to observe the final state and settle.
+	m.OnExternalUpdate(path)
+
+	mu.Lock()
+	defer mu.Unlock()
+	count := 0
+	for _, f := range fire {
+		if f == "->in-progress" || f == "todo->in-progress" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("hook fired %d times for todo->in-progress, want 1: %+v", count, fire)
+	}
+}
+
 func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)

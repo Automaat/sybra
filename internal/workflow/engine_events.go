@@ -319,8 +319,14 @@ func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
 }
 
 // hasTrackedAgentForTaskStep returns true when a tracked agent is already in
-// flight for the given task+step pair. Used to detect phantom completions from
-// untracked (manually-dispatched) agents.
+// flight for the given task+step pair, OR a run_agent dispatch for that pair
+// is in progress but hasn't been assigned an agent ID yet (see
+// dispatchingStep). Used to detect phantom completions from untracked
+// (manually-dispatched, or reattached-and-stale) agents: without the
+// dispatchingStep check, a stale completion arriving while the real agent for
+// the current step is still being started (e.g. blocked on worktree prep)
+// falls back to "current step, nothing tracked yet" and gets misattributed —
+// advancing the step before its real agent ever ran.
 func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -329,7 +335,34 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 			return true
 		}
 	}
-	return false
+	return e.dispatchingStep[dispatchingStepKey(taskID, stepID)] > 0
+}
+
+func dispatchingStepKey(taskID, stepID string) string {
+	return taskID + "|" + stepID
+}
+
+// markStepDispatching records that a run_agent step's agent-start sequence
+// (which may block for seconds on worktree prep) is underway for taskID/stepID,
+// before an agent ID exists to register in agentSteps. Paired with
+// unmarkStepDispatching, always via defer, on every return path.
+func (e *Engine) markStepDispatching(taskID, stepID string) {
+	e.mu.Lock()
+	key := dispatchingStepKey(taskID, stepID)
+	e.dispatchingStep[key]++
+	e.mu.Unlock()
+}
+
+func (e *Engine) unmarkStepDispatching(taskID, stepID string) {
+	e.mu.Lock()
+	key := dispatchingStepKey(taskID, stepID)
+	if e.dispatchingStep[key] <= 1 {
+		delete(e.dispatchingStep, key)
+		e.mu.Unlock()
+		return
+	}
+	e.dispatchingStep[key]--
+	e.mu.Unlock()
 }
 
 // clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.
