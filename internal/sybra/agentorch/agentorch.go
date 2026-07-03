@@ -119,23 +119,29 @@ func PickImplementationResumeSession(runs []task.AgentRun, workflowStart time.Ti
 // Orchestrator manages agent lifecycle: worktree setup, project
 // assignment, and agent launching for a task.
 type Orchestrator struct {
-	Tasks     *task.Manager
-	Projects  *project.Store
-	Agents    *agent.Manager
-	Worktrees *worktree.Manager
-	Cfg       *config.Config
-	Sandboxes *sandbox.Manager
-	Bgops     *bgop.Tracker
-	Logger    *slog.Logger
+	tasks     *task.Manager
+	projects  *project.Store
+	agents    *agent.Manager
+	worktrees *worktree.Manager
+	cfg       *config.Config
+	sandboxes *sandbox.Manager
+	bgops     *bgop.Tracker
+	logger    *slog.Logger
 	audit     *audit.Logger
-	// ConflictRecovery turns a worktree-prep rebase conflict into an autonomous
-	// conflict pr-fix instead of a human escalation. Wired in wireServices after
-	// the review.Handler exists; nil keeps the escalate-to-human fallback.
-	ConflictRecovery func(taskID string) bool
+	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
+	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
+	// in wireServices after the review.Handler exists; nil keeps the
+	// escalate-to-human fallback. sandboxes/bgops/conflictRecovery are all set
+	// after New() returns, once the file watcher (initFileWatcher) may already
+	// be running — every read site nil-guards for this reason. Do not remove
+	// the nil guards even if app.go's init order changes to close the window;
+	// the ordering is easy to regress silently.
+	conflictRecovery func(taskID string) bool
 }
 
 // New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
-// wired in after construction once those subsystems exist.
+// wired in after construction once those subsystems exist, via SetSandboxes
+// and SetBgops.
 func New(
 	tasks *task.Manager,
 	projects *project.Store,
@@ -147,28 +153,78 @@ func New(
 ) *Orchestrator {
 	return &Orchestrator{
 		audit:     al,
-		Logger:    logger,
-		Tasks:     tasks,
-		Projects:  projects,
-		Agents:    agents,
-		Worktrees: worktrees,
-		Cfg:       cfg,
+		logger:    logger,
+		tasks:     tasks,
+		projects:  projects,
+		agents:    agents,
+		worktrees: worktrees,
+		cfg:       cfg,
 	}
+}
+
+// SetSandboxes late-binds the sandbox manager once it exists.
+func (o *Orchestrator) SetSandboxes(sandboxes *sandbox.Manager) {
+	o.sandboxes = sandboxes
+}
+
+// SetBgops late-binds the background-operation tracker once it exists.
+func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
+	o.bgops = bgops
+}
+
+// SetConflictRecovery late-binds the autonomous conflict-recovery callback
+// once the review.Handler that implements it exists.
+func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
+	o.conflictRecovery = fn
+}
+
+// Sandboxes returns the late-bound sandbox manager, for callers (e.g.
+// startup-wiring assertions) that need to verify it was wired correctly.
+func (o *Orchestrator) Sandboxes() *sandbox.Manager {
+	return o.sandboxes
+}
+
+// Bgops returns the late-bound background-operation tracker, for callers
+// (e.g. startup-wiring assertions) that need to verify it was wired
+// correctly.
+func (o *Orchestrator) Bgops() *bgop.Tracker {
+	return o.bgops
+}
+
+// HasConflictRecovery reports whether the autonomous conflict-recovery
+// callback has been wired, without exposing the callback itself.
+func (o *Orchestrator) HasConflictRecovery() bool {
+	return o.conflictRecovery != nil
+}
+
+// Cfg returns the shared config, for callers (e.g. app_workflow.go's
+// agentAdapter) that need to resolve task/config-derived settings the
+// orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Cfg() *config.Config {
+	return o.cfg
+}
+
+// Worktrees returns the shared worktree manager, for callers that need
+// worktree operations the orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Worktrees() *worktree.Manager {
+	return o.worktrees
+}
+
+// Projects returns the shared project store, for callers that need project
+// lookups the orchestrator itself doesn't expose a verb for.
+func (o *Orchestrator) Projects() *project.Store {
+	return o.projects
+}
+
+// Logger returns the shared logger, for callers that need to log in the
+// same stream as the orchestrator's own logging.
+func (o *Orchestrator) Logger() *slog.Logger {
+	return o.logger
 }
 
 // LogAudit records a structured audit event; a nil audit logger silently no-ops.
 func (o *Orchestrator) LogAudit(eventType, taskID, agentID string, data map[string]any) {
-	if o.audit == nil {
-		return
-	}
-	if err := o.audit.Log(audit.Event{
-		Type:    eventType,
-		TaskID:  taskID,
-		AgentID: agentID,
-		Data:    data,
-	}); err != nil {
-		o.Logger.Error("audit.log", "type", eventType, "err", err)
-	}
+	audit.LogEvent(o.audit, o.logger, eventType, taskID, agentID, data)
 }
 
 // resolveDispatchProvider predicts the provider a Run call for this
@@ -181,7 +237,7 @@ func (o *Orchestrator) LogAudit(eventType, taskID, agentID string, data map[stri
 // picked; otherwise a session from the requested provider could be handed
 // to a run that actually dispatches to a different one.
 func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflow.AgentAssignment) string {
-	resolved, err := o.Agents.ResolveProvider(agent.RunConfig{
+	resolved, err := o.agents.ResolveProvider(agent.RunConfig{
 		TaskID:                  taskID,
 		Provider:                assignment.Provider,
 		DisableProviderFailover: assignment.ExperimentID != "",
@@ -192,7 +248,7 @@ func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflo
 	if assignment.Provider != "" {
 		return assignment.Provider
 	}
-	return o.Agents.DefaultProvider()
+	return o.agents.DefaultProvider()
 }
 
 // SandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
@@ -200,10 +256,10 @@ func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflo
 // lazily by the testing phase (test-runner role), so implementation/review
 // agents inherit one only if testing left it up — they never spin a cluster.
 func (o *Orchestrator) SandboxEnvIfRunning(taskID string) []string {
-	if o.Sandboxes == nil {
+	if o.sandboxes == nil {
 		return nil
 	}
-	if inst := o.Sandboxes.Get(taskID); inst != nil {
+	if inst := o.sandboxes.Get(taskID); inst != nil {
 		return inst.EnvVars()
 	}
 	return nil
@@ -215,22 +271,22 @@ func (o *Orchestrator) SandboxEnvIfRunning(taskID string) []string {
 // logged, not fatal — the agent runs without the sandbox env). Called from the
 // testing phase so the per-task sandbox spins up only when tests actually run.
 func (o *Orchestrator) SandboxEnv(taskID, dir string, t task.Task) []string {
-	if o.Sandboxes == nil || t.ProjectID == "" {
+	if o.sandboxes == nil || t.ProjectID == "" {
 		return nil
 	}
-	proj, pErr := o.Projects.Get(t.ProjectID)
+	proj, pErr := o.projects.Get(t.ProjectID)
 	if pErr != nil || proj.Sandbox == nil {
 		return nil
 	}
-	inst := o.Sandboxes.Get(taskID)
+	inst := o.sandboxes.Get(taskID)
 	if inst == nil {
 		// context.Background(): SandboxEnv is called from agentAdapter.StartAgent,
 		// which implements workflow.AgentDispatcher — a fixed interface signature
 		// with no ctx parameter (see the comment on the PrepareForTask call in
 		// app_workflow.go).
-		newInst, startErr := o.Sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
+		newInst, startErr := o.sandboxes.Start(context.Background(), taskID, dir, proj.Sandbox)
 		if startErr != nil {
-			o.Logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
+			o.logger.Warn("sandbox.start.failed", "task_id", taskID, "err", startErr)
 			return nil
 		}
 		inst = newInst
@@ -282,21 +338,21 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	// a manual start) cannot observe "no running agent" and launch a duplicate
 	// on the same worktree. workflow.ErrDispatchInFlight is benign: the holder
 	// will produce the task's agent.
-	if !o.Agents.ClaimTaskDispatch(taskID) {
+	if !o.agents.ClaimTaskDispatch(taskID) {
 		return nil, "", workflow.ErrDispatchInFlight
 	}
-	defer o.Agents.ReleaseTaskDispatch(taskID)
+	defer o.agents.ReleaseTaskDispatch(taskID)
 
 	// Consume a pending watchdog headless-nudge steer (no-op when none). Held
 	// within the dispatch claim so the read-then-clear is serialized per task.
 	// On a clear failure the steer stays pending and we dispatch unsteered.
-	if steered, sErr := PrependSupervisorSteer(o.Tasks, taskID, prompt); sErr != nil {
-		o.Logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
+	if steered, sErr := PrependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
 	} else {
 		prompt = steered
 	}
 
-	t, err := o.Tasks.Get(taskID)
+	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -307,10 +363,10 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		return nil, "", fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
 	}
 	researchDir := ""
-	if o.Cfg != nil {
-		researchDir = o.Cfg.Agent.ResearchMachineDir
+	if o.cfg != nil {
+		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.Cfg)
+	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
 	if !skipWT {
 		t = o.AutoAssignProject(t)
 		if t.ProjectID == "" {
@@ -325,10 +381,10 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		// context.Background(): StartAgentWithAssignment is reached from both
 		// App.StartAgent (Wails-bound, no ctx) and workflow.AgentDispatcher.StartAgent
 		// (fixed interface signature, no ctx) — no real context to thread here.
-		d, wtErr := o.Worktrees.PrepareForTask(context.Background(), t, onPhase)
+		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
-			if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.Tasks, taskID, wtErr, o.Logger, o.ConflictRecovery); recovered {
+			if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 				return nil, "", workflow.ErrDispatchInFlight
 			}
 			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
@@ -349,7 +405,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	dispatchProvider := o.resolveDispatchProvider(taskID, assignment)
 	resumeSessionID := PickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
 
-	posture, postureErr := ResolveHeadlessPermissionMode(t, o.Cfg)
+	posture, postureErr := ResolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
@@ -357,7 +413,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
-	ag, err := o.Agents.Run(agent.RunConfig{
+	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                  taskID,
 		Name:                    t.Title,
 		Mode:                    effMode,
@@ -396,17 +452,17 @@ func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	}
 	// Gate block leaves no running agent. Flip the task back to todo so
 	// watchdog / restart-stale loops don't chase a ghost in-progress row.
-	if _, rerr := o.Tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
-		o.Logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
+	if _, rerr := o.tasks.Update(taskID, task.Update{Status: task.Ptr(task.StatusTodo)}); rerr != nil {
+		o.logger.Error("task.revert-on-gate", "task_id", taskID, "err", rerr)
 	}
 	o.LogAudit(audit.EventProviderGateBlocked, taskID, "", map[string]any{"err": err.Error()})
-	o.Logger.Info("agent.start.gated", "task_id", taskID, "err", err)
+	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 }
 
 func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error {
 	resetDir := t.WorktreeDir
 	if resetDir == "" {
-		resetDir = o.Worktrees.PathFor(t)
+		resetDir = o.worktrees.PathFor(t)
 	}
 	if _, statErr := os.Stat(resetDir); statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -418,10 +474,10 @@ func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error
 	// itself reached from Wails-bound / workflow.AgentDispatcher dead ends
 	// (see comments elsewhere in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), resetDir, ref); err != nil {
-		o.Logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
+		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
 		return err
 	}
-	o.Logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
+	o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
 	return nil
 }
 
@@ -466,6 +522,14 @@ func MarkRebaseBlockedWithRecoveryResult(tasks *task.Manager, taskID string, err
 	return MarkRebaseBlocked(tasks, taskID, err, logger, wrappedRecover), recovered
 }
 
+// RecoverFromWorktreePrepFailure marks taskID rebase-blocked using this
+// Orchestrator's own logger and late-bound conflict-recovery callback,
+// wrapping MarkRebaseBlockedWithRecoveryResult for callers outside this
+// package that don't have direct access to either.
+func (o *Orchestrator) RecoverFromWorktreePrepFailure(tasks *task.Manager, taskID string, err error) (handled, recovered bool) {
+	return MarkRebaseBlockedWithRecoveryResult(tasks, taskID, err, o.logger, o.conflictRecovery)
+}
+
 // recordImplAgentStart emits the agent.started audit event and persists the
 // initial AgentRun record for an implementation agent.
 func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
@@ -480,7 +544,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 	if t.Status != task.StatusInProgress {
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
-	if err := o.Tasks.AddRunWithStatus(taskID, task.AgentRun{
+	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
 		AgentID:         ag.ID,
 		Role:            string(agent.RoleImplementation),
 		Mode:            effMode,
@@ -496,7 +560,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		StartedAt:       ag.StartedAt,
 		Prompt:          fullPrompt,
 	}, nextStatus); err != nil {
-		o.Logger.Error("task.add-run", "task_id", taskID, "err", err)
+		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 }
 
@@ -523,11 +587,11 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	if strings.TrimSpace(projectID) == "" {
 		return nil, errors.New("project_id is required")
 	}
-	if _, err := o.Projects.Get(projectID); err != nil {
+	if _, err := o.projects.Get(projectID); err != nil {
 		return nil, fmt.Errorf("project %s: %w", projectID, err)
 	}
 
-	t, err := o.Tasks.CreateChat(projectID)
+	t, err := o.tasks.CreateChat(projectID)
 	if err != nil {
 		return nil, fmt.Errorf("create chat task: %w", err)
 	}
@@ -535,18 +599,18 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
 	// context.Background(): StartChat is reached from App.StartChat, a
 	// Wails-bound method with no ctx parameter.
-	dir, err := o.Worktrees.PrepareForChat(context.Background(), t, onPhase)
+	dir, err := o.worktrees.PrepareForChat(context.Background(), t, onPhase)
 	if err != nil {
 		o.failWorktreeOp(opID, err)
-		if delErr := o.Tasks.Delete(t.ID); delErr != nil {
-			o.Logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
+		if delErr := o.tasks.Delete(t.ID); delErr != nil {
+			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
 		}
 		return nil, fmt.Errorf("prepare chat worktree: %w", err)
 	}
 	o.completeWorktreeOp(opID)
 
-	requirePerm := ResolvePermission(t, o.Cfg)
-	ag, err := o.Agents.Run(agent.RunConfig{
+	requirePerm := ResolvePermission(t, o.cfg)
+	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             t.ID,
 		Name:               t.Title,
 		Mode:               "interactive",
@@ -558,9 +622,9 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	})
 	if err != nil {
 		// context.Background(): StartChat is a Wails-bound method with no ctx.
-		o.Worktrees.Remove(context.Background(), t.ID)
-		if delErr := o.Tasks.Delete(t.ID); delErr != nil {
-			o.Logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
+		o.worktrees.Remove(context.Background(), t.ID)
+		if delErr := o.tasks.Delete(t.ID); delErr != nil {
+			o.logger.Error("chat.rollback.delete-task", "task_id", t.ID, "err", delErr)
 		}
 		return nil, err
 	}
@@ -570,7 +634,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 		"task_type": string(t.TaskType), "provider": ag.Provider,
 		"require_permissions": requirePerm,
 	})
-	if err := o.Tasks.AddRun(t.ID, task.AgentRun{
+	if err := o.tasks.AddRun(t.ID, task.AgentRun{
 		AgentID:   ag.ID,
 		Role:      "chat",
 		Mode:      "interactive",
@@ -579,7 +643,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 		StartedAt: ag.StartedAt,
 		Prompt:    prompt,
 	}); err != nil {
-		o.Logger.Error("chat.add-run", "task_id", t.ID, "err", err)
+		o.logger.Error("chat.add-run", "task_id", t.ID, "err", err)
 	}
 	return ag, nil
 }
@@ -587,18 +651,18 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 // AutoAssignProject assigns the task to the sole registered project when the
 // task has none and exactly one project is registered. No-op otherwise.
 func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
-	if t.ProjectID != "" || o.Projects == nil {
+	if t.ProjectID != "" || o.projects == nil {
 		return t
 	}
-	projects, err := o.Projects.List()
+	projects, err := o.projects.List()
 	if err != nil || len(projects) != 1 {
 		return t
 	}
 	t.ProjectID = projects[0].ID
-	if _, err := o.Tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
-		o.Logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
+	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
+		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 	} else {
-		o.Logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
+		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
 	}
 	return t
 }
@@ -608,21 +672,21 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
 func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	// Same per-task dispatch serialization as StartAgent — a pr-fix dispatch
 	// must not race a concurrent implementation/recovery dispatch.
-	if !o.Agents.ClaimTaskDispatch(taskID) {
+	if !o.agents.ClaimTaskDispatch(taskID) {
 		return workflow.ErrDispatchInFlight
 	}
-	defer o.Agents.ReleaseTaskDispatch(taskID)
+	defer o.agents.ReleaseTaskDispatch(taskID)
 
-	t, err := o.Tasks.Get(taskID)
+	t, err := o.tasks.Get(taskID)
 	if err != nil {
 		return err
 	}
 
 	researchDir := ""
-	if o.Cfg != nil {
-		researchDir = o.Cfg.Agent.ResearchMachineDir
+	if o.cfg != nil {
+		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
-	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.Cfg)
+	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
 		t = o.AutoAssignProject(t)
 		if t.ProjectID == "" {
@@ -632,7 +696,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		// context.Background(): StartPRFixAgent implements the recovery package's
 		// Orchestrator interface, a fixed func(taskID string) error signature
 		// invoked from the background stale-agent recovery loop with no ctx.
-		d, wtErr := o.Worktrees.PrepareForTask(context.Background(), t, onPhase)
+		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
 			return fmt.Errorf("worktree required: %w", wtErr)
@@ -644,18 +708,18 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		return fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	posture, postureErr := ResolveHeadlessPermissionMode(t, o.Cfg)
+	posture, postureErr := ResolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
 		return postureErr
 	}
 
-	prompt := BuildPRFixPrompt(t, o.Logger)
-	if steered, sErr := PrependSupervisorSteer(o.Tasks, taskID, prompt); sErr != nil {
-		o.Logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
+	prompt := BuildPRFixPrompt(t, o.logger)
+	if steered, sErr := PrependSupervisorSteer(o.tasks, taskID, prompt); sErr != nil {
+		o.logger.Warn("supervisor-steer.consume", "task_id", taskID, "err", sErr)
 	} else {
 		prompt = steered
 	}
-	ag, err := o.Agents.Run(agent.RunConfig{
+	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
 		Mode:                   effMode,
@@ -679,12 +743,12 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture,
 	})
-	if err := o.Tasks.AddRun(taskID, task.AgentRun{
+	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 		Prompt: prompt,
 	}); err != nil {
-		o.Logger.Error("task.add-run", "task_id", taskID, "err", err)
+		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
 }
@@ -741,23 +805,23 @@ func BuildPRFixPrompt(t task.Task, logger *slog.Logger) string {
 // startWorktreeOp starts a bgop for worktree preparation and returns the op ID
 // and a phase-update callback. Returns empty string and nil when Bgops is nil.
 func (o *Orchestrator) startWorktreeOp(label, projectID, taskID string) (opID string, onPhase func(string)) {
-	if o.Bgops == nil {
+	if o.bgops == nil {
 		return "", nil
 	}
-	opID = o.Bgops.Start(bgop.TypeWorktreePrep, label, projectID, taskID)
-	onPhase = func(phase string) { o.Bgops.UpdatePhase(opID, phase) }
+	opID = o.bgops.Start(bgop.TypeWorktreePrep, label, projectID, taskID)
+	onPhase = func(phase string) { o.bgops.UpdatePhase(opID, phase) }
 	return opID, onPhase
 }
 
 func (o *Orchestrator) completeWorktreeOp(opID string) {
-	if o.Bgops != nil && opID != "" {
-		o.Bgops.Complete(opID)
+	if o.bgops != nil && opID != "" {
+		o.bgops.Complete(opID)
 	}
 }
 
 func (o *Orchestrator) failWorktreeOp(opID string, err error) {
-	if o.Bgops != nil && opID != "" {
-		o.Bgops.Fail(opID, err)
+	if o.bgops != nil && opID != "" {
+		o.bgops.Fail(opID, err)
 	}
 }
 

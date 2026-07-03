@@ -214,17 +214,7 @@ func New(
 
 // logAudit records a structured audit event; a nil audit logger silently no-ops.
 func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]any) {
-	if r.audit == nil {
-		return
-	}
-	if err := r.audit.Log(audit.Event{
-		Type:    eventType,
-		TaskID:  taskID,
-		AgentID: agentID,
-		Data:    data,
-	}); err != nil {
-		r.logger.Error("audit.log", "type", eventType, "err", err)
-	}
+	audit.LogEvent(r.audit, r.logger, eventType, taskID, agentID, data)
 }
 
 func (r *Handler) Name() string { return "reviews" }

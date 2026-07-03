@@ -683,7 +683,7 @@ func (a *App) initWorkflowEngine() {
 	// escalating to a human. Wired here (not at construction) because the
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
-		a.agentOrch.ConflictRecovery = a.reviewer.RecoverStaleBranchConflict
+		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.

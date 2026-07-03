@@ -430,7 +430,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 	defer a.agents.ReleaseTaskDispatch(taskID)
 
-	t, err := a.agentOrch.Tasks.Get(taskID)
+	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -444,7 +444,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", "", "", err
 	}
 
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, a.agentOrch.Cfg)
+	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, a.agentOrch.Cfg())
 	if postureErr != nil {
 		return "", "", "", postureErr
 	}
@@ -465,7 +465,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Dir:                     dir,
 		OneShot:                 oneShot,
 		MaxTurns:                t.MaxTurns,
-		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg),
+		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
 		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
@@ -493,9 +493,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// workflow step-execution call sites); see the Engine.SetContext /
 		// e.ctx pattern for why threading ctx across that interface is out of
 		// scope for this pass.
-		d, wtErr := a.agentOrch.Worktrees.PrepareForTask(context.Background(), t, nil)
+		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
-			if _, recovered := agentorch.MarkRebaseBlockedWithRecoveryResult(a.tasks, taskID, wtErr, a.agentOrch.Logger, a.agentOrch.ConflictRecovery); recovered {
+			if _, recovered := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); recovered {
 				return "", "", "", workflow.ErrDispatchInFlight
 			}
 			return "", "", "", wtErr
@@ -556,7 +556,7 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 		if t.WorktreeDir != "" {
 			target = t.WorktreeDir
 		} else {
-			target = a.agentOrch.Worktrees.PathFor(t)
+			target = a.agentOrch.Worktrees().PathFor(t)
 		}
 	}
 	if target == "" {
@@ -572,10 +572,10 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
 	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
-		a.agentOrch.Logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
+		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
-	a.agentOrch.Logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
 	return nil
 }
 
@@ -605,25 +605,25 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 }
 
 func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Role, t task.Task) {
-	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.Cfg == nil {
+	if a == nil || a.experience == nil || a.agentOrch == nil || a.agentOrch.Cfg() == nil {
 		return
 	}
-	if !roleReceivesExperience(role) || !a.agentOrch.Cfg.Experience.Enabled || t.ProjectID == "" {
+	if !roleReceivesExperience(role) || !a.agentOrch.Cfg().Experience.Enabled || t.ProjectID == "" {
 		return
 	}
 	projStore := a.projects
 	if projStore == nil {
-		projStore = a.agentOrch.Projects
+		projStore = a.agentOrch.Projects()
 	}
 	if projStore == nil {
 		return
 	}
 	proj, err := projStore.Get(t.ProjectID)
-	if err != nil || proj.ID == "" || !a.agentOrch.Cfg.AllowsProjectType(string(proj.Type)) {
+	if err != nil || proj.ID == "" || !a.agentOrch.Cfg().AllowsProjectType(string(proj.Type)) {
 		return
 	}
 	projectKey := experience.ProjectKey(proj)
-	records, err := a.experience.Query(projectKey, a.agentOrch.Cfg.Experience.MaxRecords)
+	records, err := a.experience.Query(projectKey, a.agentOrch.Cfg().Experience.MaxRecords)
 	if err != nil || len(records) == 0 {
 		return
 	}
@@ -650,7 +650,7 @@ func roleReceivesExperience(role agent.Role) bool {
 }
 
 func (a *agentAdapter) ensureTestRunnerCapacity(role agent.Role) error {
-	if role == agent.RoleTestRunner && a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.Cfg.TestingMaxConcurrent() {
+	if role == agent.RoleTestRunner && a.agents.CountLiveByRole(agent.RoleTestRunner) >= a.agentOrch.Cfg().TestingMaxConcurrent() {
 		return workflow.ErrTestRunnerBusy
 	}
 	return nil

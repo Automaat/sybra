@@ -17,6 +17,6 @@ func (a *App) wireOrchestratorService(emit func(string, any)) {
 }
 
 func (a *App) wireAgentOrchestrator() {
-	a.agentOrch.Sandboxes = a.sandboxes
-	a.agentOrch.Bgops = a.bgops
+	a.agentOrch.SetSandboxes(a.sandboxes)
+	a.agentOrch.SetBgops(a.bgops)
 }

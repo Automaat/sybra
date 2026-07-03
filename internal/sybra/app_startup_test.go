@@ -190,16 +190,16 @@ func assertStartupServiceWiring(t *testing.T, app *App) {
 	if app.reviewer.WorkflowEngine != app.workflowEngine {
 		t.Fatal("reviewer was not back-wired to the workflow engine")
 	}
-	if app.agentOrch.Sandboxes != app.sandboxes || app.agentOrch.Bgops != app.bgops {
+	if app.agentOrch.Sandboxes() != app.sandboxes || app.agentOrch.Bgops() != app.bgops {
 		t.Fatal("agent orchestrator was not fully wired")
 	}
 	// agentOrch is constructed before reviewer (see the Startup dependency-graph
 	// comment atop app.go), so the reverse wire — reviewer.RecoverStaleBranchConflict
-	// feeding agentOrch.ConflictRecovery — can only happen after both exist. This
-	// pins that ordering: a nil ConflictRecovery here means the two packages'
-	// wiring order in app_init.go regressed silently.
-	if app.agentOrch.ConflictRecovery == nil {
-		t.Fatal("agentOrch.ConflictRecovery was not back-wired from reviewer.RecoverStaleBranchConflict")
+	// feeding agentOrch's conflict-recovery callback — can only happen after both
+	// exist. This pins that ordering: no wired callback here means the two
+	// packages' wiring order in app_init.go regressed silently.
+	if !app.agentOrch.HasConflictRecovery() {
+		t.Fatal("agentOrch conflict recovery was not back-wired from reviewer.RecoverStaleBranchConflict")
 	}
 	if app.statsSvc.stats != app.stats || app.statsSvc.limits != app.limits || app.statsSvc.projects != app.projects {
 		t.Fatal("stats service was not wired")

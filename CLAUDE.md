@@ -105,6 +105,25 @@ sybra/
 
 ## Architecture
 
+### Extracting a Concern from `internal/sybra`
+
+`internal/sybra` is a large package (App + 12 `svc_*.go` service structs). When
+pulling a high-churn concern out of it (e.g. `internal/sybra/agentorch`,
+`internal/sybra/review`), nest the new package under `internal/sybra/<concern>`
+rather than promoting it to a top-level `internal/<domain>` package — this
+keeps import-cycle-prone concerns (those that still need to reach back into
+`App`-adjacent state) visually scoped to the god-package they were extracted
+from. Only promote to top-level once a concern has zero remaining coupling
+back into `internal/sybra`, the way `internal/recovery` already does (it
+defines its own narrow interface instead of importing `internal/sybra`).
+
+Keep the extracted type's exported surface narrow: private fields, a verb-only
+public API, and `Set*` methods for any field that must be late-bound after
+construction (see `agentorch.Orchestrator`'s `SetSandboxes`/`SetBgops`/
+`SetConflictRecovery`). Reach for an accessor method only when an external
+caller genuinely needs the underlying dependency itself (e.g. `Cfg()`,
+`Worktrees()`) — never export the field directly.
+
 ### Wails v3 Binding Convention
 
 The `App` struct and the 12 service structs (`internal/sybra/svc_*.go`) are registered via `App.V3Services()` and exposed to the frontend through `wails3 generate bindings`. Bindings live under `frontend/bindings/` keyed by Go package path (e.g. `frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts`).
