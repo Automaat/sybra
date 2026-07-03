@@ -27,6 +27,14 @@ const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 
 const wtFailureLimit = 5
 
+type branchConflictResumeState struct {
+	status       string
+	workflowID   string
+	workflowStep string
+	workflowVars string
+	prior        *workflow.Execution
+}
+
 const prFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
 	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
 	"- If you intentionally stopped because the PR needs a human, end with " +
@@ -764,29 +772,7 @@ func (r *ReviewHandler) recoverBranchConflictNoPR(t task.Task) bool {
 	if refetched, gerr := r.tasks.Get(taskID); gerr == nil {
 		t = refetched
 	}
-
-	// Capture the task's currently-active workflow (ID + a copy of its vars)
-	// and its visible status BEFORE cancelling anything, so the recovery
-	// workflow's terminal resume_workflow step can re-enter the exact stage
-	// that was interrupted — never skipping review/testing gates — instead of
-	// stranding the task on whatever transient status the recovery itself
-	// sets.
-	resumeStatus := string(t.Status)
-	var resumeWorkflowID string
-	var resumeWorkflowStep string
-	var resumeVarsJSON string
-	priorWorkflow := t.Workflow.Clone()
-	if t.Workflow != nil {
-		resumeWorkflowID = t.Workflow.WorkflowID
-		resumeWorkflowStep = t.Workflow.CurrentStep
-		captured := make(map[string]string, len(t.Workflow.Variables))
-		maps.Copy(captured, t.Workflow.Variables)
-		if encoded, mErr := json.Marshal(captured); mErr == nil {
-			resumeVarsJSON = string(encoded)
-		} else {
-			r.logger.Warn("pr-monitor.branch-conflict.resume-vars-encode", "task_id", taskID, "err", mErr)
-		}
-	}
+	resume := r.captureBranchConflictResumeState(t)
 	if r.workflowEngine.HasActiveWorkflow(taskID) {
 		if _, cancelErr := r.workflowEngine.CancelWorkflow(taskID, "branch conflict recovery"); cancelErr != nil {
 			r.logger.Error("pr-monitor.branch-conflict.cancel-active-workflow", "task_id", taskID, "err", cancelErr)
@@ -798,24 +784,47 @@ func (r *ReviewHandler) recoverBranchConflictNoPR(t task.Task) bool {
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
+	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume)
+}
 
+func (r *ReviewHandler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
+	state := branchConflictResumeState{
+		status: string(t.Status),
+		prior:  t.Workflow.Clone(),
+	}
+	if t.Workflow == nil {
+		return state
+	}
+	state.workflowID = t.Workflow.WorkflowID
+	state.workflowStep = t.Workflow.CurrentStep
+	captured := make(map[string]string, len(t.Workflow.Variables))
+	maps.Copy(captured, t.Workflow.Variables)
+	if encoded, err := json.Marshal(captured); err == nil {
+		state.workflowVars = string(encoded)
+	} else {
+		r.logger.Warn("pr-monitor.branch-conflict.resume-vars-encode", "task_id", t.ID, "err", err)
+	}
+	return state
+}
+
+func (r *ReviewHandler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState) bool {
 	vars := map[string]string{
 		"prompt":                branchConflictPrompt(t, base) + prFixResultContract,
 		workflow.WorkflowVarDir: dir,
-		"resume_status":         resumeStatus,
+		"resume_status":         resume.status,
 	}
-	if resumeWorkflowID != "" {
-		vars["resume_workflow_id"] = resumeWorkflowID
-		vars["resume_workflow_step"] = resumeWorkflowStep
-		vars["resume_workflow_vars"] = resumeVarsJSON
+	if resume.workflowID != "" {
+		vars["resume_workflow_id"] = resume.workflowID
+		vars["resume_workflow_step"] = resume.workflowStep
+		vars["resume_workflow_vars"] = resume.workflowVars
 	}
 
 	if err := r.workflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars); err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
-		if priorWorkflow != nil {
+		if resume.prior != nil {
 			if _, restoreErr := r.tasks.Update(taskID, task.Update{
-				Status:   task.Ptr(task.Status(resumeStatus)),
-				Workflow: task.Ptr(priorWorkflow),
+				Status:   task.Ptr(task.Status(resume.status)),
+				Workflow: task.Ptr(resume.prior),
 			}); restoreErr != nil {
 				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
 			}
