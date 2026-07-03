@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -187,6 +188,30 @@ manual_test:
 	got := getter.ManualTestConfig(created.ID)
 	if got.Kind != "cli" || got.Command != "sybra-cli --json list" {
 		t.Fatalf("ManualTestConfig = %+v, want project-level cli config", got)
+	}
+}
+
+func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	adapter := &branchSyncerAdapter{
+		tasks: task.NewManager(store, nil),
+		mgr:   &worktree.Manager{},
+	}
+
+	result, err := adapter.SyncTaskBranch(context.Background(), "missing-task")
+	if result != worktree.SyncFailed.String() {
+		t.Fatalf("result = %q, want %q", result, worktree.SyncFailed)
+	}
+	if err == nil {
+		t.Fatal("expected task lookup error")
+	}
+	if !strings.Contains(err.Error(), "get task") {
+		t.Fatalf("err = %v, want get task context", err)
 	}
 }
 

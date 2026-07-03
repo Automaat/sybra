@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeBranchSyncer is a scripted BranchSyncer for execSyncBranch tests.
@@ -18,6 +19,20 @@ func (f *fakeBranchSyncer) SyncTaskBranch(context.Context, string) (string, erro
 		panic("boom")
 	}
 	return f.result, f.err
+}
+
+type deadlineCapturingSyncer struct {
+	gotDeadline bool
+	until       time.Duration
+}
+
+func (d *deadlineCapturingSyncer) SyncTaskBranch(ctx context.Context, _ string) (string, error) {
+	deadline, ok := ctx.Deadline()
+	d.gotDeadline = ok
+	if ok {
+		d.until = time.Until(deadline)
+	}
+	return "noop", nil
 }
 
 func newSyncBranchStep() *Step { return &Step{ID: "sync_branch", Type: StepSyncBranch} }
@@ -117,6 +132,28 @@ func TestExecSyncBranch_FailedDoesNotBlock(t *testing.T) {
 	}
 	if out.Output != "failed" {
 		t.Errorf("Output = %q, want failed", out.Output)
+	}
+}
+
+func TestExecSyncBranch_UsesShellTimeout(t *testing.T) {
+	t.Parallel()
+	engine, tasks := newSyncBranchEngine(t)
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	syncer := &deadlineCapturingSyncer{}
+	engine.SetBranchSyncer(syncer)
+
+	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "noop" {
+		t.Fatalf("Output = %q, want noop", out.Output)
+	}
+	if !syncer.gotDeadline {
+		t.Fatal("syncer context missing deadline")
+	}
+	if syncer.until <= 0 || syncer.until > shellTimeout {
+		t.Fatalf("deadline remaining = %v, want within (0, %v]", syncer.until, shellTimeout)
 	}
 }
 

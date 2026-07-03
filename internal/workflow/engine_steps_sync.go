@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -41,7 +42,10 @@ func (e *Engine) execSyncBranch(taskID string, step *Step) (out StepOutput, err 
 		return e.recordSyncBranch(taskID, step, syncResultSkipped, "no branch syncer configured")
 	}
 
-	result, syncErr := e.branchSyncer.SyncTaskBranch(e.ctx, taskID)
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	result, syncErr := e.branchSyncer.SyncTaskBranch(ctx, taskID)
 	if syncErr != nil {
 		e.logger.Warn("workflow.sync-branch.result", "task_id", taskID, "result", result, "err", syncErr)
 		return e.recordSyncBranch(taskID, step, result, syncErr.Error())

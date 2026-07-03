@@ -1784,6 +1784,46 @@ func TestReconcileWithRemote_PropagatesFetchError(t *testing.T) {
 	}
 }
 
+// TestReconcileWithRemote_DirtyWorktreeFailsClosed guards the ready-pr/manual
+// status-flip path: if another actor left uncommitted edits in the worktree,
+// reconcile must not fast-forward HEAD under those live changes.
+func TestReconcileWithRemote_DirtyWorktreeFailsClosed(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	fixSHA := pushRemoteCommit(t, remoteBare, branch, "review-fix")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "local.txt"), []byte("still editing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ReconcileWithRemote(context.Background(), wtPath, branch)
+	if !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("ReconcileWithRemote dirty = %v, want ErrDirtyWorktree", err)
+	}
+
+	headOut, headErr := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if headErr != nil {
+		t.Fatalf("rev-parse HEAD: %v", headErr)
+	}
+	head := strings.TrimSpace(string(headOut))
+	if head == fixSHA {
+		t.Fatalf("local HEAD advanced to remote fix SHA %q despite dirty worktree", fixSHA)
+	}
+
+	statusOut, statusErr := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
+	if statusErr != nil {
+		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+	}
+	if !strings.Contains(string(statusOut), "local.txt") {
+		t.Fatalf("dirty file missing after failed reconcile; status = %q", statusOut)
+	}
+}
+
 // TestMergeOnto_MergesNonConflictingHistories proves the core "additive, no
 // force-push" property: merging two branches whose commits touch different
 // files produces a merge commit carrying both sides' content, and pushing the

@@ -50,7 +50,11 @@ func (r SyncResult) String() string { return string(r) }
 // there is only ever one merge policy. It is intentionally non-blocking: it
 // never mutates task status, never escalates to human-required, and any
 // error is returned alongside a SyncResult so the caller can log/record the
-// outcome and continue the workflow regardless.
+// outcome and continue the workflow regardless. This differs deliberately from
+// PrepareForTask: there, the same ErrRebaseFailed blocks another authoring run
+// because the next agent cannot safely proceed on a conflicted branch; here,
+// sync_branch is an opportunistic pre-PR refresh, so conflict/failure leaves
+// the task no worse off than skipping the step and is only recorded.
 //
 // Skips (SyncSkipped, nil) when there is no existing worktree for the task, or
 // the worktree is externally adopted (t.WorktreeDir set) — adopted worktrees

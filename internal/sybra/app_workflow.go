@@ -392,7 +392,7 @@ type branchSyncerAdapter struct {
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
-		return "", fmt.Errorf("sync branch: get task: %w", err)
+		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: get task: %w", err)
 	}
 	result, err := a.mgr.SyncTaskBranch(ctx, t)
 	return result.String(), err
