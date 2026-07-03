@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -27,7 +28,13 @@ func assertWorktreeClean(t *testing.T, wtPath string) {
 		t.Errorf("worktree not clean after sync: %q", out)
 	}
 	for _, marker := range []string{"MERGE_HEAD", "rebase-merge", "rebase-apply"} {
-		if _, err := os.Stat(filepath.Join(wtPath, ".git", marker)); err == nil {
+		gitPath := exec.Command("git", "rev-parse", "--git-path", marker)
+		gitPath.Dir = wtPath
+		resolved, err := gitPath.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git rev-parse --git-path %s: %v: %s", marker, err, resolved)
+		}
+		if _, err := os.Stat(filepath.Clean(string(bytes.TrimSpace(resolved)))); err == nil {
 			t.Errorf("worktree left in mid-%s state after sync", marker)
 		}
 	}
@@ -207,6 +214,7 @@ func TestSyncTaskBranch_Conflict(t *testing.T) {
 	if result != SyncConflict {
 		t.Errorf("result = %q, want %q", result, SyncConflict)
 	}
+	assertWorktreeClean(t, wtPath)
 	if got, _ := h.tasks.Get(tk.ID); got.Status != task.StatusTodo {
 		t.Errorf("task status = %q, want unchanged (sync never escalates status)", got.Status)
 	}
