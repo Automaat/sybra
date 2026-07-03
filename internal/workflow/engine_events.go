@@ -485,6 +485,10 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	}
 	e.clearAgentStep(agentID)
 
+	if e.handleWatchdogRateLimitRetry(&fresh, child) {
+		return
+	}
+
 	status.Status = "pending"
 	status.Output = "rate-limited: rescheduled"
 	status.AgentID = ""

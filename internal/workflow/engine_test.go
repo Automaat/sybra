@@ -1812,6 +1812,90 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	}
 }
 
+func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t *testing.T) {
+	tests := []struct {
+		name       string
+		retries    string
+		wantStarts int
+		wantStatus string
+		wantReason string
+		wantRetry  string
+	}{
+		{
+			name:       "first watchdog rate limit reruns child",
+			wantStarts: 1,
+			wantStatus: "in-progress",
+			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantRetry:  "1",
+		},
+		{
+			name:       "budget exhausted escalates instead of looping forever",
+			retries:    "2",
+			wantStarts: 0,
+			wantStatus: "human-required",
+			wantReason: "watchdog: rate limit retry budget exhausted after 2 clean re-dispatches",
+			wantRetry:  "2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStoreWith(t, "test-parallel.yaml")
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("plan_a")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: "watchdog: rate limit: org-level quota exhausted",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-parallel",
+					CurrentStep: "plan",
+					State:       ExecWaiting,
+					Variables:   vars,
+					ParallelInflight: map[string]*ParallelChildren{
+						"plan": {
+							ParentStepID: "plan",
+							Children: map[string]*ChildStatus{
+								"plan_a": {Status: "pending", AgentID: "limited-agent", Provider: "claude"},
+								"plan_b": {Status: "pending", AgentID: "other-agent", Provider: "codex"},
+							},
+						},
+					},
+				},
+			})
+			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+
+			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+			if got := agents.CallCount(); got != tc.wantStarts {
+				t.Fatalf("expected replacement agent starts = %d, got %d", tc.wantStarts, got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if got.Workflow.Variables[watchdogRateLimitRetryKey("plan_a")] != tc.wantRetry {
+				t.Fatalf("rate-limit retry var = %q, want %q", got.Workflow.Variables[watchdogRateLimitRetryKey("plan_a")], tc.wantRetry)
+			}
+			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+				t.Fatal("rate-limited child step mapping was not cleared")
+			}
+		})
+	}
+}
+
 func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
