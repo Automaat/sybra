@@ -53,7 +53,7 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		reason = "agent start blocked: project not registered locally — create the project to resume"
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
-		reason = "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
+		reason = worktreeerr.RebaseBlockedReason
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		reason = "agent start blocked: " + err.Error()
 	default:

@@ -142,8 +142,15 @@ func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 }
 
 func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
-	// Regression: ResumeStalled must escalate on the first rebase-conflict
-	// retry instead of hammering the doomed rebase every ~60s forever.
+	// Engine.surfaceStartFailure must classify ErrRebaseFailed as permanent
+	// too, as defense in depth: the three Engine-routed callers already flip
+	// to human-required via markRebaseBlocked before the error reaches here,
+	// but should that upstream guard ever regress, this classification is
+	// what stops the resume loop from hammering the doomed rebase forever.
+	// The actual regression this PR fixes is in the recovery.StartPRFixAgent
+	// path, which skips markRebaseBlocked entirely — see
+	// TestRestartStalePRFixRebaseFailedFlipsToHumanRequired in
+	// internal/recovery/recovery_test.go.
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
