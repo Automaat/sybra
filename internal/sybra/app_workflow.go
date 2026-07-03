@@ -28,6 +28,7 @@ var (
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
+	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
 	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
@@ -380,6 +381,21 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 		return "", false
 	}
 	return path, true
+}
+
+// branchSyncerAdapter bridges task.Manager + worktree.Manager → workflow.BranchSyncer.
+type branchSyncerAdapter struct {
+	tasks *task.Manager
+	mgr   *worktree.Manager
+}
+
+func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: get task: %w", err)
+	}
+	result, err := a.mgr.SyncTaskBranch(ctx, t)
+	return result.String(), err
 }
 
 // agentAdapter bridges agent.Manager + AgentOrchestrator → workflow.AgentLauncher.

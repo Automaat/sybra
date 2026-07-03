@@ -9,6 +9,17 @@ trigger:
       operator: equals
       value: ready-pr
 steps:
+  # Proactive, best-effort branch sync with origin/main right before the PR
+  # handoff — shrinks the window in which the branch can go stale between the
+  # last reactive sync (at agent dispatch) and PR creation. Never blocks: a
+  # missing worktree/syncer, a conflict, or a transient failure are all
+  # recorded and the workflow still continues to maybe_create_pr.
+  - id: sync_branch
+    name: Sync Branch
+    type: sync_branch
+    next:
+      - goto: maybe_create_pr
+
   # Guard: when the task already has a PR number (retries), skip the create_pr
   # agent entirely and just push. Prevents duplicate PRs.
   - id: maybe_create_pr

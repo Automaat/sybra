@@ -117,6 +117,14 @@ type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
 }
 
+// BranchSyncer proactively reconciles a task's worktree branch with the
+// project's default branch. Used by the `sync_branch` step. Engine operates
+// with a nil BranchSyncer — the step then records a skipped outcome and
+// never blocks workflow advancement.
+type BranchSyncer interface {
+	SyncTaskBranch(ctx context.Context, taskID string) (result string, err error)
+}
+
 // CheckConfigGetter resolves a task's verify-suite commands (the project's
 // deterministic tests/typecheck), merged from repo `.sybra.yaml` and the
 // app-level project config. Returns nil/empty when the task has no verify
@@ -186,6 +194,7 @@ type Engine struct {
 	prLinker        PRLinker
 	prReviewers     PRReviewRequester
 	worktrees       WorktreeGetter
+	branchSyncer    BranchSyncer
 	checks          CheckConfigGetter
 	manualTests     ManualTestConfigGetter
 	recorder        ArtifactRecorder
@@ -249,6 +258,10 @@ func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetBranchSyncer wires a BranchSyncer used by the `sync_branch` step.
+// Leaving it unset makes the step a no-op (skipped outcome).
+func (e *Engine) SetBranchSyncer(s BranchSyncer) { e.branchSyncer = s }
 
 // SetCheckConfigGetter wires the project verify-suite resolver used by the
 // `verify_checks` step. Leaving it unset makes the step a no-op.
