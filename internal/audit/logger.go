@@ -59,7 +59,9 @@ func LogEvent(al *Logger, fallback *slog.Logger, eventType, taskID, agentID stri
 		AgentID: agentID,
 		Data:    data,
 	}); err != nil {
-		fallback.Error("audit.log", "type", eventType, "err", err)
+		if fallback != nil {
+			fallback.Error("audit.log", "type", eventType, "err", err)
+		}
 	}
 }
 

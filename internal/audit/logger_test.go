@@ -58,3 +58,22 @@ func TestLoggerRotatesDaily(t *testing.T) {
 		t.Fatal("day2 file missing")
 	}
 }
+
+func TestLogEventNilFallbackDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	l, err := NewLogger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o700)
+	})
+
+	LogEvent(l, nil, EventTaskCreated, "task-1", "", nil)
+}

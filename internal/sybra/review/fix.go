@@ -865,7 +865,7 @@ func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
 	r.logger.Error("pr-monitor.worktree", "task_id", taskID, "err", wtErr)
 }
 
-func (r *ReviewHandler) allowPreparedWorktree(taskID, dir string) bool {
+func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 	setupFailure, ok, err := worktree.ReadSetupFailureMarker(dir)
 	if err != nil {
 		r.logger.Error("pr-monitor.worktree.setup-fail-read", "task_id", taskID, "dir", dir, "err", err)

@@ -1313,10 +1313,10 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &ReviewHandler{
-		DomainHandler: DomainHandler{logger: slog.New(slog.DiscardHandler)},
-		tasks:         tasks,
-		wtFailures:    make(map[string]int),
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		tasks:      tasks,
+		wtFailures: make(map[string]int),
 	}
 
 	wtDir := t.TempDir()
