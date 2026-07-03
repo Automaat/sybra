@@ -50,7 +50,7 @@ func TestScanTamperPatch(t *testing.T) {
 		name        string
 		cat         tamperCategory // defaults to test when empty
 		patch       string
-		fileContent string
+		baseContent string
 		wantRules   []string // high-severity rules expected (order-insensitive subset)
 	}{
 		{
@@ -61,15 +61,22 @@ func TestScanTamperPatch(t *testing.T) {
 		{
 			name:  "added_skip_matches_established_idiom_elsewhere_in_file",
 			patch: "@@ @@\n func TestBar(t *testing.T) {\n+\tif !hasGit() { t.Skip(\"git not available\") }\n",
-			fileContent: "func TestFoo(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n\n" +
-				"func TestBar(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n",
-			wantRules: nil, // identical skip guard already used elsewhere in the file — established idiom
+			baseContent: "func TestFoo(t *testing.T) {\n\tif !hasGit() { t.Skip(\"git not available\") }\n}\n\n" +
+				"func TestBar(t *testing.T) {\n}\n",
+			wantRules: nil, // identical skip guard already established in the base file — pre-existing idiom
 		},
 		{
 			name:        "added_skip_no_matching_content_line_still_flags",
 			patch:       "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
-			fileContent: "func TestBar(t *testing.T) {\n\tt.Skip(\"flaky\")\n}\n", // only the added occurrence itself
+			baseContent: "func TestBar(t *testing.T) {\n}\n", // no prior occurrence in the base file
 			wantRules:   []string{"added-skip"},
+		},
+		{
+			name:  "two_new_identical_skips_same_commit_still_flags",
+			patch: "@@ @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
+			baseContent: "func TestFoo(t *testing.T) {\n}\n\n" +
+				"func TestBar(t *testing.T) {\n}\n", // neither skip line pre-existed
+			wantRules: []string{"added-skip"}, // must not "establish" each other via the post-change file
 		},
 		{
 			name:      "added_pytest_skip",
@@ -181,7 +188,7 @@ func TestScanTamperPatch(t *testing.T) {
 			if cat == "" {
 				cat = tamperCatTest
 			}
-			got := scanTamperPatch("x_test.go", cat, tc.patch, tc.fileContent)
+			got := scanTamperPatch("x_test.go", cat, tc.patch, tc.baseContent)
 			gotRules := map[string]bool{}
 			for _, f := range got {
 				if f.Severity != tamperHigh {
@@ -499,6 +506,37 @@ func TestExecDetectTampering_EstablishedSkipIdiomDoesNotFlag(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_TwoNewIdenticalSkipsSameCommitStillFlags(t *testing.T) {
+	t.Parallel()
+	base := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n\n" +
+		"func TestBar(t *testing.T) {\n\tif Foo() != 2 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo.go":      "package foo\n\nfunc Foo() int { return 1 }\n",
+		"internal/foo/foo_test.go": base,
+	})
+	// Two brand-new, identical skip lines added in the same commit, with zero
+	// prior occurrence in the base file — must not "establish" each other.
+	tampered := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {\n\tt.Skip(\"flaky\")\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n\n" +
+		"func TestBar(t *testing.T) {\n\tt.Skip(\"flaky\")\n\tif Foo() != 2 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
+	writeRepoFile(t, wt, "internal/foo/foo_test.go", tampered)
+	gitRun(t, wt, "commit", "-am", "test: skip foo and bar")
+
+	engine, tasks := newTamperEngine(t, wt)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (two novel identical skips must not bless each other)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 }
 

@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -95,10 +93,14 @@ type tamperChange struct {
 	Status string // "A", "M", "D", "R100", …
 	Path   string
 	Patch  string
-	// FullContent is the post-change file content, when available. Used to
-	// tell an added t.Skip (etc.) that follows an existing, repo-established
-	// idiom apart from a genuinely novel skip — see isEstablishedSkipIdiom.
-	FullContent string
+	// BaseContent is the file content on the base (pre-change) side of the
+	// diff, when available. Used to tell an added t.Skip (etc.) that follows
+	// an existing, repo-established idiom apart from a genuinely novel skip —
+	// see isEstablishedSkipIdiom. Deliberately the base side, not the
+	// post-change file: counting occurrences in the final file would let two
+	// brand-new identical skip lines added in the same commit "establish"
+	// each other.
+	BaseContent string
 }
 
 type tamperPatchResult struct {
@@ -195,24 +197,22 @@ var (
 
 // isEstablishedSkipIdiom reports whether the added skip line is already a
 // repeated, pre-existing idiom in the file rather than a novel tampering
-// attempt: an identical (trimmed) line appears at least twice in the
-// post-change file content — once for the newly added occurrence and at
-// least once more already established elsewhere (e.g. the repo-wide
-// `if !hasGit() { t.Skip("git not available") }` guard). fileContent is the
-// full post-change file; empty when unavailable, in which case the added
-// line is always treated as novel (fail toward flagging, not toward silence).
-func isEstablishedSkipIdiom(addedLine, fileContent string) bool {
+// attempt: an identical (trimmed) line already appears in the file's base
+// (pre-change) content (e.g. the repo-wide
+// `if !hasGit() { t.Skip("git not available") }` guard). Comparing against
+// the base side — not the post-change file — is deliberate: two brand-new
+// identical skip lines added in the same commit must not "establish" each
+// other. baseContent is the full pre-change file; empty when unavailable, in
+// which case the added line is always treated as novel (fail toward
+// flagging, not toward silence).
+func isEstablishedSkipIdiom(addedLine, baseContent string) bool {
 	target := strings.TrimSpace(addedLine)
-	if target == "" || fileContent == "" {
+	if target == "" || baseContent == "" {
 		return false
 	}
-	count := 0
-	for line := range strings.SplitSeq(fileContent, "\n") {
+	for line := range strings.SplitSeq(baseContent, "\n") {
 		if strings.TrimSpace(line) == target {
-			count++
-			if count >= 2 {
-				return true
-			}
+			return true
 		}
 	}
 	return false
@@ -270,12 +270,12 @@ func splitTopArgs(s string) []string {
 // `--`/`++` is still classified by its leading diff marker rather than mistaken
 // for a header. Comment-only additions are ignored, so commenting out a test or
 // assertion registers as a removal (the deletion side) with no offsetting add.
-func scanTamperPatch(path string, cat tamperCategory, patch, fileContent string) []tamperFinding {
-	return scanTamperPatchResult(path, cat, patch, fileContent).Findings
+func scanTamperPatch(path string, cat tamperCategory, patch, baseContent string) []tamperFinding {
+	return scanTamperPatchResult(path, cat, patch, baseContent).Findings
 }
 
-func scanTamperPatchResult(path string, cat tamperCategory, patch, fileContent string) tamperPatchResult {
-	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}, fileContent: fileContent}
+func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent string) tamperPatchResult {
+	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}, baseContent: baseContent}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
@@ -311,7 +311,7 @@ type tamperScan struct {
 	path        string
 	cat         tamperCategory
 	isCI        bool
-	fileContent string
+	baseContent string
 	seen        map[string]bool
 	findings    []tamperFinding
 	addAssert   int
@@ -342,7 +342,7 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	if tamperAddedSkipRe.MatchString(content) && !isEstablishedSkipIdiom(content, s.fileContent) {
+	if tamperAddedSkipRe.MatchString(content) && !isEstablishedSkipIdiom(content, s.baseContent) {
 		s.add("added-skip", trimDiffLine(content))
 	}
 	if tamperAddedExitRe.MatchString(content) {
@@ -432,7 +432,7 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 			continue
 		}
 		scanned++
-		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.FullContent)
+		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent)
 		totalAddedAssertions += res.AddAssert
 		report.Findings = append(report.Findings, res.Findings...)
 	}
@@ -580,13 +580,23 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 			continue
 		}
 		c.Patch = patch
-		// The worktree's working tree is checked out at HEAD, the "new" side of
-		// rangeSpec in both resolveTamperRange branches, so the on-disk file is
-		// the post-change content — read it to tell an established skip idiom
-		// (already used elsewhere in the file) apart from a genuinely novel one.
-		if content, rErr := os.ReadFile(filepath.Join(wtPath, c.Path)); rErr == nil {
-			c.FullContent = string(content)
+		// Read the file as it existed on the base side of the diff (pre-change)
+		// to tell an established skip idiom (already used elsewhere in the file
+		// before this change) apart from a genuinely novel one. Reading the
+		// post-change file instead would let two brand-new identical skip lines
+		// added in the same commit "establish" each other.
+		content, cErr := gitFileAtRef(ctx, wtPath, base, c.Path)
+		if cErr != nil {
+			// Expected for newly added files (no base-side content) — only
+			// exceptional if the context itself died.
+			if ctx.Err() != nil {
+				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", base, c.Path, ctx.Err())
+			}
+			e.logger.Debug("workflow.detect-tampering.base-content",
+				"task_id", taskID, "file", c.Path, "err", cErr)
+			continue
 		}
+		c.BaseContent = content
 	}
 	report := buildTamperReport(taskID, base, changes)
 	report.Range = rangeSpec
@@ -615,6 +625,20 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, r
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// gitFileAtRef returns a file's content as it existed at ref (e.g. the base
+// commit of a diff range). Errors for files that don't exist at ref — a
+// newly added file — which callers treat as "no base content" rather than a
+// hard failure.
+func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+path)
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
 	if err != nil {
