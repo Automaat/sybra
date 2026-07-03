@@ -467,8 +467,66 @@ func Load() (*Config, error) {
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
+	applyReviewHoldDefaults(cfg)
 
 	return cfg, nil
+}
+
+// Review-hold modes control how far the hold extends to the fix-review agent's
+// own code changes once its replies are drafted into a pending review.
+const (
+	ReviewHoldModePush     = "push"      // reply held; code still pushed
+	ReviewHoldModePushNits = "push_nits" // reply held; code pushed only when a nit
+	ReviewHoldModeHold     = "hold"      // reply held; code held too (no push)
+
+	DefaultReviewHoldMode        = ReviewHoldModePush
+	DefaultReviewHoldNitMaxLines = 10
+)
+
+// applyReviewHoldDefaults fills the mode/threshold only when the hold is
+// enabled, so a disabled block stays at its zero value (and off).
+func applyReviewHoldDefaults(cfg *Config) {
+	if !cfg.ReviewHold.Enabled {
+		return
+	}
+	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+		cfg.ReviewHold.Mode = DefaultReviewHoldMode
+	}
+	if cfg.ReviewHold.NitMaxLines <= 0 {
+		cfg.ReviewHold.NitMaxLines = DefaultReviewHoldNitMaxLines
+	}
+}
+
+func validReviewHoldMode(mode string) bool {
+	switch mode {
+	case ReviewHoldModePush, ReviewHoldModePushNits, ReviewHoldModeHold:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReviewHoldEnabled reports whether Sybra must draft PR comment replies as a
+// pending review instead of posting them live. Nil-safe for test construction.
+func (c *Config) ReviewHoldEnabled() bool {
+	return c != nil && c.ReviewHold.Enabled
+}
+
+// ReviewHoldMode returns the resolved hold mode, falling back to the default for
+// empty/unknown values so callers never branch on an invalid mode.
+func (c *Config) ReviewHoldMode() string {
+	if c == nil || !validReviewHoldMode(c.ReviewHold.Mode) {
+		return DefaultReviewHoldMode
+	}
+	return c.ReviewHold.Mode
+}
+
+// ReviewHoldNitMaxLines returns the resolved nit ceiling for push_nits mode.
+func (c *Config) ReviewHoldNitMaxLines() int {
+	if c == nil || c.ReviewHold.NitMaxLines <= 0 {
+		return DefaultReviewHoldNitMaxLines
+	}
+	return c.ReviewHold.NitMaxLines
 }
 
 func applyExperienceDefaults(cfg *Config) {

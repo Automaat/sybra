@@ -346,6 +346,74 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 	}
 }
 
+func TestReviewHoldDefaults(t *testing.T) {
+	cases := []struct {
+		name        string
+		yaml        string
+		wantEnabled bool
+		wantMode    string
+		wantNit     int
+	}{
+		{
+			name:        "absent block is disabled",
+			yaml:        "logging:\n  level: info\n",
+			wantEnabled: false,
+			wantMode:    ReviewHoldModePush, // accessor falls back even when off
+			wantNit:     DefaultReviewHoldNitMaxLines,
+		},
+		{
+			name:        "enabled with empty mode defaults to push and nit ceiling",
+			yaml:        "review_hold:\n  enabled: true\n",
+			wantEnabled: true,
+			wantMode:    ReviewHoldModePush,
+			wantNit:     DefaultReviewHoldNitMaxLines,
+		},
+		{
+			name:        "invalid mode falls back to push",
+			yaml:        "review_hold:\n  enabled: true\n  mode: bogus\n",
+			wantEnabled: true,
+			wantMode:    ReviewHoldModePush,
+			wantNit:     DefaultReviewHoldNitMaxLines,
+		},
+		{
+			name:        "push_nits mode preserves an explicit threshold",
+			yaml:        "review_hold:\n  enabled: true\n  mode: push_nits\n  nit_max_lines: 42\n",
+			wantEnabled: true,
+			wantMode:    ReviewHoldModePushNits,
+			wantNit:     42,
+		},
+		{
+			name:        "hold mode is preserved",
+			yaml:        "review_hold:\n  enabled: true\n  mode: hold\n",
+			wantEnabled: true,
+			wantMode:    ReviewHoldModeHold,
+			wantNit:     DefaultReviewHoldNitMaxLines,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.ReviewHoldEnabled(); got != tc.wantEnabled {
+				t.Errorf("ReviewHoldEnabled() = %v, want %v", got, tc.wantEnabled)
+			}
+			if got := cfg.ReviewHoldMode(); got != tc.wantMode {
+				t.Errorf("ReviewHoldMode() = %q, want %q", got, tc.wantMode)
+			}
+			if got := cfg.ReviewHoldNitMaxLines(); got != tc.wantNit {
+				t.Errorf("ReviewHoldNitMaxLines() = %d, want %d", got, tc.wantNit)
+			}
+		})
+	}
+}
+
 func TestLoadWatchdogDefaults(t *testing.T) {
 	tests := []struct {
 		name          string
