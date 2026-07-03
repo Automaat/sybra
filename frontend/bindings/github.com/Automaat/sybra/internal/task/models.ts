@@ -248,6 +248,15 @@ export class Task {
      */
     "worktreeDir"?: string;
     "prNumber": number;
+
+    /**
+     * Issue is the canonical originating GitHub issue this task implements —
+     * set once at creation (or by auto-sources like the GitHub poller and
+     * umbrella expansion) and consumed verbatim by execEnsurePRClosesIssue to
+     * append "Closes <url>" to the task's PR body, by findActiveDuplicate for
+     * dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
+     * this after creation to attach an unrelated reference — use RefIssue.
+     */
     "issue": string;
     "statusReason": string;
 
@@ -273,6 +282,14 @@ export class Task {
      * `blocked`.
      */
     "umbrellaIssue"?: string;
+
+    /**
+     * RefIssue is an ad-hoc reference URL attached after creation — e.g. a
+     * related finding or duplicate noted while diagnosing why a task was
+     * stuck. Purely informational: unlike Issue, nothing reads RefIssue to
+     * drive PR auto-close, dedup, or umbrella state.
+     */
+    "refIssue"?: string;
 
     /**
      * DependsOn lists the issue refs (full github.com issue/PR URL or
@@ -494,10 +511,10 @@ export class Task {
     static createFrom($$source: any = {}): Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
-        const $$createField17_0 = $$createType0;
-        const $$createField35_0 = $$createType2;
-        const $$createField36_0 = $$createType4;
-        const $$createField47_0 = $$createType5;
+        const $$createField18_0 = $$createType0;
+        const $$createField36_0 = $$createType2;
+        const $$createField37_0 = $$createType4;
+        const $$createField48_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -506,16 +523,16 @@ export class Task {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
         if ("dependsOn" in $$parsedSource) {
-            $$parsedSource["dependsOn"] = $$createField17_0($$parsedSource["dependsOn"]);
+            $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField35_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField36_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField36_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField37_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField47_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField48_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

@@ -29,6 +29,7 @@ type Update struct {
 	HandoffSourceProvider *string
 	PRNumber              *int
 	Issue                 *string
+	RefIssue              *string
 	Reviewed              *bool
 	RunRole               *string
 	SupervisorSteer       *string
@@ -86,7 +87,7 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
-		"project_id", "branch", "worktree_dir", "issue", "run_role", "todoist_id", "plan", "plan_critique",
+		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
 		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
@@ -170,6 +171,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.WorktreeDir = &s
 	case "issue":
 		u.Issue = &s
+	case "ref_issue":
+		u.RefIssue = &s
 	case "run_role":
 		u.RunRole = &s
 	case "supervisor_steer":

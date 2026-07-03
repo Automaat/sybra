@@ -246,6 +246,9 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.Issue != "" {
 		fmt.Printf("Issue: %s\n", t.Issue)
 	}
+	if t.RefIssue != "" {
+		fmt.Printf("Ref Issue: %s\n", t.RefIssue)
+	}
 	if t.HandoffSourceProvider != "" {
 		fmt.Printf("Source: %s\n", t.HandoffSourceProvider)
 	}
@@ -961,7 +964,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		project:           fs.String("project", "", "project id (owner/repo)"),
 		branch:            fs.String("branch", "", "Git branch name"),
 		pr:                fs.Int("pr", 0, "GitHub PR number"),
-		issue:             fs.String("issue", "", "GitHub issue URL"),
+		issue:             fs.String("issue", "", "ad-hoc reference issue URL annotation — does not affect PR auto-close linkage (see task.Issue, set only at creation)"),
 		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
@@ -1010,7 +1013,7 @@ func applyBasicUpdateFlags(updates map[string]any, f updateFlags) {
 		updates["pr_number"] = float64(*f.pr)
 	}
 	if *f.issue != "" {
-		updates["issue"] = *f.issue
+		updates["ref_issue"] = *f.issue
 	}
 }
 
@@ -1795,6 +1798,8 @@ Commands:
            plus one blocked child per sub-issue, with dependency edges extracted by an
            LLM planner. Re-running only materializes sub-issues without an existing task.
   update   <id> [--title T] [--status S] [--status-reason R] [--body B] [--plan PLAN] [--plan-file PATH] [--plan-contract JSON|--plan-contract-file PATH] [--plan-research TEXT|--plan-research-file PATH] [--plan-decisions TEXT|--plan-decisions-file PATH] [--plan-brief TEXT|--plan-brief-file PATH] [--mode M] [--type TYPE] [--tags T] [--project ID] [--branch B] [--pr N] [--issue URL] [--source-provider P|none] [--max-turns N] [--reasoning-effort E]
+           --issue sets ref_issue, an ad-hoc reference annotation — it never
+           overwrites the task's canonical (auto-close) issue set at creation
   link-pr  <id> <pr-number>
            Link a PR number to a task and advance it to in-review. Use when a PR
            was opened outside of Sybra; the PR monitor will then auto-merge or
