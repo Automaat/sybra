@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -122,6 +124,62 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatal("stopAgent not called on stall stop verdict")
+	}
+}
+
+// TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating covers #1428:
+// a "stop" verdict with ReasonKind "rate_limit" must route through the
+// provider-health signal path and leave the task in-progress, regardless of
+// whether the trigger was "loop" (ToolLoopStreak) or "stall" (no stream
+// activity) — both are symptoms of the same underlying rate-limit exhaustion.
+func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) {
+	for _, trigger := range []string{"loop", "stall"} {
+		t.Run(trigger, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			stopped := false
+			var signaledName, signaledReason string
+			var signaledKind provider.Signal
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+				reportProviderSignal: func(name string, sig provider.Signal, reason string, _ time.Duration) {
+					signaledName, signaledKind, signaledReason = name, sig, reason
+				},
+			}
+
+			ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
+			w.applyVerdict(ag, trigger, agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "org-level rate limit exhausted",
+				Recommendation: "stop",
+				ReasonKind:     "rate_limit",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q (rate limit is recoverable, not human-required)", got.Status, task.StatusInProgress)
+			}
+			if !strings.Contains(got.StatusReason, "org-level rate limit exhausted") {
+				t.Fatalf("status_reason = %q, want it to include the verdict reason", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on rate-limit stop verdict")
+			}
+			if ag.GetErrorKind() != "rate_limit" {
+				t.Fatalf("agent error kind = %q, want %q (so the completion handler reschedules it)", ag.GetErrorKind(), "rate_limit")
+			}
+			if signaledName != "claude" || signaledKind != provider.SignalRateLimit {
+				t.Fatalf("reportProviderSignal(name=%q, sig=%v), want (claude, SignalRateLimit)", signaledName, signaledKind)
+			}
+			if !strings.Contains(signaledReason, "org-level rate limit exhausted") {
+				t.Fatalf("signaled reason = %q, want it to include the verdict reason", signaledReason)
+			}
+		})
 	}
 }
 
