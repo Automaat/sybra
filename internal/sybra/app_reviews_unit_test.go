@@ -51,6 +51,33 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	}
 }
 
+func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+	}, "")
+
+	for _, forbidden := range []string{
+		"git rebase",
+		"force-with-lease",
+		"--force",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("conflict prompt still instructs a rebase/force-push workflow (%q):\n%s", forbidden, prompt)
+		}
+	}
+	for _, want := range []string{
+		"git merge refs/remotes/origin/main",
+		"Do not force-push or rewrite existing commits",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
 	cfg := staffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
 
