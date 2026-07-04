@@ -111,6 +111,9 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 func TestDefaultDispatchJitterAndInFlightCap(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
+	if cfg.Agent.MaxConcurrent != 25 {
+		t.Errorf("Agent.MaxConcurrent = %d, want 25", cfg.Agent.MaxConcurrent)
+	}
 	if cfg.Agent.DispatchJitterMs != 1000 {
 		t.Errorf("Agent.DispatchJitterMs = %d, want 1000 (default enabled)", cfg.Agent.DispatchJitterMs)
 	}
