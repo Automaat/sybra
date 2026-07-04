@@ -1,0 +1,14 @@
+id: test-import-required-sidecar-nonreserved-dir
+name: Test Required Import Sidecar (non-reserved _dir substring)
+builtin: false
+steps:
+  - id: review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      prompt: review
+      import_sidecar:
+        kind: plan_contract
+        from: 'build_dir/review.md'
+        required: true

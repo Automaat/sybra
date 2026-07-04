@@ -12,6 +12,13 @@ import "errors"
 // the project base ref and must be repaired before another agent run.
 var ErrRebaseFailed = errors.New("worktree rebase failed")
 
+// ErrAgentRunning indicates PrepareForTask was asked to reuse (and rebase) a
+// worktree that a tracked agent is still live in. Rebasing out from under a
+// running agent corrupts its in-flight edits, so callers must treat this as
+// a transient "retry once idle" condition (like workflow.ErrDispatchInFlight)
+// rather than a real worktree conflict.
+var ErrAgentRunning = errors.New("worktree busy: agent still running for task")
+
 // RebaseBlockedReason is the human-facing status_reason written whenever
 // ErrRebaseFailed escalates a task to human-required. Shared between
 // internal/sybra's markRebaseBlocked and workflow.ClassifyAgentStartError so

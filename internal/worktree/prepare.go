@@ -24,6 +24,12 @@ var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
 // reason as ErrRebaseFailed above.
 var ErrTransientFetch = worktreeerr.ErrTransientFetch
 
+// ErrAgentRunning indicates PrepareForTask refused to reuse (and rebase) a
+// worktree that a tracked agent is still live in. Alias of
+// worktreeerr.ErrAgentRunning for the same import-cycle reason as
+// ErrRebaseFailed above.
+var ErrAgentRunning = worktreeerr.ErrAgentRunning
+
 // ErrTaskBranchMissing indicates a task's own branch does not exist locally
 // or on origin, so PrepareForBranchFix cannot check it out for no-PR conflict
 // recovery. Unlike PrepareForFix (which falls back to the PR head ref via
@@ -78,6 +84,13 @@ func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, 
 		return SyncSkipped, nil
 	}
 	if !m.Exists(t) {
+		return SyncSkipped, nil
+	}
+	// A tracked agent is still live in this worktree: rebasing here would
+	// corrupt its in-flight edits. This sync is opportunistic (never blocks
+	// workflow advancement per the doc above), so skip rather than fail —
+	// the next tick retries once the agent is idle.
+	if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
 		return SyncSkipped, nil
 	}
 	wtPath := m.PathFor(t)
@@ -148,6 +161,16 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	// checked out" refusal that a second worktree on the same branch would hit.
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, onPhase)
+	}
+
+	// A tracked agent is still live for this task: reusing its worktree
+	// below would rebase (or recreate) the branch out from under its
+	// in-flight edits. This is the last line of defense against a
+	// stale/incorrect "no agent running" read upstream (e.g. ResumeStalled)
+	// triggering a rebase against a live run — the caller must retry once
+	// idle, same as workflow.ErrDispatchInFlight.
+	if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
+		return "", fmt.Errorf("prepare worktree for reuse: %w", ErrAgentRunning)
 	}
 
 	proj, err := m.projects.Get(t.ProjectID)

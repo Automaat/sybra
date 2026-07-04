@@ -655,6 +655,40 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+// TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim guards against
+// the sybra#1495 self-deadlock: a dispatcher that holds its own dispatch
+// claim while preparing a worktree (StartAgentWithAssignment holds the claim
+// across PrepareForTask) must not see that same claim reported back as "an
+// agent is running" when it asks worktree.PrepareForTask's hasAgent guard
+// whether it's safe to proceed — otherwise no dispatch could ever complete.
+// HasRunningAgentForTask (used elsewhere to gate re-dispatch) intentionally
+// still counts the claim; HasLiveRegisteredAgentForTask must not.
+func TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should succeed")
+	}
+	defer m.ReleaseTaskDispatch("t1")
+
+	if !m.HasRunningAgentForTask("t1") {
+		t.Error("HasRunningAgentForTask must count the held claim")
+	}
+	if m.HasLiveRegisteredAgentForTask("t1") {
+		t.Error("HasLiveRegisteredAgentForTask must not count the held claim — no agent is registered yet")
+	}
+
+	// Once a real agent is registered under the same task, both must agree.
+	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, done: make(chan struct{}), cancel: func() {}}
+	m.mu.Lock()
+	m.agents[running.ID] = running
+	m.mu.Unlock()
+
+	if !m.HasLiveRegisteredAgentForTask("t1") {
+		t.Error("HasLiveRegisteredAgentForTask must report true once a real agent is registered")
+	}
+}
+
 func TestHasOtherRunningAgentForTask(t *testing.T) {
 	m, _ := newTestManager(t)
 

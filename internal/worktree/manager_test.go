@@ -1114,6 +1114,70 @@ func TestPrepareForTask_ReuseRecreatesOnBranchMismatch(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_RefusesReuseWhileAgentRunning proves the sybra#1495
+// regression guard: a dispatcher that reaches PrepareForTask for a task
+// whose worktree a tracked agent is still live in (e.g. a stale "no agent
+// running" read racing ResumeStalled) must not rebase that worktree out from
+// under the agent's in-flight edits. It must instead see ErrAgentRunning and
+// leave the worktree untouched.
+func TestPrepareForTask_RefusesReuseWhileAgentRunning(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("live agent task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	preHEAD, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("resolve pre-attempt HEAD: %v", err)
+	}
+
+	// Advance the upstream default branch so a rebase, if it ran, would be
+	// observable (HEAD would move).
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	mWithLiveAgent := New(Config{
+		WorktreesDir: h.wtDir,
+		Projects:     h.store,
+		Tasks:        h.tasks,
+		Logger:       discardLogger(),
+		LogsDir:      h.logsDir,
+		AgentChecker: func(taskID string) bool { return taskID == tk.ID },
+	})
+
+	gotPath, err := mWithLiveAgent.PrepareForTask(context.Background(), tk, nil)
+	if !errors.Is(err, ErrAgentRunning) {
+		t.Fatalf("PrepareForTask error = %v, want ErrAgentRunning", err)
+	}
+	if gotPath != "" {
+		t.Fatalf("PrepareForTask path = %q, want empty path when refusing reuse", gotPath)
+	}
+
+	postHEAD, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("resolve post-attempt HEAD: %v", err)
+	}
+	if postHEAD != preHEAD {
+		t.Fatalf("worktree HEAD changed from %q to %q — PrepareForTask must not touch a worktree with a live agent", preHEAD, postHEAD)
+	}
+}
+
 // TestPrepareForTask_BadSlugRejected proves the use-site guard: even if a
 // Task struct is constructed directly (bypassing the store and ParseBytes),
 // PrepareForTask rejects a path-traversal slug before calling PathFor.

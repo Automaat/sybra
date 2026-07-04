@@ -95,6 +95,24 @@ func TestClassifyAgentStartError_DispatchInFlightSuppressed(t *testing.T) {
 	}
 }
 
+func TestClassifyAgentStartError_AgentRunningSuppressed(t *testing.T) {
+	// PrepareForTask refusing to reuse a worktree a tracked agent is still
+	// live in (sybra#1495) is benign and self-healing — the agent's own
+	// completion drives the workflow forward. Must yield an empty reason and
+	// be non-permanent, same as ErrDispatchInFlight.
+	wrapped := fmt.Errorf("prepare worktree for reuse: %w", worktreeerr.ErrAgentRunning)
+	reason, permanent := ClassifyAgentStartError(wrapped)
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+	if permanent {
+		t.Error("agent-running must not be permanent")
+	}
+	if !transientAgentStartError(wrapped) {
+		t.Error("transientAgentStartError() = false, want true")
+	}
+}
+
 func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

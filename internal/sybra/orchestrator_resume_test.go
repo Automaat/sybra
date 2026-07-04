@@ -118,11 +118,12 @@ updated_at: 2025-01-01T00:00:00Z
 	})
 
 	wm := worktree.New(worktree.Config{
-		WorktreesDir: filepath.Join(home, "worktrees"),
-		Projects:     projStore,
-		Tasks:        taskMgr,
-		Logger:       logger,
-		AgentChecker: agentMgr.HasRunningAgentForTask,
+		WorktreesDir:     filepath.Join(home, "worktrees"),
+		Projects:         projStore,
+		Tasks:            taskMgr,
+		Logger:           logger,
+		AgentChecker:     agentMgr.HasRunningAgentForTask,
+		LiveAgentChecker: agentMgr.HasLiveRegisteredAgentForTask,
 	})
 
 	orch := agentorch.New(taskMgr, projStore, agentMgr, nil, logger, wm, nil)

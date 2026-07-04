@@ -41,12 +41,87 @@ var triageReviewShortStatRe = regexp.MustCompile(
 	`(\d+)\s+files?\s+changed(?:,\s+(\d+)\s+insertions?\(\+\))?(?:,\s+(\d+)\s+deletions?\(-\))?`,
 )
 
+// triageReviewDocsExts lists file extensions that are pure documentation/prose
+// with no executable meaning — always safe for the trivial fast-path unless
+// carved out (see triageReviewCarveOutRe).
+var triageReviewDocsExts = map[string]bool{
+	".md": true, ".markdown": true, ".txt": true, ".rst": true, ".adoc": true,
+}
+
+// triageReviewDepBumpBasenames lists manifest/lockfile basenames whose diffs
+// are dependency-version bumps (e.g. Renovate) — mechanical, low-risk churn.
+var triageReviewDepBumpBasenames = map[string]bool{
+	"go.mod": true, "go.sum": true,
+	"package.json": true, "package-lock.json": true,
+	"yarn.lock": true, "pnpm-lock.yaml": true,
+}
+
+// triageReviewGeneratedRe matches generated/derived files: Wails bindings and
+// protobuf/codegen output. Drift is already CI-enforced elsewhere.
+var triageReviewGeneratedRe = regexp.MustCompile(
+	`(^|/)frontend/bindings/|\.pb\.go$|_gen\.go$|\.gen\.go$`,
+)
+
+// triageReviewCarveOutRe matches paths that look docs-shaped but actually
+// govern agent behavior (skills, CLAUDE.md, orchestrator prompts) — these
+// must never get the trivial fast-path even though they end in .md.
+var triageReviewCarveOutRe = regexp.MustCompile(
+	`(^|/)\.claude/skills/|(^|/)CLAUDE\.md$|(^|/)SKILL\.md$|(^|/)orchestrator/`,
+)
+
+type trivialFileClass uint8
+
+const (
+	trivialFileNone trivialFileClass = iota
+	trivialFileDocs
+	trivialFileDep
+	trivialFileGenerated
+)
+
+// classifyTrivialFile reports whether a single changed file belongs to a
+// mechanically-safe class (docs, dependency bump, generated) and is not
+// carved out as agent-behavior content that still warrants staff review.
+//
+// Docs-extension matching is deliberately case-sensitive (unlike the
+// unsupported-extension downgrade further down, which lowercases): an
+// unusual-cased extension (e.g. "FOO.MD") is unfamiliar enough that it
+// should not silently bypass the line/file-count caps via this fast-path,
+// even though it may still end up "simple" through the existing
+// slower/cap-enforcing path.
+func classifyTrivialFile(path string) trivialFileClass {
+	if triageReviewCarveOutRe.MatchString(path) {
+		return trivialFileNone
+	}
+	if triageReviewGeneratedRe.MatchString(path) {
+		return trivialFileGenerated
+	}
+	base := path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		base = path[i+1:]
+	}
+	if triageReviewDepBumpBasenames[base] {
+		return trivialFileDep
+	}
+	if triageReviewDocsExts[filepathExt(path)] {
+		return trivialFileDocs
+	}
+	return trivialFileNone
+}
+
 // triageVerdict applies the heuristic and returns "skip", "simple", or "staff"
 // with a short rationale. Pure function — easy to unit-test without git.
 //
 // "skip"   — trivial diff (zero net lines changed): no review needed.
 // "simple" — small, low-risk diff: lightweight /pr-review is sufficient.
 // "staff"  — large or risky diff: full /staff-code-review required.
+//
+// Ordering: the pure-docs fast-path below runs BEFORE the risky-path gate
+// and the size/file-count caps, and deliberately bypasses all of them —
+// carve-out paths (skills/CLAUDE.md/orchestrator) are excluded from the
+// docs class itself, so this cannot leak agent-behavior content. Dependency-
+// manifest and generated-only diffs still have to pass the existing
+// size/file-count/risky-path gates before they can route to the lightweight
+// review.
 func triageVerdict(files []string, insertions, deletions int) (verdict, reason string) {
 	total := insertions + deletions
 	if len(files) == 0 {
@@ -57,6 +132,30 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 	if total == 0 {
 		return "skip", fmt.Sprintf("0 lines changed across %d file(s)", len(files))
 	}
+	// Pure docs bypass BOTH the risky-path gate below and the size/file-count
+	// caps further down: classifyTrivialFile already excludes carve-out paths
+	// (.claude/skills/, CLAUDE.md, SKILL.md, orchestrator/), so a file only
+	// reaches trivialFileDocs here if it is genuinely prose with no bearing on
+	// agent/workflow behavior — even when it lives under a risky path prefix
+	// like internal/workflow/. The downgrade target is still a real
+	// lightweight review, not skip.
+	allDocs := true
+	for _, f := range files {
+		if classifyTrivialFile(f) != trivialFileDocs {
+			allDocs = false
+			break
+		}
+	}
+	if allDocs {
+		return "simple", fmt.Sprintf("%d docs file(s)", len(files))
+	}
+	for _, f := range files {
+		// Keep the carve-out/risky-path regex aligned between the trivial-file
+		// classifier above and the hard staff gate here.
+		if isRiskyReviewPath(f) || triageReviewCarveOutRe.MatchString(f) {
+			return "staff", "risky path: " + f
+		}
+	}
 	if total > triageReviewLineLimit {
 		return "staff", fmt.Sprintf("%d lines > %d", total, triageReviewLineLimit)
 	}
@@ -64,8 +163,9 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 		return "staff", fmt.Sprintf("%d files > %d", len(files), triageReviewFileLimit)
 	}
 	for _, f := range files {
-		if triageReviewRiskyPathRe.MatchString(f) {
-			return "staff", "risky path: " + f
+		class := classifyTrivialFile(f)
+		if class == trivialFileDep || class == trivialFileGenerated {
+			continue
 		}
 		ext := strings.ToLower(filepathExt(f))
 		if !triageReviewSimpleExts[ext] {
@@ -81,6 +181,15 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 		}
 	}
 	return "simple", fmt.Sprintf("%d lines, %d files, low risk", total, len(files))
+}
+
+func isRiskyReviewPath(path string) bool {
+	// Generated Wails bindings embed Go package paths in their output path, so
+	// regex matching against ".../internal/sybra/..." would be a false positive.
+	if strings.HasPrefix(path, "frontend/bindings/") {
+		return false
+	}
+	return triageReviewRiskyPathRe.MatchString(path)
 }
 
 // filepathExt returns the file extension including the dot, or "" when none.
