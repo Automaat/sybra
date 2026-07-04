@@ -77,7 +77,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 			if transientAgentStartError(err) {
 				status.Status = "pending"
 				status.Output = "spawn blocked: " + err.Error()
-				e.surfaceStartFailure(taskID, ctx.Task.Status, err)
+				e.surfaceStartFailure(taskID, ctx.Task.Status, err, wfExec, child.ID)
 				continue
 			}
 			// Mark this child failed up front; AdvanceStep treats failed

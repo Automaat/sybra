@@ -568,7 +568,17 @@ func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr er
 	if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
 		return workflow.ErrDispatchInFlight
 	}
-	if _, recovered := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); recovered {
+	// handled=true covers every branch of RecoverFromWorktreePrepFailure that
+	// already wrote the task's terminal status itself: an autonomous
+	// conflict-fix redispatch (recovered=true), MarkRebaseBlocked parking the
+	// task at human-required, or its already-resolved-on-remote downgrade to
+	// in_review. Only checking recovered (as before) let an unhandled-but-not-
+	// recovered rebase failure fall through to `return wtErr` below even
+	// though the status was already resolved — the caller's surfaceStartFailure
+	// would then reclassify the same wtErr and clobber that resolved status
+	// (e.g. overwriting in_review back to human-required) using a stale
+	// pre-dispatch status snapshot.
+	if handled, _ := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); handled {
 		return workflow.ErrDispatchInFlight
 	}
 	return wtErr

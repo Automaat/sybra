@@ -20,6 +20,10 @@ const (
 	maxWatchdogRateLimitRetries     = 2
 	transientFetchRetryVarPrefix    = "transient_fetch.retry."
 	maxTransientFetchRetries        = 2
+	circuitBreakerFailureVarPrefix  = "circuit_breaker.failures."
+	circuitBreakerFirstVarPrefix    = "circuit_breaker.first_failure."
+	maxCircuitBreakerFailures       = 3
+	circuitBreakerWindow            = 15 * time.Minute
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -300,7 +304,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		// Without this, the task sits in-progress with the only signal in
 		// logs until ResumeStalled gets a chance to retry.
 		if t.Status != "" {
-			e.surfaceStartFailure(taskID, t.Status, err)
+			e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, spawnedStep)
 		}
 	}
 	e.clearAgentStep(c.AgentID)
@@ -496,7 +500,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	e.fireComplete(comp)
 	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
 	if rErr != nil {
-		e.surfaceStartFailure(taskID, t.Status, rErr)
+		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
 	}
 }
 
@@ -551,7 +555,7 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		e.logger.Error("workflow.rate-limit-reschedule.parallel.set", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", setErr)
 	}
 	if spawnErr != nil {
-		e.surfaceStartFailure(taskID, fresh.Status, spawnErr)
+		e.surfaceStartFailure(taskID, fresh.Status, spawnErr, wfExec, child.ID)
 	}
 }
 
@@ -736,9 +740,10 @@ func (e *Engine) ResumeStalled() {
 		e.fireComplete(comp)
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 		if rErr != nil {
-			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
+			e.surfaceStartFailure(t.ID, fresh.Status, rErr, fresh.Workflow, step.ID)
 		} else {
 			e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
+			e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
 		}
 	}
 }
@@ -923,16 +928,105 @@ func workflowRetryAfter(wf *Execution) (time.Time, bool) {
 // Idempotent: writing the same reason twice is a no-op for the user — the
 // task already shows it. The transient branch deliberately does not change
 // status, so retries continue.
-func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error) {
+//
+// wf and stepID feed the circuit breaker below; pass the caller's Execution
+// and the failing step's ID so repeated failures for that (task, step) are
+// tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
+// don't have them handy — the breaker simply stays inactive for that call.
+func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
 	reason, permanent := ClassifyAgentStartError(err)
 	if reason == "" {
+		return
+	}
+	// Sticky: a task already parked at human-required must not be touched
+	// again from here. Without this, a call driven by a stale pre-dispatch
+	// status snapshot could rewrite a status a concurrent handler resolved
+	// to something more specific (e.g. in_review) back to human-required.
+	if currentStatus == "human-required" {
 		return
 	}
 	target := currentStatus
 	if permanent {
 		target = "human-required"
 	}
+	if wf != nil && stepID != "" {
+		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
+		if trip {
+			// The status skip in resumeSkipReasonForStatus alone is not a
+			// sufficient backstop against a flapping loop: it only stops
+			// ResumeStalled from touching a task that is CURRENTLY
+			// human-required, but does nothing once some other path (a
+			// racing recovery branch, a status-change hook, a future bug)
+			// flips it back off human-required. Marking the workflow
+			// ExecFailed makes the halt independent of task.Status entirely
+			// — every resume path in this file (ResumeStalled,
+			// RescheduleRateLimitedAgent, HandleStatusChange) already
+			// refuses to touch a workflow whose State is ExecFailed.
+			wf.State = ExecFailed
+			target = "human-required"
+			reason = fmt.Sprintf("circuit breaker: %s (tripped after %d dispatch failures for step %q within %s)",
+				reason, attempts, stepID, circuitBreakerWindow)
+			e.logger.Warn("workflow.circuit-breaker.tripped",
+				"task_id", taskID, "step", stepID, "attempts", attempts)
+		}
+		if setErr := e.tasks.SetWorkflow(taskID, wf); setErr != nil {
+			e.logger.Error("workflow.circuit-breaker.persist", "task_id", taskID, "step", stepID, "err", setErr)
+		}
+	}
 	if uErr := e.tasks.UpdateTaskStatus(taskID, target, reason); uErr != nil {
 		e.logger.Error("workflow.resume-stalled.surface", "task_id", taskID, "err", uErr)
+	}
+}
+
+func circuitBreakerFailureKey(stepID string) string { return circuitBreakerFailureVarPrefix + stepID }
+func circuitBreakerFirstKey(stepID string) string   { return circuitBreakerFirstVarPrefix + stepID }
+
+// recordCircuitBreakerFailure is the generic counterpart to
+// handleWatchdogHangRetry's retry budget: instead of bounding retries of one
+// specific known failure signature, it bounds ANY repeated agent-start
+// failure for the same (task, step), regardless of cause. Once the count
+// crosses maxCircuitBreakerFailures within circuitBreakerWindow, the caller
+// trips the breaker.
+func recordCircuitBreakerFailure(wf *Execution, stepID string, now time.Time) (attempts int, trip bool) {
+	firstKey := circuitBreakerFirstKey(stepID)
+	failKey := circuitBreakerFailureKey(stepID)
+	first, err := time.Parse(time.RFC3339, wf.Variables[firstKey])
+	if err != nil || now.Sub(first) > circuitBreakerWindow {
+		wf.SetVar(firstKey, now.Format(time.RFC3339))
+		wf.SetVar(failKey, "1")
+		return 1, false
+	}
+	attempts = parseWorkflowInt(wf.Variables[failKey]) + 1
+	wf.SetVar(failKey, strconv.Itoa(attempts))
+	return attempts, attempts >= maxCircuitBreakerFailures
+}
+
+// clearCircuitBreakerFailures drops the per-(task,step) failure counter once
+// a dispatch attempt for that step succeeds, so a step that fails a couple of
+// times, recovers, and later fails again starts a fresh window rather than
+// inheriting stale attempts from an unrelated earlier incident.
+func clearCircuitBreakerFailures(wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	delete(wf.Variables, circuitBreakerFailureKey(stepID))
+	delete(wf.Variables, circuitBreakerFirstKey(stepID))
+}
+
+// clearCircuitBreakerOnSuccess persists the failure-counter reset performed
+// by clearCircuitBreakerFailures. Split out so callers that don't have a
+// failure counter to begin with (the common case) skip a wasted SetWorkflow.
+func (e *Engine) clearCircuitBreakerOnSuccess(taskID string, wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	_, hasFail := wf.Variables[circuitBreakerFailureKey(stepID)]
+	_, hasFirst := wf.Variables[circuitBreakerFirstKey(stepID)]
+	if !hasFail && !hasFirst {
+		return
+	}
+	clearCircuitBreakerFailures(wf, stepID)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.circuit-breaker.clear", "task_id", taskID, "step", stepID, "err", err)
 	}
 }

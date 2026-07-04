@@ -147,6 +147,54 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
+// TestPerTaskRateLimiter is a regression guard for sybra#1487: a single task
+// whose status keeps oscillating into human-required must not be allowed to
+// consume the entire global review budget (cfg.HumanReview.MaxPerHour=3 in
+// this test env) and starve every other task's diagnosis.
+func TestPerTaskRateLimiter(t *testing.T) {
+	t.Parallel()
+	h, _, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	now := time.Now()
+	h.now = func() time.Time { return now }
+
+	for i := range humanReviewMaxPerTaskPerWindow {
+		h.mu.Lock()
+		ok := h.allowSpawnForTaskLocked("flapping-task")
+		if ok {
+			h.perTask["flapping-task"] = append(h.perTask["flapping-task"], h.now())
+		}
+		h.mu.Unlock()
+		if !ok {
+			t.Fatalf("spawn %d for the same task should be allowed", i)
+		}
+	}
+	h.mu.Lock()
+	overLimit := h.allowSpawnForTaskLocked("flapping-task")
+	h.mu.Unlock()
+	if overLimit {
+		t.Errorf("task should be rate-limited after %d spawns within the window", humanReviewMaxPerTaskPerWindow)
+	}
+
+	// A different task must be unaffected by the flapping task's budget.
+	h.mu.Lock()
+	otherAllowed := h.allowSpawnForTaskLocked("other-task")
+	h.mu.Unlock()
+	if !otherAllowed {
+		t.Errorf("an unrelated task should not be rate-limited by another task's spawns")
+	}
+
+	// Advance past the window: the flapping task's own budget frees up.
+	h.now = func() time.Time { return now.Add(humanReviewWindow + time.Minute) }
+	h.mu.Lock()
+	allowedAfterWindow := h.allowSpawnForTaskLocked("flapping-task")
+	h.mu.Unlock()
+	if !allowedAfterWindow {
+		t.Errorf("after window, the flapping task should be allowed again")
+	}
+}
+
 func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)

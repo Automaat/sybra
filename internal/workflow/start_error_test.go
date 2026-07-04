@@ -3,8 +3,10 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
@@ -118,7 +120,7 @@ func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
-	engine.surfaceStartFailure("t1", "in-progress", ErrDispatchInFlight)
+	engine.surfaceStartFailure("t1", "in-progress", ErrDispatchInFlight, nil, "")
 
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "in-progress" {
@@ -134,7 +136,7 @@ func TestSurfaceStartFailure_TransientKeepsStatus(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
-	engine.surfaceStartFailure("t1", "in-progress", errors.New("git fetch: timeout"))
+	engine.surfaceStartFailure("t1", "in-progress", errors.New("git fetch: timeout"), nil, "")
 
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "in-progress" {
@@ -156,7 +158,7 @@ func TestSurfaceStartFailure_TransientFetchKeepsStatus(t *testing.T) {
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrTransientFetch)
-	engine.surfaceStartFailure("t1", "in-progress", wrapped)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "in-progress" {
@@ -184,7 +186,7 @@ func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("worktree required: %w", project.ErrProjectNotRegistered)
-	engine.surfaceStartFailure("t1", "in-progress", wrapped)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "human-required" {
@@ -211,7 +213,7 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
-	engine.surfaceStartFailure("t1", "in-progress", wrapped)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
 
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "human-required" {
@@ -228,9 +230,83 @@ func TestSurfaceStartFailure_NilErrIsNoOp(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
 
-	engine.surfaceStartFailure("t1", "in-progress", nil)
+	engine.surfaceStartFailure("t1", "in-progress", nil, nil, "")
 
 	if reason := tasks.Reason("t1"); reason != "" {
 		t.Errorf("nil err wrote reason %q, want empty", reason)
+	}
+}
+
+func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing.T) {
+	// Regression guard for the flapping-task circuit breaker (sybra#1487): a
+	// task whose dispatch keeps failing for the same step must eventually be
+	// halted independent of status.Status alone, since something else in the
+	// system (a racing recovery branch, a status-change hook) could otherwise
+	// keep flipping it off human-required and letting the resume loop retry
+	// forever.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	wf := &Execution{CurrentStep: "run_test", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures - 1 {
+		engine.surfaceStartFailure("t1", "todo", wrapped, wf, "run_test")
+		if wf.State == ExecFailed {
+			t.Fatalf("breaker tripped early on attempt %d, want after %d", i+1, maxCircuitBreakerFailures)
+		}
+	}
+	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "run_test")
+
+	if wf.State != ExecFailed {
+		t.Errorf("wf.State = %q, want ExecFailed after %d failures", wf.State, maxCircuitBreakerFailures)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "circuit breaker") {
+		t.Errorf("reason %q missing circuit-breaker classification", reason)
+	}
+}
+
+func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	old := time.Now().Add(-2 * circuitBreakerWindow).Format(time.RFC3339)
+	wf := &Execution{
+		CurrentStep: "run_test",
+		State:       ExecRunning,
+		Variables: map[string]string{
+			circuitBreakerFirstKey("run_test"):   old,
+			circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
+		},
+	}
+
+	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "run_test")
+
+	if wf.State == ExecFailed {
+		t.Error("breaker tripped using a stale, expired failure window")
+	}
+	if got := wf.Variables[circuitBreakerFailureKey("run_test")]; got != "1" {
+		t.Errorf("failure count = %q, want reset to 1", got)
+	}
+}
+
+func TestSurfaceStartFailure_AlreadyHumanRequiredIsNoOp(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "existing reason"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	engine.surfaceStartFailure("t1", "human-required", wrapped, nil, "")
+
+	got, _ := tasks.GetTask("t1")
+	if got.StatusReason != "existing reason" {
+		t.Errorf("StatusReason = %q, want unchanged existing reason", got.StatusReason)
 	}
 }
