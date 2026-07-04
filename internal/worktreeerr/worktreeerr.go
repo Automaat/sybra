@@ -24,3 +24,12 @@ var ErrAgentRunning = errors.New("worktree busy: agent still running for task")
 // internal/sybra's markRebaseBlocked and workflow.ClassifyAgentStartError so
 // the two escalation paths can't drift apart in wording.
 const RebaseBlockedReason = "branch stale: rebase failed before agent start; resolve conflicts or recreate the task branch"
+
+// ErrTransientFetch indicates a reused task worktree's remote reconcile step
+// failed for a transient network/transport reason (e.g. SSH connection
+// refused, DNS resolution failure, timeout) rather than a genuine content
+// conflict. Unlike ErrRebaseFailed, this must never escalate a task to
+// human-required — callers should treat it like any other transient
+// agent-start failure and let the normal resume/retry loop pick it back up
+// once connectivity recovers.
+var ErrTransientFetch = errors.New("worktree remote fetch failed transiently")

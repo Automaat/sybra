@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
@@ -12,6 +13,8 @@ import (
 // startReasonMaxLen caps the human-facing reason written to task.StatusReason.
 // Longer messages clutter the UI and rarely add value beyond the lead error.
 const startReasonMaxLen = 200
+
+const transientFetchStatusReason = "agent start delayed: transient network failure reconciling worktree with remote"
 
 // ErrDispatchInFlight is returned by an agent-start path when another dispatch
 // for the same task is already in flight (the per-task dispatch claim is held).
@@ -60,6 +63,11 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason
+	case errors.Is(err, worktreeerr.ErrTransientFetch):
+		// Transient: a network blip during the remote fetch/ls-remote, not a
+		// genuine content conflict. Never escalate — let the resume loop retry
+		// once connectivity recovers.
+		reason = transientFetchStatusReason
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		reason = "agent start blocked: " + err.Error()
 	default:
@@ -71,8 +79,13 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
+}
+
+func isTransientFetchReason(reason string) bool {
+	return strings.TrimSpace(reason) == transientFetchStatusReason
 }
 
 // truncateReason caps a status_reason to startReasonMaxLen bytes with an

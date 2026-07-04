@@ -18,6 +18,12 @@ import (
 // internal/task -> internal/workflow).
 var ErrRebaseFailed = worktreeerr.ErrRebaseFailed
 
+// ErrTransientFetch indicates reconcileAndRebase's remote fetch/ls-remote
+// step failed for a transient network reason rather than a genuine content
+// conflict. Alias of worktreeerr.ErrTransientFetch for the same import-cycle
+// reason as ErrRebaseFailed above.
+var ErrTransientFetch = worktreeerr.ErrTransientFetch
+
 // ErrAgentRunning indicates PrepareForTask refused to reuse (and rebase) a
 // worktree that a tracked agent is still live in. Alias of
 // worktreeerr.ErrAgentRunning for the same import-cycle reason as
@@ -268,12 +274,18 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 // continuing from a stale branch makes downstream diff gates scan historical
 // commits. If the rebase fails, it falls back to an additive merge (see
 // MergeOnto) before giving up, since most staleness under concurrent agents
-// is not a genuine content conflict. All three failures (reconcile, rebase,
-// and the merge fallback) wrap ErrRebaseFailed so the caller can surface a
-// repairable worktree.
+// is not a genuine content conflict. The rebase and merge-fallback failures
+// wrap ErrRebaseFailed so the caller can surface a repairable worktree. The
+// reconcile step is different: it performs a network fetch/ls-remote, and a
+// transient connectivity blip there (SSH/DNS/timeout) looks identical to a
+// genuine failure unless distinguished — so that case wraps ErrTransientFetch
+// instead, which callers must never escalate to human-required.
 func (m *Manager) reconcileAndRebase(ctx context.Context, wtPath, wtBranch, baseRef string, onPhase func(string)) error {
 	callPhase(onPhase, "Reconciling with remote…")
 	if err := project.ReconcileWithRemote(ctx, wtPath, wtBranch); err != nil {
+		if project.IsTransientNetworkError(err) {
+			return fmt.Errorf("%w: reconcile %s with remote: %w", ErrTransientFetch, wtBranch, err)
+		}
 		return fmt.Errorf("%w: reconcile %s with remote: %w", ErrRebaseFailed, wtBranch, err)
 	}
 	callPhase(onPhase, "Rebasing onto origin…")
