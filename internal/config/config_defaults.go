@@ -126,6 +126,16 @@ func (c *Config) SurviveRestartEnabled() bool {
 	return true
 }
 
+// InAppBrowserEnabled reports whether the desktop app should open external
+// links in the in-app Sybra Browser webview. Defaults to true when unset so
+// existing installs keep their current behavior without migration.
+func (c *Config) InAppBrowserEnabled() bool {
+	if c != nil && c.Browser.InApp != nil {
+		return *c.Browser.InApp
+	}
+	return true
+}
+
 // DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns
 // an isolated sandbox) when TestingConfig.MaxConcurrent is unset.
 const DefaultTestingMaxConcurrent = 3
@@ -341,15 +351,62 @@ func (c *Config) AuditDir() string {
 
 // Save writes the current config to disk.
 func (c *Config) Save() error {
-	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return WriteRawConfig(data)
+}
+
+// ConfigPath is the absolute path of the config file on disk
+// (~/.sybra/config.yaml, or $SYBRA_HOME/config.yaml).
+func ConfigPath() string {
+	return configPath()
+}
+
+// ReadRawConfig returns config.yaml verbatim from disk, preserving user
+// formatting and comments. Falls back to marshalled defaults when the file is
+// absent so the editor is never handed an empty buffer on first run.
+func ReadRawConfig() (string, error) {
+	data, err := os.ReadFile(configPath())
+	if err == nil {
+		return string(data), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	data, err = yaml.Marshal(DefaultConfig())
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// WriteRawConfig persists bytes to config.yaml through a temp file + rename, so
+// the file watcher and concurrent readers never observe a partial write.
+func WriteRawConfig(data []byte) error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // harmless once the rename below consumes it
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -467,8 +524,66 @@ func Load() (*Config, error) {
 	applyABTestingDefaults(cfg)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
+	applyReviewHoldDefaults(cfg)
 
 	return cfg, nil
+}
+
+// Review-hold modes control how far the hold extends to the fix-review agent's
+// own code changes once its replies are drafted into a pending review.
+const (
+	ReviewHoldModePush     = "push"      // reply held; code still pushed
+	ReviewHoldModePushNits = "push_nits" // reply held; code pushed only when a nit
+	ReviewHoldModeHold     = "hold"      // reply held; code held too (no push)
+
+	DefaultReviewHoldMode        = ReviewHoldModePush
+	DefaultReviewHoldNitMaxLines = 10
+)
+
+// applyReviewHoldDefaults fills the mode/threshold only when the hold is
+// enabled, so a disabled block stays at its zero value (and off).
+func applyReviewHoldDefaults(cfg *Config) {
+	if !cfg.ReviewHold.Enabled {
+		return
+	}
+	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+		cfg.ReviewHold.Mode = DefaultReviewHoldMode
+	}
+	if cfg.ReviewHold.NitMaxLines <= 0 {
+		cfg.ReviewHold.NitMaxLines = DefaultReviewHoldNitMaxLines
+	}
+}
+
+func validReviewHoldMode(mode string) bool {
+	switch mode {
+	case ReviewHoldModePush, ReviewHoldModePushNits, ReviewHoldModeHold:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReviewHoldEnabled reports whether Sybra must draft PR comment replies as a
+// pending review instead of posting them live. Nil-safe for test construction.
+func (c *Config) ReviewHoldEnabled() bool {
+	return c != nil && c.ReviewHold.Enabled
+}
+
+// ReviewHoldMode returns the resolved hold mode, falling back to the default for
+// empty/unknown values so callers never branch on an invalid mode.
+func (c *Config) ReviewHoldMode() string {
+	if c == nil || !validReviewHoldMode(c.ReviewHold.Mode) {
+		return DefaultReviewHoldMode
+	}
+	return c.ReviewHold.Mode
+}
+
+// ReviewHoldNitMaxLines returns the resolved nit ceiling for push_nits mode.
+func (c *Config) ReviewHoldNitMaxLines() int {
+	if c == nil || c.ReviewHold.NitMaxLines <= 0 {
+		return DefaultReviewHoldNitMaxLines
+	}
+	return c.ReviewHold.NitMaxLines
 }
 
 func applyExperienceDefaults(cfg *Config) {

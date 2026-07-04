@@ -66,12 +66,15 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunConvoLog",
 			"RespondEscalation",
 			"GetAgentDiff",
-			// OpenWorktree and ResumeInClaudeCode open local GUI apps.
+			// OpenWorktree opens a local GUI app.
 		),
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
+			"GetDefaultSettings",
 			"UpdateTodoistToken",
 			"UpdateSettings",
+			"GetRawConfig",
+			"SaveRawConfig",
 		),
 		"InfoService": httpapi.NewService(a.infoSvc,
 			"GetVersion",

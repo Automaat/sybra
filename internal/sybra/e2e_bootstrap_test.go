@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -21,14 +22,14 @@ import (
 // bootstrapE2E is a full-stack harness wired like setupE2E but with a real
 // project.Store, a real bare git repo (with .sybra.yaml committed upstream),
 // and the worktree manager configured with LogsDir + a real Projects store.
-// This exercises the bootstrap chain end-to-end: AgentOrchestrator.StartAgent
+// This exercises the bootstrap chain end-to-end: agentorch.Orchestrator.StartAgent
 // → autoAssignProject → worktrees.PrepareForTask → resolveSetupCommands
 // (repo .sybra.yaml + app SetupCommands merged) → runSetup → fake-claude.
 type bootstrapE2E struct {
 	tasks        *task.Manager
 	agents       *agent.Manager
 	projects     *project.Store
-	agentOrch    *AgentOrchestrator
+	agentOrch    *agentorch.Orchestrator
 	worktreesDir string
 	logsDir      string
 	projectID    string
@@ -163,7 +164,7 @@ func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E
 		LogsDir:      logsDir,
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
+	agentOrch := agentorch.New(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
 
 	return &bootstrapE2E{
 		tasks:        taskMgr,

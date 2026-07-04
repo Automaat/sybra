@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { GitPullRequest, RotateCcw } from '@lucide/svelte'
+  import { GitPullRequest } from '@lucide/svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { reviewStore } from '../../stores/reviews.svelte.js'
-  import { ResumeInClaudeCode } from '$lib/api'
   import { openLink } from '$lib/browser.svelte.js'
 
   interface Props {
@@ -12,32 +11,11 @@
   const { task }: Props = $props()
 
   const linkedPRs = $derived(reviewStore.byTask(task))
-
-  // Show resume button only when the backend can succeed: either a stored
-  // implementation session_id exists, or the task has a directly linked PR.
-  // Branch-matched PRs alone are not enough — the backend requires prNumber.
-  const hasImplementationSession = $derived(
-    task.agentRuns?.some(
-      (r) => (r.role === '' || r.role === 'implementation') && !!r.sessionId,
-    ) ?? false,
-  )
-  const hasPR = $derived(hasImplementationSession || (task.prNumber > 0 && !!task.projectId))
-
-  let resuming = $state(false)
-
-  async function resumeInCC() {
-    resuming = true
-    try {
-      await ResumeInClaudeCode(task.id)
-    } finally {
-      resuming = false
-    }
-  }
 </script>
 
 {#if linkedPRs.length > 0}
   <div class="flex flex-col gap-2">
-    <span class="text-sm font-medium text-surface-500">Pull Requests</span>
+    <span class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Pull Requests</span>
     {#each linkedPRs as pr (pr.number)}
       <button
         type="button"
@@ -80,7 +58,7 @@
   </div>
 {:else if task.prNumber && task.projectId}
   <div class="flex flex-col gap-1">
-    <span class="text-sm font-medium text-surface-500">Pull Request</span>
+    <span class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Pull Request</span>
     <button
       type="button"
       class="flex w-fit items-center gap-1.5 text-sm text-warning-700 hover:underline dark:text-warning-400"
@@ -90,17 +68,4 @@
       {task.projectId}#{task.prNumber}
     </button>
   </div>
-{/if}
-
-{#if hasPR}
-  <button
-    type="button"
-    class="flex w-fit items-center gap-1.5 rounded-md border border-surface-300 bg-surface-50 px-2.5 py-1.5 text-sm transition-colors hover:bg-surface-100 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
-    onclick={resumeInCC}
-    disabled={resuming}
-    title="Resume the Claude Code session that produced this PR"
-  >
-    <RotateCcw size={14} class="shrink-0" />
-    {resuming ? 'Resuming…' : 'Resume in Claude Code'}
-  </button>
 {/if}

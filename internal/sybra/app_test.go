@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -55,7 +56,7 @@ func setupApp(t *testing.T) *App {
 		Logger:       logger,
 		AgentChecker: mgr.HasRunningAgentForTask,
 	})
-	agentOrch := newAgentOrchestrator(taskMgr, nil, mgr, nil, logger, wm, nil)
+	agentOrch := agentorch.New(taskMgr, nil, mgr, nil, logger, wm, nil)
 
 	return &App{
 		tasks:     taskMgr,
@@ -414,6 +415,78 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	}
 }
 
+// TestOnAgentComplete_FixReviewHoldParksForHuman locks the review-hold branch of
+// the manual fix-review path: the task is parked in human-required for the user
+// to verify and submit the pending review, rather than following the auto-push
+// path (which never touches status). The push decision is owned by the agent per
+// the configured mode, so Sybra runs no force-push here.
+func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
+	h, taskMgr, _ := setupFixReviewPushTest(t)
+	h.cfg = &config.Config{ReviewHold: config.ReviewHoldConfig{
+		Enabled: true, Mode: config.ReviewHoldModeHold,
+	}}
+
+	tk, err := taskMgr.Create("fix pr", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = taskMgr.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("testowner/testrepo"),
+		PRNumber:  task.Ptr(42),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "add", "."},
+		{"-C", wtPath, "commit", "-m", "fix(review): update pr"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID: "agent-1", Role: string(agent.RoleFixReview), Mode: "headless",
+		State: string(agent.StateRunning), StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.OnComplete(&agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Mode:      "headless",
+		Name:      agent.RoleFixReview.AgentName(tk.Title),
+		StartedAt: time.Now(),
+	})
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
 func TestNewApp(t *testing.T) {
 	cfg := testConfig(t)
 	a := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
@@ -667,7 +740,7 @@ func TestResolvePermission(t *testing.T) {
 			if tt.cfgPerm != nil {
 				cfg = &config.Config{Agent: config.AgentDefaults{RequirePermissions: tt.cfgPerm}}
 			}
-			if got := resolvePermission(tk, cfg); got != tt.want {
+			if got := agentorch.ResolvePermission(tk, cfg); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -678,7 +751,7 @@ func TestResolveExecutionDebugAlwaysRequiresPermissions(t *testing.T) {
 	t.Parallel()
 	tk := task.Task{TaskType: task.TaskTypeDebug, RequirePermissions: task.Ptr(false)}
 	// TaskTypeDebug hardcodes requirePerm=true regardless of task field.
-	_, _, requirePerm, _ := resolveExecution(tk, "headless", "", nil)
+	_, _, requirePerm, _ := agentorch.ResolveExecution(tk, "headless", "", nil)
 	if !requirePerm {
 		t.Error("debug task should always require permissions")
 	}

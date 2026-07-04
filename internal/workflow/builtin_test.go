@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -475,6 +476,55 @@ func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("create_pr prompt still hardcodes %q", forbidden)
 		}
+	}
+}
+
+// TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff proves the proactive
+// sync_branch step runs first — before the create_pr-vs-push_existing_pr
+// branch point — so both PR handoff paths (new PR and retry-with-pr_number)
+// get a fresh sync before the branch is pushed.
+func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
+	t.Parallel()
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-pr" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-pr builtin definition not found")
+	}
+
+	first := simple.FirstStep()
+	if first == nil || first.Type != StepSyncBranch {
+		t.Fatalf("FirstStep = %+v, want sync_branch first", first)
+	}
+
+	syncStep := simple.StepByID("sync_branch")
+	if syncStep == nil {
+		t.Fatal("sync_branch step not found in simple-task-pr")
+	}
+	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
+		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
+	}
+
+	// maybe_create_pr must still be the branch point covering both downstream
+	// PR paths — sync_branch does not bypass either one.
+	guard := simple.StepByID("maybe_create_pr")
+	if guard == nil {
+		t.Fatal("maybe_create_pr step not found in simple-task-pr")
+	}
+	var gotoTargets []string
+	for _, n := range guard.Next {
+		gotoTargets = append(gotoTargets, n.GoTo)
+	}
+	if !slices.Contains(gotoTargets, "push_existing_pr") || !slices.Contains(gotoTargets, "create_pr") {
+		t.Fatalf("maybe_create_pr.Next targets = %v, want both push_existing_pr and create_pr", gotoTargets)
 	}
 }
 

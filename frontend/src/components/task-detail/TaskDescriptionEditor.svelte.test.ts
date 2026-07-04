@@ -68,7 +68,7 @@ describe('TaskDescriptionEditor', () => {
     expect(mockUpdate).not.toHaveBeenCalled()
   })
 
-  it('renders plan and code-review when present', () => {
+  it('no longer renders plan or code review (moved to Plan/Review tabs)', () => {
     render(TaskDescriptionEditor, {
       props: {
         task: {
@@ -78,8 +78,9 @@ describe('TaskDescriptionEditor', () => {
         } as never,
       },
     })
-    expect(screen.getByText('Plan')).toBeDefined()
-    expect(screen.getByText('Code Review (auto-generated)')).toBeDefined()
+    expect(screen.queryByText('plan body')).toBeNull()
+    expect(screen.queryByText('review body')).toBeNull()
+    expect(screen.queryByText(/Code Review/)).toBeNull()
   })
 
   it('opens editor when task-detail:edit-body event fires', async () => {

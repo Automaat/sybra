@@ -131,7 +131,7 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 			prFlag = ""
 		}
 		// A pending supervisor steer (set by the watchdog's headless nudge) is
-		// consumed and prepended to the prompt inside AgentOrchestrator.StartAgent,
+		// consumed and prepended to the prompt inside agentorch.Orchestrator.StartAgent,
 		// the single dispatch choke point this path and the workflow resume path
 		// both funnel through — so it is delivered exactly once regardless of
 		// which loop re-dispatches the task.

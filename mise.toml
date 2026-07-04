@@ -23,6 +23,18 @@ run = "scripts/sybra-dev-supervisor.sh"
 description = "Run dev mode under an auto-update supervisor; restarts only when Sybra requests it."
 env = { SYBRA_PPROF = "127.0.0.1:6060" }
 
+[tasks."dev:mock"]
+run = "scripts/dev-mock/backend.sh"
+description = "Run sybra-server against an isolated, seeded dev home with fake providers (no credits). Pair with 'dev:web'. Pass --reset to wipe/re-seed."
+
+[tasks."dev:mock:seed"]
+run = "SYBRA_HOME=${DEV_HOME:-.dev-mock/home} scripts/dev-mock/seed.sh"
+description = "Re-seed the dev-mock home with mock tasks/projects (server picks up changes via the file watcher)."
+
+[tasks."dev:web"]
+run = "cd frontend && VITE_MODE=web npm run dev"
+description = "Vite dev server (HMR) in web mode; proxies /api + /events to the mock backend (run 'dev:mock' first)."
+
 [tasks.build]
 run = ["cd frontend && npm run build:desktop", "go build -o build/bin/sybra ."]
 description = "Build production desktop binary."

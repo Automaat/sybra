@@ -6,6 +6,13 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
+func appendDeepChanged(keys []string, name string, old, next any) []string {
+	if !reflect.DeepEqual(old, next) {
+		return append(keys, name)
+	}
+	return keys
+}
+
 // diffConfig compares old and new configs and returns two slices of dot-separated
 // key names: hot (live-reloadable without restart) and restart (require restart).
 func diffConfig(old, next config.Config) (hot, restart []string) {
@@ -79,39 +86,18 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	}
 
 	// Restart-required blocks
-	if !reflect.DeepEqual(old.Providers, next.Providers) {
-		restart = append(restart, "providers")
-	}
-	if !reflect.DeepEqual(old.Metrics, next.Metrics) {
-		restart = append(restart, "metrics")
-	}
-	if !reflect.DeepEqual(old.Monitor, next.Monitor) {
-		restart = append(restart, "monitor")
-	}
-	if !reflect.DeepEqual(old.SelfMonitor, next.SelfMonitor) {
-		restart = append(restart, "self_monitor")
-	}
-	if !reflect.DeepEqual(old.HarnessEvolve, next.HarnessEvolve) {
-		restart = append(restart, "harness_evolution")
-	}
-	if !reflect.DeepEqual(old.PromptLab, next.PromptLab) {
-		restart = append(restart, "prompt_lab")
-	}
-	if !reflect.DeepEqual(old.ABTesting, next.ABTesting) {
-		restart = append(restart, "ab_testing")
-	}
-	if !reflect.DeepEqual(old.Triage, next.Triage) {
-		restart = append(restart, "triage")
-	}
-	if !reflect.DeepEqual(old.GitHub, next.GitHub) {
-		restart = append(restart, "github")
-	}
-	if !reflect.DeepEqual(old.ProjectTypes, next.ProjectTypes) {
-		restart = append(restart, "project_types")
-	}
-	if !reflect.DeepEqual(old.AutoUpdate, next.AutoUpdate) {
-		restart = append(restart, "auto_update")
-	}
+	restart = appendDeepChanged(restart, "providers", old.Providers, next.Providers)
+	restart = appendDeepChanged(restart, "metrics", old.Metrics, next.Metrics)
+	restart = appendDeepChanged(restart, "monitor", old.Monitor, next.Monitor)
+	restart = appendDeepChanged(restart, "self_monitor", old.SelfMonitor, next.SelfMonitor)
+	restart = appendDeepChanged(restart, "harness_evolution", old.HarnessEvolve, next.HarnessEvolve)
+	restart = appendDeepChanged(restart, "prompt_lab", old.PromptLab, next.PromptLab)
+	restart = appendDeepChanged(restart, "ab_testing", old.ABTesting, next.ABTesting)
+	restart = appendDeepChanged(restart, "triage", old.Triage, next.Triage)
+	restart = appendDeepChanged(restart, "github", old.GitHub, next.GitHub)
+	restart = appendDeepChanged(restart, "project_types", old.ProjectTypes, next.ProjectTypes)
+	restart = appendDeepChanged(restart, "auto_update", old.AutoUpdate, next.AutoUpdate)
+	restart = appendDeepChanged(restart, "browser", old.Browser, next.Browser)
 
 	return hot, restart
 }

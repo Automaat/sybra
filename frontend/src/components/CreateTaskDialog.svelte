@@ -17,7 +17,6 @@
   let title = $state('')
   let body = $state('')
   let headless = $state(false)
-  let forkSubagent = $state(false)
   let reasoningEffort = $state('')
   let taskType = $state('normal')
   let selectedProject = $state('')
@@ -61,7 +60,6 @@
     title = ''
     body = ''
     headless = false
-    forkSubagent = false
     reasoningEffort = ''
     taskType = 'normal'
     selectedProject = ''
@@ -90,7 +88,6 @@
       const updates: Record<string, unknown> = {}
       if (taskType !== 'normal') updates.task_type = taskType
       if (selectedProject) updates.project_id = selectedProject
-      if (forkSubagent && effectiveMode === 'headless') updates.fork_subagent = true
       if (reasoningEffort) updates.reasoning_effort = reasoningEffort
       if (Object.keys(updates).length > 0) {
         t = await taskStore.update(t.id, updates)
@@ -209,17 +206,6 @@
             />
             <span class="text-sm font-medium">Headless</span>
           </label>
-          {#if headless}
-            <label class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                bind:checked={forkSubagent}
-                class="rounded border-surface-300 dark:border-surface-600"
-              />
-              <span class="text-sm font-medium">Fork subagents</span>
-              <span class="text-xs text-surface-400">(parallel, higher token cost)</span>
-            </label>
-          {/if}
           <label class="flex flex-col gap-1">
             <span class="text-sm font-medium">Reasoning effort</span>
             <select

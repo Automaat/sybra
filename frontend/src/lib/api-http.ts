@@ -51,7 +51,6 @@ export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { 
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
 export function OpenWorktree(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
-export function ResumeInClaudeCode(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
@@ -69,8 +68,11 @@ export function StopChat(arg1: string): Promise<void> { return call('App', 'Stop
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
+export function GetDefaultSettings(): Promise<AppSettings> { return call('ConfigService', 'GetDefaultSettings') }
 export function UpdateSettings(arg1: AppSettings): Promise<void> { return call('ConfigService', 'UpdateSettings', arg1) }
 export function UpdateTodoistToken(arg1: string): Promise<void> { return call('ConfigService', 'UpdateTodoistToken', arg1) }
+export function GetRawConfig(): Promise<string> { return call('ConfigService', 'GetRawConfig') }
+export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
 // InfoService
 export function GetCodexModels(): Promise<CodexModel[]> { return call('InfoService', 'GetCodexModels') }

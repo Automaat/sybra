@@ -9,25 +9,29 @@ function buildSettings(enabled: boolean) {
   } as never
 }
 
+function props(enabled: boolean) {
+  return { settings: buildSettings(enabled), defaults: buildSettings(true) } as never
+}
+
 describe('RenovatePanel', () => {
   afterEach(cleanup)
 
   it('disabled hides author input', () => {
-    render(RenovatePanel, { props: { settings: buildSettings(false) } })
-    expect(screen.queryByLabelText('PR Author')).toBeNull()
+    render(RenovatePanel, { props: props(false) })
+    expect(screen.queryByLabelText('PR author')).toBeNull()
   })
 
   it('enabled reveals author input pre-filled', () => {
-    render(RenovatePanel, { props: { settings: buildSettings(true) } })
-    const input = screen.getByLabelText('PR Author') as HTMLInputElement
+    render(RenovatePanel, { props: props(true) })
+    const input = screen.getByLabelText('PR author') as HTMLInputElement
     expect(input.value).toBe('app/renovate')
   })
 
   it('enable toggle reflects current settings.enabled', () => {
-    render(RenovatePanel, { props: { settings: buildSettings(false) } })
+    render(RenovatePanel, { props: props(false) })
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false)
     cleanup()
-    render(RenovatePanel, { props: { settings: buildSettings(true) } })
+    render(RenovatePanel, { props: props(true) })
     expect((screen.getAllByRole('checkbox')[0] as HTMLInputElement).checked).toBe(true)
   })
 })

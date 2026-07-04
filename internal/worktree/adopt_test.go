@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -203,6 +204,56 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
 		t.Errorf("worktree HEAD = %q, want PR head %q", got, prSHA)
+	}
+}
+
+// TestPrepareForFix_SetupFailureDoesNotBlock is the regression test for
+// issue #1454: a project whose setup: command fails (e.g. the PR under
+// repair broke the build) must not prevent PrepareForFix from creating the
+// fix worktree — gating on that exact breakage would deadlock the task, since
+// the fixer this worktree is for exists specifically to repair it.
+func TestPrepareForFix_SetupFailureDoesNotBlock(t *testing.T) {
+	h := prepareHarness(t, []string{"exit 1"}, 0)
+
+	const prNumber = 9
+	const branch = "fix-broken-build"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "pr commit")
+	srcGit("checkout", "main")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("fix broken build", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix must succeed despite a failing setup command: %v", err)
+	}
+
+	content, readErr := os.ReadFile(filepath.Join(wtPath, notes.FileName))
+	if readErr != nil {
+		t.Fatalf("read scratchpad: %v", readErr)
+	}
+	if !strings.Contains(string(content), "Setup failure") {
+		t.Errorf("scratchpad missing setup failure note: %q", content)
 	}
 }
 

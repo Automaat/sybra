@@ -1,39 +1,29 @@
 <script lang="ts">
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import Section from './fields/Section.svelte'
+  import ToggleField from './fields/ToggleField.svelte'
+  import TextField from './fields/TextField.svelte'
 
   interface Props {
     settings: AppSettings
+    defaults: AppSettings
   }
 
-  const { settings }: Props = $props()
+  let { settings = $bindable(), defaults }: Props = $props()
+  const r = $derived(settings.renovate)
+  const d = $derived(defaults.renovate)
 </script>
 
-<div class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
-  <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Renovate</h2>
-  <div class="flex flex-col gap-4">
-    <label class="flex cursor-pointer items-center gap-3">
-      <input
-        type="checkbox"
-        class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
-        bind:checked={settings.renovate.enabled}
-      />
-      <div>
-        <span class="text-sm font-medium">Enable Renovate PR tracking</span>
-        <p class="text-xs text-surface-500 dark:text-surface-400">Show Renovate bot PRs for registered projects</p>
-      </div>
-    </label>
-    {#if settings.renovate.enabled}
-      <div class="flex flex-col gap-1 sm:max-w-sm">
-        <label class="text-sm font-medium" for="renovate-author">PR Author</label>
-        <input
-          id="renovate-author"
-          type="text"
-          placeholder="app/renovate"
-          class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-          bind:value={settings.renovate.author}
-        />
-        <span class="text-xs text-surface-500 dark:text-surface-400">GitHub author filter (default: app/renovate)</span>
-      </div>
-    {/if}
-  </div>
-</div>
+<Section title="Renovate" description="Show Renovate bot PRs for registered projects and drive the CI fixer.">
+  <ToggleField label="Enable Renovate PR tracking" keyPath="renovate.enabled"
+    bind:checked={settings.renovate.enabled}
+    modified={r.enabled !== d.enabled}
+    onreset={() => (settings.renovate.enabled = d.enabled)} />
+  {#if settings.renovate.enabled}
+    <TextField id="renovate-author" label="PR author" placeholder="app/renovate" keyPath="renovate.author"
+      description="GitHub author filter (default: app/renovate)"
+      bind:value={settings.renovate.author}
+      modified={r.author !== d.author}
+      onreset={() => (settings.renovate.author = d.author)} />
+  {/if}
+</Section>

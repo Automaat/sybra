@@ -14,12 +14,13 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// setupReviewService wires a ReviewService + ReviewHandler backed by real
+// setupReviewService wires a ReviewService + review.Handler backed by real
 // task/project/worktree stores and the fake-claude binary for agent runs.
 // Returns the service, task manager, and the bare clone path the test can
 // use to simulate PR branches.
@@ -103,7 +104,7 @@ updated_at: 2025-01-01T00:00:00Z
 		AgentChecker: agentMgr.HasRunningAgentForTask,
 	})
 
-	handler := newReviewHandler(taskMgr, projStore, agentMgr, nil, logger, nil, func(string, any) {}, wm, nil, nil, nil)
+	handler := review.New(taskMgr, projStore, agentMgr, nil, logger, nil, func(string, any) {}, wm, nil, nil, nil)
 	svc := &ReviewService{reviewer: handler, tasks: taskMgr}
 
 	return svc, taskMgr, barePath

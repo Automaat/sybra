@@ -4,12 +4,13 @@ import (
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 )
 
 // ReviewService exposes PR review operations as Wails-bound methods.
 type ReviewService struct {
-	reviewer *ReviewHandler
+	reviewer *review.Handler
 	tasks    *task.Manager
 }
 
@@ -22,7 +23,7 @@ func (s *ReviewService) StartReview(taskID string) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", taskID)
 	}
-	return s.reviewer.startReviewAgent(t, true)
+	return s.reviewer.StartReviewAgent(t, true)
 }
 
 // StartFixReview starts a headless fix-review agent that applies unresolved
@@ -32,7 +33,7 @@ func (s *ReviewService) StartFixReview(taskID string) error {
 	if err != nil {
 		return err
 	}
-	return s.reviewer.startFixReviewAgent(t)
+	return s.reviewer.StartFixReviewAgent(t)
 }
 
 // ListReviewComments returns all review comments for a task.

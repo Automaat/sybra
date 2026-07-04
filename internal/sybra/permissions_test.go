@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -70,7 +71,7 @@ func TestResolveHeadlessPermissionMode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := resolveHeadlessPermissionMode(tc.t, tc.cfg)
+			got, err := agentorch.ResolveHeadlessPermissionMode(tc.t, tc.cfg)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
 			}

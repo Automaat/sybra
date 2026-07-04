@@ -130,8 +130,9 @@ reason_kind (only meaningful when recommendation is "stop"):
   rate-limit text) — this is a transient infra condition, not a real hang
 - "reward_hacking": the agent is repeating the same failing action or
   fabricating progress with no rate-limit signal — a genuine stuck loop
-- "generic_stall": stuck for some other reason (or unclear) — leave empty if
-  unsure`,
+- "generic_stall": stuck for some other reason, e.g. a benign command-
+  repetition flake — leave empty whenever there's any chance this could
+  instead be a real reward-hacking loop`,
 		in.AgentID, in.TaskTitle, trigger, in.StallSec, in.TotalSec, in.LogPath)
 }
 

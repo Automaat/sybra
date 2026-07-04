@@ -34,6 +34,11 @@ var ErrBranchMissing = errors.New("local branch ref does not exist")
 // silently clobber the remote.
 var ErrBranchDiverged = errors.New("local branch diverged from remote head")
 
+// ErrDirtyWorktree is returned by ReconcileWithRemote when the worktree has
+// uncommitted changes. Fast-forwarding HEAD under live, uncommitted edits can
+// silently shift the author's base, so callers must fail closed instead.
+var ErrDirtyWorktree = errors.New("worktree has uncommitted changes")
+
 // ErrRemoteAdvanced is returned by PushSync when the live remote branch head no
 // longer matches the remote-tracking ref the push decision was based on. The
 // tracking ref is stale, so a --force-with-lease would clobber commits pushed
@@ -634,6 +639,15 @@ func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(branch), nil
 }
 
+// CurrentCommit returns the full SHA of HEAD for a worktree.
+func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
+	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(sha), nil
+}
+
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
@@ -708,10 +722,25 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 		return nil // local already contains the remote head
 	}
 	if isAncestor(ctx, worktreePath, localSHA, remoteSHA) {
+		dirty, err := worktreeDirty(ctx, worktreePath)
+		if err != nil {
+			return fmt.Errorf("check worktree dirty: %w", err)
+		}
+		if dirty {
+			return ErrDirtyWorktree
+		}
 		// Remote strictly ahead — adopt its commits before rebasing.
 		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", remoteSHA)
 	}
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
+func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
+	out, err := executil.Output(ctx, worktreePath, "git", "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 // PushSync syncs the branch to the fork remote (if present) or origin using

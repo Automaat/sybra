@@ -48,7 +48,6 @@ export const RespondEscalation = pick(AgentSvc.RespondEscalation, http.RespondEs
 export const SendMessage = pick(AgentSvc.SendMessage, http.SendMessage)
 export const StopAgent = pick(AgentSvc.StopAgent, http.StopAgent)
 export const OpenWorktree = pick(AgentSvc.OpenWorktree, http.OpenWorktree)
-export const ResumeInClaudeCode = pick(AgentSvc.ResumeInClaudeCode, http.ResumeInClaudeCode)
 
 // App
 export const GetMonitorReport = pick(AppSvc.GetMonitorReport, http.GetMonitorReport)
@@ -66,8 +65,11 @@ export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
+export const GetDefaultSettings = pick(ConfigSvc.GetDefaultSettings, http.GetDefaultSettings)
 export const UpdateSettings = pick(ConfigSvc.UpdateSettings, http.UpdateSettings)
 export const UpdateTodoistToken = pick(ConfigSvc.UpdateTodoistToken, http.UpdateTodoistToken)
+export const GetRawConfig = pick(ConfigSvc.GetRawConfig, http.GetRawConfig)
+export const SaveRawConfig = pick(ConfigSvc.SaveRawConfig, http.SaveRawConfig)
 
 // InfoService
 export const GetCodexModels = pick(InfoSvc.GetCodexModels, http.GetCodexModels)

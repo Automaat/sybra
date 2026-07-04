@@ -7,6 +7,7 @@ const mockRemove = vi.fn()
 const mockStart = vi.fn()
 const mockStop = vi.fn()
 const mockByTask = vi.fn()
+const mockByState = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
@@ -24,6 +25,7 @@ vi.mock('../stores/agents.svelte.js', () => ({
     start: (...args: unknown[]) => mockStart(...args),
     stop: (...args: unknown[]) => mockStop(...args),
     byTask: (...args: unknown[]) => mockByTask(...args),
+    byState: (...args: unknown[]) => mockByState(...args),
     updateAgent: (...args: unknown[]) => mockUpdateAgent(...args),
   },
 }))
@@ -105,6 +107,7 @@ describe('TaskDetail', () => {
     mockStart.mockReset()
     mockStop.mockReset()
     mockByTask.mockReturnValue(null)
+    mockByState.mockReturnValue([])
     mockUpdateAgent.mockReset()
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
@@ -271,6 +274,62 @@ describe('TaskDetail', () => {
     })
     await vi.waitFor(() => {
       expect(screen.getByText('Start agent')).toBeDefined()
+    })
+  })
+
+  describe('tabs', () => {
+    it('defaults to the Overview tab (metadata visible)', async () => {
+      mockGet.mockResolvedValue(mockTask)
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Mode')).toBeDefined()
+      })
+    })
+
+    it('shows the read-only Plan panel when the task has a plan', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'done', plan: '# Plan\n\ndo it' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        // TaskPlanPanel renders a static "read-only" marker beside the plan.
+        expect(screen.getByText('read-only')).toBeDefined()
+      })
+    })
+
+    it('shows the Review panel when the task has a code review', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'done', codeReview: '# Code Review\n\nlgtm' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('auto-generated')).toBeDefined()
+      })
+    })
+
+    it('pins a live running agent above the tabs', async () => {
+      mockByState.mockReturnValue([{ id: 'a1', state: 'running', mode: 'headless', taskId: 'task-1' }])
+      mockGet.mockResolvedValue({ ...mockTask, status: 'in-progress' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Stop')).toBeDefined()
+      })
+    })
+
+    it('offers a Plan tab with approve/reject for plan-review, even with no plan sidecar', async () => {
+      // A plan-review task keeps its decision even when the plan is in the body.
+      mockGet.mockResolvedValue({ ...mockTask, status: 'plan-review' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Approve Plan')).toBeDefined()
+        expect(screen.getByText('Reject Plan')).toBeDefined()
+      })
     })
   })
 

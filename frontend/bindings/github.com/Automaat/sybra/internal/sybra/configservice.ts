@@ -15,6 +15,26 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
+ * GetDefaultSettings returns the settings a fresh install would have. The UI
+ * diffs live values against these to flag "modified from default" fields and to
+ * power per-field reset-to-default, without hardcoding defaults in TypeScript.
+ */
+export function GetDefaultSettings(): $CancellablePromise<$models.AppSettings> {
+    return $Call.ByID(2008277869).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * GetRawConfig returns the raw config.yaml text for the Advanced (YAML) editor.
+ * Unlike GetSettings this is NOT redacted — it is the user's own local file,
+ * surfaced behind an explicit Advanced disclosure with a secrets warning.
+ */
+export function GetRawConfig(): $CancellablePromise<string> {
+    return $Call.ByID(3654655477);
+}
+
+/**
  * GetSettings returns the current app settings for the config UI.
  * Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
  * dedicated write-only methods (UpdateTodoistToken) to rotate them.
@@ -35,6 +55,15 @@ export function ReloadFromDisk(): $CancellablePromise<string[]> {
     return $Call.ByID(742653545).then(($result: any) => {
         return $$createType1($result);
     });
+}
+
+/**
+ * SaveRawConfig validates raw YAML, atomically writes it (preserving the user's
+ * formatting and comments), then hot-reloads. Invalid YAML or a value that
+ * fails validation is rejected without touching disk.
+ */
+export function SaveRawConfig(raw: string): $CancellablePromise<void> {
+    return $Call.ByID(3088084744, raw);
 }
 
 /**

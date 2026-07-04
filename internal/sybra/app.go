@@ -40,6 +40,8 @@ import (
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -79,8 +81,8 @@ type App struct {
 	selfMonitorSvc    *selfmonitor.Service
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
-	agentOrch         *AgentOrchestrator
-	reviewer          *ReviewHandler
+	agentOrch         *agentorch.Orchestrator
+	reviewer          *review.Handler
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
 	todoist           *todoistCoordinator
@@ -248,7 +250,12 @@ func (a *App) Startup(ctx context.Context) error {
 	} else {
 		a.emit = func(string, any) {}
 	}
-	emit := func(event string, data any) { //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
+	// This closure's DispatchEvent -> execShell eventually derives its
+	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
+	// not an explicit parameter threaded through the closure. contextcheck
+	// no longer flags this call site (verified with a clean build+lint
+	// cache), so no suppression directive is needed here.
+	emit := func(event string, data any) {
 		switch event {
 		case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
 			if path, ok := data.(string); ok {
@@ -299,8 +306,8 @@ func (a *App) Startup(ctx context.Context) error {
 		AgentChecker:     a.agents.HasRunningAgentForTask,
 	})
 	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
-	a.agentOrch = newAgentOrchestrator(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
-	a.reviewer = newReviewHandler(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
+	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
+	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 
 	a.initWorkflowEngine()
 
@@ -432,7 +439,7 @@ func (a *App) Shutdown(_ context.Context) {
 	a.logger.Info("app.stopped")
 }
 
-// StartAgent delegates to AgentOrchestrator and is exposed as a Wails-bound method.
+// StartAgent delegates to agentorch.Orchestrator and is exposed as a Wails-bound method.
 // User-triggered starts are never one-shot — that flag is reserved for workflow
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription bool) (*agent.Agent, error) {

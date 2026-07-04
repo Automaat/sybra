@@ -37,6 +37,9 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed browser_chrome.js
+var browserChromeJS string
+
 func main() {
 	code, err := run()
 	if err != nil {
@@ -67,30 +70,15 @@ func run() (int, error) {
 
 	startPprof(logger)
 
+	logger.Info("browser.in_app", "enabled", cfg.InAppBrowserEnabled())
+
 	v3emit := func(string, any) {}
 	v3openBrowser := func(string) {}
 	var restartRequested atomic.Bool
 	var v3app *application.App
 
-	sybraApp := sybra.NewApp(logger, levelVar, cfg,
-		sybra.WithSkillsFS(skills.FS),
-		sybra.WithEmitFactory(func(_ context.Context) func(string, any) {
-			return func(event string, data any) { v3emit(event, data) }
-		}),
-		sybra.WithBrowserOpener(func(url string) { v3openBrowser(url) }),
-		sybra.WithRestartRequest(func() {
-			homeDir := config.HomeDir()
-			if err := autoupdate.WriteRestartMarker(homeDir); err != nil {
-				logger.Error("autoupdate.restart.marker.failed", "err", err)
-			} else {
-				logger.Info("autoupdate.restart.marker.written", "path", autoupdate.RestartMarkerPath(homeDir))
-			}
-			restartRequested.Store(true)
-			if v3app != nil {
-				v3app.Quit()
-			}
-		}),
-	)
+	opts := buildAppOptions(cfg, logger, &v3emit, &v3openBrowser, &restartRequested, &v3app)
+	sybraApp := sybra.NewApp(logger, levelVar, cfg, opts...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -154,19 +142,69 @@ func run() (int, error) {
 	return 0, nil
 }
 
+// buildAppOptions assembles the sybra.Option set for the desktop app.
+// v3emit/v3openBrowser/v3app are pointers to run's locals so the restart and
+// browser-opener callbacks can reach state that isn't set up until later in
+// startup (the v3app application.App and the wired emit/opener funcs).
+func buildAppOptions(
+	cfg *config.Config,
+	logger *slog.Logger,
+	v3emit *func(string, any),
+	v3openBrowser *func(string),
+	restartRequested *atomic.Bool,
+	v3app **application.App,
+) []sybra.Option {
+	opts := []sybra.Option{
+		sybra.WithSkillsFS(skills.FS),
+		sybra.WithEmitFactory(func(_ context.Context) func(string, any) {
+			return func(event string, data any) { (*v3emit)(event, data) }
+		}),
+	}
+	opts = append(opts, desktopBrowserOptions(cfg, func(url string) { (*v3openBrowser)(url) })...)
+	opts = append(opts, sybra.WithRestartRequest(func() {
+		homeDir := config.HomeDir()
+		if err := autoupdate.WriteRestartMarker(homeDir); err != nil {
+			logger.Error("autoupdate.restart.marker.failed", "err", err)
+		} else {
+			logger.Info("autoupdate.restart.marker.written", "path", autoupdate.RestartMarkerPath(homeDir))
+		}
+		restartRequested.Store(true)
+		if *v3app != nil {
+			(*v3app).Quit()
+		}
+	}))
+	return opts
+}
+
+// desktopBrowserOptions returns the sybra.Option(s) that wire the in-app
+// browser opener, or none when the config toggle disables it. When omitted,
+// BrowserService.Open keeps its nil-opener "unavailable" behavior, and the
+// frontend's existing catch handler falls back to the system browser.
+func desktopBrowserOptions(cfg *config.Config, opener func(string)) []sybra.Option {
+	if !cfg.InAppBrowserEnabled() {
+		return nil
+	}
+	return []sybra.Option{sybra.WithBrowserOpener(opener)}
+}
+
 // openInAppBrowser opens url in a fresh in-app webview window. The window uses
 // the app's default (persistent, app-wide) WKWebsiteDataStore, so a GitHub
 // login here is reused across windows and survives restarts — the user logs in
-// once and stays in a single app. One window per call by design.
+// once and stays in a single app. The injected toolbar also allows the user to
+// navigate elsewhere inside that same persistent browser profile. One window
+// per call by design.
 func openInAppBrowser(app *application.App, url string) {
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Sybra Browser",
-		URL:              url,
-		Width:            1100,
-		Height:           850,
-		MinWidth:         480,
-		MinHeight:        360,
-		BackgroundColour: application.RGBA{Red: 255, Green: 255, Blue: 255, Alpha: 1},
+		Title:     "Sybra Browser",
+		URL:       url,
+		Width:     1100,
+		Height:    850,
+		MinWidth:  480,
+		MinHeight: 360,
+		// Throwaway JS-injected toolbar (address bar + back/forward/reload)
+		// pending a native NSToolbar — see docs on openInAppBrowser above.
+		JS:               browserChromeJS,
+		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
 	})
 }
 

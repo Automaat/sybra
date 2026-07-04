@@ -708,6 +708,28 @@ export enum StepType {
      * aggregate failure flag set when any child failed past its retry budget).
      */
     StepParallel = "parallel",
+
+    /**
+     * StepSyncBranch proactively reconciles the task's worktree branch with
+     * the project's default branch before the workflow reaches a PR handoff
+     * point, shrinking the window in which the branch can go stale. Always
+     * non-blocking: conflict, failure, or missing-worktree/syncer outcomes are
+     * recorded but never flip the task to human-required — the workflow
+     * continues to its next step regardless of outcome.
+     */
+    StepSyncBranch = "sync_branch",
+
+    /**
+     * StepResumeWorkflow is the terminal step of a recovery workflow
+     * (branch-conflict-fix) that re-enters the task's original interrupted
+     * workflow/stage. Reads resume_workflow_id/resume_workflow_vars/
+     * resume_status vars captured before the recovery workflow was started;
+     * a missing resume_workflow_id is a no-op (the workflow simply ends, and
+     * normal status-driven cascade dispatch — see
+     * AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+     * matches the restored task status).
+     */
+    StepResumeWorkflow = "resume_workflow",
 };
 
 /**

@@ -1,64 +1,48 @@
 <script lang="ts">
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import Section from './fields/Section.svelte'
+  import ToggleField from './fields/ToggleField.svelte'
+  import NumberField from './fields/NumberField.svelte'
+  import TextField from './fields/TextField.svelte'
+  import TokenField from './fields/TokenField.svelte'
 
   interface Props {
     settings: AppSettings
+    defaults: AppSettings
+    /** Persists the token via the dedicated write path (never the generic Save). */
+    onsavetoken: (token: string) => Promise<void>
   }
 
-  const { settings }: Props = $props()
+  let { settings = $bindable(), defaults, onsavetoken }: Props = $props()
+  const t = $derived(settings.todoist)
+  const d = $derived(defaults.todoist)
 </script>
 
-<div class="rounded-xl border border-surface-200 bg-surface-50 p-5 shadow-sm dark:border-surface-700 dark:bg-surface-800 dark:shadow-none">
-  <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-surface-600 dark:text-surface-300">Todoist</h2>
-  <div class="flex flex-col gap-4">
-    <label class="flex cursor-pointer items-center gap-3">
-      <input
-        type="checkbox"
-        class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500"
-        bind:checked={settings.todoist.enabled}
-      />
-      <div>
-        <span class="text-sm font-medium">Enable Todoist sync</span>
-        <p class="text-xs text-surface-500 dark:text-surface-400">Pull tasks from a Todoist project and close them when done</p>
-      </div>
-    </label>
-    {#if settings.todoist.enabled}
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="todoist-token">API Token</label>
-          <input
-            id="todoist-token"
-            type="password"
-            placeholder="Your Todoist API token"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.todoist.apiToken}
-          />
-          <span class="text-xs text-surface-500 dark:text-surface-400">Settings → Integrations → API token</span>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="todoist-project">Project ID</label>
-          <input
-            id="todoist-project"
-            type="text"
-            placeholder="Todoist project ID"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.todoist.projectId}
-          />
-          <span class="text-xs text-surface-500 dark:text-surface-400">ID from project URL</span>
-        </div>
-        <div class="flex flex-col gap-1">
-          <label class="text-sm font-medium" for="todoist-poll">Poll Interval (seconds)</label>
-          <input
-            id="todoist-poll"
-            type="number"
-            min="30"
-            max="3600"
-            class="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm dark:border-surface-600 dark:bg-surface-700"
-            bind:value={settings.todoist.pollSeconds}
-          />
-          <span class="text-xs text-surface-500 dark:text-surface-400">30–3600 seconds</span>
-        </div>
-      </div>
-    {/if}
-  </div>
-</div>
+<Section title="Todoist" description="Pull tasks from a Todoist project and close them when done.">
+  <ToggleField label="Enable Todoist sync" keyPath="todoist.enabled"
+    bind:checked={settings.todoist.enabled}
+    modified={t.enabled !== d.enabled}
+    onreset={() => (settings.todoist.enabled = d.enabled)} />
+
+  {#if settings.todoist.enabled}
+    <TokenField
+      id="todoist-token"
+      label="API token"
+      description="Settings → Integrations → API token. Saved separately from the form and never displayed after storing."
+      keyPath="todoist.api_token"
+      tokenSet={settings.todoistTokenSet}
+      onsave={onsavetoken}
+    />
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <TextField id="todoist-project" label="Project ID" placeholder="Todoist project ID" keyPath="todoist.project_id"
+        bind:value={settings.todoist.projectId}
+        modified={t.projectId !== d.projectId}
+        onreset={() => (settings.todoist.projectId = d.projectId)} />
+      <NumberField id="todoist-poll" label="Poll interval (seconds)" keyPath="todoist.poll_seconds" min={30} max={3600}
+        description="30–3600 seconds"
+        bind:value={settings.todoist.pollSeconds}
+        modified={t.pollSeconds !== d.pollSeconds}
+        onreset={() => (settings.todoist.pollSeconds = d.pollSeconds)} />
+    </div>
+  {/if}
+</Section>

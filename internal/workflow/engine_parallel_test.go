@@ -189,6 +189,10 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 			t.Errorf("Children count = %d, want 2", len(rec.Children))
 		}
 		for id, c := range rec.Children {
+			if c == nil {
+				t.Errorf("child %q status record is nil", id)
+				continue
+			}
 			if c.Status != "pending" {
 				t.Errorf("child %q status = %q, want pending", id, c.Status)
 			}

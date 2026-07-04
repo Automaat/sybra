@@ -5,7 +5,7 @@
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
   import { formatDateTime } from '../../lib/dates.js'
   import { formatCostShort } from '../../lib/cost.js'
-  import { runStateClasses } from '../../lib/agent-run.js'
+  import { runStateClasses, runRoleLabel, runRoleClasses } from '../../lib/agent-run.js'
   import StreamOutput from '../StreamOutput.svelte'
   import MessageBubble from '../MessageBubble.svelte'
   import ProviderLogo from '../ProviderLogo.svelte'
@@ -104,7 +104,12 @@
             {#if run.provider}
               <ProviderLogo provider={run.provider} class="h-3.5 w-3.5 text-surface-400" />
             {/if}
-            <span class="font-mono text-surface-400">{run.agentId}</span>
+            {#if runRoleLabel(run.role)}
+              <!-- Role is the signal ("which run is the plan/review/eval"); the
+                   opaque agentId is demoted to a quiet mono id beside it. -->
+              <span class="rounded px-1.5 py-0.5 font-medium {runRoleClasses(run.role)}">{runRoleLabel(run.role)}</span>
+            {/if}
+            <span class="font-mono text-[11px] text-surface-400">{run.agentId}</span>
             <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{run.mode}</span>
             <span class="rounded px-1.5 py-0.5 {runStateClasses(run.state || 'running')}">
               {run.state || 'running'}
