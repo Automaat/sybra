@@ -57,6 +57,6 @@ checks:
   verify:
     - mise exec -- bash scripts/check-api-shim-sync.sh
     - mise exec -- go test ./internal/... ./cmd/...
-    - (cd frontend && npm run build:web)
-    - (cd frontend && npm run test:coverage)
+    - (cd frontend && mise exec -- npm run build:web)
+    - (cd frontend && mise exec -- npm run test:coverage)
     - mise exec -- go test -tags e2e -short -timeout 4m ./internal/sybra/...
