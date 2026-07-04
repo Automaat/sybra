@@ -140,6 +140,9 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	}
 	a := fromRecord(r)
 	rehydrateFromLog(a, r.LogPath)
+	if mt, ok := logActivityTime(r.LogPath); ok {
+		a.SetLastEventAt(mt)
+	}
 	found, isError := a.lastHeadlessResult()
 	if !found {
 		return false
@@ -277,6 +280,9 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 		rehydratePerTurnConvoFromLog(a, r.LogPath)
 	}
 	if r.OneShot {
+		if mt, ok := logActivityTime(r.LogPath); ok {
+			a.SetLastEventAt(mt)
+		}
 		m.finalizePerTurnOneShot(r, a, reg)
 		return nil
 	}
@@ -462,6 +468,25 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		}
 	}
 	return offset
+}
+
+// logActivityTime returns the log file's mtime: the last time the (now-dead)
+// process actually wrote to it, and the only faithful proxy for "when did
+// this run actually finish" available on the dead-process recovery path.
+// Every event replayed by rehydrateFromLog/rehydratePerTurnConvoFromLog is
+// re-stamped at replay time, so without this a run finalized long after an
+// app-downtime gap would report the full idle time as its duration. Returns
+// false if the file cannot be statted (missing path, deleted log, etc.), in
+// which case the caller falls back to the pre-fix behavior.
+func logActivityTime(path string) (time.Time, bool) {
+	if path == "" {
+		return time.Time{}, false
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
 }
 
 // reattachAlive reports whether the recorded process is still the agent we

@@ -770,6 +770,16 @@ func (a *Agent) TouchLastEvent() {
 	a.mu.Unlock()
 }
 
+// SetLastEventAt overrides the last-activity timestamp directly. Used by
+// dead-process reattach recovery, where every replayed event is stamped at
+// replay time (not history), so AppendOutput/AppendConvo would otherwise
+// collapse LastEventAt to the wall-clock moment finalization happens to run.
+func (a *Agent) SetLastEventAt(t time.Time) {
+	a.mu.Lock()
+	a.LastEventAt = t
+	a.mu.Unlock()
+}
+
 // Output returns a snapshot of the stream events produced so far. The
 // returned slice is safe to inspect concurrently with the agent's runner
 // goroutine appending more events.
