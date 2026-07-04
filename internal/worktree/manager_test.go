@@ -921,6 +921,56 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed proves the fix for
+// the bug where a network blip during reconcileAndRebase's remote fetch was
+// indistinguishable from a genuine content conflict: both wrapped
+// ErrRebaseFailed, so a transient SSH/DNS outage falsely parked a task
+// human-required on an otherwise clean branch.
+//
+// reconcileAndRebase's fetch/ls-remote target PushRemote's chosen remote
+// ("fork" when configured, else "origin"). Configuring an unreachable "fork"
+// remote isolates the failure to that step alone: PrepareForTask's earlier
+// "Fetching origin…" step (against the real local bare clone) keeps
+// succeeding, and only the reconcile step hits a real, deterministic
+// "Connection refused" transport error — reproducing the reported outage
+// without any external network dependency.
+func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("transient network task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	// Point the push remote at a port nothing listens on: fetch fails fast
+	// with a real "Connection refused" transport error, exactly like the
+	// reported outage, while origin's own fetch remains healthy.
+	mustRunInDir(t, wtPath, "git", "remote", "add", "fork", "ssh://127.0.0.1:1/unreachable.git")
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if !errors.Is(err, ErrTransientFetch) {
+		t.Fatalf("PrepareForTask error = %v, want ErrTransientFetch", err)
+	}
+	if errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v must not also classify as ErrRebaseFailed (would wrongly escalate to human-required)", err)
+	}
+	if gotPath != "" {
+		t.Fatalf("PrepareForTask path = %q, want empty path on transient fetch failure", gotPath)
+	}
+}
+
 // TestPrepareForTask_RebaseFailureRecoversViaMerge proves the merge fallback
 // in reconcileAndRebase: a task branch whose commits, replayed individually,
 // hit an intermediate patch-apply conflict against the new base — even though

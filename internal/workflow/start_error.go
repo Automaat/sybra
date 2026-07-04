@@ -54,6 +54,11 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason
+	case errors.Is(err, worktreeerr.ErrTransientFetch):
+		// Transient: a network blip during the remote fetch/ls-remote, not a
+		// genuine content conflict. Never escalate — let the resume loop retry
+		// once connectivity recovers.
+		reason = "agent start delayed: transient network failure reconciling worktree with remote"
 	case errors.Is(err, provider.ErrProviderUnhealthy):
 		reason = "agent start blocked: " + err.Error()
 	default:
@@ -65,6 +70,7 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 

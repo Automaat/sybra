@@ -40,6 +40,11 @@ func TestClassifyAgentStartError(t *testing.T) {
 			wantContains:  "branch stale: rebase failed before agent start",
 		},
 		{
+			name:         "transient fetch failure is not permanent",
+			err:          fmt.Errorf("prepare worktree: %w", worktreeerr.ErrTransientFetch),
+			wantContains: "agent start delayed: transient network failure",
+		},
+		{
 			name:         "provider unhealthy is transient",
 			err:          &provider.UnhealthyError{Provider: "codex", Reason: "rate_limited"},
 			wantContains: "agent start blocked: provider codex unhealthy (rate_limited)",
@@ -120,6 +125,28 @@ func TestSurfaceStartFailure_TransientKeepsStatus(t *testing.T) {
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "git fetch: timeout") {
 		t.Errorf("reason %q missing transient error text", reason)
+	}
+}
+
+func TestSurfaceStartFailure_TransientFetchKeepsStatus(t *testing.T) {
+	// Regression guard for the bug this PR fixes: a network blip during
+	// worktree reconcile must never park the task human-required — it should
+	// behave exactly like any other transient failure and let the resume loop
+	// retry once connectivity recovers.
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrTransientFetch)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "in-progress" {
+		t.Errorf("transient fetch failure flipped status: got %q, want in-progress", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "transient network failure") {
+		t.Errorf("reason %q missing transient-fetch classification", reason)
 	}
 }
 
