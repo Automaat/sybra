@@ -175,15 +175,28 @@ const prQuery = `query($q: String!) {
 }`
 
 // gqlCheckContext captures both `CheckRun` and `StatusContext` shapes from
-// the StatusCheckRollup contexts edge. The GraphQL query aliases
-// `StatusContext.context` → `name` and only `CheckRun` populates
-// status/conclusion, so callers must dispatch on Typename.
+// the StatusCheckRollup contexts edge. The prQuery GraphQL fragment in this
+// file aliases `StatusContext.context` → `name`, but `gh pr view --json
+// statusCheckRollup` (used by FetchPRState) emits the raw field name
+// `context` instead — both are captured so effectiveName() works for either
+// source. Only `CheckRun` populates status/conclusion, so callers must
+// dispatch on Typename.
 type gqlCheckContext struct {
 	Typename   string `json:"__typename"`
 	Name       string `json:"name"`
+	Context    string `json:"context"`    // StatusContext, non-GraphQL-aliased sources only
 	Status     string `json:"status"`     // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
 	Conclusion string `json:"conclusion"` // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
 	State      string `json:"state"`      // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+}
+
+// effectiveName returns the check's display name regardless of which JSON
+// shape populated it (GraphQL-aliased `name`, or raw `context`).
+func (c gqlCheckContext) effectiveName() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Context
 }
 
 type gqlStatusCheckRollup struct {

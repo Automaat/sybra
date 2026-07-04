@@ -82,15 +82,71 @@ func TestPRState_CIStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			checks := make([]struct {
-				State string `json:"state"`
-			}, len(tt.checks))
+			checks := make([]gqlCheckContext, len(tt.checks))
 			for i, c := range tt.checks {
-				checks[i].State = c.State
+				checks[i] = gqlCheckContext{Typename: "StatusContext", State: c.State}
 			}
 			s := PRState{StatusCheckRollup: checks}
 			if got := s.CIStatus(); got != tt.want {
 				t.Errorf("CIStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPRState_CIStatus_CheckRunShape verifies the GitHub-Actions/App
+// CheckRun shape (`status`/`conclusion`, no `state`) classifies the same as
+// the legacy StatusContext shape — this is the exact shape `gh pr view
+// --json statusCheckRollup` emits for Actions-based CI, and the shape a
+// prior implementation of this task's fix mishandled (see task b569bcef
+// test failure: CheckRun entries parsed as permanently SUCCESS because only
+// `state` was read).
+func TestPRState_CIStatus_CheckRunShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		checks []gqlCheckContext
+		want   string
+	}{
+		{"no checks", nil, ""},
+		{
+			"all completed success",
+			[]gqlCheckContext{{Typename: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"}},
+			"SUCCESS",
+		},
+		{
+			"in progress is pending, not success",
+			[]gqlCheckContext{{Typename: "CheckRun", Status: "IN_PROGRESS", Conclusion: ""}},
+			"PENDING",
+		},
+		{
+			"queued is pending",
+			[]gqlCheckContext{{Typename: "CheckRun", Status: "QUEUED"}},
+			"PENDING",
+		},
+		{
+			"completed failure",
+			[]gqlCheckContext{{Typename: "CheckRun", Status: "COMPLETED", Conclusion: "FAILURE"}},
+			"FAILURE",
+		},
+		{
+			"failure beats pending across mixed shapes",
+			[]gqlCheckContext{
+				{Typename: "CheckRun", Status: "IN_PROGRESS"},
+				{Typename: "CheckRun", Status: "COMPLETED", Conclusion: "FAILURE"},
+			},
+			"FAILURE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := PRState{StatusCheckRollup: tt.checks}
+			if got := s.CIStatus(); got != tt.want {
+				t.Errorf("CIStatus() = %q, want %q", got, tt.want)
+			}
+			if tt.want == "PENDING" && !s.HasPendingChecks() {
+				t.Errorf("HasPendingChecks() = false, want true for PENDING status")
 			}
 		})
 	}
@@ -104,18 +160,12 @@ func TestPRState_ReadyToMerge(t *testing.T) {
 		wantReady bool
 	}{
 		{"open mergeable no ci", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
-		{"open mergeable ci success", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"SUCCESS"}}}, true},
+		{"open mergeable ci success", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "SUCCESS"}}}, true},
 		{"not open", PRState{State: "MERGED", Mergeable: "MERGEABLE"}, false},
 		{"conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
 		{"unknown mergeable", PRState{State: "OPEN", Mergeable: "UNKNOWN"}, false},
-		{"ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"FAILURE"}}}, false},
-		{"ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"PENDING"}}}, false},
+		{"ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "FAILURE"}}}, false},
+		{"ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "PENDING"}}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,12 +191,8 @@ func TestPRState_Resolved(t *testing.T) {
 		{"closed", PRState{State: "CLOSED"}, false},
 		{"open ready to merge", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
 		{"open conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
-		{"open ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"PENDING"}}}, false},
-		{"open ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
-			State string `json:"state"`
-		}{{"FAILURE"}}}, false},
+		{"open ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "PENDING"}}}, false},
+		{"open ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "FAILURE"}}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
