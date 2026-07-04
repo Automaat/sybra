@@ -127,6 +127,9 @@ straight to opening the PR after implementation):
 - Do NOT add "noplan" or "trivial" when the approach is non-obvious, scope is
   unclear, type is feature, or the change touches a public API, data model,
   auth, or concurrency.
+- Never add "trivial" when type is bug — trivial skips both review and
+  testing, and a "small" bug fix is exactly the case where a subtle regression
+  can slip past both. "noplan" alone is still fine for a trivial bug fix.
 - When in doubt, omit both — planning, review, and testing are the safe
   default.
 

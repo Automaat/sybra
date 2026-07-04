@@ -96,7 +96,7 @@ func TestValidateVerdictTrivialFloor(t *testing.T) {
 		wantTrivial bool
 	}{
 		{"small chore keeps", "small", "chore", true},
-		{"small bug keeps", "small", "bug", true},
+		{"small bug strips", "small", "bug", false},
 		{"small refactor keeps", "small", "refactor", true},
 		{"small feature strips", "small", "feature", false},
 		{"medium chore strips", "medium", "chore", false},
@@ -116,5 +116,24 @@ func TestValidateVerdictTrivialFloor(t *testing.T) {
 				t.Errorf("trivial present = %v, want %v (tags %v)", gotTrivial, tc.wantTrivial, v.Tags)
 			}
 		})
+	}
+}
+
+// TestValidateVerdictTrivialBugFloorIndependentOfNoplan proves the stricter
+// trivial-vs-bug floor doesn't leak into noplan: a small bug fix may still
+// skip planning but must not also skip review + testing unattended.
+func TestValidateVerdictTrivialBugFloorIndependentOfNoplan(t *testing.T) {
+	v := Verdict{
+		Title: "t", Size: "small", Type: "bug", Mode: "headless",
+		Tags: []string{"backend", "small", "bug", "noplan", "trivial"},
+	}
+	if err := ValidateVerdict(&v); err != nil {
+		t.Fatalf("ValidateVerdict: %v", err)
+	}
+	if !slices.Contains(v.Tags, "noplan") {
+		t.Errorf("expected noplan to survive on small bug fix, got %v", v.Tags)
+	}
+	if slices.Contains(v.Tags, "trivial") {
+		t.Errorf("expected trivial to be stripped on small bug fix, got %v", v.Tags)
 	}
 }
