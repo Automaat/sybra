@@ -694,13 +694,22 @@ func (e *Engine) ResumeStalled() {
 		if e.handleWatchdogHangRetry(t, step) {
 			continue
 		}
-		if e.handleTransientFetchRetry(t, step) {
-			continue
-		}
 		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 		if !acquired {
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", reason, "step", step.ID)
+			continue
+		}
+
+		// handleTransientFetchRetry runs only after the dispatching claim is
+		// acquired, so the retry budget tracks actual re-dispatch attempts —
+		// a tick that loses the claim to a concurrent goroutine (already
+		// dispatching/advancing) never burns budget for a retry that didn't
+		// happen.
+		if e.handleTransientFetchRetry(t, step) {
+			e.mu.Lock()
+			delete(e.dispatching, t.ID)
+			e.mu.Unlock()
 			continue
 		}
 
