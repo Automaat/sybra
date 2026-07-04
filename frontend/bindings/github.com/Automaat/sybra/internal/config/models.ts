@@ -102,7 +102,8 @@ export class AgentDefaults {
      * DispatchJitterMs bounds a uniform random delay applied before headless
      * agent dispatch, so a wave of concurrently ready tasks does not all
      * probe the provider health gate in the same tick. 0 disables jitter.
-     * Never applied to interactive/chat dispatch. Default 0 (opt-in).
+     * Never applied to interactive/chat dispatch. Default 1000 — set 0 to
+     * disable.
      */
     "dispatchJitterMs": number;
 

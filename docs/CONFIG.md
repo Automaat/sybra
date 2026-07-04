@@ -75,7 +75,7 @@ machine.
 | `agent.provider` | `string` | `claude` |  |
 | `agent.model` | `string` |  |  |
 | `agent.mode` | `string` |  |  |
-| `agent.max_concurrent` | `int` | `100` |  |
+| `agent.max_concurrent` | `int` | `25` |  |
 | `agent.research_machine_dir` | `string` |  |  |
 | `agent.max_cost_usd` | `float64` | `5` |  |
 | `agent.max_turns` | `int` | `150` |  |
@@ -90,7 +90,7 @@ machine.
 | `agent.survive_restart` | `*bool` | _(nil)_ | SurviveRestart keeps agent subprocesses running across an app restart (detached, output streamed to their log files) and reattaches to them on the next startup. nil means not configured (defaults to true). Set false to revert to the legacy behaviour where agents are killed on shutdown and recovered via restart-stale. |
 | `agent.approval_port` | `int` |  | ApprovalPort pins the localhost port of the PreToolUse approval server. The hook URL is baked into a permission-gated agent's --settings at spawn, so a fixed port lets a detached agent's approval requests still resolve after a restart. 0 (default) binds a random port (no cross-restart approval survival). |
 | `agent.headless_permission_mode` | `string` |  | HeadlessPermissionMode sets the default permission posture for unattended headless claude runs. "bypass" (default) keeps the current --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto which activates the Claude Code auto-mode classifier (blocks destructive ops such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass". |
-| `agent.dispatch_jitter_ms` | `int` |  | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 0 (opt-in). |
+| `agent.dispatch_jitter_ms` | `int` | `1000` | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 1000 — set 0 to disable. |
 
 ## TestingConfig (`testing`)
 
