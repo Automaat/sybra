@@ -665,6 +665,7 @@ func (a *App) initWorkflowEngine() {
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
+	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})

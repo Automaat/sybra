@@ -26,6 +26,7 @@ var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
+	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
@@ -245,6 +246,14 @@ func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int
 
 func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
 	return github.EditPRBody(repo, prNumber, body)
+}
+
+// prStateFetcherAdapter wires the workflow engine's PRStateFetcher interface
+// to the github package. Stateless — all state lives in `gh` / GitHub.
+type prStateFetcherAdapter struct{}
+
+func (prStateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState, error) {
+	return github.FetchPRState(repo, number)
 }
 
 // prReviewRequesterAdapter asks users who left actionable PR feedback to

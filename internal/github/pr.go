@@ -68,6 +68,17 @@ func (s PRState) ReadyToMerge() bool {
 		(s.CIStatus() == "SUCCESS" || s.CIStatus() == "")
 }
 
+// Resolved reports whether this PR needs no further pr-fix action: it
+// merged, or it's open with green CI and no merge conflicts. An abandoned
+// (unmerged) close is NOT resolved — unlike a stale-worktree-vs-green-remote
+// false positive, a human genuinely needs to decide what happens to the task
+// now. Callers use this to re-probe the live PR before parking a task
+// human-required on a stale/diverged local worktree — an external bot may
+// have force-pushed a fix since the last poll, leaving nothing left to do.
+func (s PRState) Resolved() bool {
+	return s.State == "MERGED" || s.ReadyToMerge()
+}
+
 // PRFiles holds the list of files changed by a PR.
 type PRFiles struct {
 	Files []struct {

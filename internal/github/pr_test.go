@@ -127,6 +127,37 @@ func TestPRState_ReadyToMerge(t *testing.T) {
 	}
 }
 
+func TestPRState_Resolved(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		state        PRState
+		wantResolved bool
+	}{
+		{"merged", PRState{State: "MERGED"}, true},
+		// An abandoned (unmerged) close is NOT treated as resolved: unlike a
+		// stale-worktree-vs-green-remote false positive, a human genuinely needs
+		// to decide what happens to the task now.
+		{"closed", PRState{State: "CLOSED"}, false},
+		{"open ready to merge", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
+		{"open conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
+		{"open ci pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
+			State string `json:"state"`
+		}{{"PENDING"}}}, false},
+		{"open ci failing", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []struct {
+			State string `json:"state"`
+		}{{"FAILURE"}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.state.Resolved(); got != tt.wantResolved {
+				t.Errorf("Resolved() = %v, want %v", got, tt.wantResolved)
+			}
+		})
+	}
+}
+
 func TestFetchPRFilesWith(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

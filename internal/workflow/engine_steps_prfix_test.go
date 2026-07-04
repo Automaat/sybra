@@ -4,7 +4,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/github"
 )
+
+// scriptedPRStateFetcher returns a fixed state or error for every probe,
+// regardless of repo/number, so tests can pin the "remote already resolved"
+// signal without shelling out to `gh`.
+type scriptedPRStateFetcher struct {
+	state github.PRState
+	err   error
+}
+
+func (f scriptedPRStateFetcher) FetchPRState(string, int) (github.PRState, error) {
+	return f.state, f.err
+}
 
 func TestClassifyPRFixResult(t *testing.T) {
 	t.Parallel()
@@ -94,7 +108,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 		Workflow: wf,
 	})
 
-	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf)
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1178})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
 	}
@@ -110,6 +124,90 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "Human review is required") {
 		t.Errorf("reason = %q, want agent output excerpt", reason)
+	}
+}
+
+// TestExecRoutePRFixResult_ReProbesResolvedRemotePR pins the bug report's
+// scenario: the pr-fix agent correctly declined to push because its local
+// worktree was stale/diverged, but the remote PR is already green and
+// mergeable (an external bot fixed it out from under the task). The step
+// must re-probe and route to in-review instead of parking human-required.
+func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID:    "fix",
+			Status:    "completed",
+			Output:    "Local worktree is diverged from origin; declining to push.\nSYBRA_PR_FIX_RESULT: human-required\n",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "acme/widgets", PRNumber: 1178, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1178})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue, want resolved-on-remote message")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+}
+
+// TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR asserts the
+// re-probe never overrides a review-hold park: that park exists because a
+// pending review draft needs a human to submit it, which is orthogonal to
+// whether CI is green.
+func TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	wf := &Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "route_pr_fix_result",
+		State:       ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID:    "fix",
+			Status:    "completed",
+			Output:    "Pushed the fix.\nSYBRA_PR_FIX_RESULT: continue",
+			AgentID:   "agent-1",
+			StartedAt: time.Now(),
+		}},
+		Variables: map[string]string{ReviewHoldParkVar: "true"},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "acme/widgets", PRNumber: 1446, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1446})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if out.Output == "continue" {
+		t.Fatal("route output = continue; review-hold park must force human-required")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required (review-hold must not be waved through)", got.Status)
 	}
 }
 
@@ -137,7 +235,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 	}
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 1446, Workflow: wf})
 
-	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf)
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1446})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
 	}
