@@ -288,6 +288,39 @@ func parallelHasChild(parent *Step, childID string) bool {
 	return false
 }
 
+// dispatchStepError wraps an error that occurred while executeSteps was
+// trying to start a specific step, so callers that only hold the *previous*
+// step's ID (e.g. HandleAgentComplete, which calls AdvanceStep and only knows
+// the step that just completed) can attribute the failure — and any
+// circuit-breaker bookkeeping keyed off it — to the step that actually failed
+// to dispatch instead of the one that finished successfully.
+type dispatchStepError struct {
+	stepID string
+	err    error
+}
+
+func (d *dispatchStepError) Error() string { return d.err.Error() }
+func (d *dispatchStepError) Unwrap() error { return d.err }
+
+// wrapDispatchErr tags a non-nil dispatch error with the step that failed to
+// start; nil passes through unchanged.
+func wrapDispatchErr(stepID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &dispatchStepError{stepID: stepID, err: err}
+}
+
+// dispatchFailureStepID returns the step ID a dispatchStepError was recorded
+// against, or fallback if err doesn't carry one.
+func dispatchFailureStepID(err error, fallback string) string {
+	var dse *dispatchStepError
+	if errors.As(err, &dse) {
+		return dse.stepID
+	}
+	return fallback
+}
+
 // CycleError is returned when executeSteps detects a cycle in the synchronous
 // step chain — the same step ID was visited twice without an async step
 // (run_agent, wait_human) breaking the loop.
@@ -348,11 +381,11 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// will call AdvanceStep later.
 		switch step.Type {
 		case StepRunAgent:
-			return nil, e.execRunAgent(taskID, step, wfExec, ctx)
+			return nil, wrapDispatchErr(step.ID, e.execRunAgent(taskID, step, wfExec, ctx))
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
-			return nil, e.execWaitHuman(taskID, step, wfExec)
+			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow:
 			// handled below as sync steps
 		default:
@@ -378,7 +411,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 				var parkedNoCompletion *CompletionInfo
 				return parkedNoCompletion, nil
 			}
-			return nil, execErr
+			return nil, wrapDispatchErr(step.ID, execErr)
 		}
 
 		now := time.Now().UTC()

@@ -297,6 +297,46 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	}
 }
 
+// TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep is
+// a regression guard for the review finding on 90befcef: HandleAgentComplete
+// only knows the step that just completed (spawnedStep), but the error
+// AdvanceStep returns typically comes from failing to dispatch the *next*
+// step. Recording the circuit-breaker failure against spawnedStep would
+// misdiagnose which step is flapping and let a later successful dispatch of
+// the real offender never clear it.
+func TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+	if agents.LastCall().Role != "triage" {
+		t.Fatalf("expected triage, got %q", agents.LastCall().Role)
+	}
+	triageAgentID := agents.LastID()
+
+	// Arm the mock so the next dispatch (implement, reached via
+	// triage -> set_in_progress -> implement) fails to spawn.
+	agents.SetFailSpawn(fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed))
+	agents.SimulateComplete("t1")
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: triageAgentID, Success: true, Result: "triaged"})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, tripped := ti.Workflow.Variables[circuitBreakerFailureKey("implement")]; !tripped {
+		t.Errorf("expected circuit breaker failure recorded against %q, vars=%v", "implement", ti.Workflow.Variables)
+	}
+	if _, wrong := ti.Workflow.Variables[circuitBreakerFailureKey("triage")]; wrong {
+		t.Errorf("circuit breaker failure wrongly recorded against completed step %q instead of the step that failed to dispatch", "triage")
+	}
+}
+
 func TestSurfaceStartFailure_AlreadyHumanRequiredIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "existing reason"})

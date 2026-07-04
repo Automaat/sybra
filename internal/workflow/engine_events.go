@@ -303,8 +303,16 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		// the *next* step couldn't spawn its agent (e.g. project missing).
 		// Without this, the task sits in-progress with the only signal in
 		// logs until ResumeStalled gets a chance to retry.
+		//
+		// The failure is attributed to the step that actually failed to
+		// dispatch (unwrapped from a dispatchStepError), not spawnedStep —
+		// AdvanceStep usually fails advancing *past* spawnedStep, into the
+		// next step, so keying circuit-breaker/reason bookkeeping off
+		// spawnedStep would blame the wrong step and let the real offender's
+		// stale counters leak into unrelated future chains.
 		if t.Status != "" {
-			e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, spawnedStep)
+			failedStep := dispatchFailureStepID(err, spawnedStep)
+			e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, failedStep)
 		}
 	}
 	e.clearAgentStep(c.AgentID)
