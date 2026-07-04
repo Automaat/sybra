@@ -789,11 +789,46 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 	}
 }
 
+// TestGuardrails_SubagentAssistantTurnsExcluded verifies that Claude
+// assistant events carrying parent_tool_use_id (forked subagent turns) do
+// not increment Agent.TurnCount, while top-level assistant events (no
+// parent_tool_use_id) do. A regression in the parser or conversion path
+// that dropped parent_tool_use_id would silently reintroduce fan-out turn
+// inflation and trip MaxTurns on legitimate subagent chatter.
+func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"top1"}]}}`,
+		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"sub1"}]}}`,
+		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"sub2"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"top2"}]}}`,
+	}
+	input := strings.Join(lines, "\n") + "\n"
+
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxTurns: 0})
+
+	a := &Agent{ID: "t", Provider: "claude"}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	if got := len(a.Output()); got != 4 {
+		t.Fatalf("got %d events, want 4 — stream stopped early", got)
+	}
+	if got := a.GetTurnCount(); got != 2 {
+		t.Errorf("TurnCount = %d, want 2 (only top-level assistant events count)", got)
+	}
+}
+
 // TestGuardrails_SetMidRunVisibleToStream verifies SetGuardrails picks up
 // live — the stream loop re-reads m.guardrails under RLock on every event,
 // so a user who tightens the cost limit mid-run sees escalation on the
 // next result. A regression that cached the guardrails at start of loop
 // would miss the new limit and let the agent keep burning budget.
+//
+// The cost guardrail hard-blocks on breach pending a human decision (mirroring
+// the turns guardrail), so the agent is pre-armed with a buffered
+// escalationCh reply ("continue") to unblock the stream without a live
+// responder.
 func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Result #1 below the eventual limit, result #2 pushes cumulative above.
 	input := `{"type":"result","result":"r1","session_id":"s1","total_cost_usd":5.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n" +
@@ -822,7 +857,8 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Start unlimited so result #1 doesn't escalate.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0})
 
-	a := &Agent{ID: "t", Provider: "claude"}
+	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	a.escalationCh <- true
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()
@@ -830,6 +866,98 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Cumulative cost after both results = 11.0, > new limit 10.0.
 	if escalations != 1 {
 		t.Errorf("got %d escalation events, want 1 (limit tightened mid-run should fire on result #2)", escalations)
+	}
+}
+
+// TestGuardrails_CostBlocks_RejectStopsStream verifies the cost guardrail's
+// hard-blocking path: a human reject (escalationCh <- false) must return
+// stop=true and the stream loop must not process any further lines,
+// mirroring the turns-guardrail kill path pinned by
+// TestGuardrails_TurnsBlocks_CostNearCap.
+func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
+	resultLine := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}`
+	trailingLine := `{"type":"assistant","message":{"content":[{"type":"text","text":"should never be processed"}]}}`
+	input := resultLine + "\n" + trailingLine + "\n"
+
+	var (
+		blocked int
+		mu      sync.Mutex
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
+			mu.Lock()
+			blocked++
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
+
+	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	a.escalationCh <- false // reject: stop the run.
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if blocked != 1 {
+		t.Errorf("got %d cost escalation events, want 1", blocked)
+	}
+	// Only the result event should have been appended; the trailing
+	// assistant line must never reach the stream after the reject.
+	if got := len(a.Output()); got != 1 {
+		t.Errorf("got %d events, want 1 — stream kept processing lines after a rejected cost escalation", got)
+	}
+}
+
+// TestGuardrails_CostBlocks_ContextCancelStopsStream verifies that a
+// context cancellation (e.g. app shutdown) while the cost guardrail is
+// waiting on escalationCh also stops the stream, mirroring the reject path
+// above without requiring a human response.
+func TestGuardrails_CostBlocks_ContextCancelStopsStream(t *testing.T) {
+	input := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
+
+	var (
+		blocked int
+		mu      sync.Mutex
+	)
+	emit := func(event string, data any) {
+		if !strings.Contains(event, "agent:escalation:") {
+			return
+		}
+		if e, ok := data.(EscalationEvent); ok && e.Reason == "cost" {
+			mu.Lock()
+			blocked++
+			mu.Unlock()
+		}
+	}
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	raised := make(chan bool, 1)
+	go func() {
+		raised <- pollUntil(2*time.Second, time.Millisecond, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return blocked > 0
+		})
+		cancel()
+	}()
+	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+
+	if !<-raised {
+		t.Error("cost escalation was never raised before cancellation")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if blocked == 0 {
+		t.Error("expected blocking cost escalation event, got none")
 	}
 }
 

@@ -493,7 +493,14 @@ func (m *Manager) Guardrails() Guardrails {
 // TurnCostFraction * MaxCostUSD, meaning there is still meaningful budget left
 // and the turns limit can be auto-bumped without human approval.
 // If MaxCostUSD == 0, auto-continue is always allowed (cost is unlimited).
+// Verifier roles (review/test-runner/eval, see Role.IsVerifier) never
+// auto-continue: cost only updates on "result" events, so a fan-out can hold
+// it at a stale $0 for the whole run, and a verifier stuck in a loop should
+// escalate rather than silently get 2x/4x/8x the turn budget.
 func (m *Manager) canAutoContinueTurns(a *Agent) bool {
+	if RoleFromName(a.Name).IsVerifier() {
+		return false
+	}
 	m.mu.RLock()
 	maxCost := m.guardrails.MaxCostUSD
 	fraction := m.guardrails.TurnCostFraction

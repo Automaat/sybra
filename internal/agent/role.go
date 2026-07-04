@@ -38,6 +38,19 @@ func (r Role) AuthorsCode() bool {
 	}
 }
 
+// IsVerifier reports whether the role independently checks another agent's
+// work (review, test-runner, eval). These roles must not have their turn
+// budget auto-bumped: a verifier stuck in a fan-out loop should escalate to a
+// human promptly rather than being handed progressively larger turn budgets.
+func (r Role) IsVerifier() bool {
+	switch r {
+	case RoleReview, RoleTestRunner, RoleEval:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsSystem returns true for roles whose agents should not trigger
 // user-facing notifications (triage, eval, plan-critic, human-review).
 func (r Role) IsSystem() bool {
