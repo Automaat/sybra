@@ -163,7 +163,8 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 		return "staff", fmt.Sprintf("%d files > %d", len(files), triageReviewFileLimit)
 	}
 	for _, f := range files {
-		if classifyTrivialFile(f) == trivialFileDep || classifyTrivialFile(f) == trivialFileGenerated {
+		class := classifyTrivialFile(f)
+		if class == trivialFileDep || class == trivialFileGenerated {
 			continue
 		}
 		ext := strings.ToLower(filepathExt(f))
