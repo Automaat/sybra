@@ -155,6 +155,36 @@ func TestImportSidecar_MissingFileWithDirSetStillReportsMissing(t *testing.T) {
 	}
 }
 
+func TestImportSidecar_NonReservedDirTemplateStillReportsMissing(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-nonreserved-dir.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-nonreserved-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "sidecar missing") {
+		t.Fatalf("reason = %q, want plain missing sidecar", reason)
+	}
+	if strings.Contains(reason, "unresolved: worktree dir variable was empty at render time") {
+		t.Fatalf("reason = %q, must not claim reserved _dir was unresolved for a non-reserved path", reason)
+	}
+}
+
 func TestImportSidecar_NoConfigIsNoop(t *testing.T) {
 	store := newTestStore(t) // test-simple.yaml has no import_sidecar
 	tasks := newMemTasks()

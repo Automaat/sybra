@@ -1297,6 +1297,70 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	}
 }
 
+func TestPrepareWorktree_AgentRunningDoesNotTripCircuitBreaker(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projID := "owner/repo"
+	tk, err = tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(projID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projStore, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := worktree.New(worktree.Config{
+		WorktreesDir: filepath.Join(tmp, "worktrees"),
+		Projects:     projStore,
+		Tasks:        tasks,
+		Logger:       slog.New(slog.DiscardHandler),
+		LogsDir:      filepath.Join(tmp, "logs"),
+		LiveAgentChecker: func(string) bool {
+			return true
+		},
+	})
+
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		tasks:      tasks,
+		worktrees:  wt,
+		wtFailures: make(map[string]int),
+	}
+
+	issue := github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: tk.ID,
+		PR:     github.PullRequest{Number: 1, HeadRefName: "feat/x"},
+	}
+
+	for i := range wtFailureLimit + 1 {
+		_, ok := r.prepareWorktree(context.Background(), tk, issue)
+		if ok {
+			t.Fatalf("call %d: want ok=false while a live agent blocks worktree reuse", i+1)
+		}
+		got, err := tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: agent-running collision must not escalate to human-required", i+1)
+		}
+		if n := r.wtFailures[tk.ID]; n != 0 {
+			t.Fatalf("call %d: wtFailures[%s] = %d, want 0 for transient live-agent collisions", i+1, tk.ID, n)
+		}
+	}
+}
+
 // TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker verifies the
 // non-fatal fix-role setup-failure path still contributes to the same
 // per-task circuit breaker as hard worktree-prepare errors.

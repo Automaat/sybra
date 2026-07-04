@@ -944,6 +944,10 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		d, wtErr = r.worktrees.PrepareForTask(ctx, t, nil)
 	}
 	if wtErr != nil {
+		if errors.Is(wtErr, worktree.ErrAgentRunning) {
+			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
+			return "", false
+		}
 		// A conflict fix already operates on the non-rebasing PrepareForFix path,
 		// so a rebase failure here can only come from the CI-fix PrepareForTask
 		// branch. Recover by re-routing to the conflict fix unless this already

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -47,6 +48,8 @@ func (c StepConfig) sidecarImports() []ImportSidecar {
 	return out
 }
 
+var worktreeDirTemplatePattern = regexp.MustCompile(`\{\{\s*getvar\s+\.Vars\s+"` + WorkflowVarDir + `"\s*\}\}`)
+
 func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) {
 	path, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
@@ -69,7 +72,7 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 			// never produced the artifact — the file may well exist in the
 			// worktree the agent actually ran in. Surface this distinctly so
 			// it isn't misread as "review missing" when investigating.
-			if strings.Contains(cfg.From, WorkflowVarDir) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == "" {
+			if worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == "" {
 				e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
 			} else {
 				e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
