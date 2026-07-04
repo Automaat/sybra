@@ -5558,6 +5558,62 @@ func newEvaluateStep() *Step {
 	return &Step{ID: "evaluate", Type: StepEvaluate}
 }
 
+func TestLooksLikeTransientGitHub(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"connection refused", "dial tcp: connection refused", true},
+		{"dns failure", "could not resolve host: api.github.com", true},
+		{"name resolution failure", "temporary failure in name resolution", true},
+		{"i/o timeout", "context deadline exceeded (i/o timeout)", true},
+		{"502", "502 Bad Gateway", true},
+		{"503", "503 Service Unavailable", true},
+		{"bare HTTP 502", "gh failed: HTTP 502", true},
+		{"bare HTTP 503", "gh failed: HTTP 503", true},
+		{"tls handshake", "remote error: tls: handshake failure", true},
+		{"unrelated failure", "PR title does not follow conventional commit format", false},
+		{"empty", "", false},
+		{"rate limit alone handled elsewhere", "API rate limit exceeded", false},
+		{"auth failure handled elsewhere", "gh: Bad credentials (HTTP 401)", false},
+		{"bare dns mention is not a network error", "cannot title DNS cache fix", false},
+		{"5-digit numeral containing 502 is not a gateway status", "task 150290 failed validation", false},
+		{"letters around 502 are not a gateway status", "abc502def", false},
+		{"status glued to HTTP token is not a gateway status", "gh failed: http502", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeTransientGitHub(tt.output); got != tt.want {
+				t.Errorf("looksLikeTransientGitHub(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeAuthFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"bad credentials", "gh: Bad credentials (HTTP 401)", true},
+		{"auth failed", "authentication failed for repository", true},
+		{"gh auth hint", "run gh auth login to authenticate", true},
+		{"401", "401 Unauthorized", true},
+		{"unrelated failure", "PR title does not follow conventional commit format", false},
+		{"empty", "", false},
+		{"network failure handled elsewhere", "dial tcp: connection refused", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeAuthFailure(tt.output); got != tt.want {
+				t.Errorf("looksLikeAuthFailure(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {
 	t.Helper()
 	store := newTestStore(t)
@@ -5674,6 +5730,158 @@ func TestExecEvaluate_PRCreateRateLimitParksForRetry(t *testing.T) {
 	}
 	if got := tasks.Reason("t1"); got != prCreateRetryStatusReason {
 		t.Errorf("reason = %q, want %q", got, prCreateRetryStatusReason)
+	}
+}
+
+func TestExecEvaluate_PRCreateTransientOutageParksForRetry(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		WorkflowID:  "simple-task-pr",
+		CurrentStep: "evaluate",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+		StepHistory: []StepRecord{
+			{
+				StepID:  "create_pr",
+				Status:  "completed",
+				AgentID: "a1",
+				Output:  "Network/auth is broken: connection refused to api.github.com. Please check connectivity.",
+			},
+		},
+	}
+
+	_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "create_pr" {
+		t.Errorf("CurrentStep = %q, want create_pr", wfExec.CurrentStep)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wfExec.State)
+	}
+	if _, ok := workflowRetryAfter(wfExec); !ok {
+		t.Errorf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "ready-pr" {
+		t.Errorf("task status = %q, want ready-pr", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != prCreateTransientStatusReason {
+		t.Errorf("reason = %q, want %q", got, prCreateTransientStatusReason)
+	}
+}
+
+func TestExecEvaluate_PRCreateAuthFailureRetriesThenEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	newWfExec := func(attempts string) *Execution {
+		vars := map[string]string{}
+		if attempts != "" {
+			vars[prCreateAuthAttemptsVar] = attempts
+		}
+		return &Execution{
+			WorkflowID:  "simple-task-pr",
+			CurrentStep: "evaluate",
+			State:       ExecRunning,
+			Variables:   vars,
+			StepHistory: []StepRecord{
+				{
+					StepID:  "create_pr",
+					Status:  "completed",
+					AgentID: "a1",
+					Output:  "gh: Bad credentials (HTTP 401)",
+				},
+			},
+		}
+	}
+
+	// First three attempts (0, 1, 2) park for retry and increment the counter.
+	for i := range maxPRCreateAuthRetries {
+		wfExec := newWfExec(strconv.Itoa(i))
+		_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d: err = %v, want errStepParked", i, err)
+		}
+		if wfExec.Variables[prCreateAuthAttemptsVar] != strconv.Itoa(i+1) {
+			t.Errorf("attempt %d: %s = %q, want %q", i, prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar], strconv.Itoa(i+1))
+		}
+		if got := tasks.Reason("t1"); got != prCreateAuthRetryReason {
+			t.Errorf("attempt %d: reason = %q, want %q", i, got, prCreateAuthRetryReason)
+		}
+	}
+
+	// After exhausting the budget, it escalates to human-required instead of
+	// retrying a broken credential forever.
+	wfExec := newWfExec(strconv.Itoa(maxPRCreateAuthRetries))
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	wantReason := fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", maxPRCreateAuthRetries)
+	if got := tasks.Reason("t1"); got != wantReason {
+		t.Errorf("reason = %q, want %q", got, wantReason)
+	}
+}
+
+func TestExecEvaluate_PRCreatePushedNoPRRetriesThenEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	newWfExec := func(attempts string) *Execution {
+		vars := map[string]string{}
+		if attempts != "" {
+			vars[prCreateAttemptsVar] = attempts
+		}
+		return &Execution{
+			WorkflowID:  "simple-task-pr",
+			CurrentStep: "evaluate",
+			State:       ExecRunning,
+			Variables:   vars,
+			StepHistory: []StepRecord{
+				{
+					StepID:  "create_pr",
+					Status:  "completed",
+					AgentID: "a1",
+					Output:  "I was unable to create the PR due to an unexpected issue.",
+				},
+			},
+		}
+	}
+
+	// First three attempts (0, 1, 2) park for retry and increment the counter.
+	for i := range maxPRCreatePushedNoPRRetries {
+		wfExec := newWfExec(strconv.Itoa(i))
+		_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d: err = %v, want errStepParked", i, err)
+		}
+		if wfExec.Variables[prCreateAttemptsVar] != strconv.Itoa(i+1) {
+			t.Errorf("attempt %d: %s = %q, want %q", i, prCreateAttemptsVar, wfExec.Variables[prCreateAttemptsVar], strconv.Itoa(i+1))
+		}
+		if got := tasks.Reason("t1"); got != prCreatePushedNoPRReason {
+			t.Errorf("attempt %d: reason = %q, want %q", i, got, prCreatePushedNoPRReason)
+		}
+	}
+
+	// After exhausting the budget, it escalates to human-required.
+	wfExec := newWfExec(strconv.Itoa(maxPRCreatePushedNoPRRetries))
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	wantReason := fmt.Sprintf("commits pushed but no PR created after %d retries", maxPRCreatePushedNoPRRetries)
+	if got := tasks.Reason("t1"); got != wantReason {
+		t.Errorf("reason = %q, want %q", got, wantReason)
 	}
 }
 
