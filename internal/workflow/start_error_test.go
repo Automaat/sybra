@@ -150,6 +150,16 @@ func TestSurfaceStartFailure_TransientFetchKeepsStatus(t *testing.T) {
 	}
 }
 
+func TestIsTransientFetchReason(t *testing.T) {
+	t.Parallel()
+	if !isTransientFetchReason(transientFetchStatusReason) {
+		t.Fatal("expected canonical transient fetch reason to match")
+	}
+	if isTransientFetchReason("agent start failed: transient network failure reconciling worktree with remote") {
+		t.Fatal("unexpected match for non-canonical reason")
+	}
+}
+
 func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

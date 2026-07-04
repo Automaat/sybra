@@ -18,6 +18,8 @@ const (
 	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
 	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
 	maxWatchdogRateLimitRetries     = 2
+	transientFetchRetryVarPrefix    = "transient_fetch.retry."
+	maxTransientFetchRetries        = 2
 )
 
 // HandleHumanAction processes approve/reject/input from the UI.
@@ -692,6 +694,9 @@ func (e *Engine) ResumeStalled() {
 		if e.handleWatchdogHangRetry(t, step) {
 			continue
 		}
+		if e.handleTransientFetchRetry(t, step) {
+			continue
+		}
 		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 		if !acquired {
 			e.logger.Debug("workflow.resume-stalled.skip",
@@ -723,6 +728,8 @@ func (e *Engine) ResumeStalled() {
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 		if rErr != nil {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr)
+		} else {
+			e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
 		}
 	}
 }
@@ -807,6 +814,45 @@ func isWatchdogRateLimitReason(reason string) bool {
 	return reason == watchdogRateLimitStatusPrefix || strings.HasPrefix(reason, watchdogRateLimitStatusPrefix+":")
 }
 
+func (e *Engine) handleTransientFetchRetry(t *TaskInfo, step *Step) bool {
+	if t == nil || t.Workflow == nil || step == nil || step.Type != StepRunAgent || !isTransientFetchReason(t.StatusReason) {
+		return false
+	}
+	retryKey := transientFetchRetryKey(step.ID)
+	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
+	if attempts >= maxTransientFetchRetries {
+		reason := fmt.Sprintf("agent start blocked: transient network retry budget exhausted after %d attempts reconciling worktree with remote", attempts)
+		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			e.logger.Error("workflow.transient-fetch.escalate", "task_id", t.ID, "step", step.ID, "err", err)
+		} else {
+			e.logger.Warn("workflow.transient-fetch.exhausted", "task_id", t.ID, "step", step.ID, "attempts", attempts)
+		}
+		return true
+	}
+	t.Workflow.SetVar(retryKey, strconv.Itoa(attempts+1))
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.transient-fetch.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	e.logger.Info("workflow.transient-fetch.retry",
+		"task_id", t.ID, "step", step.ID, "attempt", attempts+1, "max", maxTransientFetchRetries)
+	return false
+}
+
+func (e *Engine) clearTransientFetchRetry(taskID string, wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	retryKey := transientFetchRetryKey(stepID)
+	if _, ok := wf.Variables[retryKey]; !ok {
+		return
+	}
+	delete(wf.Variables, retryKey)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.transient-fetch.clear", "task_id", taskID, "step", stepID, "err", err)
+	}
+}
+
 func watchdogHangRetryKey(stepID string) string {
 	return watchdogHangRetryVarPrefix + stepID
 }
@@ -817,6 +863,10 @@ func watchdogHangCleanRetryKey(stepID string) string {
 
 func watchdogRateLimitRetryKey(stepID string) string {
 	return watchdogRateLimitRetryVarPrefix + stepID
+}
+
+func transientFetchRetryKey(stepID string) string {
+	return transientFetchRetryVarPrefix + stepID
 }
 
 func parseWorkflowInt(raw string) int {

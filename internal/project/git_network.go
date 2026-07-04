@@ -1,6 +1,10 @@
 package project
 
-import "strings"
+import (
+	"context"
+	"strings"
+	"time"
+)
 
 // transientNetworkMarkers are substrings of git/ssh/curl transport failures
 // that indicate a connectivity blip (DNS, refused/reset connection, timeout)
@@ -23,7 +27,11 @@ var transientNetworkMarkers = []string{
 	"recv failure",
 	"tls handshake timeout",
 	"empty reply from server",
+	"early eof",
+	"unexpected disconnect while reading sideband packet",
 }
+
+var gitOpRetrySleepContext = sleepWithContext
 
 // IsTransientNetworkError reports whether err looks like a transient
 // network/transport failure from a git remote operation (fetch, ls-remote)
@@ -46,11 +54,27 @@ func IsTransientNetworkError(err error) bool {
 // immediately without retrying. Shares its backoff schedule with
 // withLockRetry — both are bounded, short retries for conditions that
 // typically clear within seconds.
-func withNetworkRetry(fn func() error) error {
+func withNetworkRetry(ctx context.Context, fn func() error) error {
 	err := fn()
 	for attempt := 0; attempt < len(gitOpRetryBackoffs) && IsTransientNetworkError(err); attempt++ {
-		gitOpRetrySleep(gitOpRetryBackoffs[attempt])
+		if sleepErr := gitOpRetrySleepContext(ctx, gitOpRetryBackoffs[attempt]); sleepErr != nil {
+			return sleepErr
+		}
 		err = fn()
 	}
 	return err
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

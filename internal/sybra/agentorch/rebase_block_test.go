@@ -130,3 +130,31 @@ func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
 	}
 }
+
+func TestMarkRebaseBlocked_IgnoresTransientFetch(t *testing.T) {
+	tasks := newRebaseBlockTestManager(t)
+	tk, err := tasks.Create("transient fetch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	handled := MarkRebaseBlocked(tasks, tk.ID, worktree.ErrTransientFetch, discardSlogLogger(), func(string) bool {
+		called = true
+		return true
+	})
+	if handled {
+		t.Fatal("MarkRebaseBlocked = true, want false for transient fetch")
+	}
+	if called {
+		t.Fatal("recoverConflict should not be called for transient fetch")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusTodo {
+		t.Fatalf("status = %q, want unchanged %q", got.Status, task.StatusTodo)
+	}
+}

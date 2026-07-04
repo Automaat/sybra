@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // --- Test helpers ---
@@ -943,6 +945,62 @@ func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
 	}
 	if got.StatusReason != "watchdog: looping on toolchain setup" {
 		t.Fatalf("status_reason = %q, want loop reason preserved", got.StatusReason)
+	}
+}
+
+func TestResumeStalled_TransientFetchRetriesThenEscalates(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(worktreeerr.ErrTransientFetch)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: transientFetchStatusReason,
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	for attempt := 1; attempt <= maxTransientFetchRetries; attempt++ {
+		engine.ResumeStalled()
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatalf("get task after attempt %d: %v", attempt, err)
+		}
+		if got.Status != "in-progress" {
+			t.Fatalf("attempt %d status = %q, want in-progress", attempt, got.Status)
+		}
+		if got.Workflow.Variables[transientFetchRetryKey("implement")] != strconv.Itoa(attempt) {
+			t.Fatalf("attempt %d retry var = %q, want %q", attempt, got.Workflow.Variables[transientFetchRetryKey("implement")], strconv.Itoa(attempt))
+		}
+		if got.StatusReason != transientFetchStatusReason {
+			t.Fatalf("attempt %d status_reason = %q, want %q", attempt, got.StatusReason, transientFetchStatusReason)
+		}
+	}
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after retry exhaustion", got.Status)
+	}
+	wantReason := "agent start blocked: transient network retry budget exhausted after 2 attempts reconciling worktree with remote"
+	if got.StatusReason != wantReason {
+		t.Fatalf("status_reason = %q, want %q", got.StatusReason, wantReason)
+	}
+	if got.Workflow.Variables[transientFetchRetryKey("implement")] != strconv.Itoa(maxTransientFetchRetries) {
+		t.Fatalf("retry var = %q, want %d", got.Workflow.Variables[transientFetchRetryKey("implement")], maxTransientFetchRetries)
 	}
 }
 

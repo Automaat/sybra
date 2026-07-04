@@ -660,7 +660,7 @@ func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) 
 // Returns ("", nil) when the remote branch does not exist (never pushed).
 func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
 	var out string
-	err := withNetworkRetry(func() error {
+	err := withNetworkRetry(ctx, func() error {
 		var runErr error
 		out, runErr = executil.Output(ctx, worktreePath, "git", "ls-remote", remote, "refs/heads/"+branch)
 		return runErr
@@ -702,7 +702,7 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 	// continuing on stale history is exactly the data-loss scenario this
 	// function exists to prevent.
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	fetchErr := withNetworkRetry(func() error {
+	fetchErr := withNetworkRetry(ctx, func() error {
 		return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
 	})
 	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
