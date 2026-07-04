@@ -133,4 +133,25 @@ describe('TaskMetadataRow', () => {
     await fireEvent.click(screen.getByText('https://example/i/1'))
     expect(mockOpenURL).toHaveBeenCalledWith('https://example/i/1', expect.anything())
   })
+
+  it('copies the task id to the clipboard and shows feedback', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(TaskMetadataRow, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByTitle('Copy task ID (⌘.)'))
+    expect(writeText).toHaveBeenCalledWith('t1')
+    await waitFor(() => {
+      expect(screen.getByText('Copied!')).toBeDefined()
+    })
+  })
+
+  it('shows an error notification when copying the task id fails', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(TaskMetadataRow, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByTitle('Copy task ID (⌘.)'))
+    await waitFor(() => {
+      expect(mockPushLocal).toHaveBeenCalledWith('error', 'Copy failed', expect.stringContaining('denied'))
+    })
+  })
 })
