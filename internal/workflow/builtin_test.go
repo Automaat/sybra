@@ -370,20 +370,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 	t.Parallel()
 
-	defs, err := BuiltinDefinitions()
-	if err != nil {
-		t.Fatalf("BuiltinDefinitions: %v", err)
-	}
-	var review *Definition
-	for i := range defs {
-		if defs[i].ID == "simple-task-review" {
-			review = &defs[i]
-			break
-		}
-	}
-	if review == nil {
-		t.Fatal("simple-task-review builtin definition not found")
-	}
+	review := mustBuiltinDefinition(t, "simple-task-review")
 	step := review.StepByID("maybe_review")
 	if step == nil {
 		t.Fatal("maybe_review step not found in simple-task-review")
@@ -941,6 +928,9 @@ func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 		if n.When != nil && n.When.Value == "notest" {
 			t.Fatalf("maybe_test must not branch on notest, got branch to %q", n.GoTo)
 		}
+	}
+	if len(maybe.Next) == 0 {
+		t.Fatal("maybe_test has no transitions")
 	}
 	if got := maybe.Next[len(maybe.Next)-1].GoTo; got != "run_test" {
 		t.Fatalf("maybe_test fallthrough = %q, want run_test", got)

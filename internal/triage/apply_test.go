@@ -93,7 +93,7 @@ func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
 	// A human/orchestrator set trivial on the task before triage runs.
 	created.Tags = []string{"trivial"}
 
-	// Classifier verdict does not include trivial (it's outside the vocabulary).
+	// This verdict omits trivial; Apply must preserve the pre-set escape hatch.
 	v := Verdict{
 		Title: "fix(docs): typo",
 		Tags:  []string{"docs", "small", "docs"},
