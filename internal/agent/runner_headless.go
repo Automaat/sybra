@@ -119,7 +119,7 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 	if err != nil {
 		return prepared, err
 	}
-	if prov.SupportsOutputSchema() && cfg.OutputSchema != "" {
+	if prov.OutputSchemaAsFile() && cfg.OutputSchema != "" {
 		f, schemaErr := os.CreateTemp("", "sybra-codex-schema-*.json")
 		if schemaErr != nil {
 			return prepared, fmt.Errorf("create codex output schema: %w", schemaErr)

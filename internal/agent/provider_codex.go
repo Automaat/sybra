@@ -81,7 +81,7 @@ func (codexProvider) SandboxArgs(requirePerms, headless bool) []string {
 	return []string{"--sandbox", "workspace-write"}
 }
 
-func (codexProvider) SupportsOutputSchema() bool { return true }
+func (codexProvider) OutputSchemaAsFile() bool { return true }
 
 func (codexProvider) UsesPerTurnConvo() bool { return true }
 

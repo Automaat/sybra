@@ -42,6 +42,9 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		args = append(args, "--resume", sid)
 	}
 	args = append(args, claudePermissionArgs(cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)...)
+	if cfg.OutputSchema != "" {
+		args = append(args, "--json-schema", cfg.OutputSchema)
+	}
 	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}

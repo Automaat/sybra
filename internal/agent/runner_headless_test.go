@@ -1449,6 +1449,72 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 			t.Fatalf("--output-schema must not appear for claude provider; got %v", args)
 		}
 	})
+
+	t.Run("claude_inline_json_schema", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		schema := `{"type":"object","properties":{"decision":{"type":"string"}}}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:       "diagnose",
+			OutputSchema: schema,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--json-schema")
+		if idx < 0 {
+			t.Fatalf("args missing --json-schema; got %v", args)
+		}
+		if idx+1 >= len(args) || args[idx+1] != schema {
+			t.Errorf("--json-schema value wrong; args=%v", args)
+		}
+	})
+
+	t.Run("claude_empty_schema_is_noop", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "diagnose"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--json-schema") {
+			t.Fatalf("--json-schema must be absent when OutputSchema empty; got %v", args)
+		}
+	})
+
+	t.Run("claude_json_schema_coexists_with_permission_args", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		schema := `{"type":"object"}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:             "diagnose",
+			OutputSchema:       schema,
+			RequirePermissions: false,
+			AllowedTools:       []string{"Read", "Grep"},
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if !slices.Contains(args, "--json-schema") {
+			t.Fatalf("--json-schema missing alongside --allowedTools; got %v", args)
+		}
+		if !slices.Contains(args, "--allowedTools") {
+			t.Fatalf("--allowedTools missing alongside --json-schema; got %v", args)
+		}
+	})
+
+	t.Run("codex_ignores_inline_output_schema_field", func(t *testing.T) {
+		// Codex reads OutputSchema via cfg.outputSchemaPath (written to a temp
+		// file by prepareHeadlessAttempt), never the raw OutputSchema string.
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:       "run tests",
+			OutputSchema: `{"type":"object"}`,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--output-schema") {
+			t.Fatalf("--output-schema must not appear when only OutputSchema (not outputSchemaPath) is set; got %v", args)
+		}
+	})
 }
 
 // TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless

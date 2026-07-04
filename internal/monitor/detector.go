@@ -1,8 +1,6 @@
 package monitor
 
 import (
-	"encoding/json"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -10,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/verdict"
 )
 
 // liveAgent is the minimal projection of agent.Agent the detector needs.
@@ -189,8 +188,8 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 		// verdict. Checking only the last run misses earlier successful verdicts
 		// when the most recent human-review run failed (e.g. API 529 Overloaded)
 		// and left an empty result with no sybra-verdict block.
-		if verdict := lastHumanReviewVerdict(t.AgentRuns); verdict != "" {
-			ev["human_review_verdict"] = verdict
+		if dec := lastHumanReviewVerdict(t.AgentRuns); dec != "" {
+			ev["human_review_verdict"] = dec
 		}
 	}
 	// Skip the LLM only when human-review already confirmed verdict=human;
@@ -408,32 +407,9 @@ func lastHumanReviewVerdict(runs []task.AgentRun) string {
 		if r.Verdict != "" {
 			return r.Verdict
 		}
-		if v := parseHumanReviewDecision(r.Result); v != "" {
-			return v
+		if dec, _, err := verdict.Parse(r.Result); err == nil {
+			return dec.Decision
 		}
 	}
 	return ""
-}
-
-var humanReviewVerdictRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
-
-// parseHumanReviewDecision extracts the "decision" field from a sybra-verdict
-// fenced block embedded in the human-review agent result text. Returns "human"
-// or "sybra_bug" on success, empty string on any parse failure.
-func parseHumanReviewDecision(result string) string {
-	m := humanReviewVerdictRe.FindStringSubmatch(result)
-	if len(m) < 2 {
-		return ""
-	}
-	var v struct {
-		Decision string `json:"decision"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &v); err != nil {
-		return ""
-	}
-	d := strings.ToLower(strings.TrimSpace(v.Decision))
-	if d != "human" && d != "sybra_bug" {
-		return ""
-	}
-	return d
 }
