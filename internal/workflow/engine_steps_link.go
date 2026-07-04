@@ -16,9 +16,12 @@ var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
 var prShortRe = regexp.MustCompile(`\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#(\d+)`)
 
 const (
-	workflowRetryAfterVar     = "workflow.retry_after"
-	prCreateRetryBackoff      = 15 * time.Minute
-	prCreateRetryStatusReason = "GitHub rate limit during PR creation — retrying later"
+	workflowRetryAfterVar        = "workflow.retry_after"
+	prCreateRetryBackoff         = 15 * time.Minute
+	prCreateRetryStatusReason    = "GitHub rate limit during PR creation — retrying later"
+	prCreatePushedNoPRReason     = "commits pushed but no PR created — retrying"
+	prCreateAttemptsVar          = "workflow.pr_create_attempts"
+	maxPRCreatePushedNoPRRetries = 3
 )
 
 // execLinkPRAndReview is a non-LLM mechanical step that tries to recover the
@@ -143,7 +146,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 
 	reason := "no agent result to evaluate"
 	if last != nil {
-		if isPRCreationStep(last.StepID) && looksLikeGitHubRateLimit(last.Output) {
+		if isPRCreationStep(last.StepID) && (looksLikeGitHubRateLimit(last.Output) || looksLikeTransientGitHub(last.Output)) {
 			wfExec.CurrentStep = last.StepID
 			wfExec.State = ExecWaiting
 			wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
@@ -153,15 +156,38 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 			if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, prCreateRetryStatusReason); statusErr != nil {
 				return StepOutput{}, statusErr
 			}
-			e.logger.Warn("workflow.evaluate.pr-create-rate-limited", "task_id", taskID, "step", last.StepID)
+			e.logger.Warn("workflow.evaluate.pr-create-transient-outage", "task_id", taskID, "step", last.StepID)
 			return StepOutput{}, errStepParked
 		}
-		if last.Status == "failed" {
+		switch {
+		case last.Status == "failed":
 			reason = truncate(strings.TrimSpace(last.Output), 200)
 			if reason == "" {
 				reason = "agent failed with no output"
 			}
-		} else {
+		case isPRCreationStep(last.StepID):
+			// Agent "succeeded" (didn't self-report failure) but no PR was found
+			// by link_pr_and_review or the late gh pr list check above. The
+			// worktree/branch still exist and re-checking for a race-created PR
+			// is safe, so retry a bounded number of times before giving up.
+			attempts := parseWorkflowInt(wfExec.Variables[prCreateAttemptsVar])
+			if attempts < maxPRCreatePushedNoPRRetries {
+				wfExec.SetVar(prCreateAttemptsVar, strconv.Itoa(attempts+1))
+				wfExec.CurrentStep = last.StepID
+				wfExec.State = ExecWaiting
+				wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
+				if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+					return StepOutput{}, err
+				}
+				if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, prCreatePushedNoPRReason); statusErr != nil {
+					return StepOutput{}, statusErr
+				}
+				e.logger.Warn("workflow.evaluate.pr-create-pushed-no-pr-retry",
+					"task_id", taskID, "step", last.StepID, "attempt", attempts+1, "max", maxPRCreatePushedNoPRRetries)
+				return StepOutput{}, errStepParked
+			}
+			reason = fmt.Sprintf("commits pushed but no PR created after %d retries", attempts)
+		default:
 			reason = "commits pushed but no PR created"
 		}
 	}
@@ -187,4 +213,36 @@ func looksLikeGitHubRateLimit(output string) bool {
 		strings.Contains(lower, "gh ") ||
 		strings.Contains(lower, "api rate limit") ||
 		strings.Contains(lower, "secondary rate limit")
+}
+
+// looksLikeTransientGitHub matches connectivity/auth failures that keep a PR
+// creation agent from reaching GitHub at all — DNS/connection errors, TLS
+// failures, timeouts, bad/expired credentials, and 502/503 responses. These
+// are distinct from looksLikeGitHubRateLimit (which requires the substring
+// "rate limit") and are just as safe to retry once connectivity or auth is
+// restored.
+func looksLikeTransientGitHub(output string) bool {
+	lower := strings.ToLower(output)
+	patterns := []string{
+		"connection refused",
+		"could not resolve host",
+		"no such host",
+		"dns",
+		"i/o timeout",
+		"timed out",
+		"bad credentials",
+		"authentication failed",
+		"gh auth",
+		"401 unauthorized",
+		"502 bad gateway",
+		"503 service unavailable",
+		"tls handshake",
+		"tls:",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
 }
