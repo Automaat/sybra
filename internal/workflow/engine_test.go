@@ -5570,12 +5570,15 @@ func TestLooksLikeTransientGitHub(t *testing.T) {
 		{"i/o timeout", "context deadline exceeded (i/o timeout)", true},
 		{"502", "502 Bad Gateway", true},
 		{"503", "503 Service Unavailable", true},
+		{"bare HTTP 502", "gh failed: HTTP 502", true},
+		{"bare HTTP 503", "gh failed: HTTP 503", true},
 		{"tls handshake", "remote error: tls: handshake failure", true},
 		{"unrelated failure", "PR title does not follow conventional commit format", false},
 		{"empty", "", false},
 		{"rate limit alone handled elsewhere", "API rate limit exceeded", false},
 		{"auth failure handled elsewhere", "gh: Bad credentials (HTTP 401)", false},
 		{"bare dns mention is not a network error", "cannot title DNS cache fix", false},
+		{"5-digit numeral containing 502 is not a gateway status", "task 150290 failed validation", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

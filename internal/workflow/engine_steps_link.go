@@ -257,8 +257,6 @@ func looksLikeTransientGitHub(output string) bool {
 		"temporary failure in name resolution",
 		"i/o timeout",
 		"timed out",
-		"502 bad gateway",
-		"503 service unavailable",
 		"tls handshake",
 		"tls:",
 	}
@@ -267,7 +265,35 @@ func looksLikeTransientGitHub(output string) bool {
 			return true
 		}
 	}
+	return looksLikeGatewayStatus(lower)
+}
+
+// looksLikeGatewayStatus matches HTTP 502/503 responses regardless of how the
+// status is phrased ("HTTP 502", "502 bad gateway", "503 Service Unavailable",
+// ...) — GitHub/gh can surface either the bare code or a reason phrase.
+func looksLikeGatewayStatus(lower string) bool {
+	for _, code := range []string{"502", "503"} {
+		idx := strings.Index(lower, code)
+		if idx < 0 {
+			continue
+		}
+		// Guard against matching an unrelated 3-digit number embedded in a
+		// larger numeral (e.g. a PR number like "15029") by requiring the
+		// code to be flanked by non-digit boundaries.
+		if idx > 0 && isDigit(lower[idx-1]) {
+			continue
+		}
+		end := idx + len(code)
+		if end < len(lower) && isDigit(lower[end]) {
+			continue
+		}
+		return true
+	}
 	return false
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 // looksLikeAuthFailure matches bad/expired GitHub credentials. Unlike rate
