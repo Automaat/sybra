@@ -264,6 +264,47 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("test_case_moved_across_files_is_medium_not_blocking", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
+			{Status: "A", Path: "internal/foo/new_test.go", Patch: "@@ @@\n+func TestGone(t *testing.T) {\n+\tt.Errorf(\"x\")\n+}\n+func TestExtra(t *testing.T) {\n+\tt.Errorf(\"y\")\n+}\n"},
+		})
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (consolidation is diff-wide net-neutral): %v", r.highCount(), r.Findings)
+		}
+		foundDecl := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-test-cases" {
+				foundDecl = true
+				if f.Severity != tamperMedium {
+					t.Errorf("removed-test-cases severity = %q, want medium", f.Severity)
+				}
+			}
+		}
+		if !foundDecl {
+			t.Fatalf("want a removed-test-cases finding (downgraded), got %v", r.Findings)
+		}
+	})
+
+	t.Run("test_case_removed_with_no_offsetting_addition_stays_high", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
+			{Status: "M", Path: "internal/foo/other_test.go", Patch: "@@ @@\n+\tfoo := 1\n"},
+		})
+		found := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-test-cases" {
+				found = true
+				if f.Severity != tamperHigh {
+					t.Errorf("removed-test-cases severity = %q, want high (no offsetting addition anywhere in diff)", f.Severity)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("want a removed-test-cases finding, got %v", r.Findings)
+		}
+	})
+
 	t.Run("tampering_mixes_high_and_skips_medium", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "a_test.go", Patch: "@@ @@\n+\tt.Skip(\"x\")\n"},

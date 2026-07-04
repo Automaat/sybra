@@ -112,6 +112,8 @@ type tamperPatchResult struct {
 	Findings  []tamperFinding
 	AddAssert int
 	DelAssert int
+	AddDecl   int
+	DelDecl   int
 }
 
 var (
@@ -408,7 +410,10 @@ func (s *tamperScan) finalize() tamperPatchResult {
 	}
 	netFinding("removed-assertions", "assertion line(s)", s.delAssert, s.addAssert)
 	netFinding("removed-test-cases", "test declaration(s)", s.delDecl, s.addDecl)
-	return tamperPatchResult{Findings: s.findings, AddAssert: s.addAssert, DelAssert: s.delAssert}
+	return tamperPatchResult{
+		Findings: s.findings, AddAssert: s.addAssert, DelAssert: s.delAssert,
+		AddDecl: s.addDecl, DelDecl: s.delDecl,
+	}
 }
 
 // buildTamperReport assembles the report from the parsed diff. Pure function:
@@ -417,6 +422,8 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 	report := tamperReport{TaskID: taskID, Base: base}
 	scanned := 0
 	totalAddedAssertions := 0
+	totalAddedDecl := 0
+	totalDeletedDecl := 0
 	for i := range changes {
 		c := changes[i]
 		cat := classifyTamperPath(c.Path)
@@ -439,10 +446,19 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 		scanned++
 		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent)
 		totalAddedAssertions += res.AddAssert
+		totalAddedDecl += res.AddDecl
+		totalDeletedDecl += res.DelDecl
 		report.Findings = append(report.Findings, res.Findings...)
 	}
 	if totalAddedAssertions > 0 {
-		report.Findings = downgradeRemovedAssertionOnlyFindings(report.Findings)
+		report.Findings = downgradeFindingsByRule(report.Findings, "removed-assertions")
+	}
+	// A test declaration deleted in one file and re-added (moved/renamed/
+	// consolidated) in another nets to zero across the diff even though each
+	// file's own scan sees only its half — so the pass/fail decision is based
+	// on the diff-wide net, not the per-file net computed in finalize().
+	if totalDeletedDecl-totalAddedDecl <= 0 {
+		report.Findings = downgradeFindingsByRule(report.Findings, "removed-test-cases")
 	}
 
 	// Verification files changed but nothing high fired: record one medium
@@ -459,10 +475,13 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 	return report
 }
 
-func downgradeRemovedAssertionOnlyFindings(findings []tamperFinding) []tamperFinding {
+// downgradeFindingsByRule lowers the severity of every finding matching rule
+// to medium (non-blocking) — used once the diff-wide net for that rule shows
+// the apparent removal was offset elsewhere in the same diff.
+func downgradeFindingsByRule(findings []tamperFinding, rule string) []tamperFinding {
 	out := findings[:0]
 	for _, f := range findings {
-		if f.Rule == "removed-assertions" {
+		if f.Rule == rule {
 			f.Severity = tamperMedium
 		}
 		out = append(out, f)
