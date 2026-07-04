@@ -838,13 +838,17 @@ type RunConfig struct {
 	// implementation worktree, so seeding them would feed an independent
 	// reviewer/tester the implementer's notes. No-op if the dir has no NOTES.md.
 	SeedWorkingMemory bool
-	// OutputSchema is an inline JSON Schema (codex only). The runner writes it
-	// to a temp file and passes --output-schema <path> to codex exec. Empty =
-	// no schema enforcement. Ignored by claude/copilot.
+	// OutputSchema is a JSON Schema string enforcing the shape of the agent's
+	// final response. Empty = no schema enforcement. Delivery differs by
+	// provider (see Provider.OutputSchemaAsFile): codex receives it as a temp
+	// file path via --output-schema <path> (the runner writes OutputSchema to
+	// disk before invocation); claude receives it inline via
+	// --json-schema <schema>. Ignored by copilot.
 	OutputSchema string
-	// outputSchemaPath is the temp file path the runner wrote OutputSchema to.
-	// Set intra-package before buildHeadlessInvocation; cleared by defer after
-	// the subprocess exits. Never set by callers.
+	// outputSchemaPath is the temp file path the runner wrote OutputSchema to,
+	// for providers where Provider.OutputSchemaAsFile() is true. Set
+	// intra-package before buildHeadlessInvocation; cleared by defer after the
+	// subprocess exits. Never set by callers.
 	outputSchemaPath string
 	// HeadlessPermissionMode overrides the permission posture for this run.
 	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).

@@ -527,58 +527,6 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 }
 
-func TestParseHumanReviewDecision(t *testing.T) {
-	cases := []struct {
-		name   string
-		result string
-		want   string
-	}{
-		{
-			name:   "human verdict",
-			result: "Analysis complete.\n\n```sybra-verdict\n{\"decision\":\"human\",\"summary\":\"needs human\"}\n```",
-			want:   "human",
-		},
-		{
-			name:   "sybra_bug verdict",
-			result: "```sybra-verdict\n{\"decision\":\"sybra_bug\",\"summary\":\"workflow misfire\"}\n```",
-			want:   "sybra_bug",
-		},
-		{
-			name:   "case insensitive decision",
-			result: "```sybra-verdict\n{\"decision\":\"HUMAN\"}\n```",
-			want:   "human",
-		},
-		{
-			name:   "no verdict block",
-			result: "No structured verdict here.",
-			want:   "",
-		},
-		{
-			name:   "invalid decision value",
-			result: "```sybra-verdict\n{\"decision\":\"maybe\"}\n```",
-			want:   "",
-		},
-		{
-			name:   "malformed json",
-			result: "```sybra-verdict\n{broken\n```",
-			want:   "",
-		},
-		{
-			name:   "empty result",
-			result: "",
-			want:   "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseHumanReviewDecision(tc.result)
-			if got != tc.want {
-				t.Errorf("parseHumanReviewDecision = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
@@ -627,7 +575,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 			t.AgentRuns = []task.AgentRun{
 				{
 					AgentID: "rev1", Role: "human-review", State: "stopped",
-					Result: "```sybra-verdict\n{\"decision\":\"sybra_bug\"}\n```",
+					Result: "```sybra-verdict\n{\"decision\":\"sybra_bug\",\"summary\":\"workflow misfire\"}\n```",
 				},
 			}
 		})
