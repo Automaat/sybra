@@ -93,6 +93,12 @@ type Watchdog struct {
 
 	inspectAgent func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error)
 	stopAgent    func(string) error
+	// stopCompletedAgent stops a headless agent that already produced a clean
+	// terminal result, marking it completed-by-result first so the runner
+	// finalizes it as a success rather than treating the kill signal as a
+	// failure or stall. Used only by checkCompletedHang — every other
+	// judge-driven verdict path uses the generic stopAgent.
+	stopCompletedAgent func(string) error
 	// nudgeAgent delivers a corrective steer to a live agent. Returns an error
 	// for agents with no live transport (headless has no mid-stream stdin), in
 	// which case applyVerdict degrades the nudge to an escalate.
@@ -123,6 +129,7 @@ func New(
 		loopThreshold:        cfg.LoopThreshold,
 		inspectAgent:         agent.Inspect,
 		stopAgent:            agents.StopAgent,
+		stopCompletedAgent:   agents.StopCompletedAgent,
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
 	}
@@ -211,7 +218,7 @@ func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
 	}
 	w.logger.Warn("agent.watchdog.completed_hang", "id", ag.ID,
 		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()))
-	if err := w.stopAgent(ag.ID); err != nil {
+	if err := w.stopCompletedAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.completed_hang.stop_failed", "id", ag.ID, "err", err)
 	}
 }

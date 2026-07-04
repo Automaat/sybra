@@ -335,8 +335,8 @@ func TestDecideTrigger(t *testing.T) {
 func TestCheckCompletedHang_StopsAfterGrace(t *testing.T) {
 	stopped := ""
 	w := &Watchdog{
-		logger:    slog.New(slog.DiscardHandler),
-		stopAgent: func(id string) error { stopped = id; return nil },
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(id string) error { stopped = id; return nil },
 	}
 
 	ag := &agent.Agent{ID: "a1"}
@@ -346,7 +346,7 @@ func TestCheckCompletedHang_StopsAfterGrace(t *testing.T) {
 	w.checkCompletedHang(ag, time.Now())
 
 	if stopped != "a1" {
-		t.Fatalf("stopAgent called with %q, want a1", stopped)
+		t.Fatalf("stopCompletedAgent called with %q, want a1", stopped)
 	}
 }
 
@@ -356,8 +356,8 @@ func TestCheckCompletedHang_StopsAfterGrace(t *testing.T) {
 func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
 	stopped := false
 	w := &Watchdog{
-		logger:    slog.New(slog.DiscardHandler),
-		stopAgent: func(string) error { stopped = true; return nil },
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
 	}
 
 	ag := &agent.Agent{ID: "a1"}
@@ -367,7 +367,7 @@ func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
 	w.checkCompletedHang(ag, time.Now())
 
 	if stopped {
-		t.Fatal("stopAgent called within grace window, want no-op")
+		t.Fatal("stopCompletedAgent called within grace window, want no-op")
 	}
 }
 

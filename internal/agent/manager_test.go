@@ -278,6 +278,37 @@ func TestStopAgent(t *testing.T) {
 	}
 }
 
+// TestStopCompletedAgent_MarksCompletedByResult covers the watchdog's
+// completed-hang backstop: it must mark the agent completed-by-result before
+// stopping it, so the runner's exit-status handling finalizes it as a success
+// instead of treating the resulting kill signal as a failed/stopped run.
+func TestStopCompletedAgent_MarksCompletedByResult(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.StopCompletedAgent(a.ID); err != nil {
+		t.Fatalf("StopCompletedAgent: %v", err)
+	}
+
+	if !a.wasCompletedByResult() {
+		t.Error("wasCompletedByResult() = false, want true after StopCompletedAgent")
+	}
+	if got := a.GetState(); got != StateStopped {
+		t.Errorf("State = %q, want %q", got, StateStopped)
+	}
+}
+
+func TestStopCompletedAgent_NotFound(t *testing.T) {
+	m, _ := newTestManager(t)
+	if err := m.StopCompletedAgent("nonexistent"); err == nil {
+		t.Fatal("expected error for nonexistent agent")
+	}
+}
+
 // TestFireComplete_IdempotentUnderConcurrency verifies that two runner
 // goroutines both reaching their terminal site for the same agent (the
 // runner_convo + runner_convo_survive double-fire scenario) call onComplete
