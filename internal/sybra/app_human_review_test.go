@@ -194,6 +194,98 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	}
 }
 
+// TestOnComplete_BareJSONVerdict_HumanDecision drives onComplete with a bare
+// structured-output JSON assistant turn (verdict.SourceJSON) instead of the
+// legacy fenced ```sybra-verdict``` block — the production path introduced
+// by --json-schema enforcement, previously untested end-to-end.
+func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"human","summary":"needs product input on scope"}`,
+	})
+	h.inflight[tk.ID] = "agent-3"
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required", got.Status)
+	}
+	if !strings.Contains(got.Body, "Auto-review verdict: needs human") {
+		t.Errorf("expected verdict header in body; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "needs product input on scope") {
+		t.Errorf("expected summary in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called for human verdict; calls=%d", sink.calls)
+	}
+}
+
+// TestOnComplete_BareJSONVerdict_SybraBug is the sybra_bug counterpart of
+// TestOnComplete_BareJSONVerdict_HumanDecision — bare JSON assistant output,
+// no fence, driving the issue-filing side effect.
+func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits never re-checked the branch",
+  "issue_title": "fix(workflow): verify_commits race",
+  "issue_body": "## What\nrace condition",
+  "issue_labels": ["workflow", "regression"]
+}`,
+	})
+	h.inflight[tk.ID] = "agent-4"
+	h.onComplete(ag)
+
+	if sink.calls != 1 {
+		t.Fatalf("sink calls: got %d want 1", sink.calls)
+	}
+	if sink.gotTitle != "fix(workflow): verify_commits race" {
+		t.Errorf("sink title: got %q", sink.gotTitle)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusBlocked {
+		t.Errorf("status: got %q want blocked", got.Status)
+	}
+	if got.BlockedByIssue != sink.url {
+		t.Errorf("BlockedByIssue: got %q want %q", got.BlockedByIssue, sink.url)
+	}
+}
+
 func TestOnComplete_SybraBugVerdict_FilesIssueAndBlocks(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
