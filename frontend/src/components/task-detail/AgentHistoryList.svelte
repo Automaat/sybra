@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { ChevronDown, RefreshCw } from '@lucide/svelte'
+  import { ChevronDown, RefreshCw, Copy, Check } from '@lucide/svelte'
   import type { ConvoEvent, StreamEvent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { GetAgentRunLog, GetAgentRunConvoLog } from '$lib/api'
+  import { notificationStore } from '../../stores/notifications.svelte.js'
   import { formatDateTime } from '../../lib/dates.js'
   import { formatCostShort } from '../../lib/cost.js'
   import { runStateClasses, runRoleLabel, runRoleClasses } from '../../lib/agent-run.js'
@@ -25,6 +26,7 @@
   let runLogConvoEvents = $state<Map<string, ConvoEvent[]>>(new Map())
   let runLogLoading = $state<Set<string>>(new Set())
   let runLogError = $state<Map<string, string>>(new Map())
+  let copiedRun = $state<string | null>(null)
 
   const pastRuns = $derived(
     (task.agentRuns ?? []).filter((r) => r.state !== 'running').reverse(),
@@ -87,6 +89,57 @@
     const e = new Map(runLogError); e.delete(agentId); runLogError = e
     await loadRunLog(agentId)
   }
+
+  // Assemble a single run's output as plain text from whichever log shape is
+  // loaded, falling back to the persisted result string.
+  function runOutputText(agentId: string): string {
+    const run = (task.agentRuns ?? []).find((r) => r.agentId === agentId)
+    if (run?.mode === 'interactive') {
+      const events = runLogConvoEvents.get(agentId) ?? []
+      if (events.length > 0) {
+        return events
+          .map((ev) => {
+            const parts: string[] = []
+            if (ev.text) parts.push(ev.text)
+            for (const tu of ev.toolUses ?? []) {
+              const input = tu.input ? JSON.stringify(tu.input) : ''
+              parts.push(`[tool_use ${tu.name ?? ''}] ${input}`.trim())
+            }
+            for (const tr of ev.toolResults ?? []) parts.push(tr.content ?? '')
+            return parts.filter(Boolean).join('\n')
+          })
+          .filter(Boolean)
+          .join('\n\n')
+      }
+    } else {
+      const events = runLogStreamEvents.get(agentId) ?? []
+      if (events.length > 0) {
+        return events.map((ev) => ev.content ?? '').filter(Boolean).join('\n')
+      }
+    }
+    return run?.result ?? ''
+  }
+
+  async function copyRunOutput(agentId: string) {
+    // Make sure the log is fetched before copying (the row may have just opened).
+    const run = (task.agentRuns ?? []).find((r) => r.agentId === agentId)
+    const loaded = run?.mode === 'interactive'
+      ? runLogConvoEvents.has(agentId)
+      : runLogStreamEvents.has(agentId)
+    if (!loaded) await loadRunLog(agentId)
+    const text = runOutputText(agentId)
+    if (!text) {
+      notificationStore.pushLocal('error', 'Nothing to copy', 'This run has no output.')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      copiedRun = agentId
+      setTimeout(() => { if (copiedRun === agentId) copiedRun = null }, 1500)
+    } catch (e) {
+      notificationStore.pushLocal('error', 'Copy failed', String(e))
+    }
+  }
 </script>
 
 {#if pastRuns.length > 0}
@@ -125,6 +178,20 @@
         </button>
         {#if expandedRun === run.agentId}
           <div class="border-t border-surface-300 px-3 py-2 dark:border-surface-600">
+            <div class="mb-2 flex justify-end">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded border border-surface-300 px-2 py-1 text-xs font-medium text-surface-600 transition-colors hover:bg-surface-200 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-700"
+                onclick={() => copyRunOutput(run.agentId)}
+                title="Copy this agent's output"
+              >
+                {#if copiedRun === run.agentId}
+                  <Check size={12} /> Copied!
+                {:else}
+                  <Copy size={12} /> Copy output
+                {/if}
+              </button>
+            </div>
             {#if run.prompt}
               <details class="mb-3 rounded-lg border border-surface-300 bg-surface-100 dark:border-surface-600 dark:bg-surface-900">
                 <summary class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 dark:text-surface-300">Prompt</summary>
