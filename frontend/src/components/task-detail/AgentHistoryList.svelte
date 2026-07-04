@@ -181,8 +181,9 @@
             <div class="mb-2 flex justify-end">
               <button
                 type="button"
-                class="inline-flex items-center gap-1 rounded border border-surface-300 px-2 py-1 text-xs font-medium text-surface-600 transition-colors hover:bg-surface-200 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-700"
+                class="inline-flex items-center gap-1 rounded border border-surface-300 px-2 py-1 text-xs font-medium text-surface-600 transition-colors hover:bg-surface-200 disabled:cursor-not-allowed disabled:opacity-50 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-700"
                 onclick={() => copyRunOutput(run.agentId)}
+                disabled={runLogLoading.has(run.agentId)}
                 title="Copy this agent's output"
               >
                 {#if copiedRun === run.agentId}
