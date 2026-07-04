@@ -668,7 +668,11 @@ func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
 			kept = append(kept, ts)
 		}
 	}
-	h.perTask[taskID] = kept
+	if len(kept) == 0 {
+		delete(h.perTask, taskID)
+	} else {
+		h.perTask[taskID] = kept
+	}
 	return len(kept) < humanReviewMaxPerTaskPerWindow
 }
 

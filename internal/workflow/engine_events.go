@@ -509,6 +509,8 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
 	if rErr != nil {
 		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
+	} else {
+		e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
 	}
 }
 
@@ -558,6 +560,8 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		status.Status = "pending"
 		status.Output = "reschedule failed: " + spawnErr.Error()
 		status.AgentID = ""
+	} else {
+		clearCircuitBreakerFailures(wfExec, child.ID)
 	}
 	if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
 		e.logger.Error("workflow.rate-limit-reschedule.parallel.set", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", setErr)
