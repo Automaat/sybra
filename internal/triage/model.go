@@ -37,8 +37,13 @@ var (
 	// classifier-emittable — the triage prompt instructs the model to assign it
 	// for trivially mechanical small tasks, bounded by the deterministic floor
 	// in ValidateVerdict (small + non-feature). `nocritic` skips the plan
-	// critique and remains human/orchestrator-set only.
-	escapeHatchTags = []string{"noplan", "nocritic"}
+	// critique and remains human/orchestrator-set only. `trivial` skips both
+	// the review and testing phases (see simple-task-review.yaml and
+	// testing-task.yaml) for the same trivially-mechanical class of task as
+	// noplan; it is classifier-emittable and bounded by the same floor.
+	// `notest` is deliberately not in this list — it only downgrades evidence
+	// requirements (app-start exemption); it never skips the tester.
+	escapeHatchTags = []string{"noplan", "nocritic", "trivial"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
 	tagAliases = map[string]string{
@@ -126,7 +131,7 @@ func ValidateVerdict(v *Verdict) error {
 	// and type actually qualify. Human/orchestrator-set noplan is unaffected:
 	// it lives on the task, not the verdict, and is preserved in Apply.
 	if v.Size != "small" || v.Type == "feature" {
-		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "noplan" })
+		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "noplan" || tag == "trivial" })
 	}
 	return nil
 }

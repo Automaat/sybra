@@ -9,8 +9,10 @@ trigger:
       operator: equals
       value: ready-review
 steps:
-  # Skip review when tagged noreview or already reviewed in a prior run.
-  # On skip, jump straight to done_review so the task still advances to testing.
+  # Skip review when tagged noreview/trivial or already reviewed in a prior
+  # run. On skip, jump straight to done_review so the task still advances to
+  # testing — trivial-tagged tasks then also skip testing (see
+  # testing-task.yaml's maybe_test), landing directly on ready-pr.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -24,6 +26,11 @@ steps:
           field: task.reviewed
           operator: equals
           value: "true"
+        goto: done_review
+      - when:
+          field: task.tags
+          operator: contains
+          value: trivial
         goto: done_review
       - when:
           field: task.tags

@@ -362,6 +362,73 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the trivial
+// escape hatch in simple-task-review's maybe_review transition table: a
+// trivial tag routes straight to done_review (skipping the code-review
+// agents), same as an already-reviewed task, while noreview and the normal
+// path are unaffected.
+func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var review *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			review = &defs[i]
+			break
+		}
+	}
+	if review == nil {
+		t.Fatal("simple-task-review builtin definition not found")
+	}
+	step := review.StepByID("maybe_review")
+	if step == nil {
+		t.Fatal("maybe_review step not found in simple-task-review")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "no_escape_hatch_goes_to_triage_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,feature"},
+			want:   "triage_review",
+		},
+		{
+			name:   "trivial_skips_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,trivial"},
+			want:   "done_review",
+		},
+		{
+			name:   "noreview_skips_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,noreview"},
+			want:   "done_review",
+		},
+		{
+			name:   "already_reviewed_wins_over_normal_path",
+			fields: map[string]string{"task.reviewed": "true", "task.tags": "backend,feature"},
+			want:   "done_review",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuiltinDefinitions(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -858,19 +925,55 @@ func isCodexObjectSchema(schema map[string]any) bool {
 	return hasProperties || hasRequired || hasAdditionalProperties
 }
 
+// TestBuiltinTestingTask_NotestStillRunsTester asserts the real invariant:
+// notest only downgrades evidence requirements (app-start exemption), it
+// must never bypass the test-runner. skip_testing exists (for `trivial`) but
+// notest-tagged tasks must still route to run_test.
 func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 	t.Parallel()
 
 	testingDef := mustBuiltinDefinition(t, "testing-task")
-	if testingDef.StepByID("skip_testing") != nil {
-		t.Fatal("testing-task must not bypass test-runner for notest tasks")
-	}
 	maybe := testingDef.StepByID("maybe_test")
 	if maybe == nil {
 		t.Fatal("maybe_test step not found in testing-task")
 	}
-	if len(maybe.Next) != 1 || maybe.Next[0].GoTo != "run_test" {
-		t.Fatalf("maybe_test next = %+v, want unconditional run_test", maybe.Next)
+	for _, n := range maybe.Next {
+		if n.When != nil && n.When.Value == "notest" {
+			t.Fatalf("maybe_test must not branch on notest, got branch to %q", n.GoTo)
+		}
+	}
+	if got := maybe.Next[len(maybe.Next)-1].GoTo; got != "run_test" {
+		t.Fatalf("maybe_test fallthrough = %q, want run_test", got)
+	}
+}
+
+func TestBuiltinTestingTask_TrivialSkipsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	maybe := testingDef.StepByID("maybe_test")
+	if maybe == nil {
+		t.Fatal("maybe_test step not found in testing-task")
+	}
+	var gotTrivialBranch bool
+	for _, n := range maybe.Next {
+		if n.When != nil && n.When.Field == "task.tags" && n.When.Operator == "contains" && n.When.Value == "trivial" {
+			gotTrivialBranch = true
+			if n.GoTo != "skip_testing" {
+				t.Fatalf("trivial branch goto = %q, want skip_testing", n.GoTo)
+			}
+		}
+	}
+	if !gotTrivialBranch {
+		t.Fatal("maybe_test has no branch for task.tags contains trivial")
+	}
+
+	skip := testingDef.StepByID("skip_testing")
+	if skip == nil {
+		t.Fatal("skip_testing step not found in testing-task")
+	}
+	if skip.Type != "set_status" || skip.Config.Status != "ready-pr" {
+		t.Fatalf("skip_testing = %+v, want set_status to ready-pr", skip)
 	}
 }
 

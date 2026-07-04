@@ -19,7 +19,7 @@ func TestNormalizeTags(t *testing.T) {
 		{"dedupe", []string{"backend", "backend", "BE"}, []string{"backend"}, false},
 		{"whitespace+case", []string{" Backend ", "SMALL"}, []string{"backend", "small"}, false},
 		{"empty", []string{}, []string{}, false},
-		{"escape-hatch kept", []string{"backend", "noplan", "nocritic"}, []string{"backend", "noplan", "nocritic"}, false},
+		{"escape-hatch kept", []string{"backend", "noplan", "nocritic", "trivial"}, []string{"backend", "noplan", "nocritic", "trivial"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,6 +83,37 @@ func TestValidateVerdictNoplanFloor(t *testing.T) {
 			gotNoplan := slices.Contains(v.Tags, "noplan")
 			if gotNoplan != tc.wantNoplan {
 				t.Errorf("noplan present = %v, want %v (tags %v)", gotNoplan, tc.wantNoplan, v.Tags)
+			}
+		})
+	}
+}
+
+func TestValidateVerdictTrivialFloor(t *testing.T) {
+	tests := []struct {
+		name        string
+		size        string
+		typ         string
+		wantTrivial bool
+	}{
+		{"small chore keeps", "small", "chore", true},
+		{"small bug keeps", "small", "bug", true},
+		{"small refactor keeps", "small", "refactor", true},
+		{"small feature strips", "small", "feature", false},
+		{"medium chore strips", "medium", "chore", false},
+		{"large bug strips", "large", "bug", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := Verdict{
+				Title: "t", Size: tc.size, Type: tc.typ, Mode: "headless",
+				Tags: []string{"backend", tc.size, tc.typ, "trivial"},
+			}
+			if err := ValidateVerdict(&v); err != nil {
+				t.Fatalf("ValidateVerdict: %v", err)
+			}
+			gotTrivial := slices.Contains(v.Tags, "trivial")
+			if gotTrivial != tc.wantTrivial {
+				t.Errorf("trivial present = %v, want %v (tags %v)", gotTrivial, tc.wantTrivial, v.Tags)
 			}
 		})
 	}
