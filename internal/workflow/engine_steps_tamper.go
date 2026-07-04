@@ -626,19 +626,54 @@ func tamperBaselineVar(stepID string) string {
 }
 
 func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, rangeSpec string) {
+	origin := resolveOriginBase(ctx, wtPath)
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
 				cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
 				cmd.Dir = wtPath
 				if cmd.Run() == nil {
-					return sha, sha + "..HEAD"
+					if gitIsAncestor(ctx, wtPath, sha, "HEAD") {
+						return sha, sha + "..HEAD"
+					}
+					// The captured pre-dispatch baseline is no longer an
+					// ancestor of HEAD — the branch was rebased or
+					// force-updated during the run, so the two lines of
+					// history diverged. Diffing the stale baseline directly
+					// against HEAD would span whatever unrelated commits
+					// landed upstream in the meantime and misattribute their
+					// deletions to the agent (see task b2db8f33). Re-anchor on
+					// the actual fork point between the up-to-date origin ref
+					// and HEAD instead, which is the agent's true parent.
+					if mb := gitMergeBase(ctx, wtPath, origin, "HEAD"); mb != "" {
+						return mb, mb + "..HEAD"
+					}
 				}
 			}
 		}
 	}
-	base = resolveOriginBase(ctx, wtPath)
-	return base, base + "...HEAD"
+	return origin, origin + "...HEAD"
+}
+
+// gitIsAncestor reports whether ancestor is an ancestor of (or equal to)
+// descendant — i.e. whether diffing ancestor..descendant is a true,
+// attributable range rather than a comparison across diverged history.
+func gitIsAncestor(ctx context.Context, wtPath, ancestor, descendant string) bool {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, descendant)
+	cmd.Dir = wtPath
+	return cmd.Run() == nil
+}
+
+// gitMergeBase returns the best common ancestor of a and b, or "" if it
+// cannot be determined (e.g. unrelated histories, missing ref).
+func gitMergeBase(ctx context.Context, wtPath, a, b string) string {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", a, b)
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {

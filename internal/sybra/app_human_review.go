@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -725,7 +726,11 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	b.WriteString("- Trust deterministic workflow signals before inferring from weak provider metadata: status history, exit state, parsed verdict, protocol_violation, test_outcome, failure fingerprint, task body delta, and log tail. Do NOT classify a Codex run as crashed solely because cost=0 or session is empty; confirm from log contents or exit failure.\n")
 	b.WriteString("- For test escalations, separate product_bug, test_protocol_violation, infra_failure, ambiguous_requirement, and missing_evidence. Only grounded product_bug failures should be described as implementation misses.\n")
 	b.WriteString("- A genuine human-required reason looks like: scope question, creative decision, missing credentials, ambiguous requirement, or an external system the agent legitimately cannot reach.\n")
-	b.WriteString("- A Sybra bug looks like: workflow step never ran the agent, agent started in the wrong dir, status flipped despite a successful PR, sidecar required but never written, repeated provider gate blocks, panics in logs, mis-routed completions.\n\n")
+	b.WriteString("- A Sybra bug looks like: workflow step never ran the agent, agent started in the wrong dir, status flipped despite a successful PR, sidecar required but never written, repeated provider gate blocks, panics in logs, mis-routed completions.\n")
+	if workflow.IsTamperFlaggedReason(t.StatusReason) {
+		b.WriteString("- This task was flagged by detect_tampering. Its baseline can go stale (rebase/force-push during the run), attributing upstream deletions to the agent. Before trusting a \"deleted verification file\" finding, check whether that file already vanished at the flagged commit's actual git parent — if so, this is a false positive and the correct verdict is sybra_bug, not human.\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## Output protocol (REQUIRED)\n")
 	b.WriteString("End your response with EXACTLY one fenced block tagged `sybra-verdict` containing JSON:\n\n")

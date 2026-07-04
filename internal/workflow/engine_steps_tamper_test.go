@@ -718,6 +718,66 @@ func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
 	}
 }
 
+// TestExecDetectTampering_DivergedBaselineDoesNotFlag reproduces task
+// b2db8f33: the pre-dispatch baseline captured before agent dispatch can
+// diverge from HEAD when the branch is rebased onto a newer upstream during
+// the run (e.g. a stale/failed prior rebase, or a force-updated branch). A
+// stale baseline diffed straight against HEAD spans unrelated upstream
+// commits and misattributes their deletions to the agent. detect_tampering
+// must detect the divergence and re-anchor on the merge-base with origin
+// instead of flagging.
+func TestExecDetectTampering_DivergedBaselineDoesNotFlag(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		".github/workflows/ci.yml": "name: ci\non: push\n",
+		"internal/foo/foo.go":      "package foo\n\nfunc Foo() int { return 1 }\n",
+	})
+
+	// A stale pre-dispatch baseline that ends up on a diverged line of
+	// history (e.g. captured before a rebase that later succeeded on a
+	// subsequent dispatch).
+	gitRun(t, wt, "checkout", "-b", "stale-baseline")
+	writeRepoFile(t, wt, "SCRATCH.md", "scratch\n")
+	gitRun(t, wt, "add", "SCRATCH.md")
+	gitRun(t, wt, "commit", "-m", "scratch: unrelated pre-dispatch state")
+	staleBaseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+	gitRun(t, wt, "checkout", "main")
+
+	// Upstream legitimately deletes the CI file on main, then origin/main is
+	// refreshed to reflect it.
+	gitRun(t, wt, "rm", ".github/workflows/ci.yml")
+	gitRun(t, wt, "commit", "-m", "chore: remove ci file upstream")
+	gitRun(t, wt, "fetch", "origin")
+
+	// The agent's own commit lands on top of the rebased-onto-upstream tip —
+	// it only touches implementation files.
+	writeRepoFile(t, wt, "internal/foo/foo.go", "package foo\n\nfunc Foo() int { return 2 }\n")
+	gitRun(t, wt, "commit", "-am", "feat: bump foo")
+
+	engine, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): staleBaseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean; diverged baseline must not attribute upstream's own ci.yml deletion to the agent", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
 func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
