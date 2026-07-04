@@ -99,7 +99,7 @@ Rules:
 - title: ALWAYS rewrite into a clean, human-readable, imperative conventional-commit-style title (e.g. "feat(auth): add JWT middleware", "fix(api): handle nil pointer on empty body"). Even if the input title already looks fine, produce your best version. Max 80 chars.
 - original_title: copy the input title verbatim so the user can recover it later.
 - description: ONLY set if the input body is empty/just-a-URL. 2-3 sentences describing what the task is about and what "done" looks like. Otherwise leave empty string.
-- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tag "noplan" when the task qualifies (see the noplan guide below): it is the only tag outside the lists above you may emit, and it does NOT count toward the 2-5 — never drop a deserved "noplan" to stay under the cap.
+- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tags "noplan" and/or "trivial" when the task qualifies (see the noplan/trivial guide below): these are the only tags outside the lists above you may emit, and they do NOT count toward the 2-5 — never drop a deserved "noplan"/"trivial" to stay under the cap.
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
 - mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
@@ -114,15 +114,24 @@ Decision guide for size:
 - medium: multiple files, clear scope, design mostly known
 - large: cross-cutting, new subsystem, or unclear scope
 
-Decision guide for noplan (skip the planning phase — go straight to implementation):
-- Add "noplan" ONLY when the task is small AND trivially mechanical: the fix is
-  obvious and needs no design decisions or up-front scoping.
-- Good fits: dependency/version bumps, lockfile regeneration, CI/lint/config
-  tweaks, fixing a red CI check on a Renovate PR, typo/comment/docstring fixes,
-  a small mechanical rename.
-- Do NOT add "noplan" when the approach is non-obvious, scope is unclear, type is
-  feature, or the change touches a public API, data model, auth, or concurrency.
-- When in doubt, omit it — planning is the safe default.
+Decision guide for noplan (skip the planning phase — go straight to implementation)
+and trivial (also skip agentic code review AND adversarial manual testing —
+straight to opening the PR after implementation):
+- Add "noplan" and/or "trivial" ONLY when the task is small AND trivially
+  mechanical: the fix is obvious and needs no design decisions or up-front
+  scoping. They are independent — add both when the task qualifies for both,
+  or just "noplan" if you want a human/reviewer to still see the diff.
+- Good fits for either: dependency/version bumps, lockfile regeneration,
+  CI/lint/config tweaks, fixing a red CI check on a Renovate PR, typo/comment/
+  docstring fixes, a small mechanical rename.
+- Do NOT add "noplan" or "trivial" when the approach is non-obvious, scope is
+  unclear, type is feature, or the change touches a public API, data model,
+  auth, or concurrency.
+- Never add "trivial" when type is bug — trivial skips both review and
+  testing, and a "small" bug fix is exactly the case where a subtle regression
+  can slip past both. "noplan" alone is still fine for a trivial bug fix.
+- When in doubt, omit both — planning, review, and testing are the safe
+  default.
 
 Output schema (single JSON object):
 {"title":"...","original_title":"...","description":"","tags":["..."],"size":"small","type":"feature","mode":"headless","project_id":""}
