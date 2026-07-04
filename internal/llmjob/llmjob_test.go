@@ -153,6 +153,28 @@ func TestRunPreservesExplicitModels(t *testing.T) {
 	}
 }
 
+func TestRunPassesSchemaViaOptionsNotPrompt(t *testing.T) {
+	const schema = `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`
+	restore := stubRunner(func(_ context.Context, prompt string, opts llmexec.Options) (llmexec.Result, error) {
+		if opts.Schema != schema {
+			t.Fatalf("opts.Schema = %q, want %q", opts.Schema, schema)
+		}
+		if strings.Contains(prompt, schema) || strings.Contains(prompt, "Output schema:") {
+			t.Fatalf("prompt must not embed the schema (double delivery risk): %q", prompt)
+		}
+		return llmexec.Result{Provider: "codex", Text: `{"ok":true}`}, nil
+	})
+	defer restore()
+
+	if _, _, err := Run(context.Background(), "prompt", Spec[testOut]{
+		Name:   "schema-passthrough",
+		Tier:   Cheap,
+		Schema: schema,
+	}, llmexec.Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
 func TestModelsForClones(t *testing.T) {
 	got := modelsFor(Standard)
 	got["claude"] = "mutated"

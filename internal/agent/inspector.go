@@ -29,6 +29,12 @@ type InspectorVerdict struct {
 	ReasonKind string `json:"reason_kind,omitempty"` // "rate_limit" | "generic_stall" | "reward_hacking" | ""
 }
 
+// inspectorVerdictSchema is a hand-written strict JSON Schema for
+// InspectorVerdict: root object, additionalProperties:false, and every field
+// listed as required (including the omitempty ones) — codex's strict mode
+// rejects schemas that omit a struct field from "required".
+const inspectorVerdictSchema = `{"type":"object","properties":{"stuck":{"type":"boolean"},"reason":{"type":"string"},"recommendation":{"type":"string","enum":["stop","continue","escalate","nudge"]},"nudge":{"type":"string"},"reason_kind":{"type":"string","enum":["rate_limit","generic_stall","reward_hacking",""]}},"required":["stuck","reason","recommendation","nudge","reason_kind"],"additionalProperties":false}`
+
 // InspectInput holds the context handed to the inspector about the target agent.
 type InspectInput struct {
 	AgentID   string
@@ -58,6 +64,7 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[InspectorVerdict]{
 		Name:     "inspect",
 		Tier:     llmjob.Cheap,
+		Schema:   inspectorVerdictSchema,
 		Validate: validateInspectorVerdict,
 	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model)})
 	if err != nil {

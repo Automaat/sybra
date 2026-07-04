@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -22,6 +23,12 @@ import (
 var providerOrder = []string{"claude", "codex", "copilot"}
 
 const streamScannerBuffer = 4 * 1024 * 1024
+
+// errSchemaDelivery wraps failures creating/writing the codex output-schema
+// temp file. RunJSON treats it as a failover-eligible provider failure rather
+// than a hard error, so a codex-local filesystem issue falls back to the next
+// provider instead of aborting the whole call.
+var errSchemaDelivery = errors.New("schema delivery failed")
 
 // Options configures a one-shot provider invocation.
 type Options struct {
@@ -38,6 +45,11 @@ type Options struct {
 	DisableTools bool
 	Logger       *slog.Logger
 	Gate         provider.HealthGate
+	// Schema is an optional JSON Schema describing the expected result shape.
+	// Codex receives it natively via `--output-schema <tempfile>` (no prose);
+	// claude and copilot have no such flag, so it is embedded as prose in the
+	// prompt instead. Empty means no schema is delivered by either path.
+	Schema string
 }
 
 // Result is the normalized final assistant text.
@@ -68,8 +80,17 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 			continue
 		}
 
-		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools)
+		raw, stderrOut, err := runProvider(ctx, p, prompt, opts.Models[p], opts.DisableTools, opts.Schema)
 		if err != nil {
+			if errors.Is(err, errSchemaDelivery) {
+				failures = append(failures, fmt.Sprintf("%s: %s", p, err))
+				continue
+			}
+			if schemaFlagRejected(p, opts.Schema, stderrOut, string(raw)) {
+				logFallback(opts.Logger, p, provider.SignalNone, "unsupported_output_schema")
+				failures = append(failures, fmt.Sprintf("%s: unsupported output-schema flag", p))
+				continue
+			}
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
@@ -87,6 +108,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 
 		text, cost, parseErr := parseProviderText(p, raw)
 		if parseErr != nil {
+			if schemaFlagRejected(p, opts.Schema, stderrOut, string(raw)) {
+				logFallback(opts.Logger, p, provider.SignalNone, "unsupported_output_schema")
+				failures = append(failures, fmt.Sprintf("%s: unsupported output-schema flag", p))
+				continue
+			}
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
@@ -143,8 +169,23 @@ func binaryName(p string) string {
 	return p
 }
 
-func runProvider(ctx context.Context, p, prompt, model string, disableTools bool) (stdout []byte, stderrOut string, err error) {
-	name, args, stdin := invocation(p, prompt, model, disableTools)
+func runProvider(ctx context.Context, p, prompt, model string, disableTools bool, schema string) (stdout []byte, stderrOut string, err error) {
+	effectivePrompt := prompt
+	schemaPath := ""
+	if strings.TrimSpace(schema) != "" {
+		if p == "codex" {
+			path, schemaErr := writeSchemaTempFile(schema)
+			if schemaErr != nil {
+				return nil, "", fmt.Errorf("%w: %w", errSchemaDelivery, schemaErr)
+			}
+			defer os.Remove(path)
+			schemaPath = path
+		} else {
+			effectivePrompt = prompt + "\n\nOutput schema:\n" + strings.TrimSpace(schema)
+		}
+	}
+
+	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaPath)
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -155,16 +196,37 @@ func runProvider(ctx context.Context, p, prompt, model string, disableTools bool
 	return out, stderr.String(), err
 }
 
-func invocation(p, prompt, model string, disableTools bool) (name string, args []string, stdin string) {
+func writeSchemaTempFile(schema string) (string, error) {
+	f, err := os.CreateTemp("", "sybra-llmexec-schema-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create schema temp file: %w", err)
+	}
+	if _, err := f.WriteString(schema); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("write schema temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("close schema temp file: %w", err)
+	}
+	return f.Name(), nil
+}
+
+func invocation(p, prompt, model string, disableTools bool, schemaPath string) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
 		args := []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
-			"--dangerously-bypass-approvals-and-sandbox", "-",
+			"--dangerously-bypass-approvals-and-sandbox",
 		}
 		if model != "" {
-			args = append(args[:len(args)-1], "--model", model, "-")
+			args = append(args, "--model", model)
 		}
+		if schemaPath != "" {
+			args = append(args, "--output-schema", schemaPath)
+		}
+		args = append(args, "-")
 		return "codex", args, prompt
 	case "copilot":
 		args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
@@ -295,6 +357,45 @@ func overloaded(parts ...string) bool {
 	for _, p := range parts {
 		lower := strings.ToLower(p)
 		if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaFlagRejected(providerName, schema string, parts ...string) bool {
+	if providerName != "codex" || strings.TrimSpace(schema) == "" {
+		return false
+	}
+	for _, part := range parts {
+		lower := strings.ToLower(part)
+		if !strings.Contains(lower, "--output-schema") {
+			continue
+		}
+		if containsAnyString(lower,
+			"unknown option",
+			"unknown flag",
+			"unknown argument",
+			"unrecognized option",
+			"unrecognized argument",
+			"unexpected option",
+			"unexpected argument",
+			"found argument '--output-schema' which wasn't expected",
+			"no such option",
+			"unsupported option",
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyString(haystack string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		if strings.Contains(haystack, needle) {
 			return true
 		}
 	}

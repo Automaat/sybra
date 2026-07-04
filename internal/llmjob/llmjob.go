@@ -41,9 +41,7 @@ type Meta struct {
 func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options) (T, Meta, error) {
 	var zero T
 	o.Models = mergeModels(modelsFor(s.Tier), o.Models)
-	if strings.TrimSpace(s.Schema) != "" {
-		prompt += "\n\nOutput schema:\n" + strings.TrimSpace(s.Schema)
-	}
+	o.Schema = s.Schema
 	if strings.TrimSpace(s.AvoidProvider) != "" {
 		var err error
 		o, err = avoidProvider(o, s.AvoidProvider)
