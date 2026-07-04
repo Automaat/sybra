@@ -245,7 +245,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			return
 		}
 		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
-		if h.appendNote(taskID, "Auto-review (unparseable verdict)", final) {
+		if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
@@ -297,10 +297,27 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		}
 	default:
 		h.logger.Warn("human-review.verdict.unknown", "task_id", taskID, "decision", v.Decision)
-		if h.appendNote(taskID, "Auto-review (unknown decision)", final) {
+		if h.appendNote(taskID, "Auto-review (unknown decision)", h.scrubForTask(current.ProjectID, final)) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	}
+}
+
+// scrubForTask redacts text through the work-project blocklist for
+// projectID, if one applies. Used before persisting raw agent output (e.g.
+// an unparseable or unrecognized verdict) into a task body, so a leaked
+// work-repo identifier in the model's response never lands in a public
+// artifact.
+func (h *humanReviewHandler) scrubForTask(projectID, text string) string {
+	if h.workCtx == nil {
+		return text
+	}
+	wctx := h.workCtx(projectID)
+	if wctx == nil {
+		return text
+	}
+	scrubbed, _ := scrub.Scrub(text, wctx.Blocklist)
+	return scrubbed
 }
 
 func (h *humanReviewHandler) noteSybraBugOnly(taskID, agentID string, v verdictDecision) {
@@ -734,11 +751,23 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	return b.String()
 }
 
-// finalAssistantText concatenates the assistant text from the agent's stream.
-// The structured verdict JSON always lives in the last assistant turn — this
-// also matches the legacy fenced-block format so old runs remain parseable.
+// finalAssistantText walks the assistant turns backward and returns the
+// first one that actually decodes via verdict.Parse — this avoids selecting
+// an earlier turn that merely echoes the schema or discusses "the decision"
+// in prose that happens to parse as JSON. If no turn parses (e.g. the run
+// produced no valid verdict at all), it falls back to the last turn that at
+// least looks verdict-shaped, then the last result turn, purely so callers
+// have raw text to surface for diagnostics.
 func finalAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
+	for i := range slices.Backward(out) {
+		if out[i].Type != "assistant" {
+			continue
+		}
+		if _, _, err := verdict.Parse(out[i].Content); err == nil {
+			return out[i].Content
+		}
+	}
 	for i := range slices.Backward(out) {
 		if out[i].Type == "assistant" && (strings.Contains(out[i].Content, "sybra-verdict") || strings.Contains(out[i].Content, "\"decision\"")) {
 			return out[i].Content
