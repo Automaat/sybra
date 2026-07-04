@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -167,7 +168,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// output and persist it in its own field so detector.go can read it even
 	// when the full result text is longer than maxResultLen.
 	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
-		if v, err := parseVerdict(finalAssistantText(ag)); err == nil {
+		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
 			runUpdates.Verdict = task.Ptr(v.Decision)
 		}
 	}
