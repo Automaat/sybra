@@ -27,7 +27,7 @@ type Provider interface {
 	BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error)
 	ParseHeadlessLine(line []byte) (StreamEvent, error)
 	SandboxArgs(requirePerms, headless bool) []string
-	SupportsOutputSchema() bool
+	OutputSchemaAsFile() bool
 	UsesPerTurnConvo() bool
 	BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation
 	ParseConvoLine(line []byte) (ConvoEvent, error)
@@ -39,7 +39,7 @@ type baseProvider struct{}
 
 func (baseProvider) SandboxArgs(bool, bool) []string { return nil }
 
-func (baseProvider) SupportsOutputSchema() bool { return false }
+func (baseProvider) OutputSchemaAsFile() bool { return false }
 
 func (baseProvider) UsesPerTurnConvo() bool { return false }
 
