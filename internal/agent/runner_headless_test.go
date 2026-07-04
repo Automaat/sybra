@@ -794,6 +794,11 @@ func TestGuardrails_TurnsBlocks_CostNearCap(t *testing.T) {
 // so a user who tightens the cost limit mid-run sees escalation on the
 // next result. A regression that cached the guardrails at start of loop
 // would miss the new limit and let the agent keep burning budget.
+//
+// The cost guardrail hard-blocks on breach pending a human decision (mirroring
+// the turns guardrail), so the agent is pre-armed with a buffered
+// escalationCh reply ("continue") to unblock the stream without a live
+// responder.
 func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Result #1 below the eventual limit, result #2 pushes cumulative above.
 	input := `{"type":"result","result":"r1","session_id":"s1","total_cost_usd":5.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n" +
@@ -822,7 +827,8 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Start unlimited so result #1 doesn't escalate.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0})
 
-	a := &Agent{ID: "t", Provider: "claude"}
+	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
+	a.escalationCh <- true
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()

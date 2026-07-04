@@ -642,8 +642,14 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if event.OutputTokens > 0 {
 			a.AddOutputTokens(event.OutputTokens)
 		}
-		if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
-			return true
+		// A forked subagent's assistant turns carry parent_tool_use_id and must
+		// not inflate the top-level turn count: a single Task-tool fan-out can
+		// emit hundreds of subagent turns that have nothing to do with the
+		// top-level conversation the guardrail is meant to bound.
+		if event.parentToolUseID == "" {
+			if keepGoing := m.checkTurnsGuardrail(ctx, a); !keepGoing {
+				return true
+			}
 		}
 	}
 
@@ -664,17 +670,41 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		maxCost := m.guardrails.MaxCostUSD
 		m.mu.RUnlock()
 		if maxCost > 0 && costNow > maxCost {
-			m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
-			a.SetEscalationReason("cost")
-			m.emit(events.AgentEscalation(a.ID), EscalationEvent{
-				Reason:  "cost",
-				CostUSD: costNow,
-				Limit:   maxCost,
-			})
-			m.emit(events.AgentState(a.ID), a)
+			if keepGoing := m.checkCostGuardrail(ctx, a, costNow, maxCost); !keepGoing {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// checkCostGuardrail blocks the stream on a breach of MaxCostUSD until a
+// human responds via RespondEscalation. Unlike checkTurnsGuardrail there is
+// no auto-continue path: cost is the hard ceiling turns' auto-continue is
+// itself gated against, so a breach must always stop the run pending a human
+// decision rather than silently letting the process keep spending. Returns
+// false when the caller should stop the stream (subprocess is terminated by
+// the caller, mirroring checkTurnsGuardrail).
+func (m *Manager) checkCostGuardrail(ctx context.Context, a *Agent, costNow, maxCost float64) bool {
+	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+	a.SetEscalationReason("cost")
+	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
+		Reason:  "cost",
+		CostUSD: costNow,
+		Limit:   maxCost,
+	})
+	m.emit(events.AgentState(a.ID), a)
+	select {
+	case continueRun := <-a.escalationCh:
+		if !continueRun {
+			return false
+		}
+		a.SetEscalationReason("")
+		m.emit(events.AgentState(a.ID), a)
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // reportScannerError surfaces bufio.Scanner errors at the end of the NDJSON

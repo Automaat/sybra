@@ -53,6 +53,10 @@ type ClaudeEvent struct {
 	Raw          json.RawMessage // independent copy, never aliased to scanner buffer
 	Message      *ClaudeMessage
 	Result       *ClaudeResult
+	// ParentToolUseID is Claude Code's `parent_tool_use_id` field, non-empty
+	// when the event belongs to a forked subagent's turn (CLAUDE_CODE_FORK_SUBAGENT)
+	// rather than the top-level conversation.
+	ParentToolUseID string
 }
 
 // CodexEvent is the shared envelope for all Codex stream-json events.
@@ -82,16 +86,17 @@ type CopilotEvent struct {
 }
 
 type claudeEnvelope struct {
-	Type         string                `json:"type"`
-	Subtype      string                `json:"subtype"`
-	SessionID    string                `json:"session_id"`
-	PluginErrors []string              `json:"plugin_errors,omitempty"`
-	Message      *claudeMessagePayload `json:"message"`
-	Result       string                `json:"result"`
-	TotalCostUSD float64               `json:"total_cost_usd"`
-	IsError      bool                  `json:"is_error"`
-	APIStatus    int                   `json:"api_error_status"`
-	Error        string                `json:"error"`
+	Type            string                `json:"type"`
+	Subtype         string                `json:"subtype"`
+	SessionID       string                `json:"session_id"`
+	PluginErrors    []string              `json:"plugin_errors,omitempty"`
+	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
+	Message         *claudeMessagePayload `json:"message"`
+	Result          string                `json:"result"`
+	TotalCostUSD    float64               `json:"total_cost_usd"`
+	IsError         bool                  `json:"is_error"`
+	APIStatus       int                   `json:"api_error_status"`
+	Error           string                `json:"error"`
 	// Real Claude Code result events nest token counts under `usage` (per
 	// platform.claude.com/docs/en/agent-sdk/headless and verified against
 	// captured agent NDJSON). Earlier root-level `total_*_tokens` fields are
@@ -369,9 +374,10 @@ func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
 	}
 
 	event := ClaudeEvent{
-		Type:    raw.Type,
-		Subtype: raw.Subtype,
-		Raw:     copyRaw(line),
+		Type:            raw.Type,
+		Subtype:         raw.Subtype,
+		Raw:             copyRaw(line),
+		ParentToolUseID: raw.ParentToolUseID,
 	}
 
 	switch raw.Type {

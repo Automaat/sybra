@@ -61,4 +61,10 @@ type StreamEvent struct {
 	// from this event's tool_result error blocks. Unexported so it is never
 	// serialized; lives in-memory only. Populated for claude "user" events only.
 	permissionDenials []PermissionDenial
+	// parentToolUseID is the Claude Code `parent_tool_use_id` field, non-empty
+	// when this event belongs to a forked subagent's turn rather than the
+	// top-level conversation (see CLAUDE_CODE_FORK_SUBAGENT). Unexported so it
+	// is never serialized; used only to exclude subagent chatter from the
+	// top-level turn count.
+	parentToolUseID string
 }
