@@ -271,6 +271,29 @@ printf '%s\n' '{"result":"{\"ok\":true}"}'
 	}
 }
 
+func TestRunJSONFallsBackWhenCodexRejectsOutputSchemaFlag(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "codex"), `#!/bin/sh
+echo "error: unexpected argument '--output-schema' found" >&2
+exit 2
+`)
+	writeExe(t, filepath.Join(dir, "copilot"), `#!/bin/sh
+printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{
+		Provider: "codex",
+		Schema:   `{"type":"object"}`,
+	})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "copilot" {
+		t.Fatalf("provider = %q, want copilot fallback after codex rejects --output-schema", res.Provider)
+	}
+}
+
 func writeExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {

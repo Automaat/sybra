@@ -86,6 +86,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, err))
 				continue
 			}
+			if schemaFlagRejected(p, opts.Schema, stderrOut, string(raw)) {
+				logFallback(opts.Logger, p, provider.SignalNone, "unsupported_output_schema")
+				failures = append(failures, fmt.Sprintf("%s: unsupported output-schema flag", p))
+				continue
+			}
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
@@ -103,6 +108,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 
 		text, cost, parseErr := parseProviderText(p, raw)
 		if parseErr != nil {
+			if schemaFlagRejected(p, opts.Schema, stderrOut, string(raw)) {
+				logFallback(opts.Logger, p, provider.SignalNone, "unsupported_output_schema")
+				failures = append(failures, fmt.Sprintf("%s: unsupported output-schema flag", p))
+				continue
+			}
 			if overloaded(stderrOut, string(raw)) {
 				logFallback(opts.Logger, p, provider.SignalRateLimit, "overloaded")
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
@@ -347,6 +357,45 @@ func overloaded(parts ...string) bool {
 	for _, p := range parts {
 		lower := strings.ToLower(p)
 		if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaFlagRejected(providerName, schema string, parts ...string) bool {
+	if providerName != "codex" || strings.TrimSpace(schema) == "" {
+		return false
+	}
+	for _, part := range parts {
+		lower := strings.ToLower(part)
+		if !strings.Contains(lower, "--output-schema") {
+			continue
+		}
+		if containsAnyString(lower,
+			"unknown option",
+			"unknown flag",
+			"unknown argument",
+			"unrecognized option",
+			"unrecognized argument",
+			"unexpected option",
+			"unexpected argument",
+			"found argument '--output-schema' which wasn't expected",
+			"no such option",
+			"unsupported option",
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyString(haystack string, needles ...string) bool {
+	for _, needle := range needles {
+		if needle == "" {
+			continue
+		}
+		if strings.Contains(haystack, needle) {
 			return true
 		}
 	}
