@@ -138,18 +138,19 @@ func (m *Manager) RepairAll(ctx context.Context) {
 	}
 }
 
-// healOrRecreate ensures the worktree at wtPath has resolvable git metadata.
-// Returns (true, nil) if the worktree is usable on return, (false, nil) if it
-// was wiped and the caller should re-create it, or (_, err) on a hard error.
-func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath string) (bool, error) {
-	if project.WorktreeHealthy(ctx, wtPath) {
+// healOrRecreate ensures the worktree at wtPath has resolvable git metadata
+// and sits on wantBranch. Returns (true, nil) if the worktree is usable on
+// return, (false, nil) if it was wiped and the caller should re-create it, or
+// (_, err) on a hard error.
+func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
+	if project.WorktreeHealthy(ctx, wtPath) && onExpectedBranch(ctx, wtPath, wantBranch) {
 		return true, nil
 	}
 	m.logger.Warn("worktree.unhealthy", "task_id", taskID, "path", wtPath)
 	if err := project.RepairWorktrees(ctx, clonePath); err != nil {
 		m.logger.Warn("worktree.repair", "task_id", taskID, "err", err)
 	}
-	if project.WorktreeHealthy(ctx, wtPath) {
+	if project.WorktreeHealthy(ctx, wtPath) && onExpectedBranch(ctx, wtPath, wantBranch) {
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
@@ -160,4 +161,19 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath 
 	}
 	_ = project.PruneWorktrees(ctx, clonePath)
 	return false, nil
+}
+
+// onExpectedBranch reports whether wtPath is currently checked out on
+// wantBranch. A reused worktree directory can be left on a leftover HEAD from
+// a prior run or aborted rebase (e.g. a detached HEAD from an interrupted
+// operation) while still passing WorktreeHealthy — reusing it as-is would let
+// a stale HEAD get captured downstream as the tamper-detection baseline,
+// producing a diff range that spans unrelated history instead of the current
+// task's actual change.
+func onExpectedBranch(ctx context.Context, wtPath, wantBranch string) bool {
+	current, err := project.CurrentBranch(ctx, wtPath)
+	if err != nil {
+		return false
+	}
+	return current == wantBranch
 }

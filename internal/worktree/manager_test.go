@@ -1014,6 +1014,56 @@ func TestPrepareForTask_RebaseFailureRecoversViaMerge(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_ReuseRecreatesOnBranchMismatch reproduces the
+// contributing factor from issue #1477: a reused worktree directory can be
+// left checked out on a stale HEAD (e.g. a leftover detached HEAD from an
+// interrupted rebase/heal attempt in a prior run) while still passing
+// WorktreeHealthy. Reusing it as-is would let that stale HEAD get captured
+// downstream as the tamper-detection baseline. PrepareForTask must instead
+// detect the branch mismatch and recreate the worktree on the expected
+// branch.
+func TestPrepareForTask_ReuseRecreatesOnBranchMismatch(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("branch mismatch task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	// Simulate a leftover detached HEAD from an interrupted prior run — still
+	// a perfectly healthy git worktree, just not on the task's branch.
+	mustRunInDir(t, wtPath, "git", "checkout", "--detach", "HEAD")
+	if branch, err := project.CurrentBranch(context.Background(), wtPath); err != nil || branch != "" {
+		t.Fatalf("precondition: expected detached HEAD, got branch=%q err=%v", branch, err)
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask after branch mismatch: %v", err)
+	}
+
+	got, err := project.CurrentBranch(context.Background(), gotPath)
+	if err != nil {
+		t.Fatalf("resolve branch: %v", err)
+	}
+	want := branchNameForTask(tk)
+	if got != want {
+		t.Fatalf("branch = %q, want %q — reused worktree must not stay on a stale HEAD", got, want)
+	}
+}
+
 // TestPrepareForTask_BadSlugRejected proves the use-site guard: even if a
 // Task struct is constructed directly (bypassing the store and ParseBytes),
 // PrepareForTask rejects a path-traversal slug before calling PathFor.

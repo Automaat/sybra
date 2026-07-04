@@ -629,10 +629,20 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, r
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
-				cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
-				cmd.Dir = wtPath
-				if cmd.Run() == nil {
-					return sha, sha + "..HEAD"
+				verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
+				verify.Dir = wtPath
+				if verify.Run() == nil {
+					// A stored baseline can go stale (e.g. the underlying branch
+					// was force-pushed after the baseline was captured) and stay
+					// git-resolvable while no longer being an ancestor of HEAD.
+					// Diffing against such an orphaned base with two dots spans
+					// the entire divergent history instead of the agent's actual
+					// change, so require ancestry before trusting it.
+					ancestor := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", sha, "HEAD")
+					ancestor.Dir = wtPath
+					if ancestor.Run() == nil {
+						return sha, sha + "..HEAD"
+					}
 				}
 			}
 		}
