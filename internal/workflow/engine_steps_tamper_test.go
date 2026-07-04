@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -747,7 +748,7 @@ func TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase(t *testing.T)
 	gitRun(t, wt, "add", ".")
 	gitRun(t, wt, "commit", "-m", "feat: add foo")
 
-	engine, tasks := newTamperEngine(t, wt)
+	_, tasks := newTamperEngine(t, wt)
 	wf := &Execution{
 		Variables: map[string]string{tamperBaselineVar("fix"): staleBaseline},
 		StepHistory: []StepRecord{{
@@ -758,12 +759,15 @@ func TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase(t *testing.T)
 	}
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	base, rangeSpec := resolveTamperRange(context.Background(), wt, TaskInfo{ID: "t1", Workflow: wf}, "t1", nil)
+	if base == staleBaseline {
+		t.Fatalf("base = %q, want fallback to origin base; orphaned baseline must be rejected", base)
 	}
-	if out.Output != "clean" {
-		t.Fatalf("Output = %q, want clean; orphaned baseline must not inflate the diff", out.Output)
+	if rangeSpec == staleBaseline+"..HEAD" {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range, not the stale two-dot baseline range", rangeSpec)
+	}
+	if !strings.Contains(rangeSpec, "...HEAD") {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range", rangeSpec)
 	}
 }
 

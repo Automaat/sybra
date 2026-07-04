@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -546,7 +547,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperReport, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	base, rangeSpec := resolveTamperRange(ctx, wtPath, t)
+	base, rangeSpec := resolveTamperRange(ctx, wtPath, t, taskID, e.logger)
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
@@ -625,7 +626,7 @@ func tamperBaselineVar(stepID string) string {
 	return "step." + stepID + ".tamper_base"
 }
 
-func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, rangeSpec string) {
+func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID string, logger *slog.Logger) (base, rangeSpec string) {
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
@@ -642,6 +643,10 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, r
 					ancestor.Dir = wtPath
 					if ancestor.Run() == nil {
 						return sha, sha + "..HEAD"
+					}
+					if logger != nil {
+						logger.Warn("workflow.detect-tampering.baseline-orphaned",
+							"task_id", taskID, "baseline", sha)
 					}
 				}
 			}
