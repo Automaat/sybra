@@ -1,6 +1,9 @@
 package verdict
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	t.Parallel()
@@ -78,6 +81,15 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:  "issue_labels trimmed and blanks dropped",
+			input: `{"decision":"sybra_bug","summary":"x","issue_labels":[" workflow ","",  "  ","bug"]}`,
+			want: Decision{
+				Decision: "sybra_bug", Summary: "x",
+				IssueLabels: []string{"workflow", "bug"},
+			},
+			wantSource: SourceJSON,
+		},
+		{
 			name:    "empty input",
 			input:   "",
 			wantErr: true,
@@ -126,6 +138,9 @@ func TestParse(t *testing.T) {
 			}
 			if got.IssueTitle != tc.want.IssueTitle || got.IssueBody != tc.want.IssueBody {
 				t.Errorf("issue: got %+v want %+v", got, tc.want)
+			}
+			if !slices.Equal(got.IssueLabels, tc.want.IssueLabels) {
+				t.Errorf("issue_labels: got %+v want %+v", got.IssueLabels, tc.want.IssueLabels)
 			}
 			if src != tc.wantSource {
 				t.Errorf("source: got %s want %s", src, tc.wantSource)

@@ -93,6 +93,7 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 	v.Summary = strings.TrimSpace(v.Summary)
 	v.IssueTitle = strings.TrimSpace(v.IssueTitle)
 	v.IssueBody = strings.TrimSpace(v.IssueBody)
+	v.IssueLabels = normalizeLabels(v.IssueLabels)
 	if v.Decision != "human" && v.Decision != "sybra_bug" {
 		return Decision{}, "", fmt.Errorf("verdict: invalid decision %q", v.Decision)
 	}
@@ -100,4 +101,20 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 		return Decision{}, "", errors.New("verdict: empty summary")
 	}
 	return v, src, nil
+}
+
+// normalizeLabels trims each label and drops any that are blank, so
+// downstream consumers (e.g. app_human_review.go's task tags) never see
+// whitespace-only or empty labels from a model's issue_labels output.
+func normalizeLabels(labels []string) []string {
+	if labels == nil {
+		return nil
+	}
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
