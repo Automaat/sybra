@@ -40,8 +40,10 @@ type Config struct {
 	// dispatch claim as "running". PrepareForTask/SyncTaskBranch call it from
 	// inside the very dispatch that holds that claim, so a claim-inclusive
 	// check would always see its own claim and refuse to ever prepare.
-	// Defaults to AgentChecker when unset (tests that don't wire it get the
-	// same, safe behavior AgentChecker provides).
+	// Production must wire a claim-exclusive checker (for example
+	// agent.Manager.HasLiveRegisteredAgentForTask). When unset, New falls back
+	// to AgentChecker only for legacy/test harnesses that never hold an
+	// in-flight dispatch claim while preparing the worktree.
 	LiveAgentChecker AgentChecker
 	// MisePath is the path to the mise binary. Defaults to "mise" (PATH lookup).
 	// Tests inject a concrete path so parallel tests don't race on os.Setenv(PATH).
