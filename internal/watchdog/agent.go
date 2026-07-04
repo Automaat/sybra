@@ -20,6 +20,16 @@ const (
 	InspectTimeout = 2 * time.Minute
 )
 
+// completedHangGrace bounds how long a headless agent may sit
+// completed-but-alive (a terminal result observed, process not yet exited)
+// before the watchdog force-stops it directly, bypassing the LLM judge. The
+// runner's own post-result reaper (90s, internal/agent/runner_headless.go)
+// already handles this for a live tailer, but that tailer only runs for a
+// detached/reattached process — a non-detached run (agent.survive_restart:
+// false) and a lost tailer goroutine leave nothing watching a finished run
+// otherwise, so this is a hard backstop rather than the primary mechanism.
+const completedHangGrace = 5 * time.Minute
+
 // stallLimit returns the max event-gap before triggering inspection.
 func stallLimit(tags []string) time.Duration {
 	switch {
@@ -146,10 +156,14 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 		// A headless agent whose stream already ended in a successful terminal
 		// result is logically complete; its process just has not exited yet (a
 		// skill that spawns subagents can leave CC alive after the final
-		// result). The runner's post-result guard finalizes it shortly. Never
-		// inspect or escalate such an agent — doing so flips a finished run to
-		// human-required on a false stall (task c4a0fda0).
+		// result). The runner's post-result guard usually finalizes it within
+		// seconds, so never inspect or escalate such an agent — doing so flips
+		// a finished run to human-required on a false stall (task c4a0fda0).
+		// If it is still alive well past that grace, the runner's reaper isn't
+		// covering it (e.g. non-detached run, lost tailer); hard-stop it
+		// directly instead of leaving it to linger indefinitely.
 		if ag.CompletedSuccessfully() {
+			w.checkCompletedHang(ag, now)
 			continue
 		}
 		logPath := ag.GetLogPath()
@@ -184,6 +198,21 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 			"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
 
 		w.wg.Go(func() { w.inspect(ctx, ag, t, trigger, int(stall.Seconds()), int(total.Seconds())) })
+	}
+}
+
+// checkCompletedHang force-stops a headless agent that finished its work (a
+// non-error terminal result) but has sat idle beyond completedHangGrace
+// without its process exiting. No judge inspection is involved — a finished
+// run has nothing left to inspect, it just needs its orphaned process killed.
+func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
+	if !ag.TerminalResultIdle(completedHangGrace) {
+		return
+	}
+	w.logger.Warn("agent.watchdog.completed_hang", "id", ag.ID,
+		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()))
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.completed_hang.stop_failed", "id", ag.ID, "err", err)
 	}
 }
 

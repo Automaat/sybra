@@ -371,6 +371,24 @@ func TestTerminalResultIdle(t *testing.T) {
 			t.Fatal("TerminalResultIdle = true when last event is not a result, want false")
 		}
 	})
+	t.Run("codex turn.completed idle past grace", func(t *testing.T) {
+		// Codex never emits a "result"-typed line; its terminal signal is
+		// turn.completed, mapped to StreamEvent{Type: "result"} by
+		// codexEventToStreamEvent. This locks in that the shared postResultGrace
+		// reaper reaps a lingering codex process the same way it does claude.
+		a := &Agent{}
+		parsed, err := ParseCodexLine([]byte(`{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}`))
+		if err != nil {
+			t.Fatalf("ParseCodexLine: %v", err)
+		}
+		a.AppendOutput(codexEventToStreamEvent(parsed))
+		a.mu.Lock()
+		a.LastEventAt = time.Now().Add(-2 * time.Minute)
+		a.mu.Unlock()
+		if !a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = false on codex turn.completed idle past grace, want true")
+		}
+	})
 }
 
 func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
