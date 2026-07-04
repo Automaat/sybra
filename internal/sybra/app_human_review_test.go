@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/verdict"
 )
 
 type fakeIssueSink struct {
@@ -56,68 +57,57 @@ func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, *fakeIs
 	return h, tasks, sink, func() {}
 }
 
-func TestParseVerdict(t *testing.T) {
+// TestVerdictDecisionIsSharedParserType pins that this package's local
+// verdictDecision alias round-trips through the shared internal/verdict
+// parser used by onComplete — full Parse coverage (bare JSON, fenced
+// fallback, precedence, validation failures) lives in
+// internal/verdict/verdict_test.go.
+func TestVerdictDecisionIsSharedParserType(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name    string
-		input   string
-		want    verdictDecision
-		wantErr bool
-	}{
-		{
-			name: "human decision",
-			input: "Looks like a real ambiguity.\n\n```sybra-verdict\n" +
-				`{"decision":"human","summary":"needs scope clarification"}` +
-				"\n```\n",
-			want: verdictDecision{Decision: "human", Summary: "needs scope clarification"},
-		},
-		{
-			name: "sybra_bug decision",
-			input: "Found a workflow bug.\n\n```sybra-verdict\n" +
-				`{"decision":"sybra_bug","summary":"verify_commits flipped despite push","issue_title":"fix(workflow): verify_commits race","issue_body":"## What\nrace","issue_labels":["workflow"]}` +
-				"\n```\n",
-			want: verdictDecision{
-				Decision: "sybra_bug", Summary: "verify_commits flipped despite push",
-				IssueTitle: "fix(workflow): verify_commits race", IssueBody: "## What\nrace",
-				IssueLabels: []string{"workflow"},
-			},
-		},
-		{
-			name:    "missing block",
-			input:   "no fenced verdict here",
-			wantErr: true,
-		},
-		{
-			name:    "invalid json",
-			input:   "```sybra-verdict\n{broken\n```",
-			wantErr: true,
-		},
-		{
-			name:    "unknown decision",
-			input:   "```sybra-verdict\n{\"decision\":\"maybe\"}\n```",
-			wantErr: true,
-		},
+	input := "Found a workflow bug.\n\n```sybra-verdict\n" +
+		`{"decision":"sybra_bug","summary":"verify_commits flipped despite push","issue_title":"fix(workflow): verify_commits race","issue_body":"## What\nrace","issue_labels":["workflow"]}` +
+		"\n```\n"
+	var got verdictDecision
+	got, source, err := verdict.Parse(input)
+	if err != nil {
+		t.Fatalf("verdict.Parse: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := parseVerdict(tc.input)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("want error, got %+v", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseVerdict: %v", err)
-			}
-			if got.Decision != tc.want.Decision || got.Summary != tc.want.Summary {
-				t.Errorf("decision/summary: got %+v want %+v", got, tc.want)
-			}
-			if got.IssueTitle != tc.want.IssueTitle || got.IssueBody != tc.want.IssueBody {
-				t.Errorf("issue: got %+v want %+v", got, tc.want)
-			}
-		})
+	if source != verdict.SourceFence {
+		t.Errorf("source: got %s want %s", source, verdict.SourceFence)
+	}
+	want := verdictDecision{
+		Decision: "sybra_bug", Summary: "verify_commits flipped despite push",
+		IssueTitle: "fix(workflow): verify_commits race", IssueBody: "## What\nrace",
+		IssueLabels: []string{"workflow"},
+	}
+	if got.Decision != want.Decision || got.Summary != want.Summary {
+		t.Errorf("decision/summary: got %+v want %+v", got, want)
+	}
+	if got.IssueTitle != want.IssueTitle || got.IssueBody != want.IssueBody {
+		t.Errorf("issue: got %+v want %+v", got, want)
+	}
+}
+
+// TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
+// tells the agent to emit a fenced ```sybra-verdict``` block — the schema is
+// now enforced out-of-band via RunConfig.OutputSchema/--json-schema, and the
+// prompt just names the JSON fields to return.
+func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Some task", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	prompt := h.buildPrompt(tk, nil)
+	if strings.Contains(prompt, "sybra-verdict") {
+		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "`decision`") {
+		t.Errorf("prompt does not describe the decision field:\n%s", prompt)
 	}
 }
 
@@ -201,6 +191,98 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	}
 	if _, busy := h.inflight[tk.ID]; busy {
 		t.Errorf("inflight should be cleared after onComplete")
+	}
+}
+
+// TestOnComplete_BareJSONVerdict_HumanDecision drives onComplete with a bare
+// structured-output JSON assistant turn (verdict.SourceJSON) instead of the
+// legacy fenced ```sybra-verdict``` block — the production path introduced
+// by --json-schema enforcement, previously untested end-to-end.
+func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"human","summary":"needs product input on scope"}`,
+	})
+	h.inflight[tk.ID] = "agent-3"
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required", got.Status)
+	}
+	if !strings.Contains(got.Body, "Auto-review verdict: needs human") {
+		t.Errorf("expected verdict header in body; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "needs product input on scope") {
+		t.Errorf("expected summary in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called for human verdict; calls=%d", sink.calls)
+	}
+}
+
+// TestOnComplete_BareJSONVerdict_SybraBug is the sybra_bug counterpart of
+// TestOnComplete_BareJSONVerdict_HumanDecision — bare JSON assistant output,
+// no fence, driving the issue-filing side effect.
+func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: `{
+  "decision": "sybra_bug",
+  "summary": "verify_commits never re-checked the branch",
+  "issue_title": "fix(workflow): verify_commits race",
+  "issue_body": "## What\nrace condition",
+  "issue_labels": ["workflow", "regression"]
+}`,
+	})
+	h.inflight[tk.ID] = "agent-4"
+	h.onComplete(ag)
+
+	if sink.calls != 1 {
+		t.Fatalf("sink calls: got %d want 1", sink.calls)
+	}
+	if sink.gotTitle != "fix(workflow): verify_commits race" {
+		t.Errorf("sink title: got %q", sink.gotTitle)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusBlocked {
+		t.Errorf("status: got %q want blocked", got.Status)
+	}
+	if got.BlockedByIssue != sink.url {
+		t.Errorf("BlockedByIssue: got %q want %q", got.BlockedByIssue, sink.url)
 	}
 }
 
