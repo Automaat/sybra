@@ -158,3 +158,47 @@ func TestMarkRebaseBlocked_IgnoresTransientFetch(t *testing.T) {
 		t.Fatalf("status = %q, want unchanged %q", got.Status, task.StatusTodo)
 	}
 }
+
+// TestMarkRebaseBlockedWithRecoveryResult_HandledWithoutRecovery pins the
+// handled/recovered distinction sybra#1487's fix depends on: when the rebase
+// failure resolves via the already-resolved-remote-PR downgrade (not an
+// autonomous conflict-fix redispatch), the call is still fully "handled" —
+// callers must not treat handled=false-equivalent (checking only `recovered`)
+// and fall through to their own status write, which would clobber the
+// in_review status this call already set back to human-required using a
+// stale pre-dispatch snapshot.
+func TestMarkRebaseBlockedWithRecoveryResult_HandledWithoutRecovery(t *testing.T) {
+	orig := fetchPRStateForRebaseBlock
+	defer func() { fetchPRStateForRebaseBlock = orig }()
+	fetchPRStateForRebaseBlock = func(repo string, number int) (github.PRState, error) {
+		return github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}, nil
+	}
+
+	tasks := newRebaseBlockTestManager(t)
+	tk, err := tasks.Create("pr-fix task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := "acme/widgets"
+	prNumber := 42
+	if _, err := tasks.Update(tk.ID, task.Update{ProjectID: &projectID, PRNumber: &prNumber}); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, recovered := MarkRebaseBlockedWithRecoveryResult(tasks, tk.ID, worktree.ErrRebaseFailed, discardSlogLogger(),
+		func(string) bool { return false })
+	if !handled {
+		t.Fatal("handled = false, want true — the already-resolved downgrade fully applies the status change")
+	}
+	if recovered {
+		t.Fatal("recovered = true, want false — no conflict-fix agent was dispatched")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
+	}
+}

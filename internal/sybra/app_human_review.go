@@ -28,6 +28,14 @@ const (
 	humanReviewMaxAgentTurns  = 40
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
+
+	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
+	// spawn a review agent within humanReviewWindow. The global window
+	// (allowSpawnLocked) bounds total fleet spend but does not stop one
+	// flapping task (e.g. status oscillating todo<->human-required) from
+	// consuming every slot in the window and starving every other task's
+	// diagnosis. This is a per-task budget layered on top of that global one.
+	humanReviewMaxPerTaskPerWindow = 2
 )
 
 // humanReviewIssueFiler is the subset of monitor.GHIssueSink the handler
@@ -63,8 +71,9 @@ type humanReviewHandler struct {
 	workCtx func(projectID string) *WorkScrubContext
 
 	mu       sync.Mutex
-	inflight map[string]string // taskID -> agent ID
-	recent   []time.Time       // spawn timestamps (rolling window)
+	inflight map[string]string      // taskID -> agent ID
+	recent   []time.Time            // spawn timestamps (rolling window), global cap
+	perTask  map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
 }
 
 // verdictDecision is the agent's structured output, produced via
@@ -94,6 +103,7 @@ func newHumanReviewHandler(
 		now:      time.Now,
 		workCtx:  workCtx,
 		inflight: make(map[string]string),
+		perTask:  make(map[string][]time.Time),
 	}
 }
 
@@ -161,9 +171,16 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.skip(taskID, "rate_limited")
 		return
 	}
+	if !h.allowSpawnForTaskLocked(taskID) {
+		h.mu.Unlock()
+		h.skip(taskID, "task_rate_limited")
+		return
+	}
 	// Reserve the slot before spawning so a racing second flip is rejected.
 	h.inflight[taskID] = ""
-	h.recent = append(h.recent, h.now())
+	now := h.now()
+	h.recent = append(h.recent, now)
+	h.perTask[taskID] = append(h.perTask[taskID], now)
 	h.mu.Unlock()
 
 	prompt := h.buildPrompt(t, wctx)
@@ -633,6 +650,30 @@ func (h *humanReviewHandler) allowSpawnLocked() bool {
 	}
 	h.recent = kept
 	return len(h.recent) < limit
+}
+
+// allowSpawnForTaskLocked must be called with h.mu held. Trims expired
+// entries from h.perTask[taskID] and returns false once that single task has
+// spawned humanReviewMaxPerTaskPerWindow reviews within the window — the
+// per-task counterpart to allowSpawnLocked's fleet-wide budget. Without this,
+// a single task whose status keeps oscillating into human-required can spend
+// every slot the global window allows, starving every other task's
+// diagnosis (see task 90befcef's origin incident: 235 flaps drained the
+// fleet's review budget on one task).
+func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
+	cutoff := h.now().Add(-humanReviewWindow)
+	kept := h.perTask[taskID][:0]
+	for _, ts := range h.perTask[taskID] {
+		if ts.After(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	if len(kept) == 0 {
+		delete(h.perTask, taskID)
+	} else {
+		h.perTask[taskID] = kept
+	}
+	return len(kept) < humanReviewMaxPerTaskPerWindow
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {
