@@ -489,12 +489,30 @@ func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error
 // retry budget is spent) do we fall back to human-required. recoverConflict may
 // be nil (callers without a PR-monitor handle), which preserves the old
 // escalate-to-human behaviour.
+//
+// Before parking, re-probes the task's linked PR (if any): a rebase failure
+// can mean the local branch merely diverged from a remote an external bot
+// already force-pushed a green fix onto, in which case there is genuinely
+// nothing left to fix and human-required would be a false park. Only reached
+// when recoverConflict declined/is absent — the common case re-dispatches a
+// conflict pr-fix, whose own agent run flows through execRoutePRFixResult's
+// equivalent re-probe.
 func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *slog.Logger, recoverConflict func(string) bool) bool {
 	if !errors.Is(err, worktree.ErrRebaseFailed) {
 		return false
 	}
 	if recoverConflict != nil && recoverConflict(taskID) {
 		logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
+		return true
+	}
+	if reason, resolved := rebaseBlockedPRAlreadyResolved(tasks, taskID); resolved {
+		if _, uerr := tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(reason),
+		}); uerr != nil {
+			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
+		}
+		logger.Info("worktree.rebase-block.already-resolved", "task_id", taskID)
 		return true
 	}
 	reason := worktreeerr.RebaseBlockedReason
@@ -505,6 +523,24 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}
 	return true
+}
+
+// fetchPRStateForRebaseBlock is overridable in tests to avoid shelling out to `gh`.
+var fetchPRStateForRebaseBlock = github.FetchPRState
+
+// rebaseBlockedPRAlreadyResolved re-probes the task's linked PR when a rebase
+// failure has no autonomous recovery path. A fetch error or an unlinked PR
+// falls through to the normal human-required park.
+func rebaseBlockedPRAlreadyResolved(tasks *task.Manager, taskID string) (reason string, resolved bool) {
+	t, err := tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" || t.PRNumber == 0 {
+		return "", false
+	}
+	state, err := fetchPRStateForRebaseBlock(t.ProjectID, t.PRNumber)
+	if err != nil || !state.Resolved() {
+		return "", false
+	}
+	return fmt.Sprintf("worktree rebase-blocked: PR #%d already resolved on remote", t.PRNumber), true
 }
 
 // MarkRebaseBlockedWithRecoveryResult behaves like MarkRebaseBlocked but also

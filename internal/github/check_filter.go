@@ -138,7 +138,7 @@ func rollupFromContexts(contexts []gqlCheckContext) (ciStatus string, hasPending
 
 	var sawCounted, sawFailure, sawPending, sawSuccess bool
 	for i := range contexts {
-		if isNonGatingCheck(contexts[i].Name) {
+		if isNonGatingCheck(contexts[i].effectiveName()) {
 			continue
 		}
 		state := effectiveCheckState(contexts[i])

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/prompteval"
 )
@@ -159,6 +160,16 @@ type PRReviewRequester interface {
 	RerequestReview(repo string, prNumber int) (reviewers []string, err error)
 }
 
+// PRStateFetcher fetches the live state of a GitHub pull request. Used by
+// `route_pr_fix_result` to re-probe the remote PR before parking a task
+// human-required — a pr-fix agent that declined to push because its local
+// worktree was stale/diverged may be sitting on a PR an external bot already
+// fixed. Engine operates with a nil fetcher — the re-probe is then skipped
+// and the agent's sentinel is trusted as-is, so tests don't need to wire one.
+type PRStateFetcher interface {
+	FetchPRState(repo string, number int) (github.PRState, error)
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -193,6 +204,7 @@ type Engine struct {
 	agents          AgentLauncher
 	prLinker        PRLinker
 	prReviewers     PRReviewRequester
+	prStates        PRStateFetcher
 	worktrees       WorktreeGetter
 	branchSyncer    BranchSyncer
 	checks          CheckConfigGetter
@@ -254,6 +266,11 @@ func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 
 // SetPRReviewRequester wires an implementation used by rerequest_review.
 func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
+
+// SetPRStateFetcher wires an implementation used by `route_pr_fix_result` to
+// re-probe the live PR before parking human-required. Leaving it unset skips
+// the re-probe and trusts the agent's sentinel as-is.
+func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
 
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.

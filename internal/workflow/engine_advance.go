@@ -448,7 +448,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	case StepVerifyChecks:
 		return e.execVerifyChecks(taskID, step, t)
 	case StepRoutePRFixResult:
-		return e.execRoutePRFixResult(taskID, step, wfExec)
+		return e.execRoutePRFixResult(taskID, step, wfExec, t)
 	case StepRouteTestResult:
 		return e.execRouteTestResult(taskID, step, wfExec, t)
 	case StepSyncBranch:
