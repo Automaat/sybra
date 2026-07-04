@@ -41,12 +41,74 @@ var triageReviewShortStatRe = regexp.MustCompile(
 	`(\d+)\s+files?\s+changed(?:,\s+(\d+)\s+insertions?\(\+\))?(?:,\s+(\d+)\s+deletions?\(-\))?`,
 )
 
+// triageReviewDocsExts lists file extensions that are pure documentation/prose
+// with no executable meaning — always safe for the trivial fast-path unless
+// carved out (see triageReviewCarveOutRe).
+var triageReviewDocsExts = map[string]bool{
+	".md": true, ".markdown": true, ".txt": true, ".rst": true, ".adoc": true,
+}
+
+// triageReviewDepBumpBasenames lists manifest/lockfile basenames whose diffs
+// are dependency-version bumps (e.g. Renovate) — mechanical, low-risk churn.
+var triageReviewDepBumpBasenames = map[string]bool{
+	"go.mod": true, "go.sum": true,
+	"package.json": true, "package-lock.json": true,
+	"yarn.lock": true, "pnpm-lock.yaml": true,
+	"renovate.json": true,
+}
+
+// triageReviewGeneratedRe matches generated/derived files: Wails bindings and
+// protobuf/codegen output. Drift is already CI-enforced elsewhere.
+var triageReviewGeneratedRe = regexp.MustCompile(
+	`(^|/)frontend/bindings/|\.pb\.go$|_gen\.go$|\.gen\.go$`,
+)
+
+// triageReviewCarveOutRe matches paths that look docs-shaped but actually
+// govern agent behavior (skills, CLAUDE.md, orchestrator prompts) — these
+// must never get the trivial fast-path even though they end in .md.
+var triageReviewCarveOutRe = regexp.MustCompile(
+	`(^|/)\.claude/skills/|(^|/)CLAUDE\.md$|(^|/)SKILL\.md$|(^|/)orchestrator/`,
+)
+
+// isTrivialFile reports whether a single changed file belongs to a
+// mechanically-safe class (docs, dependency bump, generated) and is not
+// carved out as agent-behavior content that still warrants staff review.
+//
+// Docs-extension matching is deliberately case-sensitive (unlike the
+// unsupported-extension downgrade further down, which lowercases): an
+// unusual-cased extension (e.g. "FOO.MD") is unfamiliar enough that it
+// should not silently bypass the line/file-count caps via this fast-path,
+// even though it may still end up "simple" through the existing
+// slower/cap-enforcing path.
+func isTrivialFile(path string) bool {
+	if triageReviewCarveOutRe.MatchString(path) {
+		return false
+	}
+	if triageReviewGeneratedRe.MatchString(path) {
+		return true
+	}
+	base := path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		base = path[i+1:]
+	}
+	if triageReviewDepBumpBasenames[base] {
+		return true
+	}
+	return triageReviewDocsExts[filepathExt(path)]
+}
+
 // triageVerdict applies the heuristic and returns "skip", "simple", or "staff"
 // with a short rationale. Pure function — easy to unit-test without git.
 //
 // "skip"   — trivial diff (zero net lines changed): no review needed.
 // "simple" — small, low-risk diff: lightweight /pr-review is sufficient.
 // "staff"  — large or risky diff: full /staff-code-review required.
+//
+// Ordering: the all-trivial fast-path below runs BEFORE the size/file-count
+// caps and deliberately bypasses them — a docs/dep-bump/generated-only diff
+// stays "simple" no matter how large. The unsupported-extension downgrade
+// further down runs AFTER those caps and still enforces them — it only
+// applies to diffs that already passed the size/file-count/risky-path gates.
 func triageVerdict(files []string, insertions, deletions int) (verdict, reason string) {
 	total := insertions + deletions
 	if len(files) == 0 {
@@ -57,6 +119,18 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 	if total == 0 {
 		return "skip", fmt.Sprintf("0 lines changed across %d file(s)", len(files))
 	}
+	// All-trivial fast-path: bypasses the line/file-count caps below because
+	// the downgrade target is still a real lightweight review, not skip.
+	allTrivial := true
+	for _, f := range files {
+		if !isTrivialFile(f) {
+			allTrivial = false
+			break
+		}
+	}
+	if allTrivial {
+		return "simple", fmt.Sprintf("%d trivial file(s): docs/dep/generated", len(files))
+	}
 	if total > triageReviewLineLimit {
 		return "staff", fmt.Sprintf("%d lines > %d", total, triageReviewLineLimit)
 	}
@@ -64,7 +138,7 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 		return "staff", fmt.Sprintf("%d files > %d", len(files), triageReviewFileLimit)
 	}
 	for _, f := range files {
-		if triageReviewRiskyPathRe.MatchString(f) {
+		if triageReviewRiskyPathRe.MatchString(f) || triageReviewCarveOutRe.MatchString(f) {
 			return "staff", "risky path: " + f
 		}
 		ext := strings.ToLower(filepathExt(f))

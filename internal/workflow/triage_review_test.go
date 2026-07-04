@@ -82,8 +82,85 @@ func TestTriageVerdict(t *testing.T) {
 		},
 		{
 			name:       "many_files_is_staff",
-			files:      []string{"a.md", "b.md", "c.md", "d.md"},
+			files:      []string{"a.go", "b.go", "c.go", "d.go"},
 			insertions: 4,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "dep_bump_is_simple",
+			files:      []string{"go.mod", "go.sum"},
+			insertions: 30,
+			deletions:  10,
+			want:       "simple",
+		},
+		{
+			name:       "generated_bindings_is_simple",
+			files:      []string{"frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts"},
+			insertions: 200,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "generated_pb_go_is_simple",
+			files:      []string{"internal/proto/task.pb.go"},
+			insertions: 500,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "large_docs_only_is_simple",
+			files:      []string{"docs/CONFIG.md"},
+			insertions: triageReviewLineLimit + 100,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "many_docs_only_is_simple",
+			files:      []string{"a.md", "b.md", "c.md", "d.md", "e.md"},
+			insertions: 5,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "skill_md_carve_out_is_staff",
+			files:      []string{".claude/skills/sybra-tasks/SKILL.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "claude_skills_dotmd_carve_out_precedence_over_docs_ext",
+			files:      []string{".claude/skills/foo.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "claude_md_carve_out_is_staff",
+			files:      []string{"CLAUDE.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "mixed_trivial_and_source_is_staff",
+			files:      []string{"README.md", "internal/agent/x.go"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "uppercase_extension_large_diff_bypasses_fast_path_stays_staff",
+			files:      []string{"BIG.MD"},
+			insertions: triageReviewLineLimit + 50,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "no_extension_risky_dockerfile_is_staff",
+			files:      []string{"Dockerfile"},
+			insertions: 1,
 			deletions:  0,
 			want:       "staff",
 		},
@@ -329,16 +406,18 @@ func TestExecTriageReview_LargeChangeReturnsStaff(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	wt := makeGitRepo(t, false)
-	// Write a single non-risky file but with > line limit insertions.
+	// Write a single non-risky, non-trivial file but with > line limit
+	// insertions. Must not be a docs/dep/generated file, or the all-trivial
+	// fast-path would deliberately bypass this cap.
 	var big strings.Builder
 	for range triageReviewLineLimit + 5 {
 		big.WriteString("line\n")
 	}
-	if err := os.WriteFile(filepath.Join(wt, "big.md"), []byte(big.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt, "big.sql"), []byte(big.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitRun(t, wt, "add", "big.md")
-	gitRun(t, wt, "commit", "-m", "docs: big")
+	gitRun(t, wt, "add", "big.sql")
+	gitRun(t, wt, "commit", "-m", "chore: big")
 
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 
