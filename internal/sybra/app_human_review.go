@@ -2,13 +2,10 @@ package sybra
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/verdict"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -41,10 +39,10 @@ type humanReviewIssueFiler interface {
 
 // humanReviewHandler spawns a headless review agent each time a task
 // transitions into status=human-required. The agent inspects task state,
-// agent runs and Sybra logs/source, then emits a fenced verdict block
-// (see verdictDecision) which the handler turns into a side-effect:
-// genuine -> append a note; sybra_bug -> file a deduplicated GitHub issue
-// and flip the task to status=blocked.
+// agent runs and Sybra logs/source, then emits a structured verdict
+// (verdict.Decision, enforced via --json-schema) which the handler turns
+// into a side-effect: genuine -> append a note; sybra_bug -> file a
+// deduplicated GitHub issue and flip the task to status=blocked.
 type humanReviewHandler struct {
 	cfg     *config.Config
 	tasks   *task.Manager
@@ -69,15 +67,10 @@ type humanReviewHandler struct {
 	recent   []time.Time       // spawn timestamps (rolling window)
 }
 
-// verdictDecision is the agent's structured output. Captured from a fenced
-// ```sybra-verdict\n{ ... }\n``` block in the agent's final assistant message.
-type verdictDecision struct {
-	Decision    string   `json:"decision"` // "human" | "sybra_bug"
-	Summary     string   `json:"summary"`
-	IssueTitle  string   `json:"issue_title,omitempty"`
-	IssueBody   string   `json:"issue_body,omitempty"`
-	IssueLabels []string `json:"issue_labels,omitempty"`
-}
+// verdictDecision is the agent's structured output, produced via
+// --json-schema (verdict.Schema) and parsed by verdict.Parse. Aliased here
+// so the rest of this file (and its tests) keep the historical local name.
+type verdictDecision = verdict.Decision
 
 func newHumanReviewHandler(
 	cfg *config.Config,
@@ -184,6 +177,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		Dir:                h.cfg.HumanReview.SybraRepoDir,
 		RequirePermissions: false,
 		OneShot:            true,
+		OutputSchema:       verdict.Schema,
 	})
 	if err != nil {
 		h.mu.Lock()
@@ -242,7 +236,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	}
 
 	final := finalAssistantText(ag)
-	v, parseErr := parseVerdict(final)
+	v, source, parseErr := verdict.Parse(final)
 	if parseErr != nil {
 		if ag.GetErrorKind() == "rate_limit" {
 			h.logger.Warn("human-review.verdict.deferred",
@@ -254,11 +248,13 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		if h.appendNote(taskID, "Auto-review (unparseable verdict)", final) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
-		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{"decision": "unparseable"})
+		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+			"decision": "unparseable", "verdict_source": "unparseable", "reason": parseErr.Error(),
+		})
 		return
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
-		"decision": v.Decision, "summary": v.Summary,
+		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
 	})
 
 	switch v.Decision {
@@ -728,41 +724,23 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	b.WriteString("- A Sybra bug looks like: workflow step never ran the agent, agent started in the wrong dir, status flipped despite a successful PR, sidecar required but never written, repeated provider gate blocks, panics in logs, mis-routed completions.\n\n")
 
 	b.WriteString("## Output protocol (REQUIRED)\n")
-	b.WriteString("End your response with EXACTLY one fenced block tagged `sybra-verdict` containing JSON:\n\n")
-	b.WriteString("```sybra-verdict\n{\n  \"decision\": \"human\" | \"sybra_bug\",\n  \"summary\": \"one-sentence diagnosis\",\n  \"issue_title\": \"type(scope): short title\",   // sybra_bug only, must follow Sybra conventional commit format (e.g. fix(workflow): ...)\n  \"issue_body\": \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\",  // sybra_bug only\n  \"issue_labels\": [\"workflow\", \"bug\"]              // sybra_bug only, optional\n}\n```\n\n")
-	b.WriteString("If decision=human, omit issue_* fields. The host parses this block deterministically — any other format will be treated as a parse failure.\n")
+	b.WriteString("Your final response is enforced to match a JSON schema. Return exactly these fields:\n\n")
+	b.WriteString("- `decision`: \"human\" | \"sybra_bug\"\n")
+	b.WriteString("- `summary`: one-sentence diagnosis\n")
+	b.WriteString("- `issue_title` (sybra_bug only): \"type(scope): short title\", must follow Sybra conventional commit format (e.g. fix(workflow): ...)\n")
+	b.WriteString("- `issue_body` (sybra_bug only): \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\"\n")
+	b.WriteString("- `issue_labels` (sybra_bug only, optional): array of label strings\n\n")
+	b.WriteString("If decision=human, omit issue_* fields.\n")
 	return b.String()
 }
 
-// parseVerdict extracts and unmarshals the fenced sybra-verdict JSON block.
-var verdictBlockRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
-
-func parseVerdict(text string) (verdictDecision, error) {
-	if strings.TrimSpace(text) == "" {
-		return verdictDecision{}, errors.New("empty assistant text")
-	}
-	m := verdictBlockRe.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return verdictDecision{}, errors.New("no sybra-verdict block")
-	}
-	var v verdictDecision
-	if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &v); err != nil {
-		return verdictDecision{}, fmt.Errorf("verdict json: %w", err)
-	}
-	v.Decision = strings.TrimSpace(strings.ToLower(v.Decision))
-	v.Summary = strings.TrimSpace(v.Summary)
-	if v.Decision != "human" && v.Decision != "sybra_bug" {
-		return verdictDecision{}, fmt.Errorf("invalid decision %q", v.Decision)
-	}
-	return v, nil
-}
-
 // finalAssistantText concatenates the assistant text from the agent's stream.
-// The fenced verdict block always lives in the last assistant turn.
+// The structured verdict JSON always lives in the last assistant turn — this
+// also matches the legacy fenced-block format so old runs remain parseable.
 func finalAssistantText(ag *agent.Agent) string {
 	out := ag.Output()
 	for i := range slices.Backward(out) {
-		if out[i].Type == "assistant" && strings.Contains(out[i].Content, "sybra-verdict") {
+		if out[i].Type == "assistant" && (strings.Contains(out[i].Content, "sybra-verdict") || strings.Contains(out[i].Content, "\"decision\"")) {
 			return out[i].Content
 		}
 	}
