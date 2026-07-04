@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -546,7 +547,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperReport, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	base, rangeSpec := resolveTamperRange(ctx, wtPath, t)
+	base, rangeSpec := resolveTamperRange(ctx, wtPath, t, taskID, e.logger)
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
@@ -625,14 +626,28 @@ func tamperBaselineVar(stepID string) string {
 	return "step." + stepID + ".tamper_base"
 }
 
-func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, rangeSpec string) {
+func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID string, logger *slog.Logger) (base, rangeSpec string) {
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
-				cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
-				cmd.Dir = wtPath
-				if cmd.Run() == nil {
-					return sha, sha + "..HEAD"
+				verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
+				verify.Dir = wtPath
+				if verify.Run() == nil {
+					// A stored baseline can go stale (e.g. the underlying branch
+					// was force-pushed after the baseline was captured) and stay
+					// git-resolvable while no longer being an ancestor of HEAD.
+					// Diffing against such an orphaned base with two dots spans
+					// the entire divergent history instead of the agent's actual
+					// change, so require ancestry before trusting it.
+					ancestor := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", sha, "HEAD")
+					ancestor.Dir = wtPath
+					if ancestor.Run() == nil {
+						return sha, sha + "..HEAD"
+					}
+					if logger != nil {
+						logger.Warn("workflow.detect-tampering.baseline-orphaned",
+							"task_id", taskID, "baseline", sha)
+					}
 				}
 			}
 		}

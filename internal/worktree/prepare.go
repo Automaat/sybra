@@ -170,7 +170,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		callPhase(onPhase, "Checking worktree…")
-		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath)
+		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
 		if err != nil {
 			return "", err
 		}
@@ -388,7 +388,7 @@ func (m *Manager) PrepareForChat(ctx context.Context, t task.Task, onPhase func(
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
-		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath)
+		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
 		if err != nil {
 			return "", err
 		}

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -715,6 +716,58 @@ func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+// TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase reproduces the
+// force-push scenario from issue #1477: the stored tamper_base baseline stays
+// git-resolvable (rev-parse --verify succeeds) but is no longer an ancestor
+// of HEAD after the underlying branch was reset/force-pushed. A two-dot diff
+// against such an orphaned base would span the whole divergent history
+// instead of the agent's actual change; this test asserts the ancestry check
+// rejects the stale baseline and falls back to origin/main (three-dot),
+// scoping the report to only the real commit.
+func TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+	})
+
+	// Simulate a prior run's captured baseline: a commit that will later be
+	// orphaned by a force-push/reset, but which still resolves via rev-parse.
+	writeRepoFile(t, wt, "internal/other/other.go", "package other\n\nfunc Other() int { return 1 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: unrelated prior work")
+	staleBaseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+
+	// Force-push equivalent: branch is reset back to origin/main, then the
+	// agent's real (small) change is committed on top — staleBaseline is now
+	// orphaned, resolvable but not an ancestor of the new HEAD.
+	gitRun(t, wt, "reset", "--hard", "origin/main")
+	writeRepoFile(t, wt, "internal/foo/foo.go", "package foo\n\nfunc Foo() int { return 1 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: add foo")
+
+	_, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): staleBaseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	base, rangeSpec := resolveTamperRange(context.Background(), wt, TaskInfo{ID: "t1", Workflow: wf}, "t1", nil)
+	if base == staleBaseline {
+		t.Fatalf("base = %q, want fallback to origin base; orphaned baseline must be rejected", base)
+	}
+	if rangeSpec == staleBaseline+"..HEAD" {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range, not the stale two-dot baseline range", rangeSpec)
+	}
+	if !strings.Contains(rangeSpec, "...HEAD") {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range", rangeSpec)
 	}
 }
 
