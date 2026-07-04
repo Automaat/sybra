@@ -48,6 +48,12 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, ErrTestRunnerBusy):
 		// Transient: the testing slot frees and ResumeStalled retries. No reason.
 		return "", false
+	case errors.Is(err, worktreeerr.ErrAgentRunning):
+		// Transient: PrepareForTask refused to rebase a worktree a tracked
+		// agent is still live in. The agent's own completion (or a later
+		// ResumeStalled tick once it's genuinely idle) drives the workflow
+		// forward — no reason, no escalation.
+		return "", false
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
@@ -65,6 +71,7 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 

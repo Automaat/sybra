@@ -304,6 +304,7 @@ func (a *App) Startup(ctx context.Context) error {
 		LogsDir:          a.logDir,
 		PRBranchResolver: github.FetchPRBranch,
 		AgentChecker:     a.agents.HasRunningAgentForTask,
+		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
 	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)

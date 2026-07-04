@@ -35,21 +35,30 @@ type Config struct {
 	SetupTimeout     time.Duration
 	PRBranchResolver PRBranchResolver
 	AgentChecker     AgentChecker
+	// LiveAgentChecker reports whether an already-registered agent process is
+	// live for a task — unlike AgentChecker, it must NOT count an in-flight
+	// dispatch claim as "running". PrepareForTask/SyncTaskBranch call it from
+	// inside the very dispatch that holds that claim, so a claim-inclusive
+	// check would always see its own claim and refuse to ever prepare.
+	// Defaults to AgentChecker when unset (tests that don't wire it get the
+	// same, safe behavior AgentChecker provides).
+	LiveAgentChecker AgentChecker
 	// MisePath is the path to the mise binary. Defaults to "mise" (PATH lookup).
 	// Tests inject a concrete path so parallel tests don't race on os.Setenv(PATH).
 	MisePath string
 }
 
 type Manager struct {
-	dir          string
-	projects     *project.Store
-	tasks        *task.Manager
-	logger       *slog.Logger
-	logsDir      string
-	setupTimeout time.Duration
-	prBranch     PRBranchResolver
-	hasAgent     AgentChecker
-	misePath     string
+	dir              string
+	projects         *project.Store
+	tasks            *task.Manager
+	logger           *slog.Logger
+	logsDir          string
+	setupTimeout     time.Duration
+	prBranch         PRBranchResolver
+	hasAgent         AgentChecker
+	hasLiveAgentOnly AgentChecker
+	misePath         string
 }
 
 func New(cfg Config) *Manager {
@@ -62,16 +71,21 @@ func New(cfg Config) *Manager {
 	if mp == "" || (mp != "mise" && !filepath.IsAbs(mp)) {
 		mp = "mise"
 	}
+	liveAgentChecker := cfg.LiveAgentChecker
+	if liveAgentChecker == nil {
+		liveAgentChecker = cfg.AgentChecker
+	}
 	return &Manager{
-		dir:          cfg.WorktreesDir,
-		projects:     cfg.Projects,
-		tasks:        cfg.Tasks,
-		logger:       cfg.Logger,
-		logsDir:      cfg.LogsDir,
-		setupTimeout: timeout,
-		prBranch:     cfg.PRBranchResolver,
-		hasAgent:     cfg.AgentChecker,
-		misePath:     mp,
+		dir:              cfg.WorktreesDir,
+		projects:         cfg.Projects,
+		tasks:            cfg.Tasks,
+		logger:           cfg.Logger,
+		logsDir:          cfg.LogsDir,
+		setupTimeout:     timeout,
+		prBranch:         cfg.PRBranchResolver,
+		hasAgent:         cfg.AgentChecker,
+		hasLiveAgentOnly: liveAgentChecker,
+		misePath:         mp,
 	}
 }
 

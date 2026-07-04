@@ -86,6 +86,75 @@ func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+// TestImportSidecar_EmptyDirVarDistinguishedFromMissing proves the
+// sybra#1495 diagnostic fix: when a sidecar path template references the
+// reserved worktree-dir var (_dir) and that var is empty at render time, the
+// escalation reason says so explicitly instead of the generic "missing" —
+// so an investigator doesn't misread an engine-lost-worktree-dir bug as "the
+// agent never wrote the review".
+func TestImportSidecar_EmptyDirVarDistinguishedFromMissing(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-dir.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{}, // _dir never set
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "unresolved: worktree dir variable was empty at render time") {
+		t.Fatalf("reason = %q, want empty-dir-var diagnostic, not generic missing", reason)
+	}
+	if strings.Contains(reason, "sidecar missing") {
+		t.Fatalf("reason = %q, must not read as a plain missing sidecar", reason)
+	}
+}
+
+// TestImportSidecar_MissingFileWithDirSetStillReportsMissing proves the new
+// empty-_dir diagnostic in importOneSidecar doesn't shadow the ordinary
+// "agent never wrote the file" case once _dir is genuinely populated.
+func TestImportSidecar_MissingFileWithDirSetStillReportsMissing(t *testing.T) {
+	store := newTestStoreWith(t, "test-import-required-sidecar-dir.yaml")
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-required-sidecar-dir",
+			CurrentStep: "review",
+			Variables:   map[string]string{"_dir": t.TempDir()},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	info, _ := tasks.GetTask("t1")
+	engine.importSidecarIfConfigured("t1", "review", info)
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "sidecar missing") {
+		t.Fatalf("reason = %q, want plain missing sidecar", reason)
+	}
+	if strings.Contains(reason, "unresolved") {
+		t.Fatalf("reason = %q, must not claim an unresolved dir var when _dir was set", reason)
+	}
+}
+
 func TestImportSidecar_NoConfigIsNoop(t *testing.T) {
 	store := newTestStore(t) // test-simple.yaml has no import_sidecar
 	tasks := newMemTasks()

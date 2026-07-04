@@ -199,6 +199,27 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	if _, held := m.dispatchClaims[taskID]; held {
 		return true
 	}
+	return m.hasLiveRegisteredAgent(taskID)
+}
+
+// HasLiveRegisteredAgentForTask reports whether a genuinely registered Agent
+// (already past dispatch setup) is live for taskID — unlike
+// HasRunningAgentForTask, it does NOT treat an in-flight dispatch claim as
+// "running". Used to gate worktree mutation (worktree.AgentChecker) from
+// inside the very dispatch call that holds the claim: that caller already IS
+// the in-flight dispatch, so checking dispatchClaims there would always see
+// its own claim and deadlock against itself. It must instead ask "is some
+// OTHER, already-started agent process still using this worktree?".
+func (m *Manager) HasLiveRegisteredAgentForTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hasLiveRegisteredAgent(taskID)
+}
+
+// hasLiveRegisteredAgent is the shared core of HasRunningAgentForTask and
+// HasLiveRegisteredAgentForTask. Callers must hold m.mu (read lock is
+// sufficient).
+func (m *Manager) hasLiveRegisteredAgent(taskID string) bool {
 	for _, a := range m.agents {
 		if a.TaskID != taskID {
 			continue

@@ -384,6 +384,15 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
+			// A tracked agent is still live in this worktree (see
+			// worktree.PrepareForTask's hasAgent guard) — this is a benign
+			// timing collision with a stale "no agent running" read
+			// upstream, not a real worktree conflict. Wait rather than
+			// escalate; the agent's own completion (or a later ResumeStalled
+			// tick, once it is genuinely idle) drives the workflow forward.
+			if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
+				return nil, "", workflow.ErrDispatchInFlight
+			}
 			if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 				return nil, "", workflow.ErrDispatchInFlight
 			}
