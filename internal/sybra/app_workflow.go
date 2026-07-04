@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // Compile-time interface checks.
@@ -504,10 +506,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// scope for this pass.
 		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
-			if _, recovered := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); recovered {
-				return "", "", "", workflow.ErrDispatchInFlight
-			}
-			return "", "", "", wtErr
+			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
 		}
 		cfg.Dir = d
 	}
@@ -557,6 +556,22 @@ func (a *agentAdapter) claimDirectDispatch(taskID string) error {
 		return workflow.ErrDispatchInFlight
 	}
 	return nil
+}
+
+// classifyDirectDispatchWorktreeErr translates a PrepareForTask failure from
+// the direct-dispatch path into the error execRunAgent should see. A tracked
+// agent still live in the worktree (worktree.ErrAgentRunning) is a benign
+// timing collision with a stale "no agent running" read upstream, not a real
+// worktree conflict — treat it like ErrDispatchInFlight so the step parks
+// and retries once the agent is genuinely idle, instead of escalating.
+func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr error) error {
+	if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
+		return workflow.ErrDispatchInFlight
+	}
+	if _, recovered := a.agentOrch.RecoverFromWorktreePrepFailure(a.tasks, taskID, wtErr); recovered {
+		return workflow.ErrDispatchInFlight
+	}
+	return wtErr
 }
 
 func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) error {

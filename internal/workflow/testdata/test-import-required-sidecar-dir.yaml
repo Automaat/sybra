@@ -1,0 +1,15 @@
+id: test-import-required-sidecar-dir
+name: Test Required Import Sidecar (worktree dir template)
+builtin: false
+steps:
+  - id: review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      prompt: review
+      needs_worktree: true
+      import_sidecar:
+        kind: plan_contract
+        from: '{{getvar .Vars "_dir"}}/review.md'
+        required: true
