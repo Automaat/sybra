@@ -115,10 +115,13 @@ func classifyTrivialFile(path string) trivialFileClass {
 // "simple" — small, low-risk diff: lightweight /pr-review is sufficient.
 // "staff"  — large or risky diff: full /staff-code-review required.
 //
-// Ordering: the pure-docs fast-path below runs BEFORE the size/file-count
-// caps and deliberately bypasses them. Dependency-manifest and generated-only
-// diffs still have to pass the existing size/file-count/risky-path gates
-// before they can route to the lightweight review.
+// Ordering: the pure-docs fast-path below runs BEFORE the risky-path gate
+// and the size/file-count caps, and deliberately bypasses all of them —
+// carve-out paths (skills/CLAUDE.md/orchestrator) are excluded from the
+// docs class itself, so this cannot leak agent-behavior content. Dependency-
+// manifest and generated-only diffs still have to pass the existing
+// size/file-count/risky-path gates before they can route to the lightweight
+// review.
 func triageVerdict(files []string, insertions, deletions int) (verdict, reason string) {
 	total := insertions + deletions
 	if len(files) == 0 {
@@ -129,15 +132,13 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 	if total == 0 {
 		return "skip", fmt.Sprintf("0 lines changed across %d file(s)", len(files))
 	}
-	for _, f := range files {
-		// Keep the carve-out/risky-path regex aligned between the trivial-file
-		// classifier above and the hard staff gate here.
-		if isRiskyReviewPath(f) || triageReviewCarveOutRe.MatchString(f) {
-			return "staff", "risky path: " + f
-		}
-	}
-	// Pure docs bypass the size/file-count caps below because the downgrade
-	// target is still a real lightweight review, not skip.
+	// Pure docs bypass BOTH the risky-path gate below and the size/file-count
+	// caps further down: classifyTrivialFile already excludes carve-out paths
+	// (.claude/skills/, CLAUDE.md, SKILL.md, orchestrator/), so a file only
+	// reaches trivialFileDocs here if it is genuinely prose with no bearing on
+	// agent/workflow behavior — even when it lives under a risky path prefix
+	// like internal/workflow/. The downgrade target is still a real
+	// lightweight review, not skip.
 	allDocs := true
 	for _, f := range files {
 		if classifyTrivialFile(f) != trivialFileDocs {
@@ -147,6 +148,13 @@ func triageVerdict(files []string, insertions, deletions int) (verdict, reason s
 	}
 	if allDocs {
 		return "simple", fmt.Sprintf("%d docs file(s)", len(files))
+	}
+	for _, f := range files {
+		// Keep the carve-out/risky-path regex aligned between the trivial-file
+		// classifier above and the hard staff gate here.
+		if isRiskyReviewPath(f) || triageReviewCarveOutRe.MatchString(f) {
+			return "staff", "risky path: " + f
+		}
 	}
 	if total > triageReviewLineLimit {
 		return "staff", fmt.Sprintf("%d lines > %d", total, triageReviewLineLimit)

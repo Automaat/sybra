@@ -137,6 +137,13 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "simple",
 		},
 		{
+			name:       "docs_under_risky_internal_path_is_simple",
+			files:      []string{"internal/workflow/README.md"},
+			insertions: 5,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
 			name:       "skill_md_carve_out_is_staff",
 			files:      []string{".claude/skills/sybra-tasks/SKILL.md"},
 			insertions: 3,
