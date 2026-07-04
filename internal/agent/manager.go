@@ -545,8 +545,14 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 
 // recordCompletion records duration + result into the metrics pipeline.
 // Call through fireComplete — do not call directly from runner terminal sites.
+//
+// Duration is measured against the last observed stream activity, not against
+// this call's own wall-clock time: fireComplete can run long after the
+// process actually finished (reattach/stop recovering a run the app missed
+// while it was down), and time.Since(a.StartedAt) would then count that idle
+// gap as run time.
 func (m *Manager) recordCompletion(ctx context.Context, a *Agent, ok bool) {
-	dur := time.Since(a.StartedAt)
+	dur := max(a.GetLastEventAt().Sub(a.StartedAt), 0)
 	result := "ok"
 	if !ok {
 		result = "error"

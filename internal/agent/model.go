@@ -105,6 +105,14 @@ type Agent struct {
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
 	completedOnce sync.Once
+	// costSessionID and costBaseUSD back AddResultStats' per-session cost
+	// bookkeeping. Providers report CostUSD as a cumulative total for the
+	// current session (not a per-turn delta), so a repeated session id must
+	// replace the running total rather than add to it; costBaseUSD banks the
+	// last cumulative snapshot of any prior session once a new session id
+	// appears (e.g. across a --resume segment boundary).
+	costSessionID string
+	costBaseUSD   float64
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.
@@ -342,14 +350,25 @@ func (a *Agent) GetSessionFilePath() string {
 	return a.sessionFilePath
 }
 
-// AddResultStats merges a result-event's stats into the running totals
-// and returns the new cumulative CostUSD.
+// AddResultStats merges a result-event's stats into the running totals and
+// returns the new cumulative CostUSD. Token counts are genuine per-turn
+// deltas and accumulate normally. Cost is not: providers report CostUSD as
+// the cumulative total for the whole session (including every prior turn,
+// and — across a --resume segment boundary — every prior segment too), so
+// summing it turn over turn multiplies the true spend several times over.
+// A same-session event therefore replaces the running total instead of
+// adding to it; only a change in session id banks the previous session's
+// final snapshot and starts counting the new one from there.
 func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
 	a.mu.Lock()
 	if sessionID != "" {
 		a.SessionID = sessionID
 	}
-	a.CostUSD += cost
+	if sessionID != "" && sessionID != a.costSessionID {
+		a.costBaseUSD = a.CostUSD
+		a.costSessionID = sessionID
+	}
+	a.CostUSD = a.costBaseUSD + cost
 	a.InputTokens += in
 	a.OutputTokens += out
 	a.ReasoningTokens += reasoning
@@ -748,6 +767,16 @@ func (a *Agent) GetLastEventAt() time.Time {
 func (a *Agent) TouchLastEvent() {
 	a.mu.Lock()
 	a.LastEventAt = time.Now().UTC()
+	a.mu.Unlock()
+}
+
+// SetLastEventAt overrides the last-activity timestamp directly. Used by
+// dead-process reattach recovery, where every replayed event is stamped at
+// replay time (not history), so AppendOutput/AppendConvo would otherwise
+// collapse LastEventAt to the wall-clock moment finalization happens to run.
+func (a *Agent) SetLastEventAt(t time.Time) {
+	a.mu.Lock()
+	a.LastEventAt = t
 	a.mu.Unlock()
 }
 

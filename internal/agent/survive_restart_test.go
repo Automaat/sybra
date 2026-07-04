@@ -586,6 +586,54 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 	}
 }
 
+// TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration
+// guards the dead-process recovery path against the duration bug the fix
+// targets: replaying the log stamps every event at replay time, so without
+// the fix LastEventAt collapses to the reattach wall-clock moment and a run
+// finalized after an app-downtime gap reports the full idle time as its
+// duration. The log file's mtime is the last real signal of when the
+// process actually finished, so it must win instead.
+func TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "comp2.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"result","result":"done","session_id":"sess-9","total_cost_usd":0.2}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	// Simulate the process having actually finished writing well before this
+	// reattach runs (the app-downtime gap).
+	finishedAt := time.Now().Add(-2 * time.Hour).UTC()
+	if err := os.Chtimes(logPath, finishedAt, finishedAt); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	var completed atomic.Value
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: t.TempDir(),
+		OnComplete:        func(ag *Agent) { completed.Store(ag) },
+	})
+
+	startedAt := finishedAt.Add(-time.Minute)
+	if err := m.reg.Save(Record{ID: "comp2", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, StartedAt: startedAt}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected dead record not reattached as live, got %d", len(got))
+	}
+	ag, _ := completed.Load().(*Agent)
+	if ag == nil {
+		t.Fatal("expected onComplete to fire for comp2")
+	}
+	if got := ag.GetLastEventAt(); got.Sub(finishedAt).Abs() > time.Second {
+		t.Fatalf("LastEventAt = %s, want ~%s (log mtime, not reattach wall-clock)", got, finishedAt)
+	}
+}
+
 // TestProcessHeadlessLine_CapturesSessionOnInit is the real regression
 // guard for Phase 2: the session id must be captured (and persisted to the
 // registry) on the init/system event, not only on the terminal result —
