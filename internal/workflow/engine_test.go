@@ -5579,6 +5579,8 @@ func TestLooksLikeTransientGitHub(t *testing.T) {
 		{"auth failure handled elsewhere", "gh: Bad credentials (HTTP 401)", false},
 		{"bare dns mention is not a network error", "cannot title DNS cache fix", false},
 		{"5-digit numeral containing 502 is not a gateway status", "task 150290 failed validation", false},
+		{"letters around 502 are not a gateway status", "abc502def", false},
+		{"status glued to HTTP token is not a gateway status", "gh failed: http502", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

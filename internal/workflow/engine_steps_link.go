@@ -153,9 +153,9 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 		if isPRCreationStep(last.StepID) {
 			switch {
 			case looksLikeGitHubRateLimit(last.Output):
-				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateRetryStatusReason)
+				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateRetryStatusReason, "workflow.evaluate.pr-create-rate-limit")
 			case looksLikeTransientGitHub(last.Output):
-				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateTransientStatusReason)
+				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateTransientStatusReason, "workflow.evaluate.pr-create-transient-outage")
 			case looksLikeAuthFailure(last.Output):
 				// Bad/expired credentials are not naturally time-bounded like a
 				// rate limit or a network blip, so they only get a bounded
@@ -163,7 +163,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				attempts := parseWorkflowInt(wfExec.Variables[prCreateAuthAttemptsVar])
 				if attempts < maxPRCreateAuthRetries {
 					wfExec.SetVar(prCreateAuthAttemptsVar, strconv.Itoa(attempts+1))
-					return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateAuthRetryReason)
+					return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateAuthRetryReason, "workflow.evaluate.pr-create-auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
 				}
 				reason = fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", attempts)
 			}
@@ -183,18 +183,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				attempts := parseWorkflowInt(wfExec.Variables[prCreateAttemptsVar])
 				if attempts < maxPRCreatePushedNoPRRetries {
 					wfExec.SetVar(prCreateAttemptsVar, strconv.Itoa(attempts+1))
-					wfExec.CurrentStep = last.StepID
-					wfExec.State = ExecWaiting
-					wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
-					if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-						return StepOutput{}, err
-					}
-					if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, prCreatePushedNoPRReason); statusErr != nil {
-						return StepOutput{}, statusErr
-					}
-					e.logger.Warn("workflow.evaluate.pr-create-pushed-no-pr-retry",
-						"task_id", taskID, "step", last.StepID, "attempt", attempts+1, "max", maxPRCreatePushedNoPRRetries)
-					return StepOutput{}, errStepParked
+					return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreatePushedNoPRReason, "workflow.evaluate.pr-create-pushed-no-pr-retry", "attempt", attempts+1, "max", maxPRCreatePushedNoPRRetries)
 				}
 				reason = fmt.Sprintf("commits pushed but no PR created after %d retries", attempts)
 			default:
@@ -212,7 +201,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 
 // parkStepForRetry rewinds wfExec back to stepID and persists a bounded
 // retry-after window, then parks the current evaluate step via errStepParked.
-func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, stepID, statusReason string) (StepOutput, error) {
+func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, stepID, statusReason, logEvent string, logAttrs ...any) (StepOutput, error) {
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
@@ -222,7 +211,8 @@ func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, 
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, statusReason); statusErr != nil {
 		return StepOutput{}, statusErr
 	}
-	e.logger.Warn("workflow.evaluate.pr-create-transient-outage", "task_id", taskID, "step", stepID, "reason", statusReason)
+	attrs := append([]any{"task_id", taskID, "step", stepID, "reason", statusReason}, logAttrs...)
+	e.logger.Warn(logEvent, attrs...)
 	return StepOutput{}, errStepParked
 }
 
@@ -277,14 +267,14 @@ func looksLikeGatewayStatus(lower string) bool {
 		if idx < 0 {
 			continue
 		}
-		// Guard against matching an unrelated 3-digit number embedded in a
-		// larger numeral (e.g. a PR number like "15029") by requiring the
-		// code to be flanked by non-digit boundaries.
-		if idx > 0 && isDigit(lower[idx-1]) {
+		// Guard against matching a status embedded in a larger token
+		// (e.g. "15029" or "abc502def") by requiring non-alphanumeric
+		// boundaries around the code.
+		if idx > 0 && !isStatusBoundary(lower[idx-1]) {
 			continue
 		}
 		end := idx + len(code)
-		if end < len(lower) && isDigit(lower[end]) {
+		if end < len(lower) && !isStatusBoundary(lower[end]) {
 			continue
 		}
 		return true
@@ -294,6 +284,14 @@ func looksLikeGatewayStatus(lower string) bool {
 
 func isDigit(b byte) bool {
 	return b >= '0' && b <= '9'
+}
+
+func isLowerAlpha(b byte) bool {
+	return b >= 'a' && b <= 'z'
+}
+
+func isStatusBoundary(b byte) bool {
+	return !isDigit(b) && !isLowerAlpha(b)
 }
 
 // looksLikeAuthFailure matches bad/expired GitHub credentials. Unlike rate
