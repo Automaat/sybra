@@ -143,8 +143,20 @@ func (m *Manager) RepairAll(ctx context.Context) {
 // return, (false, nil) if it was wiped and the caller should re-create it, or
 // (_, err) on a hard error.
 func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
-	if project.WorktreeHealthy(ctx, wtPath) && onExpectedBranch(ctx, wtPath, wantBranch) {
+	healthy := project.WorktreeHealthy(ctx, wtPath)
+	onBranch := onExpectedBranch(ctx, wtPath, wantBranch)
+	if healthy && onBranch {
 		return true, nil
+	}
+	if healthy {
+		m.logger.Warn("worktree.branch-mismatch-recreate", "task_id", taskID, "path", wtPath, "branch", wantBranch)
+		m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
+		_ = project.RemoveWorktree(ctx, clonePath, wtPath)
+		if err := os.RemoveAll(wtPath); err != nil {
+			return false, fmt.Errorf("remove mismatched-branch worktree %s: %w", wtPath, err)
+		}
+		_ = project.PruneWorktrees(ctx, clonePath)
+		return false, nil
 	}
 	m.logger.Warn("worktree.unhealthy", "task_id", taskID, "path", wtPath)
 	if err := project.RepairWorktrees(ctx, clonePath); err != nil {
