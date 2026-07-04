@@ -81,6 +81,15 @@ type AgentCompletionHandler struct {
 
 // OnComplete is called by the manager's construction-time completion callback.
 // once per terminal agent state transition.
+// runDurationSeconds measures against the last observed stream activity,
+// not finalize time: a process that emits its terminal result but lingers
+// before the agent record is finalized (reattach, stop, app restart) would
+// otherwise have that idle gap counted as run time — real runs have shown
+// multi-hour "durations" for work that took minutes.
+func runDurationSeconds(ag *agent.Agent) float64 {
+	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
+}
+
 func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	var resultContent string
 	var hasResultEvent bool
@@ -113,7 +122,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// Audit logging always fires — orchestrator brain agents have no
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
-	duration := time.Since(ag.StartedAt).Seconds()
+	duration := runDurationSeconds(ag)
 	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,

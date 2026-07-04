@@ -528,10 +528,12 @@ func TestStreamHeadlessOutput_PartialLineAtEOF(t *testing.T) {
 }
 
 // TestStreamHeadlessOutput_MultipleResultEvents pins the current semantics
-// when a provider emits more than one "result" event in a single stream.
-// Both events are recorded in the output buffer; per-run cost accumulates;
-// session_id takes the last non-empty value. Callers downstream that pick
-// the "final" result via backward scan thus see the last one.
+// when a provider emits more than one "result" event in a single stream,
+// each under a distinct session id. Both events are recorded in the output
+// buffer; the second session's final cumulative cost is banked on top of the
+// first session's (genuinely separate spend, so it adds); session_id takes
+// the last non-empty value. Callers downstream that pick the "final" result
+// via backward scan thus see the last one.
 func TestStreamHeadlessOutput_MultipleResultEvents(t *testing.T) {
 	input := `{"type":"result","result":"first","session_id":"s1","total_cost_usd":0.10,"total_input_tokens":10,"total_output_tokens":5}` + "\n" +
 		`{"type":"result","result":"second","session_id":"s2","total_cost_usd":0.20,"total_input_tokens":20,"total_output_tokens":10}` + "\n"
@@ -545,7 +547,7 @@ func TestStreamHeadlessOutput_MultipleResultEvents(t *testing.T) {
 		t.Fatalf("got %d result events, want 2 (both must be recorded). events=%+v", len(out), out)
 	}
 	if got := a.GetCostUSD(); got < 0.29 || got > 0.31 {
-		t.Errorf("GetCostUSD = %f, want ~0.30 (accumulated across both results)", got)
+		t.Errorf("GetCostUSD = %f, want ~0.30 (session s1's final cost banked, plus session s2's final cost)", got)
 	}
 	if got := a.GetSessionID(); got != "s2" {
 		t.Errorf("GetSessionID = %q, want %q (last non-empty wins)", got, "s2")
@@ -830,9 +832,11 @@ func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
 // escalationCh reply ("continue") to unblock the stream without a live
 // responder.
 func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
-	// Result #1 below the eventual limit, result #2 pushes cumulative above.
+	// Same session both times — cost is a cumulative-per-session snapshot,
+	// so result #2's 12.0 is the real running total (not summed with #1's
+	// 5.0), and it's what must push the tightened limit.
 	input := `{"type":"result","result":"r1","session_id":"s1","total_cost_usd":5.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n" +
-		`{"type":"result","result":"r2","session_id":"s1","total_cost_usd":6.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
+		`{"type":"result","result":"r2","session_id":"s1","total_cost_usd":12.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
 
 	var (
 		escalations int
@@ -863,7 +867,7 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Cumulative cost after both results = 11.0, > new limit 10.0.
+	// Cumulative cost after result #2 = 12.0, > new limit 10.0.
 	if escalations != 1 {
 		t.Errorf("got %d escalation events, want 1 (limit tightened mid-run should fire on result #2)", escalations)
 	}
