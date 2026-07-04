@@ -305,6 +305,25 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("removed_assertions_with_unrelated_addition_stays_high", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-\tif err != nil { t.Fatalf(\"bad: %v\", err) }\n-\tif y != 2 { t.Fatalf(\"bad y\") }\n"},
+			{Status: "A", Path: "internal/foo/new_feature_test.go", Patch: "@@ @@\n+func TestUnrelated(t *testing.T) {\n+\trequire.NoError(t, err)\n+}\n"},
+		})
+		found := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-assertions" {
+				found = true
+				if f.Severity != tamperHigh {
+					t.Errorf("removed-assertions severity = %q, want high (only 1 of 2 removed assertions offset)", f.Severity)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("want a removed-assertions finding, got %v", r.Findings)
+		}
+	})
+
 	t.Run("tampering_mixes_high_and_skips_medium", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "a_test.go", Patch: "@@ @@\n+\tt.Skip(\"x\")\n"},

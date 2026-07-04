@@ -422,6 +422,7 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 	report := tamperReport{TaskID: taskID, Base: base}
 	scanned := 0
 	totalAddedAssertions := 0
+	totalDeletedAssertions := 0
 	totalAddedDecl := 0
 	totalDeletedDecl := 0
 	for i := range changes {
@@ -446,17 +447,20 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 		scanned++
 		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent)
 		totalAddedAssertions += res.AddAssert
+		totalDeletedAssertions += res.DelAssert
 		totalAddedDecl += res.AddDecl
 		totalDeletedDecl += res.DelDecl
 		report.Findings = append(report.Findings, res.Findings...)
 	}
-	if totalAddedAssertions > 0 {
+	// An assertion or test declaration deleted in one file and re-added
+	// (moved/renamed/consolidated) in another nets to zero across the diff
+	// even though each file's own scan sees only its half — so the pass/fail
+	// decision is based on the diff-wide net, not the per-file net computed
+	// in finalize(). Both rules use the same strict net-offset formula so
+	// they downgrade consistently.
+	if totalDeletedAssertions-totalAddedAssertions <= 0 {
 		report.Findings = downgradeFindingsByRule(report.Findings, "removed-assertions")
 	}
-	// A test declaration deleted in one file and re-added (moved/renamed/
-	// consolidated) in another nets to zero across the diff even though each
-	// file's own scan sees only its half — so the pass/fail decision is based
-	// on the diff-wide net, not the per-file net computed in finalize().
 	if totalDeletedDecl-totalAddedDecl <= 0 {
 		report.Findings = downgradeFindingsByRule(report.Findings, "removed-test-cases")
 	}
