@@ -2,11 +2,49 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestInspectorVerdictSchemaIsCodexStrict asserts inspectorVerdictSchema is a
+// root object schema with additionalProperties:false and every struct field
+// (including the omitempty ones, nudge and reason_kind) listed as required —
+// codex's strict output-schema mode rejects a schema that omits any property
+// from "required".
+func TestInspectorVerdictSchemaIsCodexStrict(t *testing.T) {
+	var schema struct {
+		Type                 string                     `json:"type"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal([]byte(inspectorVerdictSchema), &schema); err != nil {
+		t.Fatalf("unmarshal inspectorVerdictSchema: %v", err)
+	}
+	if schema.Type != "object" {
+		t.Fatalf("type = %q, want object", schema.Type)
+	}
+	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+		t.Fatalf("additionalProperties = %v, want false", schema.AdditionalProperties)
+	}
+	required := make(map[string]bool, len(schema.Required))
+	for _, f := range schema.Required {
+		required[f] = true
+	}
+	for field := range schema.Properties {
+		if !required[field] {
+			t.Fatalf("codex strict output schema requires every property; %q missing from required", field)
+		}
+	}
+	for _, want := range []string{"stuck", "reason", "recommendation", "nudge", "reason_kind"} {
+		if !required[want] {
+			t.Fatalf("required is missing %q: %v", want, schema.Required)
+		}
+	}
+}
 
 func TestValidateInspectorVerdict(t *testing.T) {
 	tests := []struct {
@@ -19,6 +57,7 @@ func TestValidateInspectorVerdict(t *testing.T) {
 		{"valid stop with reward_hacking kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "reward_hacking"}, false},
 		{"valid stop with empty kind (backwards compat)", InspectorVerdict{Recommendation: "stop", ReasonKind: ""}, false},
 		{"valid continue", InspectorVerdict{Recommendation: "continue"}, false},
+		{"valid stop with empty nudge and reason_kind (codex strict emission)", InspectorVerdict{Recommendation: "stop", Nudge: "", ReasonKind: ""}, false},
 		{"invalid recommendation", InspectorVerdict{Recommendation: "bogus"}, true},
 		{"invalid reason_kind", InspectorVerdict{Recommendation: "stop", ReasonKind: "bogus"}, true},
 	}
