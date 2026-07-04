@@ -290,10 +290,10 @@ func DefaultConfig() *Config {
 		},
 		Agent: AgentDefaults{
 			Provider:         "claude",
-			MaxConcurrent:    100,
+			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
-			DispatchJitterMs: 0,
+			DispatchJitterMs: 1000,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,
