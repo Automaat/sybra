@@ -762,6 +762,12 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // enrichFromIssue path so tag-driven routing and the UI still recognize it),
 // and a StatusReason explaining why no workflow started. No flat workflow is
 // started — the task is a known umbrella.
+//
+// TaskType is set to umbrella so the fix holds durably: every write to the
+// task file re-fires the emit-path task.created dispatch, and the
+// enrich-pending tag this call clears was the only guard skipTaskCreatedWorkflow
+// had left to skip on. TaskTypeUmbrella is a permanent property of the task
+// record, not a transient marker, so it survives that same write.
 func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
 	u := task.Update{
 		Title:        task.Ptr(issue.Title),
@@ -769,6 +775,7 @@ func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.
 		ProjectID:    task.Ptr(repo),
 		Slug:         task.Ptr(task.Slugify(issue.Title)),
 		StatusReason: task.Ptr(reason),
+		TaskType:     task.Ptr(task.TaskTypeUmbrella),
 	}
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)

@@ -566,6 +566,16 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a failed umbrella expansion", got.Workflow)
 	}
+	// TaskType must be set durably — the enrich write above clears
+	// enrich-pending, and that write re-fires the emit-path task.created
+	// dispatch (fsnotify watcher). TaskType is the only guard left standing,
+	// so skipTaskCreatedWorkflow must still hold on the persisted task.
+	if got.TaskType != task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want %q so a re-fired task:created dispatch is skipped", got.TaskType, task.TaskTypeUmbrella)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the inert stub must be skipped, want no flat workflow")
+	}
 }
 
 func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {

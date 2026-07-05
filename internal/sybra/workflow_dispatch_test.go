@@ -20,3 +20,10 @@ func TestSkipTaskCreatedWorkflowUngated(t *testing.T) {
 		t.Errorf("expected ungated task not to skip task:created dispatch")
 	}
 }
+
+func TestSkipTaskCreatedWorkflowUmbrellaTaskType(t *testing.T) {
+	tsk := task.Task{TaskType: task.TaskTypeUmbrella, Tags: []string{"backend"}}
+	if !skipTaskCreatedWorkflow(tsk) {
+		t.Error("expected a TaskType=umbrella task to skip task:created dispatch, even without a marker tag")
+	}
+}
