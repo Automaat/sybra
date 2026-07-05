@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -101,6 +102,36 @@ func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
 		t.Fatalf("Startup after releasing the lock: %v", err)
 	}
 	shutdown(third)
+}
+
+func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupTestConfig(home)
+	if err := os.WriteFile(cfg.TasksDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed tasks path as file: %v", err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+
+	first := NewApp(logger, &slog.LevelVar{}, cfg)
+	if err := first.Startup(context.Background()); err == nil {
+		t.Fatal("Startup succeeded with tasks dir blocked by a regular file, want failure")
+	}
+	if err := os.Remove(cfg.TasksDir); err != nil {
+		t.Fatalf("remove blocking tasks file: %v", err)
+	}
+
+	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := second.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup after failed startup should reacquire released lock: %v", err)
+	}
+	if second.agentSvc != nil && second.agentSvc.approval != nil {
+		_ = second.agentSvc.approval.Shutdown(context.Background())
+	}
+	second.Shutdown(context.Background())
 }
 
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {

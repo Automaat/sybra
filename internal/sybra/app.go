@@ -247,6 +247,21 @@ func (a *App) Startup(ctx context.Context) error {
 	if err := a.acquireHomeLock(); err != nil {
 		return err
 	}
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		if a.cancel != nil {
+			a.cancel()
+		}
+		if a.homeUnlock != nil {
+			if err := a.homeUnlock(); err != nil {
+				a.logger.Warn("app.home_unlock.failed", "err", err)
+			}
+			a.homeUnlock = nil
+		}
+	}()
 
 	ctx, a.cancel = context.WithCancel(ctx)
 	a.ctx = ctx
@@ -363,6 +378,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
+	started = true
 	return nil
 }
 
