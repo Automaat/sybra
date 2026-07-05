@@ -232,6 +232,38 @@ func (a *App) acquireHomeLock() error {
 	return nil
 }
 
+func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+	a.initLoopScheduler(ctx, emit)
+	a.initFileWatcher(ctx, emit)
+
+	issuesFetcher := a.initAutomations(emit)
+	a.wireServices(emit)
+
+	// syncSkillsBundle's deep diagnostic logging uses context.Background()
+	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
+	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.recovery = a.newRecovery()
+	a.recovery.RunStartupCleanup(ctx)
+	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
+
+	lm := newLifecycleManager(a)
+	lm.StartManagers(ctx, emit)
+	lm.StartPollers(ctx, emit, issuesFetcher)
+	lm.StartWatchers(ctx)
+}
+
+func (a *App) cleanupFailedStartup() {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	if a.homeUnlock != nil {
+		if err := a.homeUnlock(); err != nil {
+			a.logger.Warn("app.home_unlock.failed", "err", err)
+		}
+		a.homeUnlock = nil
+	}
+}
+
 // Startup initializes all subsystems. Returns an error if a critical subsystem
 // fails; callers (Wails OnStartup, HTTP server main) handle the error.
 // contextcheck note: several call chains below (emit's task.created dispatch,
@@ -256,15 +288,7 @@ func (a *App) Startup(ctx context.Context) error {
 		if started {
 			return
 		}
-		if a.cancel != nil {
-			a.cancel()
-		}
-		if a.homeUnlock != nil {
-			if err := a.homeUnlock(); err != nil {
-				a.logger.Warn("app.home_unlock.failed", "err", err)
-			}
-			a.homeUnlock = nil
-		}
+		a.cleanupFailedStartup()
 	}()
 
 	ctx, a.cancel = context.WithCancel(ctx)
@@ -362,23 +386,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.initLoopScheduler(ctx, emit)
-	a.initFileWatcher(ctx, emit)
-
-	issuesFetcher := a.initAutomations(emit)
-	a.wireServices(emit)
-
-	// syncSkillsBundle's deep diagnostic logging uses context.Background()
-	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
-	a.recovery = a.newRecovery()
-	a.recovery.RunStartupCleanup(ctx)
-	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
-
-	lm := newLifecycleManager(a)
-	lm.StartManagers(ctx, emit)
-	lm.StartPollers(ctx, emit, issuesFetcher)
-	lm.StartWatchers(ctx)
+	a.startLifecycle(ctx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
