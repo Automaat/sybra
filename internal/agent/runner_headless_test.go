@@ -230,6 +230,44 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	}
 }
 
+func TestLogHeadlessStderr_CleanExit_LogsDebugNotError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logHeadlessStderr(logger, "agent-1", "Reading additional input from stdin...", nil)
+
+	out := buf.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("expected no ERROR log on clean exit, got: %s", out)
+	}
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "Reading additional input from stdin...") {
+		t.Fatalf("expected DEBUG log with stderr content, got: %s", out)
+	}
+}
+
+func TestLogHeadlessStderr_NonZeroExit_LogsError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logHeadlessStderr(logger, "agent-1", "panic: runtime error", errors.New("exit status 1"))
+
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "panic: runtime error") {
+		t.Fatalf("expected ERROR log with stderr content on non-zero exit, got: %s", out)
+	}
+}
+
+func TestLogHeadlessStderr_EmptyStderr_NoLog(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logHeadlessStderr(logger, "agent-1", "", nil)
+
+	if buf.Len() != 0 {
+		t.Fatalf("expected no log for empty stderr, got: %s", buf.String())
+	}
+}
+
 // TestClassifyProviderError_CodexConnectivityRoutesToRateLimit pins the
 // acceptance path: a codex backend connectivity error must classify as
 // SignalRateLimit and map to ErrorKind "rate_limit" (not "" / a fatal kind),

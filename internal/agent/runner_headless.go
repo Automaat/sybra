@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
@@ -206,12 +207,10 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	stderrOut := stderrBuf.String()
-	if stderrOut != "" {
-		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
+	logHeadlessStderr(m.logger, a.ID, stderrOut, waitErr)
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
@@ -322,12 +321,10 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
+	logHeadlessStderr(m.logger, a.ID, stderrOut, waitErr)
 	if waitErr != nil {
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
@@ -364,6 +361,25 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		return
 	}
 	a.SetExitErr(nil)
+}
+
+// logHeadlessStderr logs a completed attempt's captured stderr. Codex (and
+// other CLIs) routinely write informational lines to stderr on healthy runs
+// (e.g. "Reading additional input from stdin..."), so logging unconditionally
+// at ERROR made every run look like a crash and actively misled diagnosis of
+// task 133a5d46 / issue #1560. Only a genuine failure (non-zero exit or a
+// provider-reported result error, both folded into waitErr by the caller)
+// warrants ERROR; a clean exit logs the same content at DEBUG for anyone
+// still chasing provider noise.
+func logHeadlessStderr(logger *slog.Logger, id, stderrOut string, waitErr error) {
+	if stderrOut == "" {
+		return
+	}
+	if waitErr != nil {
+		logger.Error("agent.headless.stderr", "id", id, "stderr", stderrOut)
+		return
+	}
+	logger.Debug("agent.headless.stderr", "id", id, "stderr", stderrOut)
 }
 
 func resultStreamError(streamEvents []StreamEvent) error {
@@ -671,7 +687,13 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if event.PremiumRequests > 0 {
 			a.AddPremiumRequests(event.PremiumRequests)
 		}
-		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
+		// Codex NDJSON never reports session_id/cost on the result event, so
+		// those alone read as an empty/crashed run (this misled diagnosis of
+		// the 2026-07-05 stalled-workflow incident, #1559). Log the token
+		// counts codex does report so a healthy codex completion is
+		// distinguishable from a real crash at a glance.
+		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
+			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.
 		if event.SessionID != "" {
