@@ -694,7 +694,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		// meaningless fields for codex and log only the token counts it does
 		// report, so a healthy codex completion is distinguishable from a
 		// real crash at a glance.
-		if provider.Name() == "codex" {
+		if a.Provider == "codex" {
 			m.logger.Info("agent.headless.result", "id", a.ID,
 				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 		} else {
