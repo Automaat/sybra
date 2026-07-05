@@ -276,9 +276,7 @@ func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 			a.SetExitErr(errProviderRateLimited)
 		}
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.convo.stderr", "id", a.ID, "provider", a.Provider, "stderr", stderrOut)
-	}
+	logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr(), "provider", a.Provider)
 	return gotResult && a.GetExitErr() == nil
 }
 

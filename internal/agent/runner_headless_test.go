@@ -128,6 +128,48 @@ func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
 	}
 }
 
+// TestProcessHeadlessLine_ResultLogOmitsSessionCostForCodex verifies that
+// agent.headless.result drops the meaningless session_id/cost fields for
+// codex (which never reports them), while keeping them for providers that
+// do (e.g. claude) — see #1560.
+func TestProcessHeadlessLine_ResultLogOmitsSessionCostForCodex(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+
+	a := &Agent{ID: "codex1", TaskID: "t", Mode: "headless", Provider: "codex", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":123,"output_tokens":45}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("codex")); stop {
+		t.Fatal("result event must not stop the stream")
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "agent.headless.result") {
+		t.Fatalf("log = %q, want agent.headless.result entry", logged)
+	}
+	if strings.Contains(logged, "session_id=") || strings.Contains(logged, "cost=") {
+		t.Fatalf("log = %q, want no session_id/cost fields for codex", logged)
+	}
+	if !strings.Contains(logged, "input_tokens=123") || !strings.Contains(logged, "output_tokens=45") {
+		t.Fatalf("log = %q, want input_tokens/output_tokens present", logged)
+	}
+
+	logBuf.Reset()
+	b := &Agent{ID: "claude1", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	claudeLine := []byte(`{"type":"result","subtype":"success","session_id":"sess-1","total_cost_usd":0.25,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	if stop := m.processHeadlessLine(context.Background(), b, claudeLine, &lastEmit, providerByName("claude")); stop {
+		t.Fatal("result event must not stop the stream")
+	}
+	claudeLogged := logBuf.String()
+	if !strings.Contains(claudeLogged, `session_id=sess-1`) {
+		t.Fatalf("log = %q, want session_id present for claude", claudeLogged)
+	}
+	if !strings.Contains(claudeLogged, "cost=0.25") {
+		t.Fatalf("log = %q, want cost present for claude", claudeLogged)
+	}
+}
+
 func TestParseCodexStreamEvent_Error_SubstringFallback(t *testing.T) {
 	line := []byte(`{"type":"error","message":"Service overloaded (529)"}`)
 
@@ -227,6 +269,56 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	streamEvents := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
 	if shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = true on non-transient error, want false")
+	}
+}
+
+func TestLogAttemptStderr_CleanExit_LogsDebugNotError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "Reading additional input from stdin...", nil)
+
+	out := buf.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("expected no ERROR log on clean exit, got: %s", out)
+	}
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "Reading additional input from stdin...") {
+		t.Fatalf("expected DEBUG log with stderr content, got: %s", out)
+	}
+}
+
+func TestLogAttemptStderr_FinalProviderFailure_LogsError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "You've hit your weekly limit", errProviderRateLimited)
+
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "You've hit your weekly limit") {
+		t.Fatalf("expected ERROR log with stderr content on final provider failure, got: %s", out)
+	}
+}
+
+func TestLogAttemptStderr_ConvoPreservesExtraFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logAttemptStderr(logger, "agent.convo.stderr", "agent-1", "Reading additional input from stdin...", nil, "provider", "codex")
+
+	out := buf.String()
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "provider=codex") {
+		t.Fatalf("expected DEBUG convo log with provider field, got: %s", out)
+	}
+}
+
+func TestLogAttemptStderr_EmptyStderr_NoLog(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "", nil)
+
+	if buf.Len() != 0 {
+		t.Fatalf("expected no log for empty stderr, got: %s", buf.String())
 	}
 }
 
