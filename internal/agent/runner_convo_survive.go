@@ -157,20 +157,22 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
-		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -252,20 +254,22 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
-		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 

@@ -210,26 +210,25 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
-	logHeadlessStderr(m.logger, a.ID, stderrOut, waitErr)
-	if waitErr != nil {
-		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
-		a.SetExitErr(waitErr)
-	} else {
-		a.SetExitErr(nil)
-	}
-
 	// Only inspect the events produced during this attempt. Some CLIs report
 	// quota exhaustion as an exit-0 result event, so classify provider health
 	// even when the process itself looked successful.
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
 	if waitErr != nil {
+		a.SetExitErr(waitErr)
+		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -324,25 +323,25 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
-	logHeadlessStderr(m.logger, a.ID, stderrOut, waitErr)
-	if waitErr != nil {
-		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
-		a.SetExitErr(waitErr)
-	} else {
-		a.SetExitErr(nil)
-	}
 	// Only inspect events from this attempt, mirroring the legacy path —
 	// otherwise a transient 529 from an earlier attempt makes every later
 	// attempt retry regardless of its real failure.
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
 	if waitErr != nil {
+		a.SetExitErr(waitErr)
+		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -363,23 +362,25 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 	a.SetExitErr(nil)
 }
 
-// logHeadlessStderr logs a completed attempt's captured stderr. Codex (and
+// logAttemptStderr logs a completed attempt's captured stderr. Codex (and
 // other CLIs) routinely write informational lines to stderr on healthy runs
 // (e.g. "Reading additional input from stdin..."), so logging unconditionally
 // at ERROR made every run look like a crash and actively misled diagnosis of
-// task 133a5d46 / issue #1560. Only a genuine failure (non-zero exit or a
-// provider-reported result error, both folded into waitErr by the caller)
-// warrants ERROR; a clean exit logs the same content at DEBUG for anyone
-// still chasing provider noise.
-func logHeadlessStderr(logger *slog.Logger, id, stderrOut string, waitErr error) {
+// task 133a5d46 / issue #1560. Only a genuine failure warrants ERROR; a clean
+// exit logs the same content at DEBUG for anyone still chasing provider noise.
+func logAttemptStderr(logger *slog.Logger, eventName, id, stderrOut string, finalErr error, attrs ...any) {
 	if stderrOut == "" {
 		return
 	}
-	if waitErr != nil {
-		logger.Error("agent.headless.stderr", "id", id, "stderr", stderrOut)
+	kv := make([]any, 0, len(attrs)+4)
+	kv = append(kv, "id", id)
+	kv = append(kv, attrs...)
+	kv = append(kv, "stderr", stderrOut)
+	if finalErr != nil {
+		logger.Error(eventName, kv...)
 		return
 	}
-	logger.Debug("agent.headless.stderr", "id", id, "stderr", stderrOut)
+	logger.Debug(eventName, kv...)
 }
 
 func resultStreamError(streamEvents []StreamEvent) error {

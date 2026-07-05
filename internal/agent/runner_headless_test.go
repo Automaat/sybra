@@ -230,11 +230,11 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	}
 }
 
-func TestLogHeadlessStderr_CleanExit_LogsDebugNotError(t *testing.T) {
+func TestLogAttemptStderr_CleanExit_LogsDebugNotError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logHeadlessStderr(logger, "agent-1", "Reading additional input from stdin...", nil)
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "Reading additional input from stdin...", nil)
 
 	out := buf.String()
 	if strings.Contains(out, "level=ERROR") {
@@ -245,23 +245,35 @@ func TestLogHeadlessStderr_CleanExit_LogsDebugNotError(t *testing.T) {
 	}
 }
 
-func TestLogHeadlessStderr_NonZeroExit_LogsError(t *testing.T) {
+func TestLogAttemptStderr_FinalProviderFailure_LogsError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logHeadlessStderr(logger, "agent-1", "panic: runtime error", errors.New("exit status 1"))
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "You've hit your weekly limit", errProviderRateLimited)
 
 	out := buf.String()
-	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "panic: runtime error") {
-		t.Fatalf("expected ERROR log with stderr content on non-zero exit, got: %s", out)
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "You've hit your weekly limit") {
+		t.Fatalf("expected ERROR log with stderr content on final provider failure, got: %s", out)
 	}
 }
 
-func TestLogHeadlessStderr_EmptyStderr_NoLog(t *testing.T) {
+func TestLogAttemptStderr_ConvoPreservesExtraFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	logHeadlessStderr(logger, "agent-1", "", nil)
+	logAttemptStderr(logger, "agent.convo.stderr", "agent-1", "Reading additional input from stdin...", nil, "provider", "codex")
+
+	out := buf.String()
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "provider=codex") {
+		t.Fatalf("expected DEBUG convo log with provider field, got: %s", out)
+	}
+}
+
+func TestLogAttemptStderr_EmptyStderr_NoLog(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	logAttemptStderr(logger, "agent.headless.stderr", "agent-1", "", nil)
 
 	if buf.Len() != 0 {
 		t.Fatalf("expected no log for empty stderr, got: %s", buf.String())
