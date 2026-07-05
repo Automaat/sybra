@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/llmexec"
 )
@@ -93,6 +94,71 @@ func TestRun(t *testing.T) {
 				t.Fatalf("repair prompt missing invalid-output context: %q", prompts[len(prompts)-1])
 			}
 		})
+	}
+}
+
+// TestRunAttemptTimeoutGivesEachAttemptFreshBudget covers the umbrella
+// planner regression (#1555): a single shared deadline let attempt 1 consume
+// the whole budget on a hung provider call, so attempts 2/3 died instantly on
+// an already-expired context. With AttemptTimeout set, each attempt gets its
+// own context.WithTimeout derived fresh from ctx, so a provider that sleeps
+// past its own per-attempt deadline still leaves later attempts a full
+// budget to actually run in.
+func TestRunAttemptTimeoutGivesEachAttemptFreshBudget(t *testing.T) {
+	const attemptTimeout = 20 * time.Millisecond
+	calls := 0
+	restore := stubRunner(func(ctx context.Context, _ string, _ llmexec.Options) (llmexec.Result, error) {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return llmexec.Result{Provider: "claude"}, ctx.Err()
+		}
+		return llmexec.Result{Provider: "claude", Text: `{"ok":true}`}, nil
+	})
+	defer restore()
+
+	_, meta, err := Run(context.Background(), "prompt", Spec[testOut]{
+		Name:           "umbrella-order",
+		Tier:           Cheap,
+		AttemptTimeout: attemptTimeout,
+	}, llmexec.Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (attempt 2 must run after attempt 1's deadline expires)", calls)
+	}
+	if meta.Provider != "claude" {
+		t.Fatalf("meta.Provider = %q, want %q", meta.Provider, "claude")
+	}
+}
+
+// TestRunAttemptTimeoutFinalErrorNamesProvider covers the other half of
+// #1555: when every attempt fails, the wrapped error must still name the
+// provider that failed rather than reporting an empty provider (previously
+// lost because RunJSON's error-path Results were zero-valued).
+func TestRunAttemptTimeoutFinalErrorNamesProvider(t *testing.T) {
+	restore := stubRunner(func(_ context.Context, _ string, _ llmexec.Options) (llmexec.Result, error) {
+		return llmexec.Result{Provider: "claude"}, errors.New("signal: killed")
+	})
+	defer restore()
+
+	_, meta, err := Run(context.Background(), "prompt", Spec[testOut]{
+		Name:           "umbrella-order",
+		Tier:           Cheap,
+		AttemptTimeout: 20 * time.Millisecond,
+	}, llmexec.Options{})
+	if err == nil {
+		t.Fatal("Run: want error")
+	}
+	if !strings.Contains(err.Error(), `provider "claude"`) {
+		t.Fatalf("err = %v, want it to name provider %q", err, "claude")
+	}
+	if !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Fatalf("err = %v, want it to report all 3 attempts made", err)
+	}
+	if meta.Provider != "claude" {
+		t.Fatalf("meta.Provider = %q, want %q", meta.Provider, "claude")
 	}
 }
 

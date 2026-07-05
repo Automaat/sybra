@@ -9,6 +9,23 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+// TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt guards #1555: the
+// overall Generate deadline must comfortably fit plannerJobAttempts each
+// getting a full PlannerAttemptTimeout, and grow with subCount rather than
+// staying a single fixed ceiling shared across every retry.
+func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
+	t.Parallel()
+	minBudget := PlannerAttemptTimeout * plannerJobAttempts
+	if got := plannerTimeout(0); got < minBudget {
+		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d full attempts)", got, minBudget, plannerJobAttempts)
+	}
+	small := plannerTimeout(1)
+	large := plannerTimeout(38)
+	if large <= small {
+		t.Fatalf("plannerTimeout(38) = %v, want greater than plannerTimeout(1) = %v", large, small)
+	}
+}
+
 func newTestTaskManager(t *testing.T) *task.Manager {
 	t.Helper()
 	store, err := task.NewStore(t.TempDir())

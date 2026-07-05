@@ -21,10 +21,28 @@ import (
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
-// PlannerTimeout bounds the whole Generate call — every attemptPlan retry
+// PlannerAttemptTimeout bounds a single planner CLI invocation. It is passed
+// to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets this
+// full budget fresh, instead of splitting a single shared deadline across
+// them — a large umbrella's first attempt can legitimately take minutes to
+// read and order every sub-issue, which used to leave nothing for retries
+// (see #1555).
+const PlannerAttemptTimeout = 4 * time.Minute
+
+// plannerJobAttempts mirrors llmjob's default 1+maxRepairs attempts for the
+// "umbrella-order" job (Tier Standard, no MaxRepairs override) — used only to
+// size plannerTimeout below.
+const plannerJobAttempts = 3
+
+// plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
-// expansion indefinitely.
-const PlannerTimeout = 5 * time.Minute
+// expansion indefinitely. It comfortably covers plannerJobAttempts each
+// getting a full PlannerAttemptTimeout, plus headroom that scales with
+// subCount: a bigger umbrella means a longer prompt and legitimately more
+// model time, and a bigger expansion is more expensive to have starved.
+func plannerTimeout(subCount int) time.Duration {
+	return PlannerAttemptTimeout*plannerJobAttempts + time.Duration(subCount)*5*time.Second
+}
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
 // wedge the caller (notably the issue poll loop).
@@ -70,8 +88,8 @@ type Result struct {
 // plus one `blocked`+gated child per open sub-issue. It is idempotent: only
 // sub-issues without an existing task are created, and a fully-materialized
 // re-run skips the planner entirely. The planner run is bounded by
-// PlannerTimeout. Shared by the `sybra-cli umbrella` command and the GitHub
-// issue fetcher's auto-detect path.
+// plannerTimeout, scaled to the sub-issue count. Shared by the `sybra-cli
+// umbrella` command and the GitHub issue fetcher's auto-detect path.
 func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
 	var cfg expandConfig
 	for _, opt := range opts {
@@ -117,7 +135,7 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		genOpts = append(genOpts, WithGrounder(cfg.lister, cfg.minSubs))
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, PlannerTimeout)
+	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(subs)))
 	defer cancel()
 	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
@@ -288,8 +306,9 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
 		plan, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Plan]{
-			Name: "umbrella-order",
-			Tier: llmjob.Standard,
+			Name:           "umbrella-order",
+			Tier:           llmjob.Standard,
+			AttemptTimeout: PlannerAttemptTimeout,
 		}, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
