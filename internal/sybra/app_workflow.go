@@ -233,6 +233,9 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestOutcome:            runs[i].TestOutcome,
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
+			Mode:                   runs[i].Mode,
+			State:                  runs[i].State,
+			Result:                 runs[i].Result,
 		}
 	}
 	return out

@@ -3,6 +3,7 @@ package logging
 import (
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // ErrorThrottle suppresses repeated identical error log entries that would
@@ -57,4 +58,39 @@ func (t *ErrorThrottle) Clear(key string) {
 	t.mu.Lock()
 	delete(t.last, key)
 	t.mu.Unlock()
+}
+
+// IntervalThrottle promotes a condition that would otherwise log at DEBUG on
+// every poll tick (a dropped completion, a resume-loop skip reason) to INFO
+// at most once per key per interval, so a live incident leaves a visible
+// trail without one INFO line per tick for its whole duration.
+type IntervalThrottle struct {
+	mu       sync.Mutex
+	last     map[string]time.Time
+	interval time.Duration
+}
+
+// NewIntervalThrottle returns a throttle that logs at most once per key per
+// interval at INFO, downgrading more frequent repeats to DEBUG.
+func NewIntervalThrottle(interval time.Duration) *IntervalThrottle {
+	return &IntervalThrottle{last: make(map[string]time.Time), interval: interval}
+}
+
+// Log emits msg under key: INFO the first time (or once interval has
+// elapsed since the last INFO for this key), DEBUG otherwise.
+func (t *IntervalThrottle) Log(logger *slog.Logger, msg, key string, attrs ...any) {
+	now := time.Now()
+	t.mu.Lock()
+	last, seen := t.last[key]
+	due := !seen || now.Sub(last) >= t.interval
+	if due {
+		t.last[key] = now
+	}
+	t.mu.Unlock()
+
+	if due {
+		logger.Info(msg, attrs...)
+		return
+	}
+	logger.Debug(msg, attrs...)
 }

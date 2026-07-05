@@ -1737,6 +1737,55 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_ReconcilesTerminalAgentRunWithoutRedispatch is the
+// regression test for #1559: an agent finished (its terminal result already
+// persisted onto the task's AgentRuns) but the in-memory agentSteps tracking
+// entry that would normally route its completion is gone — a dropped
+// callback, a lost tracking entry, or any other gap that stops
+// HandleAgentComplete from ever firing for that run. The next ResumeStalled
+// tick must advance the workflow from the persisted result instead of
+// spawning a duplicate agent for the same step.
+func TestResumeStalled_ReconcilesTerminalAgentRunWithoutRedispatch(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+		AgentRuns: []AgentRunInfo{
+			{
+				AgentID:  "agent-lost",
+				Provider: "claude",
+				Mode:     "headless",
+				State:    "stopped",
+				Result:   "verdict: FAIL — reproduced the reported bug",
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if agents.CallCount() != 0 {
+		t.Fatalf("expected no re-dispatch (reconciliation should reuse the persisted result), got %d agent starts", agents.CallCount())
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.CurrentStep == "implement" {
+		t.Fatalf("workflow did not advance past implement: %+v", got.Workflow)
+	}
+}
+
 func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

@@ -75,6 +75,14 @@ type AgentRunInfo struct {
 	TestOutcome            string
 	TestFailureFingerprint string
 	HeadSHA                string
+	// Mode, State, and Result mirror task.AgentRun's persisted completion
+	// fields. Used by ResumeStalled's per-tick reconciliation to detect a
+	// headless run that already finished (state "stopped" with a non-empty
+	// Result) whose HandleAgentComplete callback never fired or was dropped
+	// — see reconcileTerminalAgentRun.
+	Mode   string
+	State  string
+	Result string
 }
 
 // TaskProvider reads and updates tasks.
@@ -223,16 +231,25 @@ type Engine struct {
 	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
-	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting        abtest.Config
-	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	// skipThrottle promotes HandleAgentComplete's bail paths and
+	// ResumeStalled's skip reasons from DEBUG to a throttled INFO (see
+	// skipLogInterval), so a dropped completion or a stuck resume is visible
+	// live instead of only reconstructible from code.
+	skipThrottle    *logging.IntervalThrottle
+	maxTestAttempts int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	verifyTimeout   time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting       abtest.Config
+	evalGate        *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
 // when SetTestingMaxAttempts was never called. Mirrors
 // config.DefaultTestingMaxAttempts (kept as a literal to avoid a config import).
 const defaultTestAttempts = 3
+
+// skipLogInterval bounds how often skipThrottle re-promotes a recurring
+// bail/skip reason to INFO for the same key.
+const skipLogInterval = 5 * time.Minute
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
@@ -251,6 +268,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		cascadeDepth:     make(map[string]int),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
+		skipThrottle:     logging.NewIntervalThrottle(skipLogInterval),
 	}
 }
 

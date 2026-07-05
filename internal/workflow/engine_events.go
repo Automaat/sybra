@@ -223,7 +223,8 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		return
 	}
 	if t.Workflow == nil {
-		e.logger.Debug("workflow.agent-complete.no-workflow", "task_id", taskID)
+		e.skipThrottle.Log(e.logger, "workflow.agent-complete.no-workflow", taskID+"|no-workflow",
+			"task_id", taskID)
 		return
 	}
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
@@ -235,13 +236,13 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 				e.importSidecarIfConfigured(taskID, spawnedStep, t)
 			}
 		}
-		e.logger.Debug("workflow.agent-complete.terminal",
+		e.skipThrottle.Log(e.logger, "workflow.agent-complete.terminal", taskID+"|terminal",
 			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
 		e.clearAgentStep(c.AgentID)
 		return
 	}
 	if t.Workflow.CurrentStep == "" {
-		e.logger.Debug("workflow.agent-complete.no-current-step",
+		e.skipThrottle.Log(e.logger, "workflow.agent-complete.no-current-step", taskID+"|no-current-step",
 			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
 		e.clearAgentStep(c.AgentID)
 		return
@@ -257,7 +258,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
 		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
-			e.logger.Debug("workflow.agent-complete.untracked-ignored",
+			e.skipThrottle.Log(e.logger, "workflow.agent-complete.untracked-ignored", taskID+"|untracked-ignored",
 				"task_id", taskID, "agent_id", c.AgentID, "current_step", spawnedStep)
 			e.clearAgentStep(c.AgentID)
 			return
@@ -692,16 +693,26 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
-			e.logger.Debug("workflow.resume-stalled.skip",
+			e.skipThrottle.Log(e.logger, "workflow.resume-stalled.skip", t.ID+"|retry_after",
 				"task_id", t.ID, "reason", "retry_after", "retry_after", retryAt.Format(time.RFC3339), "step", step.ID)
 			continue
 		}
 		if reason, skip := resumeSkipReasonForStatus(t.Status); skip {
-			e.logger.Debug("workflow.resume-stalled.skip",
+			e.skipThrottle.Log(e.logger, "workflow.resume-stalled.skip", t.ID+"|"+reason,
 				"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
 			continue
 		}
 		if e.agents.HasRunningAgent(t.ID) {
+			continue
+		}
+		// Per-tick reconciliation: a run_agent step waiting on an agent that
+		// already finished (its terminal result already persisted onto the
+		// task's AgentRuns) but whose HandleAgentComplete callback never
+		// advanced the workflow — the exact incident-class gap in #1559 —
+		// is fully reconcilable from disk right now. Re-drive completion
+		// from the persisted result instead of falling through to
+		// executeSteps below, which would spawn a duplicate agent.
+		if e.reconcileTerminalAgentRun(t, step) {
 			continue
 		}
 		if e.shouldSkipResumeForRateLimitedProvider(t, step) {
@@ -712,7 +723,7 @@ func (e *Engine) ResumeStalled() {
 		}
 		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 		if !acquired {
-			e.logger.Debug("workflow.resume-stalled.skip",
+			e.skipThrottle.Log(e.logger, "workflow.resume-stalled.skip", t.ID+"|"+reason,
 				"task_id", t.ID, "reason", reason, "step", step.ID)
 			continue
 		}
@@ -758,6 +769,68 @@ func (e *Engine) ResumeStalled() {
 			e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
 		}
 	}
+}
+
+// agentRunStateStopped mirrors agent.StateStopped (internal/agent). Kept as
+// a literal here rather than importing the agent package: the workflow
+// engine deliberately only sees the projected AgentRunInfo view of a task's
+// run history, not agent-package process-lifecycle types.
+const agentRunStateStopped = "stopped"
+
+// reconcileTerminalAgentRun re-drives a stalled run_agent step whose agent
+// already finished — its terminal result already persisted onto the task's
+// AgentRuns history — but whose HandleAgentComplete callback never advanced
+// the workflow (a dropped event, a lost agentSteps tracking entry, or any
+// other gap). This is the incident-class bug in #1559: the completion was
+// fully reconcilable from disk, but nothing re-drove it until the much
+// slower stale-agent recovery scan (internal/recovery.RestartStaleInProgress,
+// gated to task.StatusInProgress) eventually ran. Reconciling here means
+// every ResumeStalled tick (every ~minute) catches it instead.
+//
+// Mirrors the same heuristic internal/recovery.recoverCompletedHeadlessRun
+// uses for tasks restarted while in-progress: the current step has no
+// history record yet (not yet processed) and the task's last recorded agent
+// run is a terminal, non-empty-result headless run — in normal operation
+// that combination only arises when that run was dispatched for the current
+// step and its completion got lost, since completing any earlier step's
+// agent already advances CurrentStep past it.
+//
+// Only handles StepRunAgent in headless mode: interactive steps advance via
+// HandleStatusChange/wait_for_status or the dedicated recoverStaleInteractive
+// path instead.
+//
+// Returns true when it fired HandleAgentComplete — the caller should treat
+// this tick as handled and skip the normal re-dispatch path for this task.
+func (e *Engine) reconcileTerminalAgentRun(t *TaskInfo, step *Step) bool {
+	if step.Type != StepRunAgent {
+		return false
+	}
+	if t.Workflow.RecordForStep(step.ID) != nil {
+		// Already processed; any stall belongs to a downstream step.
+		return false
+	}
+	lr := lastAgentRunInfo(t)
+	if lr == nil || lr.Mode != "headless" || lr.State != agentRunStateStopped || lr.Result == "" {
+		return false
+	}
+	e.logger.Info("workflow.resume-stalled.reconcile",
+		"task_id", t.ID, "step", step.ID, "agent_id", lr.AgentID)
+	e.HandleAgentComplete(t.ID, AgentCompletion{
+		AgentID:  lr.AgentID,
+		Provider: lr.Provider,
+		Success:  true,
+		Result:   lr.Result,
+	})
+	return true
+}
+
+// lastAgentRunInfo returns the most recently recorded agent run for a task,
+// or nil if none exist.
+func lastAgentRunInfo(t *TaskInfo) *AgentRunInfo {
+	if len(t.AgentRuns) == 0 {
+		return nil
+	}
+	return &t.AgentRuns[len(t.AgentRuns)-1]
 }
 
 func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
@@ -915,7 +988,7 @@ func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step)
 	if !e.agents.ProviderRateLimited(prov) || e.agents.ProviderCanFailover(prov) {
 		return false
 	}
-	e.logger.Debug("workflow.resume-stalled.skip",
+	e.skipThrottle.Log(e.logger, "workflow.resume-stalled.skip", t.ID+"|provider_rate_limited",
 		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
 	return true
 }
