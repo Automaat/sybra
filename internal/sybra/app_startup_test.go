@@ -69,6 +69,40 @@ func (r *startupEventRecorder) snapshot() []string {
 	return append([]string(nil), r.events...)
 }
 
+func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	logger := slog.New(slog.DiscardHandler)
+
+	shutdown := func(app *App) {
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	}
+
+	first := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := first.Startup(context.Background()); err != nil {
+		t.Fatalf("first Startup: %v", err)
+	}
+
+	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	err := second.Startup(context.Background())
+	if err == nil {
+		t.Fatal("second Startup against the same home succeeded, want a fail-fast lock error")
+	}
+	shutdown(second) // must not touch the first instance's tasks/agents
+
+	shutdown(first)
+	third := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := third.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup after releasing the lock: %v", err)
+	}
+	shutdown(third)
+}
+
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
 	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, startupTestConfig(t.TempDir()))
 

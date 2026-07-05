@@ -325,6 +325,40 @@ func TestManager_StartNilConfig(t *testing.T) {
 	}
 }
 
+func TestManager_SybraHomeDir(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		t.Fatalf("SybraHomeDir did not create a directory at %q: %v", dir, statErr)
+	}
+	if !strings.HasSuffix(dir, filepath.Join("task-1", "sybra-home")) {
+		t.Fatalf("unexpected dir layout: %q", dir)
+	}
+
+	dir2, err := m.SybraHomeDir("task-2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir == dir2 {
+		t.Fatal("different tasks must not share a SYBRA_HOME")
+	}
+
+	// Idempotent — calling again for the same task returns the same path and
+	// does not fail even though the directory already exists.
+	dirAgain, err := m.SybraHomeDir("task-1")
+	if err != nil {
+		t.Fatalf("unexpected error on second call: %v", err)
+	}
+	if dirAgain != dir {
+		t.Fatalf("expected stable path, got %q then %q", dir, dirAgain)
+	}
+}
+
 // TestRunCmd_ContextCancellationKillsProcess proves runCmd's exec.Command is
 // built with the caller's context (exec.CommandContext): cancelling ctx must
 // kill an in-flight subprocess instead of leaving it to run to completion.

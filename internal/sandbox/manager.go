@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -121,4 +122,19 @@ func (m *Manager) Stop(taskID string) {
 		m.stopDocker(inst)
 	}
 	m.logger.Info("sandbox.stopped", "task_id", taskID)
+}
+
+// SybraHomeDir returns (creating on first call) an isolated, empty directory
+// under dataDir a test-runner/eval agent should point SYBRA_HOME at when the
+// task under test is Sybra itself. Unlike Start, this needs no Docker/k8s
+// machinery — plain isolation of the app-under-test's data dir is all
+// Sybra's own startup needs, since it creates tasks/, logs/, etc. itself
+// against a fresh home (see docs/manual-testing.md). Kept on Manager anyway
+// so per-task sandbox state lives under one dataDir regardless of kind.
+func (m *Manager) SybraHomeDir(taskID string) (string, error) {
+	dir := filepath.Join(m.dataDir, taskID, "sybra-home")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir sybra home: %w", err)
+	}
+	return dir, nil
 }
