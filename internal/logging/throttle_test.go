@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestLogger(t *testing.T) (*slog.Logger, *bytes.Buffer) {
@@ -109,5 +110,35 @@ func TestErrorThrottle_KeysAreIndependent(t *testing.T) {
 
 	if got := countLines(buf, "level=ERROR"); got != 2 {
 		t.Errorf("ERROR lines = %d, want 2 (one per key)", got)
+	}
+}
+
+func TestIntervalThrottle_FirstLogAtInfoThenDebug(t *testing.T) {
+	t.Parallel()
+	logger, buf := newTestLogger(t)
+	th := NewIntervalThrottle(time.Hour)
+
+	th.Log(logger, "workflow.resume-stalled.skip", "task-1")
+	th.Log(logger, "workflow.resume-stalled.skip", "task-1")
+
+	if got := countLines(buf, "level=INFO"); got != 1 {
+		t.Fatalf("INFO lines = %d, want 1", got)
+	}
+	if got := countLines(buf, "level=DEBUG"); got != 1 {
+		t.Fatalf("DEBUG lines = %d, want 1", got)
+	}
+}
+
+func TestIntervalThrottle_RearmsAfterInterval(t *testing.T) {
+	t.Parallel()
+	logger, buf := newTestLogger(t)
+	th := NewIntervalThrottle(time.Nanosecond)
+
+	th.Log(logger, "workflow.resume-stalled.skip", "task-1")
+	time.Sleep(time.Millisecond)
+	th.Log(logger, "workflow.resume-stalled.skip", "task-1")
+
+	if got := countLines(buf, "level=INFO"); got != 2 {
+		t.Fatalf("INFO lines = %d, want 2", got)
 	}
 }

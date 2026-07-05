@@ -805,12 +805,20 @@ func (e *Engine) reconcileTerminalAgentRun(t *TaskInfo, step *Step) bool {
 	if step.Type != StepRunAgent {
 		return false
 	}
+	if t.Status != "in-progress" {
+		return false
+	}
 	if t.Workflow.RecordForStep(step.ID) != nil {
 		// Already processed; any stall belongs to a downstream step.
 		return false
 	}
 	lr := lastAgentRunInfo(t)
 	if lr == nil || lr.Mode != "headless" || lr.State != agentRunStateStopped || lr.Result == "" {
+		return false
+	}
+	t.Workflow.Recovered = true
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.resume-stalled.reconcile.set-recovered", "task_id", t.ID, "err", err)
 		return false
 	}
 	e.logger.Info("workflow.resume-stalled.reconcile",

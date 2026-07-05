@@ -1750,6 +1750,12 @@ func TestResumeStalled_ReconcilesTerminalAgentRunWithoutRedispatch(t *testing.T)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
+	var recoveredSeen bool
+	tasks.SetGetTaskHook(func(id string, t *TaskInfo, count int) {
+		if id == "t1" && count == 1 && t.Workflow != nil && t.Workflow.Recovered {
+			recoveredSeen = true
+		}
+	})
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -1783,6 +1789,47 @@ func TestResumeStalled_ReconcilesTerminalAgentRunWithoutRedispatch(t *testing.T)
 	}
 	if got.Workflow.CurrentStep == "implement" {
 		t.Fatalf("workflow did not advance past implement: %+v", got.Workflow)
+	}
+	if !recoveredSeen {
+		t.Fatal("HandleAgentComplete did not reload a recovered workflow snapshot")
+	}
+}
+
+func TestResumeStalled_DoesNotReconcileTerminalAgentRunOutsideInProgress(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "todo",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+		AgentRuns: []AgentRunInfo{
+			{
+				AgentID:  "agent-lost",
+				Provider: "claude",
+				Mode:     "headless",
+				State:    "stopped",
+				Result:   "persisted output",
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.Recovered {
+		t.Fatal("unexpected recovered flag for non-in-progress reconciliation candidate")
 	}
 }
 
