@@ -578,6 +578,49 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	}
 }
 
+func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTracker(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     1151,
+			Title:      "☂️ duplicate cleanup failed",
+			URL:        "https://github.com/owner/repo/issues/1151",
+			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
+		}, nil
+	}
+	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+		return umbrella.Result{UmbrellaURL: "https://github.com/owner/repo/issues/1151", Created: 6}, nil
+	}
+	svc.deleteTask = func(string) error {
+		return errors.New("delete boom")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("duplicate stub should remain when cleanup delete fails: %v", err)
+	}
+	if got.Title != "☂️ duplicate cleanup failed" {
+		t.Fatalf("Title = %q, want enriched duplicate title", got.Title)
+	}
+	if !slices.Equal(got.Tags, []string{"umbrella", "backend"}) {
+		t.Fatalf("Tags = %v, want [umbrella backend] from the issue labels", got.Tags)
+	}
+	if got.StatusReason == "" {
+		t.Fatal("StatusReason is empty, want an explanation for the duplicate stub")
+	}
+	if got.TaskType == task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want non-umbrella duplicate so gate/scanExisting cannot treat it as the live tracker", got.TaskType)
+	}
+}
+
 func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: false}}
