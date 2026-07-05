@@ -690,11 +690,17 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		}
 		// Codex NDJSON never reports session_id/cost on the result event, so
 		// those alone read as an empty/crashed run (this misled diagnosis of
-		// the 2026-07-05 stalled-workflow incident, #1559). Log the token
-		// counts codex does report so a healthy codex completion is
-		// distinguishable from a real crash at a glance.
-		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
-			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
+		// the 2026-07-05 stalled-workflow incident, #1559). Omit the
+		// meaningless fields for codex and log only the token counts it does
+		// report, so a healthy codex completion is distinguishable from a
+		// real crash at a glance.
+		if provider.Name() == "codex" {
+			m.logger.Info("agent.headless.result", "id", a.ID,
+				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
+		} else {
+			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
+				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
+		}
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.
 		if event.SessionID != "" {
