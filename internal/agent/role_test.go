@@ -122,3 +122,28 @@ func TestRoleFromName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRoleFromName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		want   Role
+		wantOK bool
+	}{
+		{"test-runner:Run Tests", RoleTestRunner, true},
+		{"implementation:Impl", RoleImplementation, true},
+		{"unknown:something", RoleImplementation, false},
+		{"no-colon", RoleImplementation, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := ParseRoleFromName(tt.name)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("ParseRoleFromName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}

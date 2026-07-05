@@ -80,7 +80,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		// above whenever a thorough test-runner writes a long summary. No-op
 		// (empty) for every non-test step. See route_test_result.
 		if output.Status == "completed" {
-			if v := extractTestVerdict(output.Output); v != "" {
+			if v := ExtractTestVerdict(output.Output); v != "" {
 				wfExec.SetVar("step."+output.StepID+".verdict", v)
 			}
 		}

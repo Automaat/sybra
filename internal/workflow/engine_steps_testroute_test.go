@@ -70,8 +70,8 @@ func TestExtractTestVerdict(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := extractTestVerdict(tc.output); got != tc.want {
-				t.Errorf("extractTestVerdict(%q) = %q, want %q", tc.output, got, tc.want)
+			if got := ExtractTestVerdict(tc.output); got != tc.want {
+				t.Errorf("ExtractTestVerdict(%q) = %q, want %q", tc.output, got, tc.want)
 			}
 		})
 	}

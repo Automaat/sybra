@@ -46,6 +46,9 @@ steps:
         gate. If an existing test is genuinely wrong, fix it correctly and
         explain why in the commit message — do not silently disable it.
         Tampering is detected mechanically and will block the task.
+
+        Before finishing, re-check your change against a short checklist:
+        tests updated, edge cases covered, no leftover debug code.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract
