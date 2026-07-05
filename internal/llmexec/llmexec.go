@@ -67,7 +67,9 @@ type Result struct {
 func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 	candidates := candidates(opts.Provider)
 	var failures []string
+	var lastProvider string
 	for _, p := range candidates {
+		lastProvider = p
 		if ctx.Err() != nil {
 			return Result{}, ctx.Err()
 		}
@@ -103,7 +105,7 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
 				continue
 			}
-			return Result{}, providerError(p, err, stderrOut)
+			return Result{Provider: p}, providerError(p, err, stderrOut)
 		}
 
 		text, cost, parseErr := parseProviderText(p, raw)
@@ -125,14 +127,14 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
 				continue
 			}
-			return Result{}, fmt.Errorf("%s output: %w", p, parseErr)
+			return Result{Provider: p}, fmt.Errorf("%s output: %w", p, parseErr)
 		}
 		return Result{Provider: p, Text: text, CostUSD: cost}, nil
 	}
 	if len(failures) == 0 {
 		return Result{}, errors.New("no providers configured")
 	}
-	return Result{}, fmt.Errorf("all providers failed: %s", strings.Join(failures, "; "))
+	return Result{Provider: lastProvider}, fmt.Errorf("all providers failed: %s", strings.Join(failures, "; "))
 }
 
 func candidates(preferred string) []string {

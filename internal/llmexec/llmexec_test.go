@@ -294,6 +294,31 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	}
 }
 
+func TestRunJSONAllProvidersFailedNamesLastProvider(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
+	writeExe(t, filepath.Join(dir, "codex"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
+	writeExe(t, filepath.Join(dir, "copilot"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{})
+	if err == nil {
+		t.Fatal("RunJSON: want error when every provider fails")
+	}
+	if res.Provider != "copilot" {
+		t.Fatalf("provider = %q, want copilot (last candidate tried)", res.Provider)
+	}
+}
+
 func writeExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {

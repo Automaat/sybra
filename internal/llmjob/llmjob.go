@@ -28,6 +28,29 @@ type Spec[T any] struct {
 	Validate      func(*T) error
 	MaxRepairs    int
 	AvoidProvider string
+	// AttemptTimeout, when set, bounds a single runJSON invocation instead of
+	// letting the caller's ctx govern the whole call directly. Each attempt
+	// (including repairs) gets its own context.WithTimeout derived fresh from
+	// ctx, so one slow/hung attempt cannot consume the budget a later retry
+	// needs. It also opts the job into retrying after a hard runJSON error
+	// (not just a malformed/invalid response) — with a shared, un-bounded
+	// per-attempt budget that retry would just re-hit the same expired
+	// deadline, so it stays gated on AttemptTimeout being set. Zero leaves
+	// legacy behavior unchanged: the whole call shares ctx, and a runJSON
+	// error is fatal (no retry).
+	AttemptTimeout time.Duration
+}
+
+// Attempts returns the total number of runJSON invocations Run will make for
+// this Spec (the initial attempt plus repairs), so callers that need to size
+// an outer deadline around Run don't have to hand-maintain their own copy of
+// 1+maxRepairs.
+func (s Spec[T]) Attempts() int {
+	maxRepairs := s.MaxRepairs
+	if maxRepairs == 0 {
+		maxRepairs = defaultMaxRepairs
+	}
+	return 1 + maxRepairs
 }
 
 type Meta struct {
@@ -55,15 +78,20 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 	if maxRepairs == 0 {
 		maxRepairs = defaultMaxRepairs
 	}
-	attempts := 1 + maxRepairs
+	attempts := s.Attempts()
 	attemptPrompt := prompt
 	var lastErr error
 	var lastProvider string
+	madeAttempts := 0
 	for attempt := range attempts {
-		res, err := runJSON(ctx, attemptPrompt, o)
+		madeAttempts = attempt + 1
+		res, err := runAttempt(ctx, s.AttemptTimeout, attemptPrompt, o)
 		if err != nil {
 			lastErr = err
 			lastProvider = res.Provider
+			if s.AttemptTimeout > 0 && attempt < attempts-1 && ctx.Err() == nil {
+				continue
+			}
 			break
 		}
 		lastProvider = res.Provider
@@ -92,7 +120,20 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 	}
 	logJob(o.Logger, s.Name, lastProvider, s.Tier, maxRepairs, false)
 	return zero, Meta{Provider: lastProvider, Tier: s.Tier, Repairs: maxRepairs},
-		fmt.Errorf("%s job failed with provider %q after %d attempts: %w", s.Name, lastProvider, attempts, lastErr)
+		fmt.Errorf("%s job failed with provider %q model %q after %d attempts: %w", s.Name, lastProvider, o.Models[lastProvider], madeAttempts, lastErr)
+}
+
+// runAttempt runs one runJSON invocation, optionally bounding it with its own
+// fresh timeout derived from ctx rather than letting a shared ambient
+// deadline decide how much of the budget is left by the time this attempt
+// starts.
+func runAttempt(ctx context.Context, timeout time.Duration, prompt string, o llmexec.Options) (llmexec.Result, error) {
+	if timeout <= 0 {
+		return runJSON(ctx, prompt, o)
+	}
+	actx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return runJSON(actx, prompt, o)
 }
 
 func mergeModels(defaults, explicit map[string]string) map[string]string {
