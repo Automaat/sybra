@@ -57,18 +57,25 @@ func (r Role) IsSystem() bool {
 	return r == RoleTriage || r == RoleEval || r == RolePlanCritic || r == RoleHumanReview
 }
 
-// RoleFromName extracts the Role from a prefixed agent name.
-// Returns RoleImplementation for names without a known prefix.
-func RoleFromName(name string) Role {
+// ParseRoleFromName extracts the Role from a prefixed agent name.
+// The bool reports whether the name carried a known role prefix.
+func ParseRoleFromName(name string) (Role, bool) {
 	prefix, _, ok := strings.Cut(name, ":")
 	if !ok {
-		return RoleImplementation
+		return RoleImplementation, false
 	}
 	r := Role(prefix)
 	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleHumanReview:
-		return r
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation, RoleHumanReview:
+		return r, true
 	default:
-		return RoleImplementation
+		return RoleImplementation, false
 	}
+}
+
+// RoleFromName extracts the Role from a prefixed agent name.
+// Returns RoleImplementation for names without a known prefix.
+func RoleFromName(name string) Role {
+	r, _ := ParseRoleFromName(name)
+	return r
 }

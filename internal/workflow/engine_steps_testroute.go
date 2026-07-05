@@ -466,7 +466,7 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 			return false, body, nil
 		}
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
-	} else if extractTestVerdict(output.Output) == "FAIL" {
+	} else if ExtractTestVerdict(output.Output) == "FAIL" {
 		report = plainTestFailureReport(output.Output)
 	}
 	if report == "" {
@@ -1118,7 +1118,7 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 	if output.Status != "completed" && output.Status != "failed" {
 		return "", "", ""
 	}
-	v := extractTestVerdict(output.Output)
+	v := ExtractTestVerdict(output.Output)
 	outcome, fingerprint = classifyTestOutcome(output.Status, output.Output, body, wfExec, output.StepID)
 	if outcome != "" {
 		wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, outcome)
@@ -1178,7 +1178,7 @@ func appendTestInfrastructureFailure(output string) string {
 }
 
 func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID string) (outcome, fingerprint string) {
-	v := extractTestVerdict(output)
+	v := ExtractTestVerdict(output)
 	if status == "failed" {
 		return testOutcomeInfraFailure, ""
 	}
@@ -1839,7 +1839,7 @@ var fixSuggestionEvidencePrefixes = []string{
 	"temporary test body",
 }
 
-// extractTestVerdict returns "PASS"/"FAIL"/"" from agent output.
+// ExtractTestVerdict returns "PASS"/"FAIL"/"" from agent output.
 //
 // Object-shaped output (leading `{` after trimming BOM/whitespace) is treated
 // as authoritative JSON: the `verdict` field is parsed and the marker scan is
@@ -1851,16 +1851,7 @@ var fixSuggestionEvidencePrefixes = []string{
 // Non-object-shaped output (claude plain text) falls to the exact-line marker
 // scan. The last matching line wins; missing/ambiguous output yields "" → FAIL,
 // which is the safe direction.
-//
-// ExtractTestVerdict is the exported entry point for callers outside this
-// package (e.g. agent_completion.recordRunStats, which needs the verdict to
-// tell a test-runner that genuinely completed its protocol from one that
-// crashed before producing one).
 func ExtractTestVerdict(output string) string {
-	return extractTestVerdict(output)
-}
-
-func extractTestVerdict(output string) string {
 	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
 	if strings.HasPrefix(s, "{") {

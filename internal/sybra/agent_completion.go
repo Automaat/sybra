@@ -123,12 +123,13 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// parent task and skip the storage paths below, but their lifecycle
 	// still belongs in the audit trail.
 	duration := runDurationSeconds(ag)
+	role := h.roleForAgentName(ag.Name)
 	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,
 		"duration_s": duration,
 		"state":      string(state),
-		"role":       agent.RoleFromName(ag.Name),
+		"role":       role,
 		"provider":   ag.Provider,
 		"name":       ag.Name,
 		"log_file":   ag.LogPath,
@@ -141,7 +142,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 
-	h.recordRunStats(ag, cost, duration, exitErr, resultContent)
+	h.recordRunStats(ag, role, cost, duration, exitErr, resultContent)
 
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
@@ -432,11 +433,20 @@ func runOutcome(role agent.Role, exitErr error, resultContent string) string {
 	return "failed"
 }
 
+func (h *AgentCompletionHandler) roleForAgentName(name string) agent.Role {
+	role, ok := agent.ParseRoleFromName(name)
+	if ok || !strings.Contains(name, ":") {
+		return role
+	}
+	h.logger.Warn("agent.role.unknown-prefix", "name", name)
+	return role
+}
+
 // recordRunStats persists a stats.RunRecord for the completed agent.
 // No-op when the stats store failed to initialize at startup. resultContent
 // is the agent's final message text, forwarded to runOutcome for test-runner
 // verdict recovery.
-func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration float64, exitErr error, resultContent string) {
+func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duration float64, exitErr error, resultContent string) {
 	if h.stats == nil {
 		return
 	}
@@ -446,7 +456,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := runOutcome(agent.RoleFromName(ag.Name), exitErr, resultContent)
+	outcome := runOutcome(role, exitErr, resultContent)
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -458,7 +468,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 		TaskID:                   ag.TaskID,
 		ProjectID:                projectID,
 		Mode:                     ag.Mode,
-		Role:                     string(agent.RoleFromName(ag.Name)),
+		Role:                     string(role),
 		Model:                    ag.Model,
 		Provider:                 ag.Provider,
 		ReasoningEffort:          ag.ReasoningEffort,
