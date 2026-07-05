@@ -43,20 +43,14 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	// Push UpdatedAt far into the past to exceed any budget.
-	past := time.Now().UTC().Add(-24 * time.Hour)
+	// Blocker exemption only matters for in-progress tasks now that todo is
+	// out of scope for dwell entirely.
 	blockedTask, err = mgr.Update(blockedTask.ID, task.Update{
-		Status: task.Ptr(task.StatusTodo),
+		Status: task.Ptr(task.StatusInProgress),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
 	}
-	// Manually set UpdatedAt via a second Update with a body touch to keep past time.
-	// We can't set UpdatedAt directly — use a workaround: set the task's body again so
-	// the store re-marshals. Then verify the watchdog skips it regardless.
-	_ = past // UpdatedAt is set by the store on each Update call.
-	// Use a real old task by setting updatedAt via internal store if needed.
-	// Since we cannot set UpdatedAt, we verify the skip via status after checkDwell.
 
 	w := &Watchdog{
 		tasks:  mgr,
@@ -64,18 +58,18 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	}
 
 	// Run checkDwell with a "now" that is far ahead so any non-blocked task would fire.
-	w.checkDwell(time.Now().Add(48 * time.Hour))
+	w.checkDwell(blockedTask.UpdatedAt.Add(48 * time.Hour))
 
 	got, err := mgr.Get(blockedTask.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusTodo {
-		t.Fatalf("blocked task status = %q, want todo (should be skipped by dwell)", got.Status)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("blocked task status = %q, want in-progress (should be skipped by dwell)", got.Status)
 	}
 }
 
-func TestCheckDwell_EscalatesUnblockedTask(t *testing.T) {
+func TestCheckDwell_SkipsTodoTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -87,6 +81,40 @@ func TestCheckDwell_EscalatesUnblockedTask(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusTodo)})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	w := &Watchdog{
+		tasks:  mgr,
+		logger: slog.New(slog.DiscardHandler),
+	}
+
+	// checkDwell with "now" 48h ahead so the default 12h budget would be
+	// exceeded if todo were still in scope — it must not be escalated.
+	w.checkDwell(tk.UpdatedAt.Add(48 * time.Hour))
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusTodo {
+		t.Fatalf("status = %q, want todo (dwell must not escalate todo tasks)", got.Status)
+	}
+}
+
+func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+
+	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
 	}

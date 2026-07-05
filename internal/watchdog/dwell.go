@@ -18,7 +18,7 @@ const (
 )
 
 // dwellBudget returns how long a task may stay in an actionable status before
-// being escalated to human-required. Only applies to todo and in-progress.
+// being escalated to human-required. Only applies to in-progress.
 func dwellBudget(tags []string) time.Duration {
 	switch {
 	case slices.Contains(tags, "large"):
@@ -60,7 +60,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		if t.TaskType == task.TaskTypeChat {
 			continue
 		}
-		if t.Status != task.StatusTodo && t.Status != task.StatusInProgress {
+		if t.Status != task.StatusInProgress {
 			continue
 		}
 		if hasBlocker(t.Body) {
