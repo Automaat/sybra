@@ -74,3 +74,22 @@ func TestTryLockPath_ReleaseAllowsReacquire(t *testing.T) {
 		t.Fatalf("unlock2: %v", err)
 	}
 }
+
+func TestTryLockPath_CreatesParentDir(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "fresh", "nested", "sybra.lock")
+
+	unlock, err := TryLockPath(path)
+	if err != nil {
+		t.Fatalf("TryLockPath: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := unlock(); err != nil {
+			t.Errorf("unlock: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatalf("stat parent dir: %v", err)
+	}
+}

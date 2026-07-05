@@ -222,6 +222,10 @@ func (a *App) acquireHomeLock() error {
 		if errors.Is(err, fsutil.ErrLocked) {
 			return fmt.Errorf("another Sybra instance is already running against %s (%w) — stop it first, or point this run at a different SYBRA_HOME", config.HomeDir(), err)
 		}
+		if errors.Is(err, fsutil.ErrLockUnsupported) {
+			a.logger.Warn("app.home_lock.unsupported", "home", config.HomeDir(), "err", err)
+			return nil
+		}
 		return fmt.Errorf("acquire home lock: %w", err)
 	}
 	a.homeUnlock = unlock

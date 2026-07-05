@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
@@ -93,6 +95,9 @@ func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
 	err := second.Startup(context.Background())
 	if err == nil {
 		t.Fatal("second Startup against the same home succeeded, want a fail-fast lock error")
+	}
+	if !errors.Is(err, fsutil.ErrLocked) {
+		t.Fatalf("second Startup error = %v, want fsutil.ErrLocked", err)
 	}
 	shutdown(second) // must not touch the first instance's tasks/agents
 

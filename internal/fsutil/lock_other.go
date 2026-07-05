@@ -13,7 +13,7 @@ import (
 // packages that import fsutil (e.g. `go vet ./...` on a Windows dev machine)
 // still compile.
 func LockFile(_ string) (func() error, error) {
-	return nil, fmt.Errorf("fsutil: cross-process file locking is not supported on this platform")
+	return nil, fmt.Errorf("%w", ErrLockUnsupported)
 }
 
 // ErrLocked mirrors the unix build's sentinel so callers can compile
@@ -23,5 +23,5 @@ var ErrLocked = errors.New("fsutil: already locked by another process")
 
 // TryLockPath is unimplemented on non-unix platforms; see LockFile.
 func TryLockPath(_ string) (func() error, error) {
-	return nil, fmt.Errorf("fsutil: cross-process file locking is not supported on this platform")
+	return nil, fmt.Errorf("%w", ErrLockUnsupported)
 }

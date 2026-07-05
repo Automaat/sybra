@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,6 +61,9 @@ var ErrLocked = errors.New("fsutil: already locked by another process")
 // second launch can name the holder. The returned unlock releases the flock,
 // closes the file descriptor, and must be called exactly once.
 func TryLockPath(path string) (func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create lock dir: %w", err)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
