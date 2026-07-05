@@ -194,6 +194,17 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 
 	waitErr := cmd.Wait()
 
+	// Post-result-hang finalize: the watchdog's checkCompletedHang can kill a
+	// non-detached process after it already emitted a terminal result (this
+	// path has no live tailer to catch that itself), so the signal error in
+	// waitErr is expected and not a failure. Completion comes from the result
+	// event, mirroring the detached path's own handling in
+	// runHeadlessAttemptSurvive.
+	if a.wasCompletedByResult() {
+		m.finalizeFromResult(a, prevLen)
+		return false, nil
+	}
+
 	stderrOut := stderrBuf.String()
 	if stderrOut != "" {
 		m.logger.Error("agent.headless.stderr", "id", a.ID, "stderr", stderrOut)

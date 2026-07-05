@@ -164,6 +164,27 @@ func (m *Manager) StopAgent(agentID string) error {
 	return nil
 }
 
+// StopCompletedAgent force-stops a headless agent whose stream already ended
+// in a clean terminal result but whose process never exited (e.g. a
+// non-detached run, or a detached run whose tailer goroutine died before it
+// could finalize). Unlike StopAgent, it marks the agent as completed-by-result
+// first, so the runner's own exit-status handling (runHeadlessAttemptPipe,
+// tailHeadlessFile) derives completion from the terminal result event instead
+// of misreading the kill signal in cmd.Wait()'s error as a failed/stopped run.
+func (m *Manager) StopCompletedAgent(agentID string) error {
+	m.mu.Lock()
+	a, ok := m.agents[agentID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+	if a.Mode != "headless" || !a.CompletedSuccessfully() {
+		return fmt.Errorf("agent %s is not a completed headless agent", agentID)
+	}
+	a.setCompletedByResult(true)
+	return m.StopAgent(agentID)
+}
+
 func (m *Manager) GetAgent(agentID string) (*Agent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -371,6 +372,49 @@ func TestTerminalResultIdle(t *testing.T) {
 			t.Fatal("TerminalResultIdle = true when last event is not a result, want false")
 		}
 	})
+	t.Run("codex turn.completed idle past grace", func(t *testing.T) {
+		// Codex never emits a "result"-typed line; its terminal signal is
+		// turn.completed, mapped to StreamEvent{Type: "result"} by
+		// codexEventToStreamEvent. This locks in that the shared postResultGrace
+		// reaper reaps a lingering codex process the same way it does claude.
+		a := &Agent{}
+		parsed, err := ParseCodexLine([]byte(`{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}`))
+		if err != nil {
+			t.Fatalf("ParseCodexLine: %v", err)
+		}
+		a.AppendOutput(codexEventToStreamEvent(parsed))
+		a.mu.Lock()
+		a.LastEventAt = time.Now().Add(-2 * time.Minute)
+		a.mu.Unlock()
+		if !a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = false on codex turn.completed idle past grace, want true")
+		}
+	})
+}
+
+// TestFinalizeFromResult_IgnoresKillSignalWaitErr covers the fix for the
+// non-detached (survive_restart: false) headless path: when the watchdog's
+// checkCompletedHang kills a process that already emitted a clean terminal
+// result, cmd.Wait() surfaces the kill as a non-nil error. finalizeFromResult
+// must derive completion from the result event, not that wait error, so the
+// run finalizes as a success instead of the workflow engine treating it as a
+// stopped/failed stall.
+func TestFinalizeFromResult_IgnoresKillSignalWaitErr(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "assistant", Content: "working"})
+	a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+	// Simulate what runHeadlessAttemptPipe used to do unconditionally: record
+	// the kill signal from cmd.Wait() as the exit error.
+	a.SetExitErr(errors.New("signal: killed"))
+
+	m.finalizeFromResult(a, 0)
+
+	if err := a.GetExitErr(); err != nil {
+		t.Fatalf("GetExitErr() = %v, want nil (finalized from clean result)", err)
+	}
 }
 
 func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {

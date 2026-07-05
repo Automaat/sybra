@@ -264,15 +264,23 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 // isSignalKill alone misses Sybra-initiated stops — the failure mode from #641.
 // Rate limits reschedule rather than marking failed to avoid stranding tasks in
 // human-required while a healthy peer is available.
+//
+// WasStopped() is deliberately overridden by WasCompletedByResult(): the
+// watchdog's StopCompletedAgent (and the runner's own post-result-hang
+// reaper) both mark an agent stopped in order to reap its now-orphaned
+// process, but its work already finished cleanly via a terminal result event
+// — treating it as a stall would silently re-queue already-completed work
+// instead of finalizing it.
 func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
 	rateLimited := isRateLimitedRun(ag, exitErr)
-	if isSignalKill(exitErr) || ag.WasStopped() || rateLimited {
+	stopStalled := ag.WasStopped() && !ag.WasCompletedByResult()
+	if isSignalKill(exitErr) || stopStalled || rateLimited {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", ag.WasStopped(),
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled,
 			"rate_limited", rateLimited)
 		if rateLimited {
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)

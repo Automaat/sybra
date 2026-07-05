@@ -327,6 +327,50 @@ func TestDecideTrigger(t *testing.T) {
 	}
 }
 
+// TestCheckCompletedHang_StopsAfterGrace covers the watchdog's hard backstop
+// for a headless agent whose stream ended in a clean terminal result but
+// whose process never exited — no live tailer catches this outside the
+// detached/reattached path, so the watchdog must force-stop it directly once
+// it has sat idle past completedHangGrace.
+func TestCheckCompletedHang_StopsAfterGrace(t *testing.T) {
+	stopped := ""
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now().Add(-10 * time.Minute))
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped != "a1" {
+		t.Fatalf("stopCompletedAgent called with %q, want a1", stopped)
+	}
+}
+
+// TestCheckCompletedHang_WithinGraceLeavesAgentRunning ensures a completed
+// agent still within the grace window is left alone — the runner's own
+// post-result reaper gets first crack at it.
+func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now())
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped {
+		t.Fatal("stopCompletedAgent called within grace window, want no-op")
+	}
+}
+
 // TestApplyVerdict_NudgeLiveTransportDeliversInPlace covers the live-transport
 // path: an agent with a working SendPromptToAgent (interactive/conversational)
 // is steered in place and left running — no stop, no persisted steer.
