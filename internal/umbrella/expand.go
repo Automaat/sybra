@@ -29,10 +29,19 @@ var errSkipUpdate = errors.New("skip update")
 // (see #1555).
 const PlannerAttemptTimeout = 4 * time.Minute
 
-// plannerJobAttempts mirrors llmjob's default 1+maxRepairs attempts for the
-// "umbrella-order" job (Tier Standard, no MaxRepairs override) — used only to
-// size plannerTimeout below.
-const plannerJobAttempts = 3
+// plannerJobSpec is the llmjob.Spec FallbackPlannerRunner runs the
+// "umbrella-order" job with. It is shared with plannerTimeout below via
+// Attempts() so the two can never drift out of sync the way a
+// hand-maintained attempt-count constant could.
+var plannerJobSpec = llmjob.Spec[Plan]{
+	Name:           "umbrella-order",
+	Tier:           llmjob.Standard,
+	AttemptTimeout: PlannerAttemptTimeout,
+}
+
+// plannerJobAttempts mirrors llmjob's 1+maxRepairs attempts for plannerJobSpec
+// — used only to size plannerTimeout below.
+var plannerJobAttempts = plannerJobSpec.Attempts()
 
 // plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
@@ -41,7 +50,7 @@ const plannerJobAttempts = 3
 // subCount: a bigger umbrella means a longer prompt and legitimately more
 // model time, and a bigger expansion is more expensive to have starved.
 func plannerTimeout(subCount int) time.Duration {
-	return PlannerAttemptTimeout*plannerJobAttempts + time.Duration(subCount)*5*time.Second
+	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts) + time.Duration(subCount)*5*time.Second
 }
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
@@ -305,11 +314,7 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		gate = gates[0]
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		plan, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Plan]{
-			Name:           "umbrella-order",
-			Tier:           llmjob.Standard,
-			AttemptTimeout: PlannerAttemptTimeout,
-		}, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
+		plan, _, err := llmjob.Run(ctx, prompt, plannerJobSpec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}

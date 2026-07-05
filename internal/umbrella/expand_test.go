@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -15,7 +16,7 @@ import (
 // staying a single fixed ceiling shared across every retry.
 func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	t.Parallel()
-	minBudget := PlannerAttemptTimeout * plannerJobAttempts
+	minBudget := PlannerAttemptTimeout * time.Duration(plannerJobAttempts)
 	if got := plannerTimeout(0); got < minBudget {
 		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d full attempts)", got, minBudget, plannerJobAttempts)
 	}

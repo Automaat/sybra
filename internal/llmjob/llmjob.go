@@ -41,6 +41,18 @@ type Spec[T any] struct {
 	AttemptTimeout time.Duration
 }
 
+// Attempts returns the total number of runJSON invocations Run will make for
+// this Spec (the initial attempt plus repairs), so callers that need to size
+// an outer deadline around Run don't have to hand-maintain their own copy of
+// 1+maxRepairs.
+func (s Spec[T]) Attempts() int {
+	maxRepairs := s.MaxRepairs
+	if maxRepairs == 0 {
+		maxRepairs = defaultMaxRepairs
+	}
+	return 1 + maxRepairs
+}
+
 type Meta struct {
 	Provider string
 	Tier     Tier
@@ -66,7 +78,7 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 	if maxRepairs == 0 {
 		maxRepairs = defaultMaxRepairs
 	}
-	attempts := 1 + maxRepairs
+	attempts := s.Attempts()
 	attemptPrompt := prompt
 	var lastErr error
 	var lastProvider string
