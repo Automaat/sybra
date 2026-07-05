@@ -141,7 +141,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 
-	h.recordRunStats(ag, cost, duration, exitErr)
+	h.recordRunStats(ag, cost, duration, exitErr, resultContent)
 
 	// Loop agents run without a TaskID — let the scheduler record cost
 	// before the early return below kicks in.
@@ -411,9 +411,32 @@ func (h *AgentCompletionHandler) captureHeadSHA(taskID string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// runOutcome derives the stats.RunRecord outcome ("completed"/"failed") for a
+// terminal agent run. Test-runner is special-cased: its exitErr reflects
+// whether the *process* exited clean, not whether it correctly did its job
+// (proving or failing to disprove the implementation). A test-runner that
+// produced a protocol-valid PASS/FAIL verdict succeeded at its job even if a
+// benign post-result glitch (e.g. a trailing stream hiccup) left exitErr
+// non-nil, so it is recorded as "completed" rather than inflating the role's
+// failure_rate with a run that was never actually a failure. Other roles are
+// unaffected: their exitErr already reflects whether they completed the task.
+func runOutcome(role agent.Role, exitErr error, resultContent string) string {
+	if exitErr == nil {
+		return "completed"
+	}
+	if role == agent.RoleTestRunner {
+		if v := workflow.ExtractTestVerdict(resultContent); v == "PASS" || v == "FAIL" {
+			return "completed"
+		}
+	}
+	return "failed"
+}
+
 // recordRunStats persists a stats.RunRecord for the completed agent.
-// No-op when the stats store failed to initialize at startup.
-func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration float64, exitErr error) {
+// No-op when the stats store failed to initialize at startup. resultContent
+// is the agent's final message text, forwarded to runOutcome for test-runner
+// verdict recovery.
+func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration float64, exitErr error, resultContent string) {
 	if h.stats == nil {
 		return
 	}
@@ -423,10 +446,7 @@ func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, cost, duration 
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := "failed"
-	if exitErr == nil {
-		outcome = "completed"
-	}
+	outcome := runOutcome(agent.RoleFromName(ag.Name), exitErr, resultContent)
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {

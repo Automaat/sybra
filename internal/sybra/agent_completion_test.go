@@ -10,6 +10,56 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 )
 
+func TestRunOutcome(t *testing.T) {
+	t.Parallel()
+	errBoom := errors.New("boom")
+
+	cases := []struct {
+		name          string
+		role          agent.Role
+		exitErr       error
+		resultContent string
+		want          string
+	}{
+		{"clean_exit_any_role", agent.RoleImplementation, nil, "", "completed"},
+		{"non_test_runner_errors_are_failed", agent.RoleImplementation, errBoom, "TEST_VERDICT: PASS", "failed"},
+		{
+			name:          "test_runner_genuine_pass_survives_trailing_process_error",
+			role:          agent.RoleTestRunner,
+			exitErr:       errBoom,
+			resultContent: "ran the app end to end\nTEST_VERDICT: PASS",
+			want:          "completed",
+		},
+		{
+			// A FAIL verdict means the test-runner did its job (proved a real
+			// defect), so it's still "completed" for stats purposes — the
+			// implementation's failure is tracked separately via the task's
+			// TestOutcome/route_test_result, not this agent-run stat.
+			name:          "test_runner_genuine_fail_still_completed_the_protocol",
+			role:          agent.RoleTestRunner,
+			exitErr:       errBoom,
+			resultContent: "found a defect\nTEST_VERDICT: FAIL",
+			want:          "completed",
+		},
+		{
+			name:          "test_runner_no_verdict_is_a_real_failure",
+			role:          agent.RoleTestRunner,
+			exitErr:       errBoom,
+			resultContent: "crashed before concluding anything",
+			want:          "failed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runOutcome(tc.role, tc.exitErr, tc.resultContent); got != tc.want {
+				t.Errorf("runOutcome(%v, %v, %q) = %q, want %q", tc.role, tc.exitErr, tc.resultContent, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsRateLimitedRun(t *testing.T) {
 	t.Parallel()
 	rateLimited := &agent.Agent{}

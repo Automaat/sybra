@@ -1851,6 +1851,15 @@ var fixSuggestionEvidencePrefixes = []string{
 // Non-object-shaped output (claude plain text) falls to the exact-line marker
 // scan. The last matching line wins; missing/ambiguous output yields "" → FAIL,
 // which is the safe direction.
+//
+// ExtractTestVerdict is the exported entry point for callers outside this
+// package (e.g. agent_completion.recordRunStats, which needs the verdict to
+// tell a test-runner that genuinely completed its protocol from one that
+// crashed before producing one).
+func ExtractTestVerdict(output string) string {
+	return extractTestVerdict(output)
+}
+
 func extractTestVerdict(output string) string {
 	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
