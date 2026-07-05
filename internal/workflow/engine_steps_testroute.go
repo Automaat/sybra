@@ -1843,14 +1843,15 @@ var fixSuggestionEvidencePrefixes = []string{
 //
 // Object-shaped output (leading `{` after trimming BOM/whitespace) is treated
 // as authoritative JSON: the `verdict` field is parsed and the marker scan is
-// skipped entirely. A malformed or unexpected object yields "" → FAIL without
-// falling through to the marker, so a JSON body that incidentally contains a
-// marker-shaped substring cannot misroute. This is the path codex takes when
+// skipped entirely. A malformed or unexpected object yields "", and callers
+// interpret that empty verdict in the fail-safe direction, without falling
+// through to the marker. That prevents a JSON body that incidentally contains
+// a marker-shaped substring from misrouting. This is the path codex takes when
 // --output-schema enforces a structured response.
 //
 // Non-object-shaped output (claude plain text) falls to the exact-line marker
-// scan. The last matching line wins; missing/ambiguous output yields "" → FAIL,
-// which is the safe direction.
+// scan. The last matching line wins; missing/ambiguous output yields "", which
+// callers treat as a non-pass/failing-safe verdict.
 func ExtractTestVerdict(output string) string {
 	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
