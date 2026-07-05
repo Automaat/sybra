@@ -135,8 +135,11 @@ func TestRunAttemptTimeoutGivesEachAttemptFreshBudget(t *testing.T) {
 
 // TestRunAttemptTimeoutFinalErrorNamesProvider covers the other half of
 // #1555: when every attempt fails, the wrapped error must still name the
-// provider that failed rather than reporting an empty provider (previously
-// lost because RunJSON's error-path Results were zero-valued).
+// provider and model that failed rather than reporting an empty provider
+// (previously lost because RunJSON's error-path Results were zero-valued).
+// Tier: Standard matches the umbrella planner's actual Spec (llmjob.Standard
+// maps claude to sonnet), so this doubles as a regression test for the
+// missing-model-name defect found during manual testing.
 func TestRunAttemptTimeoutFinalErrorNamesProvider(t *testing.T) {
 	restore := stubRunner(func(_ context.Context, _ string, _ llmexec.Options) (llmexec.Result, error) {
 		return llmexec.Result{Provider: "claude"}, errors.New("signal: killed")
@@ -145,7 +148,7 @@ func TestRunAttemptTimeoutFinalErrorNamesProvider(t *testing.T) {
 
 	_, meta, err := Run(context.Background(), "prompt", Spec[testOut]{
 		Name:           "umbrella-order",
-		Tier:           Cheap,
+		Tier:           Standard,
 		AttemptTimeout: 20 * time.Millisecond,
 	}, llmexec.Options{})
 	if err == nil {
@@ -153,6 +156,9 @@ func TestRunAttemptTimeoutFinalErrorNamesProvider(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `provider "claude"`) {
 		t.Fatalf("err = %v, want it to name provider %q", err, "claude")
+	}
+	if !strings.Contains(err.Error(), `model "sonnet"`) {
+		t.Fatalf("err = %v, want it to name model %q", err, "sonnet")
 	}
 	if !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Fatalf("err = %v, want it to report all 3 attempts made", err)

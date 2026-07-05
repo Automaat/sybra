@@ -120,7 +120,7 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 	}
 	logJob(o.Logger, s.Name, lastProvider, s.Tier, maxRepairs, false)
 	return zero, Meta{Provider: lastProvider, Tier: s.Tier, Repairs: maxRepairs},
-		fmt.Errorf("%s job failed with provider %q after %d attempts: %w", s.Name, lastProvider, madeAttempts, lastErr)
+		fmt.Errorf("%s job failed with provider %q model %q after %d attempts: %w", s.Name, lastProvider, o.Models[lastProvider], madeAttempts, lastErr)
 }
 
 // runAttempt runs one runJSON invocation, optionally bounding it with its own
