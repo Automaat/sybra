@@ -47,6 +47,9 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	// deleteTask allows tests to force DeleteTask failures on cleanup branches
+	// without mutating the real task store or broadening the public API.
+	deleteTask func(id string) error
 	// enrichReconciling holds task IDs with an in-flight enrichment goroutine —
 	// either the original CreateTask async fetch or a reconcile-pass retry — so
 	// a maintenance tick never stacks a second concurrent gh fetch on the same
@@ -746,11 +749,11 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 	// Use DeleteTask (not the raw store Delete) so any agent/sandbox/worktree
 	// that started on the stub — e.g. if a flat workflow won the create race
 	// before the enrich-pending marker took effect — is torn down, not leaked.
-	if delErr := s.DeleteTask(taskID); delErr != nil {
+	if delErr := s.deleteTaskFunc()(taskID); delErr != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", delErr)
 		// Cleanup failed: enrich the stub so it is an identifiable,
 		// user-deletable duplicate rather than a raw-URL task with no metadata.
-		s.enrichInertUmbrellaStub(taskID, repo, issue,
+		s.enrichDuplicateUmbrellaStub(taskID, repo, issue,
 			"umbrella expanded to a separate tracker; this duplicate can be deleted")
 		return
 	}
@@ -762,7 +765,22 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // enrichFromIssue path so tag-driven routing and the UI still recognize it),
 // and a StatusReason explaining why no workflow started. No flat workflow is
 // started — the task is a known umbrella.
+//
+// On the true expansion-failure path, TaskType is set to umbrella so the fix
+// holds durably: every write to the task file re-fires the emit-path
+// task.created dispatch, and the enrich-pending tag this call clears was the
+// only guard skipTaskCreatedWorkflow had left to skip on. Duplicate-stub
+// cleanup failures must not set TaskTypeUmbrella because a real tracker
+// already exists for the same issue.
 func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	s.enrichUmbrellaStub(taskID, repo, issue, reason, true)
+}
+
+func (s *TaskService) enrichDuplicateUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	s.enrichUmbrellaStub(taskID, repo, issue, reason, false)
+}
+
+func (s *TaskService) enrichUmbrellaStub(taskID, repo string, issue github.Issue, reason string, markUmbrella bool) {
 	u := task.Update{
 		Title:        task.Ptr(issue.Title),
 		Issue:        task.Ptr(issue.URL),
@@ -770,16 +788,31 @@ func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.
 		Slug:         task.Ptr(task.Slugify(issue.Title)),
 		StatusReason: task.Ptr(reason),
 	}
+	// Replace tags with the issue's labels (possibly empty), preserving them for
+	// identification/routing while clearing the enrich-pending marker.
+	labels := slices.Clone(issue.Labels)
+	if markUmbrella {
+		u.TaskType = task.Ptr(task.TaskTypeUmbrella)
+	} else {
+		// Not the tracker (a real one already exists elsewhere) — mark this
+		// duplicate durably so skipTaskCreatedWorkflow keeps blocking dispatch
+		// on it without also claiming TaskTypeUmbrella.
+		labels = append(labels, umbrellaDuplicateTag)
+	}
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	// Replace tags with the issue's labels (possibly empty), preserving them for
-	// identification/routing while clearing the enrich-pending marker.
-	labels := issue.Labels
 	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
 	}
+}
+
+func (s *TaskService) deleteTaskFunc() func(id string) error {
+	if s.deleteTask != nil {
+		return s.deleteTask
+	}
+	return s.DeleteTask
 }
 
 func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {

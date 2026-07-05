@@ -566,6 +566,69 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a failed umbrella expansion", got.Workflow)
 	}
+	// TaskType must be set durably — the enrich write above clears
+	// enrich-pending, and that write re-fires the emit-path task.created
+	// dispatch (fsnotify watcher). TaskType is the only guard left standing,
+	// so skipTaskCreatedWorkflow must still hold on the persisted task.
+	if got.TaskType != task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want %q so a re-fired task:created dispatch is skipped", got.TaskType, task.TaskTypeUmbrella)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the inert stub must be skipped, want no flat workflow")
+	}
+}
+
+func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTracker(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     1151,
+			Title:      "☂️ duplicate cleanup failed",
+			URL:        "https://github.com/owner/repo/issues/1151",
+			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
+		}, nil
+	}
+	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+		return umbrella.Result{UmbrellaURL: "https://github.com/owner/repo/issues/1151", Created: 6}, nil
+	}
+	svc.deleteTask = func(string) error {
+		return errors.New("delete boom")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("duplicate stub should remain when cleanup delete fails: %v", err)
+	}
+	if got.Title != "☂️ duplicate cleanup failed" {
+		t.Fatalf("Title = %q, want enriched duplicate title", got.Title)
+	}
+	if !slices.Equal(got.Tags, []string{"umbrella", "backend", umbrellaDuplicateTag}) {
+		t.Fatalf("Tags = %v, want issue labels plus the durable duplicate-dispatch guard", got.Tags)
+	}
+	if got.StatusReason == "" {
+		t.Fatal("StatusReason is empty, want an explanation for the duplicate stub")
+	}
+	if got.TaskType == task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want non-umbrella duplicate so gate/scanExisting cannot treat it as the live tracker", got.TaskType)
+	}
+	// TaskType alone no longer guards dispatch for this duplicate (by design,
+	// to avoid the tracker-identity collision above), so the belt-and-braces
+	// umbrellaDuplicateTag check in skipTaskCreatedWorkflow must hold instead —
+	// a re-fired task:created dispatch (fsnotify watcher) must still be skipped.
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil for a duplicate umbrella stub", got.Workflow)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
+	}
 }
 
 func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
