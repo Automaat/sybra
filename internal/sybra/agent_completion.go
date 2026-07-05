@@ -91,24 +91,7 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 }
 
 func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
-	var resultContent string
-	var hasResultEvent bool
-	outputs := ag.Output()
-	for i := range outputs {
-		if outputs[i].Type == "result" {
-			resultContent = outputs[i].Content
-			hasResultEvent = true
-		}
-	}
-	// Codex's terminal turn.completed event carries no text — the final message
-	// arrives as an assistant StreamEvent. When a result event was seen but
-	// carried empty content, fall back to the last assistant turn so that
-	// result-dependent paths (extractTestVerdict, PR-URL scraping) work for
-	// codex too. Guard with hasResultEvent so agents that exit-0 without
-	// emitting any result event (no_result scenario) are NOT back-filled.
-	if hasResultEvent && resultContent == "" {
-		resultContent = lastAssistantText(ag)
-	}
+	resultContent := terminalResultContent(ag)
 
 	// Snapshot mutable fields once under the agent's lock so both the
 	// persistence write and the audit entry see a consistent view.
@@ -159,34 +142,7 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 
 	h.emitPermissionDenialAudits(ag)
 
-	truncated := resultContent
-	if len(truncated) > maxResultLen {
-		truncated = truncated[:maxResultLen] + "\n... (truncated)"
-	}
-	runUpdates := task.RunPatch{
-		State:           task.Ptr(string(state)),
-		CostUSD:         task.Ptr(cost),
-		PremiumRequests: task.Ptr(premiumRequests),
-		Result:          task.Ptr(truncated),
-		LogFile:         task.Ptr(ag.LogPath),
-		SessionID:       task.Ptr(ag.GetSessionID()),
-		Model:           task.Ptr(ag.Model),
-		Provider:        task.Ptr(ag.Provider),
-	}
-	addRunMetadata(&runUpdates, ag)
-	// For human-review agents, parse the verdict from the live (untruncated)
-	// output and persist it in its own field so detector.go can read it even
-	// when the full result text is longer than maxResultLen.
-	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
-		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
-			runUpdates.Verdict = task.Ptr(v.Decision)
-		}
-	}
-	// Capture the worktree HEAD while it still exists (cleanup below is async) so
-	// landing can later detect human edits after the agent (merged_with_edits).
-	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
-		runUpdates.HeadSHA = task.Ptr(sha)
-	}
+	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
@@ -223,6 +179,28 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	}
 }
 
+func terminalResultContent(ag *agent.Agent) string {
+	var resultContent string
+	var hasResultEvent bool
+	outputs := ag.Output()
+	for i := range outputs {
+		if outputs[i].Type == "result" {
+			resultContent = outputs[i].Content
+			hasResultEvent = true
+		}
+	}
+	// Codex's terminal turn.completed event carries no text — the final message
+	// arrives as an assistant StreamEvent. When a result event was seen but
+	// carried empty content, fall back to the last assistant turn so that
+	// result-dependent paths (extractTestVerdict, PR-URL scraping) work for
+	// codex too. Guard with hasResultEvent so agents that exit-0 without
+	// emitting any result event (no_result scenario) are NOT back-filled.
+	if hasResultEvent && resultContent == "" {
+		return lastAssistantText(ag)
+	}
+	return resultContent
+}
+
 // emitPermissionDenialAudits emits one agent.permission_denied audit event per
 // auto-mode denial recorded during the run. Batched at completion time so the
 // audit log is not spammed mid-run; a killed run may drop its denial events —
@@ -252,6 +230,38 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ReasoningEffort != "" {
 		updates.ReasoningEffort = task.Ptr(ag.ReasoningEffort)
 	}
+}
+
+func (h *AgentCompletionHandler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string) task.RunPatch {
+	truncated := resultContent
+	if len(truncated) > maxResultLen {
+		truncated = truncated[:maxResultLen] + "\n... (truncated)"
+	}
+	runUpdates := task.RunPatch{
+		State:           task.Ptr(string(state)),
+		CostUSD:         task.Ptr(cost),
+		PremiumRequests: task.Ptr(premiumRequests),
+		Result:          task.Ptr(truncated),
+		LogFile:         task.Ptr(ag.LogPath),
+		SessionID:       task.Ptr(ag.GetSessionID()),
+		Model:           task.Ptr(ag.Model),
+		Provider:        task.Ptr(ag.Provider),
+	}
+	addRunMetadata(&runUpdates, ag)
+	// For human-review agents, parse the verdict from the live (untruncated)
+	// output and persist it in its own field so detector.go can read it even
+	// when the full result text is longer than maxResultLen.
+	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+		if v, _, err := verdict.Parse(finalAssistantText(ag)); err == nil {
+			runUpdates.Verdict = task.Ptr(v.Decision)
+		}
+	}
+	// Capture the worktree HEAD while it still exists (cleanup below is async) so
+	// landing can later detect human edits after the agent (merged_with_edits).
+	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
+		runUpdates.HeadSHA = task.Ptr(sha)
+	}
+	return runUpdates
 }
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
