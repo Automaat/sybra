@@ -2,13 +2,16 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
@@ -67,6 +70,73 @@ func (r *startupEventRecorder) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.events...)
+}
+
+func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	logger := slog.New(slog.DiscardHandler)
+
+	shutdown := func(app *App) {
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	}
+
+	first := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := first.Startup(context.Background()); err != nil {
+		t.Fatalf("first Startup: %v", err)
+	}
+
+	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	err := second.Startup(context.Background())
+	if err == nil {
+		t.Fatal("second Startup against the same home succeeded, want a fail-fast lock error")
+	}
+	if !errors.Is(err, fsutil.ErrLocked) {
+		t.Fatalf("second Startup error = %v, want fsutil.ErrLocked", err)
+	}
+	shutdown(second) // must not touch the first instance's tasks/agents
+
+	shutdown(first)
+	third := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := third.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup after releasing the lock: %v", err)
+	}
+	shutdown(third)
+}
+
+func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupTestConfig(home)
+	if err := os.WriteFile(cfg.TasksDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("seed tasks path as file: %v", err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+
+	first := NewApp(logger, &slog.LevelVar{}, cfg)
+	if err := first.Startup(context.Background()); err == nil {
+		t.Fatal("Startup succeeded with tasks dir blocked by a regular file, want failure")
+	}
+	if err := os.Remove(cfg.TasksDir); err != nil {
+		t.Fatalf("remove blocking tasks file: %v", err)
+	}
+
+	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
+	if err := second.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup after failed startup should reacquire released lock: %v", err)
+	}
+	if second.agentSvc != nil && second.agentSvc.approval != nil {
+		_ = second.agentSvc.approval.Shutdown(context.Background())
+	}
+	second.Shutdown(context.Background())
 }
 
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {

@@ -76,6 +76,8 @@ In `## Test Failures` record, per defect: what you did (exact steps/commands), w
    - Namespace anything global by the task id.
    - **Tear down** every process/container/cluster you start before exiting (trap/defer). Leaks starve the next agent.
 
+   **If the project under test is Sybra itself**, never point a second Sybra process at the real `~/.sybra` — two instances sharing one home fight over task files, in-memory agent state, and pollers (one incident: a second instance reattached to the production instance's live agents and corrupted their bookkeeping). Sybra now enforces this with an exclusive `flock` on `<home>/sybra.lock`, so a stray second instance fails fast instead of running — but don't rely on that as your only safeguard. If `SYBRA_HOME` is already set in your environment, an isolated home was pre-provisioned for this run — use it (e.g. `SYBRA_HOME=$SYBRA_HOME go run ./cmd/sybra-server`, `SYBRA_HOME=$SYBRA_HOME go run ./cmd/sybra-cli ...`). If it is not set, follow `docs/manual-testing.md`: point `SYBRA_HOME` at a fresh temp directory and use the fake-provider harness before starting anything.
+
 5. **Attack across all angles** (aim for thorough, not one path):
    - **Happy path** — the primary flow from the task, end to end.
    - **Edge cases** — empty/missing input, max/min/boundary values, unicode, very large input, concurrent/repeated calls, re-entrancy.

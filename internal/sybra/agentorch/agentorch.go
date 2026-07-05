@@ -294,6 +294,32 @@ func (o *Orchestrator) SandboxEnv(taskID, dir string, t task.Task) []string {
 	return inst.EnvVars()
 }
 
+// TestIsolationEnv returns SYBRA_HOME=<isolated-dir> when task t's project is
+// Sybra itself, so a test-runner/eval agent that launches a Sybra build under
+// test never touches the production ~/.sybra. Without this, an app-under-test
+// process spawned by an adversarial test agent shares the real instance's
+// task files, in-memory agent state, and pollers — a second instance can
+// reattach to live production agents, advance other tasks' workflows, and
+// corrupt completion bookkeeping (the incident this guards against). Returns
+// nil for every other project, and for roles other than test-runner/eval,
+// which legitimately operate on the real worktree/repo and must not be
+// redirected.
+func (o *Orchestrator) TestIsolationEnv(taskID string, t task.Task) []string {
+	if o.sandboxes == nil || t.ProjectID == "" {
+		return nil
+	}
+	proj, err := o.projects.Get(t.ProjectID)
+	if err != nil || !proj.IsSybraProject() {
+		return nil
+	}
+	dir, err := o.sandboxes.SybraHomeDir(taskID)
+	if err != nil {
+		o.logger.Warn("sandbox.sybra_home.failed", "task_id", taskID, "err", err)
+		return nil
+	}
+	return []string{"SYBRA_HOME=" + dir}
+}
+
 // PrependSupervisorSteer consumes a pending watchdog headless-nudge steer for
 // taskID: it clears the one-shot SupervisorSteer field and returns prompt with
 // the correction prepended. Returns prompt unchanged when none is pending.

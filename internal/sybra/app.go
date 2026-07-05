@@ -10,6 +10,7 @@ package sybra
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
@@ -77,6 +79,7 @@ type App struct {
 	providerHealth    *provider.Checker
 	worktrees         *worktree.Manager
 	sandboxes         *sandbox.Manager
+	homeUnlock        func() error
 	monitorSvc        *monitor.Service
 	selfMonitorSvc    *selfmonitor.Service
 	evaluationSvc     *evaluation.Service
@@ -203,6 +206,64 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	return a
 }
 
+// acquireHomeLock takes an exclusive, non-blocking flock on
+// <SYBRA_HOME>/sybra.lock, held for the process lifetime, so a second Sybra
+// instance (desktop, sybra-server, or an app-under-test spawned by a
+// test-runner agent) pointed at the same home fails fast instead of racing
+// the first over task files, in-memory agent state, and pollers — the
+// dual-instance incident this guards against saw a second instance reattach
+// to the production instance's live agents and corrupt its completion
+// bookkeeping. The unlock is released in Shutdown; if Shutdown is never
+// called (process killed, os.Exit on a Startup error), the OS releases the
+// flock when the process's file descriptors close.
+func (a *App) acquireHomeLock() error {
+	unlock, err := fsutil.TryLockPath(filepath.Join(config.HomeDir(), "sybra.lock"))
+	if err != nil {
+		if errors.Is(err, fsutil.ErrLocked) {
+			return fmt.Errorf("another Sybra instance is already running against %s (%w) — stop it first, or point this run at a different SYBRA_HOME", config.HomeDir(), err)
+		}
+		if errors.Is(err, fsutil.ErrLockUnsupported) {
+			a.logger.Warn("app.home_lock.unsupported", "home", config.HomeDir(), "err", err)
+			return nil
+		}
+		return fmt.Errorf("acquire home lock: %w", err)
+	}
+	a.homeUnlock = unlock
+	return nil
+}
+
+func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+	a.initLoopScheduler(ctx, emit)
+	a.initFileWatcher(ctx, emit)
+
+	issuesFetcher := a.initAutomations(emit)
+	a.wireServices(emit)
+
+	// syncSkillsBundle's deep diagnostic logging uses context.Background()
+	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
+	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.recovery = a.newRecovery()
+	a.recovery.RunStartupCleanup(ctx)
+	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
+
+	lm := newLifecycleManager(a)
+	lm.StartManagers(ctx, emit)
+	lm.StartPollers(ctx, emit, issuesFetcher)
+	lm.StartWatchers(ctx)
+}
+
+func (a *App) cleanupFailedStartup() {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	if a.homeUnlock != nil {
+		if err := a.homeUnlock(); err != nil {
+			a.logger.Warn("app.home_unlock.failed", "err", err)
+		}
+		a.homeUnlock = nil
+	}
+}
+
 // Startup initializes all subsystems. Returns an error if a critical subsystem
 // fails; callers (Wails OnStartup, HTTP server main) handle the error.
 // contextcheck note: several call chains below (emit's task.created dispatch,
@@ -219,6 +280,17 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 // pass through is out of scope for this pass — nolint annotations below
 // point back to this comment.
 func (a *App) Startup(ctx context.Context) error {
+	if err := a.acquireHomeLock(); err != nil {
+		return err
+	}
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		a.cleanupFailedStartup()
+	}()
+
 	ctx, a.cancel = context.WithCancel(ctx)
 	a.ctx = ctx
 	a.logger.Info("app.starting")
@@ -314,26 +386,11 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.initAgentConfig()
 
-	a.initLoopScheduler(ctx, emit)
-	a.initFileWatcher(ctx, emit)
-
-	issuesFetcher := a.initAutomations(emit)
-	a.wireServices(emit)
-
-	// syncSkillsBundle's deep diagnostic logging uses context.Background()
-	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
-	a.recovery = a.newRecovery()
-	a.recovery.RunStartupCleanup(ctx)
-	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
-
-	lm := newLifecycleManager(a)
-	lm.StartManagers(ctx, emit)
-	lm.StartPollers(ctx, emit, issuesFetcher)
-	lm.StartWatchers(ctx)
+	a.startLifecycle(ctx, emit)
 
 	a.logAutomationsSummary()
 	a.logger.Info("app.started")
+	started = true
 	return nil
 }
 
@@ -436,6 +493,12 @@ func (a *App) Shutdown(_ context.Context) {
 	}
 	if a.audit != nil {
 		_ = a.audit.Close()
+	}
+	if a.homeUnlock != nil {
+		if err := a.homeUnlock(); err != nil {
+			a.logger.Warn("app.home_unlock.failed", "err", err)
+		}
+		a.homeUnlock = nil
 	}
 	a.logger.Info("app.stopped")
 }
