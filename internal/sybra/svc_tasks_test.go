@@ -621,8 +621,8 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 	}
 	// TaskType alone no longer guards dispatch for this duplicate (by design,
 	// to avoid the tracker-identity collision above), so the belt-and-braces
-	// title/label check in skipTaskCreatedWorkflow must hold instead — a
-	// re-fired task:created dispatch (fsnotify watcher) must still be skipped.
+	// umbrellaDuplicateTag check in skipTaskCreatedWorkflow must hold instead —
+	// a re-fired task:created dispatch (fsnotify watcher) must still be skipped.
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a duplicate umbrella stub", got.Workflow)
 	}
