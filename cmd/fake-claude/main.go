@@ -159,6 +159,7 @@ var scenarioHandlers = map[string]func(string){
 	"signal_kill":           func(string) { runSignalKill() },
 	"block_silent":          func(string) { _, _ = io.Copy(io.Discard, os.Stdin) },
 	"hang":                  func(string) { runHang() },
+	"success_then_hang":     func(string) { runSuccessThenHang() },
 	"auth_error":            func(string) { emitSystem(); emitAssistant("Authentication failed. Please re-auth."); os.Exit(1) },
 	"malformed_pr_output":   func(string) { runMalformedPROutput() },
 	"perf_stream":           func(string) { runPerfStream() },
@@ -179,6 +180,23 @@ func runSuccess() {
 	emitSystem()
 	emitAssistant("Working on it...")
 	emitResult("Task completed successfully.")
+}
+
+// runSuccessThenHang emits a clean terminal result, like runSuccess, but then
+// blocks forever instead of exiting — simulating a process that finished its
+// work but never exited (e.g. a subagent-spawning skill left CC alive). Used
+// to test the watchdog's StopCompletedAgent path, which must reap the
+// orphaned process without the completed work being treated as a stall.
+func runSuccessThenHang() {
+	emitSystem()
+	emitAssistant("Working on it...")
+	emitResult("Task completed successfully.")
+	// A bare `select {}` deadlocks a single-goroutine program instantly (the
+	// runtime treats it as a fatal all-goroutines-asleep condition, not a
+	// hang); a pending timer keeps the runtime from considering it deadlocked.
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func runEvaluate(taskID string) {

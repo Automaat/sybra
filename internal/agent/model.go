@@ -754,6 +754,16 @@ func (a *Agent) wasCompletedByResult() bool {
 	return a.completedByResult
 }
 
+// WasCompletedByResult reports whether the agent's completion was derived
+// from a clean terminal result event (via StopCompletedAgent or the runner's
+// own post-result-hang reaper) rather than an intentional mid-run stop. A
+// caller must not treat such an agent as stalled merely because WasStopped()
+// is also true — StopCompletedAgent marks both flags, since force-stopping
+// the now-orphaned process is still implemented via StopAgent.
+func (a *Agent) WasCompletedByResult() bool {
+	return a.wasCompletedByResult()
+}
+
 // GetLastEventAt returns the most recent event timestamp.
 func (a *Agent) GetLastEventAt() time.Time {
 	a.mu.RLock()
