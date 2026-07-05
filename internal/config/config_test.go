@@ -1,10 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/abtest"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -817,5 +822,289 @@ func TestRetryWatchdog(t *testing.T) {
 				t.Errorf("got %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// oldShapeABTestingExperiments returns the pre-reconcile shape: the original
+// single shared "code-author-cheap" bracket (hand-tuned claude weight 99, a
+// value neither the old nor new DefaultConfig would ever produce, so a
+// recovered backup is unambiguously distinguishable), no builtin_version
+// stamp, plus a user-authored experiment that must survive reconcile intact.
+func oldShapeABTestingExperiments() []abtest.Experiment {
+	enabled := true
+	return []abtest.Experiment{
+		{
+			ID:             "code-author-cheap",
+			Enabled:        &enabled,
+			AssignmentUnit: "stage",
+			Bracket:        "cheap",
+			Roles:          []string{"implementation", "test-runner", "fix-review", "pr-fix"},
+			Variants: []abtest.Variant{
+				{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 99},
+				{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 2},
+			},
+		},
+		{
+			ID:             "my-custom-experiment",
+			Enabled:        &enabled,
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "custom-v1", Provider: "claude", Model: "sonnet", Weight: 1},
+			},
+		},
+	}
+}
+
+func writeOldShapeConfig(t *testing.T, dir string) {
+	t.Helper()
+	enabled := true
+	cfg := &Config{
+		ABTesting: abtest.Config{
+			Enabled:              &enabled,
+			MinSamplesPerVariant: 20,
+			Experiments:          oldShapeABTestingExperiments(),
+			// BuiltinVersion deliberately left at zero: simulates a config
+			// persisted before builtin_version existed.
+		},
+	}
+	data, err := yamlv3.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLoadReconcilesStaleBuiltinABExperiments proves an existing persisted
+// config (predating the code-author-cheap/-maintenance-cheap split) adopts
+// the new built-in experiments on Load, not only fresh installs.
+func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+
+	byID := make(map[string]abtest.Experiment, len(cfg.ABTesting.Experiments))
+	for _, exp := range cfg.ABTesting.Experiments {
+		byID[exp.ID] = exp
+	}
+
+	if _, ok := byID["code-author-maintenance-cheap"]; !ok {
+		t.Fatal("code-author-maintenance-cheap not adopted by reconcile")
+	}
+	authorCheap, ok := byID["code-author-cheap"]
+	if !ok {
+		t.Fatal("code-author-cheap missing after reconcile")
+	}
+	for _, v := range authorCheap.Variants {
+		if v.ID == "claude-sonnet" && v.Weight == 99 {
+			t.Fatal("code-author-cheap still carries the stale hand-tuned weight; reconcile did not replace it")
+		}
+	}
+	if len(authorCheap.Roles) != 1 || authorCheap.Roles[0] != "implementation" {
+		t.Fatalf("code-author-cheap roles = %v, want [implementation] (role split did not land)", authorCheap.Roles)
+	}
+
+	if _, ok := byID["my-custom-experiment"]; !ok {
+		t.Fatal("user-authored experiment my-custom-experiment was dropped by reconcile")
+	}
+}
+
+// TestLoadReconcilePersistsBackupBeforeOverwrite proves a one-generation
+// backup of the prior experiment list is written to disk before the stale
+// same-ID built-in is overwritten, so a hand-tuned built-in is recoverable.
+func TestLoadReconcilePersistsBackupBeforeOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	backupPath := filepath.Join(dir, "config.ab_testing.backup.v0.yaml")
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("backup file not written: %v", err)
+	}
+	var backup struct {
+		PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
+		Experiments         []abtest.Experiment `yaml:"experiments"`
+	}
+	if err := yamlv3.Unmarshal(data, &backup); err != nil {
+		t.Fatalf("backup file unreadable: %v", err)
+	}
+	if backup.PriorBuiltinVersion != 0 {
+		t.Fatalf("PriorBuiltinVersion = %d, want 0", backup.PriorBuiltinVersion)
+	}
+	var recovered *abtest.Experiment
+	for i := range backup.Experiments {
+		if backup.Experiments[i].ID == "code-author-cheap" {
+			recovered = &backup.Experiments[i]
+		}
+	}
+	if recovered == nil {
+		t.Fatal("backup does not contain the prior code-author-cheap experiment")
+	}
+	found := false
+	for _, v := range recovered.Variants {
+		if v.ID == "claude-sonnet" && v.Weight == 99 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("backup lost the hand-tuned claude-sonnet weight — same-ID built-in is not recoverable")
+	}
+}
+
+// TestLoadReconcilePersistsToDisk proves the reconciled config is written
+// back to config.yaml immediately, so the refresh survives a process
+// restart rather than living only in the in-memory Load() result.
+func TestLoadReconcilePersistsToDisk(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk Config
+	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if got := onDisk.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("persisted BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+	foundCustom := false
+	for _, exp := range onDisk.ABTesting.Experiments {
+		if exp.ID == "my-custom-experiment" {
+			foundCustom = true
+		}
+	}
+	if !foundCustom {
+		t.Fatal("persisted config.yaml lost the user-authored experiment")
+	}
+}
+
+// TestLoadDoesNotReconcileUpToDateBuiltins proves a config already stamped at
+// the current builtin version is left alone — no repeat backup/rewrite work
+// on every Load (e.g. every hot reload).
+func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	enabled := true
+	cfg := &Config{
+		ABTesting: abtest.Config{
+			Enabled:              &enabled,
+			MinSamplesPerVariant: 20,
+			BuiltinVersion: func() *int {
+				v := abtest.CurrentBuiltinVersion
+				return &v
+			}(),
+			Experiments: abtest.DefaultConfig().Experiments,
+		},
+	}
+	data, err := yamlv3.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("backup file should not be written when already at current builtin version, stat err = %v", err)
+	}
+}
+
+func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("LoadNoPersist rewrote config.yaml")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not write backup, stat err = %v", err)
+	}
+}
+
+func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	firstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := strings.Replace(string(data), "builtin_version: 2", "builtin_version: 1", 1)
+	if rewritten == string(data) {
+		t.Fatal("failed to downgrade builtin_version in persisted config")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	secondBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v1.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillFirstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stillFirstBackup, firstBackup) {
+		t.Fatal("v0 backup was overwritten by a later reconcile")
+	}
+	if len(secondBackup) == 0 {
+		t.Fatal("v1 backup should not be empty")
 	}
 }

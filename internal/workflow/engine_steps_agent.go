@@ -245,8 +245,13 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 }
 
 func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, bool, error) {
+	eligibility := e.providerEligibilitySnapshot(ctx)
 	providerAllowed := func(provider string) bool {
-		return providerAvailable(provider) && e.agents.ProviderHealthy(provider) && !e.agents.ProviderRateLimited(provider)
+		status, ok := eligibility[provider]
+		if !ok {
+			status = e.providerEligibility(provider)
+		}
+		return status.allowed
 	}
 	var evalPassed abtest.EvalPassed
 	if e.evalGate != nil {
@@ -264,6 +269,7 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 	if err != nil || !ok {
 		return AgentAssignment{}, ok, err
 	}
+	e.reportProviderDemotion(ctx, a, eligibility, evalPassed)
 	return AgentAssignment{
 		ExperimentID:    a.ExperimentID,
 		Kind:            a.Kind,
@@ -276,6 +282,69 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 		PromptTransform: workflowPromptTransform(a.PromptTransform),
 		SkillAliases:    cloneWorkflowSkillAliases(a.SkillAliases),
 	}, true, nil
+}
+
+type providerEligibilityStatus struct {
+	allowed bool
+	reason  string
+}
+
+func (e *Engine) providerEligibility(provider string) providerEligibilityStatus {
+	switch {
+	case !providerAvailable(provider):
+		return providerEligibilityStatus{reason: "cli_not_found"}
+	case !e.agents.ProviderHealthy(provider):
+		return providerEligibilityStatus{reason: "unhealthy"}
+	case e.agents.ProviderRateLimited(provider):
+		return providerEligibilityStatus{reason: "rate_limited"}
+	default:
+		return providerEligibilityStatus{allowed: true}
+	}
+}
+
+func (e *Engine) providerEligibilitySnapshot(_ abtest.SelectionContext) map[string]providerEligibilityStatus {
+	statuses := map[string]providerEligibilityStatus{}
+	for i := range e.abTesting.Experiments {
+		exp := e.abTesting.Experiments[i]
+		if !exp.EnabledValue() {
+			continue
+		}
+		for j := range exp.Variants {
+			provider := exp.Variants[j].Provider
+			if _, ok := statuses[provider]; ok {
+				continue
+			}
+			statuses[provider] = e.providerEligibility(provider)
+		}
+	}
+	return statuses
+}
+
+// reportProviderDemotion detects when provider eligibility filtering (CLI
+// missing, unhealthy, rate-limited) changed the A/B outcome for this routing
+// context. It re-runs selection with no provider filter to find the provider
+// that would have won on hash alone, compares it to the actual (filtered)
+// assignment, then logs the captured selection-time reason. Throttling is
+// fleet-wide per routing context + demotion tuple so a sustained outage does
+// not emit one ERROR per task.
+func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abtest.Assignment, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+	if err != nil || !ok || wanted.Provider == actual.Provider {
+		return
+	}
+	status, ok := eligibility[wanted.Provider]
+	if !ok {
+		status = e.providerEligibility(wanted.Provider)
+	}
+	reason := status.reason
+	if reason == "" {
+		reason = "unknown"
+	}
+	key := strings.Join([]string{ctx.WorkflowID, ctx.Role, ctx.StepID, wanted.Provider, actual.Provider, reason}, "|")
+	msg := fmt.Sprintf("wanted=%s got=%s reason=%s", wanted.Provider, actual.Provider, reason)
+	e.demotionThrottle.Log(e.logger, "workflow.ab.provider_demoted", key, errors.New(msg),
+		"task_id", ctx.TaskID, "workflow_id", ctx.WorkflowID, "role", ctx.Role, "step_id", ctx.StepID,
+		"wanted_provider", wanted.Provider, "selected_provider", actual.Provider, "reason", reason)
 }
 
 func (e *Engine) renderAssignedPrompt(taskID string, step *Step, ctx TemplateContext, assignment AgentAssignment, steerLog string) (string, error) {

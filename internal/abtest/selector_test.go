@@ -3,6 +3,7 @@ package abtest
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,23 +86,48 @@ func TestSelectSkipsNonMatchingRole(t *testing.T) {
 
 func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 	cfg := DefaultConfig()
-	for _, role := range []string{"implementation", "test-runner", "fix-review", "pr-fix"} {
-		t.Run(role, func(t *testing.T) {
+	cases := []struct {
+		role         string
+		experimentID string
+		variantIDs   []string
+	}{
+		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
+		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+		{"fix-review", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.role, func(t *testing.T) {
 			for i := range 100 {
-				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), role, "step")
+				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), tt.role, "step")
 				if err != nil || !ok {
 					t.Fatalf("Select ok=%v err=%v", ok, err)
 				}
-				if a.ExperimentID != "code-author-cheap" {
-					t.Fatalf("ExperimentID = %q, want code-author-cheap", a.ExperimentID)
+				if a.ExperimentID != tt.experimentID {
+					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, tt.experimentID)
 				}
-				switch a.VariantID {
-				case "claude-sonnet", "codex-gpt-5.4", "copilot-sonnet":
-				default:
-					t.Fatalf("VariantID = %q, want cheap variant", a.VariantID)
+				if !slices.Contains(tt.variantIDs, a.VariantID) {
+					t.Fatalf("VariantID = %q, want one of %v", a.VariantID, tt.variantIDs)
 				}
 			}
 		})
+	}
+}
+
+// TestDefaultConfigScopesCopilotToImplementation locks the "capped, not
+// blanket" copilot requirement: the maintenance-role experiment
+// (fix-review/pr-fix/test-runner) must never surface a copilot variant, only
+// the implementation-scoped experiment may.
+func TestDefaultConfigScopesCopilotToImplementation(t *testing.T) {
+	cfg := DefaultConfig()
+	for _, exp := range cfg.Experiments {
+		if exp.ID == "code-author-maintenance-cheap" {
+			for _, v := range exp.Variants {
+				if v.Provider == "copilot" {
+					t.Fatalf("code-author-maintenance-cheap must not include a copilot variant, got %+v", v)
+				}
+			}
+		}
 	}
 }
 

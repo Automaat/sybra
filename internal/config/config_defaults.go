@@ -437,11 +437,30 @@ func (c *Config) ExperiencesDir() string {
 }
 
 func Load() (*Config, error) {
+	return load(loadOptions{persistABTestingReconcile: true})
+}
+
+// LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
+// without writing any migration back to disk. Reload paths use this to keep
+// their read-only contract and to preserve raw-editor formatting/comments.
+func LoadNoPersist() (*Config, error) {
+	return load(loadOptions{})
+}
+
+type loadOptions struct {
+	persistABTestingReconcile bool
+}
+
+func load(opts loadOptions) (*Config, error) {
 	cfg := DefaultConfig()
 
 	path := configPath()
 	data, err := os.ReadFile(path)
-	if err == nil {
+	existingFile := err == nil
+	if existingFile {
+		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
+		// reflect the document exactly: nil means "key absent" on older files.
+		cfg.ABTesting.BuiltinVersion = nil
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
@@ -521,10 +540,21 @@ func Load() (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
-	applyABTestingDefaults(cfg)
+	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistABTestingReconcile)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
+
+	// Persist a builtin A/B experiment reconcile immediately so the refreshed
+	// weights survive a restart instead of only living in this in-memory cfg
+	// until something else happens to call Save(). Only for a config file that
+	// already existed — a brand-new install seeds def.Experiments directly and
+	// writeDefaultConfig already wrote the (comment-only) file above.
+	if opts.persistABTestingReconcile && existingFile && abTestingReconciled {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
+		}
+	}
 
 	return cfg, nil
 }
@@ -610,9 +640,13 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	}
 }
 
-func applyABTestingDefaults(cfg *Config) {
+// applyABTestingDefaults fills zero-value A/B testing config and reconciles
+// built-in experiments against the current code defaults. Returns true when
+// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
+// so the caller knows whether the change needs persisting.
+func applyABTestingDefaults(cfg *Config, persist bool) bool {
 	if cfg == nil {
-		return
+		return false
 	}
 	def := abtest.DefaultConfig()
 	if cfg.ABTesting.Enabled == nil {
@@ -623,7 +657,69 @@ func applyABTestingDefaults(cfg *Config) {
 	}
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
+		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		return false
 	}
+	return reconcileBuiltinExperiments(cfg, def, persist)
+}
+
+// reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
+// experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
+// current defaults. Experiments outside that ID set — i.e. user-authored —
+// are left untouched. A one-generation backup of the prior experiment list is
+// written before the built-ins are replaced, so a same-ID hand-tuned built-in
+// is recoverable even though reconcile treats the ID as Sybra-owned.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+	priorVersion := cfg.ABTesting.BuiltinVersionValue()
+	if priorVersion >= def.BuiltinVersionValue() {
+		return false
+	}
+	if persist {
+		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
+			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
+			return false
+		}
+	}
+	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
+	for _, id := range abtest.BuiltinExperimentIDs {
+		builtin[id] = true
+	}
+	kept := make([]abtest.Experiment, 0, len(cfg.ABTesting.Experiments)+len(def.Experiments))
+	for i := range cfg.ABTesting.Experiments {
+		if exp := cfg.ABTesting.Experiments[i]; !builtin[exp.ID] {
+			kept = append(kept, exp)
+		}
+	}
+	kept = append(kept, def.Experiments...)
+	cfg.ABTesting.Experiments = kept
+	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
+	return true
+}
+
+// abTestingBackupPath returns the version-stamped backup path written before a
+// builtin reconcile overwrites persisted experiments. Each prior builtin
+// version keeps its own snapshot so successive builtin-version bumps do not
+// destroy the true pre-migration original.
+func abTestingBackupPath(priorVersion int) string {
+	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
+}
+
+type abTestingBackup struct {
+	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
+	Experiments         []abtest.Experiment `yaml:"experiments"`
+}
+
+func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
+	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
+	if err != nil {
+		return err
+	}
+	path := abTestingBackupPath(priorVersion)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and
