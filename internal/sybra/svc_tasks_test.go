@@ -610,14 +610,24 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 	if got.Title != "☂️ duplicate cleanup failed" {
 		t.Fatalf("Title = %q, want enriched duplicate title", got.Title)
 	}
-	if !slices.Equal(got.Tags, []string{"umbrella", "backend"}) {
-		t.Fatalf("Tags = %v, want [umbrella backend] from the issue labels", got.Tags)
+	if !slices.Equal(got.Tags, []string{"umbrella", "backend", umbrellaDuplicateTag}) {
+		t.Fatalf("Tags = %v, want issue labels plus the durable duplicate-dispatch guard", got.Tags)
 	}
 	if got.StatusReason == "" {
 		t.Fatal("StatusReason is empty, want an explanation for the duplicate stub")
 	}
 	if got.TaskType == task.TaskTypeUmbrella {
 		t.Fatalf("TaskType = %q, want non-umbrella duplicate so gate/scanExisting cannot treat it as the live tracker", got.TaskType)
+	}
+	// TaskType alone no longer guards dispatch for this duplicate (by design,
+	// to avoid the tracker-identity collision above), so the belt-and-braces
+	// title/label check in skipTaskCreatedWorkflow must hold instead — a
+	// re-fired task:created dispatch (fsnotify watcher) must still be skipped.
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil for a duplicate umbrella stub", got.Workflow)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
 	}
 }
 

@@ -788,15 +788,20 @@ func (s *TaskService) enrichUmbrellaStub(taskID, repo string, issue github.Issue
 		Slug:         task.Ptr(task.Slugify(issue.Title)),
 		StatusReason: task.Ptr(reason),
 	}
+	// Replace tags with the issue's labels (possibly empty), preserving them for
+	// identification/routing while clearing the enrich-pending marker.
+	labels := slices.Clone(issue.Labels)
 	if markUmbrella {
 		u.TaskType = task.Ptr(task.TaskTypeUmbrella)
+	} else {
+		// Not the tracker (a real one already exists elsewhere) — mark this
+		// duplicate durably so skipTaskCreatedWorkflow keeps blocking dispatch
+		// on it without also claiming TaskTypeUmbrella.
+		labels = append(labels, umbrellaDuplicateTag)
 	}
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	// Replace tags with the issue's labels (possibly empty), preserving them for
-	// identification/routing while clearing the enrich-pending marker.
-	labels := issue.Labels
 	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
