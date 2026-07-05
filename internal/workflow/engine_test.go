@@ -3306,8 +3306,8 @@ func recordAttr(r slog.Record, key string) string {
 // TestExecRunAgent_ProviderDemotionEmitsThrottledSignal proves selection-time
 // provider filtering (here: rate limiting) that changes the A/B outcome
 // surfaces a first-class demotion signal — wanted/selected/reason — logged at
-// Warn on first occurrence and throttled to Debug on identical repeats, so a
-// sustained rate limit does not flood the log with duplicate Warns.
+// Error on first occurrence and throttled to Debug on identical repeats, so a
+// sustained rate limit does not flood the log with duplicate errors.
 func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
@@ -3340,14 +3340,14 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
 
-	runOnce := func() {
+	runOnce := func(taskID string) {
 		wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
-		ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
-		if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		ctx := TemplateContext{Task: TaskInfo{ID: taskID}, Step: *step, Vars: wfExec.Variables}
+		if err := engine.execRunAgent(taskID, step, wfExec, ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	runOnce()
+	runOnce("t1")
 	call := agents.LastCall()
 	if call.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude (codex is rate-limited)", call.Provider)
@@ -3379,11 +3379,12 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 		t.Fatalf("task_id = %q, want t1", got)
 	}
 
-	// A second identical demotion (codex still rate-limited) must be
-	// throttled to Debug, not repeated at Warn — otherwise a sustained outage
-	// floods the log with one Warn per dispatch.
+	// A second identical demotion for a different task must still be
+	// throttled to Debug — otherwise a sustained outage floods the log with
+	// one Error per dispatch across the fleet.
 	records = nil
-	runOnce()
+	tasks.Put(TaskInfo{ID: "t2", Status: "todo", AgentMode: "headless"})
+	runOnce("t2")
 	var second []slog.Record
 	for _, r := range records {
 		if r.Message == "workflow.ab.provider_demoted" {
@@ -3395,6 +3396,9 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	}
 	if second[0].Level != slog.LevelDebug {
 		t.Fatalf("repeat demotion level = %v, want Debug (throttled)", second[0].Level)
+	}
+	if got := recordAttr(second[0], "task_id"); got != "t2" {
+		t.Fatalf("task_id = %q, want t2 on throttled cross-task repeat", got)
 	}
 }
 

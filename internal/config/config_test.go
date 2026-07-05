@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -887,8 +889,8 @@ func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ABTesting.BuiltinVersion != abtest.CurrentBuiltinVersion {
-		t.Fatalf("BuiltinVersion = %d, want %d", cfg.ABTesting.BuiltinVersion, abtest.CurrentBuiltinVersion)
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
 	}
 
 	byID := make(map[string]abtest.Experiment, len(cfg.ABTesting.Experiments))
@@ -929,7 +931,7 @@ func TestLoadReconcilePersistsBackupBeforeOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backupPath := filepath.Join(dir, "config.ab_testing.backup.yaml")
+	backupPath := filepath.Join(dir, "config.ab_testing.backup.v0.yaml")
 	data, err := os.ReadFile(backupPath)
 	if err != nil {
 		t.Fatalf("backup file not written: %v", err)
@@ -984,8 +986,8 @@ func TestLoadReconcilePersistsToDisk(t *testing.T) {
 	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
 		t.Fatal(err)
 	}
-	if onDisk.ABTesting.BuiltinVersion != abtest.CurrentBuiltinVersion {
-		t.Fatalf("persisted BuiltinVersion = %d, want %d", onDisk.ABTesting.BuiltinVersion, abtest.CurrentBuiltinVersion)
+	if got := onDisk.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("persisted BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
 	}
 	foundCustom := false
 	for _, exp := range onDisk.ABTesting.Experiments {
@@ -1009,8 +1011,11 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 		ABTesting: abtest.Config{
 			Enabled:              &enabled,
 			MinSamplesPerVariant: 20,
-			BuiltinVersion:       abtest.CurrentBuiltinVersion,
-			Experiments:          abtest.DefaultConfig().Experiments,
+			BuiltinVersion: func() *int {
+				v := abtest.CurrentBuiltinVersion
+				return &v
+			}(),
+			Experiments: abtest.DefaultConfig().Experiments,
 		},
 	}
 	data, err := yamlv3.Marshal(cfg)
@@ -1025,7 +1030,81 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("backup file should not be written when already at current builtin version, stat err = %v", err)
+	}
+}
+
+func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
+		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("LoadNoPersist rewrote config.yaml")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("LoadNoPersist should not write backup, stat err = %v", err)
+	}
+}
+
+func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+	writeOldShapeConfig(t, dir)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	firstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := strings.Replace(string(data), "builtin_version: 2", "builtin_version: 1", 1)
+	if rewritten == string(data) {
+		t.Fatal("failed to downgrade builtin_version in persisted config")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	secondBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v1.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stillFirstBackup, err := os.ReadFile(filepath.Join(dir, "config.ab_testing.backup.v0.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stillFirstBackup, firstBackup) {
+		t.Fatal("v0 backup was overwritten by a later reconcile")
+	}
+	if len(secondBackup) == 0 {
+		t.Fatal("v1 backup should not be empty")
 	}
 }

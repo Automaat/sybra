@@ -12,7 +12,7 @@ type Config struct {
 	// bumps a lagging config's built-in experiments (see BuiltinExperimentIDs)
 	// up to CurrentBuiltinVersion, leaving any other (user-authored) experiment
 	// untouched.
-	BuiltinVersion int `yaml:"builtin_version,omitempty" json:"builtinVersion,omitempty"`
+	BuiltinVersion *int `yaml:"builtin_version,omitempty" json:"builtinVersion,omitempty"`
 }
 
 // CurrentBuiltinVersion is the version stamp for the built-in experiment set
@@ -105,10 +105,11 @@ type Assignment struct {
 func DefaultConfig() Config {
 	enabled := true
 	expEnabled := true
+	builtinVersion := CurrentBuiltinVersion
 	return Config{
 		Enabled:              &enabled,
 		MinSamplesPerVariant: 20,
-		BuiltinVersion:       CurrentBuiltinVersion,
+		BuiltinVersion:       &builtinVersion,
 		Experiments: []Experiment{
 			{
 				ID:             "code-author-cheap",
@@ -169,6 +170,13 @@ func (c Config) Validate() error {
 // EnabledValue reports whether A/B assignment should run.
 func (c Config) EnabledValue() bool {
 	return c.Enabled == nil || *c.Enabled
+}
+
+func (c Config) BuiltinVersionValue() int {
+	if c.BuiltinVersion == nil {
+		return 0
+	}
+	return *c.BuiltinVersion
 }
 
 func (e Experiment) EnabledValue() bool {

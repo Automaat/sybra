@@ -155,6 +155,37 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+	writeConfigYAML(t, cfgPath, svc.cfg)
+
+	raw, err := svc.GetRawConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := "# keep this comment\n" + strings.Replace(raw, "builtin_version: 2\n", "", 1)
+	edited = strings.Replace(edited, "max_files: 5", "max_files: 7", 1)
+
+	if err := svc.SaveRawConfig(edited); err != nil {
+		t.Fatalf("SaveRawConfig: %v", err)
+	}
+
+	saved, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(saved)
+	if !strings.Contains(savedText, "# keep this comment") {
+		t.Fatal("raw save lost the preserved comment")
+	}
+	if strings.Contains(savedText, "builtin_version:") {
+		t.Fatal("hot reload rewrote the raw config with builtin_version")
+	}
+	if !strings.Contains(savedText, "max_files: 7") {
+		t.Fatal("raw save did not persist the edit")
+	}
+}
+
 func TestSaveRawConfig_RejectsInvalidYAML(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)

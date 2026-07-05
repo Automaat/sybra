@@ -12,7 +12,7 @@ import (
 // of hot-reloadable keys that changed. On any error the in-memory config is
 // left unchanged. Never writes to disk.
 func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
-	next, err := config.Load()
+	next, err := config.LoadNoPersist()
 	if err != nil {
 		return nil, err
 	}
