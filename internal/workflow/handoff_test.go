@@ -120,14 +120,21 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 	if !hasCondition(review.Trigger.Conditions, "task.status", "equals", "ready-review") {
 		t.Errorf("simple-task-review must trigger on status=ready-review; got %+v", review.Trigger.Conditions)
 	}
-	for _, stepID := range []string{"code_review_simple", "code_review_staff"} {
-		step := review.StepByID(stepID)
-		if step == nil {
-			t.Fatalf("simple-task-review %s step not found", stepID)
-		}
-		if step.Config.Provider != "cross" {
-			t.Errorf("simple-task-review %s provider = %q, want cross", stepID, step.Config.Provider)
-		}
+	// code_review_simple stays a cross-check lane; code_review_staff is pinned
+	// to claude for high-risk review (see simple-task-review.yaml).
+	simple := review.StepByID("code_review_simple")
+	if simple == nil {
+		t.Fatal("simple-task-review code_review_simple step not found")
+	}
+	if simple.Config.Provider != "cross" {
+		t.Errorf("simple-task-review code_review_simple provider = %q, want cross", simple.Config.Provider)
+	}
+	staff := review.StepByID("code_review_staff")
+	if staff == nil {
+		t.Fatal("simple-task-review code_review_staff step not found")
+	}
+	if staff.Config.Provider != "claude" {
+		t.Errorf("simple-task-review code_review_staff provider = %q, want claude", staff.Config.Provider)
 	}
 }
 

@@ -199,33 +199,34 @@ type agentEntry struct {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store           *Store
-	tasks           TaskProvider
-	agents          AgentLauncher
-	prLinker        PRLinker
-	prReviewers     PRReviewRequester
-	prStates        PRStateFetcher
-	worktrees       WorktreeGetter
-	branchSyncer    BranchSyncer
-	checks          CheckConfigGetter
-	manualTests     ManualTestConfigGetter
-	recorder        ArtifactRecorder
-	onComplete      func(CompletionInfo)
-	logger          *slog.Logger
-	ctx             context.Context
-	mu              sync.Mutex
-	inflightMutexes map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching     map[string]struct{}    // taskID → dispatch in progress
-	starting        map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction     map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps      map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth    map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
-	resumeError     *logging.ErrorThrottle
-	maxTestAttempts int           // testing → re-implement loop cap (0 → defaultTestAttempts)
-	verifyTimeout   time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting       abtest.Config
-	evalGate        *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	store            *Store
+	tasks            TaskProvider
+	agents           AgentLauncher
+	prLinker         PRLinker
+	prReviewers      PRReviewRequester
+	prStates         PRStateFetcher
+	worktrees        WorktreeGetter
+	branchSyncer     BranchSyncer
+	checks           CheckConfigGetter
+	manualTests      ManualTestConfigGetter
+	recorder         ArtifactRecorder
+	onComplete       func(CompletionInfo)
+	logger           *slog.Logger
+	ctx              context.Context
+	mu               sync.Mutex
+	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}    // taskID → dispatch in progress
+	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
+	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	resumeError      *logging.ErrorThrottle
+	demotionThrottle *logging.ErrorThrottle
+	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting        abtest.Config
+	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -236,19 +237,20 @@ const defaultTestAttempts = 3
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return &Engine{
-		store:           store,
-		tasks:           tasks,
-		agents:          agents,
-		logger:          logger,
-		ctx:             context.Background(),
-		inflightMutexes: make(map[string]*sync.Mutex),
-		dispatching:     make(map[string]struct{}),
-		starting:        make(map[string]struct{}),
-		humanAction:     make(map[string]struct{}),
-		agentSteps:      make(map[string]agentEntry),
-		dispatchingStep: make(map[string]int),
-		cascadeDepth:    make(map[string]int),
-		resumeError:     logging.NewErrorThrottle(),
+		store:            store,
+		tasks:            tasks,
+		agents:           agents,
+		logger:           logger,
+		ctx:              context.Background(),
+		inflightMutexes:  make(map[string]*sync.Mutex),
+		dispatching:      make(map[string]struct{}),
+		starting:         make(map[string]struct{}),
+		humanAction:      make(map[string]struct{}),
+		agentSteps:       make(map[string]agentEntry),
+		dispatchingStep:  make(map[string]int),
+		cascadeDepth:     make(map[string]int),
+		resumeError:      logging.NewErrorThrottle(),
+		demotionThrottle: logging.NewErrorThrottle(),
 	}
 }
 

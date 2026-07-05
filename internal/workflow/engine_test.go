@@ -3277,6 +3277,127 @@ func TestExecRunAgent_ABTestingSkipsConfigDisabledProvider(t *testing.T) {
 	}
 }
 
+// demotionRecordHandler captures slog records for assertions, mirroring
+// internal/sybra's recordHandler test helper.
+type demotionRecordHandler struct {
+	records *[]slog.Record
+}
+
+func (h *demotionRecordHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *demotionRecordHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *demotionRecordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *demotionRecordHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func recordAttr(r slog.Record, key string) string {
+	var out string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// TestExecRunAgent_ProviderDemotionEmitsThrottledSignal proves selection-time
+// provider filtering (here: rate limiting) that changes the A/B outcome
+// surfaces a first-class demotion signal — wanted/selected/reason — logged at
+// Warn on first occurrence and throttled to Debug on identical repeats, so a
+// sustained rate limit does not flood the log with duplicate Warns.
+func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, logger)
+	enabled := true
+	// codex carries almost all the weight so the unfiltered ("wanted")
+	// selection is codex with overwhelming probability for any task ID,
+	// making the test deterministic without hand-computing the hash.
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-variant", Provider: "codex", Model: "gpt-5.5", Weight: 100},
+				{ID: "claude-variant", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+
+	runOnce := func() {
+		wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+		ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+		if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runOnce()
+	call := agents.LastCall()
+	if call.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude (codex is rate-limited)", call.Provider)
+	}
+
+	var demotions []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_demoted" {
+			demotions = append(demotions, r)
+		}
+	}
+	if len(demotions) != 1 {
+		t.Fatalf("got %d demotion records after first run, want 1: %+v", len(demotions), demotions)
+	}
+	first := demotions[0]
+	if first.Level != slog.LevelError {
+		t.Fatalf("first demotion level = %v, want Error", first.Level)
+	}
+	if got := recordAttr(first, "wanted_provider"); got != "codex" {
+		t.Fatalf("wanted_provider = %q, want codex", got)
+	}
+	if got := recordAttr(first, "selected_provider"); got != "claude" {
+		t.Fatalf("selected_provider = %q, want claude", got)
+	}
+	if got := recordAttr(first, "reason"); got != "rate_limited" {
+		t.Fatalf("reason = %q, want rate_limited", got)
+	}
+	if got := recordAttr(first, "task_id"); got != "t1" {
+		t.Fatalf("task_id = %q, want t1", got)
+	}
+
+	// A second identical demotion (codex still rate-limited) must be
+	// throttled to Debug, not repeated at Warn — otherwise a sustained outage
+	// floods the log with one Warn per dispatch.
+	records = nil
+	runOnce()
+	var second []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_demoted" {
+			second = append(second, r)
+		}
+	}
+	if len(second) != 1 {
+		t.Fatalf("got %d demotion records after second run, want 1: %+v", len(second), second)
+	}
+	if second[0].Level != slog.LevelDebug {
+		t.Fatalf("repeat demotion level = %v, want Debug (throttled)", second[0].Level)
+	}
+}
+
 func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
