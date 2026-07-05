@@ -11,14 +11,16 @@ import (
 )
 
 // TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt guards #1555: the
-// overall Generate deadline must comfortably fit plannerJobAttempts each
-// getting a full PlannerAttemptTimeout, and grow with subCount rather than
-// staying a single fixed ceiling shared across every retry.
+// overall Generate deadline must comfortably fit the full worst-case Generate
+// path (initial attemptPlan plus critic re-ask, each with plannerAttempts
+// planner samples, each sample with plannerJobAttempts full llmjob slices),
+// and grow with subCount rather than staying a single fixed ceiling shared
+// across every retry.
 func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	t.Parallel()
-	minBudget := PlannerAttemptTimeout * time.Duration(plannerJobAttempts)
+	minBudget := PlannerAttemptTimeout * time.Duration(plannerJobAttempts*plannerGenerateSamples)
 	if got := plannerTimeout(0); got < minBudget {
-		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d full attempts)", got, minBudget, plannerJobAttempts)
+		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d planner samples x %d llmjob attempts)", got, minBudget, plannerGenerateSamples, plannerJobAttempts)
 	}
 	small := plannerTimeout(1)
 	large := plannerTimeout(38)

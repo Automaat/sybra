@@ -43,14 +43,22 @@ var plannerJobSpec = llmjob.Spec[Plan]{
 // — used only to size plannerTimeout below.
 var plannerJobAttempts = plannerJobSpec.Attempts()
 
+// plannerGenerateSamples is the maximum number of planner samples Generate can
+// request: plannerAttempts for the initial attemptPlan plus another
+// plannerAttempts for the critic re-ask path when the first valid plan looks
+// suspiciously flat.
+const plannerGenerateSamples = plannerAttempts * 2
+
 // plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
-// expansion indefinitely. It comfortably covers plannerJobAttempts each
-// getting a full PlannerAttemptTimeout, plus headroom that scales with
-// subCount: a bigger umbrella means a longer prompt and legitimately more
-// model time, and a bigger expansion is more expensive to have starved.
+// expansion indefinitely. It comfortably covers plannerGenerateSamples each
+// getting plannerJobAttempts full PlannerAttemptTimeout slices, plus headroom
+// that scales with subCount: a bigger umbrella means a longer prompt and
+// legitimately more model time, and a bigger expansion is more expensive to
+// have starved.
 func plannerTimeout(subCount int) time.Duration {
-	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts) + time.Duration(subCount)*5*time.Second
+	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
+		time.Duration(subCount*plannerGenerateSamples)*5*time.Second
 }
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
