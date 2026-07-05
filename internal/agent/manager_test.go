@@ -289,6 +289,7 @@ func TestStopCompletedAgent_MarksCompletedByResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.AppendOutput(StreamEvent{Type: "result", Subtype: "success"})
 
 	if err := m.StopCompletedAgent(a.ID); err != nil {
 		t.Fatalf("StopCompletedAgent: %v", err)

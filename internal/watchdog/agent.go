@@ -218,7 +218,15 @@ func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
 	}
 	w.logger.Warn("agent.watchdog.completed_hang", "id", ag.ID,
 		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()))
-	if err := w.stopCompletedAgent(ag.ID); err != nil {
+	stop := w.stopCompletedAgent
+	if stop == nil {
+		stop = w.stopAgent
+	}
+	if stop == nil {
+		w.logger.Error("agent.watchdog.completed_hang.no_stop_fn", "id", ag.ID)
+		return
+	}
+	if err := stop(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.completed_hang.stop_failed", "id", ag.ID, "err", err)
 	}
 }

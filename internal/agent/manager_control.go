@@ -178,6 +178,9 @@ func (m *Manager) StopCompletedAgent(agentID string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
+	if a.Mode != "headless" || !a.CompletedSuccessfully() {
+		return fmt.Errorf("agent %s is not a completed headless agent", agentID)
+	}
 	a.setCompletedByResult(true)
 	return m.StopAgent(agentID)
 }
