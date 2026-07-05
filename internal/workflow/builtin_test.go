@@ -115,6 +115,131 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove locks the
+// behavior that an APPROVE plan-critique verdict routes straight to
+// review_plan, skipping the second full opus address_critique run — that
+// run only makes sense when the critic asked for changes.
+func TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("route_critique_verdict")
+	if step == nil {
+		t.Fatal("route_critique_verdict step not found in simple-task-plan")
+	}
+
+	cases := []struct {
+		name         string
+		planCritique string
+		want         string
+	}{
+		{
+			name:         "approve_skips_address_critique",
+			planCritique: "# Plan Review: APPROVE\n\n## Verdict\n\nExecutable as-is.\n",
+			want:         "review_plan",
+		},
+		{
+			name:         "refine_routes_to_address_critique",
+			planCritique: "# Plan Review: REFINE\n\n## Verdict\n\nNeeds targeted edits.\n",
+			want:         "reset_for_address",
+		},
+		{
+			name:         "reject_routes_to_address_critique",
+			planCritique: "# Plan Review: REJECT\n\n## Verdict\n\nUngrounded.\n",
+			want:         "reset_for_address",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.plan_critique": tc.planCritique,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
+// iteration cap: task.replan_count is start_replan's own step-history count
+// as of the current reject, so 0/1/2 still have budget for another full
+// opus replan cycle, and 3+ hands the task to a human instead of burning a
+// 4th opus run on a plan the human keeps rejecting.
+func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("check_replan_cap")
+	if step == nil {
+		t.Fatal("check_replan_cap step not found in simple-task-plan")
+	}
+
+	cases := []struct {
+		name        string
+		replanCount string
+		want        string
+	}{
+		{name: "first_reject_under_cap", replanCount: "0", want: "start_replan"},
+		{name: "second_reject_under_cap", replanCount: "1", want: "start_replan"},
+		{name: "third_reject_under_cap", replanCount: "2", want: "start_replan"},
+		{name: "fourth_reject_hits_cap", replanCount: "3", want: "replan_cap_exceeded"},
+		{name: "well_past_cap", replanCount: "9", want: "replan_cap_exceeded"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.replan_count": tc.replanCount,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	exceeded := simple.StepByID("replan_cap_exceeded")
+	if exceeded == nil {
+		t.Fatal("replan_cap_exceeded step not found in simple-task-plan")
+	}
+	if exceeded.Config.Status != "human-required" {
+		t.Errorf("replan_cap_exceeded status = %q, want human-required", exceeded.Config.Status)
+	}
+}
+
 func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T) {
 	t.Parallel()
 

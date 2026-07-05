@@ -603,9 +603,18 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.handoff_source_provider": t.HandoffSourceProvider,
 		"task.branch":                  t.Branch,
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
+		"task.plan_critique":           t.PlanCritique,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)
+	}
+	// start_replan's own step-history count: how many times a human-rejected
+	// plan has already been sent back through the full plan→critique→address
+	// cycle. Populated from t.Workflow (the just-recorded execution state) so
+	// simple-task-plan.yaml's replan cap gate sees the count as of the current
+	// reject, before this cycle's start_replan runs.
+	if t.Workflow != nil {
+		fields["task.replan_count"] = strconv.Itoa(t.Workflow.CountStep("start_replan"))
 	}
 	return fields
 }

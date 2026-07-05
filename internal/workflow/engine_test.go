@@ -22,6 +22,42 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
+// TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
+// simple-task-plan replan/critique gates depend on: task.plan_critique
+// mirrors TaskInfo.PlanCritique verbatim (route_critique_verdict substring-
+// matches its verdict heading), and task.replan_count is start_replan's own
+// step-history count as of the current call — the number of full opus
+// replan cycles already spent, not counting the one about to start.
+func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plan_critique mirrors TaskInfo verbatim", func(t *testing.T) {
+		ti := TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n"}
+		fields := taskFields(ti)
+		if got := fields["task.plan_critique"]; got != ti.PlanCritique {
+			t.Errorf("task.plan_critique = %q, want %q", got, ti.PlanCritique)
+		}
+	})
+
+	t.Run("replan_count absent without a workflow", func(t *testing.T) {
+		fields := taskFields(TaskInfo{ID: "t1"})
+		if _, ok := fields["task.replan_count"]; ok {
+			t.Errorf("task.replan_count = %q, want absent when Workflow is nil", fields["task.replan_count"])
+		}
+	})
+
+	t.Run("replan_count reflects start_replan history", func(t *testing.T) {
+		wf := &Execution{}
+		wf.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+		wf.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+		ti := TaskInfo{ID: "t1", Workflow: wf}
+		fields := taskFields(ti)
+		if got := fields["task.replan_count"]; got != "2" {
+			t.Errorf("task.replan_count = %q, want %q", got, "2")
+		}
+	})
+}
+
 // --- Test helpers ---
 
 func init() {

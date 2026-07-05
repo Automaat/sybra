@@ -440,6 +440,27 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: route_critique_verdict
+
+  # The critic's own output format (see the plan-critic skill) is
+  # `# Plan Review: <APPROVE|REFINE|REJECT>`. An APPROVE verdict means the
+  # plan is executable as-is — routing straight to human review skips a
+  # second full opus address_critique run that would otherwise revise a
+  # plan the critic already signed off on.
+  - id: route_critique_verdict
+    name: Route on Critique Verdict
+    type: condition
+    config:
+      check:
+        field: task.plan_critique
+        operator: contains
+        value: 'Plan Review: APPROVE'
+    next:
+      - when:
+          field: task.plan_critique
+          operator: contains
+          value: 'Plan Review: APPROVE'
+        goto: review_plan
       - goto: reset_for_address
 
   - id: reset_for_address
@@ -587,7 +608,41 @@ steps:
           field: vars.human_action
           operator: equals
           value: reject
+        goto: check_replan_cap
+
+  # The human-reject loop (review_plan reject -> start_replan -> plan) is
+  # gated only by a human clicking reject each time; the engine's per-advance
+  # cycle detector can't span wait_human suspensions. task.replan_count is
+  # start_replan's own step-history count as of this reject, so 0/1/2 means
+  # start_replan has run at most twice before — allow one more full opus
+  # replan cycle (cap: 3 total). Past that, stop burning opus runs on a plan
+  # a human keeps rejecting and hand it to a human directly.
+  - id: check_replan_cap
+    name: Check Replan Cap
+    type: condition
+    config:
+      check:
+        field: task.replan_count
+        operator: in
+        value: '0,1,2'
+    next:
+      - when:
+          field: task.replan_count
+          operator: in
+          value: '0,1,2'
         goto: start_replan
+      - goto: replan_cap_exceeded
+
+  - id: replan_cap_exceeded
+    name: Replan Cap Exceeded
+    type: set_status
+    config:
+      status: human-required
+      status_reason: >-
+        Plan rejected by human 3 times in a row — stopping the automated
+        replan loop before a 4th opus run. Needs a human to re-plan directly.
+    next:
+      - goto: ""
 
   # Reset status before re-entering `plan` so the plan-review status-change
   # hook fires again when the agent delivers a revised plan. Without this
