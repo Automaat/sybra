@@ -429,13 +429,14 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	// handoff field is never persisted, so a genuine restart's fromRecord
 	// Agent always has none and falls through to ordinary finalization below.
 	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
-		var outFile *os.File
-		if f, ferr := os.OpenFile(a.GetLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
-			outFile = f
-		} else {
-			m.logger.Warn("agent.reattach.handoff.log", "id", a.ID, "err", ferr)
+		prevLogPath := a.GetLogPath()
+		outFile, err := m.reopenConvoHandoffLog(a, nil)
+		if err != nil {
+			m.logger.Warn("agent.reattach.handoff.log", "id", a.ID, "err", err)
+		} else if prevLogPath != "" && outFile.Name() != prevLogPath {
+			m.logger.Warn("agent.reattach.handoff.log-fallback", "id", a.ID, "from", prevLogPath, "to", outFile.Name())
 		}
-		m.completeConvoHandoff(ctx, a, &outFile, handoffCfg, prompt)
+		m.completeConvoHandoff(ctx, a, outFile, handoffCfg, prompt)
 		return
 	}
 

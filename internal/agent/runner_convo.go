@@ -223,7 +223,8 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 	// Claude process to force this exit) takes over instead of finalizing:
 	// the same *Agent hands off to the per-turn runner on the new provider.
 	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
-		m.completeConvoHandoff(ctx, a, &outFile, handoffCfg, prompt)
+		m.completeConvoHandoff(ctx, a, outFile, handoffCfg, prompt)
+		outFile = nil
 		return
 	}
 
@@ -251,6 +252,36 @@ func (m *Manager) beginConvoHandoff(a *Agent, cfg RunConfig, prompt string) {
 	m.logger.Info("agent.convo.handoff", "id", a.ID, "task", cfg.TaskID, "to", cfg.Provider)
 }
 
+// reopenConvoHandoffLog reacquires the log writer used to bound a same-agent
+// Claude -> per-turn handoff. If the existing detached log cannot be reopened
+// for append, fall back to a fresh log file so the persisted provider switch
+// still has a marker-bounded segment instead of leaving restart rehydration
+// with a switched registry record and no boundary marker.
+func (m *Manager) reopenConvoHandoffLog(a *Agent, outFile *os.File) (*os.File, error) {
+	if outFile != nil {
+		return outFile, nil
+	}
+
+	var reopenErr error
+	if logPath := a.GetLogPath(); logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			return f, nil
+		}
+		reopenErr = err
+	}
+
+	fresh, err := logging.NewAgentOutputFile(m.logDir, a.ID)
+	if err != nil {
+		if reopenErr != nil {
+			return nil, fmt.Errorf("reopen handoff log: %w; fresh handoff log: %w", reopenErr, err)
+		}
+		return nil, fmt.Errorf("fresh handoff log: %w", err)
+	}
+	a.SetLogPath(fresh.Name())
+	return fresh, nil
+}
+
 // completeConvoHandoff finishes a mid-run persistent-Claude -> per-turn
 // provider switch once the killed Claude process has actually exited: it
 // writes the provider-marker boundary into the still-open log (closing the
@@ -258,12 +289,11 @@ func (m *Manager) beginConvoHandoff(a *Agent, cfg RunConfig, prompt string) {
 // persists the switched registry record, then hands the log and a fresh
 // prompt channel to the per-turn runner. Returns without finalizing/marking
 // the agent done: the new goroutine owns the agent's completion from here.
-func (m *Manager) completeConvoHandoff(ctx context.Context, a *Agent, outFile **os.File, cfg RunConfig, prompt string) {
+func (m *Manager) completeConvoHandoff(ctx context.Context, a *Agent, outFile *os.File, cfg RunConfig, prompt string) {
 	a.SetExitErr(nil)
-	if *outFile != nil {
-		writeProviderMarkerLine(*outFile, a.Provider)
-		_ = (*outFile).Close()
-		*outFile = nil
+	if outFile != nil {
+		writeProviderMarkerLine(outFile, a.Provider)
+		_ = outFile.Close()
 	}
 	if m.survives() {
 		m.saveRegistry(ctx, a)
@@ -394,6 +424,9 @@ func (m *Manager) streamConvoOutput(ctx context.Context, a *Agent, stdout io.Rea
 // state machine. Shared by the pipe-backed streamer and the survival file
 // tailer; it never writes the log file (caller or child owns that).
 func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, st *convoEmitState, oneShot bool) {
+	if _, ok := parseProviderMarkerLine(line); ok {
+		return
+	}
 	parsed, parseErr := ParseClaudeLine(line)
 	if parseErr != nil {
 		m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))

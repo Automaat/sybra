@@ -81,6 +81,42 @@ func TestRehydrateCodexConvoFromLog(t *testing.T) {
 	}
 }
 
+func TestProcessConvoLine_IgnoresProviderMarker(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "marker", Provider: "claude"}
+	st := &convoEmitState{}
+
+	m.processConvoLine(context.Background(), a, []byte(`{"__sybra_provider_marker__":"provider_switch","version":1,"provider":"copilot"}`), st, false)
+
+	if got := len(a.ConvoOutput()); got != 0 {
+		t.Fatalf("expected provider marker to be ignored, got %d convo events", got)
+	}
+}
+
+func TestReopenConvoHandoffLog_FallsBackToFreshFile(t *testing.T) {
+	logDir := t.TempDir()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir)
+	a := &Agent{ID: "handoff-fallback"}
+	badPath := filepath.Join(t.TempDir(), "stale-log")
+	if err := os.MkdirAll(badPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	a.SetLogPath(badPath)
+
+	f, err := m.reopenConvoHandoffLog(a, nil)
+	if err != nil {
+		t.Fatalf("reopenConvoHandoffLog: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if f.Name() == badPath {
+		t.Fatalf("expected fallback fresh log, kept broken path %q", badPath)
+	}
+	if a.GetLogPath() != f.Name() {
+		t.Fatalf("expected agent log path updated to fallback file, got %q want %q", a.GetLogPath(), f.Name())
+	}
+}
+
 // TestReattachCodexConvo_RecreatesIdleAgent verifies a codex interactive
 // record is recreated as an idle, sendable agent on restart (no live process
 // required — codex has none between turns).

@@ -150,42 +150,11 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		m.markAgentDone(a)
 	}()
 
-	// On recreate (resume), append to the existing log so the rehydrated
-	// chat history is preserved across restarts; a fresh run opens a new
-	// file. Without this, each restart would open a new empty log and the
-	// next restart would rehydrate zero history.
-	existingLog := a.GetLogPath()
-	var outFile *os.File
-	var fileErr error
-	if existingLog != "" {
-		outFile, fileErr = os.OpenFile(existingLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	} else {
-		outFile, fileErr = logging.NewAgentOutputFile(m.logDir, a.ID)
-	}
-	if fileErr != nil {
-		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
-	}
+	outFile, logWriter := m.openPerTurnConvoLog(a)
 	if outFile != nil {
-		a.SetLogPath(outFile.Name())
 		defer func() { _ = outFile.Close() }()
 	}
-
-	var logWriter io.Writer
-	if outFile != nil {
-		logWriter = outFile
-	}
-	if existingLog == "" {
-		// First line of a fresh log records the starting provider, so a
-		// restart's rehydration can tell which parser covers the segment
-		// before any mid-run provider switch (see writeProviderMarkerLine).
-		writeProviderMarkerLine(logWriter, a.Provider)
-	}
-
-	// Record the agent so a restart can recreate it (the log path is now set).
-	if m.survives() {
-		a.setDetached(true)
-		m.saveRegistry(ctx, a)
-	}
+	m.persistPerTurnConvoSurvival(ctx, a)
 
 	// shutdownSurvive reports whether a ctx cancel should leave the agent
 	// running for recreate (survival on, app shutdown, not an intentional stop).
@@ -227,35 +196,70 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		}
 		resumeWait = false
 
-		// Drain any prompts still queued on the Agent before blocking on the
-		// prompt channel. This carries a persistent-Claude session's queued
-		// follow-ups across a mid-run handoff (completeConvoHandoff hands off
-		// only the prompt that triggered the switch; any prompts queued
-		// before it are still sitting in this same *Agent's pending queue)
-		// so they replay here in original order instead of being stranded.
-		if next, ok := a.PopPendingPrompt(); ok {
-			a.SetState(StateRunning)
-			m.emit(events.AgentState(a.ID), a)
-			prompt = next
-			continue
-		}
-
-		ch := a.promptChannel()
-
-		select {
-		case <-ctx.Done():
+		nextPrompt, ok := m.waitPerTurnPrompt(ctx, a)
+		if !ok {
 			if shutdownSurvive() {
 				survived = true
 			}
 			return
-		case next, ok := <-ch:
-			if !ok {
-				return
-			}
-			a.SetState(StateRunning)
-			m.emit(events.AgentState(a.ID), a)
-			prompt = next
 		}
+		prompt = nextPrompt
+	}
+}
+
+// openPerTurnConvoLog reuses an existing recreated-agent log when present and
+// otherwise allocates a fresh one, seeding the first segment with the current
+// provider marker for mixed-provider rehydration.
+func (m *Manager) openPerTurnConvoLog(a *Agent) (*os.File, io.Writer) {
+	existingLog := a.GetLogPath()
+	var (
+		outFile *os.File
+		err     error
+	)
+	if existingLog != "" {
+		outFile, err = os.OpenFile(existingLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	} else {
+		outFile, err = logging.NewAgentOutputFile(m.logDir, a.ID)
+	}
+	if err != nil {
+		m.logger.Error("agent.output.file", "id", a.ID, "err", err)
+		return nil, nil
+	}
+
+	a.SetLogPath(outFile.Name())
+	if existingLog == "" {
+		writeProviderMarkerLine(outFile, a.Provider)
+	}
+	return outFile, outFile
+}
+
+func (m *Manager) persistPerTurnConvoSurvival(ctx context.Context, a *Agent) {
+	if !m.survives() {
+		return
+	}
+	a.setDetached(true)
+	m.saveRegistry(ctx, a)
+}
+
+// waitPerTurnPrompt drains already-queued prompts before blocking on the live
+// prompt channel so same-agent handoffs preserve message order.
+func (m *Manager) waitPerTurnPrompt(ctx context.Context, a *Agent) (string, bool) {
+	if next, ok := a.PopPendingPrompt(); ok {
+		a.SetState(StateRunning)
+		m.emit(events.AgentState(a.ID), a)
+		return next, true
+	}
+
+	select {
+	case <-ctx.Done():
+		return "", false
+	case next, ok := <-a.promptChannel():
+		if !ok {
+			return "", false
+		}
+		a.SetState(StateRunning)
+		m.emit(events.AgentState(a.ID), a)
+		return next, true
 	}
 }
 
