@@ -439,7 +439,7 @@ func (c *Config) ExperiencesDir() string {
 }
 
 func Load() (*Config, error) {
-	return load(loadOptions{persistABTestingReconcile: true})
+	return load(loadOptions{persistLoadReconciles: true})
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
@@ -450,7 +450,7 @@ func LoadNoPersist() (*Config, error) {
 }
 
 type loadOptions struct {
-	persistABTestingReconcile bool
+	persistLoadReconciles bool
 }
 
 func load(opts loadOptions) (*Config, error) {
@@ -542,11 +542,11 @@ func load(opts loadOptions) (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
-	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistABTestingReconcile)
+	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
-	serverTokenGenerated := applyServerDefaults(cfg)
+	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
 
 	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
 
@@ -560,12 +560,12 @@ func load(opts loadOptions) (*Config, error) {
 // so an unsaved token would silently rotate on every restart and lock
 // operators out).
 func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
-	if opts.persistABTestingReconcile && existingFile && abTestingReconciled {
+	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
 		if saveErr := cfg.Save(); saveErr != nil {
 			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
 		}
 	}
-	if opts.persistABTestingReconcile && serverTokenGenerated {
+	if opts.persistLoadReconciles && serverTokenGenerated {
 		if saveErr := cfg.Save(); saveErr != nil {
 			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
 		}
@@ -576,8 +576,9 @@ func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestin
 // env vars win when set, otherwise a missing token is auto-generated so the
 // HTTP control plane always fails closed instead of silently running
 // unauthenticated. Returns true when a new token was generated (the caller
-// must persist it — see load()).
-func applyServerDefaults(cfg *Config) bool {
+// must persist it — see load()). Read-only config loads pass allowGenerate=false
+// so they never invent an in-memory-only secret that diverges from disk.
+func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
 	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
 		cfg.Server.AuthToken = v
 	}
@@ -589,6 +590,9 @@ func applyServerDefaults(cfg *Config) bool {
 		cfg.Server.AllowedOrigins = origins
 	}
 	if cfg.Server.AuthToken != "" {
+		return false
+	}
+	if !allowGenerate {
 		return false
 	}
 	token, err := generateAuthToken()

@@ -105,11 +105,12 @@ func run() (int, error) {
 
 	mux := buildMux(logger, broker, app)
 
-	// authMiddleware gates everything except GET /health behind the
-	// shared-secret bearer token; corsMiddleware only echoes CORS headers
-	// back for origins on the configured allowlist (no wildcard). Order
-	// matters: CORS must sit outside auth so preflight OPTIONS requests
-	// (which never carry Authorization) are answered before reaching it.
+	// authMiddleware gates the HTTP control plane behind the shared-secret
+	// bearer token while leaving SPA/static delivery public; corsMiddleware
+	// only echoes CORS headers back for origins on the configured allowlist
+	// (no wildcard). Order matters: CORS must sit outside auth so preflight
+	// OPTIONS requests (which never carry Authorization) are answered before
+	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
 	port := os.Getenv("SYBRA_PORT")
@@ -274,16 +275,18 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware gates every request behind a shared-secret bearer token,
-// except GET /health (container-orchestration liveness probes have no way
-// to carry a header). Browser EventSource cannot set request headers, so the
+// authMiddleware gates only the HTTP control plane behind a shared-secret
+// bearer token: `/api/*`, `/events`, `/api/events/*`, `/metrics`, and
+// `/debug/pprof/*`. Browser EventSource cannot set request headers, so the
 // SSE endpoints additionally accept the token as a `?token=` query param.
-// A blank token fails every request closed rather than treating it as "auth
+// Static SPA assets stay public so normal browser navigations can load the
+// app shell before JS starts issuing authenticated API calls. A blank token
+// fails every protected request closed rather than treating it as "auth
 // disabled" — config.Load always generates one, so an empty value here means
 // misconfiguration, not intent.
 func authMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+		if !requestRequiresAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -297,6 +300,23 @@ func authMiddleware(token string, logger *slog.Logger, next http.Handler) http.H
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestRequiresAuth(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/health":
+		return false
+	case r.URL.Path == "/events":
+		return true
+	case r.URL.Path == "/metrics":
+		return true
+	case strings.HasPrefix(r.URL.Path, "/api/"):
+		return true
+	case strings.HasPrefix(r.URL.Path, "/debug/pprof/"):
+		return true
+	default:
+		return false
+	}
 }
 
 func requestAuthorized(r *http.Request, token string) bool {

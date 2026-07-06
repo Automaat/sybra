@@ -1,10 +1,17 @@
 package main
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/sse"
+	"github.com/Automaat/sybra/internal/sybra"
 )
 
 func testLogger() *slog.Logger {
@@ -55,6 +62,17 @@ func TestAuthMiddlewareRejectsWrongBearerToken(t *testing.T) {
 func TestAuthMiddlewareAllowsHealthWithoutToken(t *testing.T) {
 	h := authMiddleware("secret", testLogger(), okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestAuthMiddlewareAllowsStaticRouteWithoutToken(t *testing.T) {
+	h := authMiddleware("secret", testLogger(), okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 
@@ -142,5 +160,53 @@ func TestCorsMiddlewareHandlesPreflight(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204 for OPTIONS preflight", rr.Code)
+	}
+}
+
+func TestServerHandlerServesSPAWithoutToken(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_STATIC_DIR", staticDir)
+
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "secret"
+
+	app := sybra.NewApp(testLogger(), nil, cfg)
+	handler := cspMiddleware(corsMiddleware(nil, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if body := rr.Body.String(); body != "ok" {
+		t.Fatalf("body = %q, want %q", body, "ok")
+	}
+}
+
+func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := fs.Sub(os.DirFS(staticDir), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := spaHandler{fs: http.FileServer(http.FS(sub)), staticDir: staticDir}
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/123", http.NoBody)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if body := rr.Body.String(); body != "index" {
+		t.Fatalf("body = %q, want %q", body, "index")
 	}
 }

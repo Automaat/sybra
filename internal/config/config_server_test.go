@@ -96,3 +96,33 @@ func TestLoadServerAllowedOriginsEnvOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("server:\n  allowed_origins: [https://a.example]\n")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.AuthToken != "" {
+		t.Fatalf("AuthToken = %q, want empty for read-only loads", cfg.Server.AuthToken)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "allowed_origins") {
+		t.Fatalf("config.yaml changed unexpectedly: %s", data)
+	}
+	if strings.Contains(string(data), "auth_token") {
+		t.Fatalf("LoadNoPersist should not persist auth_token, got %s", data)
+	}
+}
