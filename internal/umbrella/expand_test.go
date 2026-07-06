@@ -81,6 +81,60 @@ func TestExpandThreadsScaledAttemptTimeoutToPlanner(t *testing.T) {
 	}
 }
 
+func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
+	restore := githubFetchUmbrellaForTest(t, github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+	}, makeTestIssues(3))
+	defer restore()
+
+	tasks := newTestTaskManager(t)
+	run := func(context.Context, string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+
+	res, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if !res.Degraded {
+		t.Fatalf("Degraded = false, want true after planner deadline fallback")
+	}
+	if res.Created != 3 {
+		t.Fatalf("Created = %d, want 3", res.Created)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var tracker *task.Task
+	children := map[string]task.Task{}
+	for i := range all {
+		if all[i].TaskType == task.TaskTypeUmbrella {
+			tracker = &all[i]
+			continue
+		}
+		children[NormalizeIssueRef(all[i].Issue)] = all[i]
+	}
+	if tracker == nil {
+		t.Fatal("no umbrella tracker created")
+	}
+	if !slices.Contains(tracker.Tags, FallbackTag) {
+		t.Fatalf("tracker tags = %v, want %q", tracker.Tags, FallbackTag)
+	}
+	if got := ParseExpandFailCount(tracker.Tags); got != 0 {
+		t.Fatalf("expand fail count = %d, want 0 for degraded fallback success", got)
+	}
+	if got := children["o/r#2"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/1" {
+		t.Fatalf("child #2 deps = %v, want issue #1", got)
+	}
+	if got := children["o/r#3"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/2" {
+		t.Fatalf("child #3 deps = %v, want issue #2", got)
+	}
+}
+
 func githubFetchUmbrellaForTest(t *testing.T, umb github.Issue, subs []github.Issue) func() {
 	t.Helper()
 	old := fetchUmbrella
