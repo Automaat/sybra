@@ -296,22 +296,33 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	if content == "" {
 		return m.Get(id)
 	}
-	mu := m.lockFor(id)
-	mu.Lock()
-	defer mu.Unlock()
-	t, err := m.store.Get(id)
-	if err != nil {
-		return Task{}, err
-	}
-	body := strings.TrimRight(t.Body, "\n")
-	if body != "" {
-		body += "\n\n"
-	}
-	body += content + "\n"
-	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	var (
+		t   Task
+		err error
+	)
+	func() {
+		mu := m.lockFor(id)
+		mu.Lock()
+		defer mu.Unlock()
+
+		t, err = m.store.Get(id)
+		if err != nil {
+			return
+		}
+		body := strings.TrimRight(t.Body, "\n")
+		if body != "" {
+			body += "\n\n"
+		}
+		body += content + "\n"
+		t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	}()
 	if err != nil {
 		return t, err
 	}
+	// Emit after releasing the lock — see AddRunWithStatus for why: this
+	// Manager is its own emitter's target (app.go routes task:updated back
+	// into OnExternalUpdate), so firing while still holding the lock
+	// self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil

@@ -211,11 +211,15 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // HandleAgentComplete is called when an agent finishes. It maps the agent
 // back to the workflow step and advances.
 //
-// Silently skips (Debug log) when the task's workflow is already terminal or
-// has no current step. Agents that were started outside the workflow engine
-// (e.g. manual pr-fix retries, recovery spawns) land here on completion; the
-// guard avoids the "step not found" error loop that followed workflow
-// completion in older versions.
+// Every non-advancing exit below logs at INFO with task_id, agent_id, and a
+// reason — a completion that bails here produces no other signal (no error,
+// no workflow.advance), so a Debug-only log made the drop invisible at the
+// default log level and let a genuine regression (e.g. #1567) masquerade as
+// routine "agent started outside the workflow engine" noise. Agents started
+// outside the workflow engine (e.g. manual pr-fix retries, recovery spawns)
+// legitimately land here on completion; the guards below avoid the "step not
+// found" error loop that followed workflow completion in older versions —
+// but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
@@ -223,7 +227,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		return
 	}
 	if t.Workflow == nil {
-		e.logger.Debug("workflow.agent-complete.no-workflow", "task_id", taskID)
+		e.logger.Info("workflow.agent-complete.bail", "task_id", taskID, "agent_id", c.AgentID, "reason", "no-workflow")
 		return
 	}
 	if t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed {
@@ -235,14 +239,14 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 				e.importSidecarIfConfigured(taskID, spawnedStep, t)
 			}
 		}
-		e.logger.Debug("workflow.agent-complete.terminal",
-			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "terminal", "state", string(t.Workflow.State))
 		e.clearAgentStep(c.AgentID)
 		return
 	}
 	if t.Workflow.CurrentStep == "" {
-		e.logger.Debug("workflow.agent-complete.no-current-step",
-			"task_id", taskID, "agent_id", c.AgentID, "state", string(t.Workflow.State))
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "no-current-step", "state", string(t.Workflow.State))
 		e.clearAgentStep(c.AgentID)
 		return
 	}
@@ -257,8 +261,8 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
 		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
-			e.logger.Debug("workflow.agent-complete.untracked-ignored",
-				"task_id", taskID, "agent_id", c.AgentID, "current_step", spawnedStep)
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
 			e.clearAgentStep(c.AgentID)
 			return
 		}
