@@ -1868,6 +1868,74 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+// TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover is the
+// regression guard for sybra#1585: a reschedule that fires while the step's
+// provider is still inside its rate-limit cooldown (and no healthy peer exists
+// to fail over to) must PARK the task — not consume a watchdog retry budget and
+// not escalate to human-required. Even with the retry budget already exhausted,
+// the task waits for the cooldown to expire instead of bothering a human.
+func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *testing.T) {
+	tests := []struct {
+		name    string
+		retries string
+	}{
+		{name: "fresh budget parks", retries: ""},
+		{name: "exhausted budget still parks", retries: strconv.Itoa(maxWatchdogRateLimitRetries)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			// Provider throttled, no peer to fail over to → must park and wait.
+			agents.SetProviderRateLimited(true)
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: "watchdog: rate limit: org-level quota exhausted",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+				},
+			})
+			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+
+			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+			if got := agents.CallCount(); got != 0 {
+				t.Fatalf("expected no replacement agent starts while parked, got %d", got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != "in-progress" {
+				t.Fatalf("status = %q, want in-progress (parked, not escalated)", got.Status)
+			}
+			// Budget untouched: the parked attempt never counted.
+			if got := got.Workflow.Variables[watchdogRateLimitRetryKey("implement")]; got != tc.retries {
+				t.Fatalf("rate-limit retry var = %q, want unchanged %q", got, tc.retries)
+			}
+			// Breaker untouched: a transient throttle is not a dispatch failure.
+			if _, tripped := got.Workflow.Variables[circuitBreakerFailureKey("implement")]; tripped {
+				t.Fatalf("circuit breaker recorded a failure for a transient rate limit: %v", got.Workflow.Variables)
+			}
+			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+				t.Fatal("rate-limited agent step mapping was not cleared")
+			}
+		})
+	}
+}
+
 func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

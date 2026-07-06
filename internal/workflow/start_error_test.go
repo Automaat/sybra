@@ -271,6 +271,34 @@ func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing
 	}
 }
 
+// TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker guards sybra#1585:
+// an all-providers-throttled gate error (provider.UnhealthyError, rate_limited)
+// is a transient capacity condition that self-heals when the cooldown expires,
+// so it must never feed the circuit breaker or escalate the task, no matter how
+// many times it repeats within the window. Auth failures keep tripping it.
+func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	rateLimited := &provider.UnhealthyError{Provider: "claude", Reason: provider.RateLimitReason}
+	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 2 {
+		engine.surfaceStartFailure("t1", "in-progress", rateLimited, wf, "implement")
+		if wf.State == ExecFailed {
+			t.Fatalf("transient rate limit tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if _, recorded := wf.Variables[circuitBreakerFailureKey("implement")]; recorded {
+		t.Fatalf("transient rate limit recorded a breaker failure: %v", wf.Variables)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status == "human-required" {
+		t.Fatal("transient rate limit escalated to human-required")
+	}
+}
+
 func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})

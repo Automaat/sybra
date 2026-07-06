@@ -12,6 +12,12 @@ import (
 // ErrProviderUnhealthy sentinel — use errors.Is to detect gate-block errors.
 var ErrProviderUnhealthy = errors.New("provider unhealthy")
 
+// RateLimitReason is the Status.Reason value set when a provider is throttled
+// (ReportRateLimit). Exposed so callers can tell a transient capacity throttle
+// (self-heals when the cooldown window expires) apart from an auth failure
+// (needs a human login) without string-matching a literal.
+const RateLimitReason = "rate_limited"
+
 // UnhealthyError carries the structured reason a provider was refused.
 type UnhealthyError struct {
 	Provider string

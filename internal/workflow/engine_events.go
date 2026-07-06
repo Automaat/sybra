@@ -475,6 +475,13 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		return
 	}
 	e.clearAgentStep(agentID)
+	if e.shouldSkipResumeForRateLimitedProvider(&t, step) {
+		// Provider is still inside its rate-limit cooldown and no healthy peer is
+		// available to fail over to. Park the task without consuming a watchdog
+		// retry budget or feeding the circuit breaker — ResumeStalled re-drives
+		// it once clearExpiredRateLimits reopens a provider.
+		return
+	}
 	if e.agents.HasOtherRunningAgentForTask(taskID, agentID) {
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
 			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
@@ -540,6 +547,13 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		return
 	}
 	e.clearAgentStep(agentID)
+
+	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child) {
+		// See RescheduleRateLimitedAgent: park rather than burn a retry budget or
+		// trip the breaker while this child's provider is rate-limited with no
+		// failover peer. The parent stays inflight; ResumeStalled retries later.
+		return
+	}
 
 	if e.handleWatchdogRateLimitRetry(&fresh, child) {
 		return
@@ -965,7 +979,12 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	if permanent {
 		target = "human-required"
 	}
-	if wf != nil && stepID != "" {
+	// A provider being rate-limited right now is a transient capacity condition,
+	// not a genuine start failure: counting it toward the breaker would trip a
+	// task to human-required for something that self-heals when the cooldown
+	// window expires. Only genuine failures (bad worktree, missing project,
+	// crashes) — and auth failures that need a human login — feed the breaker.
+	if wf != nil && stepID != "" && !isTransientCapacityError(err) {
 		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
 		if trip {
 			// The status skip in resumeSkipReasonForStatus alone is not a
