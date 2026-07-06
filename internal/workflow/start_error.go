@@ -76,6 +76,22 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	return truncateReason(reason), permanent
 }
 
+// isTransientCapacityError reports whether err is a provider-capacity throttle
+// (rate limit) that self-heals once the provider's cooldown window expires.
+// Such errors must not be counted toward the circuit breaker or escalated to
+// human-required — the task should park and retry when a provider frees up.
+// Both the rate-limit reason and a cooldown deadline (Until) are accepted
+// because resolveProviderDecision tags the reason but leaves Until zero, while
+// other gate paths may carry only the deadline. A logged-out auth failure has
+// neither, so it stays escalatable — a human must log in.
+func isTransientCapacityError(err error) bool {
+	var ue *provider.UnhealthyError
+	if errors.As(err, &ue) {
+		return ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+	}
+	return false
+}
+
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
