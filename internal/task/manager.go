@@ -296,32 +296,26 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	if content == "" {
 		return m.Get(id)
 	}
-	var (
-		t   Task
-		err error
-	)
-	func() {
-		mu := m.lockFor(id)
-		mu.Lock()
-		defer mu.Unlock()
-
-		t, err = m.store.Get(id)
-		if err != nil {
-			return
-		}
-		body := strings.TrimRight(t.Body, "\n")
-		if body != "" {
-			body += "\n\n"
-		}
-		body += content + "\n"
-		t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
-	}()
+	mu := m.lockFor(id)
+	mu.Lock()
+	t, err := m.store.Get(id)
+	if err != nil {
+		mu.Unlock()
+		return Task{}, err
+	}
+	body := strings.TrimRight(t.Body, "\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	body += content + "\n"
+	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	mu.Unlock()
 	if err != nil {
 		return t, err
 	}
-	// Emit after releasing the lock — see AddRunWithStatus for why: this
-	// Manager is its own emitter's target (app.go routes task:updated back
-	// into OnExternalUpdate), so firing while still holding the lock
+	// Emit after releasing the lock — see UpdateFn/AddRunWithStatus for why:
+	// this Manager is its own emitter's target (app.go routes task:updated
+	// back into OnExternalUpdate), so firing while still holding the lock
 	// self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
@@ -332,16 +326,22 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
+		mu.Unlock()
 		return err
 	}
 	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
+	mu.Unlock()
+	// Emit/hook after releasing the lock — see UpdateFn/AddRunWithStatus for
+	// why: this Manager is its own emitter's target (app.go routes
+	// task:updated back into OnExternalUpdate), so firing while still holding
+	// the lock self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	if m.onDeleteHook != nil {
