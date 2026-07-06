@@ -405,11 +405,12 @@ func TestReportProviderHealthSignal_CleanSuccessMentioningRateLimitDoesNotMarkRa
 	}
 }
 
-// TestGateProvider_SoftThresholdLastResortUsesRemainingBudget is the sybra#1588
-// regression: when the requested provider is only blocked by a soft reserve
-// threshold (budget remains) and no healthy peer exists to fail over to, the
-// run must use the remaining budget rather than gate. Otherwise the reserved
-// headroom is stranded and the task escalates with usable quota left.
+// TestGateProvider_SoftThresholdLastResortUsesRemainingBudget guards the
+// soft-threshold last-resort path: when the requested provider is only blocked
+// by a soft reserve threshold (budget remains) and no healthy peer exists to
+// fail over to, the run must use the remaining budget rather than gate.
+// Otherwise the reserved headroom is stranded and the task escalates with
+// usable quota left.
 func TestGateProvider_SoftThresholdLastResortUsesRemainingBudget(t *testing.T) {
 	for _, reason := range []string{"weekly limit near threshold", "session limit near threshold"} {
 		t.Run(reason, func(t *testing.T) {

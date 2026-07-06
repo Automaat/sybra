@@ -443,7 +443,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []providerGateEvent, taskID string) (string, []providerGateEvent, error) {
 	if limits.IsSoftThresholdReason(reason) {
 		gateEvents = append(gateEvents, providerGateEvent{
-			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", logLevel: "info", taskID: taskID,
+			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
 		})
 		return resolved, gateEvents, nil
 	}
