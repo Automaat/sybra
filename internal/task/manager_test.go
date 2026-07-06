@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 )
@@ -435,4 +436,59 @@ func TestNoopEmitter(t *testing.T) {
 	}
 	// should not panic
 	m.emitter.Emit("x", "y")
+}
+
+// TestEmitReenteringOnExternalUpdateDoesNotDeadlock guards #1569: the app emit
+// closure routes task events synchronously back into OnExternalUpdate, which
+// takes the same per-task lock as the mutation that emitted — so any Manager
+// method that emits while still holding lockFor(id) deadlocks itself. The
+// production incident path was AppendBody (workflow test-failure reports);
+// Delete is covered too since task:deleted takes the same route.
+func TestEmitReenteringOnExternalUpdateDoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+	ops := []struct {
+		name string
+		op   func(m *Manager, id string) error
+	}{
+		{"AppendBody", func(m *Manager, id string) error {
+			_, err := m.AppendBody(id, "## Test Failures\nreport")
+			return err
+		}},
+		{"Delete", func(m *Manager, id string) error {
+			return m.Delete(id)
+		}},
+	}
+	for _, tc := range ops {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			var m *Manager
+			m = NewManager(store, EmitterFunc(func(_ string, data any) {
+				if path, ok := data.(string); ok {
+					m.OnExternalUpdate(path)
+				}
+			}))
+			// OnExternalUpdate only takes the per-task lock once a status hook
+			// is wired — mirror the fully-started app, not the startup window.
+			m.SetStatusChangeHook(func(string, string, string) {})
+
+			tk, err := m.Create("Title", "body", "headless")
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.op(m, tk.ID) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s deadlocked emitting under the per-task lock", tc.name)
+			}
+		})
+	}
 }

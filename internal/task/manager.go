@@ -298,9 +298,9 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return Task{}, err
 	}
 	body := strings.TrimRight(t.Body, "\n")
@@ -309,9 +309,13 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	body += content + "\n"
 	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	mu.Unlock()
 	if err != nil {
 		return t, err
 	}
+	// The app emit closure routes task:updated back into OnExternalUpdate,
+	// which re-takes this task's lock — holding it here self-deadlocks (see
+	// AddRunWithStatus).
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil
@@ -321,16 +325,22 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
+		mu.Unlock()
 		return err
 	}
 	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
+	mu.Unlock()
+	// task:deleted also routes into OnExternalUpdate via the app emit closure;
+	// under the lock that survives only because locks.Delete above hands the
+	// re-entry a fresh mutex. Emit outside the critical section anyway so the
+	// safety does not hinge on that ordering (see AddRunWithStatus).
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	if m.onDeleteHook != nil {
