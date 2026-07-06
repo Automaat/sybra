@@ -29,6 +29,33 @@ func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	}
 }
 
+// TestPlannerAttemptTimeout_ScalesWithPromptSize guards #1570: a fixed
+// per-attempt budget deadline-kills every attempt on a large umbrella, whose
+// prompt (and per-child JSON answer) grow with sub-issue count. The budget
+// must hold the floor for small prompts, grow with prompt size, and stay
+// capped so one attempt cannot hold the expansion slot indefinitely.
+func TestPlannerAttemptTimeout_ScalesWithPromptSize(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		promptLen int
+		want      time.Duration
+	}{
+		{"empty prompt keeps floor", 0, PlannerAttemptTimeout},
+		{"below one chunk keeps floor", plannerAttemptPromptChunk - 1, PlannerAttemptTimeout},
+		{"each chunk buys a minute", 4 * plannerAttemptPromptChunk, PlannerAttemptTimeout + 4*time.Minute},
+		{"huge prompt is capped", 1 << 30, plannerAttemptTimeoutMax},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := plannerAttemptTimeout(tt.promptLen); got != tt.want {
+				t.Fatalf("plannerAttemptTimeout(%d) = %v, want %v", tt.promptLen, got, tt.want)
+			}
+		})
+	}
+}
+
 func newTestTaskManager(t *testing.T) *task.Manager {
 	t.Helper()
 	store, err := task.NewStore(t.TempDir())
