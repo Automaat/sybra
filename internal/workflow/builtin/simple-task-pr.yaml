@@ -60,8 +60,8 @@ steps:
              git fetch "$PUSH_REMOTE" "$BRANCH"
              git rebase "$PUSH_REMOTE/$BRANCH"
              If the rebase reports conflicts, run `git rebase --abort` and stop
-             — report the task as blocked on manual conflict resolution. Do
-             not force-push under any circumstances.
+             — report the task as human-required for manual conflict
+             resolution. Do not force-push under any circumstances.
              Otherwise, after a clean rebase, push again:
              git push "$PUSH_REMOTE" HEAD:"$BRANCH"
           3. Verify the remote PR head matches local HEAD:
@@ -106,8 +106,8 @@ steps:
              git fetch "$PUSH_REMOTE" "$BRANCH"
              git rebase "$PUSH_REMOTE/$BRANCH"
              If the rebase reports conflicts, run `git rebase --abort` and stop
-             — report the task as blocked on manual conflict resolution. Do
-             not force-push under any circumstances.
+             — report the task as human-required for manual conflict
+             resolution. Do not force-push under any circumstances.
              Otherwise, after a clean rebase, push again:
              git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"
              gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \

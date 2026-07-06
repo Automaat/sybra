@@ -628,17 +628,24 @@ func TestBuiltinDefinitions_NeverInstructForcePush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
 	}
-	// Match actual command flags, not advisory prose like "Never force-push".
-	forbidden := []string{"--force-with-lease", "--force"}
+	// Match actual git-push instructions, not advisory prose like
+	// "Never force-push" or unrelated commands that may legitimately use
+	// a --force flag.
+	forbidden := []string{"--force-with-lease", "--force", " -f", "\t-f", "`-f`"}
 	for _, def := range defs {
 		for _, step := range def.Steps {
 			prompt := step.Config.Prompt
 			if prompt == "" {
 				continue
 			}
-			for _, term := range forbidden {
-				if strings.Contains(prompt, term) {
-					t.Fatalf("builtin %q step %q prompt instructs force-push (contains %q):\n%s", def.ID, step.ID, term, prompt)
+			for line := range strings.Lines(prompt) {
+				if !strings.Contains(line, "git push") {
+					continue
+				}
+				for _, term := range forbidden {
+					if strings.Contains(line, term) {
+						t.Fatalf("builtin %q step %q prompt instructs force-push (contains %q):\n%s", def.ID, step.ID, term, prompt)
+					}
 				}
 			}
 		}
