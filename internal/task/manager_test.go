@@ -3,8 +3,10 @@ package task
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 )
@@ -435,4 +437,126 @@ func TestNoopEmitter(t *testing.T) {
 	}
 	// should not panic
 	m.emitter.Emit("x", "y")
+}
+
+// reentrantEmitter reproduces app.go's Startup emit closure, which calls
+// Manager.OnExternalUpdate(path) synchronously and on the same goroutine for
+// every TaskCreated/TaskUpdated/TaskDeleted event a Manager write emits. Any
+// Manager method that emits while still holding lockFor(id) deadlocks the
+// caller against itself through this exact path.
+type reentrantEmitter struct {
+	m *Manager
+}
+
+func (e *reentrantEmitter) Emit(_ string, data any) {
+	if path, ok := data.(string); ok {
+		e.m.OnExternalUpdate(path)
+	}
+}
+
+// runWithDeadlockGuard runs fn and fails the test if it does not return
+// within the deadline, instead of hanging the whole test binary — the exact
+// failure mode of the bug this guards against (issue ddc0410c/#1569): a
+// wedged per-task mutex blocks not just the caller but the fsnotify watcher
+// loop and the monitor tick behind it.
+func runWithDeadlockGuard(t *testing.T, name string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s deadlocked: emit-under-lock re-entered OnExternalUpdate on the same goroutine", name)
+	}
+}
+
+// TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit is the regression test
+// for issue ddc0410c/#1569: a live test-runner FAIL completion calls
+// AppendBody, whose emit re-enters OnExternalUpdate synchronously through the
+// app.go emit closure. Before the fix, AppendBody held lockFor(id) across the
+// emit (defer mu.Unlock()), so OnExternalUpdate's mu.Lock() on the same
+// goroutine hung forever — wedging the calling goroutine, and behind it the
+// fsnotify watcher and monitor tick (both serialize on the same per-task
+// lock).
+func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	m := NewManager(store, nil)
+	m.emitter = &reentrantEmitter{m: m}
+	m.SetStatusChangeHook(func(string, string, string) {})
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	runWithDeadlockGuard(t, "AppendBody", func() {
+		if _, err := m.AppendBody(task.ID, "## Test Failures\nfailed"); err != nil {
+			t.Errorf("AppendBody: %v", err)
+		}
+	})
+
+	got, err := m.Get(task.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !strings.Contains(got.Body, "Test Failures") {
+		t.Fatalf("Body = %q, want it to contain appended content", got.Body)
+	}
+}
+
+// TestManagerDeleteDoesNotDeadlockOnReentrantEmit guards the same
+// emit-under-lock shape in Delete, flagged by the AppendBody audit in
+// issue ddc0410c/#1569.
+func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	m := NewManager(store, nil)
+	m.emitter = &reentrantEmitter{m: m}
+	m.SetStatusChangeHook(func(string, string, string) {})
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	runWithDeadlockGuard(t, "Delete", func() {
+		if err := m.Delete(task.ID); err != nil {
+			t.Errorf("Delete: %v", err)
+		}
+	})
+}
+
+// TestManagerOnExternalUpdateSkipsBusyLockInsteadOfBlocking is the defense-
+// in-depth regression for issue ddc0410c/#1569 item 2: even if a future
+// change reintroduces an emit-under-lock bug, OnExternalUpdate must not block
+// forever on the same goroutine that is already holding lockFor(id) — it
+// should back off and let the caller proceed.
+func TestManagerOnExternalUpdateSkipsBusyLockInsteadOfBlocking(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+	m.SetStatusChangeHook(func(string, string, string) {})
+
+	task, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := filepath.Join(m.store.dir, task.ID+".md")
+
+	mu := m.lockFor(task.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	runWithDeadlockGuard(t, "OnExternalUpdate", func() {
+		m.OnExternalUpdate(path)
+	})
 }

@@ -1,6 +1,7 @@
 package task
 
 import (
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -111,7 +112,19 @@ func (m *Manager) OnExternalUpdate(path string) {
 	}
 
 	mu := m.lockFor(id)
-	mu.Lock()
+	// TryLock, not Lock: every Manager write path now releases lockFor(id)
+	// before emitting (see AppendBody/Delete/UpdateFn/AddRunWithStatus), so
+	// this lock is free by the time an in-process emit reaches here. If a
+	// future change reintroduces an emit-under-lock, blocking here would
+	// re-wedge the caller's goroutine on itself (and, since this same path
+	// serves the fsnotify watcher, freeze external-update processing for
+	// every task). Skipping this one dedupe-check instead of deadlocking is
+	// safe: the writer's own state is already durable, and the next genuine
+	// external file event still resolves the status via a fresh TryLock.
+	if !mu.TryLock() {
+		slog.Default().Warn("task.OnExternalUpdate.lock_busy", "id", id)
+		return
+	}
 	// Only Status is needed here; use the parse-only read to avoid the
 	// per-call sidecar dir scan on every external file change.
 	t, err := m.store.read(id)
@@ -298,9 +311,9 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return Task{}, err
 	}
 	body := strings.TrimRight(t.Body, "\n")
@@ -309,9 +322,14 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	body += content + "\n"
 	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	mu.Unlock()
 	if err != nil {
 		return t, err
 	}
+	// Emit after releasing the lock — see UpdateFn/AddRunWithStatus for why:
+	// this Manager is its own emitter's target (app.go routes task:updated
+	// back into OnExternalUpdate), so firing while still holding the lock
+	// self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil
@@ -321,16 +339,22 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
+		mu.Unlock()
 		return err
 	}
 	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
+	mu.Unlock()
+	// Emit/hook after releasing the lock — see UpdateFn/AddRunWithStatus for
+	// why: this Manager is its own emitter's target (app.go routes
+	// task:updated back into OnExternalUpdate), so firing while still holding
+	// the lock self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	if m.onDeleteHook != nil {
