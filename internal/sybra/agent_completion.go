@@ -52,6 +52,9 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		humanReview:    a.humanReview,
 		prTracker:      a.prTracker,
 		cfg:            a.cfg,
+		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
+		// own guard), same pattern as agentOrch.SetConflictRecovery.
+		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
 	}
 }
 
@@ -77,6 +80,14 @@ type AgentCompletionHandler struct {
 	humanReview    *humanReviewHandler
 	prTracker      *github.IssueTracker
 	cfg            *config.Config
+
+	// conflictRecovery dispatches the autonomous conflict-fix agent for a
+	// task (review.Handler.RecoverStaleBranchConflict) — reused here so a
+	// fix-review push that hits project.ErrDivergedNeedsResolve resolves via
+	// an agent-driven merge+push (a real tool call, interceptable by hooks)
+	// rather than Sybra's own process force-pushing. May be nil (degraded
+	// init / tests): callers must treat that like "no recovery available".
+	conflictRecovery func(taskID string) bool
 }
 
 // OnComplete is called by the manager's construction-time completion callback.
@@ -398,10 +409,37 @@ func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
 			h.logger.Info("fix-review.push-skipped", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "reason", "local branch ref missing")
 			return
 		}
+		if errors.Is(err, project.ErrDivergedNeedsResolve) {
+			h.recoverDivergedFixReviewPush(ag, branch, err)
+			return
+		}
 		h.logger.Warn("fix-review.push", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "err", err)
 		return
 	}
 	h.logger.Info("fix-review.pushed", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch)
+}
+
+// recoverDivergedFixReviewPush handles a fix-review push backstop that hit
+// project.ErrDivergedNeedsResolve: Sybra's own process must never force-push
+// (see project.PushSync's doc), so the fix sitting in the worktree is handed
+// to the autonomous conflict-fix agent instead — it merges the branch cleanly
+// and pushes as its own tool call, which unlike this Go process's shell-out
+// is interceptable by hooks. Escalates to human-required when no recovery
+// callback is wired or it declines (e.g. retry budget spent), so the fix is
+// never silently stranded on local disk.
+func (h *AgentCompletionHandler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, pushErr error) {
+	if h.conflictRecovery != nil && h.conflictRecovery(ag.TaskID) {
+		h.logger.Info("fix-review.push-diverged.recovered", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch)
+		return
+	}
+	h.logger.Warn("fix-review.push-diverged", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch, "err", pushErr)
+	reason := "fix-review: branch diverged from remote and needs manual rebase/merge before the fix can be pushed"
+	if _, err := h.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		h.logger.Error("fix-review.push-diverged.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
 }
 
 // captureHeadSHA returns the worktree HEAD commit for the task, or "" when the

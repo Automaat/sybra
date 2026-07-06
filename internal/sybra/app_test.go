@@ -245,7 +245,7 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 	}
 }
 
-func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manager, string) {
+func setupFixReviewPushTest(t *testing.T) (h *AgentCompletionHandler, taskMgr *task.Manager, barePath, src string) {
 	t.Helper()
 	home, err := os.MkdirTemp("", "sybra-fix-review-*")
 	if err != nil {
@@ -258,15 +258,15 @@ func setupFixReviewPushTest(t *testing.T) (*AgentCompletionHandler, *task.Manage
 	if err != nil {
 		t.Fatal(err)
 	}
-	taskMgr := task.NewManager(taskStore, nil)
+	taskMgr = task.NewManager(taskStore, nil)
 
 	projStore, err := project.NewStore(filepath.Join(home, "projects"), filepath.Join(home, "clones"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	src := initFixReviewSourceRepo(t)
-	barePath := filepath.Join(home, "clones", "testowner", "testrepo.git")
+	src = initFixReviewSourceRepo(t)
+	barePath = filepath.Join(home, "clones", "testowner", "testrepo.git")
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -300,12 +300,12 @@ updated_at: 2025-01-01T00:00:00Z
 		},
 	})
 
-	h := &AgentCompletionHandler{
+	h = &AgentCompletionHandler{
 		DomainHandler: DomainHandler{logger: logger},
 		tasks:         taskMgr,
 		worktrees:     wm,
 	}
-	return h, taskMgr, barePath
+	return h, taskMgr, barePath, src
 }
 
 func initFixReviewSourceRepo(t *testing.T) string {
@@ -339,7 +339,7 @@ func initFixReviewSourceRepo(t *testing.T) string {
 }
 
 func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
-	h, taskMgr, barePath := setupFixReviewPushTest(t)
+	h, taskMgr, barePath, _ := setupFixReviewPushTest(t)
 	branch, err := project.DefaultBranch(context.Background(), barePath)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
@@ -421,7 +421,7 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 // path (which never touches status). The push decision is owned by the agent per
 // the configured mode, so Sybra runs no force-push here.
 func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
-	h, taskMgr, _ := setupFixReviewPushTest(t)
+	h, taskMgr, _, _ := setupFixReviewPushTest(t)
 	h.cfg = &config.Config{ReviewHold: config.ReviewHoldConfig{
 		Enabled: true, Mode: config.ReviewHoldModeHold,
 	}}
@@ -469,6 +469,150 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	h.OnComplete(&agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Mode:      "headless",
+		Name:      agent.RoleFixReview.AgentName(tk.Title),
+		StartedAt: time.Now(),
+	})
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
+// setupDivergedFixReviewPush prepares a fix-review worktree whose branch has
+// genuinely diverged from its remote tracking ref (neither is an ancestor of
+// the other) — the exact condition project.PushSync now refuses to force
+// through. Mirrors internal/project's own PushSync divergence tests: seed a
+// push, then rewrite local history so it no longer contains the tracking
+// ref's tip.
+func setupDivergedFixReviewPush(t *testing.T) (h *AgentCompletionHandler, taskMgr *task.Manager, tk task.Task) {
+	t.Helper()
+	h, taskMgr, barePath, src := setupFixReviewPushTest(t)
+	branch, err := project.DefaultBranch(context.Background(), barePath)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	// src has its default branch checked out; without this, any push to it
+	// (the seed push below and the fix-review push under test) is rejected
+	// with "refusing to update checked out branch" regardless of divergence.
+	if out, err := exec.Command("git", "-C", src, "config", "receive.denyCurrentBranch", "updateInstead").CombinedOutput(); err != nil {
+		t.Fatalf("config denyCurrentBranch: %v: %s", err, out)
+	}
+
+	tk, err = taskMgr.Create("fix pr", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = taskMgr.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("testowner/testrepo"),
+		PRNumber:  task.Ptr(42),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
+	if err != nil {
+		t.Fatalf("PrepareForFix: %v", err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
+		{"-C", wtPath, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	gitCommit := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"-C", wtPath, "add", "."},
+			{"-C", wtPath, "commit", "-m", "fix(review): " + content},
+		} {
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+	}
+	gitCommit("one")
+	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Rewrite history locally so HEAD diverges from the remote tracking ref
+	// PushSync compares against — same technique as
+	// TestPushSync_DivergenceReturnsErrorNoForce in internal/project.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
+		t.Fatalf("reset: %v: %s", err, out)
+	}
+	gitCommit("two-prime")
+
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "agent-1",
+		Role:      string(agent.RoleFixReview),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return h, taskMgr, tk
+}
+
+// TestOnAgentComplete_FixReviewPushDivergedRecoversViaAgent proves the core
+// "never force-push" fix for the fix-review backstop: when the push hits a
+// genuine divergence, Sybra must not force through it and must not strand the
+// fix — it hands off to the wired conflict-recovery callback (the same
+// autonomous agent-driven merge+push used elsewhere) instead.
+func TestOnAgentComplete_FixReviewPushDivergedRecoversViaAgent(t *testing.T) {
+	h, taskMgr, tk := setupDivergedFixReviewPush(t)
+	var recoveredTaskID string
+	h.conflictRecovery = func(taskID string) bool {
+		recoveredTaskID = taskID
+		return true
+	}
+
+	h.OnComplete(&agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Mode:      "headless",
+		Name:      agent.RoleFixReview.AgentName(tk.Title),
+		StartedAt: time.Now(),
+	})
+
+	if recoveredTaskID != tk.ID {
+		t.Fatalf("conflictRecovery called with task %q, want %q", recoveredTaskID, tk.ID)
+	}
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want unchanged (recovery handled it, not human-required)", got.Status)
+	}
+}
+
+// TestOnAgentComplete_FixReviewPushDivergedEscalatesToHuman guards the other
+// half: when there is no recovery path (nil callback) or it declines, the
+// diverged fix must not be silently dropped — the task escalates to
+// human-required rather than leaving the fix stranded with no signal.
+func TestOnAgentComplete_FixReviewPushDivergedEscalatesToHuman(t *testing.T) {
+	h, taskMgr, tk := setupDivergedFixReviewPush(t)
+	h.conflictRecovery = func(string) bool { return false }
 
 	h.OnComplete(&agent.Agent{
 		ID:        "agent-1",
