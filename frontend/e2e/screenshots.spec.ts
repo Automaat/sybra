@@ -14,9 +14,10 @@ import { mockReviewComments } from './lib/review-mocks.js'
 import { copyFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+import { isolatedSybraHome } from './lib/sybra-home'
+
+const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
 

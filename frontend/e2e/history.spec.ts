@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+
+import { isolatedSybraHome } from './lib/sybra-home'
 
 // Verifies the fix for the empty-history bug: interactive agent runs persist
 // their NDJSON log in raw Anthropic-envelope format. Before the fix,
@@ -14,7 +15,7 @@ import { homedir } from 'node:os'
 // the matching log) then asserts the visible content inside the history
 // section — not just bubble count.
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 const AGENTS_LOG_DIR = join(SYBRA_HOME, 'logs', 'agents')
 
