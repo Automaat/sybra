@@ -1650,7 +1650,11 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	}
 }
 
-func TestPushSync_DivergenceForcePushes(t *testing.T) {
+// TestPushSync_DivergenceReturnsErrorNoForce guards the core "never
+// force-push" property: on a genuinely diverged branch, PushSync must refuse
+// to push (returning ErrDivergedNeedsResolve) rather than force-with-lease
+// over remote-only commits.
+func TestPushSync_DivergenceReturnsErrorNoForce(t *testing.T) {
 	t.Parallel()
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
 	makeCommit(t, wtPath, "one")
@@ -1658,25 +1662,28 @@ func TestPushSync_DivergenceForcePushes(t *testing.T) {
 	if err := PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
 	}
+	beforeSHA := remoteRefSHA(t, remoteBare, branch)
 
 	// Rewrite history locally so HEAD diverges from the remote tracking ref.
 	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
 		t.Fatalf("reset: %v: %s", err, out)
 	}
-	divergedSHA := makeCommit(t, wtPath, "two-prime")
+	makeCommit(t, wtPath, "two-prime")
 
-	// Prove a regular push would now be rejected — only force-with-lease should succeed.
+	// Prove a regular push would now be rejected — confirms this is a genuine
+	// divergence, not a fast-forward PushSync mis-detected as one.
 	rejectCmd := exec.Command("git", "push", "origin", branch)
 	rejectCmd.Dir = wtPath
 	if out, err := rejectCmd.CombinedOutput(); err == nil {
 		t.Fatalf("expected regular push to be rejected on divergence; succeeded: %s", out)
 	}
 
-	if err := PushSync(context.Background(), wtPath, branch); err != nil {
-		t.Fatalf("PushSync divergence: %v", err)
+	err := PushSync(context.Background(), wtPath, branch)
+	if !errors.Is(err, ErrDivergedNeedsResolve) {
+		t.Fatalf("PushSync divergence = %v, want ErrDivergedNeedsResolve", err)
 	}
-	if got := remoteRefSHA(t, remoteBare, branch); got != divergedSHA {
-		t.Fatalf("remote SHA after force-with-lease = %q, want %q", got, divergedSHA)
+	if got := remoteRefSHA(t, remoteBare, branch); got != beforeSHA {
+		t.Fatalf("remote SHA = %q, want untouched %q (PushSync must never force-push)", got, beforeSHA)
 	}
 }
 
@@ -1919,8 +1926,8 @@ func TestMergeOnto_ConflictReturnsErrorAndCleansUp(t *testing.T) {
 
 // TestPushSync_RefusesForceWhenRemoteAdvanced is the defense-in-depth net: when
 // the live remote head no longer matches the stale tracking ref the push
-// decision was based on, PushSync must refuse the --force-with-lease rather than
-// clobber the newer commits (which the lease would wrongly permit).
+// decision was based on, PushSync must refuse to push at all rather than
+// clobber the newer commits with a force push.
 func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
@@ -1944,6 +1951,9 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
 	}
+	if !errors.Is(err, ErrDivergedNeedsResolve) {
+		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve", err)
+	}
 	// The remote fix must survive untouched.
 	if got := remoteRefSHA(t, remoteBare, branch); got != advancedSHA {
 		t.Fatalf("remote SHA = %q, want untouched fix %q", got, advancedSHA)
@@ -1951,8 +1961,8 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 }
 
 // TestPushSync_FailsClosedWhenRemoteHeadUnverifiable guards the fail-closed
-// fix: if the live remote head can't be verified before a force push, PushSync
-// must refuse rather than proceed with --force-with-lease against unconfirmed
+// fix: if the live remote head can't be verified before a push, PushSync
+// must refuse rather than proceed with a force push against unconfirmed
 // remote state.
 func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	t.Parallel()
@@ -1979,6 +1989,9 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	err := PushSync(context.Background(), wtPath, branch)
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced (fail closed)", err)
+	}
+	if !errors.Is(err, ErrDivergedNeedsResolve) {
+		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve (fail closed)", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != beforeSHA {
 		t.Fatalf("remote SHA = %q, want untouched %q", got, beforeSHA)

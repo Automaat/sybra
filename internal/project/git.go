@@ -40,10 +40,18 @@ var ErrBranchDiverged = errors.New("local branch diverged from remote head")
 var ErrDirtyWorktree = errors.New("worktree has uncommitted changes")
 
 // ErrRemoteAdvanced is returned by PushSync when the live remote branch head no
-// longer matches the remote-tracking ref the push decision was based on. The
-// tracking ref is stale, so a --force-with-lease would clobber commits pushed
-// after the last fetch.
+// longer matches the remote-tracking ref the push decision was based on — the
+// tracking ref is stale, so PushSync cannot even be sure what "diverged" means
+// right now. Always wrapped together with ErrDivergedNeedsResolve.
 var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
+
+// ErrDivergedNeedsResolve is returned by PushSync when the local branch and
+// its remote tracking branch have diverged (neither is a fast-forward of the
+// other). PushSync never force-pushes to resolve this — a force push rewrites
+// already-published history, which Sybra must never do out-of-band. Callers
+// must instead spawn agent work to reconcile the branches (rebase/merge onto
+// the remote) so a later push can fast-forward.
+var ErrDivergedNeedsResolve = errors.New("branch diverged from remote; needs agent-driven resolution, not a force push")
 
 func runBare(ctx context.Context, barePath string, args ...string) error {
 	return executil.Run(ctx, barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
@@ -756,11 +764,11 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //   - first push (remote tracking ref absent): regular push with -u
 //   - local SHA == remote tracking SHA: no-op
 //   - remote tracking SHA is an ancestor of local (fast-forward): regular push
-//   - histories diverged: --force-with-lease, but only after confirming the live
-//     remote head still matches the tracking ref (else ErrRemoteAdvanced)
+//   - histories diverged: never force-pushes. Returns ErrDivergedNeedsResolve
+//     (wrapping ErrRemoteAdvanced when the live remote head has moved past the
+//     stale tracking ref) so the caller can spawn agent work to reconcile the
+//     branches instead of rewriting already-published history.
 //
-// Compared to an unconditional force push, this avoids gratuitous rewrites of
-// the remote when a rebase was a no-op or the agent produced no new commits.
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
 	if err := executil.Run(ctx, worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
@@ -792,21 +800,18 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
 	}
 
-	// Divergence path: about to force-push. Verify the live remote head still
-	// matches the tracking ref this decision was based on. If it advanced since
-	// the last fetch, --force-with-lease would pass against the stale tracking
-	// ref and clobber the newer commits — refuse instead. Fail closed if the
-	// live head can't even be verified, rather than proceeding with a force
-	// push against an unconfirmed remote state.
+	// Divergence path: never force-push. Check the live remote head purely to
+	// give a precise error — either outcome means the branch needs
+	// agent-driven resolution (rebase/merge onto the remote), never a rewrite.
 	liveSHA, err := remoteBranchHead(ctx, worktreePath, remote, branch)
 	if err != nil {
-		return fmt.Errorf("%w: could not verify live remote head before force push: %w", ErrRemoteAdvanced, err)
+		return fmt.Errorf("%w: %w: could not verify live remote head before push: %w", ErrDivergedNeedsResolve, ErrRemoteAdvanced, err)
 	}
 	if liveSHA != "" && liveSHA != remoteSHA {
-		return fmt.Errorf("%w: tracking %s but remote %s/%s is at %s", ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
+		return fmt.Errorf("%w: %w: tracking %s but remote %s/%s is at %s", ErrDivergedNeedsResolve, ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
 	}
 
-	return executil.Run(ctx, worktreePath, "git", "push", "--force-with-lease", "-u", remote, branch)
+	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
 // RemoveWorktree deletes worktreePath and its `git worktree` registration

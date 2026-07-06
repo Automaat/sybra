@@ -614,6 +614,44 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	}
 }
 
+// TestBuiltinDefinitions_NeverInstructForcePush is the repo-wide acceptance
+// probe for the "never force-push" invariant: no builtin workflow prompt may
+// instruct an agent to force-push, under any spelling. Sybra's own process
+// (project.PushSync) already refuses to force-push and instead returns
+// ErrDivergedNeedsResolve for agent-driven recovery — this test guards the
+// other force-push surface, the prompts Sybra authors for agents, so a new
+// builtin workflow can't reintroduce a force-push instruction unnoticed.
+func TestBuiltinDefinitions_NeverInstructForcePush(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	// Match actual git-push instructions, not advisory prose like
+	// "Never force-push" or unrelated commands that may legitimately use
+	// a --force flag.
+	forbidden := []string{"--force-with-lease", "--force", " -f", "\t-f", "`-f`"}
+	for _, def := range defs {
+		for _, step := range def.Steps {
+			prompt := step.Config.Prompt
+			if prompt == "" {
+				continue
+			}
+			for line := range strings.Lines(prompt) {
+				if !strings.Contains(line, "git push") {
+					continue
+				}
+				for _, term := range forbidden {
+					if strings.Contains(line, term) {
+						t.Fatalf("builtin %q step %q prompt instructs force-push (contains %q):\n%s", def.ID, step.ID, term, prompt)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()

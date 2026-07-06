@@ -213,7 +213,11 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
 			// Sync remote after rebase. PushSync picks the minimum mode —
 			// no-op when local matches remote, regular push for
-			// fast-forward, --force-with-lease only on divergence.
+			// fast-forward. On divergence it returns ErrDivergedNeedsResolve
+			// instead of force-pushing; callers here only log it (see
+			// logPushSync) because this is best-effort cleanup after the
+			// main reconcile/rebase path and the remote may have advanced
+			// again since that earlier fetch.
 			callPhase(onPhase, "Syncing upstream…")
 			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
 			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
