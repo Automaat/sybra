@@ -281,7 +281,7 @@ func (s *Store) Summary(policy Policy) Summary {
 // still affects scoring but not hard blocking.
 func (s *Store) ProviderAvailable(provider string, policy Policy) (available bool, reason string) {
 	if !providerEnabled(policy, provider) {
-		return false, "provider disabled"
+		return false, quotaReasonProviderDisabled
 	}
 	if !policy.Enabled {
 		return true, ""
@@ -425,18 +425,35 @@ func addEventToProviderSummary(e *UsageEvent, ps *ProviderSummary, session, addC
 	ps.WeeklyReasoningTokens += e.ReasoningTokens
 }
 
+const (
+	quotaReasonRateLimitReached = "provider reports rate limit reached"
+	quotaReasonSessionThreshold = "session limit near threshold"
+	quotaReasonWeeklyThreshold  = "weekly limit near threshold"
+	quotaReasonProviderDisabled = "provider disabled"
+)
+
+// IsSoftThresholdReason reports whether a ProviderAvailable "unavailable" reason
+// is a soft reserve threshold (session/weekly near threshold) rather than a hard
+// block. A soft threshold should only redirect a run to a healthier peer; it
+// must never strand a task on a provider that still has budget when no peer is
+// available. Hard blocks (rate limit actually reached, provider disabled) return
+// false so they keep gating.
+func IsSoftThresholdReason(reason string) bool {
+	return reason == quotaReasonSessionThreshold || reason == quotaReasonWeeklyThreshold
+}
+
 func quotaLimited(ps ProviderSummary, snap Snapshot, policy Policy) (limited bool, reason string) {
 	if ps.Confidence != ConfidenceExact {
 		return false, ""
 	}
 	if strings.TrimSpace(snap.RateLimitReachedType) != "" {
-		return true, "provider reports rate limit reached"
+		return true, quotaReasonRateLimitReached
 	}
 	if ps.SessionUsedPercent > 0 && ps.SessionUsedPercent >= policy.SessionThresholdPercent {
-		return true, "session limit near threshold"
+		return true, quotaReasonSessionThreshold
 	}
 	if ps.WeeklyUsedPercent > 0 && ps.WeeklyUsedPercent >= policy.WeeklyThresholdPercent {
-		return true, "weekly limit near threshold"
+		return true, quotaReasonWeeklyThreshold
 	}
 	return false, ""
 }

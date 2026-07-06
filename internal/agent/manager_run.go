@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
@@ -311,6 +312,8 @@ func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
 		switch e.kind {
 		case "gated":
 			metrics.AgentGated(e.provider, e.reason)
+		case "soft_limit":
+			m.logger.Info(e.logKey, "provider", e.provider, "reason", e.reason, "task", e.taskID)
 		case "failover":
 			metrics.AgentFailover(e.from, e.to)
 			fields := []any{"from", e.from, "to", e.to, "task", e.taskID}
@@ -431,17 +434,23 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 			})
 			return alt, gateEvents, nil
 		}
-		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-		return "", gateEvents, &provider.UnhealthyError{
-			Provider: resolved,
-			Reason:   reason,
-		}
+		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
 	} else {
-		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-		return "", gateEvents, &provider.UnhealthyError{
-			Provider: resolved,
-			Reason:   reason,
-		}
+		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+	}
+}
+
+func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []providerGateEvent, taskID string) (string, []providerGateEvent, error) {
+	if limits.IsSoftThresholdReason(reason) {
+		gateEvents = append(gateEvents, providerGateEvent{
+			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
+		})
+		return resolved, gateEvents, nil
+	}
+	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+	return "", gateEvents, &provider.UnhealthyError{
+		Provider: resolved,
+		Reason:   reason,
 	}
 }
 

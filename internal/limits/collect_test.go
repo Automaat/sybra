@@ -450,3 +450,22 @@ func TestWalkJSONL_StopsOnCanceledContext(t *testing.T) {
 		t.Fatal("walkJSONL callback ran after context cancellation")
 	}
 }
+
+func TestIsSoftThresholdReason(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{quotaReasonWeeklyThreshold, true},
+		{quotaReasonSessionThreshold, true},
+		{quotaReasonRateLimitReached, false},
+		{quotaReasonProviderDisabled, false},
+		{"", false},
+		{"something else", false},
+	}
+	for _, c := range cases {
+		if got := IsSoftThresholdReason(c.reason); got != c.want {
+			t.Errorf("IsSoftThresholdReason(%q) = %v, want %v", c.reason, got, c.want)
+		}
+	}
+}

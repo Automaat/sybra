@@ -437,3 +437,60 @@ func TestReportProviderHealthSignal_CleanSuccessMentioningRateLimitDoesNotMarkRa
 		t.Fatalf("unexpected rate-limit report: %+v", fg.reportedRLName)
 	}
 }
+
+// TestGateProvider_SoftThresholdLastResortUsesRemainingBudget guards the
+// soft-threshold last-resort path: when the requested provider is only blocked
+// by a soft reserve threshold (budget remains) and no healthy peer exists to
+// fail over to, the run must use the remaining budget rather than gate.
+// Otherwise the reserved headroom is stranded and the task escalates with
+// usable quota left.
+func TestGateProvider_SoftThresholdLastResortUsesRemainingBudget(t *testing.T) {
+	for _, reason := range []string{"weekly limit near threshold", "session limit near threshold"} {
+		t.Run(reason, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+			if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+				DefaultProvider: "claude",
+				LimitGate: &fakeLimitGate{
+					available: map[string]bool{"claude": false},
+					reasons:   map[string]string{"claude": reason},
+				},
+				LimitPolicy: limits.Policy{},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := m.gateProvider(RunConfig{Provider: "claude"})
+			if err != nil {
+				t.Fatalf("soft threshold with no peer must not gate: %v", err)
+			}
+			if got != "claude" {
+				t.Errorf("got %q, want claude (use remaining budget as last resort)", got)
+			}
+		})
+	}
+}
+
+// TestGateProvider_HardLimitStillGatesWithNoPeer verifies a hard block (provider
+// actually reports rate limit reached) keeps gating when no peer is available —
+// only soft reserve thresholds fall back to the remaining budget.
+func TestGateProvider_HardLimitStillGatesWithNoPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "claude",
+		LimitGate: &fakeLimitGate{
+			available: map[string]bool{"claude": false},
+			reasons:   map[string]string{"claude": "provider reports rate limit reached"},
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.gateProvider(RunConfig{Provider: "claude"})
+	if err == nil {
+		t.Fatal("hard limit with no peer must gate, got nil error")
+	}
+	if !errors.Is(err, provider.ErrProviderUnhealthy) {
+		t.Fatalf("want ErrProviderUnhealthy, got %v", err)
+	}
+}
