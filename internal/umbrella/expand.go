@@ -21,13 +21,33 @@ import (
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
-// PlannerAttemptTimeout bounds a single planner CLI invocation. It is passed
-// to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets this
-// full budget fresh, instead of splitting a single shared deadline across
-// them — a large umbrella's first attempt can legitimately take minutes to
-// read and order every sub-issue, which used to leave nothing for retries
-// (see #1555).
+// PlannerAttemptTimeout is the floor of the per-attempt planner budget. It is
+// passed to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets its
+// budget fresh, instead of splitting a single shared deadline across them
+// (see #1555). The effective budget scales with prompt size via
+// plannerAttemptTimeout: a fixed cap starves large umbrellas — a 38-child
+// umbrella's decompose was deadline-killed on every attempt at a fixed 4m,
+// looping the expansion forever (see #1570).
 const PlannerAttemptTimeout = 4 * time.Minute
+
+// plannerAttemptTimeoutMax caps the scaled per-attempt budget so one attempt
+// on a pathologically large umbrella cannot hold the expansion slot for an
+// hour.
+const plannerAttemptTimeoutMax = 30 * time.Minute
+
+// plannerAttemptPromptChunk is how much prompt buys one extra minute of
+// per-attempt budget on top of the PlannerAttemptTimeout floor.
+const plannerAttemptPromptChunk = 2 << 10
+
+// plannerAttemptTimeout returns the per-attempt planner budget for a prompt of
+// promptLen bytes. Model time grows with both the prompt to read and the
+// answer to emit, and the answer (one change-surface JSON entry per sub-issue)
+// grows with the prompt listing them — so the budget scales with input size
+// rather than sub-issue count, which FallbackPlannerRunner cannot see.
+func plannerAttemptTimeout(promptLen int) time.Duration {
+	d := PlannerAttemptTimeout + time.Duration(promptLen/plannerAttemptPromptChunk)*time.Minute
+	return min(d, plannerAttemptTimeoutMax)
+}
 
 // plannerJobSpec is the llmjob.Spec FallbackPlannerRunner runs the
 // "umbrella-order" job with. It is shared with plannerTimeout below via
@@ -51,14 +71,15 @@ const plannerGenerateSamples = plannerAttempts * 2
 
 // plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
-// expansion indefinitely. It comfortably covers plannerGenerateSamples each
-// getting plannerJobAttempts full PlannerAttemptTimeout slices, plus headroom
-// that scales with subCount: a bigger umbrella means a longer prompt and
-// legitimately more model time, and a bigger expansion is more expensive to
-// have starved.
+// expansion indefinitely. It covers plannerGenerateSamples each getting
+// plannerJobAttempts full PlannerAttemptTimeout floor slices, plus per-sub
+// headroom sized so the prompt-scaled attempt budgets of a large umbrella
+// (see plannerAttemptTimeout) still fit: a bigger umbrella means a longer
+// prompt and legitimately more model time, and a bigger expansion is more
+// expensive to have starved.
 func plannerTimeout(subCount int) time.Duration {
 	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
-		time.Duration(subCount*plannerGenerateSamples)*5*time.Second
+		time.Duration(subCount*plannerGenerateSamples)*15*time.Second
 }
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
@@ -322,7 +343,9 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		gate = gates[0]
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		plan, _, err := llmjob.Run(ctx, prompt, plannerJobSpec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
+		spec := plannerJobSpec
+		spec.AttemptTimeout = plannerAttemptTimeout(len(prompt))
+		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}
