@@ -296,20 +296,26 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	if content == "" {
 		return m.Get(id)
 	}
-	mu := m.lockFor(id)
-	mu.Lock()
-	t, err := m.store.Get(id)
-	if err != nil {
-		mu.Unlock()
-		return Task{}, err
-	}
-	body := strings.TrimRight(t.Body, "\n")
-	if body != "" {
-		body += "\n\n"
-	}
-	body += content + "\n"
-	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
-	mu.Unlock()
+	var (
+		t   Task
+		err error
+	)
+	func() {
+		mu := m.lockFor(id)
+		mu.Lock()
+		defer mu.Unlock()
+
+		t, err = m.store.Get(id)
+		if err != nil {
+			return
+		}
+		body := strings.TrimRight(t.Body, "\n")
+		if body != "" {
+			body += "\n\n"
+		}
+		body += content + "\n"
+		t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	}()
 	if err != nil {
 		return t, err
 	}
