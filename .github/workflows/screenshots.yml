@@ -30,9 +30,15 @@ jobs:
           mkdir -p "$SYBRA_HOME/tasks" "$SYBRA_HOME/workflows"
           cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
           cp frontend/e2e/fixtures/wf-editor-e2e.yaml "$SYBRA_HOME/workflows/"
+          cat > "$SYBRA_HOME/config.yaml" <<EOF
+          server:
+            auth_token: e2e-test-token
+          EOF
 
       - name: Build web frontend
         run: cd frontend && npm run build:web
+        env:
+          VITE_API_TOKEN: e2e-test-token
 
       - name: Build sybra-server
         run: go build -o bin/sybra-server ./cmd/sybra-server
