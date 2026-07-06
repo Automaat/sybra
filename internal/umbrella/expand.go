@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -137,14 +138,24 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		byRef[NormalizeIssueRef(subs[i].URL)] = subs[i]
 	}
 
-	existing, trackerExists, trackerID, err := scanExisting(tasks, umb.URL)
+	existing, tracker, err := scanExisting(tasks, umb.URL)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan existing tasks: %w", err)
 	}
 	// Short-circuit a full re-run: nothing to create means no (costly,
 	// stochastic) planner call.
-	if trackerExists && allMaterialized(planSubs, existing) {
+	if tracker.exists && allMaterialized(planSubs, existing) {
 		return Result{UmbrellaURL: umb.URL, Skipped: len(subs)}, nil
+	}
+	// A tracker parked human-required after ExpandFailThreshold consecutive
+	// planner failures stops calling the planner entirely — the incident this
+	// guards against (#1570) burned a killed sonnet call every ~5 minutes
+	// indefinitely because nothing remembered prior failures across calls. A
+	// human must move the tracker off human-required (or clear the tag) to
+	// resume retrying.
+	if tracker.exists && tracker.status == task.StatusHumanRequired &&
+		ParseExpandFailCount(tracker.tags) >= ExpandFailThreshold {
+		return Result{}, fmt.Errorf("umbrella expansion parked human-required after %d consecutive planner failures", ParseExpandFailCount(tracker.tags))
 	}
 
 	var genOpts []GenerateOption
@@ -156,13 +167,21 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	defer cancel()
 	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
+		if recErr := recordExpandFailure(tasks, umb, tracker, err); recErr != nil {
+			slog.Error("umbrella.expand.record-failure", "issue", umb.URL, "err", recErr)
+		}
 		return Result{}, fmt.Errorf("plan umbrella: %w", err)
 	}
 
 	specs := ChildSpecs(plan, planSubs, existing)
-	created, err := materialize(tasks, umb, specs, byRef, trackerExists, trackerID, plan.MaxParallel, plan.Fallback)
+	created, err := materialize(tasks, umb, specs, byRef, tracker.exists, tracker.id, plan.MaxParallel, plan.Fallback)
 	if err != nil {
 		return Result{}, err
+	}
+	if tracker.exists && ParseExpandFailCount(tracker.tags) > 0 {
+		if err := clearExpandFailure(tasks, tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+		}
 	}
 	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created, Degraded: plan.Fallback}, nil
 }
@@ -180,14 +199,24 @@ func allMaterialized(subs []SubIssue, existing map[string]bool) bool {
 	return true
 }
 
+// existingTracker describes the umbrella tracker task scanExisting found for
+// a given umbrella URL, if any. Bundled into one struct (rather than four
+// scanExisting return values) to stay under gocritic's result-count limit.
+type existingTracker struct {
+	exists bool
+	id     string
+	tags   []string
+	status task.Status
+}
+
 // scanExisting returns the set of normalized issue refs that already have a
-// task, whether the umbrella tracker exists, and its task id when it does. A
-// List failure is propagated so the caller aborts rather than treating an
-// unreadable store as empty and creating a duplicate DAG.
-func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, trackerExists bool, trackerID string, err error) {
+// task, plus the umbrella tracker's own state when it exists. A List failure
+// is propagated so the caller aborts rather than treating an unreadable store
+// as empty and creating a duplicate DAG.
+func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, tracker existingTracker, err error) {
 	all, err := tasks.List()
 	if err != nil {
-		return nil, false, "", err
+		return nil, existingTracker{}, err
 	}
 	refs = make(map[string]bool, len(all))
 	umbKey := NormalizeIssueRef(umbrellaURL)
@@ -197,11 +226,10 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 			refs[NormalizeIssueRef(t.Issue)] = true
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
-			trackerExists = true
-			trackerID = t.ID
+			tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status}
 		}
 	}
-	return refs, trackerExists, trackerID, nil
+	return refs, tracker, nil
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
@@ -226,9 +254,19 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}); err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
-	} else if degraded {
-		if err := tagTrackerDegraded(tasks, trackerID); err != nil {
+	} else {
+		// A tracker can already exist without a MaxParallelTag: recordExpandFailure
+		// creates a placeholder tracker on a planner failure that never reaches
+		// this function's tag-setting branch above. Backfill it on the first
+		// successful materialize so the cap reflects this plan's judgment instead
+		// of silently defaulting to DefaultMaxParallel forever.
+		if err := ensureMaxParallelTag(tasks, trackerID, maxParallel); err != nil {
 			return 0, err
+		}
+		if degraded {
+			if err := tagTrackerDegraded(tasks, trackerID); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -267,6 +305,90 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 			return nil
 		}
 		return fmt.Errorf("tag tracker degraded: %w", err)
+	}
+	return nil
+}
+
+// ensureMaxParallelTag backfills a MaxParallelTag onto an already-materialized
+// tracker if it doesn't have one yet — the case for a tracker that started
+// life as a recordExpandFailure placeholder. Read-then-write, so a tracker
+// that already carries the tag (the common case) is left untouched.
+func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if HasMaxParallelTag(cur.Tags) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{
+			Tags: task.Ptr(append(slices.Clone(cur.Tags), MaxParallelTag(n))),
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("backfill tracker max-parallel: %w", err)
+	}
+	return nil
+}
+
+// recordExpandFailure durably records a failed planner run against the
+// umbrella's tracker, so the failure survives restarts and is visible on the
+// board (see #1570: previously a failure was only a log line, and nothing
+// stopped the same doomed planner call from re-running every ~5 minutes
+// indefinitely). When no tracker exists yet (the umbrella has never
+// successfully expanded even once), one is created here purely to hold the
+// failure state — materialize still owns creating the "real" tracker on a
+// later success, which simply overwrites this placeholder's fields.
+func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existingTracker, cause error) error {
+	if !tracker.exists {
+		count := 1
+		_, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+			Issue:        task.Ptr(umb.URL),
+			TaskType:     task.Ptr(task.TaskTypeUmbrella),
+			ProjectID:    task.Ptr(umb.Repository),
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(fmt.Sprintf("umbrella expansion failed (attempt %d): %s", count, cause)),
+			Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(count)}),
+		})
+		if err != nil {
+			return fmt.Errorf("create failure tracker: %w", err)
+		}
+		return nil
+	}
+
+	count := ParseExpandFailCount(tracker.tags) + 1
+	newTags := slices.DeleteFunc(slices.Clone(tracker.tags), func(t string) bool {
+		return strings.HasPrefix(t, ExpandFailTagPrefix)
+	})
+	newTags = append(newTags, ExpandFailTag(count))
+	upd := task.Update{
+		Tags:         task.Ptr(newTags),
+		StatusReason: task.Ptr(fmt.Sprintf("umbrella expansion failed (attempt %d): %s", count, cause)),
+	}
+	if count >= ExpandFailThreshold {
+		upd.Status = task.Ptr(task.StatusHumanRequired)
+	}
+	if _, err := tasks.Update(tracker.id, upd); err != nil {
+		return fmt.Errorf("tag tracker expand-failed: %w", err)
+	}
+	return nil
+}
+
+// clearExpandFailure strips the failure-count tag from a tracker once
+// expansion succeeds again, so a transient blip doesn't keep counting toward
+// ExpandFailThreshold on the next genuine failure.
+func clearExpandFailure(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if ParseExpandFailCount(cur.Tags) == 0 {
+			return task.Update{}, errSkipUpdate
+		}
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return strings.HasPrefix(t, ExpandFailTagPrefix)
+		})
+		return task.Update{Tags: task.Ptr(newTags)}, nil
+	})
+	if err != nil && !errors.Is(err, errSkipUpdate) {
+		return fmt.Errorf("clear tracker expand-failed: %w", err)
 	}
 	return nil
 }

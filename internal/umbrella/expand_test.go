@@ -2,7 +2,9 @@ package umbrella
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,6 +115,147 @@ func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testi
 	}
 }
 
+// TestRecordExpandFailure_NoTrackerCreatesVisibleFailureTracker guards #1570's
+// board-visibility gap: previously a failed expansion with no prior tracker
+// left zero trace on the board besides a log line. The first failure must
+// materialize a real, inspectable task.
+func TestRecordExpandFailure_NoTrackerCreatesVisibleFailureTracker(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r", Body: "body"}
+
+	if err := recordExpandFailure(tasks, umb, existingTracker{}, errors.New("planner killed")); err != nil {
+		t.Fatalf("recordExpandFailure: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("len(tasks) = %d, want 1", len(all))
+	}
+	tracker := all[0]
+	if tracker.TaskType != task.TaskTypeUmbrella || tracker.Issue != umb.URL {
+		t.Fatalf("tracker = %+v, want TaskType=umbrella Issue=%q", tracker, umb.URL)
+	}
+	if ParseExpandFailCount(tracker.Tags) != 1 {
+		t.Fatalf("fail count = %d, want 1: %v", ParseExpandFailCount(tracker.Tags), tracker.Tags)
+	}
+	if !strings.Contains(tracker.StatusReason, "planner killed") {
+		t.Fatalf("StatusReason = %q, want to mention the failure cause", tracker.StatusReason)
+	}
+	if tracker.Status == task.StatusHumanRequired {
+		t.Fatalf("status = human-required after a single failure, want to stay non-terminal below threshold")
+	}
+}
+
+// TestRecordExpandFailure_EscalatesAtThreshold guards the "stop retrying"
+// half of #1570: after ExpandFailThreshold consecutive failures against an
+// existing tracker, the tracker must park human-required rather than keep
+// silently retrying forever.
+func TestRecordExpandFailure_EscalatesAtThreshold(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r"}
+	tracker, err := tasks.CreateFull(umb.Title, "", task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr(umb.URL),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(ExpandFailThreshold - 1)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+
+	if err := recordExpandFailure(tasks, umb, existingTracker{exists: true, id: tracker.ID, tags: tracker.Tags}, errors.New("killed")); err != nil {
+		t.Fatalf("recordExpandFailure: %v", err)
+	}
+
+	got, err := tasks.Get(tracker.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required at ExpandFailThreshold=%d", got.Status, ExpandFailThreshold)
+	}
+	if ParseExpandFailCount(got.Tags) != ExpandFailThreshold {
+		t.Fatalf("fail count = %d, want %d", ParseExpandFailCount(got.Tags), ExpandFailThreshold)
+	}
+}
+
+// TestClearExpandFailure_StripsTagOnSuccess guards the recovery path: once
+// expansion succeeds again, the failure count must reset so a later, distinct
+// failure streak starts counting from zero rather than resuming near the
+// threshold.
+func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	tracker, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr("https://github.com/o/r/issues/100"),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(2)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+
+	if err := clearExpandFailure(tasks, tracker.ID); err != nil {
+		t.Fatalf("clearExpandFailure: %v", err)
+	}
+
+	got, err := tasks.Get(tracker.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if ParseExpandFailCount(got.Tags) != 0 {
+		t.Fatalf("fail count = %d, want 0 after clear", ParseExpandFailCount(got.Tags))
+	}
+
+	// Idempotent: clearing an already-clean tracker is a no-op, not an error.
+	if err := clearExpandFailure(tasks, tracker.ID); err != nil {
+		t.Fatalf("clearExpandFailure (idempotent): %v", err)
+	}
+}
+
+// TestMaterialize_BackfillsMaxParallelOnPlaceholderTracker guards the tracker
+// created by recordExpandFailure (which has no MaxParallelTag, since it never
+// ran through materialize's fresh-tracker branch): the first successful
+// materialize against it must backfill the tag rather than leaving the
+// tracker's parallelism cap silently pinned to DefaultMaxParallel forever.
+func TestMaterialize_BackfillsMaxParallelOnPlaceholderTracker(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r"}
+
+	placeholder, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr(umb.URL),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(1)}),
+	})
+	if err != nil {
+		t.Fatalf("create placeholder tracker: %v", err)
+	}
+	if HasMaxParallelTag(placeholder.Tags) {
+		t.Fatal("placeholder tracker unexpectedly already has a MaxParallelTag")
+	}
+
+	specs := []ChildSpec{{Title: "c1", Issue: "o/r#1"}}
+	if _, err := materialize(tasks, umb, specs, map[string]github.Issue{}, true, placeholder.ID, 7, false); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	got, err := tasks.Get(placeholder.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !HasMaxParallelTag(got.Tags) || ParseMaxParallel(got.Tags) != 7 {
+		t.Fatalf("tracker tags = %v, want a MaxParallelTag backfilled to 7", got.Tags)
+	}
+}
+
 func TestScanExisting_ReturnsTrackerID(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskManager(t)
@@ -127,15 +270,15 @@ func TestScanExisting_ReturnsTrackerID(t *testing.T) {
 		t.Fatalf("create tracker: %v", err)
 	}
 
-	_, trackerExists, trackerID, err := scanExisting(tasks, umb)
+	_, got, err := scanExisting(tasks, umb)
 	if err != nil {
 		t.Fatalf("scanExisting: %v", err)
 	}
-	if !trackerExists {
+	if !got.exists {
 		t.Fatal("trackerExists = false, want true")
 	}
-	if trackerID != tracker.ID {
-		t.Fatalf("trackerID = %q, want %q", trackerID, tracker.ID)
+	if got.id != tracker.ID {
+		t.Fatalf("trackerID = %q, want %q", got.id, tracker.ID)
 	}
 }
 
