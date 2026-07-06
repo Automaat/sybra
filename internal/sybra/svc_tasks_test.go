@@ -578,6 +578,61 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	}
 }
 
+// TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDuplicate
+// guards #1570's follow-on fix: when a planner failure already produced a
+// durable failure tracker (internal/umbrella.recordExpandFailure creates or
+// updates one inside Expand), the manually-created stub must not also claim
+// TaskTypeUmbrella — that would leave two tracker tasks for the same issue,
+// confusing scanExisting/the gate about which one is authoritative.
+func TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDuplicate(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
+	const issueURL = "https://github.com/owner/repo/issues/1151"
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     1151,
+			Title:      "☂️ already has a failure tracker",
+			URL:        issueURL,
+			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
+		}, nil
+	}
+	// Simulate a prior Expand call's recordExpandFailure having already
+	// materialized the umbrella's durable failure tracker.
+	if _, err := svc.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
+		Issue:        task.Ptr(issueURL),
+		TaskType:     task.Ptr(task.TaskTypeUmbrella),
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("umbrella expansion failed (attempt 1): planner boom"),
+		Tags:         task.Ptr([]string{"umbrella", umbrella.ExpandFailTag(1)}),
+	}); err != nil {
+		t.Fatalf("seed failure tracker: %v", err)
+	}
+	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+		return umbrella.Result{}, errors.New("planner boom")
+	}
+
+	created, err := svc.CreateTask(issueURL, "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("duplicate stub should survive a failed expansion: %v", err)
+	}
+	if got.TaskType == task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want non-umbrella duplicate since a failure tracker already exists for this issue", got.TaskType)
+	}
+	if !slices.Contains(got.Tags, umbrellaDuplicateTag) {
+		t.Fatalf("Tags = %v, want to contain %q", got.Tags, umbrellaDuplicateTag)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
+	}
+}
+
 func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTracker(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}

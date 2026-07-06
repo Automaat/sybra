@@ -101,9 +101,10 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // a critic nudge; any failure of that re-ask (parse, validate, or run error)
 // falls back to the original plan rather than failing the whole expansion.
 // If the first attempt exhausts plannerAttempts without ever producing a
-// valid plan, Generate falls back to a fully-serial linear chain
-// (linearChainFallback) instead of aborting the expansion; a fatal runner
-// error (couldn't launch the model) is not exhaustion and still aborts.
+// valid plan, or the planner deadline expires, Generate falls back to a
+// fully-serial linear chain (linearChainFallback) instead of aborting the
+// expansion; a fatal runner error (couldn't launch the model) is not
+// exhaustion and still aborts.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue, opts ...GenerateOption) (Plan, error) {
 	if len(subs) == 0 {
 		return Plan{}, fmt.Errorf("umbrella %s has no sub-issues to expand", umbrellaRef)
@@ -117,7 +118,7 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 
 	plan, err := attemptPlan(ctx, run, idx, prompt, subs, cfg)
 	if err != nil {
-		if errors.Is(err, errPlannerExhausted) {
+		if plannerExhausted(err) {
 			return linearChainFallback(subs)
 		}
 		return Plan{}, err
@@ -129,6 +130,10 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 		}
 	}
 	return plan, nil
+}
+
+func plannerExhausted(err error) bool {
+	return errors.Is(err, errPlannerExhausted) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // attemptPlan runs up to plannerAttempts model invocations with the given

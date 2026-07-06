@@ -318,9 +318,15 @@ func umbrellaProgressIssueSuffix(ref string) string {
 // cycle, a stuck (human-required) child, or a cancelled child surfaces as
 // human-required (halting only that chain); all-done closes the umbrella. A
 // tracker with no children (every sub-issue was already closed at expansion)
-// is vacuously complete, but only once `settled` so a tracker observed while
-// its children are still being materialized is not closed prematurely.
+// is vacuously complete, but only once `settled` (so a tracker observed while
+// its children are still being materialized is not closed prematurely) and
+// only when expansion isn't currently failing — a tracker carrying
+// umbrella.ExpandFailTagPrefix (see internal/umbrella.recordExpandFailure)
+// never had a chance to materialize its children in the first place, and
+// closing it would silently drop the umbrella issue while sub-issues remain
+// open on GitHub (#1570).
 func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
+	expandFailing := st.tracker != nil && umbrella.ParseExpandFailCount(st.tracker.Tags) > 0
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
@@ -328,6 +334,12 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyCancelled:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
+	case expandFailing:
+		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
+		// this tracker's status/reason while expansion keeps failing. Rollup
+		// must not overwrite that state just because the tracker already has
+		// children or all currently-materialized children happen to be done.
+		return st.tracker.Status, st.tracker.StatusReason, false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
 	case st.total == 0 && settled:

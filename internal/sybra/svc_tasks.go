@@ -733,16 +733,25 @@ func (s *TaskService) umbrellaExpansionEnabled() bool {
 // expandUmbrellaStub expands a manually-created stub whose URL resolved to a
 // ☂️ umbrella issue into a gated child DAG, then deletes the stub — the
 // expander creates its own umbrella-typed tracker, so keeping the stub would
-// leave a duplicate flat task for the same issue. On expansion failure the stub
-// is enriched into an identifiable (but inert) task so the user is not left
-// empty-handed and can retry with `sybra-cli umbrella <url>`; crucially no flat
-// workflow is started on a known umbrella, which is the bug this path fixes.
+// leave a duplicate flat task for the same issue. On expansion failure, a
+// planner failure (internal/umbrella.recordExpandFailure, see #1570) already
+// created or updated a separate, durable tracker task carrying the failure
+// detail — in that case the stub is marked a duplicate (mirroring the success
+// path) rather than also claiming TaskTypeUmbrella, which would leave two
+// tracker tasks for the same issue. A failure before any tracker existed
+// (bad URL, GitHub fetch failure) has nothing else to defer to, so the stub
+// itself becomes the identifiable (but inert) record instead.
 func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
 	res, err := s.umbrellaExpand(issue.URL)
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
-		s.enrichInertUmbrellaStub(taskID, repo, issue,
-			"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
+		if s.umbrellaTrackerExistsElsewhere(taskID, issue.URL) {
+			s.enrichDuplicateUmbrellaStub(taskID, repo, issue,
+				"umbrella expansion failed; see the umbrella tracker task for details")
+		} else {
+			s.enrichInertUmbrellaStub(taskID, repo, issue,
+				"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
+		}
 		return
 	}
 	// Expand created the real tracker + children; the stub is now a duplicate.
@@ -758,6 +767,30 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 		return
 	}
 	s.logger.Info("enrich-issue.umbrella-expanded", "issue", issue.URL, "created", res.Created, "stub", taskID)
+}
+
+// umbrellaTrackerExistsElsewhere reports whether some other task already
+// carries TaskTypeUmbrella for issueURL. Used to decide, after a failed
+// expandUmbrellaStub, whether that failure already has a durable tracker to
+// point at (see recordExpandFailure) or whether this stub is the only record.
+func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
+	all, err := s.tasks.List()
+	if err != nil {
+		// Unreadable store: assume a tracker exists. Claiming this stub as the
+		// only record would mint a second TaskTypeUmbrella task for the same
+		// issue — the exact duplication this helper prevents; a mislabeled
+		// duplicate stub is the cheaper failure.
+		s.logger.Error("enrich-issue.umbrella-tracker-scan", "task_id", taskID, "err", err)
+		return true
+	}
+	key := umbrella.NormalizeIssueRef(issueURL)
+	for i := range all {
+		t := &all[i]
+		if t.ID != taskID && t.TaskType == task.TaskTypeUmbrella && umbrella.NormalizeIssueRef(t.Issue) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // enrichInertUmbrellaStub turns the stub into an identifiable, inert task: real

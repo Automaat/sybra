@@ -212,6 +212,42 @@ func TestTrackerRollup(t *testing.T) {
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
 		{"zero children settled completes", umbrellaState{total: 0}, false, true, task.StatusDone, true},
 		{"zero children not settled holds", umbrellaState{total: 0}, false, false, task.StatusInProgress, false},
+		{
+			"zero children expand-failing below threshold never auto-closes",
+			umbrellaState{total: 0, tracker: &task.Task{
+				Status:       task.StatusInProgress,
+				StatusReason: "umbrella expansion failed (attempt 1): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(1)},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
+		{
+			"zero children expand-failing at threshold stays parked human-required",
+			umbrellaState{total: 0, tracker: &task.Task{
+				Status:       task.StatusHumanRequired,
+				StatusReason: "umbrella expansion failed (attempt 3): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(3)},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
+		{
+			"existing children expand-failing below threshold stays tracker-owned",
+			umbrellaState{total: 2, doneCount: 1, tracker: &task.Task{
+				Status:       task.StatusInProgress,
+				StatusReason: "umbrella expansion failed (attempt 2): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(2)},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
+		{
+			"all materialized children done does not close over fresh expand failure",
+			umbrellaState{total: 2, doneCount: 2, tracker: &task.Task{
+				Status:       task.StatusHumanRequired,
+				StatusReason: "umbrella expansion failed (attempt 3): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(3)},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -222,6 +258,39 @@ func TestTrackerRollup(t *testing.T) {
 				t.Fatalf("trackerRollup = (%q, close=%v), want (%q, close=%v)", got, doClose, tt.want, tt.wantClose)
 			}
 		})
+	}
+}
+
+// TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses guards
+// #1570: a tracker that exists only because internal/umbrella.Expand failed
+// to materialize any children (planner killed at its timeout, repeatedly)
+// must never be auto-closed as "no open sub-issues" — that previously
+// closed the umbrella's GitHub issue while it still had open sub-issues that
+// simply never got the chance to materialize as local tasks.
+func TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	closes := 0
+	app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker, err := m.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
+		Issue:        task.Ptr(umb),
+		TaskType:     task.Ptr(task.TaskTypeUmbrella),
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("umbrella expansion failed (attempt 3): plan umbrella: run planner: killed"),
+		Tags:         task.Ptr([]string{"umbrella", umbrella.ExpandFailTag(3)}),
+	})
+	if err != nil {
+		t.Fatalf("create failure tracker: %v", err)
+	}
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want to stay human-required (never auto-closed)", got)
+	}
+	if closes != 0 {
+		t.Fatalf("umbrella issue closed %d times, want 0 while expansion keeps failing", closes)
 	}
 }
 

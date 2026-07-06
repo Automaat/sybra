@@ -71,6 +71,11 @@ func (s *Store) Comments() *CommentStore {
 	return s.comments
 }
 
+// Dir returns the root tasks directory backing this store.
+func (s *Store) Dir() string {
+	return s.dir
+}
+
 // Plans returns the sidecar store for the human-readable compact plan
 // (Task.Plan).
 func (s *Store) Plans() *PlanStore {
