@@ -25,7 +25,7 @@ describe('api-http live updates auth', () => {
 
   it('prompts for a token before opening the first SSE connection', async () => {
     vi.spyOn(window, 'prompt').mockReturnValue('secret')
-    const { EventsOn } = await import('./api-http.ts')
+    const { EventsOn } = await import('./api-http')
 
     const off = EventsOn('task:updated', vi.fn())
 
@@ -39,7 +39,7 @@ describe('api-http live updates auth', () => {
 
   it('fails closed when the token prompt is canceled', async () => {
     vi.spyOn(window, 'prompt').mockReturnValue('')
-    const { EventsOn } = await import('./api-http.ts')
+    const { EventsOn } = await import('./api-http')
 
     expect(() => EventsOn('task:updated', vi.fn())).toThrow(
       'sybra server auth token required for live updates',
