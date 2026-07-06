@@ -1,6 +1,6 @@
 # Sybra
 
-Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
+Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive conversational session + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
 
 ## Work-Data Confidentiality (HARD RULE)
 
@@ -51,8 +51,6 @@ sybra/
 │   │   ├── model.go         # Agent struct, State enum, StreamEvent
 │   │   ├── manager.go       # Start/stop/list agents
 │   │   └── runner_headless.go # claude -p NDJSON stream parser
-│   ├── tmux/
-│   │   └── manager.go       # tmux session CRUD via os/exec
 │   ├── project/             # GitHub repo mirror + git worktree management
 │   │   ├── model.go         # Project struct
 │   │   ├── store.go         # YAML-backed project store
@@ -195,12 +193,11 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 
 **Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
 
-**Interactive** (tmux):
-```bash
-tmux new-session -d -s sybra-<id> -x 200 -y 50 "claude"
-```
-- GUI polls `tmux capture-pane -t sybra-<id> -p` for preview
-- User attaches via terminal
+**Interactive** (persistent conversational session — not tmux):
+
+`agent.Manager.Run` spawns a long-lived CLI process that streams stream-json over stdin/stdout: claude via `runConversational` (persistent approval-hook runner), codex/copilot via the per-turn conversational runner (`UsesPerTurnConvo()`). The GUI renders the live stream in a bounded session box; the user drives it by sending turns.
+
+**Same provider gate as headless.** Both modes resolve the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`) exactly like headless. There is no provider-pinned interactive launcher. Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (headless recovers by re-dispatch via `RescheduleRateLimitedAgent`).
 
 ### Worktree Agent Context
 

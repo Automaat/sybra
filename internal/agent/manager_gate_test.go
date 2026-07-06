@@ -60,6 +60,39 @@ func TestGateProvider_UnhealthyWithFailover(t *testing.T) {
 	}
 }
 
+// TestPrepareRunConfig_InteractiveFailsOverLikeHeadless is a regression guard
+// for the "interactive doesn't fail over" premise: it does. Both modes resolve
+// the provider through the same prepareRunConfig -> gateProvider path, so an
+// unhealthy requested provider fails over to a healthy peer regardless of mode.
+// If a future change re-adds a provider-pinned interactive launcher that skips
+// the gate, the interactive subtest fails.
+func TestPrepareRunConfig_InteractiveFailsOverLikeHeadless(t *testing.T) {
+	for _, mode := range []string{"headless", "interactive"} {
+		t.Run(mode, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			m.SetHealthGate(&fakeGate{
+				healthy:  map[string]bool{"claude": false, "codex": true},
+				failover: map[string]string{"claude": "codex"},
+				reasons:  map[string]string{"claude": "rate_limited"},
+			})
+			cfg, prov, err := m.prepareRunConfig(RunConfig{
+				Provider: "claude",
+				Mode:     mode,
+				Dir:      t.TempDir(),
+			})
+			if err != nil {
+				t.Fatalf("prepareRunConfig(%s): %v", mode, err)
+			}
+			if prov.Name() != "codex" {
+				t.Errorf("mode %s: resolved provider = %q, want codex (failover)", mode, prov.Name())
+			}
+			if cfg.provider == nil || cfg.provider.Name() != "codex" {
+				t.Errorf("mode %s: cfg.provider = %v, want codex", cfg.provider, "codex")
+			}
+		})
+	}
+}
+
 func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetHealthGate(&fakeGate{

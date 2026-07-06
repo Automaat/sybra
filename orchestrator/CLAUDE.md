@@ -182,7 +182,7 @@ Headless tasks get a structured prompt:
 
 ```bash
 sybra-cli --json update <id> --status in-progress
-# Then start agent via Sybra GUI or tmux
+# Then start agent via Sybra GUI
 ```
 
 For interactive tasks, just update status — human will attach.

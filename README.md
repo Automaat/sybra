@@ -17,7 +17,7 @@ Complex tasks go through a planning phase. Simple tasks go straight to execution
 ## Features
 
 - **Task board** — drag-and-drop Kanban with status swimlanes, priority, tags, agent mode
-- **Dual execution modes** — headless (`claude -p` with NDJSON streaming) or interactive (tmux sessions)
+- **Dual execution modes** — headless (`claude -p` with NDJSON streaming) or interactive (persistent conversational sessions)
 - **Worktree isolation** — each agent gets a per-task git worktree from a bare clone; no conflicts between concurrent agents
 - **GitHub integration** — link tasks to repos; agents clone, commit, and open PRs automatically
 - **Eval agents** — post-implementation verification: confirm commits exist, PRs are open, quality gates pass
