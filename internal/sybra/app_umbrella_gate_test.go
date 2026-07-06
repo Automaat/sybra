@@ -230,6 +230,24 @@ func TestTrackerRollup(t *testing.T) {
 			}},
 			false, true, task.StatusHumanRequired, false,
 		},
+		{
+			"existing children expand-failing below threshold stays tracker-owned",
+			umbrellaState{total: 2, doneCount: 1, tracker: &task.Task{
+				Status:       task.StatusInProgress,
+				StatusReason: "umbrella expansion failed (attempt 2): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(2)},
+			}},
+			false, true, task.StatusInProgress, false,
+		},
+		{
+			"all materialized children done does not close over fresh expand failure",
+			umbrellaState{total: 2, doneCount: 2, tracker: &task.Task{
+				Status:       task.StatusHumanRequired,
+				StatusReason: "umbrella expansion failed (attempt 3): boom",
+				Tags:         []string{"umbrella", umbrella.ExpandFailTag(3)},
+			}},
+			false, true, task.StatusHumanRequired, false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

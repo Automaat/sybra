@@ -184,6 +184,68 @@ func TestRecordExpandFailure_EscalatesAtThreshold(t *testing.T) {
 	}
 }
 
+func TestRecordExpandFailure_RefreshesMissingTrackerSnapshot(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r"}
+	tracker, err := tasks.CreateFull(umb.Title, "", task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr(umb.URL),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(1)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+
+	if err := recordExpandFailure(tasks, umb, existingTracker{}, errors.New("killed")); err != nil {
+		t.Fatalf("recordExpandFailure: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("len(tasks) = %d, want 1 existing tracker updated in place", len(all))
+	}
+	got, err := tasks.Get(tracker.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if ParseExpandFailCount(got.Tags) != 2 {
+		t.Fatalf("fail count = %d, want 2 after updating the existing tracker", ParseExpandFailCount(got.Tags))
+	}
+}
+
+func TestRecordExpandFailure_UsesLiveTagCount(t *testing.T) {
+	t.Parallel()
+	tasks := newTestTaskManager(t)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r"}
+	tracker, err := tasks.CreateFull(umb.Title, "", task.AgentModeHeadless, task.Update{
+		Issue:    task.Ptr(umb.URL),
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusInProgress),
+		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(2)}),
+	})
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+
+	stale := existingTracker{exists: true, id: tracker.ID, tags: []string{"umbrella", ExpandFailTag(1)}}
+	if err := recordExpandFailure(tasks, umb, stale, errors.New("killed")); err != nil {
+		t.Fatalf("recordExpandFailure: %v", err)
+	}
+
+	got, err := tasks.Get(tracker.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if ParseExpandFailCount(got.Tags) != 3 {
+		t.Fatalf("fail count = %d, want 3 from the live tracker state, not stale input", ParseExpandFailCount(got.Tags))
+	}
+}
+
 // TestClearExpandFailure_StripsTagOnSuccess guards the recovery path: once
 // expansion succeeds again, the failure count must reset so a later, distinct
 // failure streak starts counting from zero rather than resuming near the
@@ -192,10 +254,11 @@ func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskManager(t)
 	tracker, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
-		Issue:    task.Ptr("https://github.com/o/r/issues/100"),
-		TaskType: task.Ptr(task.TaskTypeUmbrella),
-		Status:   task.Ptr(task.StatusInProgress),
-		Tags:     task.Ptr([]string{"umbrella", ExpandFailTag(2)}),
+		Issue:        task.Ptr("https://github.com/o/r/issues/100"),
+		TaskType:     task.Ptr(task.TaskTypeUmbrella),
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("umbrella expansion failed (attempt 2): planner killed"),
+		Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(2)}),
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
@@ -211,6 +274,9 @@ func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	}
 	if ParseExpandFailCount(got.Tags) != 0 {
 		t.Fatalf("fail count = %d, want 0 after clear", ParseExpandFailCount(got.Tags))
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("StatusReason = %q, want cleared with the failure tag", got.StatusReason)
 	}
 
 	// Idempotent: clearing an already-clean tracker is a no-op, not an error.

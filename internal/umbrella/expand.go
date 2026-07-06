@@ -2,14 +2,17 @@ package umbrella
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
@@ -117,6 +120,15 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
 	}
+	unlock, err := lockExpandIssue(tasks, issueURL)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			slog.Warn("umbrella.expand.unlock_failed", "issue", issueURL, "err", err)
+		}
+	}()
 	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch umbrella: %w", err)
@@ -178,12 +190,22 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	if err != nil {
 		return Result{}, err
 	}
-	if tracker.exists && ParseExpandFailCount(tracker.tags) > 0 {
+	if tracker.exists {
 		if err := clearExpandFailure(tasks, tracker.id); err != nil {
 			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
 		}
 	}
 	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created, Degraded: plan.Fallback}, nil
+}
+
+func lockExpandIssue(tasks *task.Manager, issueURL string) (func() error, error) {
+	sum := sha256.Sum256([]byte(NormalizeIssueRef(issueURL)))
+	lockPath := filepath.Join(tasks.Store().Dir(), fmt.Sprintf(".umbrella-expand-%x", sum[:8]))
+	unlock, err := fsutil.LockFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("lock umbrella expand %s: %w", issueURL, err)
+	}
+	return unlock, nil
 }
 
 // allMaterialized reports whether every open sub-issue already has a task.
@@ -230,6 +252,11 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 		}
 	}
 	return refs, tracker, nil
+}
+
+func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, error) {
+	_, tracker, err := scanExisting(tasks, umbrellaURL)
+	return tracker, err
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
@@ -341,13 +368,20 @@ func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
 // later success, which simply overwrites this placeholder's fields.
 func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existingTracker, cause error) error {
 	if !tracker.exists {
+		var err error
+		tracker, err = findTracker(tasks, umb.URL)
+		if err != nil {
+			return fmt.Errorf("refresh tracker before failure record: %w", err)
+		}
+	}
+	if !tracker.exists {
 		count := 1
 		_, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
 			Issue:        task.Ptr(umb.URL),
 			TaskType:     task.Ptr(task.TaskTypeUmbrella),
 			ProjectID:    task.Ptr(umb.Repository),
 			Status:       task.Ptr(task.StatusInProgress),
-			StatusReason: task.Ptr(fmt.Sprintf("umbrella expansion failed (attempt %d): %s", count, cause)),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
 			Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(count)}),
 		})
 		if err != nil {
@@ -356,19 +390,22 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 		return nil
 	}
 
-	count := ParseExpandFailCount(tracker.tags) + 1
-	newTags := slices.DeleteFunc(slices.Clone(tracker.tags), func(t string) bool {
-		return strings.HasPrefix(t, ExpandFailTagPrefix)
+	_, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+		count := ParseExpandFailCount(cur.Tags) + 1
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return strings.HasPrefix(t, ExpandFailTagPrefix)
+		})
+		newTags = append(newTags, ExpandFailTag(count))
+		upd := task.Update{
+			Tags:         task.Ptr(newTags),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+		}
+		if count >= ExpandFailThreshold {
+			upd.Status = task.Ptr(task.StatusHumanRequired)
+		}
+		return upd, nil
 	})
-	newTags = append(newTags, ExpandFailTag(count))
-	upd := task.Update{
-		Tags:         task.Ptr(newTags),
-		StatusReason: task.Ptr(fmt.Sprintf("umbrella expansion failed (attempt %d): %s", count, cause)),
-	}
-	if count >= ExpandFailThreshold {
-		upd.Status = task.Ptr(task.StatusHumanRequired)
-	}
-	if _, err := tasks.Update(tracker.id, upd); err != nil {
+	if err != nil {
 		return fmt.Errorf("tag tracker expand-failed: %w", err)
 	}
 	return nil
@@ -385,12 +422,26 @@ func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
 			return strings.HasPrefix(t, ExpandFailTagPrefix)
 		})
-		return task.Update{Tags: task.Ptr(newTags)}, nil
+		upd := task.Update{Tags: task.Ptr(newTags)}
+		if strings.HasPrefix(cur.StatusReason, "umbrella expansion failed (attempt ") {
+			upd.StatusReason = task.Ptr("")
+		}
+		return upd, nil
 	})
 	if err != nil && !errors.Is(err, errSkipUpdate) {
 		return fmt.Errorf("clear tracker expand-failed: %w", err)
 	}
 	return nil
+}
+
+func formatExpandFailureReason(count int, cause error) string {
+	reason := fmt.Sprintf("umbrella expansion failed (attempt %d): %v", count, cause)
+	const maxLen = 200
+	if len(reason) <= maxLen {
+		return reason
+	}
+	const tail = "..."
+	return reason[:maxLen-len(tail)] + tail
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's

@@ -334,16 +334,14 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyCancelled:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
+	case expandFailing:
+		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
+		// this tracker's status/reason while expansion keeps failing. Rollup
+		// must not overwrite that state just because the tracker already has
+		// children or all currently-materialized children happen to be done.
+		return st.tracker.Status, st.tracker.StatusReason, false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
-	case st.total == 0 && expandFailing:
-		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
-		// this tracker's status/reason while expansion keeps failing (staying
-		// in-progress below ExpandFailThreshold, human-required at it). A
-		// desired value computed here would fight that state every tick —
-		// e.g. flipping a parked human-required tracker straight back to
-		// in-progress the moment this rollup runs.
-		return st.tracker.Status, st.tracker.StatusReason, false
 	case st.total == 0 && settled:
 		return task.StatusDone, "umbrella has no open sub-issues", true
 	default:
