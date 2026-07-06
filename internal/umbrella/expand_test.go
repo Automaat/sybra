@@ -3,6 +3,7 @@ package umbrella
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 // across every retry.
 func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	t.Parallel()
-	minBudget := PlannerAttemptTimeout * time.Duration(plannerJobAttempts*plannerGenerateSamples)
+	minBudget := plannerAttemptTimeout(0) * time.Duration(plannerJobAttempts*plannerGenerateSamples)
 	if got := plannerTimeout(0); got < minBudget {
 		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d planner samples x %d llmjob attempts)", got, minBudget, plannerGenerateSamples, plannerJobAttempts)
 	}
@@ -31,6 +32,21 @@ func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	}
 }
 
+func TestPlannerAttemptTimeout_ScalesWithSubCount(t *testing.T) {
+	t.Parallel()
+	if got := plannerAttemptTimeout(0); got != PlannerAttemptTimeout {
+		t.Fatalf("plannerAttemptTimeout(0) = %v, want base %v", got, PlannerAttemptTimeout)
+	}
+	small := plannerAttemptTimeout(1)
+	large := plannerAttemptTimeout(38)
+	if large <= small {
+		t.Fatalf("plannerAttemptTimeout(38) = %v, want greater than plannerAttemptTimeout(1) = %v", large, small)
+	}
+	if large <= PlannerAttemptTimeout {
+		t.Fatalf("plannerAttemptTimeout(38) = %v, want greater than fixed floor %v", large, PlannerAttemptTimeout)
+	}
+}
+
 func newTestTaskManager(t *testing.T) *task.Manager {
 	t.Helper()
 	store, err := task.NewStore(t.TempDir())
@@ -38,6 +54,56 @@ func newTestTaskManager(t *testing.T) *task.Manager {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
+}
+
+func TestExpandThreadsScaledAttemptTimeoutToPlanner(t *testing.T) {
+	restore := githubFetchUmbrellaForTest(t, github.Issue{
+		Title:      "umbrella",
+		URL:        "https://github.com/o/r/issues/100",
+		Repository: "o/r",
+	}, makeTestIssues(38))
+	defer restore()
+
+	tasks := newTestTaskManager(t)
+	var got time.Duration
+	run := func(ctx context.Context, _ string) (string, error) {
+		got = plannerAttemptTimeoutFromContext(ctx)
+		return "", errors.New("stop after observing context")
+	}
+
+	_, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
+	if err == nil {
+		t.Fatal("Expand succeeded unexpectedly with an intentionally failing runner")
+	}
+	want := plannerAttemptTimeout(38)
+	if got != want {
+		t.Fatalf("planner attempt timeout from context = %v, want %v", got, want)
+	}
+}
+
+func githubFetchUmbrellaForTest(t *testing.T, umb github.Issue, subs []github.Issue) func() {
+	t.Helper()
+	old := fetchUmbrella
+	fetchUmbrella = func(_ context.Context, _ string, _ int) (github.Issue, []github.Issue, error) {
+		return umb, subs, nil
+	}
+	return func() {
+		fetchUmbrella = old
+	}
+}
+
+func makeTestIssues(n int) []github.Issue {
+	out := make([]github.Issue, n)
+	for i := range out {
+		num := i + 1
+		out[i] = github.Issue{
+			Title:      "child",
+			URL:        fmt.Sprintf("https://github.com/o/r/issues/%d", num),
+			Repository: "o/r",
+			State:      "OPEN",
+		}
+	}
+	return out
 }
 
 func TestMaterialize_DegradedFreshTrackerCarriesFallbackTag(t *testing.T) {

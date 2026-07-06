@@ -25,13 +25,34 @@ import (
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
-// PlannerAttemptTimeout bounds a single planner CLI invocation. It is passed
-// to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets this
-// full budget fresh, instead of splitting a single shared deadline across
-// them — a large umbrella's first attempt can legitimately take minutes to
-// read and order every sub-issue, which used to leave nothing for retries
-// (see #1555).
+// PlannerAttemptTimeout is the minimum budget for a single planner CLI
+// invocation. The actual per-attempt budget is plannerAttemptTimeout(subCount):
+// large umbrellas get extra time because one model attempt has to read and
+// order every sub-issue before llmjob can repair malformed JSON.
 const PlannerAttemptTimeout = 4 * time.Minute
+
+const plannerAttemptPerSubIssueTimeout = 10 * time.Second
+
+type plannerAttemptTimeoutContextKey struct{}
+
+func withPlannerAttemptTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, plannerAttemptTimeoutContextKey{}, timeout)
+}
+
+func plannerAttemptTimeoutFromContext(ctx context.Context) time.Duration {
+	timeout, _ := ctx.Value(plannerAttemptTimeoutContextKey{}).(time.Duration)
+	if timeout > 0 {
+		return timeout
+	}
+	return PlannerAttemptTimeout
+}
+
+func plannerAttemptTimeout(subCount int) time.Duration {
+	if subCount < 0 {
+		subCount = 0
+	}
+	return PlannerAttemptTimeout + time.Duration(subCount)*plannerAttemptPerSubIssueTimeout
+}
 
 // plannerJobSpec is the llmjob.Spec FallbackPlannerRunner runs the
 // "umbrella-order" job with. It is shared with plannerTimeout below via
@@ -61,7 +82,7 @@ const plannerGenerateSamples = plannerAttempts * 2
 // legitimately more model time, and a bigger expansion is more expensive to
 // have starved.
 func plannerTimeout(subCount int) time.Duration {
-	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
+	return plannerAttemptTimeout(subCount)*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
 		time.Duration(subCount*plannerGenerateSamples)*5*time.Second
 }
 
@@ -69,12 +90,14 @@ func plannerTimeout(subCount int) time.Duration {
 // wedge the caller (notably the issue poll loop).
 const FetchTimeout = 60 * time.Second
 
+var fetchUmbrella = github.FetchUmbrella
+
 // fetchUmbrellaBounded fetches the umbrella under FetchTimeout, releasing the
 // timer as soon as the fetch returns (defer right after WithTimeout).
 func fetchUmbrellaBounded(ctx context.Context, repo string, number int) (umbrella github.Issue, subs []github.Issue, err error) {
 	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
-	return github.FetchUmbrella(fctx, repo, number)
+	return fetchUmbrella(fctx, repo, number)
 }
 
 // expandConfig holds the optional settings ExpandOption values apply.
@@ -177,6 +200,7 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 
 	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(subs)))
 	defer cancel()
+	pctx = withPlannerAttemptTimeout(pctx, plannerAttemptTimeout(len(subs)))
 	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
 		if recErr := recordExpandFailure(tasks, umb, tracker, err); recErr != nil {
@@ -495,7 +519,9 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 		gate = gates[0]
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
-		plan, _, err := llmjob.Run(ctx, prompt, plannerJobSpec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
+		spec := plannerJobSpec
+		spec.AttemptTimeout = plannerAttemptTimeoutFromContext(ctx)
+		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}
