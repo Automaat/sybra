@@ -153,9 +153,45 @@ type Agent struct {
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
 
+	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
+	// Claude interactive agent's provider is switched at a turn boundary. The
+	// still-idle Claude process is torn down (closeStdinPipe/signalKill); once
+	// runConversational's goroutine observes the process actually exit, it
+	// consumes this instead of finalizing, and hands the same *Agent off to
+	// runPerTurnConversational on the new provider.
+	handoff *pendingConvoHandoff
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+// pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
+// persistent-Claude -> per-turn provider switch. See Agent.handoff.
+type pendingConvoHandoff struct {
+	cfg    RunConfig
+	prompt string
+}
+
+// SetPendingHandoff records a same-agent provider switch to be picked up by
+// runConversational's finalize path once its (now-doomed) process exits.
+func (a *Agent) SetPendingHandoff(cfg RunConfig, prompt string) {
+	a.mu.Lock()
+	a.handoff = &pendingConvoHandoff{cfg: cfg, prompt: prompt}
+	a.mu.Unlock()
+}
+
+// ConsumePendingHandoff returns and clears any pending handoff recorded by
+// SetPendingHandoff.
+func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.handoff == nil {
+		return RunConfig{}, "", false
+	}
+	h := a.handoff
+	a.handoff = nil
+	return h.cfg, h.prompt, true
 }
 
 // toRecord snapshots only the fields persisted for restart survival.
@@ -336,6 +372,28 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// SetProviderAndModel updates the agent's provider and (already-normalized)
+// model. Used when a mid-run per-turn provider re-gate fails the agent's
+// current provider over to a healthy peer; Provider/Model are otherwise fixed
+// for the lifetime of the agent (set once at construction).
+func (a *Agent) SetProviderAndModel(prov, model string) {
+	a.mu.Lock()
+	a.Provider = prov
+	a.Model = model
+	a.mu.Unlock()
+}
+
+// GetProvider returns the agent's current provider name. Safe to call
+// concurrently with a mid-run SetProviderAndModel switch; code within the
+// single-threaded runner loop (which owns all writes) may keep reading
+// a.Provider directly since it's the same goroutine, but any external
+// reader must go through this to avoid racing the switch.
+func (a *Agent) GetProvider() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Provider
+}
+
 // SetSessionFilePath records the path to the provider session file.
 func (a *Agent) SetSessionFilePath(p string) {
 	a.mu.Lock()
@@ -438,6 +496,17 @@ func (a *Agent) PendingPromptCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return len(a.convo.pendingPrompts)
+}
+
+// RestorePendingPrompt pushes text back onto the front of the pending queue.
+// Used by the turn-boundary chokepoint (advanceClaudeTurn) to put a
+// just-reserved prompt back where it came from when the turn cannot proceed
+// (no healthy peer, write failure, cancellation), so it is retried in order
+// rather than lost or reordered behind prompts queued afterward.
+func (a *Agent) RestorePendingPrompt(text string) {
+	a.mu.Lock()
+	a.convo.pendingPrompts = append([]string{text}, a.convo.pendingPrompts...)
+	a.mu.Unlock()
 }
 
 // IncTurnCount increments the turn counter and returns the new value.

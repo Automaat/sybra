@@ -263,6 +263,15 @@ func convoResumeState(evs []ConvoEvent) State {
 // rehydrate its chat from the log, and restart the loop in resume-wait mode
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
+//
+// r.Provider is authoritative even when a mid-run regateForTurn switch
+// happened before the restart: regateForTurn persists the switched provider
+// (and clears the old session id) via saveRegistry, so the record already
+// reflects the peer the agent moved to, not the one it started on. The next
+// prompt is dispatched via runPerTurnConversational(..., RunConfig{Dir:...},
+// true), whose regate call reads the live current provider from a.Provider —
+// not from this (mostly empty) RunConfig — so a stale/zero-value cfg.Provider
+// here can never resurrect the pre-switch provider.
 func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app

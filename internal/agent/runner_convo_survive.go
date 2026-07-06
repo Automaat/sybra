@@ -70,6 +70,12 @@ func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg Ru
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		// Records the starting provider up front so a mid-run
+		// regateBeforeClaudeTurn switch away from Claude can be told apart
+		// from this initial segment on rehydration (see
+		// rehydratePerTurnConvoFromLog). Written directly (the child hasn't
+		// started yet, so nothing else has written to the file).
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 
@@ -204,6 +210,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 
@@ -413,6 +420,23 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	exited, _ := m.tailConvoFile(ctx, a, a.GetLogPath(), startOffset, oneShot, procDone)
 	if !exited {
 		m.logger.Info("agent.reattach.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown")
+		return
+	}
+
+	// A pending handoff can only exist here if this *Agent is the same
+	// in-memory object that had SendMessage/advanceClaudeTurn regate it onto
+	// a peer just before its (now-doomed) Claude process was torn down — the
+	// handoff field is never persisted, so a genuine restart's fromRecord
+	// Agent always has none and falls through to ordinary finalization below.
+	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
+		prevLogPath := a.GetLogPath()
+		outFile, err := m.reopenConvoHandoffLog(a, nil)
+		if err != nil {
+			m.logger.Warn("agent.reattach.handoff.log", "id", a.ID, "err", err)
+		} else if prevLogPath != "" && outFile.Name() != prevLogPath {
+			m.logger.Warn("agent.reattach.handoff.log-fallback", "id", a.ID, "from", prevLogPath, "to", outFile.Name())
+		}
+		m.completeConvoHandoff(ctx, a, outFile, handoffCfg, prompt)
 		return
 	}
 

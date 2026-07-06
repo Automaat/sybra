@@ -218,7 +218,90 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		return
 	}
 
+	// A pending handoff (SendMessage/regateBeforeClaudeTurn regated this
+	// agent's next turn onto a healthy per-turn peer and tore down the idle
+	// Claude process to force this exit) takes over instead of finalizing:
+	// the same *Agent hands off to the per-turn runner on the new provider.
+	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
+		m.completeConvoHandoff(ctx, a, outFile, handoffCfg, prompt)
+		outFile = nil
+		return
+	}
+
 	m.finalizeRun(ctx, a, "agent.convo.done")
+}
+
+// beginConvoHandoff records a regated provider switch on a persistent Claude
+// interactive agent and tears down its (idle) process so runConversational's
+// goroutine exits and completeConvoHandoff can take over. Called from
+// SendMessage when regateBeforeClaudeTurn finds Claude capped and a healthy
+// per-turn-capable peer available.
+func (m *Manager) beginConvoHandoff(a *Agent, cfg RunConfig, prompt string) {
+	cfg.Prompt = prompt
+	a.SetPendingHandoff(cfg, prompt)
+	a.SetState(StateRunning)
+	m.emit(events.AgentState(a.ID), a)
+	if a.isDetached() {
+		// A detached agent's stdin is a never-EOF O_RDWR FIFO (see
+		// startConvoProcessSurvive) — closing our end does not signal the
+		// child, so it must be killed by PID like StopAgent does.
+		m.signalKill(a)
+	} else {
+		a.convo.closeStdinPipe()
+	}
+	m.logger.Info("agent.convo.handoff", "id", a.ID, "task", cfg.TaskID, "to", cfg.Provider)
+}
+
+// reopenConvoHandoffLog reacquires the log writer used to bound a same-agent
+// Claude -> per-turn handoff. If the existing detached log cannot be reopened
+// for append, fall back to a fresh log file so the persisted provider switch
+// still has a marker-bounded segment instead of leaving restart rehydration
+// with a switched registry record and no boundary marker.
+func (m *Manager) reopenConvoHandoffLog(a *Agent, outFile *os.File) (*os.File, error) {
+	if outFile != nil {
+		return outFile, nil
+	}
+
+	var reopenErr error
+	if logPath := a.GetLogPath(); logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			return f, nil
+		}
+		reopenErr = err
+	}
+
+	fresh, err := logging.NewAgentOutputFile(m.logDir, a.ID)
+	if err != nil {
+		if reopenErr != nil {
+			return nil, fmt.Errorf("reopen handoff log: %w; fresh handoff log: %w", reopenErr, err)
+		}
+		return nil, fmt.Errorf("fresh handoff log: %w", err)
+	}
+	a.SetLogPath(fresh.Name())
+	return fresh, nil
+}
+
+// completeConvoHandoff finishes a mid-run persistent-Claude -> per-turn
+// provider switch once the killed Claude process has actually exited: it
+// writes the provider-marker boundary into the still-open log (closing the
+// crash window before the switch lands on disk — see regate's deferPersist),
+// persists the switched registry record, then hands the log and a fresh
+// prompt channel to the per-turn runner. Returns without finalizing/marking
+// the agent done: the new goroutine owns the agent's completion from here.
+func (m *Manager) completeConvoHandoff(ctx context.Context, a *Agent, outFile *os.File, cfg RunConfig, prompt string) {
+	a.SetExitErr(nil)
+	if outFile != nil {
+		writeProviderMarkerLine(outFile, a.Provider)
+		_ = outFile.Close()
+	}
+	if m.survives() {
+		m.saveRegistry(ctx, a)
+	}
+	cfg.Prompt = prompt
+	a.setPromptChannel(make(chan string, 1))
+	m.logger.Info("agent.convo.handoff.start", "id", a.ID, "provider", a.Provider)
+	go m.runPerTurnConversational(ctx, a, cfg, false)
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -257,7 +340,8 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	}
 
 	// Open log file on first successful start; subsequent retries append.
-	if *outFile == nil {
+	freshLog := *outFile == nil
+	if freshLog {
 		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
 		if fileErr != nil {
 			m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
@@ -271,6 +355,13 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	var logWriter io.Writer
 	if *outFile != nil {
 		logWriter = *outFile
+	}
+	if freshLog {
+		// Records the starting provider up front so a mid-run
+		// regateBeforeClaudeTurn switch away from Claude can be told apart
+		// from this initial segment on rehydration (see
+		// rehydratePerTurnConvoFromLog).
+		writeProviderMarkerLine(logWriter, a.Provider)
 	}
 
 	prevLen := len(a.ConvoOutput())
@@ -333,6 +424,9 @@ func (m *Manager) streamConvoOutput(ctx context.Context, a *Agent, stdout io.Rea
 // state machine. Shared by the pipe-backed streamer and the survival file
 // tailer; it never writes the log file (caller or child owns that).
 func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, st *convoEmitState, oneShot bool) {
+	if _, ok := parseProviderMarkerLine(line); ok {
+		return
+	}
 	parsed, parseErr := ParseClaudeLine(line)
 	if parseErr != nil {
 		m.logger.Warn("agent.convo.parse", "id", a.ID, "err", parseErr, "line", string(line))
@@ -384,19 +478,20 @@ func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, s
 		m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 		// Drain any prompts queued mid-turn before flipping to paused. Each
 		// queued prompt fires the next turn back-to-back so the user's
-		// chat-window queue executes in order without manual re-trigger.
+		// chat-window queue executes in order without manual re-trigger. This
+		// turn boundary must re-gate exactly like SendMessage's idle path —
+		// otherwise a provider that capped while the turn was running would
+		// still receive the queued follow-up on its stranded stdin.
 		if next, ok := a.PopPendingPrompt(); ok {
-			if err := m.writeUserMessage(a, next); err != nil {
+			if err := m.advanceClaudeTurn(ctx, a, next); err != nil {
 				m.logger.Error("agent.convo.flush-queue", "id", a.ID, "err", err)
-				a.SetState(StatePaused)
 			} else {
-				a.SetState(StateRunning)
 				m.logger.Info("agent.convo.queue-flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 			}
 		} else {
 			a.SetState(StatePaused)
+			m.emit(events.AgentState(a.ID), a)
 		}
-		m.emit(events.AgentState(a.ID), a)
 		// One-shot runs close stdin so the claude process sees EOF and exits.
 		if oneShot {
 			m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
@@ -432,6 +527,63 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	return a.convo.writeStdin(data)
 }
 
+// claudeRegateConfig builds the RunConfig used to re-gate a persistent
+// Claude agent at a turn boundary (SendMessage's idle path and
+// advanceClaudeTurn's queued-flush path share this so both judge/switch
+// provider health from identical agent state).
+func claudeRegateConfig(a *Agent) RunConfig {
+	return RunConfig{
+		TaskID:             a.TaskID,
+		Dir:                a.sessionCWD,
+		Provider:           a.Provider,
+		Model:              a.Model,
+		RequirePermissions: a.requirePermissions,
+	}
+}
+
+// advanceClaudeTurn is the single persistent-Claude turn-boundary
+// chokepoint: given the next prompt to send — either SendMessage's idle
+// turn boundary or a queued follow-up flushed after a "result" event — it
+// re-gates provider health before writing to Claude's stdin, so a provider
+// that capped since the last turn does not strand this session. On any
+// outcome that cannot proceed (no healthy peer, write failure, cancellation,
+// stopped agent), prompt is restored to the front of the pending queue so a
+// later attempt retries it in order instead of losing or reordering it.
+func (m *Manager) advanceClaudeTurn(ctx context.Context, a *Agent, prompt string) error {
+	if a.WasStopped() || ctx.Err() != nil {
+		a.RestorePendingPrompt(prompt)
+		return fmt.Errorf("agent %s: not advancing turn, stopped or canceled", a.ID)
+	}
+
+	cfg := claudeRegateConfig(a)
+	updatedCfg, switched, regateErr := m.regateBeforeClaudeTurn(ctx, a, cfg)
+	if regateErr != nil {
+		// No healthy peer: regate already set a.SetError("rate_limit", ...).
+		// Restore the prompt so it is retried (not lost) once a peer or
+		// Claude itself recovers, and park the session instead of stranding
+		// it mid-write.
+		a.RestorePendingPrompt(prompt)
+		a.SetState(StatePaused)
+		m.emit(events.AgentState(a.ID), a)
+		m.logger.Warn("agent.convo.regate.blocked", "id", a.ID, "task", a.TaskID, "err", regateErr)
+		return regateErr
+	}
+	if switched {
+		m.beginConvoHandoff(a, updatedCfg, prompt)
+		return nil
+	}
+	if err := m.writeUserMessage(a, prompt); err != nil {
+		a.RestorePendingPrompt(prompt)
+		a.SetState(StatePaused)
+		m.emit(events.AgentState(a.ID), a)
+		m.logger.Error("agent.convo.write", "id", a.ID, "err", err)
+		return err
+	}
+	a.SetState(StateRunning)
+	m.emit(events.AgentState(a.ID), a)
+	return nil
+}
+
 // SendMessage sends a follow-up user message to a conversational agent.
 // When the agent is mid-turn (StateRunning), the message is appended to a
 // pending queue and flushed on the next "result" event, so users can pile
@@ -453,11 +605,12 @@ func (m *Manager) SendMessage(agentID, text string) error {
 		a.EnqueuePrompt(text)
 		m.logger.Info("agent.convo.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
 	} else {
-		if err := m.writeUserMessage(a, text); err != nil {
-			return err
+		// Turn boundary: re-consult provider health before writing to the
+		// idle Claude session's stdin, so a provider that capped since the
+		// last turn does not strand this chat for the rest of its life.
+		if err := m.advanceClaudeTurn(m.ctx, a, text); err != nil {
+			return fmt.Errorf("agent %s: %w", agentID, err)
 		}
-		a.SetState(StateRunning)
-		m.emit(events.AgentState(a.ID), a)
 		m.logger.Info("agent.convo.message_sent", "id", a.ID)
 	}
 
