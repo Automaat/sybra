@@ -197,11 +197,11 @@ type Project struct {
 }
 
 // IsSybraProject reports whether p is the Sybra repo itself (owner
-// "Automaat", repo "sybra", case-insensitive). Used to gate spawn-time
-// SYBRA_HOME isolation for test-runner/eval agents that launch a Sybra
-// build under test — see agentorch.Orchestrator.TestIsolationEnv. Testing
-// any other project never needs this: only Sybra testing Sybra risks a
-// second instance fighting the production one over ~/.sybra.
+// "Automaat", repo "sybra", case-insensitive). Every task-scoped agent
+// subprocess now gets an isolated SYBRA_HOME regardless of project (see
+// agent.Manager.prepareRunConfig / ManagerConfig.SandboxHome), so this no
+// longer gates that isolation; kept for callers that still need to detect
+// Sybra-testing-Sybra specifically.
 func (p Project) IsSybraProject() bool {
 	return strings.EqualFold(p.Owner, "Automaat") && strings.EqualFold(p.Repo, "sybra")
 }

@@ -106,6 +106,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 
+	if err := m.injectSandboxHome(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
@@ -118,6 +122,77 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	m.mu.RUnlock()
 	return cfg, prov, nil
+}
+
+// injectSandboxHome routes every task-scoped agent subprocess's default
+// SYBRA_HOME through the per-task sandbox home, so no fresh agent (any
+// provider, any role) can resolve the operator's real ~/.sybra by default —
+// see #1576. System/probe runs with an empty TaskID (health checks,
+// orchestrator-internal probes) are the only ones allowed to skip this: they
+// have no task-scoped worktree/sandbox to isolate into.
+//
+// cfg.ExtraEnv is normalized before the trusted values are appended: any
+// existing SYBRA_HOME/SYBRA_CONTROL_HOME entries (caller-supplied or
+// otherwise) are stripped first, then the sandbox home and (if configured) the
+// control home are appended last, so they always win regardless of duplicate
+// env var resolution order in the target process.
+func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
+	if cfg.TaskID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	resolve := m.sandboxHome
+	controlHome := m.controlHome
+	m.mu.RUnlock()
+	if resolve == nil {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "no sandbox home resolver configured")
+		return fmt.Errorf("agent.Run: no sandbox home resolver configured for task-scoped run %q", cfg.TaskID)
+	}
+	dir, err := resolve(cfg.TaskID)
+	if err != nil {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: resolve sandbox home for task %q: %w", cfg.TaskID, err)
+	}
+	if strings.TrimSpace(dir) == "" {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "resolver returned empty path")
+		return fmt.Errorf("agent.Run: sandbox home resolver returned empty path for task %q", cfg.TaskID)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		if statErr == nil {
+			statErr = fmt.Errorf("%q is not a directory", dir)
+		}
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", statErr)
+		return fmt.Errorf("agent.Run: sandbox home %q for task %q is not accessible: %w", dir, cfg.TaskID, statErr)
+	}
+
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_HOME="+dir)
+	if controlHome != "" {
+		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
+	}
+	return nil
+}
+
+// stripEnvKeys returns env with any "KEY=..." entries for the given keys
+// removed, preserving the relative order of the remaining entries.
+func stripEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, k := range keys {
+			if strings.HasPrefix(kv, k+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func defaultReasoningEffort(effort string) string {

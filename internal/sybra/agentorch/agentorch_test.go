@@ -1,16 +1,11 @@
 package agentorch
 
 import (
-	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
-	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -265,76 +260,4 @@ func TestBuildTaskStartPrompt(t *testing.T) {
 	if !strings.Contains(got, "# Task: My task") {
 		t.Fatalf("BuildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
 	}
-}
-
-func newProjectStoreWithProject(t *testing.T, id, owner, repo string) *project.Store {
-	t.Helper()
-	dir := t.TempDir()
-	store, err := project.NewStore(dir, t.TempDir())
-	if err != nil {
-		t.Fatalf("project.NewStore: %v", err)
-	}
-	yamlBody := "id: " + id + "\nname: " + repo + "\nowner: " + owner + "\nrepo: " + repo +
-		"\nurl: https://github.com/" + owner + "/" + repo + "\nclone_path: /tmp/" + repo + ".git\ntype: pet\n"
-	fileName := strings.ReplaceAll(id, "/", "--") + ".yaml"
-	if err := os.WriteFile(filepath.Join(dir, fileName), []byte(yamlBody), 0o644); err != nil {
-		t.Fatalf("write project fixture: %v", err)
-	}
-	return store
-}
-
-// TestOrchestrator_TestIsolationEnv pins the SYBRA_HOME injection this task
-// adds (sybra#1558): a test-runner/eval agent testing Sybra against itself
-// must get an isolated SYBRA_HOME, or a second instance can fight the
-// production one over ~/.sybra (reattaching to live agents, advancing other
-// tasks' workflows). Every other project must be unaffected.
-func TestOrchestrator_TestIsolationEnv(t *testing.T) {
-	t.Parallel()
-
-	t.Run("sybra project gets an isolated SYBRA_HOME", func(t *testing.T) {
-		t.Parallel()
-		projects := newProjectStoreWithProject(t, "Automaat/sybra", "Automaat", "sybra")
-		o := New(nil, projects, nil, nil, slog.New(slog.DiscardHandler), nil, nil)
-		o.SetSandboxes(sandbox.NewManager(t.TempDir(), slog.New(slog.DiscardHandler)))
-
-		env := o.TestIsolationEnv("task-1", task.Task{ProjectID: "Automaat/sybra"})
-		if len(env) != 1 || !strings.HasPrefix(env[0], "SYBRA_HOME=") {
-			t.Fatalf("TestIsolationEnv = %v, want a single SYBRA_HOME entry", env)
-		}
-		dir := strings.TrimPrefix(env[0], "SYBRA_HOME=")
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			t.Fatalf("SYBRA_HOME dir %q was not created: %v", dir, err)
-		}
-	})
-
-	t.Run("non-sybra project is untouched", func(t *testing.T) {
-		t.Parallel()
-		projects := newProjectStoreWithProject(t, "owner/repo", "owner", "repo")
-		o := New(nil, projects, nil, nil, slog.New(slog.DiscardHandler), nil, nil)
-		o.SetSandboxes(sandbox.NewManager(t.TempDir(), slog.New(slog.DiscardHandler)))
-
-		if env := o.TestIsolationEnv("task-1", task.Task{ProjectID: "owner/repo"}); env != nil {
-			t.Fatalf("TestIsolationEnv = %v, want nil for a non-sybra project", env)
-		}
-	})
-
-	t.Run("no project id is a no-op", func(t *testing.T) {
-		t.Parallel()
-		o := New(nil, nil, nil, nil, slog.New(slog.DiscardHandler), nil, nil)
-		o.SetSandboxes(sandbox.NewManager(t.TempDir(), slog.New(slog.DiscardHandler)))
-
-		if env := o.TestIsolationEnv("task-1", task.Task{}); env != nil {
-			t.Fatalf("TestIsolationEnv = %v, want nil without a project id", env)
-		}
-	})
-
-	t.Run("no sandboxes manager wired is a no-op", func(t *testing.T) {
-		t.Parallel()
-		projects := newProjectStoreWithProject(t, "Automaat/sybra", "Automaat", "sybra")
-		o := New(nil, projects, nil, nil, slog.New(slog.DiscardHandler), nil, nil)
-
-		if env := o.TestIsolationEnv("task-1", task.Task{ProjectID: "Automaat/sybra"}); env != nil {
-			t.Fatalf("TestIsolationEnv = %v, want nil before sandboxes are wired", env)
-		}
-	})
 }

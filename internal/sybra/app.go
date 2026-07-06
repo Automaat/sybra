@@ -360,6 +360,9 @@ func (a *App) Startup(ctx context.Context) error {
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
+	// sandboxes has no dependency on the agent manager and must exist before
+	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
+	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	if err := a.initAgentManager(ctx, emit); err != nil {
 		return err
 	}
@@ -378,7 +381,6 @@ func (a *App) Startup(ctx context.Context) error {
 		AgentChecker:     a.agents.HasRunningAgentForTask,
 		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
-	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 

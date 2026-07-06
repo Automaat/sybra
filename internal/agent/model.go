@@ -909,7 +909,11 @@ type RunConfig struct {
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
-	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG).
+	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG)
+	// and, for every task-scoped run, the trusted SYBRA_HOME/SYBRA_CONTROL_HOME
+	// pair that Manager.prepareRunConfig appends last (see ManagerConfig.SandboxHome) —
+	// any caller-supplied entry for those two keys is stripped before the
+	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".

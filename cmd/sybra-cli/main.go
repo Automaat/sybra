@@ -46,15 +46,41 @@ func run(args []string) int {
 		return 1
 	}
 
-	// Extract global --json flag before subcommand.
+	// Extract global --json and --home flags before subcommand.
 	jsonOut := false
 	filtered := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--json" {
+	homeOverride := ""
+	homeErr := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
 			jsonOut = true
-		} else {
+		case a == "--home":
+			if i+1 >= len(args) {
+				homeErr = true
+				continue
+			}
+			i++
+			homeOverride = args[i]
+		case strings.HasPrefix(a, "--home="):
+			homeOverride = strings.TrimPrefix(a, "--home=")
+		default:
 			filtered = append(filtered, a)
 		}
+	}
+
+	// Detect the hook subcommand before config.Load can abort: codex lifecycle
+	// hooks must fail open (see cmdHook) — a malformed config must never make
+	// `sybra-cli hook` exit non-zero and stall an agent run.
+	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+
+	if homeErr {
+		if isHook {
+			fmt.Fprintln(os.Stderr, "hook: --home requires a value (continuing fail-open)")
+			return 0
+		}
+		return fatal(jsonOut, "--home requires a value")
 	}
 
 	if len(filtered) == 0 {
@@ -62,10 +88,40 @@ func run(args []string) int {
 		return 1
 	}
 
-	// Detect the hook subcommand before config.Load can abort: codex lifecycle
-	// hooks must fail open (see cmdHook) — a malformed config must never make
-	// `sybra-cli hook` exit non-zero and stall an agent run.
-	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+	// Home precedence: --home > SYBRA_CONTROL_HOME (the real operator store,
+	// injected into task-scoped agent subprocesses) > SYBRA_HOME (ambient,
+	// e.g. the per-task sandbox) > config.Load's own default resolution.
+	// Bare `sybra-cli` calls from inside an agent land on SYBRA_CONTROL_HOME so
+	// task CRUD reaches the real board even though the agent's own SYBRA_HOME
+	// points at its sandbox; `--home` lets an agent explicitly inspect the
+	// sandbox/app-under-test store instead (see docs/manual-testing.md).
+	effectiveHome := homeOverride
+	if effectiveHome == "" {
+		effectiveHome = os.Getenv("SYBRA_CONTROL_HOME")
+	}
+	if effectiveHome == "" {
+		effectiveHome = os.Getenv("SYBRA_HOME")
+	}
+
+	restoreHome := func() {}
+	if effectiveHome != "" {
+		prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
+		if err := os.Setenv("SYBRA_HOME", effectiveHome); err != nil {
+			if isHook {
+				fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
+				return 0
+			}
+			return fatal(jsonOut, "apply --home: %v", err)
+		}
+		restoreHome = func() {
+			if hadHome {
+				_ = os.Setenv("SYBRA_HOME", prevHome)
+			} else {
+				_ = os.Unsetenv("SYBRA_HOME")
+			}
+		}
+	}
+	defer restoreHome()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -1776,7 +1832,13 @@ func statusListForUsage() string {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Usage: sybra-cli [--json] <command> [flags]
+	fmt.Fprintf(os.Stderr, `Usage: sybra-cli [--json] [--home DIR] <command> [flags]
+
+--home DIR overrides which Sybra home this invocation reads/writes, taking
+precedence over SYBRA_CONTROL_HOME and SYBRA_HOME. Inside a task-scoped
+agent, bare sybra-cli reaches the real operator board via SYBRA_CONTROL_HOME;
+pass --home "$SYBRA_HOME" to inspect the agent's own sandbox/app-under-test
+store instead.
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]

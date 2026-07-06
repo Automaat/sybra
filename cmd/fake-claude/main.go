@@ -34,6 +34,10 @@
 //     kickoff prompt that parks in StatePaused with no session id.
 //   - hang: emits system+assistant then blocks indefinitely. Used to simulate
 //     an agent that Sybra's StopAgent has to kill mid-run.
+//   - sybra_home_sentinel: writes a marker under $SYBRA_HOME, then runs bare
+//     `sybra-cli update` (no --home) on the task — proves default writes land
+//     in the per-task sandbox while task CRUD still reaches the real store
+//     via SYBRA_CONTROL_HOME (sybra#1577).
 //
 // Perf scenarios (zero token cost, drive backend load):
 //   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
@@ -165,6 +169,7 @@ var scenarioHandlers = map[string]func(string){
 	"perf_stream":           func(string) { runPerfStream() },
 	"perf_burst":            func(string) { runPerfBurst() },
 	"perf_long":             func(string) { runPerfLong() },
+	"sybra_home_sentinel":   runSybraHomeSentinel,
 }
 
 func runScenario(scenario, taskID string) bool {
@@ -197,6 +202,23 @@ func runSuccessThenHang() {
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// runSybraHomeSentinel reproduces the #1576 wipe scenario for the sybra#1577
+// fix, run as a real subprocess through agent.Manager: it writes a marker
+// file under its own default SYBRA_HOME (proving the process inherited the
+// per-task sandbox, not the operator's real home) then calls bare `sybra-cli
+// update` (no --home) on the task, which must reach the real operator store
+// through SYBRA_CONTROL_HOME rather than the sandbox.
+func runSybraHomeSentinel(taskID string) {
+	emitSystem()
+	if home := os.Getenv("SYBRA_HOME"); home != "" {
+		_ = os.WriteFile(filepath.Join(home, "sentinel-marker"), []byte(taskID), 0o644)
+	}
+	if taskID != "" {
+		runCLI("update", taskID, "--status", "in-review")
+	}
+	emitResult("Sentinel done.")
 }
 
 func runEvaluate(taskID string) {
