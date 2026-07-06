@@ -776,7 +776,12 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
 	all, err := s.tasks.List()
 	if err != nil {
-		return false
+		// Unreadable store: assume a tracker exists. Claiming this stub as the
+		// only record would mint a second TaskTypeUmbrella task for the same
+		// issue — the exact duplication this helper prevents; a mislabeled
+		// duplicate stub is the cheaper failure.
+		s.logger.Error("enrich-issue.umbrella-tracker-scan", "task_id", taskID, "err", err)
+		return true
 	}
 	key := umbrella.NormalizeIssueRef(issueURL)
 	for i := range all {

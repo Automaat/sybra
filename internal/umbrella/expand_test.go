@@ -21,7 +21,7 @@ import (
 // across every retry.
 func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	t.Parallel()
-	minBudget := plannerAttemptTimeout(0) * time.Duration(plannerJobAttempts*plannerGenerateSamples)
+	minBudget := PlannerAttemptTimeout * time.Duration(plannerJobAttempts*plannerGenerateSamples)
 	if got := plannerTimeout(0); got < minBudget {
 		t.Fatalf("plannerTimeout(0) = %v, want at least %v (room for %d planner samples x %d llmjob attempts)", got, minBudget, plannerGenerateSamples, plannerJobAttempts)
 	}
@@ -32,18 +32,30 @@ func TestPlannerTimeout_ScalesWithSubCountAndCoversEveryAttempt(t *testing.T) {
 	}
 }
 
-func TestPlannerAttemptTimeout_ScalesWithSubCount(t *testing.T) {
+// TestPlannerAttemptTimeout_ScalesWithPromptSize guards #1570: a fixed
+// per-attempt budget deadline-kills every attempt on a large umbrella, whose
+// prompt (and per-child JSON answer) grow with sub-issue count. The budget
+// must hold the floor for small prompts, grow with prompt size, and stay
+// capped so one attempt cannot hold the expansion slot indefinitely.
+func TestPlannerAttemptTimeout_ScalesWithPromptSize(t *testing.T) {
 	t.Parallel()
-	if got := plannerAttemptTimeout(0); got != PlannerAttemptTimeout {
-		t.Fatalf("plannerAttemptTimeout(0) = %v, want base %v", got, PlannerAttemptTimeout)
+	tests := []struct {
+		name      string
+		promptLen int
+		want      time.Duration
+	}{
+		{"empty prompt keeps floor", 0, PlannerAttemptTimeout},
+		{"below one chunk keeps floor", plannerAttemptPromptChunk - 1, PlannerAttemptTimeout},
+		{"each chunk buys a minute", 4 * plannerAttemptPromptChunk, PlannerAttemptTimeout + 4*time.Minute},
+		{"huge prompt is capped", 1 << 30, plannerAttemptTimeoutMax},
 	}
-	small := plannerAttemptTimeout(1)
-	large := plannerAttemptTimeout(38)
-	if large <= small {
-		t.Fatalf("plannerAttemptTimeout(38) = %v, want greater than plannerAttemptTimeout(1) = %v", large, small)
-	}
-	if large <= PlannerAttemptTimeout {
-		t.Fatalf("plannerAttemptTimeout(38) = %v, want greater than fixed floor %v", large, PlannerAttemptTimeout)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := plannerAttemptTimeout(tt.promptLen); got != tt.want {
+				t.Fatalf("plannerAttemptTimeout(%d) = %v, want %v", tt.promptLen, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -54,31 +66,6 @@ func newTestTaskManager(t *testing.T) *task.Manager {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
-}
-
-func TestExpandThreadsScaledAttemptTimeoutToPlanner(t *testing.T) {
-	restore := githubFetchUmbrellaForTest(t, github.Issue{
-		Title:      "umbrella",
-		URL:        "https://github.com/o/r/issues/100",
-		Repository: "o/r",
-	}, makeTestIssues(38))
-	defer restore()
-
-	tasks := newTestTaskManager(t)
-	var got time.Duration
-	run := func(ctx context.Context, _ string) (string, error) {
-		got = plannerAttemptTimeoutFromContext(ctx)
-		return "", errors.New("stop after observing context")
-	}
-
-	_, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
-	if err == nil {
-		t.Fatal("Expand succeeded unexpectedly with an intentionally failing runner")
-	}
-	want := plannerAttemptTimeout(38)
-	if got != want {
-		t.Fatalf("planner attempt timeout from context = %v, want %v", got, want)
-	}
 }
 
 func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {

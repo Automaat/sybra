@@ -25,33 +25,32 @@ import (
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
-// PlannerAttemptTimeout is the minimum budget for a single planner CLI
-// invocation. The actual per-attempt budget is plannerAttemptTimeout(subCount):
-// large umbrellas get extra time because one model attempt has to read and
-// order every sub-issue before llmjob can repair malformed JSON.
+// PlannerAttemptTimeout is the floor of the per-attempt planner budget. It is
+// passed to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets its
+// budget fresh, instead of splitting a single shared deadline across them
+// (see #1555). The effective budget scales with prompt size via
+// plannerAttemptTimeout: a fixed cap starves large umbrellas — a 38-child
+// umbrella's decompose was deadline-killed on every attempt at a fixed 4m,
+// looping the expansion forever (see #1570).
 const PlannerAttemptTimeout = 4 * time.Minute
 
-const plannerAttemptPerSubIssueTimeout = 10 * time.Second
+// plannerAttemptTimeoutMax caps the scaled per-attempt budget so one attempt
+// on a pathologically large umbrella cannot hold the expansion slot for an
+// hour.
+const plannerAttemptTimeoutMax = 30 * time.Minute
 
-type plannerAttemptTimeoutContextKey struct{}
+// plannerAttemptPromptChunk is how much prompt buys one extra minute of
+// per-attempt budget on top of the PlannerAttemptTimeout floor.
+const plannerAttemptPromptChunk = 2 << 10
 
-func withPlannerAttemptTimeout(ctx context.Context, timeout time.Duration) context.Context {
-	return context.WithValue(ctx, plannerAttemptTimeoutContextKey{}, timeout)
-}
-
-func plannerAttemptTimeoutFromContext(ctx context.Context) time.Duration {
-	timeout, _ := ctx.Value(plannerAttemptTimeoutContextKey{}).(time.Duration)
-	if timeout > 0 {
-		return timeout
-	}
-	return PlannerAttemptTimeout
-}
-
-func plannerAttemptTimeout(subCount int) time.Duration {
-	if subCount < 0 {
-		subCount = 0
-	}
-	return PlannerAttemptTimeout + time.Duration(subCount)*plannerAttemptPerSubIssueTimeout
+// plannerAttemptTimeout returns the per-attempt planner budget for a prompt of
+// promptLen bytes. Model time grows with both the prompt to read and the
+// answer to emit, and the answer (one change-surface JSON entry per sub-issue)
+// grows with the prompt listing them — so the budget scales with input size
+// rather than sub-issue count, which FallbackPlannerRunner cannot see.
+func plannerAttemptTimeout(promptLen int) time.Duration {
+	d := PlannerAttemptTimeout + time.Duration(promptLen/plannerAttemptPromptChunk)*time.Minute
+	return min(d, plannerAttemptTimeoutMax)
 }
 
 // plannerJobSpec is the llmjob.Spec FallbackPlannerRunner runs the
@@ -76,20 +75,22 @@ const plannerGenerateSamples = plannerAttempts * 2
 
 // plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
-// expansion indefinitely. It comfortably covers plannerGenerateSamples each
-// getting plannerJobAttempts full PlannerAttemptTimeout slices, plus headroom
-// that scales with subCount: a bigger umbrella means a longer prompt and
-// legitimately more model time, and a bigger expansion is more expensive to
-// have starved.
+// expansion indefinitely. It covers plannerGenerateSamples each getting
+// plannerJobAttempts full PlannerAttemptTimeout floor slices, plus per-sub
+// headroom sized so the prompt-scaled attempt budgets of a large umbrella
+// (see plannerAttemptTimeout) still fit: a bigger umbrella means a longer
+// prompt and legitimately more model time, and a bigger expansion is more
+// expensive to have starved.
 func plannerTimeout(subCount int) time.Duration {
-	return plannerAttemptTimeout(subCount)*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
-		time.Duration(subCount*plannerGenerateSamples)*5*time.Second
+	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
+		time.Duration(subCount*plannerGenerateSamples)*15*time.Second
 }
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
 // wedge the caller (notably the issue poll loop).
 const FetchTimeout = 60 * time.Second
 
+// fetchUmbrella is a test seam over the GitHub umbrella fetch.
 var fetchUmbrella = github.FetchUmbrella
 
 // fetchUmbrellaBounded fetches the umbrella under FetchTimeout, releasing the
@@ -178,8 +179,14 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		return Result{}, fmt.Errorf("scan existing tasks: %w", err)
 	}
 	// Short-circuit a full re-run: nothing to create means no (costly,
-	// stochastic) planner call.
+	// stochastic) planner call. Children can also materialize between failed
+	// planner runs (manual CLI expansion, another instance), so drop any
+	// recorded failure state here too — otherwise the tracker reads as
+	// expand-failing forever and trackerRollup never closes the umbrella.
 	if tracker.exists && allMaterialized(planSubs, existing) {
+		if err := clearExpandFailure(tasks, tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+		}
 		return Result{UmbrellaURL: umb.URL, Skipped: len(subs)}, nil
 	}
 	// A tracker parked human-required after ExpandFailThreshold consecutive
@@ -200,7 +207,6 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 
 	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(subs)))
 	defer cancel()
-	pctx = withPlannerAttemptTimeout(pctx, plannerAttemptTimeout(len(subs)))
 	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
 		if recErr := recordExpandFailure(tasks, umb, tracker, err); recErr != nil {
@@ -388,8 +394,9 @@ func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
 // stopped the same doomed planner call from re-running every ~5 minutes
 // indefinitely). When no tracker exists yet (the umbrella has never
 // successfully expanded even once), one is created here purely to hold the
-// failure state — materialize still owns creating the "real" tracker on a
-// later success, which simply overwrites this placeholder's fields.
+// failure state — a later successful materialize reuses it as the tracker,
+// backfilling only tags (max-parallel, degraded marker). The placeholder's
+// title/body persist, which is fine: they mirror the umbrella issue.
 func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existingTracker, cause error) error {
 	if !tracker.exists {
 		var err error
@@ -520,7 +527,7 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	}
 	return func(ctx context.Context, prompt string) (string, error) {
 		spec := plannerJobSpec
-		spec.AttemptTimeout = plannerAttemptTimeoutFromContext(ctx)
+		spec.AttemptTimeout = plannerAttemptTimeout(len(prompt))
 		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
