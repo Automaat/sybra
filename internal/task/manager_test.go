@@ -536,27 +536,58 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	})
 }
 
-// TestManagerOnExternalUpdateSkipsBusyLockInsteadOfBlocking is the defense-
-// in-depth regression for issue ddc0410c/#1569 item 2: even if a future
-// change reintroduces an emit-under-lock bug, OnExternalUpdate must not block
-// forever on the same goroutine that is already holding lockFor(id) — it
-// should back off and let the caller proceed.
-func TestManagerOnExternalUpdateSkipsBusyLockInsteadOfBlocking(t *testing.T) {
+// TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires guards the real
+// production contention shape from issue ddc0410c/#1569: a single coalesced
+// watcher event can land while an in-process writer still holds lockFor(id).
+// OnExternalUpdate must wait for that write to finish and then deliver the
+// external status transition, rather than dropping it on a failed TryLock.
+func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)
-	m.SetStatusChangeHook(func(string, string, string) {})
-
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	path := filepath.Join(m.store.dir, task.ID+".md")
 
+	var (
+		hookMu sync.Mutex
+		fired  []string
+	)
+	m.SetStatusChangeHook(func(_ string, from, to string) {
+		hookMu.Lock()
+		fired = append(fired, from+"->"+to)
+		hookMu.Unlock()
+	})
+
 	mu := m.lockFor(task.ID)
 	mu.Lock()
-	defer mu.Unlock()
 
-	runWithDeadlockGuard(t, "OnExternalUpdate", func() {
+	done := make(chan struct{})
+	go func() {
 		m.OnExternalUpdate(path)
-	})
+		close(done)
+	}()
+
+	body := "## Updated externally\nbody\n"
+	if _, _, err := m.store.UpdateWithPrev(task.ID, Update{
+		Status: Ptr(StatusInProgress),
+		Body:   &body,
+	}); err != nil {
+		mu.Unlock()
+		t.Fatalf("UpdateWithPrev: %v", err)
+	}
+	mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnExternalUpdate did not finish after writer released lock")
+	}
+
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if len(fired) != 1 || fired[0] != "todo->in-progress" {
+		t.Fatalf("hook calls = %v, want [todo->in-progress]", fired)
+	}
 }

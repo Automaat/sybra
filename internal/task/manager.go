@@ -1,7 +1,6 @@
 package task
 
 import (
-	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -112,19 +111,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 	}
 
 	mu := m.lockFor(id)
-	// TryLock, not Lock: every Manager write path now releases lockFor(id)
-	// before emitting (see AppendBody/Delete/UpdateFn/AddRunWithStatus), so
-	// this lock is free by the time an in-process emit reaches here. If a
-	// future change reintroduces an emit-under-lock, blocking here would
-	// re-wedge the caller's goroutine on itself (and, since this same path
-	// serves the fsnotify watcher, freeze external-update processing for
-	// every task). Skipping this one dedupe-check instead of deadlocking is
-	// safe: the writer's own state is already durable, and the next genuine
-	// external file event still resolves the status via a fresh TryLock.
-	if !mu.TryLock() {
-		slog.Default().Warn("task.OnExternalUpdate.lock_busy", "id", id)
-		return
-	}
+	mu.Lock()
 	// Only Status is needed here; use the parse-only read to avoid the
 	// per-call sidecar dir scan on every external file change.
 	t, err := m.store.read(id)
