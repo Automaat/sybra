@@ -29,6 +29,7 @@ func mustNewManager(tb testing.TB, ctx context.Context, emit EmitFunc, logger *s
 // individually. Tests exercising the resolver itself (missing/erroring/empty/
 // non-directory) pass an explicit ManagerConfig.SandboxHome that overrides this.
 func testSandboxHome(tb testing.TB) func(taskID string) (string, error) {
+	tb.Helper()
 	dir := tb.TempDir()
 	return func(string) (string, error) { return dir, nil }
 }

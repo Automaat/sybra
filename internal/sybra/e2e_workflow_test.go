@@ -199,7 +199,8 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	var env *e2eEnv
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		ControlHome: taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			env.pendingCompletions.Add(1)
 			defer env.pendingCompletions.Add(-1)
@@ -3222,7 +3223,8 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	logDir := t.TempDir()
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		ControlHome: env.taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			var result string
 			output := ag.Output()
