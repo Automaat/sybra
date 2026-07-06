@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/sse"
@@ -185,6 +187,35 @@ func TestServerHandlerServesSPAWithoutToken(t *testing.T) {
 	}
 	if body := rr.Body.String(); body != "ok" {
 		t.Fatalf("body = %q, want %q", body, "ok")
+	}
+}
+
+func TestSSEHandlerNeverSetsWildcardCORS(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "secret"
+	cfg.Server.AllowedOrigins = []string{"https://allowed.example"}
+
+	app := sybra.NewApp(testLogger(), nil, cfg)
+	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
+
+	for _, path := range []string{"/events?token=secret", "/api/events/task:updated?token=secret"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		req := httptest.NewRequest(http.MethodGet, path, http.NoBody).WithContext(ctx)
+		req.Header.Set("Origin", "https://evil.example")
+		rr := httptest.NewRecorder()
+
+		done := make(chan struct{})
+		go func() {
+			handler.ServeHTTP(rr, req)
+			close(done)
+		}()
+		<-time.After(20 * time.Millisecond)
+		cancel()
+		<-done
+
+		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("%s: Access-Control-Allow-Origin = %q, want empty for an unlisted origin", path, got)
+		}
 	}
 }
 
