@@ -68,8 +68,12 @@ evaluation:
   enabled: true
   interval_hours: 24
   window_days: 30
+server:
+  auth_token: smoke-test-token
 YAML
 ```
+
+A pinned `server.auth_token` keeps the harness's `curl` calls reproducible — without it, sybra-server auto-generates a random token on first start (see `internal/config.applyServerDefaults`) and the value would only be discoverable by re-reading `$TMP/home/config.yaml` after the fact.
 
 Create fake CLIs:
 
@@ -120,13 +124,15 @@ The server exposes allowlisted bound methods as:
 POST /api/{Service}/{Method}
 ```
 
-Request bodies are JSON arrays of positional arguments.
+Request bodies are JSON arrays of positional arguments. Every path except `GET /health` requires
+`Authorization: Bearer <server.auth_token>` (see `cmd/sybra-server`'s `authMiddleware`) — the harness's
+config above pins this to `smoke-test-token`.
 
 Examples:
 
 ```bash
 api() {
-  curl -fsS -H 'Content-Type: application/json' \
+  curl -fsS -H 'Content-Type: application/json' -H 'Authorization: Bearer smoke-test-token' \
     -X POST "http://127.0.0.1:$PORT/api/$1/$2" \
     --data "$3"
 }

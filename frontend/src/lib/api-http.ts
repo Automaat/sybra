@@ -17,12 +17,47 @@ import type { Digest, Status as LearningDigestStatus } from '../../bindings/gith
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
 
+// sybra-server gates every request (except GET /health) behind a shared
+// bearer token (see cmd/sybra-server authMiddleware). A build-time default
+// can be baked in via VITE_API_TOKEN; otherwise the token is entered once at
+// runtime and cached in localStorage so it survives reloads.
+const TOKEN_STORAGE_KEY = 'sybra.apiToken'
+
+export function getApiToken(): string {
+  if (typeof localStorage === 'undefined') return (import.meta.env.VITE_API_TOKEN as string | undefined) ?? ''
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || (import.meta.env.VITE_API_TOKEN as string | undefined) || ''
+}
+
+export function setApiToken(token: string): void {
+  if (typeof localStorage === 'undefined') return
+  localStorage.setItem(TOKEN_STORAGE_KEY, token)
+}
+
+// promptForApiToken asks the operator for the sybra-server auth token once
+// per session (retrieved via `cat ~/.sybra/config.yaml` on the server host,
+// key `server.auth_token`). Returns '' if the user cancels.
+function promptForApiToken(): string {
+  if (typeof window === 'undefined') return ''
+  const entered = window.prompt('Sybra server auth token required (see server.auth_token in config.yaml):')
+  if (!entered) return ''
+  setApiToken(entered)
+  return entered
+}
+
 async function call<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
-  const res = await fetch(`${API_BASE}/${service}/${method}`, {
+  const doFetch = () => fetch(`${API_BASE}/${service}/${method}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(getApiToken() ? { Authorization: `Bearer ${getApiToken()}` } : {}),
+    },
     body: args.length > 0 ? JSON.stringify(args) : undefined,
   })
+
+  let res = await doFetch()
+  if (res.status === 401 && promptForApiToken()) {
+    res = await doFetch()
+  }
   if (!res.ok) {
     const rawText = await res.text()
     // web-mode only: desktop Wails IPC errors never reach this path
@@ -165,18 +200,23 @@ export function StartWorkflow(arg1: string, arg2: string): Promise<void> { retur
 
 // Shared EventSource for the multiplexed /events SSE stream.
 // All EventsOn subscriptions funnel through a single connection.
-const EVENTS_URL = (() => {
+// EventSource cannot set an Authorization header, so the token travels as a
+// query param instead — the server's authMiddleware accepts either form, but
+// only for SSE paths (see isSSEPath in cmd/sybra-server).
+function eventsURL(): string {
   // Strip /api suffix to get server root, then append /events.
   const base = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
-  return base.replace(/\/api$/, '') + '/events'
-})()
+  const url = base.replace(/\/api$/, '') + '/events'
+  const token = getApiToken()
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url
+}
 
 let _sharedES: EventSource | null = null
 let _subCount = 0
 
 function getSharedES(): EventSource {
   if (!_sharedES) {
-    _sharedES = new EventSource(EVENTS_URL)
+    _sharedES = new EventSource(eventsURL())
   }
   return _sharedES
 }

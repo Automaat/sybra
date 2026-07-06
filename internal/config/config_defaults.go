@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -544,19 +546,68 @@ func load(opts loadOptions) (*Config, error) {
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
+	serverTokenGenerated := applyServerDefaults(cfg)
 
-	// Persist a builtin A/B experiment reconcile immediately so the refreshed
-	// weights survive a restart instead of only living in this in-memory cfg
-	// until something else happens to call Save(). Only for a config file that
-	// already existed — a brand-new install seeds def.Experiments directly and
-	// writeDefaultConfig already wrote the (comment-only) file above.
+	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
+
+	return cfg, nil
+}
+
+// persistLoadReconciles writes back in-memory-only changes made during load()
+// that must survive a restart: the ab_testing builtin reconcile (existing
+// files only) and a freshly generated server auth token (even for a
+// brand-new install — sybra-server reads Server.AuthToken once at startup,
+// so an unsaved token would silently rotate on every restart and lock
+// operators out).
+func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
 	if opts.persistABTestingReconcile && existingFile && abTestingReconciled {
 		if saveErr := cfg.Save(); saveErr != nil {
 			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
 		}
 	}
+	if opts.persistABTestingReconcile && serverTokenGenerated {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
+		}
+	}
+}
 
-	return cfg, nil
+// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
+// env vars win when set, otherwise a missing token is auto-generated so the
+// HTTP control plane always fails closed instead of silently running
+// unauthenticated. Returns true when a new token was generated (the caller
+// must persist it — see load()).
+func applyServerDefaults(cfg *Config) bool {
+	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
+		cfg.Server.AuthToken = v
+	}
+	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
+		origins := strings.Split(v, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		cfg.Server.AllowedOrigins = origins
+	}
+	if cfg.Server.AuthToken != "" {
+		return false
+	}
+	token, err := generateAuthToken()
+	if err != nil {
+		slog.Warn("config: failed to generate server auth token", "err", err)
+		return false
+	}
+	cfg.Server.AuthToken = token
+	return true
+}
+
+// generateAuthToken returns a random 256-bit hex-encoded shared secret for
+// sybra-server's bearer-token auth.
+func generateAuthToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // Review-hold modes control how far the hold extends to the fix-review agent's

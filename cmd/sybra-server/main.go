@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -104,8 +105,12 @@ func run() (int, error) {
 
 	mux := buildMux(logger, broker, app)
 
-	// CORS for dev (permissive; tighten for production).
-	handler := cspMiddleware(corsMiddleware(mux))
+	// authMiddleware gates everything except GET /health behind the
+	// shared-secret bearer token; corsMiddleware only echoes CORS headers
+	// back for origins on the configured allowlist (no wildcard). Order
+	// matters: CORS must sit outside auth so preflight OPTIONS requests
+	// (which never carry Authorization) are answered before reaching it.
+	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
 	port := os.Getenv("SYBRA_PORT")
 	if port == "" {
@@ -243,17 +248,78 @@ func cspMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// corsMiddleware echoes CORS headers back only for an Origin present in
+// allowedOrigins (exact match) — no wildcard. Requests without a matching
+// Origin still reach next (non-browser callers don't need CORS headers at
+// all), they just won't be readable cross-origin from an unlisted site.
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = struct{}{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if _, ok := allowed[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			}
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authMiddleware gates every request behind a shared-secret bearer token,
+// except GET /health (container-orchestration liveness probes have no way
+// to carry a header). Browser EventSource cannot set request headers, so the
+// SSE endpoints additionally accept the token as a `?token=` query param.
+// A blank token fails every request closed rather than treating it as "auth
+// disabled" — config.Load always generates one, so an empty value here means
+// misconfiguration, not intent.
+func authMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !requestAuthorized(r, token) {
+			logger.Warn("server.auth.denied", "path", r.URL.Path, "remote", r.RemoteAddr)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="sybra"`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprint(w, `{"error":"unauthorized","code":"unauthorized"}`)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return false
+	}
+	if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tokensEqual(bearer, token) {
+		return true
+	}
+	if isSSEPath(r.URL.Path) {
+		if qt := r.URL.Query().Get("token"); qt != "" && tokensEqual(qt, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSSEPath(p string) bool {
+	return p == "/events" || strings.HasPrefix(p, "/api/events/")
+}
+
+func tokensEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 type slogWriter struct{ logger *slog.Logger }

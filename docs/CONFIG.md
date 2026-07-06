@@ -41,6 +41,7 @@ machine.
 | `ab_testing` | `abtest.Config` |  |  |
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
+| `server` | `ServerConfig` | _(see below)_ |  |
 | `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
 | `browser` | `BrowserConfig` | _(see below)_ |  |
 | `project_types` | `[]string` |  |  |
@@ -448,6 +449,21 @@ Prometheus-format output for external scrapers.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `metrics.enabled` | `bool` |  |  |
+
+## ServerConfig (`server`)
+
+ServerConfig controls sybra-server's HTTP control-plane authentication and
+CORS policy. AuthToken gates every request except GET /health behind a
+shared-secret bearer token: callers must send
+`Authorization: Bearer <token>`, or, for the SSE endpoints only (browser
+EventSource cannot set request headers), a `?token=<token>` query param.
+AuthToken is auto-generated and persisted to config.yaml on first run if
+left empty — see applyServerDefaults.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `server.auth_token` | `string` | `[redacted]` |  |
+| `server.allowed_origins` | `[]string` |  |  |
 
 ## AutoUpdateConfig (`auto_update`)
 
