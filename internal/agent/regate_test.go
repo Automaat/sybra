@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ func TestRegateForTurn_HealthyCurrentNoOp(t *testing.T) {
 	a.SetSessionID("sess-keep")
 	cfg := RunConfig{Provider: "codex", TaskID: "t1"}
 
-	got, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestRegateForTurn_FailoverToHealthyPeer(t *testing.T) {
 	a.SetSessionFilePath("/tmp/old-session.jsonl")
 	cfg := RunConfig{Provider: "codex", TaskID: "t2"}
 
-	got, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestRegateForTurn_NoPerTurnPeerRejected(t *testing.T) {
 	a := &Agent{ID: "a3", Provider: "codex"}
 	cfg := RunConfig{Provider: "codex", TaskID: "t3"}
 
-	got, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err == nil {
 		t.Fatal("expected error: claude is not a valid per-turn hot-swap target")
 	}
@@ -148,7 +149,7 @@ func TestRegateForTurn_SelfCountAware(t *testing.T) {
 	a := &Agent{ID: "a4", Provider: "codex"}
 	cfg := RunConfig{Provider: "codex"}
 
-	_, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	_, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestRegateForTurn_UsesAgentProviderNotStaleCfg(t *testing.T) {
 	a := &Agent{ID: "a5", Provider: "copilot"}
 	cfg := RunConfig{Provider: "codex"}
 
-	got, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestRegateForTurn_LiveByProviderMultiAgentBucket(t *testing.T) {
 	m.mu.Unlock()
 
 	a := &Agent{ID: "a6", Provider: "codex"}
-	_, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex"})
+	_, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestRegateForTurn_LimitGateCappedFailsOverToPeer(t *testing.T) {
 	}
 
 	a := &Agent{ID: "a7", Provider: "codex"}
-	got, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex"})
+	got, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestRegateForTurn_PersistsSwitchToRegistry(t *testing.T) {
 	a := &Agent{ID: "a8", TaskID: "t8", Provider: "codex", Mode: "interactive"}
 	a.SetSessionID("sess-old")
 
-	if _, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t8"}); err != nil || !switched {
+	if _, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t8"}, nil); err != nil || !switched {
 		t.Fatalf("regateForTurn: switched=%v err=%v", switched, err)
 	}
 
@@ -289,6 +290,35 @@ func TestRegateForTurn_PersistsSwitchToRegistry(t *testing.T) {
 	}
 }
 
+// TestRegateForTurn_WritesMarkerBeforePersistingSwitch verifies the
+// convoProviderMarker line lands in the log before the switch is persisted to
+// the registry, closing the crash window where a restart between the two
+// would leave rehydratePerTurnConvoFromLog with a persisted provider but no
+// marker to bound the pre-switch segment.
+func TestRegateForTurn_WritesMarkerBeforePersistingSwitch(t *testing.T) {
+	regDir := t.TempDir()
+	m := mustNewManager(t, t.Context(), func(string, any) {}, discardLogger(), t.TempDir(), ManagerConfig{SurviveRestartDir: regDir})
+	m.SetHealthGate(&fakeGate{
+		healthy: map[string]bool{"codex": false, "copilot": true},
+		reasons: map[string]string{"codex": "rate_limited"},
+	})
+
+	a := &Agent{ID: "a9", TaskID: "t9", Provider: "codex", Mode: "interactive"}
+	var buf bytes.Buffer
+
+	if _, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t9"}, &buf); err != nil || !switched {
+		t.Fatalf("regateForTurn: switched=%v err=%v", switched, err)
+	}
+
+	provider, ok := parseProviderMarkerLine(bytes.TrimRight(buf.Bytes(), "\n"))
+	if !ok {
+		t.Fatalf("expected a marker line to be written, got %q", buf.String())
+	}
+	if provider != "copilot" {
+		t.Errorf("marker provider = %q, want copilot", provider)
+	}
+}
+
 // TestRegateForTurn_PreservesRequirePermissionsAcrossSwitch verifies a
 // provider switch carries the run's sandbox/approval posture
 // (RequirePermissions) forward unchanged, so a sandboxed chat stays
@@ -302,7 +332,7 @@ func TestRegateForTurn_PreservesRequirePermissionsAcrossSwitch(t *testing.T) {
 	a := &Agent{ID: "perm1", Provider: "copilot"}
 	cfg := RunConfig{Provider: "copilot", RequirePermissions: true}
 
-	got, switched, err := m.regateForTurn(t.Context(), a, cfg)
+	got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
 	if err != nil || !switched {
 		t.Fatalf("switched=%v err=%v", switched, err)
 	}
@@ -396,10 +426,7 @@ func TestRehydratePerTurnConvoFromLog_MixedProviderMarkers(t *testing.T) {
 	lines = append(lines, marshalMarkerLine(t, "copilot"))
 	lines = append(lines, `{"type":"assistant.message","data":{"content":"hello"}}`)
 	lines = append(lines, `{"type":"result","sessionId":"cop-9"}`)
-	content := ""
-	for _, l := range lines {
-		content += l + "\n"
-	}
+	content := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

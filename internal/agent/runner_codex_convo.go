@@ -196,17 +196,18 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 	prompt := cfg.Prompt
 	for {
 		if !resumeWait {
-			updatedCfg, switched, regateErr := m.regateForTurn(ctx, a, cfg)
+			updatedCfg, _, regateErr := m.regateForTurn(ctx, a, cfg, logWriter)
 			if regateErr != nil {
-				m.logger.Warn("agent.convo.regate.blocked", "id", a.ID, "provider", a.Provider, "err", regateErr)
+				m.logger.Warn("agent.convo.regate.blocked", "id", a.ID, "task", a.TaskID, "provider", a.Provider, "err", regateErr)
 				a.SetExitErr(errProviderRateLimited)
+				select {
+				case a.promptChannel() <- prompt:
+				default:
+				}
 				if shutdownSurvive() {
 					survived = true
 				}
 				return
-			}
-			if switched {
-				writeProviderMarkerLine(logWriter, updatedCfg.Provider)
 			}
 			cfg = updatedCfg
 
@@ -479,6 +480,11 @@ func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
 	return prov.ParseConvoLine(line)
 }
 
+// convoProviderMarkerVersion identifies the marker line schema. Bump it if a
+// field is ever added/changed so old markers (version 0, absent) can still be
+// told apart from new ones during rehydration.
+const convoProviderMarkerVersion = 1
+
 // convoProviderMarker is a durable, out-of-band log line that records which
 // provider's schema parses the lines following it. A mid-run provider switch
 // (regateForTurn) writes one at the switch boundary, and a fresh log gets one
@@ -489,6 +495,7 @@ func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
 // genuine codex/copilot JSON line.
 type convoProviderMarker struct {
 	Marker   string `json:"__sybra_provider_marker__"`
+	Version  int    `json:"version"`
 	Provider string `json:"provider"`
 }
 
@@ -499,7 +506,7 @@ func writeProviderMarkerLine(w io.Writer, provider string) {
 	if w == nil {
 		return
 	}
-	data, err := json.Marshal(convoProviderMarker{Marker: "provider_switch", Provider: provider})
+	data, err := json.Marshal(convoProviderMarker{Marker: "provider_switch", Version: convoProviderMarkerVersion, Provider: provider})
 	if err != nil {
 		return
 	}
@@ -508,7 +515,8 @@ func writeProviderMarkerLine(w io.Writer, provider string) {
 }
 
 // parseProviderMarkerLine reports whether line is a convoProviderMarker and,
-// if so, the provider it names.
+// if so, the provider it names. Version is not yet enforced (only version 1
+// exists), but is parsed so a future schema change can branch on it.
 func parseProviderMarkerLine(line []byte) (string, bool) {
 	var mark convoProviderMarker
 	if err := json.Unmarshal(line, &mark); err != nil {

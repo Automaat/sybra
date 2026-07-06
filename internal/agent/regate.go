@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 )
 
@@ -27,7 +28,13 @@ import (
 // set to "rate_limit" so the existing isRateLimitedRun /
 // RescheduleRateLimitedAgent reschedule-and-park behavior stays reachable,
 // exactly as it would for an in-flight run that hit the same cap.
-func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig) (RunConfig, bool, error) {
+//
+// logWriter, if non-nil, receives the convoProviderMarker line for a switch
+// before the registry is persisted (saveRegistry below) — writing the
+// marker first closes the crash window where a restart between a persisted
+// switch and a not-yet-written marker would make rehydratePerTurnConvoFromLog
+// parse the entire pre-switch segment under the new provider's schema.
+func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig, logWriter io.Writer) (RunConfig, bool, error) {
 	current := a.Provider
 
 	m.mu.RLock()
@@ -106,6 +113,11 @@ func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig) (R
 
 	cfg.Provider = alt
 	cfg.provider = altProv
+
+	// Marker must land before the registry write below: on a crash between
+	// the two, rehydration must find a marker for every persisted provider
+	// change, never a persisted provider with an unmarked log segment.
+	writeProviderMarkerLine(logWriter, alt)
 
 	if m.survives() {
 		m.saveRegistry(ctx, a)

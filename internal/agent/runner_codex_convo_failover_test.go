@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,10 +15,12 @@ import (
 // real provider.
 func writeFakePerTurnBinary(t *testing.T, dir, name string, lines ...string) {
 	t.Helper()
-	script := "#!/bin/sh\n"
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
 	for _, l := range lines {
-		script += "printf '%s\\n' " + shQuote(l) + "\n"
+		b.WriteString("printf '%s\\n' " + shQuote(l) + "\n")
 	}
+	script := b.String()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake %s: %v", name, err)
@@ -27,15 +30,15 @@ func writeFakePerTurnBinary(t *testing.T, dir, name string, lines ...string) {
 // shQuote wraps s in single quotes for embedding in a generated shell script,
 // escaping any literal single quotes it contains.
 func shQuote(s string) string {
-	escaped := ""
+	var b strings.Builder
 	for _, r := range s {
 		if r == '\'' {
-			escaped += `'\''`
+			b.WriteString(`'\''`)
 		} else {
-			escaped += string(r)
+			b.WriteRune(r)
 		}
 	}
-	return "'" + escaped + "'"
+	return "'" + b.String() + "'"
 }
 
 func waitForAgentState(t *testing.T, a *Agent, want State, timeout time.Duration) {
@@ -192,5 +195,16 @@ func TestRunPerTurnConversational_NoPeerParksInstead(t *testing.T) {
 	}
 	if a.GetProvider() != "codex" {
 		t.Errorf("provider must be unchanged when no switch happens, got %q", a.GetProvider())
+	}
+
+	// The "continue" follow-up dequeued from the prompt channel for this turn
+	// must not vanish on a blocked regate — it is requeued so it isn't lost.
+	select {
+	case got := <-a.promptChannel():
+		if got != "continue" {
+			t.Errorf("requeued prompt = %q, want %q", got, "continue")
+		}
+	default:
+		t.Fatal("expected the in-flight prompt to be requeued on a blocked regate")
 	}
 }
