@@ -216,6 +216,9 @@ let _subCount = 0
 
 function getSharedES(): EventSource {
   if (!_sharedES) {
+    if (!getApiToken() && !promptForApiToken()) {
+      throw new Error('sybra server auth token required for live updates')
+    }
     _sharedES = new EventSource(eventsURL())
   }
   return _sharedES

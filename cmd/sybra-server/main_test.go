@@ -129,6 +129,22 @@ func TestCorsMiddlewareEchoesAllowedOrigin(t *testing.T) {
 	}
 }
 
+func TestCorsMiddlewarePreservesExistingVaryHeaders(t *testing.T) {
+	h := corsMiddleware([]string{"https://allowed.example"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Vary", "Accept-Encoding")
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
+	req.Header.Set("Origin", "https://allowed.example")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	got := rr.Result().Header.Values("Vary")
+	if len(got) != 2 || got[0] != "Origin" || got[1] != "Accept-Encoding" {
+		t.Fatalf("Vary headers = %q, want [Origin Accept-Encoding]", got)
+	}
+}
+
 func TestCorsMiddlewareOmitsHeadersForUnlistedOrigin(t *testing.T) {
 	h := corsMiddleware([]string{"https://allowed.example"}, okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
