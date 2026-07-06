@@ -310,6 +310,8 @@ jobs:
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
+          server:
+            auth_token: e2e-test-token
           monitor:
             stuck_human_hours: 99999
           EOF
@@ -318,6 +320,8 @@ jobs:
 
       - name: Build web frontend
         run: cd frontend && npm run build:web
+        env:
+          VITE_API_TOKEN: e2e-test-token
 
       - name: Build sybra-server
         run: go build -o bin/sybra-server ./cmd/sybra-server

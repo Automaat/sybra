@@ -1944,6 +1944,9 @@ func redactedConfig(cfg *config.Config) config.Config {
 	if out.Todoist.APIToken != "" {
 		out.Todoist.APIToken = "[redacted]"
 	}
+	if out.Server.AuthToken != "" {
+		out.Server.AuthToken = "[redacted]"
+	}
 	return out
 }
 
