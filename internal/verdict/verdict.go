@@ -36,7 +36,14 @@ const (
 
 // Schema is the JSON Schema passed to --json-schema for verdict-producing
 // headless roles (see agent.RunConfig.OutputSchema).
-const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug"]},"summary":{"type":"string"},"issue_title":{"type":"string"},"issue_body":{"type":"string"},"issue_labels":{"type":"array","items":{"type":"string"}}},"required":["decision","summary"],"additionalProperties":false}`
+//
+// Codex enforces OpenAI strict structured-output rules: with
+// additionalProperties:false, every key in properties must appear in
+// required. Optional fields (issue_* — populated only for sybra_bug) are
+// therefore modeled as nullable and listed as required; the model emits null
+// for them on a human verdict. Go decodes JSON null into the zero value
+// (empty string / nil slice), so normalize() sees them as absent.
+const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum":["human","sybra_bug"]},"summary":{"type":"string"},"issue_title":{"type":["string","null"]},"issue_body":{"type":["string","null"]},"issue_labels":{"type":["array","null"],"items":{"type":"string"}}},"required":["decision","summary","issue_title","issue_body","issue_labels"],"additionalProperties":false}`
 
 var fenceRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
 

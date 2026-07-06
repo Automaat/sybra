@@ -787,8 +787,8 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	b.WriteString("- `summary`: one-sentence diagnosis\n")
 	b.WriteString("- `issue_title` (sybra_bug only): \"type(scope): short title\", must follow Sybra conventional commit format (e.g. fix(workflow): ...)\n")
 	b.WriteString("- `issue_body` (sybra_bug only): \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\"\n")
-	b.WriteString("- `issue_labels` (sybra_bug only, optional): array of label strings\n\n")
-	b.WriteString("If decision=human, omit issue_* fields.\n")
+	b.WriteString("- `issue_labels` (sybra_bug only): array of label strings\n\n")
+	b.WriteString("If decision=human, set every issue_* field to null (the schema requires the keys to be present).\n")
 	return b.String()
 }
 
