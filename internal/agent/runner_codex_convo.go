@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
 	"time"
 
@@ -273,8 +272,7 @@ func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, pro
 		a.SetError("provider", err.Error())
 		return false
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	configureGracefulShutdown(cmd)
+	cmd := newProviderCmd(ctx, &cfg, false, bin, args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}

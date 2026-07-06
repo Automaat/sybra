@@ -36,9 +36,7 @@ func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg Ru
 	}
 
 	args := m.buildConvoArgs(a, cfg)
-	// no Context: a cancelled ctx must not kill a detached child
-	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
-	configureDetached(cmd)
+	cmd := newProviderCmd(ctx, &cfg, true, "claude", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
@@ -191,9 +189,7 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 // empty, which is how reattach recognizes a one-shot (tail-only).
 func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
 	args := m.buildOneShotConvoArgs(a, cfg)
-	// no Context: a cancelled ctx must not kill a detached child
-	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
-	configureDetached(cmd)
+	cmd := newProviderCmd(ctx, &cfg, true, "claude", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
