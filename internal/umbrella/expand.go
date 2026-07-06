@@ -33,11 +33,11 @@ const PlannerAttemptTimeout = 4 * time.Minute
 // plannerAttemptTimeoutMax caps the scaled per-attempt budget so one attempt
 // on a pathologically large umbrella cannot hold the expansion slot for an
 // hour.
-const plannerAttemptTimeoutMax = 20 * time.Minute
+const plannerAttemptTimeoutMax = 30 * time.Minute
 
 // plannerAttemptPromptChunk is how much prompt buys one extra minute of
 // per-attempt budget on top of the PlannerAttemptTimeout floor.
-const plannerAttemptPromptChunk = 8 << 10
+const plannerAttemptPromptChunk = 2 << 10
 
 // plannerAttemptTimeout returns the per-attempt planner budget for a prompt of
 // promptLen bytes. Model time grows with both the prompt to read and the
