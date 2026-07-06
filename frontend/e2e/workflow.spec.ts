@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readdir, unlink, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+import { isolatedSybraHome } from './lib/sybra-home'
+
+const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 
 const FIXTURE_FILES = new Set([
