@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 )
@@ -260,6 +261,52 @@ func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	}
 	if tasks[0].PlanContract != contract {
 		t.Fatalf("PlanContract = %q, want %q", tasks[0].PlanContract, contract)
+	}
+}
+
+// TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit reproduces the
+// production wiring in app.go's emit closure, which routes every
+// task:updated event straight back into Manager.OnExternalUpdate on the
+// same goroutine (so cross-process file writes and in-process updates share
+// one status-change path). AppendBody used to fire that emit while still
+// holding lockFor(id) via a deferred unlock, so the re-entrant
+// OnExternalUpdate call blocked forever on the same non-reentrant mutex —
+// the goroutine that wedged issue #1567 (a FAIL test-runner verdict calls
+// AppendBody via appendTestFailureReport).
+func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+
+	created, err := m.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// OnExternalUpdate only takes lockFor(id) when a status-change hook is
+	// registered — without one it returns before locking and the reentrant
+	// path this test targets would never be exercised.
+	m.SetStatusChangeHook(func(string, string, string) {})
+	m.emitter = EmitterFunc(func(event string, data any) {
+		if event != events.TaskUpdated {
+			return
+		}
+		if path, ok := data.(string); ok {
+			m.OnExternalUpdate(path)
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, appendErr := m.AppendBody(created.ID, "note")
+		done <- appendErr
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AppendBody: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AppendBody deadlocked on self-routed emit")
 	}
 }
 
