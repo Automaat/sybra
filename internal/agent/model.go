@@ -498,6 +498,17 @@ func (a *Agent) PendingPromptCount() int {
 	return len(a.convo.pendingPrompts)
 }
 
+// RestorePendingPrompt pushes text back onto the front of the pending queue.
+// Used by the turn-boundary chokepoint (advanceClaudeTurn) to put a
+// just-reserved prompt back where it came from when the turn cannot proceed
+// (no healthy peer, write failure, cancellation), so it is retried in order
+// rather than lost or reordered behind prompts queued afterward.
+func (a *Agent) RestorePendingPrompt(text string) {
+	a.mu.Lock()
+	a.convo.pendingPrompts = append([]string{text}, a.convo.pendingPrompts...)
+	a.mu.Unlock()
+}
+
 // IncTurnCount increments the turn counter and returns the new value.
 func (a *Agent) IncTurnCount() int {
 	a.mu.Lock()

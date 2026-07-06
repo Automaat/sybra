@@ -227,6 +227,19 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		}
 		resumeWait = false
 
+		// Drain any prompts still queued on the Agent before blocking on the
+		// prompt channel. This carries a persistent-Claude session's queued
+		// follow-ups across a mid-run handoff (completeConvoHandoff hands off
+		// only the prompt that triggered the switch; any prompts queued
+		// before it are still sitting in this same *Agent's pending queue)
+		// so they replay here in original order instead of being stranded.
+		if next, ok := a.PopPendingPrompt(); ok {
+			a.SetState(StateRunning)
+			m.emit(events.AgentState(a.ID), a)
+			prompt = next
+			continue
+		}
+
 		ch := a.promptChannel()
 
 		select {

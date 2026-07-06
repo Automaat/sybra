@@ -445,19 +445,20 @@ func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, s
 		m.logger.Info("agent.convo.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow)
 		// Drain any prompts queued mid-turn before flipping to paused. Each
 		// queued prompt fires the next turn back-to-back so the user's
-		// chat-window queue executes in order without manual re-trigger.
+		// chat-window queue executes in order without manual re-trigger. This
+		// turn boundary must re-gate exactly like SendMessage's idle path —
+		// otherwise a provider that capped while the turn was running would
+		// still receive the queued follow-up on its stranded stdin.
 		if next, ok := a.PopPendingPrompt(); ok {
-			if err := m.writeUserMessage(a, next); err != nil {
+			if err := m.advanceClaudeTurn(ctx, a, next); err != nil {
 				m.logger.Error("agent.convo.flush-queue", "id", a.ID, "err", err)
-				a.SetState(StatePaused)
 			} else {
-				a.SetState(StateRunning)
 				m.logger.Info("agent.convo.queue-flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 			}
 		} else {
 			a.SetState(StatePaused)
+			m.emit(events.AgentState(a.ID), a)
 		}
-		m.emit(events.AgentState(a.ID), a)
 		// One-shot runs close stdin so the claude process sees EOF and exits.
 		if oneShot {
 			m.logger.Info("agent.convo.one-shot-close", "id", a.ID)
@@ -493,6 +494,63 @@ func (m *Manager) writeUserMessage(a *Agent, text string) error {
 	return a.convo.writeStdin(data)
 }
 
+// claudeRegateConfig builds the RunConfig used to re-gate a persistent
+// Claude agent at a turn boundary (SendMessage's idle path and
+// advanceClaudeTurn's queued-flush path share this so both judge/switch
+// provider health from identical agent state).
+func claudeRegateConfig(a *Agent) RunConfig {
+	return RunConfig{
+		TaskID:             a.TaskID,
+		Dir:                a.sessionCWD,
+		Provider:           a.Provider,
+		Model:              a.Model,
+		RequirePermissions: a.requirePermissions,
+	}
+}
+
+// advanceClaudeTurn is the single persistent-Claude turn-boundary
+// chokepoint: given the next prompt to send — either SendMessage's idle
+// turn boundary or a queued follow-up flushed after a "result" event — it
+// re-gates provider health before writing to Claude's stdin, so a provider
+// that capped since the last turn does not strand this session. On any
+// outcome that cannot proceed (no healthy peer, write failure, cancellation,
+// stopped agent), prompt is restored to the front of the pending queue so a
+// later attempt retries it in order instead of losing or reordering it.
+func (m *Manager) advanceClaudeTurn(ctx context.Context, a *Agent, prompt string) error {
+	if a.WasStopped() || ctx.Err() != nil {
+		a.RestorePendingPrompt(prompt)
+		return fmt.Errorf("agent %s: not advancing turn, stopped or canceled", a.ID)
+	}
+
+	cfg := claudeRegateConfig(a)
+	updatedCfg, switched, regateErr := m.regateBeforeClaudeTurn(ctx, a, cfg)
+	if regateErr != nil {
+		// No healthy peer: regate already set a.SetError("rate_limit", ...).
+		// Restore the prompt so it is retried (not lost) once a peer or
+		// Claude itself recovers, and park the session instead of stranding
+		// it mid-write.
+		a.RestorePendingPrompt(prompt)
+		a.SetState(StatePaused)
+		m.emit(events.AgentState(a.ID), a)
+		m.logger.Warn("agent.convo.regate.blocked", "id", a.ID, "task", a.TaskID, "err", regateErr)
+		return regateErr
+	}
+	if switched {
+		m.beginConvoHandoff(a, updatedCfg, prompt)
+		return nil
+	}
+	if err := m.writeUserMessage(a, prompt); err != nil {
+		a.RestorePendingPrompt(prompt)
+		a.SetState(StatePaused)
+		m.emit(events.AgentState(a.ID), a)
+		m.logger.Error("agent.convo.write", "id", a.ID, "err", err)
+		return err
+	}
+	a.SetState(StateRunning)
+	m.emit(events.AgentState(a.ID), a)
+	return nil
+}
+
 // SendMessage sends a follow-up user message to a conversational agent.
 // When the agent is mid-turn (StateRunning), the message is appended to a
 // pending queue and flushed on the next "result" event, so users can pile
@@ -517,27 +575,10 @@ func (m *Manager) SendMessage(agentID, text string) error {
 		// Turn boundary: re-consult provider health before writing to the
 		// idle Claude session's stdin, so a provider that capped since the
 		// last turn does not strand this chat for the rest of its life.
-		regateCfg := RunConfig{
-			TaskID:             a.TaskID,
-			Dir:                a.sessionCWD,
-			Provider:           a.Provider,
-			Model:              a.Model,
-			RequirePermissions: a.requirePermissions,
+		if err := m.advanceClaudeTurn(m.ctx, a, text); err != nil {
+			return fmt.Errorf("agent %s: %w", agentID, err)
 		}
-		updatedCfg, switched, regateErr := m.regateBeforeClaudeTurn(context.Background(), a, regateCfg)
-		if regateErr != nil {
-			return fmt.Errorf("agent %s: %w", agentID, regateErr)
-		}
-		if switched {
-			m.beginConvoHandoff(a, updatedCfg, text)
-		} else {
-			if err := m.writeUserMessage(a, text); err != nil {
-				return err
-			}
-			a.SetState(StateRunning)
-			m.emit(events.AgentState(a.ID), a)
-			m.logger.Info("agent.convo.message_sent", "id", a.ID)
-		}
+		m.logger.Info("agent.convo.message_sent", "id", a.ID)
 	}
 
 	// Add user message to convo buffer regardless — the user should see

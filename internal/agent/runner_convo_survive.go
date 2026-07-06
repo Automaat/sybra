@@ -423,6 +423,22 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 		return
 	}
 
+	// A pending handoff can only exist here if this *Agent is the same
+	// in-memory object that had SendMessage/advanceClaudeTurn regate it onto
+	// a peer just before its (now-doomed) Claude process was torn down — the
+	// handoff field is never persisted, so a genuine restart's fromRecord
+	// Agent always has none and falls through to ordinary finalization below.
+	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
+		var outFile *os.File
+		if f, ferr := os.OpenFile(a.GetLogPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); ferr == nil {
+			outFile = f
+		} else {
+			m.logger.Warn("agent.reattach.handoff.log", "id", a.ID, "err", ferr)
+		}
+		m.completeConvoHandoff(ctx, a, &outFile, handoffCfg, prompt)
+		return
+	}
+
 	// No cmd.Wait runs for a reattached agent, so GetExitErr is nil. Infer
 	// the outcome from the terminal result: none -> crash (errReattachedGone);
 	// an error result -> a real failure; a success result -> leave nil.

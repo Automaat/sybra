@@ -510,3 +510,103 @@ func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
 		t.Fatalf("expected registry empty after completion, got %d", len(list))
 	}
 }
+
+// TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization verifies
+// that when the *Agent object being reattached still carries an in-memory
+// pending handoff (SendMessage/advanceClaudeTurn regated it onto a peer
+// right before its now-doomed Claude process was torn down), reattachConvo
+// hands off to the peer via completeConvoHandoff instead of finalizing the
+// agent as stopped. This only happens for the same in-memory Agent — a
+// genuine restart's fromRecord Agent never carries a handoff (see
+// TestReattachInteractive_ReattachesLiveAgent for that path).
+func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T) {
+	dir := t.TempDir()
+	writeFakePerTurnBinary(t, dir, "copilot",
+		`{"type":"assistant.message","data":{"content":"hi from copilot"}}`,
+		`{"type":"result","sessionId":"cop-fake"}`,
+	)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "hoff1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	history := `{"__sybra_provider_marker__":"provider_switch","version":1,"provider":"claude"}` + "\n" +
+		`{"type":"system","session_id":"claude-sess"}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"claude-sess"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(history), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var completed atomic.Bool
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) { completed.Store(true) },
+	})
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"copilot": true}})
+
+	// A short-lived helper process stands in for the doomed Claude process:
+	// it exits almost immediately, which is what should make reattachConvo's
+	// tail loop return exited=true.
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	procStart := processStartString(context.Background(), cmd.Process.Pid)
+	go func() { _ = cmd.Wait() }()
+
+	a := &Agent{ID: "hoff1", TaskID: "t-hoff1", Provider: "claude", Mode: "interactive", done: make(chan struct{})}
+	a.SetLogPath(logPath)
+	// Mirrors real usage: regateBeforeClaudeTurn (called from advanceClaudeTurn
+	// before beginConvoHandoff/SetPendingHandoff) already flips a.Provider to
+	// the peer before the handoff is recorded.
+	a.SetProviderAndModel("copilot", "")
+	a.SetPendingHandoff(RunConfig{TaskID: "t-hoff1", Provider: "copilot"}, "continue-on-peer")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+	t.Cleanup(cancel)
+	m.mu.Lock()
+	m.agents[a.ID] = a
+	m.liveCount = 1
+	m.liveByProvider["claude"] = 1
+	m.mu.Unlock()
+
+	m.reattachConvo(ctx, a, 0, procStart, false)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && a.GetSessionID() != "cop-fake" {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if a.GetSessionID() != "cop-fake" {
+		t.Fatalf("expected copilot session id after handoff, got %q", a.GetSessionID())
+	}
+	waitForAgentState(t, a, StatePaused, 3*time.Second)
+
+	var sawHandoffPrompt bool
+	for _, ev := range a.ConvoOutput() {
+		if ev.Type == "result" && ev.SessionID == "cop-fake" {
+			sawHandoffPrompt = true
+		}
+	}
+	if !sawHandoffPrompt {
+		t.Error("expected the handed-off prompt to run on copilot")
+	}
+	// completeConvoHandoff hands the agent to a fresh runPerTurnConversational
+	// goroutine rather than finalizing it, so OnComplete must not have fired
+	// yet — the ordinary reattachConvo finalization path was skipped.
+	if completed.Load() {
+		t.Error("expected ordinary finalization to be skipped by the handoff, but OnComplete already fired")
+	}
+
+	if err := m.StopAgent(a.ID); err != nil {
+		t.Fatalf("StopAgent: %v", err)
+	}
+	select {
+	case <-a.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent did not exit after StopAgent")
+	}
+}
