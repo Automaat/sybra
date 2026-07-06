@@ -347,6 +347,11 @@ type Task struct {
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.
 	ForkSubagent bool `json:"forkSubagent,omitempty"`
+	// Sandbox overrides the system default OS-level sandbox posture (see
+	// config.AgentDefaults.SandboxMode) for this task's agent processes.
+	// nil = use system default. false = escape hatch, disabling the
+	// sandbox-exec wrap entirely for this task's agents.
+	Sandbox *bool `json:"sandbox,omitempty"`
 	// ReasoningEffort sets the reasoning level for this task's agents
 	// (low/medium/high/xhigh). Empty = model default. Applied across providers:
 	// codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.

@@ -39,11 +39,21 @@ func newProviderCmd(ctx context.Context, cfg *RunConfig, detached bool, name str
 	return cmd
 }
 
-// wrapInvocation is a placeholder identity transform pending the sandbox-exec
-// wrapper (procsandbox_darwin.go/procsandbox_other.go), landed separately so
-// this spawn-seam refactor is a pure no-behavior-change commit.
-func wrapInvocation(name string, args []string, _ *RunConfig) (name2 string, args2 []string) {
-	return name, args
+// sandboxSpec carries the resolved OS-level process-sandbox posture and
+// canonicalized allowed write roots for one run, computed once by
+// Manager.injectProcessSandbox (manager_run.go) and consumed by
+// wrapInvocation (procsandbox_darwin.go / procsandbox_other.go) at each
+// provider spawn site. The zero value ("") is equivalent to "off": unwrapped.
+type sandboxSpec struct {
+	// mode is "off" or "enforce" here — never "report": report-mode specs are
+	// validated and logged by injectProcessSandbox but always stored as "off"
+	// so a profile/SBPL defect can only affect an explicit enforce posture,
+	// never the default rollout posture.
+	mode        string
+	worktree    string
+	sandboxHome string
+	tmp         string
+	profilePath string
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,

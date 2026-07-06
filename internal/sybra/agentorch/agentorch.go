@@ -68,6 +68,19 @@ func ResolveHeadlessPermissionMode(t task.Task, cfg *config.Config) (string, err
 	return cfg.DefaultHeadlessPermissionMode(), nil
 }
 
+// ResolveSandboxMode returns the effective OS-level process-sandbox posture
+// for a task's agent processes ("off", "report", or "enforce").
+// Priority: task.Sandbox escape hatch (false -> "off") > config default.
+// A task can only opt OUT of the config default, never opt into a stricter
+// posture than configured — Sandbox=true is a no-op, matching the intent of
+// an escape hatch rather than a per-task posture override.
+func ResolveSandboxMode(t task.Task, cfg *config.Config) string {
+	if t.Sandbox != nil && !*t.Sandbox {
+		return "off"
+	}
+	return cfg.DefaultSandboxMode()
+}
+
 // PickImplementationResumeSession walks AgentRuns newest-first and returns
 // the most recent session_id from a prior implementation run that belongs
 // to the current workflow execution and provider.
@@ -331,6 +344,64 @@ func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescri
 	return ag, err
 }
 
+// logSandboxEscapeHatch records an operator-visible signal (audit log +
+// structured log) when a task's Sandbox escape hatch overrides the config
+// default to "off", so unrestricted-write dispatches are discoverable
+// without waiting for an incident. No-op when the escape hatch is unused.
+func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
+	if t.Sandbox == nil || *t.Sandbox {
+		return
+	}
+	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID)
+	o.LogAudit(audit.EventAgentSandboxDisabled, taskID, "", map[string]any{
+		"configured_default": o.cfg.DefaultSandboxMode(),
+	})
+}
+
+// resolveDispatchDir prepares (or reuses) the working directory for a
+// project-backed task dispatch. When skipWT is true, dir is returned as
+// given (research-machine or chat tasks that don't isolate into a worktree).
+// Otherwise it auto-assigns a project if needed, optionally resets the
+// worktree for a clean retry, and prepares the task's worktree, returning
+// the (possibly project-assigned) task and its worktree directory.
+func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string) (task.Task, string, error) {
+	if skipWT {
+		return t, dir, nil
+	}
+	t = o.AutoAssignProject(t)
+	if t.ProjectID == "" {
+		return t, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
+	}
+	if cleanRetryRef != "" {
+		if resetErr := o.resetWorktreeForCleanRetry(t, cleanRetryRef); resetErr != nil {
+			return t, "", resetErr
+		}
+	}
+	opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
+	// context.Background(): StartAgentWithAssignment is reached from both
+	// App.StartAgent (Wails-bound, no ctx) and workflow.AgentDispatcher.StartAgent
+	// (fixed interface signature, no ctx) — no real context to thread here.
+	d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
+	if wtErr != nil {
+		o.failWorktreeOp(opID, wtErr)
+		// A tracked agent is still live in this worktree (see
+		// worktree.PrepareForTask's hasAgent guard) — this is a benign
+		// timing collision with a stale "no agent running" read
+		// upstream, not a real worktree conflict. Wait rather than
+		// escalate; the agent's own completion (or a later ResumeStalled
+		// tick, once it is genuinely idle) drives the workflow forward.
+		if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
+			return t, "", workflow.ErrDispatchInFlight
+		}
+		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
+			return t, "", workflow.ErrDispatchInFlight
+		}
+		return t, "", fmt.Errorf("worktree required for project task: %w", wtErr)
+	}
+	o.completeWorktreeOp(opID)
+	return t, d, nil
+}
+
 func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
@@ -367,39 +438,9 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
-	if !skipWT {
-		t = o.AutoAssignProject(t)
-		if t.ProjectID == "" {
-			return nil, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
-		}
-		if cleanRetryRef != "" {
-			if resetErr := o.resetWorktreeForCleanRetry(t, cleanRetryRef); resetErr != nil {
-				return nil, "", resetErr
-			}
-		}
-		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-		// context.Background(): StartAgentWithAssignment is reached from both
-		// App.StartAgent (Wails-bound, no ctx) and workflow.AgentDispatcher.StartAgent
-		// (fixed interface signature, no ctx) — no real context to thread here.
-		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
-		if wtErr != nil {
-			o.failWorktreeOp(opID, wtErr)
-			// A tracked agent is still live in this worktree (see
-			// worktree.PrepareForTask's hasAgent guard) — this is a benign
-			// timing collision with a stale "no agent running" read
-			// upstream, not a real worktree conflict. Wait rather than
-			// escalate; the agent's own completion (or a later ResumeStalled
-			// tick, once it is genuinely idle) drives the workflow forward.
-			if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
-				return nil, "", workflow.ErrDispatchInFlight
-			}
-			if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
-				return nil, "", workflow.ErrDispatchInFlight
-			}
-			return nil, "", fmt.Errorf("worktree required for project task: %w", wtErr)
-		}
-		o.completeWorktreeOp(opID)
-		dir = d
+	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir)
+	if dirErr != nil {
+		return nil, "", dirErr
 	}
 	if dir == "" {
 		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
@@ -422,6 +463,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
+	o.logSandboxEscapeHatch(taskID, t)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                  taskID,
 		Name:                    t.Title,
@@ -443,6 +485,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		ExtraEnv:                extraEnv,
 		MaxTurns:                t.MaxTurns,
 		ForkSubagent:            t.ForkSubagent,
+		SandboxMode:             ResolveSandboxMode(t, o.cfg),
 		ReasoningEffort:         FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
@@ -655,6 +698,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	o.completeWorktreeOp(opID)
 
 	requirePerm := ResolvePermission(t, o.cfg)
+	o.logSandboxEscapeHatch(t.ID, t)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:             t.ID,
 		Name:               t.Title,
@@ -664,6 +708,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 		Dir:                dir,
 		Model:              "sonnet",
 		RequirePermissions: requirePerm,
+		SandboxMode:        ResolveSandboxMode(t, o.cfg),
 	})
 	if err != nil {
 		// context.Background(): StartChat is a Wails-bound method with no ctx.
@@ -764,6 +809,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	} else {
 		prompt = steered
 	}
+	o.logSandboxEscapeHatch(taskID, t)
 	ag, err := o.agents.Run(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
@@ -774,6 +820,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		Model:                  "sonnet",
 		RequirePermissions:     requirePerm,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            ResolveSandboxMode(t, o.cfg),
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),

@@ -569,6 +569,9 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.ForkSubagent != nil {
 		t.ForkSubagent = *init.ForkSubagent
 	}
+	if init.Sandbox != nil {
+		t.Sandbox = init.Sandbox
+	}
 	if init.ReasoningEffort != nil {
 		t.ReasoningEffort = *init.ReasoningEffort
 	}
@@ -819,6 +822,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.ForkSubagent != nil {
 		t.ForkSubagent = *u.ForkSubagent
+	}
+	if u.Sandbox != nil {
+		t.Sandbox = u.Sandbox
 	}
 	if u.ReasoningEffort != nil {
 		t.ReasoningEffort = *u.ReasoningEffort

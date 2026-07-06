@@ -110,6 +110,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	if err := m.injectProcessSandbox(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
@@ -170,6 +174,88 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	if controlHome != "" {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 	}
+	cfg.resolvedSandboxHome = dir
+	return nil
+}
+
+// injectProcessSandbox resolves this run's OS-level process-sandbox posture
+// and allowed write roots (worktree, per-task sandbox home, tmp) into
+// cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
+//
+// enforce fails closed — mirroring injectSandboxHome's discipline — when
+// sandbox-exec is unavailable, the embedded profile cannot be materialized,
+// or a root cannot be canonicalized: the error aborts the run before any
+// subprocess spawns. report never blocks: the same failures are logged and
+// this run's spec falls back to "off" (unwrapped) instead of erroring, so a
+// misconfigured or unsupported host cannot break the default posture.
+func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
+	mode := cfg.SandboxMode
+	if mode == "" {
+		mode = "report"
+	}
+	if mode == "off" {
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	worktree := cfg.Dir
+	sandboxHome := cfg.resolvedSandboxHome
+	if sandboxHome == "" {
+		sandboxHome = worktree
+	}
+	tmp := os.TempDir()
+
+	if !sandboxExecAvailable() {
+		if mode == "enforce" {
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires sandbox-exec, which is unavailable on this host")
+			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+			return err
+		}
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	if mode != "enforce" {
+		// report: log the resolved allowlist without wrapping the spawn, so
+		// the opaque provider CLI's would-be write footprint is visible from
+		// live runs before flipping this task/fleet to enforce.
+		m.logger.Info("agent.sandbox.report", "task_id", cfg.TaskID,
+			"worktree", worktree, "sandbox_home", sandboxHome, "tmp", tmp)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	canonWorktree, err := canonicalizeRoot(worktree)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox worktree root: %w", err)
+	}
+	canonSandboxHome, err := canonicalizeRoot(sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox home root: %w", err)
+	}
+	canonTmp, err := canonicalizeRoot(tmp)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
+	}
+	profilePath, err := materializeSandboxProfile()
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
+	}
+
+	cfg.sandbox = sandboxSpec{
+		mode:        "enforce",
+		worktree:    canonWorktree,
+		sandboxHome: canonSandboxHome,
+		tmp:         canonTmp,
+		profilePath: profilePath,
+	}
+	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
+		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp, "profile", profilePath)
 	return nil
 }
 

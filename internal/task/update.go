@@ -48,6 +48,7 @@ type Update struct {
 	CodeReview            *string
 	MaxTurns              *int
 	ForkSubagent          *bool
+	Sandbox               *bool
 	ReasoningEffort       *string
 	Outcome               *string
 	MergeCommit           *string
@@ -115,6 +116,12 @@ func applyMapField(u *Update, k string, v any) error {
 			return fmt.Errorf("field %q: want bool, got %T", k, v)
 		}
 		u.ForkSubagent = &b
+	case "sandbox":
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", k, v)
+		}
+		u.Sandbox = &b
 	case "reasoning_effort":
 		s, ok := v.(string)
 		if !ok {
