@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -153,10 +154,11 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 	// chat history is preserved across restarts; a fresh run opens a new
 	// file. Without this, each restart would open a new empty log and the
 	// next restart would rehydrate zero history.
+	existingLog := a.GetLogPath()
 	var outFile *os.File
 	var fileErr error
-	if existing := a.GetLogPath(); existing != "" {
-		outFile, fileErr = os.OpenFile(existing, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if existingLog != "" {
+		outFile, fileErr = os.OpenFile(existingLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	} else {
 		outFile, fileErr = logging.NewAgentOutputFile(m.logDir, a.ID)
 	}
@@ -171,6 +173,12 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 	var logWriter io.Writer
 	if outFile != nil {
 		logWriter = outFile
+	}
+	if existingLog == "" {
+		// First line of a fresh log records the starting provider, so a
+		// restart's rehydration can tell which parser covers the segment
+		// before any mid-run provider switch (see writeProviderMarkerLine).
+		writeProviderMarkerLine(logWriter, a.Provider)
 	}
 
 	// Record the agent so a restart can recreate it (the log path is now set).
@@ -188,6 +196,20 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 	prompt := cfg.Prompt
 	for {
 		if !resumeWait {
+			updatedCfg, switched, regateErr := m.regateForTurn(ctx, a, cfg)
+			if regateErr != nil {
+				m.logger.Warn("agent.convo.regate.blocked", "id", a.ID, "provider", a.Provider, "err", regateErr)
+				a.SetExitErr(errProviderRateLimited)
+				if shutdownSurvive() {
+					survived = true
+				}
+				return
+			}
+			if switched {
+				writeProviderMarkerLine(logWriter, updatedCfg.Provider)
+			}
+			cfg = updatedCfg
+
 			if !m.runConvoTurn(ctx, a, cfg, prompt, logWriter) {
 				if shutdownSurvive() {
 					survived = true
@@ -457,10 +479,63 @@ func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
 	return prov.ParseConvoLine(line)
 }
 
+// convoProviderMarker is a durable, out-of-band log line that records which
+// provider's schema parses the lines following it. A mid-run provider switch
+// (regateForTurn) writes one at the switch boundary, and a fresh log gets one
+// up front recording its starting provider, so rehydratePerTurnConvoFromLog
+// can parse each segment of a mixed-provider log with the right parser
+// instead of guessing from the agent's current (possibly since-switched)
+// provider. The field name is namespaced so it can never collide with a
+// genuine codex/copilot JSON line.
+type convoProviderMarker struct {
+	Marker   string `json:"__sybra_provider_marker__"`
+	Provider string `json:"provider"`
+}
+
+// writeProviderMarkerLine writes a convoProviderMarker line directly to the
+// log (bypassing ConvoEvent emission — it is a rehydration aid, not
+// conversation content). No-op if w is nil.
+func writeProviderMarkerLine(w io.Writer, provider string) {
+	if w == nil {
+		return
+	}
+	data, err := json.Marshal(convoProviderMarker{Marker: "provider_switch", Provider: provider})
+	if err != nil {
+		return
+	}
+	_, _ = w.Write(data)
+	_, _ = w.Write([]byte("\n"))
+}
+
+// parseProviderMarkerLine reports whether line is a convoProviderMarker and,
+// if so, the provider it names.
+func parseProviderMarkerLine(line []byte) (string, bool) {
+	var mark convoProviderMarker
+	if err := json.Unmarshal(line, &mark); err != nil {
+		return "", false
+	}
+	if mark.Marker != "provider_switch" || mark.Provider == "" {
+		return "", false
+	}
+	return mark.Provider, true
+}
+
 // rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
 // conversational agent's log into its convo buffer (and session id) without
 // emitting events, so a recreated agent shows its prior chat history after a
-// restart.
+// restart. The log may cover more than one provider if a mid-run switch
+// occurred; convoProviderMarker lines mark each segment boundary so each
+// segment is parsed with its own provider's schema. a.Provider (the agent's
+// current provider) is only a fallback, used for any content preceding the
+// first marker in an older log written before this mechanism existed.
+//
+// Session ids are provider-scoped (a Codex thread id means nothing to
+// Copilot and vice versa), so the id tracked across the scan resets at every
+// marker: a segment must never inherit a session id from the provider that
+// preceded it, or the next turn could pass a foreign --session-id to a
+// provider that never issued it. Only the final segment's id (the one
+// belonging to the agent's current provider) is written to the agent, once,
+// after the full scan.
 func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -469,12 +544,19 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	segmentProvider := a.Provider
+	var sessionID string
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
-		ev, perr := parseConvoEvent(a.Provider, line)
+		if p, ok := parseProviderMarkerLine(line); ok {
+			segmentProvider = p
+			sessionID = ""
+			continue
+		}
+		ev, perr := parseConvoEvent(segmentProvider, line)
 		if perr != nil {
 			continue
 		}
@@ -483,7 +565,7 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 		}
 		a.AppendConvo(ev)
 		if ev.SessionID != "" {
-			a.SetSessionID(ev.SessionID)
+			sessionID = ev.SessionID
 		}
 		if ev.Type == "result" {
 			a.AddResultStats(ev.SessionID, ev.CostUSD, ev.InputTokens, ev.OutputTokens, ev.ReasoningTokens)
@@ -493,6 +575,7 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 			}
 		}
 	}
+	a.SetSessionID(sessionID)
 }
 
 // sendConvoPrompt delivers a follow-up prompt to a per-turn (codex/copilot)

@@ -336,6 +336,28 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// SetProviderAndModel updates the agent's provider and (already-normalized)
+// model. Used when a mid-run per-turn provider re-gate fails the agent's
+// current provider over to a healthy peer; Provider/Model are otherwise fixed
+// for the lifetime of the agent (set once at construction).
+func (a *Agent) SetProviderAndModel(prov, model string) {
+	a.mu.Lock()
+	a.Provider = prov
+	a.Model = model
+	a.mu.Unlock()
+}
+
+// GetProvider returns the agent's current provider name. Safe to call
+// concurrently with a mid-run SetProviderAndModel switch; code within the
+// single-threaded runner loop (which owns all writes) may keep reading
+// a.Provider directly since it's the same goroutine, but any external
+// reader must go through this to avoid racing the switch.
+func (a *Agent) GetProvider() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Provider
+}
+
 // SetSessionFilePath records the path to the provider session file.
 func (a *Agent) SetSessionFilePath(p string) {
 	a.mu.Lock()
