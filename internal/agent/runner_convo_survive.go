@@ -70,6 +70,12 @@ func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg Ru
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		// Records the starting provider up front so a mid-run
+		// regateBeforeClaudeTurn switch away from Claude can be told apart
+		// from this initial segment on rehydration (see
+		// rehydratePerTurnConvoFromLog). Written directly (the child hasn't
+		// started yet, so nothing else has written to the file).
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 
@@ -204,6 +210,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 

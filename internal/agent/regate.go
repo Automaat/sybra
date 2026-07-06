@@ -35,7 +35,40 @@ import (
 // switch and a not-yet-written marker would make rehydratePerTurnConvoFromLog
 // parse the entire pre-switch segment under the new provider's schema.
 func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig, logWriter io.Writer) (RunConfig, bool, error) {
-	current := a.Provider
+	return m.regate(ctx, a, cfg, logWriter, true, false)
+}
+
+// regateBeforeClaudeTurn is the persistent-Claude analogue of regateForTurn,
+// called from SendMessage immediately before writing the next follow-up to an
+// idle Claude session's stdin. Persistent Claude is never itself
+// per-turn-capable (UsesPerTurnConvo() is always false for it), so unlike
+// regateForTurn — where "current" must already be a per-turn provider —
+// "current" here (claude) is judged healthy purely on the health/limit
+// gates; only alternative candidates are restricted to per-turn-capable
+// peers, since the only supported hot-swap target for a persistent Claude
+// session is a per-turn provider (codex/copilot), never another persistent
+// Claude process.
+//
+// Persistence (marker + registry) is deferred: the caller has no open log
+// handle at this point (the running goroutine still owns it) and the process
+// has not been torn down yet, so writing here would let the registry record
+// the switch before the process is actually gone. The caller must persist
+// once the old process has exited and the new per-turn runner is about to
+// take over (see completeConvoHandoff).
+func (m *Manager) regateBeforeClaudeTurn(ctx context.Context, a *Agent, cfg RunConfig) (RunConfig, bool, error) {
+	return m.regate(ctx, a, cfg, nil, false, true)
+}
+
+// regate is the shared decision core of regateForTurn and
+// regateBeforeClaudeTurn. currentMustBePerTurn requires the current provider
+// itself to satisfy UsesPerTurnConvo() to be considered healthy (used by the
+// per-turn runner, where "current" is always codex/copilot); when false, the
+// current provider's health is judged directly regardless of
+// UsesPerTurnConvo() (used for persistent Claude, which never satisfies it).
+// deferPersist skips the marker-write/registry-save side effects, leaving
+// them to the caller once it is safe to record them.
+func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter io.Writer, currentMustBePerTurn, deferPersist bool) (RunConfig, bool, error) {
+	current := a.GetProvider()
 
 	m.mu.RLock()
 	g := m.gate
@@ -70,7 +103,11 @@ func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig, lo
 		return perTurnCapable(p) && (g == nil || g.IsHealthy(p)) && underCap(p) && limitAvailable(p)
 	}
 
-	if healthy(current) {
+	currentHealthy := healthy(current)
+	if !currentMustBePerTurn {
+		currentHealthy = (g == nil || g.IsHealthy(current)) && underCap(current) && limitAvailable(current)
+	}
+	if currentHealthy {
 		return cfg, false, nil
 	}
 
@@ -114,13 +151,15 @@ func (m *Manager) regateForTurn(ctx context.Context, a *Agent, cfg RunConfig, lo
 	cfg.Provider = alt
 	cfg.provider = altProv
 
-	// Marker must land before the registry write below: on a crash between
-	// the two, rehydration must find a marker for every persisted provider
-	// change, never a persisted provider with an unmarked log segment.
-	writeProviderMarkerLine(logWriter, alt)
+	if !deferPersist {
+		// Marker must land before the registry write below: on a crash between
+		// the two, rehydration must find a marker for every persisted provider
+		// change, never a persisted provider with an unmarked log segment.
+		writeProviderMarkerLine(logWriter, alt)
 
-	if m.survives() {
-		m.saveRegistry(ctx, a)
+		if m.survives() {
+			m.saveRegistry(ctx, a)
+		}
 	}
 
 	return cfg, true, nil

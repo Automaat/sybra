@@ -153,9 +153,45 @@ type Agent struct {
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
 
+	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
+	// Claude interactive agent's provider is switched at a turn boundary. The
+	// still-idle Claude process is torn down (closeStdinPipe/signalKill); once
+	// runConversational's goroutine observes the process actually exit, it
+	// consumes this instead of finalizing, and hands the same *Agent off to
+	// runPerTurnConversational on the new provider.
+	handoff *pendingConvoHandoff
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+// pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
+// persistent-Claude -> per-turn provider switch. See Agent.handoff.
+type pendingConvoHandoff struct {
+	cfg    RunConfig
+	prompt string
+}
+
+// SetPendingHandoff records a same-agent provider switch to be picked up by
+// runConversational's finalize path once its (now-doomed) process exits.
+func (a *Agent) SetPendingHandoff(cfg RunConfig, prompt string) {
+	a.mu.Lock()
+	a.handoff = &pendingConvoHandoff{cfg: cfg, prompt: prompt}
+	a.mu.Unlock()
+}
+
+// ConsumePendingHandoff returns and clears any pending handoff recorded by
+// SetPendingHandoff.
+func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.handoff == nil {
+		return RunConfig{}, "", false
+	}
+	h := a.handoff
+	a.handoff = nil
+	return h.cfg, h.prompt, true
 }
 
 // toRecord snapshots only the fields persisted for restart survival.

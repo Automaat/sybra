@@ -218,7 +218,60 @@ func (m *Manager) runConversational(ctx context.Context, a *Agent, cfg RunConfig
 		return
 	}
 
+	// A pending handoff (SendMessage/regateBeforeClaudeTurn regated this
+	// agent's next turn onto a healthy per-turn peer and tore down the idle
+	// Claude process to force this exit) takes over instead of finalizing:
+	// the same *Agent hands off to the per-turn runner on the new provider.
+	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
+		m.completeConvoHandoff(ctx, a, &outFile, handoffCfg, prompt)
+		return
+	}
+
 	m.finalizeRun(ctx, a, "agent.convo.done")
+}
+
+// beginConvoHandoff records a regated provider switch on a persistent Claude
+// interactive agent and tears down its (idle) process so runConversational's
+// goroutine exits and completeConvoHandoff can take over. Called from
+// SendMessage when regateBeforeClaudeTurn finds Claude capped and a healthy
+// per-turn-capable peer available.
+func (m *Manager) beginConvoHandoff(a *Agent, cfg RunConfig, prompt string) {
+	cfg.Prompt = prompt
+	a.SetPendingHandoff(cfg, prompt)
+	a.SetState(StateRunning)
+	m.emit(events.AgentState(a.ID), a)
+	if a.isDetached() {
+		// A detached agent's stdin is a never-EOF O_RDWR FIFO (see
+		// startConvoProcessSurvive) — closing our end does not signal the
+		// child, so it must be killed by PID like StopAgent does.
+		m.signalKill(a)
+	} else {
+		a.convo.closeStdinPipe()
+	}
+	m.logger.Info("agent.convo.handoff", "id", a.ID, "task", cfg.TaskID, "to", cfg.Provider)
+}
+
+// completeConvoHandoff finishes a mid-run persistent-Claude -> per-turn
+// provider switch once the killed Claude process has actually exited: it
+// writes the provider-marker boundary into the still-open log (closing the
+// crash window before the switch lands on disk — see regate's deferPersist),
+// persists the switched registry record, then hands the log and a fresh
+// prompt channel to the per-turn runner. Returns without finalizing/marking
+// the agent done: the new goroutine owns the agent's completion from here.
+func (m *Manager) completeConvoHandoff(ctx context.Context, a *Agent, outFile **os.File, cfg RunConfig, prompt string) {
+	a.SetExitErr(nil)
+	if *outFile != nil {
+		writeProviderMarkerLine(*outFile, a.Provider)
+		_ = (*outFile).Close()
+		*outFile = nil
+	}
+	if m.survives() {
+		m.saveRegistry(ctx, a)
+	}
+	cfg.Prompt = prompt
+	a.setPromptChannel(make(chan string, 1))
+	m.logger.Info("agent.convo.handoff.start", "id", a.ID, "provider", a.Provider)
+	go m.runPerTurnConversational(ctx, a, cfg, false)
 }
 
 func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
@@ -257,7 +310,8 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	}
 
 	// Open log file on first successful start; subsequent retries append.
-	if *outFile == nil {
+	freshLog := *outFile == nil
+	if freshLog {
 		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
 		if fileErr != nil {
 			m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
@@ -271,6 +325,13 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 	var logWriter io.Writer
 	if *outFile != nil {
 		logWriter = *outFile
+	}
+	if freshLog {
+		// Records the starting provider up front so a mid-run
+		// regateBeforeClaudeTurn switch away from Claude can be told apart
+		// from this initial segment on rehydration (see
+		// rehydratePerTurnConvoFromLog).
+		writeProviderMarkerLine(logWriter, a.Provider)
 	}
 
 	prevLen := len(a.ConvoOutput())
@@ -453,12 +514,30 @@ func (m *Manager) SendMessage(agentID, text string) error {
 		a.EnqueuePrompt(text)
 		m.logger.Info("agent.convo.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
 	} else {
-		if err := m.writeUserMessage(a, text); err != nil {
-			return err
+		// Turn boundary: re-consult provider health before writing to the
+		// idle Claude session's stdin, so a provider that capped since the
+		// last turn does not strand this chat for the rest of its life.
+		regateCfg := RunConfig{
+			TaskID:             a.TaskID,
+			Dir:                a.sessionCWD,
+			Provider:           a.Provider,
+			Model:              a.Model,
+			RequirePermissions: a.requirePermissions,
 		}
-		a.SetState(StateRunning)
-		m.emit(events.AgentState(a.ID), a)
-		m.logger.Info("agent.convo.message_sent", "id", a.ID)
+		updatedCfg, switched, regateErr := m.regateBeforeClaudeTurn(context.Background(), a, regateCfg)
+		if regateErr != nil {
+			return fmt.Errorf("agent %s: %w", agentID, regateErr)
+		}
+		if switched {
+			m.beginConvoHandoff(a, updatedCfg, text)
+		} else {
+			if err := m.writeUserMessage(a, text); err != nil {
+				return err
+			}
+			a.SetState(StateRunning)
+			m.emit(events.AgentState(a.ID), a)
+			m.logger.Info("agent.convo.message_sent", "id", a.ID)
+		}
 	}
 
 	// Add user message to convo buffer regardless — the user should see

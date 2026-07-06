@@ -544,6 +544,12 @@ func parseProviderMarkerLine(line []byte) (string, bool) {
 // provider that never issued it. Only the final segment's id (the one
 // belonging to the agent's current provider) is written to the agent, once,
 // after the full scan.
+//
+// A "claude" segment (a persistent Claude interactive agent that later
+// regated to a per-turn peer via regateBeforeClaudeTurn/beginConvoHandoff)
+// uses an entirely different line schema (Claude's stream-json, not a
+// per-turn provider's ConvoEvent parser), so it is parsed with
+// ParseClaudeLine/claudeEventToConvoEvent instead of parseConvoEvent.
 func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -564,7 +570,17 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 			sessionID = ""
 			continue
 		}
-		ev, perr := parseConvoEvent(segmentProvider, line)
+		var ev ConvoEvent
+		var perr error
+		if segmentProvider == "claude" {
+			var parsed ClaudeEvent
+			parsed, perr = ParseClaudeLine(line)
+			if perr == nil {
+				ev = claudeEventToConvoEvent(parsed)
+			}
+		} else {
+			ev, perr = parseConvoEvent(segmentProvider, line)
+		}
 		if perr != nil {
 			continue
 		}
