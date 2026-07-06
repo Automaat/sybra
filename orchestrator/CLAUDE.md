@@ -292,6 +292,22 @@ Run audit analysis during the monitor phase of the core loop. Suggested cadence:
 - Never start work without first checking current task board state
 - Keep task titles concise (<80 chars), put details in body
 
+### SYBRA_HOME vs SYBRA_CONTROL_HOME
+
+Every task-scoped agent Sybra dispatches (implementation, review, test-runner,
+eval — every role, every provider) is launched with `SYBRA_HOME` pointed at
+that task's isolated sandbox, not the real operator home. This is the fix for
+the 2026-07-06 board wipe (#1576): a fresh agent's own test servers, e2e
+suites, and scratch data always land in its sandbox by default. Bare
+`sybra-cli` calls from inside that agent still reach the *real* board through
+`SYBRA_CONTROL_HOME`, injected alongside `SYBRA_HOME` — that's the control
+channel a dispatched agent uses to update its own task's status/plan/body.
+Only pass `--home "$SYBRA_HOME"` when an agent needs to inspect its own
+sandbox or an app-under-test it started there.
+
+You (the orchestrator) are not affected by this: your own `sybra-cli` calls
+against the task board are unconditionally against the real store.
+
 ## Agent Commit Requirement
 
 Every headless implementation agent **must commit its work before finishing** — this applies to both `claude` and `codex` providers. Uncommitted changes are destroyed when the worktree is reused for a subsequent agent run.

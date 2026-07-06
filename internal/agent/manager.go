@@ -89,6 +89,16 @@ type Manager struct {
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
 
+	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
+	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
+	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
+	// system/probe run with an empty TaskID (tests, health checks).
+	sandboxHome func(taskID string) (string, error)
+	// controlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into every
+	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
+	// real operator store even though SYBRA_HOME points at the task's sandbox.
+	controlHome string
+
 	// dispatchClaims serializes agent dispatch per task. A claim is held for
 	// the full duration of a StartAgent call — across the (multi-second)
 	// worktree-preparation window during which the agent is not yet registered
@@ -128,6 +138,17 @@ type ManagerConfig struct {
 	SessionSink       func(taskID, agentID, sessionID string) error
 	TaskExists        func(taskID string) bool
 	LimitSink         func(limits.Snapshot)
+
+	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
+	// task-scoped run. Required for every fresh agent subprocess so it never
+	// inherits an unset or operator SYBRA_HOME by default — see
+	// Manager.prepareRunConfig. May be nil only when the manager is used
+	// exclusively for system/probe runs with an empty TaskID.
+	SandboxHome func(taskID string) (string, error)
+	// ControlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into
+	// every task-scoped agent subprocess so sybra-cli task commands reach the
+	// real operator store (typically config.HomeDir()).
+	ControlHome string
 }
 
 // ManagerRuntimeConfig holds settings that affect future runs and may change
@@ -175,6 +196,8 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		taskExists:             cfg.TaskExists,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
+		sandboxHome:            cfg.SandboxHome,
+		controlHome:            cfg.ControlHome,
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {

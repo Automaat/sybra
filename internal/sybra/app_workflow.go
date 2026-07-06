@@ -532,14 +532,6 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		} else if inst := a.sandboxes.Get(taskID); inst != nil {
 			cfg.ExtraEnv = inst.EnvVars()
 		}
-		// Verifier roles that launch a Sybra build under test (test-runner,
-		// eval) must never share the production ~/.sybra — see
-		// Orchestrator.TestIsolationEnv. Additive: a SANDBOX_URL/KUBECONFIG
-		// pair from the branch above (a Docker/k8s sandbox for a non-Sybra
-		// app-under-test) and SYBRA_HOME are not mutually exclusive.
-		if r == agent.RoleTestRunner || r == agent.RoleEval {
-			cfg.ExtraEnv = append(cfg.ExtraEnv, a.agentOrch.TestIsolationEnv(taskID, t)...)
-		}
 	}
 
 	ag, err := a.agents.Run(cfg)

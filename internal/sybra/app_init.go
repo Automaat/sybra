@@ -252,8 +252,10 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		SessionSink: func(taskID, agentID, sessionID string) error {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
-		TaskExists: a.taskExistsForAgent,
-		LimitSink:  a.recordLimitSnapshot,
+		TaskExists:  a.taskExistsForAgent,
+		LimitSink:   a.recordLimitSnapshot,
+		SandboxHome: a.sandboxes.SybraHomeDir,
+		ControlHome: config.HomeDir(),
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
