@@ -13,6 +13,7 @@ import "github.com/Automaat/sybra/internal/abtest"
 type Config struct {
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
+	Trash          TrashConfig          `yaml:"trash" json:"trash"`
 	Agent          AgentDefaults        `yaml:"agent" json:"agent"`
 	Testing        TestingConfig        `yaml:"testing" json:"testing"`
 	Notification   NotificationConfig   `yaml:"notification" json:"notification"`

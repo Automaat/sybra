@@ -197,6 +197,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdArtifact(rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "trash":
+		return cmdTrash(store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -1868,6 +1870,18 @@ Commands:
            was opened outside of Sybra; the PR monitor will then auto-merge or
            advance the task to done once the PR lands.
   delete   <id>
+           Soft-deletes: moves the task file and its sidecars into the trash
+           dir instead of unlinking them. See trash list / trash restore.
+
+  trash list
+  trash restore <id>
+           Restore the newest trashed generation for id back into the tasks
+           dir. Refuses if a live task with that id already exists.
+  trash delete <id>
+           Permanently purge id's newest trashed generation right away,
+           bypassing the retention window.
+  trash empty
+           Permanently purge every trashed generation, regardless of age.
 
   project list
   project get <id>
@@ -1982,6 +1996,125 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 		return printJSON(map[string]string{"status": "ok", "task_id": taskID})
 	}
 	fmt.Printf("reindexed %s\n", taskID)
+	return 0
+}
+
+// cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —
+// recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
+// internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
+// PruneAllTrash).
+func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: trash <list|restore|delete|empty>")
+	}
+	switch sub, rest := args[0], args[1:]; sub {
+	case "list":
+		return cmdTrashList(s, jsonOut)
+	case "restore":
+		return cmdTrashRestore(s, rest, jsonOut)
+	case "delete":
+		return cmdTrashDelete(s, rest, jsonOut)
+	case "empty":
+		return cmdTrashEmpty(s, jsonOut)
+	default:
+		return fatal(jsonOut, "unknown trash command: %s", sub)
+	}
+}
+
+func cmdTrashList(s *task.Manager, jsonOut bool) int {
+	entries, err := s.ListTrash()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		if entries == nil {
+			entries = []task.TrashEntry{}
+		}
+		return printJSON(entries)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tDELETED\tGENERATION\tTITLE")
+	for i := range entries {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entries[i].ID, entries[i].DeletedDate, entries[i].Generation, entries[i].Title)
+	}
+	_ = w.Flush()
+	return 0
+}
+
+func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: trash restore <id>")
+	}
+	t, err := s.RestoreFromTrash(args[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(t)
+	}
+	fmt.Printf("Restored task %s\n", t.ID)
+	return 0
+}
+
+type trashPruneReportJSON struct {
+	Scanned int               `json:"scanned"`
+	Removed int               `json:"removed"`
+	Entries []task.TrashEntry `json:"entries"`
+	Errors  []string          `json:"errors"`
+}
+
+func newTrashPruneReportJSON(rep task.TrashPruneReport) trashPruneReportJSON {
+	out := trashPruneReportJSON{
+		Scanned: rep.Scanned,
+		Removed: rep.Removed,
+		Entries: rep.Entries,
+	}
+	if len(rep.Errors) > 0 {
+		out.Errors = make([]string, 0, len(rep.Errors))
+		for _, err := range rep.Errors {
+			out.Errors = append(out.Errors, err.Error())
+		}
+	}
+	return out
+}
+
+func trashDeleteMessage(id string, removed bool) string {
+	if removed {
+		return fmt.Sprintf("Purged trashed task %s\n", id)
+	}
+	return fmt.Sprintf("Trashed task %s was already purged\n", id)
+}
+
+// cmdTrashDelete permanently purges id's newest trashed generation right
+// away, bypassing the retention window — for a compliance request or a
+// leaked credential that needs the content gone now, not after
+// RetentionDays.
+func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: trash delete <id>")
+	}
+	removed, err := s.DeleteTrashedGeneration(args[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"status": "ok", "id": args[0], "removed": removed})
+	}
+	fmt.Print(trashDeleteMessage(args[0], removed))
+	return 0
+}
+
+// cmdTrashEmpty permanently purges every trashed generation, regardless of
+// age.
+func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
+	rep, err := s.PruneAllTrash()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(newTrashPruneReportJSON(rep))
+	}
+	fmt.Printf("Purged %d/%d trashed generations\n", rep.Removed, rep.Scanned)
 	return 0
 }
 

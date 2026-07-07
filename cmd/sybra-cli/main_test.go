@@ -250,6 +250,173 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestTrashListAndRestore(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "trash me")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list exit %d: %s", code, out)
+	}
+	var entries []task.TrashEntry
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 1 || entries[0].ID != created.ID {
+		t.Fatalf("trash list = %+v, want the trashed task", entries)
+	}
+
+	code, tableOut := runCLI(t, "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list (table) exit %d", code)
+	}
+	if !strings.Contains(tableOut, created.ID) || !strings.Contains(tableOut, created.Title) {
+		t.Errorf("table output = %q, want it to contain id and title", tableOut)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "restore", created.ID)
+	if code != 0 {
+		t.Fatalf("trash restore exit %d: %s", code, out)
+	}
+	var restored task.Task
+	mustUnmarshal(t, out, &restored)
+	if restored.ID != created.ID {
+		t.Fatalf("restored.ID = %q, want %q", restored.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d", code)
+	}
+	var tasks []task.Task
+	mustUnmarshal(t, out, &tasks)
+	if len(tasks) != 1 || tasks[0].ID != created.ID {
+		t.Fatalf("expected restored task back in list, got %+v", tasks)
+	}
+}
+
+func TestTrashRestoreRefusesLiveCollision(t *testing.T) {
+	home := setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "collide")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	// Simulate a live task reappearing at the same id (e.g. an external
+	// tool wrote the file directly) so restore must refuse to overwrite it.
+	tasksDir := filepath.Join(home, "tasks")
+	livePath := filepath.Join(tasksDir, created.ID+".md")
+	if err := os.WriteFile(livePath, []byte("---\nid: "+created.ID+"\n---\nlive again"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _ = runCLI(t, "--json", "trash", "restore", created.ID)
+	if code == 0 {
+		t.Error("expected non-zero exit when restore would overwrite a live task")
+	}
+}
+
+func TestTrashListEmpty(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var entries []task.TrashEntry
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 trash entries, got %d", len(entries))
+	}
+}
+
+func TestTrashRestoreNotFound(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "restore", "nonexistent")
+	if code == 0 {
+		t.Error("expected non-zero exit for restoring nonexistent trash entry")
+	}
+}
+
+func TestTrashRestoreNoID(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "restore")
+	if code == 0 {
+		t.Error("expected non-zero exit for trash restore without ID")
+	}
+}
+
+func TestTrashUnknownSubcommand(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "bogus")
+	if code == 0 {
+		t.Error("expected non-zero exit for unknown trash subcommand")
+	}
+}
+
+func TestTrashDeleteMessage(t *testing.T) {
+	if got := trashDeleteMessage("task-1", true); got != "Purged trashed task task-1\n" {
+		t.Fatalf("removed=true message = %q", got)
+	}
+	if got := trashDeleteMessage("task-1", false); got != "Trashed task task-1 was already purged\n" {
+		t.Fatalf("removed=false message = %q", got)
+	}
+}
+
+func TestTrashEmptyJSONUsesStableDTO(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "trash me")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "empty")
+	if code != 0 {
+		t.Fatalf("trash empty exit %d: %s", code, out)
+	}
+
+	var rep struct {
+		Scanned int               `json:"scanned"`
+		Removed int               `json:"removed"`
+		Entries []task.TrashEntry `json:"entries"`
+		Errors  []string          `json:"errors"`
+	}
+	mustUnmarshal(t, out, &rep)
+	if rep.Scanned != 1 || rep.Removed != 1 {
+		t.Fatalf("trash empty report = %+v, want scanned=1 removed=1", rep)
+	}
+	if len(rep.Entries) != 1 || rep.Entries[0].ID != created.ID {
+		t.Fatalf("trash empty entries = %+v, want one entry for %s", rep.Entries, created.ID)
+	}
+	if len(rep.Errors) != 0 {
+		t.Fatalf("trash empty errors = %+v, want empty", rep.Errors)
+	}
+}
+
 func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	setupStore(t)
 

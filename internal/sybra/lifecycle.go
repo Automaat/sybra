@@ -59,6 +59,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
+	lm.startTrashPruneLoop(ctx)
 	lm.registerMetricsObservers()
 }
 
@@ -206,6 +207,26 @@ func (lm *LifecycleManager) startAgentLogPruneLoop(ctx context.Context) {
 				return
 			case <-ticker.C:
 				lm.prune()
+			}
+		}
+	})
+}
+
+// startTrashPruneLoop sweeps expired soft-deleted task generations once a
+// day. The startup call inside Recovery.RunStartupCleanup handles the first
+// pass; this goroutine bounds trash growth between restarts on long-lived
+// server deployments, mirroring startAgentLogPruneLoop.
+func (lm *LifecycleManager) startTrashPruneLoop(ctx context.Context) {
+	a := lm.app
+	a.wg.Go(func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.recovery.PruneTrash()
 			}
 		}
 	})

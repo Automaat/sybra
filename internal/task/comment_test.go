@@ -138,35 +138,3 @@ func TestCommentStore_Delete_NotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent comment")
 	}
 }
-
-func TestCommentStore_DeleteAll(t *testing.T) {
-	t.Parallel()
-	s := NewCommentStore(t.TempDir())
-
-	if _, err := s.Add("task-1", 1, "a"); err != nil {
-		t.Fatalf("Add a: %v", err)
-	}
-	if _, err := s.Add("task-1", 2, "b"); err != nil {
-		t.Fatalf("Add b: %v", err)
-	}
-
-	if err := s.DeleteAll("task-1"); err != nil {
-		t.Fatalf("DeleteAll: %v", err)
-	}
-
-	comments, err := s.List("task-1")
-	if err != nil {
-		t.Fatalf("List after DeleteAll: %v", err)
-	}
-	if len(comments) != 0 {
-		t.Errorf("expected empty, got %d comments", len(comments))
-	}
-}
-
-func TestCommentStore_DeleteAll_NoFile(t *testing.T) {
-	t.Parallel()
-	s := NewCommentStore(t.TempDir())
-	if err := s.DeleteAll("task-1"); err != nil {
-		t.Fatalf("DeleteAll with no file: %v", err)
-	}
-}

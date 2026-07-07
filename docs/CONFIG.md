@@ -19,6 +19,7 @@ machine.
 |---|---|---|---|
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
+| `trash` | `TrashConfig` | _(see below)_ |  |
 | `agent` | `AgentDefaults` | _(see below)_ |  |
 | `testing` | `TestingConfig` | _(see below)_ |  |
 | `notification` | `NotificationConfig` | _(see below)_ |  |
@@ -68,6 +69,15 @@ machine.
 |---|---|---|---|
 | `audit.enabled` | `bool` | `true` |  |
 | `audit.retention_days` | `int` | `30` |  |
+
+## TrashConfig (`trash`)
+
+TrashConfig controls the retention of soft-deleted tasks under
+~/.sybra/trash (see internal/task.Store.Delete).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `trash.retention_days` | `int` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
 
 ## AgentDefaults (`agent`)
 

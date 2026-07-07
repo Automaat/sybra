@@ -55,6 +55,12 @@ type Recovery struct {
 
 	LogDir       string
 	LogRetention time.Duration // 0 disables age-based pruning
+
+	// TrashRetentionDays bounds how long a soft-deleted task (see
+	// task.Store.Delete) survives under the trash dir before
+	// pruneTrash permanently removes it. A negative value disables
+	// pruning.
+	TrashRetentionDays int
 }
 
 // RunStartupCleanup sequences boot-time maintenance in the order that lets
@@ -76,6 +82,7 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	}
 	r.Worktrees.RepairAll(ctx)
 	r.gcOrphanChats(ctx)
+	r.pruneTrash()
 	r.Worktrees.CleanupOrphaned(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
@@ -87,4 +94,38 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 func (r *Recovery) pruneAgentLogs() {
 	rep := logging.PruneAgentLogs(r.LogDir, r.LogRetention, time.Now())
 	logging.LogPruneReport(r.Logger, rep)
+}
+
+// PruneTrash is the periodic entry point for a background ticker (see
+// LifecycleManager.startTrashPruneLoop) that keeps the trash dir bounded
+// between restarts on long-lived server deployments — RunStartupCleanup's
+// call only covers the boot-time pass.
+func (r *Recovery) PruneTrash() {
+	r.pruneTrash()
+}
+
+func (r *Recovery) effectiveTrashRetentionDays() int {
+	if r.TrashRetentionDays == 0 {
+		return 14
+	}
+	return r.TrashRetentionDays
+}
+
+// pruneTrash permanently removes trash generations older than
+// TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
+// trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.
+// Logs the resulting count and every generation removed.
+func (r *Recovery) pruneTrash() {
+	rep, err := r.Tasks.PruneTrash(r.effectiveTrashRetentionDays())
+	if err != nil {
+		r.Logger.Warn("recovery.trash.prune_failed", "err", err)
+		return
+	}
+	for _, entry := range rep.Entries {
+		r.Logger.Info("recovery.trash.pruned", "id", entry.ID, "generation", entry.Generation, "deleted_date", entry.DeletedDate, "title", entry.Title)
+	}
+	for _, err := range rep.Errors {
+		r.Logger.Warn("recovery.trash.prune_error", "err", err)
+	}
+	r.Logger.Info("recovery.trash.prune", "scanned", rep.Scanned, "removed", rep.Removed, "errors", len(rep.Errors))
 }

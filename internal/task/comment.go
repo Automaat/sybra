@@ -114,15 +114,6 @@ func (s *CommentStore) ResolveAll(taskID string) error {
 	return s.write(taskID, comments)
 }
 
-// DeleteAll removes the sidecar file for a task (called on task deletion).
-func (s *CommentStore) DeleteAll(taskID string) error {
-	path := s.sidecarPath(taskID)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("delete comments: %w", err)
-	}
-	return nil
-}
-
 func (s *CommentStore) write(taskID string, comments []ReviewComment) error {
 	data, err := json.MarshalIndent(comments, "", "  ")
 	if err != nil {
