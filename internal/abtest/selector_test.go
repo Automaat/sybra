@@ -93,7 +93,6 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 	}{
 		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
 		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
-		{"fix-review", "fix-review-expensive", []string{"claude-opus", "codex-gpt-5.5"}},
 		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
 	}
 	for _, tt := range cases {
@@ -127,6 +126,24 @@ func TestDefaultConfigScopesCopilotToImplementation(t *testing.T) {
 					t.Fatalf("code-author-maintenance-cheap must not include a copilot variant, got %+v", v)
 				}
 			}
+		}
+	}
+}
+
+func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
+	cfg := DefaultConfig()
+	for i := range 100 {
+		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "fix-review", "step")
+		if err != nil || !ok {
+			t.Fatalf("Select ok=%v err=%v", ok, err)
+		}
+		if a.ExperimentID != "fix-review-expensive" {
+			t.Fatalf("ExperimentID = %q, want fix-review-expensive", a.ExperimentID)
+		}
+		switch a.VariantID {
+		case "claude-opus", "codex-gpt-5.5":
+		default:
+			t.Fatalf("VariantID = %q, want claude-opus or codex-gpt-5.5", a.VariantID)
 		}
 	}
 }

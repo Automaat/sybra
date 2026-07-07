@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -1085,7 +1085,7 @@ func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	rewritten := strings.Replace(string(data), "builtin_version: 3", "builtin_version: 1", 1)
+	rewritten := regexp.MustCompile(`builtin_version: \d+`).ReplaceAllString(string(data), "builtin_version: 1")
 	if rewritten == string(data) {
 		t.Fatal("failed to downgrade builtin_version in persisted config")
 	}
