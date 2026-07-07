@@ -234,10 +234,13 @@ func (lm *LifecycleManager) startTrashPruneLoop(ctx context.Context) {
 }
 
 // startTaskSnapshotLoop ensures the tasks-dir git snapshot repo exists,
-// takes a baseline commit so a fresh git-dir is never left empty until the
-// first ticker fire, then launches the fixed-interval commit loop. Skips
-// (with a warning) when TaskSnapshotEnabled is false or EnsureRepo could
-// not make the snapshotter usable (git missing, corrupt/mismatched repo).
+// takes a baseline commit attempt so a fresh, non-empty tasks dir is
+// captured immediately rather than waiting for the first ticker fire (a
+// clean/empty tasks dir makes CommitNow a no-op, same as any other
+// already-clean commit attempt), then launches the fixed-interval commit
+// loop. Skips (with a warning) when TaskSnapshotEnabled is false or
+// EnsureRepo could not make the snapshotter usable (git missing,
+// corrupt/mismatched repo).
 func (lm *LifecycleManager) startTaskSnapshotLoop(ctx context.Context) {
 	a := lm.app
 	if !a.cfg.TaskSnapshotEnabled() {

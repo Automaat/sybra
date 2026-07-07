@@ -58,7 +58,7 @@ the tool of record for the actual restore below.
 
    ```bash
    git --git-dir=~/.sybra/tasks-snapshots.git --work-tree=~/.sybra/tasks \
-     checkout <sha> -- tasks/<task-id>.md
+     checkout <sha> -- <task-id>.md
    ```
 
 3. Restart Sybra (or wait for the file watcher to pick up the change) so the
@@ -70,7 +70,7 @@ Any read-only git command works directly against the snapshot repo:
 
 ```bash
 git --git-dir=~/.sybra/tasks-snapshots.git --work-tree=~/.sybra/tasks log --oneline
-git --git-dir=~/.sybra/tasks-snapshots.git --work-tree=~/.sybra/tasks show <sha>:tasks/<task-id>.md
+git --git-dir=~/.sybra/tasks-snapshots.git --work-tree=~/.sybra/tasks show <sha>:<task-id>.md
 ```
 
 Never run a write/remote operation (`push`, `pull`, `fetch`, `remote add`)

@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -234,7 +235,7 @@ func (s *Snapshotter) ensureLockExcluded() error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read exclude file: %w", err)
 	}
-	if strings.Contains(string(existing), "*.lock") {
+	if slices.Contains(strings.Split(string(existing), "\n"), "*.lock") {
 		return nil
 	}
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -242,7 +243,11 @@ func (s *Snapshotter) ensureLockExcluded() error {
 		return fmt.Errorf("open exclude file: %w", err)
 	}
 	defer f.Close()
-	if _, err := f.WriteString("*.lock\n"); err != nil {
+	pattern := "*.lock\n"
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		pattern = "\n" + pattern
+	}
+	if _, err := f.WriteString(pattern); err != nil {
 		return fmt.Errorf("write exclude file: %w", err)
 	}
 	return nil

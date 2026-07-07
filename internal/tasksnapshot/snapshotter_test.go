@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,14 +154,7 @@ func TestBuildEnv_StripsInheritedGitVars(t *testing.T) {
 		t.Fatalf("expected only GIT_DIR/GIT_WORK_TREE to survive, got %v", gitVars)
 	}
 	for _, w := range want {
-		found := false
-		for _, g := range gitVars {
-			if g == w {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(gitVars, w) {
 			t.Fatalf("expected %q in built env, got %v", w, gitVars)
 		}
 	}
