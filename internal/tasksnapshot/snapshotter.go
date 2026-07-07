@@ -67,16 +67,21 @@ func New(gitDir, workTree string, interval time.Duration, logger *slog.Logger) *
 	}
 }
 
-// BuildEnv returns the process environment with any inherited
-// GIT_DIR/GIT_WORK_TREE stripped and the given values applied, so every git
-// invocation targets exactly this repo/work-tree regardless of the calling
-// process's environment. Exported so read-only callers outside the package
-// (e.g. sybra-cli's tasks-history) target the same repo the same way.
+// BuildEnv returns the process environment with every inherited GIT_*
+// variable stripped (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+// GIT_OBJECT_DIRECTORY, GIT_CEILING_DIRECTORIES, etc.) and only GIT_DIR/
+// GIT_WORK_TREE re-applied, so every git invocation targets exactly this
+// repo/work-tree regardless of the calling process's environment. A caller
+// (e.g. a headless agent, or a parent process mid-rebase) that has any other
+// GIT_* variable set — most notably GIT_INDEX_FILE — would otherwise make
+// git read/write the wrong index file and silently fail to snapshot.
+// Exported so read-only callers outside the package (e.g. sybra-cli's
+// tasks-history) target the same repo the same way.
 func BuildEnv(gitDir, workTree string) []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+2)
 	for _, e := range base {
-		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") {
+		if strings.HasPrefix(e, "GIT_") {
 			continue
 		}
 		env = append(env, e)

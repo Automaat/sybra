@@ -134,6 +134,69 @@ func TestCommit_OnChange(t *testing.T) {
 	}
 }
 
+func TestBuildEnv_StripsInheritedGitVars(t *testing.T) {
+	t.Setenv("GIT_INDEX_FILE", "/nonexistent/bad-index")
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/nonexistent/bad-objects")
+	t.Setenv("GIT_DIR", "/nonexistent/bad-git-dir")
+	t.Setenv("GIT_WORK_TREE", "/nonexistent/bad-work-tree")
+
+	env := BuildEnv("/wanted/git-dir", "/wanted/work-tree")
+
+	var gitVars []string
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_") {
+			gitVars = append(gitVars, e)
+		}
+	}
+	want := []string{"GIT_DIR=/wanted/git-dir", "GIT_WORK_TREE=/wanted/work-tree"}
+	if len(gitVars) != len(want) {
+		t.Fatalf("expected only GIT_DIR/GIT_WORK_TREE to survive, got %v", gitVars)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range gitVars {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in built env, got %v", w, gitVars)
+		}
+	}
+}
+
+func TestCommit_SucceedsWithInheritedGitIndexFile(t *testing.T) {
+	// Regression test: a caller (or an ambient parent process) with
+	// GIT_INDEX_FILE pointed at an unrelated/invalid path must not break
+	// snapshot commits — BuildEnv must strip every inherited GIT_* var, not
+	// just GIT_DIR/GIT_WORK_TREE.
+	badIndex := filepath.Join(t.TempDir(), "bad-index")
+	if err := os.WriteFile(badIndex, []byte("not a real index"), 0o644); err != nil {
+		t.Fatalf("write bad index: %v", err)
+	}
+	t.Setenv("GIT_INDEX_FILE", badIndex)
+
+	s, gitDir, workTree := newTestSnapshotter(t)
+	ctx := context.Background()
+	if !s.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+
+	writeFile(t, filepath.Join(workTree, "task-1.md"), "hello")
+
+	committed, err := s.Commit(ctx)
+	if err != nil {
+		t.Fatalf("Commit failed with inherited GIT_INDEX_FILE set: %v", err)
+	}
+	if !committed {
+		t.Fatal("expected a commit for a new file")
+	}
+	if got := gitLogCount(t, gitDir, workTree); got != 1 {
+		t.Fatalf("expected 1 commit, got %d", got)
+	}
+}
+
 func TestCommit_NoOpWhenClean(t *testing.T) {
 	s, gitDir, workTree := newTestSnapshotter(t)
 	ctx := context.Background()
