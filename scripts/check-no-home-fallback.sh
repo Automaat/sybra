@@ -59,19 +59,21 @@ fail=0
 
 # Go: filepath.Join(<home-ish>, ".sybra"), bare string literal ".sybra", or
 # a concatenation/format-string literal ending in ".sybra" (e.g.
-# `home + "/.sybra"`, `fmt.Sprintf("%s/.sybra", home)`, `"~/.sybra"`). Matches
-# any double-quoted literal whose content ends in ".sybra" immediately before
-# the closing quote — deliberately does NOT match ".sybra/<subpath>" literals,
-# since those are overwhelmingly descriptive paths (log/doc text, comments)
-# rather than a home-fallback reconstruction, and matching them exploded into
-# hundreds of unrelated false positives when tried.
+# `home + "/.sybra"`, `fmt.Sprintf("%s/.sybra", home)`, `"~/.sybra"`,
+# `home + `+"/.sybra"`` as a raw (backtick) string). Matches any
+# double-quoted OR backtick-quoted literal whose content ends in ".sybra"
+# immediately before the closing delimiter — deliberately does NOT match
+# ".sybra/<subpath>" literals, since those are overwhelmingly descriptive
+# paths (log/doc text, comments) rather than a home-fallback reconstruction,
+# and matching them exploded into hundreds of unrelated false positives when
+# tried.
 while IFS=: read -r file line _; do
   [[ -z "${file}" ]] && continue
   if ! is_allowlisted "${file}"; then
     echo "::error file=${file},line=${line}::found a Go home+\".sybra\" fallback outside internal/config.HomeDir() (see #1576). Call config.HomeDir() instead of reconstructing it." >&2
     fail=1
   fi
-done < <(grep -rnE '\.sybra"' --include="*.go" . | grep -v '/vendor/' | sed 's#^\./##')
+done < <(grep -rnE '\.sybra["`]' --include="*.go" . | grep -v '/vendor/' | sed 's#^\./##')
 
 # TS/JS/Svelte: join(homedir(), '.sybra') or a concatenation/template literal
 # ending in '.sybra' (e.g. `${home}/.sybra`, `home + "/.sybra"`).
