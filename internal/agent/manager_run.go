@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -189,10 +190,11 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 // this run's spec falls back to "off" (unwrapped) instead of erroring, so a
 // misconfigured or unsupported host cannot break the default posture.
 func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
-	mode := cfg.SandboxMode
-	if mode == "" {
-		mode = "report"
+	mode, err := config.NormalizeSandboxMode(cfg.SandboxMode)
+	if err != nil {
+		return fmt.Errorf("agent.Run: sandbox mode: %w", err)
 	}
+	cfg.SandboxMode = mode
 	if mode == "off" {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
@@ -319,6 +321,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,
 		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
 		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {

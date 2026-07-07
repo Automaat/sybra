@@ -144,6 +144,12 @@ type Agent struct {
 	// choice across a restart instead of silently becoming permissive.
 	requirePermissions bool
 
+	// sandboxMode mirrors the resolved RunConfig.SandboxMode. Persisted to the
+	// registry so a recreated per-turn conversational chat preserves its OS
+	// process-sandbox posture across restart instead of silently dropping an
+	// enforce-mode seatbelt.
+	sandboxMode string
+
 	// headlessPermissionMode is the resolved posture passed via RunConfig
 	// ("bypass" or "auto"). Stored for OnComplete so the denial audit events
 	// can record the posture without re-resolving it.
@@ -220,6 +226,7 @@ func (a *Agent) toRecord() Record {
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
+		SandboxMode:        a.sandboxMode,
 		ReasoningEffort:    a.ReasoningEffort,
 	}
 }
@@ -249,6 +256,7 @@ func fromRecord(r Record) *Agent {
 		oneShot:            r.OneShot,
 		convo:              convoIO{stdinPath: r.StdinPath},
 		requirePermissions: r.RequirePermissions,
+		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
 		detached:           true,
 	}

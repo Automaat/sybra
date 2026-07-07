@@ -317,11 +317,19 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 
 	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", a.Provider, "events", len(a.ConvoOutput()))
 	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
-	// come from the rebuilt agent; the sandbox/approval choice is restored
-	// from the record so a sandboxed chat stays sandboxed.
-	go m.runPerTurnConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
+	// come from the rebuilt agent; the sandbox/approval choices are restored
+	// from the record so a sandboxed chat stays sandboxed across restart.
+	go m.runPerTurnConversational(ctx, a, perTurnReattachConfig(a), true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
+}
+
+func perTurnReattachConfig(a *Agent) RunConfig {
+	return RunConfig{
+		Dir:                a.sessionCWD,
+		RequirePermissions: a.requirePermissions,
+		SandboxMode:        a.sandboxMode,
+	}
 }
 
 func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistry) {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -1901,8 +1902,9 @@ Commands:
   config dump                  Print the resolved ~/.sybra/config.yaml (env
                                overrides applied, secrets redacted).
   config doctor                Sanity-check config: data dirs, agent.provider,
-                               agent.headless_permission_mode, and enabled
-                               integrations missing required credentials.
+                               agent.headless_permission_mode,
+                               agent.sandbox_mode, and enabled integrations
+                               missing required credentials.
 
 Global flags:
   --json   Output as JSON
@@ -2072,6 +2074,14 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	if cfg.Agent.HeadlessPermissionMode != "" {
 		if _, err := config.NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
 			add("error", "agent.headless_permission_mode: %v", err)
+		}
+	}
+	if cfg.Agent.SandboxMode != "" {
+		mode, err := config.NormalizeSandboxMode(cfg.Agent.SandboxMode)
+		if err != nil {
+			add("error", "agent.sandbox_mode: %v", err)
+		} else if mode == "enforce" && runtime.GOOS != "darwin" {
+			add("error", "agent.sandbox_mode=enforce requires darwin; current host is %s", runtime.GOOS)
 		}
 	}
 

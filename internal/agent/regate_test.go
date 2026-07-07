@@ -370,10 +370,11 @@ func TestReattachPerTurnConvo_UsesSwitchedProviderAndClearedSession(t *testing.T
 
 	m := mustNewManager(t, t.Context(), func(string, any) {}, discardLogger(), logDir, ManagerConfig{SurviveRestartDir: regDir})
 	// As regateForTurn would have persisted it: switched to copilot, session
-	// cleared, requirePermissions carried over from the pre-switch run.
+	// cleared, requirePermissions/sandbox posture carried over from the
+	// pre-switch run.
 	rec := Record{
 		ID: "sw1", TaskID: "t-sw", Mode: "interactive", Provider: "copilot",
-		PID: 0, LogPath: logPath, SessionID: "", RequirePermissions: true,
+		PID: 0, LogPath: logPath, SessionID: "", RequirePermissions: true, SandboxMode: "enforce",
 		StartedAt: time.Now().UTC(),
 	}
 	if err := m.reg.Save(rec); err != nil {
@@ -397,6 +398,9 @@ func TestReattachPerTurnConvo_UsesSwitchedProviderAndClearedSession(t *testing.T
 	if !a.requirePermissions {
 		t.Error("expected requirePermissions preserved across the switch+restart")
 	}
+	if a.sandboxMode != "enforce" {
+		t.Errorf("expected sandboxMode preserved across the switch+restart, got %q", a.sandboxMode)
+	}
 	// Both segments of the mixed-provider log rehydrate correctly via markers.
 	if len(a.ConvoOutput()) != 3 {
 		t.Errorf("expected 3 rehydrated events across both provider segments, got %d", len(a.ConvoOutput()))
@@ -409,6 +413,25 @@ func TestReattachPerTurnConvo_UsesSwitchedProviderAndClearedSession(t *testing.T
 	case <-a.done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("reattached agent did not exit after StopAgent")
+	}
+}
+
+func TestPerTurnReattachConfig_PreservesSandboxPosture(t *testing.T) {
+	a := &Agent{
+		sessionCWD:         "/tmp/worktree",
+		requirePermissions: true,
+		sandboxMode:        "enforce",
+	}
+
+	cfg := perTurnReattachConfig(a)
+	if cfg.Dir != a.sessionCWD {
+		t.Fatalf("Dir = %q, want %q", cfg.Dir, a.sessionCWD)
+	}
+	if !cfg.RequirePermissions {
+		t.Fatal("RequirePermissions = false, want true")
+	}
+	if cfg.SandboxMode != "enforce" {
+		t.Fatalf("SandboxMode = %q, want enforce", cfg.SandboxMode)
 	}
 }
 

@@ -18,4 +18,5 @@ stdin_path: /tmp/sybra/agents/a-map.stdin
 one_shot: true
 max_turns: 7
 require_permissions: true
+sandbox_mode: enforce
 reasoning_effort: high

@@ -40,6 +40,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		convo:                    convoIO{stdinPath: "/tmp/stdin.fifo"},
 		oneShot:                  true,
 		requirePermissions:       true,
+		sandboxMode:              "enforce",
 		detached:                 false,
 		InputTokens:              1,
 		OutputTokens:             2,
@@ -85,6 +86,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		OneShot:            rehydrated.oneShot,
 		MaxTurns:           rehydrated.MaxTurns,
 		RequirePermissions: rehydrated.requirePermissions,
+		SandboxMode:        rehydrated.sandboxMode,
 		ReasoningEffort:    rehydrated.ReasoningEffort,
 	}
 	want := persistedAgentFields{
@@ -107,6 +109,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		OneShot:            original.oneShot,
 		MaxTurns:           original.MaxTurns,
 		RequirePermissions: original.requirePermissions,
+		SandboxMode:        original.sandboxMode,
 		ReasoningEffort:    original.ReasoningEffort,
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -214,5 +217,6 @@ type persistedAgentFields struct {
 	OneShot            bool
 	MaxTurns           int
 	RequirePermissions bool
+	SandboxMode        string
 	ReasoningEffort    string
 }
