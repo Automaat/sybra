@@ -170,8 +170,7 @@ func buildClaudeHookSettings(approvalAddr string, needsApproval bool) string {
 
 func (m *Manager) startConvoProcess(ctx context.Context, a *Agent, cfg RunConfig) (*exec.Cmd, io.ReadCloser, *bytes.Buffer, error) {
 	args := m.buildConvoArgs(a, cfg)
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	configureGracefulShutdown(cmd)
+	cmd := newProviderCmd(ctx, &cfg, false, "claude", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}

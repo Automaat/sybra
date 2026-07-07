@@ -232,6 +232,56 @@ never left for `SanitizeWorktree`'s `git add -A` to commit onto the PR. For
 work-typed tasks the file stays local; route through `internal/scrub` if ever
 summarized into a persisted artifact.
 
+### OS-Level Process Sandbox (darwin)
+
+Env-level isolation (`SYBRA_HOME`, see above) is advisory — a malicious or
+confused tool can still write anywhere the OS user can, which is the blast
+radius the 2026-07-06 board-wipe incident (#1576) exploited. `internal/agent`
+adds a second, OS-enforced layer on darwin: every provider CLI spawn
+(headless pipe/survive, persistent claude convo, convo-survive, per-turn
+codex/copilot) routes through one constructor, `newProviderCmd`
+(`runner_core.go`) — the sole caller of a provider `exec.CommandContext`. A
+`rg exec.CommandContext internal/agent` drift check must only ever match
+`newProviderCmd` itself plus four documented non-provider probe sites
+(`reattach.go` ps, `discovery.go` pgrep/lsof, `skill_invoke.go` codex plugin
+list); a new spawn site cannot obtain an unsandboxed process by construction.
+
+`newProviderCmd` wraps the invocation via `wrapInvocation`
+(`procsandbox_darwin.go`, `!darwin` no-op stub in `procsandbox_other.go`),
+transposing it through `sandbox-exec` with an embedded seatbelt profile
+(`agent_sandbox.sb`) that denies `file-write*` everywhere except three
+canonicalized roots supplied via `-D`: the task's worktree, its sandbox home
+(`injectSandboxHome`'s resolved dir), and the tmp root from `os.TempDir()`
+(typically `/var/folders/.../T` on macOS, or `/private/tmp` if `TMPDIR` points
+at `/tmp`) — canonicalized in enforce mode so a symlinked tmp root (e.g. the
+`/tmp` symlink) resolves to its real path, or legitimate tmp writes would be
+denied. Reads stay unrestricted. `sandbox-exec` execs the child in place,
+preserving its PID and signal delivery (required for the watchdog kill path
+and detached-agent reattach), and the profile applies transitively to
+grandchild processes (e.g. a Playwright/npm/node subprocess an agent
+spawns) — the literal #1576 shape.
+
+Posture is `agent.sandbox_mode` (`off`/`report`/`enforce`, config default
+**`report`**) plus a per-task `sandbox: false` escape hatch (nil/true =
+inherit config; false = force off), resolved by
+`agentorch.ResolveSandboxMode` and set into `RunConfig.SandboxMode`.
+`Manager.injectProcessSandbox` (`manager_run.go`) resolves this once per run
+into an unexported `RunConfig.sandbox` spec:
+
+- `off`: no validation, no wrap.
+- `report`: validates and logs the resolved allowlist via `slog`, but
+  **never wraps the spawn** — a profile/SBPL defect can only ever affect an
+  explicit `enforce` posture, never the default rollout posture. This is
+  why `report` is safe to ship as the default.
+- `enforce`: canonicalizes the roots, materializes the embedded profile, and
+  fails the run closed (no spawn) if `sandbox-exec` or the profile is
+  unavailable — mirroring `injectSandboxHome`'s fail-closed discipline.
+
+The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
+logs a warning and records `audit.EventAgentSandboxDisabled`. Server/Linux
+has no equivalent OS enforcement yet (`sandbox-exec` is macOS-only) — tracked
+as a follow-up (#1595), not silently out of scope.
+
 ### Verified Experience Memory
 
 Experience records under `~/.sybra/experience/` are advisory-only context for

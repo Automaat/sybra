@@ -272,6 +272,28 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.SandboxMode = "definitely-not-valid"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "agent.sandbox_mode")
+	}) {
+		t.Fatalf("expected agent.sandbox_mode error in report: %+v", report.Findings)
+	}
+}
+
 func TestListFilterStatus(t *testing.T) {
 	setupStore(t)
 

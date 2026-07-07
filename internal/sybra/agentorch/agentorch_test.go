@@ -6,8 +6,38 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// TestResolveSandboxMode pins the escape-hatch/default precedence: a task
+// can only opt OUT of the configured OS-level sandbox posture (Sandbox:
+// false -> "off"), never opt into a stricter posture than configured
+// (Sandbox: true is a no-op, matching an escape hatch rather than a
+// per-task override).
+func TestResolveSandboxMode(t *testing.T) {
+	t.Parallel()
+	trueVal, falseVal := true, false
+	cases := []struct {
+		name string
+		t    task.Task
+		cfg  *config.Config
+		want string
+	}{
+		{"no override, fresh install default", task.Task{}, &config.Config{}, "report"},
+		{"no override, configured enforce", task.Task{}, &config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}}, "enforce"},
+		{"escape hatch off", task.Task{Sandbox: &falseVal}, &config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}}, "off"},
+		{"sandbox=true is a no-op, config wins", task.Task{Sandbox: &trueVal}, &config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}}, "enforce"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ResolveSandboxMode(tc.t, tc.cfg); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 // TestPickImplementationResumeSession pins two regression guards on the
 // resume-session walker:

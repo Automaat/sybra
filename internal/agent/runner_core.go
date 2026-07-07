@@ -3,10 +3,58 @@ package agent
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 )
+
+// newProviderCmd is the sole constructor for a provider CLI subprocess. Every
+// exec.CommandContext spawn of a provider binary (claude/codex/copilot, in
+// any of headless-pipe, headless-survive, persistent-convo, convo-survive,
+// or per-turn-convo mode) must go through here so a single seam can wrap the
+// invocation for OS-level sandboxing (see wrapInvocation in
+// procsandbox_darwin.go/procsandbox_other.go) — a new spawn site cannot
+// obtain an unsandboxed provider process by construction.
+//
+// detached selects the shutdown-behavior seam: false configures graceful
+// SIGTERM-then-SIGKILL shutdown on ctx cancellation (configureGracefulShutdown)
+// for a live, pipe-backed spawn; true configures a detached process group
+// (configureDetached) for a spawn that must survive a cancelled parent ctx —
+// in that case the child is run under context.Background() instead of ctx, so
+// a shutdown cancel never reaches it. cfg carries the sandbox spec computed by
+// prepareRunConfig; a nil cfg spawns unwrapped (e.g. in tests that construct a
+// command directly).
+func newProviderCmd(ctx context.Context, cfg *RunConfig, detached bool, name string, args ...string) *exec.Cmd {
+	wrappedName, wrappedArgs := wrapInvocation(name, args, cfg)
+	var cmd *exec.Cmd
+	if detached {
+		// no Context: a cancelled ctx must not kill a detached child
+		cmd = exec.CommandContext(context.Background(), wrappedName, wrappedArgs...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
+		configureDetached(cmd)
+	} else {
+		cmd = exec.CommandContext(ctx, wrappedName, wrappedArgs...)
+		configureGracefulShutdown(cmd)
+	}
+	return cmd
+}
+
+// sandboxSpec carries the resolved OS-level process-sandbox posture and
+// canonicalized allowed write roots for one run, computed once by
+// Manager.injectProcessSandbox (manager_run.go) and consumed by
+// wrapInvocation (procsandbox_darwin.go / procsandbox_other.go) at each
+// provider spawn site. The zero value ("") is equivalent to "off": unwrapped.
+type sandboxSpec struct {
+	// mode is "off" or "enforce" here — never "report": report-mode specs are
+	// validated and logged by injectProcessSandbox but always stored as "off"
+	// so a profile/SBPL defect can only affect an explicit enforce posture,
+	// never the default rollout posture.
+	mode        string
+	worktree    string
+	sandboxHome string
+	tmp         string
+	profilePath string
+}
 
 // attemptEventsFrom slices the events produced since prevLen out of all,
 // clamping prevLen so a buffer that shrank between reads (should not happen,

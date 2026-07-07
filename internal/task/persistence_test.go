@@ -14,6 +14,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 	closedAt := now.Add(time.Hour)
 	dueDate := now.Add(24 * time.Hour)
 	requirePermissions := false
+	sandbox := false
 	testingCycleStartedAt := now.Add(2 * time.Hour)
 	completedAt := now.Add(3 * time.Hour)
 	original := Task{
@@ -51,6 +52,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		RequirePermissions:     &requirePermissions,
 		HeadlessPermissionMode: "auto",
 		ForkSubagent:           true,
+		Sandbox:                &sandbox,
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
 		AgentRuns: []AgentRun{{
@@ -253,6 +255,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.HeadlessPermissionMode = "auto"
 	case "ForkSubagent":
 		task.ForkSubagent = true
+	case "Sandbox":
+		task.Sandbox = &falseValue
 	case "ReasoningEffort":
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":

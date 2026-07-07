@@ -41,6 +41,10 @@ type Record struct {
 	// across a restart (codex respawns per turn and would otherwise default
 	// to permissive).
 	RequirePermissions bool `yaml:"require_permissions,omitempty"`
+	// SandboxMode preserves the resolved OS process-sandbox posture across a
+	// restart so per-turn conversational agents keep enforce/report/off
+	// behavior on the next spawned provider process.
+	SandboxMode string `yaml:"sandbox_mode,omitempty"`
 	// ReasoningEffort preserves the codex model_reasoning_effort across restarts.
 	// Codex convo respawns a fresh process per turn — without this the effort
 	// would revert to model default after a restart.

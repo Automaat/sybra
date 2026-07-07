@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -147,8 +146,7 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 }
 
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
-	cmd := exec.CommandContext(ctx, inv.name, inv.args...)
-	configureGracefulShutdown(cmd)
+	cmd := newProviderCmd(ctx, &cfg, false, inv.name, inv.args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
@@ -250,9 +248,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	}
 	logPath := (*outFile).Name()
 
-	// no Context: a cancelled ctx must not kill a detached child
-	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
-	configureDetached(cmd)
+	cmd := newProviderCmd(ctx, &cfg, true, name, args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}

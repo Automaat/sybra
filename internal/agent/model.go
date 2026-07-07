@@ -144,6 +144,12 @@ type Agent struct {
 	// choice across a restart instead of silently becoming permissive.
 	requirePermissions bool
 
+	// sandboxMode mirrors the resolved RunConfig.SandboxMode. Persisted to the
+	// registry so a recreated per-turn conversational chat preserves its OS
+	// process-sandbox posture across restart instead of silently dropping an
+	// enforce-mode seatbelt.
+	sandboxMode string
+
 	// headlessPermissionMode is the resolved posture passed via RunConfig
 	// ("bypass" or "auto"). Stored for OnComplete so the denial audit events
 	// can record the posture without re-resolving it.
@@ -220,6 +226,7 @@ func (a *Agent) toRecord() Record {
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
+		SandboxMode:        a.sandboxMode,
 		ReasoningEffort:    a.ReasoningEffort,
 	}
 }
@@ -249,6 +256,7 @@ func fromRecord(r Record) *Agent {
 		oneShot:            r.OneShot,
 		convo:              convoIO{stdinPath: r.StdinPath},
 		requirePermissions: r.RequirePermissions,
+		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
 		detached:           true,
 	}
@@ -968,10 +976,24 @@ type RunConfig struct {
 	// Only effective for claude headless runs when AllowedTools is empty and
 	// RequirePermissions is false.
 	HeadlessPermissionMode string
+	// SandboxMode overrides the OS-level process-sandbox posture ("off",
+	// "report", or "enforce") for this run. Set by the dispatcher
+	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
+	// with config.DefaultSandboxMode(). Empty is treated as "report" by
+	// Manager.injectProcessSandbox.
+	SandboxMode string
 	// provider is the implementation selected once at run start after health
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
 	provider Provider
+	// resolvedSandboxHome is the per-task sandbox home directory resolved by
+	// injectSandboxHome, reused by injectProcessSandbox as one of the
+	// sandbox's allowed write roots. Never set by callers.
+	resolvedSandboxHome string
+	// sandbox is the resolved OS-level process-sandbox spec for this run,
+	// computed once by injectProcessSandbox and consumed by wrapInvocation
+	// at each provider spawn site. Never set by callers.
+	sandbox sandboxSpec
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

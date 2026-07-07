@@ -69,6 +69,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.setStdinPath("/tmp/sybra/agents/a-map.stdin")
 	a.oneShot = true
 	a.requirePermissions = true
+	a.sandboxMode = "enforce"
 
 	want := recordMappingRecord(started)
 	assertRecordFixtureCoversFields(t, want, "ProcStartedAt")
@@ -204,6 +205,7 @@ func recordMappingRecord(started time.Time) Record {
 		OneShot:            true,
 		MaxTurns:           7,
 		RequirePermissions: true,
+		SandboxMode:        "enforce",
 		ReasoningEffort:    "high",
 	}
 }
