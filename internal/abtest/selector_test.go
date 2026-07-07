@@ -93,7 +93,7 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 	}{
 		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
 		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
-		{"fix-review", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+		{"fix-review", "fix-review-expensive", []string{"claude-opus", "codex-gpt-5.5"}},
 		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
 	}
 	for _, tt := range cases {
