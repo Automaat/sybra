@@ -61,6 +61,14 @@ type Recovery struct {
 	// pruneTrash permanently removes it. A negative value disables
 	// pruning.
 	TrashRetentionDays int
+
+	// CommitBeforePrune, when set, is invoked at the top of pruneTrash so a
+	// git snapshot of the tasks dir (see internal/tasksnapshot) is taken
+	// immediately before the bulk-delete sweep — covering both the
+	// boot-time RunStartupCleanup pass and the periodic PruneTrash loop.
+	// nil-safe: recovery deliberately does not import internal/tasksnapshot
+	// so it stays a leaf package; this func field is the only coupling.
+	CommitBeforePrune func(context.Context)
 }
 
 // RunStartupCleanup sequences boot-time maintenance in the order that lets
@@ -82,7 +90,7 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	}
 	r.Worktrees.RepairAll(ctx)
 	r.gcOrphanChats(ctx)
-	r.pruneTrash()
+	r.pruneTrash(ctx)
 	r.Worktrees.CleanupOrphaned(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
@@ -100,8 +108,8 @@ func (r *Recovery) pruneAgentLogs() {
 // LifecycleManager.startTrashPruneLoop) that keeps the trash dir bounded
 // between restarts on long-lived server deployments — RunStartupCleanup's
 // call only covers the boot-time pass.
-func (r *Recovery) PruneTrash() {
-	r.pruneTrash()
+func (r *Recovery) PruneTrash(ctx context.Context) {
+	r.pruneTrash(ctx)
 }
 
 func (r *Recovery) effectiveTrashRetentionDays() int {
@@ -114,8 +122,13 @@ func (r *Recovery) effectiveTrashRetentionDays() int {
 // pruneTrash permanently removes trash generations older than
 // TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
 // trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.
-// Logs the resulting count and every generation removed.
-func (r *Recovery) pruneTrash() {
+// Logs the resulting count and every generation removed. Fires
+// CommitBeforePrune first (nil-safe) so a git snapshot exists immediately
+// before this bulk-delete sweep.
+func (r *Recovery) pruneTrash(ctx context.Context) {
+	if r.CommitBeforePrune != nil {
+		r.CommitBeforePrune(ctx)
+	}
 	rep, err := r.Tasks.PruneTrash(r.effectiveTrashRetentionDays())
 	if err != nil {
 		r.Logger.Warn("recovery.trash.prune_failed", "err", err)

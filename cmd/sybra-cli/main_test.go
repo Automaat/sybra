@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 )
 
 func mustUnmarshal(t *testing.T, data string, v any) {
@@ -1507,6 +1508,140 @@ func TestHookCmd_ExactLimitAccepted(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// setupSnapshotHome behaves like setupStore but also neutralizes
+// SYBRA_CONTROL_HOME, which otherwise takes precedence over SYBRA_HOME in
+// run()'s home resolution and would point tasks-history's
+// config.TaskSnapshotGitDir() lookup at the real operator home instead of
+// this test's isolated dir (setupStore's other tests are unaffected by this
+// because they read/write through the SYBRA_TASKS_DIR override, which
+// tasks-history does not use).
+func setupSnapshotHome(t *testing.T) string {
+	t.Helper()
+	dir := setupStore(t)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	return dir
+}
+
+func TestTasksHistory_MissingRepo(t *testing.T) {
+	setupSnapshotHome(t)
+
+	code, out := runCLI(t, "tasks-history")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for a missing snapshot repo, got 0 (output: %q)", out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for a missing snapshot repo (json), got 0 (output: %q)", out)
+	}
+}
+
+func TestTasksHistory_HumanAndJSONOutput(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	ctx := t.Context()
+	if !snap.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "task-1.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	committed, err := snap.Commit(ctx)
+	if err != nil || !committed {
+		t.Fatalf("baseline commit: committed=%v err=%v", committed, err)
+	}
+
+	code, out := runCLI(t, "tasks-history")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	if !strings.Contains(out, "snapshot:") {
+		t.Errorf("expected human output to contain the commit subject, got %q", out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code != 0 {
+		t.Fatalf("--json tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []struct {
+		SHA     string `json:"sha"`
+		Date    string `json:"date"`
+		Subject string `json:"subject"`
+	}
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 history entry, got %d (%q)", len(entries), out)
+	}
+	if entries[0].SHA == "" || entries[0].Date == "" || entries[0].Subject == "" {
+		t.Errorf("expected all fields populated, got %+v", entries[0])
+	}
+}
+
+func TestTasksHistory_EmptyRepoIsNotAnError(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	if !snap.EnsureRepo(t.Context()) {
+		t.Fatal("EnsureRepo failed")
+	}
+
+	code, out := runCLI(t, "tasks-history")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 for an initialized-but-empty repo (output: %q)", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code != 0 {
+		t.Fatalf("--json tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []any
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 0 {
+		t.Fatalf("expected an empty array for a fresh repo, got %v", entries)
+	}
+}
+
+func TestTasksHistory_LimitFlag(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	ctx := t.Context()
+	if !snap.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+	for i := range 3 {
+		if err := os.WriteFile(filepath.Join(tasksDir, fmt.Sprintf("task-%d.md", i)), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write task file: %v", err)
+		}
+		if committed, err := snap.Commit(ctx); err != nil || !committed {
+			t.Fatalf("commit %d: committed=%v err=%v", i, committed, err)
+		}
+	}
+
+	code, out := runCLI(t, "--json", "tasks-history", "--limit", "2")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []any
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 2 {
+		t.Fatalf("expected --limit 2 to cap the result to 2 entries, got %d", len(entries))
 	}
 }
 

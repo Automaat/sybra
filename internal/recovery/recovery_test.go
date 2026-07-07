@@ -738,3 +738,173 @@ type stubProjects struct{}
 func (stubProjects) Get(string) (project.Project, error) {
 	return project.Project{}, errors.New("no project")
 }
+
+// TestPruneTrash_CommitBeforePruneFiresBeforeSweep verifies the ordering
+// contract in internal/tasksnapshot's plan: CommitBeforePrune must run
+// before Tasks.PruneTrash actually deletes anything, on both the boot-time
+// RunStartupCleanup path and the periodic PruneTrash entry point. It backdates
+// a real trashed generation past the retention window and has
+// CommitBeforePrune observe (via ListTrash) that the generation is still on
+// disk at the moment it fires — proving the snapshot commit happens before,
+// not just alongside, the bulk-delete sweep.
+func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	backdate := func(title string) string {
+		tk, err := store.Create(title, "body", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Delete(tk.ID); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := store.ListTrash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var genDir string
+		for _, e := range entries {
+			if e.ID == tk.ID {
+				genDir = filepath.Join(store.TrashDir(), e.DeletedDate, e.Generation)
+			}
+		}
+		if genDir == "" {
+			t.Fatalf("could not find trash generation for %s", tk.ID)
+		}
+		backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
+		if err := os.MkdirAll(backdated, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(backdated, filepath.Base(genDir))
+		if err := os.Rename(genDir, dst); err != nil {
+			t.Fatal(err)
+		}
+		return tk.ID
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var calls int
+	var sawTrashedAtCommit bool
+	var expectID string
+	stillTrashed := func(id string) bool {
+		entries, err := tasks.ListTrash()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	r := &recovery.Recovery{
+		Tasks:     tasks,
+		Agents:    agents,
+		Worktrees: wm,
+		Logger:    logger,
+		Throttle:  logging.NewErrorThrottle(),
+		WG:        &wg,
+		LogDir:    t.TempDir(),
+	}
+	r.CommitBeforePrune = func(context.Context) {
+		mu.Lock()
+		calls++
+		id := expectID
+		mu.Unlock()
+		if id != "" && stillTrashed(id) {
+			mu.Lock()
+			sawTrashedAtCommit = true
+			mu.Unlock()
+		}
+	}
+
+	bootID := backdate("Boot")
+	expectID = bootID
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	mu.Lock()
+	afterBoot := calls
+	sawBoot := sawTrashedAtCommit
+	mu.Unlock()
+	if afterBoot != 1 {
+		t.Fatalf("expected CommitBeforePrune to fire once during RunStartupCleanup, got %d", afterBoot)
+	}
+	if !sawBoot {
+		t.Fatal("expected the backdated generation to still exist when CommitBeforePrune fired (boot path)")
+	}
+	if stillTrashed(bootID) {
+		t.Fatal("expected the backdated generation to be pruned after RunStartupCleanup returned")
+	}
+
+	mu.Lock()
+	sawTrashedAtCommit = false
+	mu.Unlock()
+	periodicID := backdate("Periodic")
+	expectID = periodicID
+	r.PruneTrash(context.Background())
+
+	mu.Lock()
+	afterPeriodic := calls
+	sawPeriodic := sawTrashedAtCommit
+	mu.Unlock()
+	if afterPeriodic != 2 {
+		t.Fatalf("expected CommitBeforePrune to fire again on the periodic PruneTrash call, got %d", afterPeriodic)
+	}
+	if !sawPeriodic {
+		t.Fatal("expected the backdated generation to still exist when CommitBeforePrune fired (periodic path)")
+	}
+	if stillTrashed(periodicID) {
+		t.Fatal("expected the backdated generation to be pruned after PruneTrash returned")
+	}
+}
+
+// TestPruneTrash_NilCommitBeforePruneIsSafe verifies the nil-hook path
+// (snapshotting disabled/unavailable) never panics.
+func TestPruneTrash_NilCommitBeforePruneIsSafe(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:     tasks,
+		Agents:    agents,
+		Worktrees: wm,
+		Logger:    logger,
+		Throttle:  logging.NewErrorThrottle(),
+		WG:        &wg,
+		LogDir:    t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+	r.PruneTrash(context.Background())
+}

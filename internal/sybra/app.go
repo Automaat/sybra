@@ -45,6 +45,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -105,6 +106,7 @@ type App struct {
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
 	dispatchNudge   chan struct{}
 	recovery        *recovery.Recovery
+	snapshotter     *tasksnapshot.Snapshotter
 	agentCompletion *AgentCompletionHandler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
@@ -242,6 +244,14 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
 	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
+	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
+	// fires CommitBeforePrune, which on a fresh install would otherwise commit
+	// into an uninitialized git dir and fail silently. StartManagers'
+	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
+	if a.cfg.TaskSnapshotEnabled() {
+		a.snapshotter.EnsureRepo(ctx)
+	}
 	a.recovery = a.newRecovery()
 	a.recovery.RunStartupCleanup(ctx)
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note

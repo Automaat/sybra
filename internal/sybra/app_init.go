@@ -780,7 +780,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		retention = time.Duration(days) * 24 * time.Hour
 	}
-	return &recovery.Recovery{
+	r := &recovery.Recovery{
 		Tasks:              a.tasks,
 		Agents:             a.agents,
 		Worktrees:          a.worktrees,
@@ -794,6 +794,13 @@ func (a *App) newRecovery() *recovery.Recovery {
 		LogRetention:       retention,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 	}
+	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
+	// always constructed, but when the feature is disabled its repo is never
+	// created, so a pre-prune commit would fail on every sweep forever.
+	if a.snapshotter != nil && a.cfg.TaskSnapshotEnabled() {
+		r.CommitBeforePrune = a.snapshotter.CommitNow
+	}
+	return r
 }
 
 // syncSkillsBundle drives the skillsync package with the App's source/dst

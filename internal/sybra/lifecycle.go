@@ -60,6 +60,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
 	lm.startTrashPruneLoop(ctx)
+	lm.startTaskSnapshotLoop(ctx)
 	lm.registerMetricsObservers()
 }
 
@@ -226,10 +227,36 @@ func (lm *LifecycleManager) startTrashPruneLoop(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				a.recovery.PruneTrash()
+				a.recovery.PruneTrash(ctx)
 			}
 		}
 	})
+}
+
+// startTaskSnapshotLoop ensures the tasks-dir git snapshot repo exists,
+// takes a baseline commit attempt so a fresh, non-empty tasks dir is
+// captured immediately rather than waiting for the first ticker fire (a
+// clean/empty tasks dir makes CommitNow a no-op, same as any other
+// already-clean commit attempt), then launches the fixed-interval commit
+// loop. Skips (with a warning) when TaskSnapshotEnabled is false or
+// EnsureRepo could not make the snapshotter usable (git missing,
+// corrupt/mismatched repo).
+func (lm *LifecycleManager) startTaskSnapshotLoop(ctx context.Context) {
+	a := lm.app
+	if !a.cfg.TaskSnapshotEnabled() {
+		a.logger.Info("tasksnapshot.disabled")
+		return
+	}
+	if a.snapshotter == nil {
+		a.logger.Warn("tasksnapshot.unavailable", "reason", "snapshotter not constructed")
+		return
+	}
+	if !a.snapshotter.EnsureRepo(ctx) {
+		a.logger.Warn("tasksnapshot.ensure_repo_failed")
+		return
+	}
+	a.snapshotter.CommitNow(ctx)
+	a.wg.Go(func() { a.snapshotter.Run(ctx) })
 }
 
 // prune is the periodic body of startAgentLogPruneLoop. Mirrors the
