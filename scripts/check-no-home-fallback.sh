@@ -57,6 +57,34 @@ is_allowlisted() {
 
 fail=0
 
+scan_repo_files() {
+  local pattern="$1"
+  local include_kind="$2"
+  local exclude_kind="$3"
+
+  local files=()
+  local file
+  while IFS= read -r -d '' file; do
+    if [[ -n "${exclude_kind}" ]]; then
+      case "${file}" in
+        ${exclude_kind})
+          continue
+          ;;
+      esac
+    fi
+
+    case "${file}" in
+      ${include_kind})
+        files+=("${file}")
+        ;;
+    esac
+  done < <(git ls-files -z --cached --others --exclude-standard)
+
+  ((${#files[@]} == 0)) && return 0
+
+  grep -nHE "${pattern}" "${files[@]}" | sed 's#^\./##'
+}
+
 # Go: filepath.Join(<home-ish>, ".sybra"), bare string literal ".sybra", or
 # a concatenation/format-string literal ending in ".sybra" (e.g.
 # `home + "/.sybra"`, `fmt.Sprintf("%s/.sybra", home)`, `"~/.sybra"`,
@@ -73,7 +101,7 @@ while IFS=: read -r file line _; do
     echo "::error file=${file},line=${line}::found a Go home+\".sybra\" fallback outside internal/config.HomeDir() (see #1576). Call config.HomeDir() instead of reconstructing it." >&2
     fail=1
   fi
-done < <(grep -rnE '\.sybra["`]' --include="*.go" . | grep -v '/vendor/' | sed 's#^\./##')
+done < <(scan_repo_files '\.sybra["`]' '*.go' 'vendor/*|*/vendor/*')
 
 # TS/JS/Svelte: join(homedir(), '.sybra') or a concatenation/template literal
 # ending in '.sybra' (e.g. `${home}/.sybra`, `home + "/.sybra"`).
@@ -83,7 +111,7 @@ while IFS=: read -r file line _; do
     echo "::error file=${file},line=${line}::found a TS home+'.sybra' fallback outside internal/config.HomeDir() (see #1576). Read SYBRA_HOME explicitly instead of defaulting to the operator's real home." >&2
     fail=1
   fi
-done < <(grep -rnE "\.sybra['\"\`]" --include="*.ts" --include="*.js" --include="*.svelte" . | grep -v '/node_modules/' | grep -v '/bindings/' | grep -v '/dist/' | grep -v '/dist-web/' | sed 's#^\./##')
+done < <(scan_repo_files "\.sybra['\"\`]" '*.ts|*.js|*.svelte' 'frontend/bindings/*|frontend/dist/*|frontend/dist-web/*|*/node_modules/*')
 
 # Shell: $HOME/.sybra or ${HOME}/.sybra fallback defaults.
 while IFS=: read -r file line _; do
@@ -92,7 +120,7 @@ while IFS=: read -r file line _; do
     echo "::error file=${file},line=${line}::found a shell HOME+.sybra fallback outside internal/config.HomeDir() (see #1576). Require SYBRA_HOME explicitly (e.g. ': \"\${SYBRA_HOME:?set SYBRA_HOME}\"') instead of defaulting to the operator's real home." >&2
     fail=1
   fi
-done < <(grep -rnE '\$\{?HOME\}?/\.sybra' --include="*.sh" . | sed 's#^\./##')
+done < <(scan_repo_files '\$\{?HOME\}?/\.sybra' '*.sh' '')
 
 if [[ "${fail}" -eq 0 ]]; then
   echo "no-home-fallback OK — no operator-home .sybra fallbacks found outside the allowlist"
