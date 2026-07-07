@@ -251,9 +251,11 @@ list); a new spawn site cannot obtain an unsandboxed process by construction.
 transposing it through `sandbox-exec` with an embedded seatbelt profile
 (`agent_sandbox.sb`) that denies `file-write*` everywhere except three
 canonicalized roots supplied via `-D`: the task's worktree, its sandbox home
-(`injectSandboxHome`'s resolved dir), and `TMPDIR` — resolved to
-`/private/tmp`, not the `/tmp` symlink, or every legitimate tmp write would
-be denied. Reads stay unrestricted. `sandbox-exec` execs the child in place,
+(`injectSandboxHome`'s resolved dir), and the tmp root from `os.TempDir()`
+(typically `/var/folders/.../T` on macOS, or `/private/tmp` if `TMPDIR` points
+at `/tmp`) — canonicalized in enforce mode so a symlinked tmp root (e.g. the
+`/tmp` symlink) resolves to its real path, or legitimate tmp writes would be
+denied. Reads stay unrestricted. `sandbox-exec` execs the child in place,
 preserving its PID and signal delivery (required for the watchdog kill path
 and detached-agent reattach), and the profile applies transitively to
 grandchild processes (e.g. a Playwright/npm/node subprocess an agent

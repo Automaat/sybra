@@ -221,9 +221,29 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	if mode != "enforce" {
 		// report: log the resolved allowlist without wrapping the spawn, so
 		// the opaque provider CLI's would-be write footprint is visible from
-		// live runs before flipping this task/fleet to enforce.
+		// live runs before flipping this task/fleet to enforce. Canonicalize
+		// the roots the same way enforce mode would, so the report output is
+		// representative of what enforce would allow — but never fail the
+		// run closed on a canonicalization error; fall back to logging the
+		// raw (unresolved) roots instead.
+		logWorktree, logSandboxHome, logTmp := worktree, sandboxHome, tmp
+		if canon, err := canonicalizeRoot(worktree); err == nil {
+			logWorktree = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "worktree", "err", err)
+		}
+		if canon, err := canonicalizeRoot(sandboxHome); err == nil {
+			logSandboxHome = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "sandbox_home", "err", err)
+		}
+		if canon, err := canonicalizeRoot(tmp); err == nil {
+			logTmp = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "tmp", "err", err)
+		}
 		m.logger.Info("agent.sandbox.report", "task_id", cfg.TaskID,
-			"worktree", worktree, "sandbox_home", sandboxHome, "tmp", tmp)
+			"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}

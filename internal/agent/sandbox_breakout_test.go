@@ -6,9 +6,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// shellQuote wraps a string in single quotes with proper escaping for bash,
+// so victim/target paths built from t.TempDir() can't be misparsed as shell
+// syntax if they ever contain spaces or metacharacters.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
 
 // These tests exercise newProviderCmd directly — the single seam every
 // provider spawn site (runner_headless.go, runner_convo.go,
@@ -96,7 +104,7 @@ func TestSandboxBreakout_DeniesHomeWrite(t *testing.T) {
 			home := t.TempDir()
 			victim := homeVictimPath(t, "sybra-test-PWNED-pipe-detached-"+map[bool]string{false: "pipe", true: "detached"}[detached]+".txt")
 			cfg := newEnforceSandboxCfg(t, worktree, home, os.TempDir())
-			code, _ := runSandboxedScript(t, cfg, detached, "echo pwned > "+victim)
+			code, _ := runSandboxedScript(t, cfg, detached, "echo pwned > "+shellQuote(victim))
 			if code == 0 {
 				t.Fatalf("write outside allowed roots succeeded (exit 0); want denial")
 			}
@@ -116,9 +124,9 @@ func TestSandboxBreakout_AllowsRootWrites(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := newEnforceSandboxCfg(t, worktree, home, tmp)
 
-	script := "echo a > " + filepath.Join(worktree, "a.txt") +
-		" && echo b > " + filepath.Join(home, "b.txt") +
-		" && echo c > " + filepath.Join(tmp, "c.txt")
+	script := "echo a > " + shellQuote(filepath.Join(worktree, "a.txt")) +
+		" && echo b > " + shellQuote(filepath.Join(home, "b.txt")) +
+		" && echo c > " + shellQuote(filepath.Join(tmp, "c.txt"))
 	code, _ := runSandboxedScript(t, cfg, false, script)
 	if code != 0 {
 		t.Fatalf("allowed-root writes failed with exit %d", code)
@@ -142,7 +150,7 @@ func TestSandboxBreakout_DeniesGrandchildWrite(t *testing.T) {
 	cfg := newEnforceSandboxCfg(t, worktree, home, os.TempDir())
 
 	// bash (child) spawns another bash (grandchild) which performs the write.
-	script := "bash -c 'bash -c \"echo pwned > " + victim + "\"'"
+	script := "bash -c " + shellQuote("bash -c "+shellQuote("echo pwned > "+shellQuote(victim)))
 	code, _ := runSandboxedScript(t, cfg, false, script)
 	if code == 0 {
 		t.Fatalf("grandchild write outside allowed roots succeeded; want denial")
@@ -173,7 +181,7 @@ func TestSandboxBreakout_DeniesSymlinkEscape(t *testing.T) {
 	}
 	cfg := newEnforceSandboxCfg(t, worktree, sandboxHome, os.TempDir())
 
-	code, _ := runSandboxedScript(t, cfg, false, "echo pwned > "+filepath.Join(link, victimName))
+	code, _ := runSandboxedScript(t, cfg, false, "echo pwned > "+shellQuote(filepath.Join(link, victimName)))
 	if code == 0 {
 		t.Fatalf("write through a worktree symlink pointing outside allowed roots succeeded; want denial")
 	}
