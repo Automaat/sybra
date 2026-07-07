@@ -378,6 +378,18 @@ func (m *Manager) PruneTrash(retentionDays int) (TrashPruneReport, error) {
 	return m.store.PruneTrash(retentionDays)
 }
 
+// DeleteTrashedGeneration permanently removes id's newest trashed
+// generation immediately, bypassing the retention window.
+func (m *Manager) DeleteTrashedGeneration(id string) (bool, error) {
+	return m.store.DeleteTrashedGeneration(id)
+}
+
+// PruneAllTrash permanently removes every trashed generation regardless of
+// age.
+func (m *Manager) PruneAllTrash() (TrashPruneReport, error) {
+	return m.store.PruneAllTrash()
+}
+
 // AddRun appends an agent run to the task and emits task:updated.
 func (m *Manager) AddRun(taskID string, run AgentRun) error {
 	return m.AddRunWithStatus(taskID, run, nil)

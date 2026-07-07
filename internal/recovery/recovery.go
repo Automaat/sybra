@@ -96,6 +96,14 @@ func (r *Recovery) pruneAgentLogs() {
 	logging.LogPruneReport(r.Logger, rep)
 }
 
+// PruneTrash is the periodic entry point for a background ticker (see
+// LifecycleManager.startTrashPruneLoop) that keeps the trash dir bounded
+// between restarts on long-lived server deployments — RunStartupCleanup's
+// call only covers the boot-time pass.
+func (r *Recovery) PruneTrash() {
+	r.pruneTrash()
+}
+
 // pruneTrash permanently removes trash generations older than
 // TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
 // trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.

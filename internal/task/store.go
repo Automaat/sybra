@@ -192,20 +192,36 @@ func (s *Store) lockTask(id string) (func(), error) {
 	}, nil
 }
 
+// sidecarFileSuffixes lists every fixed-name (non-plan-draft) sidecar
+// suffix a task can own. Single source of truth for both IsSidecarFile and
+// Store.taskFiles, so a new fixed-name sidecar kind only needs to be added
+// here. Plan drafts use caller-chosen names (see IsPlanDraftFile) and so
+// can't be enumerated as fixed suffixes.
+var sidecarFileSuffixes = []string{
+	".comments.json",
+	".plan.md",
+	".plan-contract.json",
+	".plan-critique.md",
+	".plan-research.md",
+	".plan-decisions.md",
+	".plan-brief.md",
+	".review.md",
+}
+
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
 // store rather than a primary task file. Centralized so adding a new
-// sidecar kind only requires updating this list.
+// sidecar kind only requires updating sidecarFileSuffixes (or, for
+// caller-named sidecars like plan drafts, IsPlanDraftFile).
 func IsSidecarFile(base string) bool {
 	if IsPlanDraftFile(base) {
 		return true
 	}
-	return strings.HasSuffix(base, ".plan.md") ||
-		strings.HasSuffix(base, ".plan-contract.json") ||
-		strings.HasSuffix(base, ".plan-critique.md") ||
-		strings.HasSuffix(base, ".plan-research.md") ||
-		strings.HasSuffix(base, ".plan-decisions.md") ||
-		strings.HasSuffix(base, ".plan-brief.md") ||
-		strings.HasSuffix(base, ".review.md")
+	for _, suffix := range sidecarFileSuffixes {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // List returns every task under the store's directory, in directory-read
@@ -620,34 +636,34 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 	return t, nil
 }
 
-// taskFiles returns the basenames of every file this store owns for id: the
-// primary task file (id.md) plus any sidecar (comments, plans, contracts,
-// critiques, research, decisions, brief, code reviews, plan drafts). All of
-// these are named "<id>.<suffix>", so a literal "id+.\" prefix match — after
-// validating id through safePath — is exact: it cannot match another task's
-// files because that would require the other id to equal this one up to and
-// including the separating dot. The per-task flock sidecar ("<id>.md.lock")
-// is deliberately excluded — it is lock plumbing, not task data, and must
-// stay in place so a concurrent lockTask call on the same id keeps working.
+// taskFiles returns the basenames of every sidecar file this store owns for
+// id (comments, plans, contracts, critiques, research, decisions, brief,
+// code reviews, plan drafts) — the primary "<id>.md" is not included, since
+// Delete/RestoreFromTrash handle it separately. Checks each fixed-name
+// suffix in sidecarFileSuffixes directly (bounded, ~8 stat calls) rather
+// than scanning the whole tasks directory, so cost scales with the sidecar
+// kinds that exist, not with the number of live tasks in the store. Plan
+// drafts go through planDrafts.List, which has its own negative-cache index
+// and so is also O(1) for the common case of a task with no drafts.
 func (s *Store) taskFiles(id string) ([]string, error) {
 	if _, err := s.safePath(id); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil, fmt.Errorf("read tasks dir: %w", err)
-	}
-	prefix := id + "."
 	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	for _, suffix := range sidecarFileSuffixes {
+		base := id + suffix
+		if _, err := os.Stat(filepath.Join(s.dir, base)); err == nil {
+			out = append(out, base)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", base, err)
 		}
-		base := e.Name()
-		if !strings.HasPrefix(base, prefix) || strings.HasSuffix(base, ".lock") {
-			continue
-		}
-		out = append(out, base)
+	}
+	drafts, err := s.planDrafts.List(id)
+	if err != nil {
+		return nil, fmt.Errorf("list plan drafts: %w", err)
+	}
+	for name := range drafts {
+		out = append(out, id+PlanDraftSidecarPrefix+name+".md")
 	}
 	return out, nil
 }
@@ -686,9 +702,13 @@ func (s *Store) newTrashGeneration(id string) (string, error) {
 // the primary "<id>.md" file so that a crash or rename failure partway
 // through leaves the primary file as the source of truth for whether the
 // task still "exists": either it's still in place (delete didn't complete)
-// or it's gone (delete completed, modulo any sidecars this call already
-// moved). There is deliberately no copy/delete fallback if a rename fails
-// (e.g. trash on a different filesystem) — the error is returned as-is.
+// or it's gone (delete completed). If any rename fails partway through,
+// every file already moved into genDir is rolled back to s.dir and genDir
+// is removed, so a partial failure never leaves an orphaned generation
+// (unlistable/unrestorable/unprunable — trashGenerationID requires the
+// primary file to identify a generation) or a live task missing sidecars.
+// There is deliberately no copy/delete fallback if a rename itself fails
+// (e.g. trash on a different filesystem) — that error is returned as-is.
 func (s *Store) Delete(id string) error {
 	unlock, err := s.lockTask(id)
 	if err != nil {
@@ -709,15 +729,22 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("create trash generation: %w", err)
 	}
 	primary := id + ".md"
-	for _, base := range files {
-		if base == primary {
-			continue
+	moved := make([]string, 0, len(files))
+	rollback := func() {
+		for _, base := range moved {
+			_ = os.Rename(filepath.Join(genDir, base), filepath.Join(s.dir, base))
 		}
+		_ = os.Remove(genDir)
+	}
+	for _, base := range files {
 		if err := os.Rename(filepath.Join(s.dir, base), filepath.Join(genDir, base)); err != nil {
+			rollback()
 			return fmt.Errorf("move %s to trash: %w", base, err)
 		}
+		moved = append(moved, base)
 	}
 	if err := os.Rename(t.FilePath, filepath.Join(genDir, primary)); err != nil {
+		rollback()
 		return fmt.Errorf("move task file to trash: %w", err)
 	}
 	s.planDrafts.invalidateIndex()
@@ -874,8 +901,13 @@ func removeEmptyTrashDirs(genDir string) {
 
 // RestoreFromTrash moves id's newest trash generation back into the tasks
 // dir under the same per-task lock Delete uses, restoring sidecars before
-// the primary "<id>.md" file (mirror of Delete's ordering). Refuses if a
-// live task with id already exists rather than silently overwriting it.
+// the primary "<id>.md" file (mirror of Delete's ordering). If any rename
+// fails partway through, every file already restored to s.dir is rolled
+// back into genDir so a partial failure never leaves orphaned "<id>.*"
+// sidecars in the live tasks dir with no primary file — such litter would
+// be invisible to List, ListTrash, and PruneTrash, and unreachable by a
+// future Delete(id), which requires the primary file to exist. Refuses if
+// a live task with id already exists rather than silently overwriting it.
 func (s *Store) RestoreFromTrash(id string) (Task, error) {
 	unlock, err := s.lockTask(id)
 	if err != nil {
@@ -906,16 +938,25 @@ func (s *Store) RestoreFromTrash(id string) (Task, error) {
 		return Task{}, fmt.Errorf("read trash generation: %w", err)
 	}
 	primary := id + ".md"
+	restored := make([]string, 0, len(entries))
+	rollback := func() {
+		for _, base := range restored {
+			_ = os.Rename(filepath.Join(s.dir, base), filepath.Join(genDir, base))
+		}
+	}
 	for _, e := range entries {
 		base := e.Name()
 		if base == primary {
 			continue
 		}
 		if err := os.Rename(filepath.Join(genDir, base), filepath.Join(s.dir, base)); err != nil {
+			rollback()
 			return Task{}, fmt.Errorf("restore %s: %w", base, err)
 		}
+		restored = append(restored, base)
 	}
 	if err := os.Rename(filepath.Join(genDir, primary), livePath); err != nil {
+		rollback()
 		return Task{}, fmt.Errorf("restore task file: %w", err)
 	}
 	removeEmptyTrashDirs(genDir)
@@ -958,6 +999,22 @@ func (s *Store) pruneGeneration(id, genDir string) (removed bool, err error) {
 	return true, nil
 }
 
+// DeleteTrashedGeneration permanently removes id's newest trashed
+// generation right away, bypassing the retention window. This is the
+// escape hatch PruneTrash can't provide: a compliance request or a leaked
+// credential needs trashed content gone immediately, not after
+// RetentionDays or the next prune sweep.
+func (s *Store) DeleteTrashedGeneration(id string) (bool, error) {
+	genDir, err := s.newestGeneration(id)
+	if err != nil {
+		return false, err
+	}
+	if genDir == "" {
+		return false, fmt.Errorf("no trashed task found for id %s: %w", id, os.ErrNotExist)
+	}
+	return s.pruneGeneration(id, genDir)
+}
+
 // PruneTrash permanently removes trash generations deleted more than
 // retentionDays ago. A negative retentionDays disables pruning entirely
 // (no-op). Each generation is removed under its own id's per-task lock, so
@@ -965,12 +1022,26 @@ func (s *Store) pruneGeneration(id, genDir string) (removed bool, err error) {
 // naive "remove the whole date directory" sweep, which could not take a
 // single lock covering every id it touches.
 func (s *Store) PruneTrash(retentionDays int) (TrashPruneReport, error) {
-	var rep TrashPruneReport
 	if retentionDays < 0 {
-		return rep, nil
+		return TrashPruneReport{}, nil
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.DateOnly)
+	return s.pruneTrashBefore(cutoff)
+}
 
+// PruneAllTrash permanently removes every trash generation regardless of
+// age — the "empty the trash now" counterpart to PruneTrash's
+// retention-gated sweep, for a `trash empty` CLI command.
+func (s *Store) PruneAllTrash() (TrashPruneReport, error) {
+	// No real deletion date sorts >= this, so every date dir qualifies.
+	return s.pruneTrashBefore("9999-99-99")
+}
+
+// pruneTrashBefore is the shared body of PruneTrash and PruneAllTrash: it
+// removes every trash generation dated strictly before cutoff (a
+// time.DateOnly string).
+func (s *Store) pruneTrashBefore(cutoff string) (TrashPruneReport, error) {
+	var rep TrashPruneReport
 	dateEntries, err := os.ReadDir(s.trashDir)
 	if err != nil {
 		if os.IsNotExist(err) {
