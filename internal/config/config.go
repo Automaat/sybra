@@ -14,6 +14,7 @@ type Config struct {
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
 	Trash          TrashConfig          `yaml:"trash" json:"trash"`
+	TaskSnapshot   TaskSnapshotConfig   `yaml:"task_snapshot" json:"taskSnapshot"`
 	Agent          AgentDefaults        `yaml:"agent" json:"agent"`
 	Testing        TestingConfig        `yaml:"testing" json:"testing"`
 	Notification   NotificationConfig   `yaml:"notification" json:"notification"`

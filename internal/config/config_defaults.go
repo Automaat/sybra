@@ -94,6 +94,29 @@ func (c *Config) DefaultTrashRetentionDays() int {
 	return c.Trash.RetentionDays
 }
 
+// DefaultTaskSnapshotIntervalSeconds is the fallback commit interval for the
+// tasks-dir git snapshotter when TaskSnapshot.IntervalSeconds is unset.
+const DefaultTaskSnapshotIntervalSeconds = 30
+
+// DefaultTaskSnapshotInterval returns the configured commit interval in
+// seconds, falling back to DefaultTaskSnapshotIntervalSeconds when unset or
+// non-positive.
+func (c *Config) DefaultTaskSnapshotInterval() int {
+	if c != nil && c.TaskSnapshot.IntervalSeconds > 0 {
+		return c.TaskSnapshot.IntervalSeconds
+	}
+	return DefaultTaskSnapshotIntervalSeconds
+}
+
+// TaskSnapshotEnabled reports whether the background git snapshotter should
+// run. nil (unset) defaults to true.
+func (c *Config) TaskSnapshotEnabled() bool {
+	if c == nil || c.TaskSnapshot.Enabled == nil {
+		return true
+	}
+	return *c.TaskSnapshot.Enabled
+}
+
 // DefaultRequirePermissions returns the configured default, or true if unset.
 func (c *Config) DefaultRequirePermissions() bool {
 	if c != nil && c.Agent.RequirePermissions != nil {

@@ -825,6 +825,50 @@ func TestDefaultTrashRetentionDays(t *testing.T) {
 	}
 }
 
+func TestTaskSnapshotEnabled(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	cases := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"omitted → true", &Config{}, true},
+		{"explicit true", &Config{TaskSnapshot: TaskSnapshotConfig{Enabled: boolPtr(true)}}, true},
+		{"explicit false", &Config{TaskSnapshot: TaskSnapshotConfig{Enabled: boolPtr(false)}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.TaskSnapshotEnabled(); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultTaskSnapshotInterval(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{"nil config → 30", nil, 30},
+		{"unset (zero) → 30", &Config{}, 30},
+		{"negative → 30", &Config{TaskSnapshot: TaskSnapshotConfig{IntervalSeconds: -5}}, 30},
+		{"explicit 60 → 60", &Config{TaskSnapshot: TaskSnapshotConfig{IntervalSeconds: 60}}, 60},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.DefaultTaskSnapshotInterval(); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRetryWatchdog(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

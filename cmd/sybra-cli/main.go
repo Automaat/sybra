@@ -199,6 +199,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdConfig(cfg, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
+	case "tasks-history":
+		return cmdTasksHistory(rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -1883,6 +1885,11 @@ Commands:
   trash empty
            Permanently purge every trashed generation, regardless of age.
 
+  tasks-history [--limit N]
+           List commits from the tasks-dir git snapshot repo (see
+           internal/tasksnapshot). Recovery is a plain git checkout against
+           that repo — see docs/tasks-snapshots.md.
+
   project list
   project get <id>
   project create --url <github-url> [--type pet|work]
@@ -2115,6 +2122,82 @@ func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
 		return printJSON(newTrashPruneReportJSON(rep))
 	}
 	fmt.Printf("Purged %d/%d trashed generations\n", rep.Removed, rep.Scanned)
+	return 0
+}
+
+// taskHistoryEntry is one commit from the tasks-dir git snapshot repo (see
+// internal/tasksnapshot).
+type taskHistoryEntry struct {
+	SHA     string `json:"sha"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
+}
+
+// cmdTasksHistory lists commits from the tasks-dir git snapshot repo — a
+// read-only convenience wrapper around `git log` against
+// config.TaskSnapshotGitDir(); plain git against that path suffices for
+// actual recovery (see docs/tasks-snapshots.md).
+func cmdTasksHistory(args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
+	limit := fs.Int("limit", 20, "max number of commits to show")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "usage: tasks-history [--limit N]")
+	}
+	if *limit <= 0 {
+		*limit = 20
+	}
+
+	ctx := context.Background()
+	gitDir := config.TaskSnapshotGitDir()
+	env := append(os.Environ(), "GIT_DIR="+gitDir)
+
+	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	verify.Env = env
+	if err := verify.Run(); err != nil {
+		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
+	}
+
+	const sep = "\x1f"
+	logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
+	logCmd.Env = env
+	var stdout, stderr bytes.Buffer
+	logCmd.Stdout = &stdout
+	logCmd.Stderr = &stderr
+
+	var entries []taskHistoryEntry
+	if err := logCmd.Run(); err != nil {
+		if !strings.Contains(stderr.String(), "does not have any commits yet") {
+			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		// A freshly-initialized repo with no commits yet is a valid, empty
+		// history — not an error.
+	} else {
+		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, sep, 3)
+			if len(parts) != 3 {
+				continue
+			}
+			entries = append(entries, taskHistoryEntry{SHA: parts[0], Date: parts[1], Subject: parts[2]})
+		}
+	}
+
+	if jsonOut {
+		if entries == nil {
+			entries = []taskHistoryEntry{}
+		}
+		return printJSON(entries)
+	}
+	if len(entries) == 0 {
+		fmt.Println("no snapshot commits yet")
+		return 0
+	}
+	for _, e := range entries {
+		fmt.Printf("%s %s %s\n", e.SHA, e.Date, e.Subject)
+	}
 	return 0
 }
 

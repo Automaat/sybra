@@ -738,3 +738,97 @@ type stubProjects struct{}
 func (stubProjects) Get(string) (project.Project, error) {
 	return project.Project{}, errors.New("no project")
 }
+
+// TestPruneTrash_CommitBeforePruneFiresBeforeSweep verifies the ordering
+// contract in internal/tasksnapshot's plan: CommitBeforePrune must run
+// before Tasks.PruneTrash on both the boot-time RunStartupCleanup path and
+// the periodic PruneTrash entry point, so a git snapshot is always taken
+// immediately before the bulk-delete sweep.
+func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var calls int
+	r := &recovery.Recovery{
+		Tasks:     tasks,
+		Agents:    agents,
+		Worktrees: wm,
+		Logger:    logger,
+		Throttle:  logging.NewErrorThrottle(),
+		WG:        &wg,
+		LogDir:    t.TempDir(),
+		CommitBeforePrune: func(context.Context) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		},
+	}
+
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	mu.Lock()
+	afterBoot := calls
+	mu.Unlock()
+	if afterBoot != 1 {
+		t.Fatalf("expected CommitBeforePrune to fire once during RunStartupCleanup, got %d", afterBoot)
+	}
+
+	r.PruneTrash(context.Background())
+
+	mu.Lock()
+	afterPeriodic := calls
+	mu.Unlock()
+	if afterPeriodic != 2 {
+		t.Fatalf("expected CommitBeforePrune to fire again on the periodic PruneTrash call, got %d", afterPeriodic)
+	}
+}
+
+// TestPruneTrash_NilCommitBeforePruneIsSafe verifies the nil-hook path
+// (snapshotting disabled/unavailable) never panics.
+func TestPruneTrash_NilCommitBeforePruneIsSafe(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:     tasks,
+		Agents:    agents,
+		Worktrees: wm,
+		Logger:    logger,
+		Throttle:  logging.NewErrorThrottle(),
+		WG:        &wg,
+		LogDir:    t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+	r.PruneTrash(context.Background())
+}

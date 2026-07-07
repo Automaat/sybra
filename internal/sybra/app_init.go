@@ -780,7 +780,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		retention = time.Duration(days) * 24 * time.Hour
 	}
-	return &recovery.Recovery{
+	r := &recovery.Recovery{
 		Tasks:              a.tasks,
 		Agents:             a.agents,
 		Worktrees:          a.worktrees,
@@ -794,6 +794,10 @@ func (a *App) newRecovery() *recovery.Recovery {
 		LogRetention:       retention,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 	}
+	if a.snapshotter != nil {
+		r.CommitBeforePrune = a.snapshotter.CommitNow
+	}
+	return r
 }
 
 // syncSkillsBundle drives the skillsync package with the App's source/dst

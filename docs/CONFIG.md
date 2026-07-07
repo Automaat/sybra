@@ -20,6 +20,7 @@ machine.
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
 | `trash` | `TrashConfig` | _(see below)_ |  |
+| `task_snapshot` | `TaskSnapshotConfig` | _(see below)_ |  |
 | `agent` | `AgentDefaults` | _(see below)_ |  |
 | `testing` | `TestingConfig` | _(see below)_ |  |
 | `notification` | `NotificationConfig` | _(see below)_ |  |
@@ -78,6 +79,19 @@ TrashConfig controls the retention of soft-deleted tasks under
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `trash.retention_days` | `int` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
+
+## TaskSnapshotConfig (`task_snapshot`)
+
+TaskSnapshotConfig controls the background git snapshotter that versions
+the tasks dir (see internal/tasksnapshot.Snapshotter), giving recovery a
+`git checkout` path for external deleters that bypass task.Store's
+trash-based soft delete (the case #1576's forensics-only recovery
+couldn't catch).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `task_snapshot.enabled` | `*bool` | _(nil)_ | Enabled toggles the background snapshotter. nil means not configured (defaults to true — safe default, matches RequirePermissions' nil-means-on convention). Set to false to disable entirely. |
+| `task_snapshot.interval_seconds` | `int` |  | IntervalSeconds is the fixed interval between commit attempts. 0 or negative falls back to DefaultTaskSnapshotInterval (30s). |
 
 ## AgentDefaults (`agent`)
 
