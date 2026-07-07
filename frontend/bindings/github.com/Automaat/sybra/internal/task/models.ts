@@ -379,10 +379,12 @@ export class Task {
     "forkSubagent"?: boolean;
 
     /**
-     * Sandbox overrides the system default OS-level sandbox posture (see
-     * config.AgentDefaults.SandboxMode) for this task's agent processes.
-     * nil = use system default. false = escape hatch, disabling the
-     * sandbox-exec wrap entirely for this task's agents.
+     * Sandbox is an escape hatch for the system default OS-level sandbox
+     * posture (see config.AgentDefaults.SandboxMode) for this task's agent
+     * processes. nil or true = use system default. false = disable the
+     * sandbox-exec wrap entirely for this task's agents. Setting true does
+     * NOT tighten posture beyond the system default (ResolveSandboxMode only
+     * treats Sandbox=false as meaningful).
      */
     "sandbox"?: boolean | null;
 
