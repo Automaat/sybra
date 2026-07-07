@@ -56,6 +56,7 @@ checks:
   # verifyChecksDefaultTimeout.
   verify:
     - mise exec -- bash scripts/check-api-shim-sync.sh
+    - mise exec -- bash scripts/check-no-home-fallback.sh
     - mise exec -- go test ./internal/... ./cmd/...
     - (cd frontend && mise exec -- npm run build:web)
     - (cd frontend && mise exec -- npm run test:coverage)
