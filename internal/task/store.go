@@ -768,11 +768,12 @@ type TrashEntry struct {
 // avoids relying on the generation directory's name (which is a convenience
 // naming scheme, not a contract) to recover id, so list/restore/prune never
 // prefix-match an arbitrary id. ok is false for an empty, already-restored,
-// or corrupt generation.
-func trashGenerationID(genDir string) (id string, ok bool) {
+// or corrupt generation. Read errors are returned so callers can surface
+// unreadable generations instead of silently skipping them.
+func trashGenerationID(genDir string) (id string, ok bool, err error) {
 	entries, err := os.ReadDir(genDir)
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -780,10 +781,10 @@ func trashGenerationID(genDir string) (id string, ok bool) {
 		}
 		base := e.Name()
 		if strings.HasSuffix(base, ".md") && !IsSidecarFile(base) {
-			return strings.TrimSuffix(base, ".md"), true
+			return strings.TrimSuffix(base, ".md"), true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // walkTrashGenerations calls fn for every generation directory under
@@ -844,7 +845,10 @@ func trashEntryFor(date, generation, path, id string) TrashEntry {
 func (s *Store) ListTrash() ([]TrashEntry, error) {
 	var out []TrashEntry
 	errs := s.walkTrashGenerations(func(date, generation, path string) error {
-		id, ok := trashGenerationID(path)
+		id, ok, err := trashGenerationID(path)
+		if err != nil {
+			return fmt.Errorf("read trash generation %s/%s: %w", date, generation, err)
+		}
 		if !ok {
 			return nil
 		}
@@ -866,7 +870,10 @@ func (s *Store) newestGeneration(id string) (string, error) {
 	var newest string
 	var newestAt time.Time
 	errs := s.walkTrashGenerations(func(date, generation, path string) error {
-		gid, ok := trashGenerationID(path)
+		gid, ok, err := trashGenerationID(path)
+		if err != nil {
+			return fmt.Errorf("read trash generation %s/%s: %w", date, generation, err)
+		}
 		if !ok || gid != id {
 			return nil
 		}
@@ -1066,7 +1073,11 @@ func (s *Store) pruneTrashBefore(cutoff string) (TrashPruneReport, error) {
 			}
 			rep.Scanned++
 			genDir := filepath.Join(dateDir, ge.Name())
-			id, ok := trashGenerationID(genDir)
+			id, ok, err := trashGenerationID(genDir)
+			if err != nil {
+				rep.Errors = append(rep.Errors, fmt.Errorf("read trash generation %s/%s: %w", date, ge.Name(), err))
+				continue
+			}
 			if !ok {
 				continue
 			}

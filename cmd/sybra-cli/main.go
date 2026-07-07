@@ -2056,6 +2056,35 @@ func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
+type trashPruneReportJSON struct {
+	Scanned int               `json:"scanned"`
+	Removed int               `json:"removed"`
+	Entries []task.TrashEntry `json:"entries"`
+	Errors  []string          `json:"errors"`
+}
+
+func newTrashPruneReportJSON(rep task.TrashPruneReport) trashPruneReportJSON {
+	out := trashPruneReportJSON{
+		Scanned: rep.Scanned,
+		Removed: rep.Removed,
+		Entries: rep.Entries,
+	}
+	if len(rep.Errors) > 0 {
+		out.Errors = make([]string, 0, len(rep.Errors))
+		for _, err := range rep.Errors {
+			out.Errors = append(out.Errors, err.Error())
+		}
+	}
+	return out
+}
+
+func trashDeleteMessage(id string, removed bool) string {
+	if removed {
+		return fmt.Sprintf("Purged trashed task %s\n", id)
+	}
+	return fmt.Sprintf("Trashed task %s was already purged\n", id)
+}
+
 // cmdTrashDelete permanently purges id's newest trashed generation right
 // away, bypassing the retention window — for a compliance request or a
 // leaked credential that needs the content gone now, not after
@@ -2071,7 +2100,7 @@ func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
 	if jsonOut {
 		return printJSON(map[string]any{"status": "ok", "id": args[0], "removed": removed})
 	}
-	fmt.Printf("Purged trashed task %s\n", args[0])
+	fmt.Print(trashDeleteMessage(args[0], removed))
 	return 0
 }
 
@@ -2083,7 +2112,7 @@ func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 	if jsonOut {
-		return printJSON(rep)
+		return printJSON(newTrashPruneReportJSON(rep))
 	}
 	fmt.Printf("Purged %d/%d trashed generations\n", rep.Removed, rep.Scanned)
 	return 0

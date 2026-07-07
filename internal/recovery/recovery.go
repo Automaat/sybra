@@ -104,12 +104,19 @@ func (r *Recovery) PruneTrash() {
 	r.pruneTrash()
 }
 
+func (r *Recovery) effectiveTrashRetentionDays() int {
+	if r.TrashRetentionDays == 0 {
+		return 14
+	}
+	return r.TrashRetentionDays
+}
+
 // pruneTrash permanently removes trash generations older than
 // TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
 // trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.
 // Logs the resulting count and every generation removed.
 func (r *Recovery) pruneTrash() {
-	rep, err := r.Tasks.PruneTrash(r.TrashRetentionDays)
+	rep, err := r.Tasks.PruneTrash(r.effectiveTrashRetentionDays())
 	if err != nil {
 		r.Logger.Warn("recovery.trash.prune_failed", "err", err)
 		return

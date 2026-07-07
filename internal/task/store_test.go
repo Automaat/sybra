@@ -2472,6 +2472,9 @@ func TestStorePruneTrash_NegativeDisables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(entries) != 1 {
+		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
+	}
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -3650).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
 		t.Fatal(err)
@@ -2513,6 +2516,9 @@ func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
 	entries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
 	}
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
@@ -2608,5 +2614,13 @@ func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].ID != chat.ID {
 		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
+	}
+}
+
+func TestTrashGenerationID_ReadError(t *testing.T) {
+	t.Parallel()
+	genDir := filepath.Join(t.TempDir(), "missing")
+	if _, _, err := trashGenerationID(genDir); err == nil {
+		t.Fatal("expected read error for missing generation dir")
 	}
 }

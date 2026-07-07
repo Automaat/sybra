@@ -370,6 +370,53 @@ func TestTrashUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestTrashDeleteMessage(t *testing.T) {
+	if got := trashDeleteMessage("task-1", true); got != "Purged trashed task task-1\n" {
+		t.Fatalf("removed=true message = %q", got)
+	}
+	if got := trashDeleteMessage("task-1", false); got != "Trashed task task-1 was already purged\n" {
+		t.Fatalf("removed=false message = %q", got)
+	}
+}
+
+func TestTrashEmptyJSONUsesStableDTO(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "trash me")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "empty")
+	if code != 0 {
+		t.Fatalf("trash empty exit %d: %s", code, out)
+	}
+
+	var rep struct {
+		Scanned int               `json:"scanned"`
+		Removed int               `json:"removed"`
+		Entries []task.TrashEntry `json:"entries"`
+		Errors  []string          `json:"errors"`
+	}
+	mustUnmarshal(t, out, &rep)
+	if rep.Scanned != 1 || rep.Removed != 1 {
+		t.Fatalf("trash empty report = %+v, want scanned=1 removed=1", rep)
+	}
+	if len(rep.Entries) != 1 || rep.Entries[0].ID != created.ID {
+		t.Fatalf("trash empty entries = %+v, want one entry for %s", rep.Entries, created.ID)
+	}
+	if len(rep.Errors) != 0 {
+		t.Fatalf("trash empty errors = %+v, want empty", rep.Errors)
+	}
+}
+
 func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	setupStore(t)
 

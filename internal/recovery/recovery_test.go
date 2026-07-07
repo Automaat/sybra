@@ -198,6 +198,65 @@ func TestRunStartupCleanup_PruneTrashRemovesExpiredGenerations(t *testing.T) {
 	}
 }
 
+func TestRunStartupCleanup_PruneTrashZeroUsesDefaultRetention(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("Expired", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := tasks.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
+	}
+	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
+	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:              tasks,
+		Agents:             agents,
+		Worktrees:          wm,
+		Logger:             logger,
+		Throttle:           logging.NewErrorThrottle(),
+		WG:                 &wg,
+		LogDir:             t.TempDir(),
+		TrashRetentionDays: 0,
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	remaining, err := tasks.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining = %+v, want the default 14-day retention to prune the expired generation", remaining)
+	}
+}
+
 // TestRestartStaleSkipsRecentRun verifies the dev-reload debounce: an
 // in-progress task whose latest agent run started seconds ago is left
 // alone (no respawn) so a hot-reloaded App doesn't race a still-living
