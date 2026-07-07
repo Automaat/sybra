@@ -245,6 +245,13 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
 	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
+	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
+	// fires CommitBeforePrune, which on a fresh install would otherwise commit
+	// into an uninitialized git dir and fail silently. StartManagers'
+	// startTaskSnapshotLoop calls EnsureRepo again (idempotent).
+	if a.cfg.TaskSnapshotEnabled() {
+		a.snapshotter.EnsureRepo(ctx)
+	}
 	a.recovery = a.newRecovery()
 	a.recovery.RunStartupCleanup(ctx)
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note

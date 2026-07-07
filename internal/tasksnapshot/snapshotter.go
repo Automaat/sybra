@@ -67,11 +67,12 @@ func New(gitDir, workTree string, interval time.Duration, logger *slog.Logger) *
 	}
 }
 
-// buildEnv returns the process environment with any inherited
-// GIT_DIR/GIT_WORK_TREE stripped and this Snapshotter's own values applied,
-// so every git invocation targets exactly this repo/work-tree regardless of
-// the calling process's environment.
-func buildEnv(gitDir, workTree string) []string {
+// BuildEnv returns the process environment with any inherited
+// GIT_DIR/GIT_WORK_TREE stripped and the given values applied, so every git
+// invocation targets exactly this repo/work-tree regardless of the calling
+// process's environment. Exported so read-only callers outside the package
+// (e.g. sybra-cli's tasks-history) target the same repo the same way.
+func BuildEnv(gitDir, workTree string) []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+2)
 	for _, e := range base {
@@ -90,7 +91,7 @@ func (s *Snapshotter) run(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = buildEnv(s.gitDir, s.workTree)
+	cmd.Env = BuildEnv(s.gitDir, s.workTree)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -107,7 +108,7 @@ func (s *Snapshotter) hasStagedChanges(ctx context.Context) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet")
-	cmd.Env = buildEnv(s.gitDir, s.workTree)
+	cmd.Env = BuildEnv(s.gitDir, s.workTree)
 	err := cmd.Run()
 	if err == nil {
 		return false, nil

@@ -106,6 +106,23 @@ or delete `~/.sybra/tasks-snapshots.git` to let Sybra reinitialize a fresh
 repo at the new location — the old repo's history is not migrated
 automatically.
 
+## Work-data confidentiality
+
+The snapshot repo is a **verbatim, unscrubbed** copy of every task file,
+including work-typed tasks. It is exempt from the `internal/scrub` floor that
+sanitizes public-destination artifacts, and from the trash retention window —
+history is kept in full and is not affected by disabling the feature (an
+existing repo persists on disk until manually removed).
+
+This exemption is acceptable because the repo is **local, at-rest, and has no
+remote**: it never leaves the machine and is never surfaced in a public
+artifact. It is the same trust boundary as the tasks dir it mirrors. Do **not**
+add a remote, publish its contents, or feed a snapshot into any public path
+(GitHub issue/PR, exported report) without first routing the content through
+`App.workScrubContextForTask` + `scrub.Scrub`. On a machine that handles
+work-typed projects, treat `~/.sybra/tasks-snapshots.git` with the same
+confidentiality as `~/.sybra/tasks` itself.
+
 ## What is out of scope (v1)
 
 - **History pruning.** Full history is kept (`gc.auto=0` bounds growth by

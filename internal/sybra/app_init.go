@@ -794,7 +794,10 @@ func (a *App) newRecovery() *recovery.Recovery {
 		LogRetention:       retention,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 	}
-	if a.snapshotter != nil {
+	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
+	// always constructed, but when the feature is disabled its repo is never
+	// created, so a pre-prune commit would fail on every sweep forever.
+	if a.snapshotter != nil && a.cfg.TaskSnapshotEnabled() {
 		r.CommitBeforePrune = a.snapshotter.CommitNow
 	}
 	return r

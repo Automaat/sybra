@@ -28,6 +28,7 @@ import (
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -200,7 +201,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
-		return cmdTasksHistory(rest, jsonOut)
+		return cmdTasksHistory(cfg, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -2137,7 +2138,7 @@ type taskHistoryEntry struct {
 // read-only convenience wrapper around `git log` against
 // config.TaskSnapshotGitDir(); plain git against that path suffices for
 // actual recovery (see docs/tasks-snapshots.md).
-func cmdTasksHistory(args []string, jsonOut bool) int {
+func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "max number of commits to show")
 	fs.SetOutput(io.Discard)
@@ -2150,7 +2151,10 @@ func cmdTasksHistory(args []string, jsonOut bool) int {
 
 	ctx := context.Background()
 	gitDir := config.TaskSnapshotGitDir()
-	env := append(os.Environ(), "GIT_DIR="+gitDir)
+	// Reuse the snapshotter's env builder so an inherited GIT_WORK_TREE can't
+	// leak in and break git commands; the work-tree value itself is unused by
+	// the read-only commands below but must be set consistently.
+	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
 
 	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
 	verify.Env = env
@@ -2158,21 +2162,24 @@ func cmdTasksHistory(args []string, jsonOut bool) int {
 		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
 	}
 
-	const sep = "\x1f"
-	logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
-	logCmd.Env = env
-	var stdout, stderr bytes.Buffer
-	logCmd.Stdout = &stdout
-	logCmd.Stderr = &stderr
+	// Detect an empty repo by HEAD resolvability, not a locale-dependent
+	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
+	// output when no commits exist yet, which is a valid empty history.
+	head := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
+	head.Env = env
+	hasCommits := head.Run() == nil
 
 	var entries []taskHistoryEntry
-	if err := logCmd.Run(); err != nil {
-		if !strings.Contains(stderr.String(), "does not have any commits yet") {
+	if hasCommits {
+		const sep = "\x1f"
+		logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
+		logCmd.Env = env
+		var stdout, stderr bytes.Buffer
+		logCmd.Stdout = &stdout
+		logCmd.Stderr = &stderr
+		if err := logCmd.Run(); err != nil {
 			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
 		}
-		// A freshly-initialized repo with no commits yet is a valid, empty
-		// history — not an error.
-	} else {
 		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
 			if line == "" {
 				continue
