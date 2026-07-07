@@ -197,6 +197,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdArtifact(rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "trash":
+		return cmdTrash(store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -1868,6 +1870,13 @@ Commands:
            was opened outside of Sybra; the PR monitor will then auto-merge or
            advance the task to done once the PR lands.
   delete   <id>
+           Soft-deletes: moves the task file and its sidecars into the trash
+           dir instead of unlinking them. See trash list / trash restore.
+
+  trash list
+  trash restore <id>
+           Restore the newest trashed generation for id back into the tasks
+           dir. Refuses if a live task with that id already exists.
 
   project list
   project get <id>
@@ -1982,6 +1991,58 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 		return printJSON(map[string]string{"status": "ok", "task_id": taskID})
 	}
 	fmt.Printf("reindexed %s\n", taskID)
+	return 0
+}
+
+// cmdTrash handles `sybra-cli trash list|restore <id>` — recovery for tasks
+// soft-deleted by Store.Delete (see internal/task.Store's ListTrash/
+// RestoreFromTrash).
+func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: trash <list|restore>")
+	}
+	switch sub, rest := args[0], args[1:]; sub {
+	case "list":
+		return cmdTrashList(s, jsonOut)
+	case "restore":
+		return cmdTrashRestore(s, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "unknown trash command: %s", sub)
+	}
+}
+
+func cmdTrashList(s *task.Manager, jsonOut bool) int {
+	entries, err := s.ListTrash()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		if entries == nil {
+			entries = []task.TrashEntry{}
+		}
+		return printJSON(entries)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tDELETED\tGENERATION\tTITLE")
+	for i := range entries {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entries[i].ID, entries[i].DeletedDate, entries[i].Generation, entries[i].Title)
+	}
+	_ = w.Flush()
+	return 0
+}
+
+func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: trash restore <id>")
+	}
+	t, err := s.RestoreFromTrash(args[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(t)
+	}
+	fmt.Printf("Restored task %s\n", t.ID)
 	return 0
 }
 

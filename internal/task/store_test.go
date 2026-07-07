@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2123,5 +2124,489 @@ func runCrossProcessUpdateWorker(t *testing.T, dir string) {
 		}
 	default:
 		t.Fatal("worker: unknown SYBRA_TASK_CROSS_PROCESS_MODE")
+	}
+}
+
+// --- Trash (soft-delete) tests ---
+
+func TestStoreDeleteMovesFileAndSidecarsToTrash(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Trash me", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.plans.Write(created.ID, "the plan"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.planDrafts.Write(created.ID, "claude", "draft content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.comments.Add(created.ID, 1, "a comment"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Primary file and every sidecar are gone from the live tasks dir.
+	if _, err := os.Stat(created.FilePath); !os.IsNotExist(err) {
+		t.Error("task file should be removed from tasks dir after delete")
+	}
+	liveEntries, err := os.ReadDir(store.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range liveEntries {
+		if strings.HasPrefix(e.Name(), created.ID+".") && !strings.HasSuffix(e.Name(), ".lock") {
+			t.Errorf("unexpected leftover file in tasks dir: %s", e.Name())
+		}
+	}
+
+	// The lock sidecar stays behind — it's lock plumbing, not task data.
+	if _, err := os.Stat(filepath.Join(store.Dir(), created.ID+".md.lock")); err != nil {
+		t.Errorf("lock file should remain in tasks dir: %v", err)
+	}
+
+	entries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
+	}
+	if entries[0].ID != created.ID {
+		t.Errorf("entry ID = %q, want %q", entries[0].ID, created.ID)
+	}
+	if entries[0].Title != created.Title {
+		t.Errorf("entry Title = %q, want %q", entries[0].Title, created.Title)
+	}
+
+	genDir := filepath.Join(store.TrashDir(), entries[0].DeletedDate, entries[0].Generation)
+	genEntries, err := os.ReadDir(genDir)
+	if err != nil {
+		t.Fatalf("read generation dir: %v", err)
+	}
+	names := map[string]bool{}
+	for _, e := range genEntries {
+		names[e.Name()] = true
+	}
+	for _, want := range []string{
+		created.ID + ".md",
+		created.ID + ".plan.md",
+		created.ID + ".comments.json",
+		created.ID + ".plan-draft-claude.md",
+	} {
+		if !names[want] {
+			t.Errorf("trash generation missing %s (have %v)", want, names)
+		}
+	}
+	if names[created.ID+".md.lock"] {
+		t.Error("trash generation should not contain the .lock file")
+	}
+}
+
+func TestStoreRestoreFromTrash(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Restore me", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.plans.Write(created.ID, "the plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(created.ID); err == nil {
+		t.Fatal("task should not be gettable while trashed")
+	}
+
+	restored, err := store.RestoreFromTrash(created.ID)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if restored.ID != created.ID || restored.Title != created.Title {
+		t.Errorf("restored task = %+v, want id/title matching %+v", restored, created)
+	}
+	if restored.Plan != "the plan" {
+		t.Errorf("restored.Plan = %q, want %q", restored.Plan, "the plan")
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get after restore: %v", err)
+	}
+	if got.Title != created.Title {
+		t.Errorf("got.Title = %q, want %q", got.Title, created.Title)
+	}
+
+	// Trash generation should be cleaned up after a successful restore.
+	remaining, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("ListTrash() after restore = %d entries, want 0", len(remaining))
+	}
+}
+
+func TestStoreRestoreFromTrash_RefusesLiveCollision(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Collide", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new live task happens to reuse the same id (e.g. an external tool
+	// recreated the file directly).
+	if err := os.WriteFile(filepath.Join(store.Dir(), created.ID+".md"), []byte("---\nid: "+created.ID+"\n---\nnew task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RestoreFromTrash(created.ID); err == nil {
+		t.Fatal("expected restore to refuse overwriting a live task")
+	}
+}
+
+func TestStoreRestoreFromTrash_NotFound(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.RestoreFromTrash("nonexistent"); err == nil {
+		t.Fatal("expected error for id with no trashed generation")
+	}
+}
+
+func TestStoreTrash_DuplicateGenerationsAndNewestRestore(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Delete twice", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryContent, err := os.ReadFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A restore always cleans up the generation directory it consumes, so
+	// two same-day generations for one id can't coexist through the public
+	// Delete/RestoreFromTrash API alone (the freed bare-id slot gets reused
+	// on the next delete). Drive the internal generation-naming helper
+	// directly to produce the two-generations-for-one-id state that
+	// ListTrash/RestoreFromTrash must handle — e.g. a crash between
+	// restoring a task's files and removing the now-empty generation dir,
+	// or a second delete racing in from another process.
+	genA, err := store.newTrashGeneration(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genA, created.ID+".md"), primaryContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(genA, older, older); err != nil {
+		t.Fatal(err)
+	}
+
+	genB, err := store.newTrashGeneration(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if genA == genB {
+		t.Fatalf("newTrashGeneration returned the same dir twice: %s", genA)
+	}
+	if err := os.WriteFile(filepath.Join(genB, created.ID+".md"), primaryContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(created.FilePath); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("ListTrash() = %d entries, want 2 distinct generations for %s", len(entries), created.ID)
+	}
+
+	restored, err := store.RestoreFromTrash(created.ID)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if restored.ID != created.ID {
+		t.Fatalf("restored.ID = %q, want %q", restored.ID, created.ID)
+	}
+
+	// The newer generation (genB) was consumed by restore; the older one
+	// (genA) remains trashed.
+	remaining, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("remaining = %+v, want exactly one leftover generation", remaining)
+	}
+	if remaining[0].Generation != filepath.Base(genA) {
+		t.Fatalf("remaining generation = %q, want the older generation %q to survive", remaining[0].Generation, filepath.Base(genA))
+	}
+}
+
+func TestStorePruneTrash(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldTask, err := store.Create("Old", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(oldTask.ID); err != nil {
+		t.Fatal(err)
+	}
+	recentTask, err := store.Create("Recent", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(recentTask.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both tasks were deleted today, so they share one date directory.
+	// Backdate only the "old" task's own generation dir by moving it into a
+	// separate, expired date directory — moving the whole shared date
+	// directory would backdate (and later prune) the recent task too.
+	oldEntries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldGenDir string
+	for _, e := range oldEntries {
+		if e.ID == oldTask.ID {
+			oldGenDir = filepath.Join(store.TrashDir(), e.DeletedDate, e.Generation)
+		}
+	}
+	if oldGenDir == "" {
+		t.Fatal("could not find old task's trash generation")
+	}
+	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
+	if err := os.MkdirAll(backdated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldGenDir, filepath.Join(backdated, filepath.Base(oldGenDir))); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := store.PruneTrash(14)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if rep.Removed != 1 {
+		t.Fatalf("rep.Removed = %d, want 1", rep.Removed)
+	}
+	if len(rep.Entries) != 1 || rep.Entries[0].ID != oldTask.ID {
+		t.Fatalf("rep.Entries = %+v, want one entry for %s", rep.Entries, oldTask.ID)
+	}
+
+	remaining, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != recentTask.ID {
+		t.Fatalf("remaining = %+v, want only the recent task", remaining)
+	}
+
+	// The now-empty backdated date directory should have been removed.
+	if _, err := os.Stat(backdated); !os.IsNotExist(err) {
+		t.Error("expired, now-empty date directory should be removed")
+	}
+}
+
+func TestStorePruneTrash_NegativeDisables(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Never pruned", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -3650).Format(time.DateOnly))
+	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := store.PruneTrash(-1)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if rep.Scanned != 0 || rep.Removed != 0 {
+		t.Fatalf("negative retention should no-op, got %+v", rep)
+	}
+
+	remaining, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("remaining = %d, want 1 (nothing pruned)", len(remaining))
+	}
+}
+
+func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Race", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Backdate so PruneTrash(1) treats this generation as expired.
+	entries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
+	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var restoreErr error
+	var pruneRep TrashPruneReport
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, restoreErr = store.RestoreFromTrash(created.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		pruneRep, _ = store.PruneTrash(1)
+	}()
+	wg.Wait()
+
+	// Per-task locking (shared between Delete/RestoreFromTrash/pruneGeneration)
+	// guarantees exactly one side wins: either the task is restored and prune
+	// removed nothing, or prune won and the task stays gone.
+	if restoreErr == nil {
+		if pruneRep.Removed != 0 {
+			t.Fatalf("prune must not remove a generation restore just consumed, got %+v", pruneRep)
+		}
+		if _, err := store.Get(created.ID); err != nil {
+			t.Fatalf("restored task should be live: %v", err)
+		}
+	} else {
+		if pruneRep.Removed != 1 {
+			t.Fatalf("expected prune to have removed the generation when restore lost the race, got %+v", pruneRep)
+		}
+		if _, err := store.Get(created.ID); err == nil {
+			t.Fatal("task should not be live when restore lost the race")
+		}
+	}
+}
+
+func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Undeletable", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create a regular file where the trash dir needs to be a
+	// directory, so MkdirAll(dateDir) fails before any rename is attempted.
+	if err := os.WriteFile(store.TrashDir(), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(created.ID); err == nil {
+		t.Fatal("expected delete to fail when the trash dir cannot be created")
+	}
+
+	if _, err := os.Stat(created.FilePath); err != nil {
+		t.Errorf("task file should remain in place after a failed delete: %v", err)
+	}
+	if _, err := store.Get(created.ID); err != nil {
+		t.Errorf("task should still be gettable after a failed delete: %v", err)
+	}
+}
+
+func TestStoreGcOrphanChatInteraction_TrashesInsteadOfUnlinking(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chat, err := store.CreateChat("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// gcOrphanChats (internal/recovery) deletes orphaned chat tasks through
+	// Manager.Delete → Store.Delete; assert that path now trashes the chat
+	// task rather than unlinking it outright, so a wrongly-GC'd chat is
+	// still recoverable.
+	if err := store.Delete(chat.ID); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.ListTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != chat.ID {
+		t.Fatalf("ListTrash() = %+v, want the trashed chat task", entries)
 	}
 }

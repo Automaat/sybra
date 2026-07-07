@@ -350,6 +350,34 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
+// RestoreFromTrash restores id's newest trash generation and emits
+// task:created — restored tasks re-enter the system the same way a fresh
+// Create does, so watchers (file watcher, workflow engine) treat it as a
+// new task rather than an update to one that "already existed".
+func (m *Manager) RestoreFromTrash(id string) (Task, error) {
+	mu := m.lockFor(id)
+	mu.Lock()
+	t, err := m.store.RestoreFromTrash(id)
+	mu.Unlock()
+	if err != nil {
+		return Task{}, err
+	}
+	m.recordFiredStatus(t.ID, string(t.Status))
+	m.emitter.Emit(events.TaskCreated, t.FilePath)
+	return t, nil
+}
+
+// ListTrash returns every trashed task generation, newest first.
+func (m *Manager) ListTrash() ([]TrashEntry, error) {
+	return m.store.ListTrash()
+}
+
+// PruneTrash permanently removes trash generations older than
+// retentionDays. A negative retentionDays disables pruning.
+func (m *Manager) PruneTrash(retentionDays int) (TrashPruneReport, error) {
+	return m.store.PruneTrash(retentionDays)
+}
+
 // AddRun appends an agent run to the task and emits task:updated.
 func (m *Manager) AddRun(taskID string, run AgentRun) error {
 	return m.AddRunWithStatus(taskID, run, nil)

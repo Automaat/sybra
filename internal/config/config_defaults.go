@@ -78,6 +78,22 @@ func (c *Config) DefaultLogRetentionDays() int {
 	return c.Agent.LogRetentionDays
 }
 
+// DefaultTrashRetentionDays returns the configured retention window for
+// soft-deleted tasks under ~/.sybra/trash, or 14 days if unset. A negative
+// value disables age-based pruning entirely.
+func (c *Config) DefaultTrashRetentionDays() int {
+	if c == nil {
+		return 14
+	}
+	if c.Trash.RetentionDays < 0 {
+		return c.Trash.RetentionDays
+	}
+	if c.Trash.RetentionDays == 0 {
+		return 14
+	}
+	return c.Trash.RetentionDays
+}
+
 // DefaultRequirePermissions returns the configured default, or true if unset.
 func (c *Config) DefaultRequirePermissions() bool {
 	if c != nil && c.Agent.RequirePermissions != nil {

@@ -781,17 +781,18 @@ func (a *App) newRecovery() *recovery.Recovery {
 		retention = time.Duration(days) * 24 * time.Hour
 	}
 	return &recovery.Recovery{
-		Tasks:          a.tasks,
-		Agents:         a.agents,
-		Worktrees:      a.worktrees,
-		WorkflowEngine: a.workflowEngine,
-		Orchestrator:   a.agentOrch,
-		Projects:       a.projects,
-		Logger:         a.logger,
-		Throttle:       a.restartStaleErr,
-		WG:             &a.wg,
-		LogDir:         a.logDir,
-		LogRetention:   retention,
+		Tasks:              a.tasks,
+		Agents:             a.agents,
+		Worktrees:          a.worktrees,
+		WorkflowEngine:     a.workflowEngine,
+		Orchestrator:       a.agentOrch,
+		Projects:           a.projects,
+		Logger:             a.logger,
+		Throttle:           a.restartStaleErr,
+		WG:                 &a.wg,
+		LogDir:             a.logDir,
+		LogRetention:       retention,
+		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 	}
 }
 
