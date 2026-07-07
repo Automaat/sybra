@@ -19,13 +19,13 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 2
+const CurrentBuiltinVersion = 3
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
 // reconcile if its ID appears here — every other experiment ID is treated as
 // user-authored and preserved verbatim.
-var BuiltinExperimentIDs = []string{"code-author-cheap", "code-author-maintenance-cheap", "review-expensive"}
+var BuiltinExperimentIDs = []string{"code-author-cheap", "code-author-maintenance-cheap", "fix-review-expensive", "review-expensive"}
 
 // Experiment selects among variants for matching workflow roles.
 type Experiment struct {
@@ -128,10 +128,21 @@ func DefaultConfig() Config {
 				Enabled:        &expEnabled,
 				AssignmentUnit: "stage",
 				Bracket:        "cheap",
-				Roles:          []string{"fix-review", "pr-fix", "test-runner"},
+				Roles:          []string{"pr-fix", "test-runner"},
 				Variants: []Variant{
 					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
 					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 3},
+				},
+			},
+			{
+				ID:             "fix-review-expensive",
+				Enabled:        &expEnabled,
+				AssignmentUnit: "stage",
+				Bracket:        "expensive",
+				Roles:          []string{"fix-review"},
+				Variants: []Variant{
+					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
 				},
 			},
 			{
