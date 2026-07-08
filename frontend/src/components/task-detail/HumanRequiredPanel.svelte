@@ -2,6 +2,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { extractAutoReviewVerdict } from '../../lib/auto-review-verdict.js'
+  import { isTamperFlaggedTask } from '$lib/tamper.js'
 
   interface Props {
     task: Task
@@ -10,6 +11,11 @@
   const { task }: Props = $props()
 
   const verdict = $derived(extractAutoReviewVerdict(task.body ?? ''))
+  // Tamper-flagged tasks must go through Bless (which records the bless tag so
+  // the same unchanged diff isn't re-flagged by detect_tampering). Dispatching
+  // straight to testing/ready-pr would bounce right back to human-required, so
+  // steer the operator to the Bless button rather than the generic actions.
+  const isTamperFlagged = $derived(isTamperFlaggedTask(task))
 
   type Target = 'in-progress' | 'testing' | 'ready-pr' | 'in-review'
 
@@ -55,6 +61,12 @@
       <p class="text-xs text-error-500">{error}</p>
     {/if}
 
+    {#if isTamperFlagged}
+      <p class="text-sm text-warning-800 dark:text-warning-200">
+        This task is tamper-flagged. Use <span class="font-semibold">Bless</span> to accept the changes
+        and resume review — dispatching it directly would re-trigger the tamper check.
+      </p>
+    {:else}
     <textarea
       class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
       rows="2"
@@ -85,5 +97,6 @@
         </button>
       {/if}
     </div>
+    {/if}
   </div>
 {/if}
