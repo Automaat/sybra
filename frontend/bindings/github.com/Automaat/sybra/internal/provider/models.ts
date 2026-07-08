@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * Status is a point-in-time health snapshot for a single provider.
  */
@@ -17,8 +13,8 @@ export class Status {
     "healthy": boolean;
     "reason": string;
     "detail"?: string;
-    "lastCheck": time$0.Time;
-    "ratelimitedUntil"?: time$0.Time;
+    "lastCheck": string;
+    "ratelimitedUntil"?: string;
 
     /** Creates a new Status instance. */
     constructor($$source: Partial<Status> = {}) {
@@ -32,7 +28,7 @@ export class Status {
             this["reason"] = "";
         }
         if (!("lastCheck" in $$source)) {
-            this["lastCheck"] = null;
+            this["lastCheck"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
