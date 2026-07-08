@@ -90,6 +90,25 @@ func TestRecordStep_TrimsAtMaxHistory(t *testing.T) {
 	}
 }
 
+func TestCountStep_SurvivesHistoryTrim(t *testing.T) {
+	e := &Execution{}
+
+	total := maxStepHistory + 10
+	for range total {
+		e.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+	}
+
+	if len(e.StepHistory) != maxStepHistory {
+		t.Fatalf("expected history trimmed to %d, got %d", maxStepHistory, len(e.StepHistory))
+	}
+	// CountStep must reflect every recorded step, not just the entries left
+	// in StepHistory after trimming — otherwise churn silently resets a
+	// replan/retry cap once early records are evicted.
+	if got := e.CountStep("start_replan"); got != total {
+		t.Errorf("expected CountStep to survive trim and report %d, got %d", total, got)
+	}
+}
+
 func TestLastRecord_ReturnsNilForEmptyHistory(t *testing.T) {
 	e := &Execution{}
 
