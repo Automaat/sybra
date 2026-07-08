@@ -1,12 +1,15 @@
 package poll
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 )
 
@@ -60,6 +63,42 @@ func TestRenovateHandlerRepos_FilterByProjectType(t *testing.T) {
 			got := h.Repos()
 			assertReposEqual(t, got, tt.wantRepos)
 		})
+	}
+}
+
+func TestRenovateHandlerPoll_AuthFailureResetsTransientFetchStreak(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	clones := t.TempDir()
+	store, err := project.NewStore(dir, clones)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	writeProject(t, dir, "owner1--pet1.yaml", "owner1/pet1", "owner1", "pet1", project.ProjectTypePet)
+
+	logger := slog.New(slog.DiscardHandler)
+	h := NewRenovateHandler(store, logger, func(string, any) {}, &config.RenovateConfig{Author: "renovate[bot]"}, nil)
+	ctx := context.Background()
+	transientErr := errors.New("dial tcp timeout")
+	authErr := errors.New("gh: HTTP 401: Bad credentials")
+
+	h.fetchPRsFn = func(context.Context, string, []string) ([]github.RenovatePR, error) {
+		return nil, transientErr
+	}
+
+	h.Poll(ctx)
+	h.Poll(ctx)
+	if h.transientFetchFails != 2 {
+		t.Fatalf("transientFetchFails = %d, want 2 before auth failure", h.transientFetchFails)
+	}
+
+	h.fetchPRsFn = func(context.Context, string, []string) ([]github.RenovatePR, error) {
+		return nil, authErr
+	}
+	h.Poll(ctx)
+	if h.transientFetchFails != 0 {
+		t.Fatalf("transientFetchFails = %d, want 0 after auth failure", h.transientFetchFails)
 	}
 }
 

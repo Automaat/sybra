@@ -77,6 +77,13 @@ func (c *renovateCoordinator) prsForMonitor() []github.PullRequest {
 	if len(repos) == 0 {
 		return nil
 	}
+	// Skip the monitor fetch while the renovate poller's auth circuit is open:
+	// the shared token is dead, so re-fetching here just re-hammers it and
+	// floods the log (#1516). The poller's own periodic re-probe closes the
+	// circuit on recovery, which re-enables this path.
+	if c.handler != nil && c.handler.AuthCircuitOpen() {
+		return nil
+	}
 	rps, err := github.FetchRenovatePRs(context.Background(), c.cfg.Renovate.Author, repos)
 	if err != nil {
 		c.recordMonitorFetchError(err)
@@ -93,6 +100,14 @@ func (c *renovateCoordinator) prsForMonitor() []github.PullRequest {
 func (c *renovateCoordinator) recordMonitorFetchError(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if github.IsAuthError(err) {
+		// A dead token is not transient: the poller's circuit (skipped on in
+		// prsForMonitor) governs backoff, so keep this path quiet at Info
+		// rather than warn-flooding every monitor cycle (#1516).
+		c.monitorTransientFails = 0
+		c.logger.Info("pr-monitor.renovate-fetch", "err", err)
+		return
+	}
 	if github.IsTransientError(err) {
 		c.monitorTransientFails++
 		if c.monitorTransientFails < review.TransientFetchWarnThreshold {

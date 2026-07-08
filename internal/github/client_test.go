@@ -837,6 +837,35 @@ func TestIsTransientError(t *testing.T) {
 	}
 }
 
+func TestIsAuthError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		errMsg string
+		auth   bool
+	}{
+		{"nil error", "", false},
+		{"401 http status", "gh api graphql: gh: HTTP 401: exit status 1", true},
+		{"bad credentials message", "gh: Bad credentials (HTTP 401)", true},
+		{"lowercase bad credentials", "bad credentials", true},
+		{"504 transient", "gh api graphql: gh: HTTP 504: exit status 1", false},
+		{"404 not found", "gh api graphql: gh: HTTP 404: exit status 1", false},
+		{"graphql error", "graphql: Field 'foo' doesn't exist", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var err error
+			if tt.errMsg != "" {
+				err = fmt.Errorf("%s", tt.errMsg)
+			}
+			if got := IsAuthError(err); got != tt.auth {
+				t.Errorf("IsAuthError(%q) = %v, want %v", tt.errMsg, got, tt.auth)
+			}
+		})
+	}
+}
+
 func TestSanitizeGHOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

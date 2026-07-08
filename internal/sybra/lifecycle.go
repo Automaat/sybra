@@ -582,5 +582,6 @@ func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *pol
 	a := lm.app
 	hub := poll.NewHub()
 	registerPollHandlers(a, hub, issuesFetcher)
+	metrics.RegisterPollerAuthHealth(hub.AuthHealthSnapshot)
 	hub.Start(ctx, &a.wg, a.logger)
 }
