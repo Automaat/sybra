@@ -636,6 +636,7 @@ func TestNewApp(t *testing.T) {
 	a := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
 	if a == nil {
 		t.Fatal("NewApp returned nil")
+		return
 	}
 	if a.tasksDir != cfg.TasksDir {
 		t.Errorf("tasksDir = %q, want %q", a.tasksDir, cfg.TasksDir)

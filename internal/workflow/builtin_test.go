@@ -31,6 +31,7 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("maybe_critique")
 	if step == nil {
@@ -100,6 +101,7 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	step := simple.StepByID("require_plan_critique")
 	if step == nil {
 		t.Fatal("require_plan_critique step not found in simple-task-plan")
+		return
 	}
 	if !step.Config.AllowMissing {
 		t.Fatal("require_plan_critique must soft-fail when the critic produces no sidecar")
@@ -234,6 +236,7 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 	exceeded := simple.StepByID("replan_cap_exceeded")
 	if exceeded == nil {
 		t.Fatal("replan_cap_exceeded step not found in simple-task-plan")
+		return
 	}
 	if exceeded.Config.Status != "human-required" {
 		t.Errorf("replan_cap_exceeded status = %q, want human-required", exceeded.Config.Status)
@@ -256,10 +259,12 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("address_critique")
 	if step == nil {
 		t.Fatal("address_critique step not found in simple-task-plan")
+		return
 	}
 	got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
 	if err != nil {
@@ -284,6 +289,7 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 		step := simple.StepByID(c.step)
 		if step == nil {
 			t.Fatalf("%s step not found in simple-task-plan", c.step)
+			return
 		}
 		got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
 		if err != nil {
@@ -350,10 +356,12 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
+		return
 	}
 	step := impl.StepByID("implement")
 	if step == nil {
 		t.Fatal("implement step not found in simple-task-implement")
+		return
 	}
 	if !strings.Contains(step.Config.Prompt, "sybra-cli get --compact {{.Task.ID}}") {
 		t.Fatalf("implement prompt must use compact task view, got:\n%s", step.Config.Prompt)
@@ -602,6 +610,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	route := prfix.StepByID("route_pr_fix_result")
 	if route == nil {
 		t.Fatal("route_pr_fix_result step missing from pr-fix")
+		return
 	}
 	if route.Type != StepRoutePRFixResult {
 		t.Fatalf("route_pr_fix_result type = %q, want %q", route.Type, StepRoutePRFixResult)
@@ -667,10 +676,12 @@ func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-pr builtin definition not found")
+		return
 	}
 	step := simple.StepByID("create_pr")
 	if step == nil {
 		t.Fatal("create_pr step not found in simple-task-pr")
+		return
 	}
 	prompt := step.Config.Prompt
 	for _, want := range []string{
@@ -715,6 +726,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-pr builtin definition not found")
+		return
 	}
 
 	first := simple.FirstStep()
@@ -725,6 +737,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	syncStep := simple.StepByID("sync_branch")
 	if syncStep == nil {
 		t.Fatal("sync_branch step not found in simple-task-pr")
+		return
 	}
 	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
 		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
@@ -735,6 +748,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	guard := simple.StepByID("maybe_create_pr")
 	if guard == nil {
 		t.Fatal("maybe_create_pr step not found in simple-task-pr")
+		return
 	}
 	var gotoTargets []string
 	for _, n := range guard.Next {
@@ -980,6 +994,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	step := testingDef.StepByID("run_test")
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
+		return
 	}
 	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
@@ -1086,6 +1101,7 @@ func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 	maybe := testingDef.StepByID("maybe_test")
 	if maybe == nil {
 		t.Fatal("maybe_test step not found in testing-task")
+		return
 	}
 	for _, n := range maybe.Next {
 		if n.When != nil && n.When.Value == "notest" {
@@ -1107,6 +1123,7 @@ func TestBuiltinTestingTask_TrivialSkipsTester(t *testing.T) {
 	maybe := testingDef.StepByID("maybe_test")
 	if maybe == nil {
 		t.Fatal("maybe_test step not found in testing-task")
+		return
 	}
 	var gotTrivialBranch bool
 	for _, n := range maybe.Next {
@@ -1124,6 +1141,7 @@ func TestBuiltinTestingTask_TrivialSkipsTester(t *testing.T) {
 	skip := testingDef.StepByID("skip_testing")
 	if skip == nil {
 		t.Fatal("skip_testing step not found in testing-task")
+		return
 	}
 	if skip.Type != "set_status" || skip.Config.Status != "ready-pr" {
 		t.Fatalf("skip_testing = %+v, want set_status to ready-pr", skip)

@@ -182,14 +182,17 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin not found")
+		return
 	}
 	vc := impl.StepByID("verify_checks")
 	if vc == nil {
 		t.Fatal("verify_checks step missing from simple-task-implement")
+		return
 	}
 	dt := impl.StepByID("detect_tampering")
 	if dt == nil {
 		t.Fatal("detect_tampering step missing")
+		return
 	}
 	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
 		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)

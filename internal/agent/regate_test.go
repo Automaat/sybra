@@ -281,6 +281,7 @@ func TestRegateForTurn_PersistsSwitchToRegistry(t *testing.T) {
 	}
 	if rec == nil {
 		t.Fatal("expected switch to persist a registry record")
+		return
 	}
 	if rec.Provider != "copilot" {
 		t.Errorf("persisted provider = %q, want copilot", rec.Provider)
