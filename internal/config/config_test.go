@@ -632,8 +632,115 @@ func TestDefaultGitHubEnabled(t *testing.T) {
 	if !cfg.GitHub.Enabled {
 		t.Error("default GitHub.Enabled should be true for backward compat")
 	}
+	if !cfg.GitHub.IssuesEnabled {
+		t.Error("default GitHub.IssuesEnabled should be true for backward compat")
+	}
+	if !cfg.GitHub.ReviewsEnabled {
+		t.Error("default GitHub.ReviewsEnabled should be true for backward compat")
+	}
 	if cfg.GitHub.NativeAutoMerge {
 		t.Error("default GitHub.NativeAutoMerge should be false (kill-switch, opt-in)")
+	}
+}
+
+func TestLoadGitHubSubToggleOverrides(t *testing.T) {
+	tests := []struct {
+		name           string
+		yaml           string
+		wantIssues     bool
+		wantReviews    bool
+		wantRunsIssues bool
+		wantRunsRevs   bool
+	}{
+		{
+			name:           "no overrides keep default-true sub-toggles",
+			yaml:           "github:\n  enabled: true\n",
+			wantIssues:     true,
+			wantReviews:    true,
+			wantRunsIssues: true,
+			wantRunsRevs:   true,
+		},
+		{
+			name:           "issues_enabled false overrides only issues",
+			yaml:           "github:\n  enabled: true\n  issues_enabled: false\n",
+			wantIssues:     false,
+			wantReviews:    true,
+			wantRunsIssues: false,
+			wantRunsRevs:   true,
+		},
+		{
+			name:           "reviews_enabled false overrides only reviews",
+			yaml:           "github:\n  enabled: true\n  reviews_enabled: false\n",
+			wantIssues:     true,
+			wantReviews:    false,
+			wantRunsIssues: true,
+			wantRunsRevs:   false,
+		},
+		{
+			name:           "top-level enabled false forces both off regardless of sub-toggles",
+			yaml:           "github:\n  enabled: false\n  issues_enabled: true\n  reviews_enabled: true\n",
+			wantIssues:     true,
+			wantReviews:    true,
+			wantRunsIssues: false,
+			wantRunsRevs:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.GitHub.IssuesEnabled != tt.wantIssues {
+				t.Errorf("IssuesEnabled = %v, want %v", cfg.GitHub.IssuesEnabled, tt.wantIssues)
+			}
+			if cfg.GitHub.ReviewsEnabled != tt.wantReviews {
+				t.Errorf("ReviewsEnabled = %v, want %v", cfg.GitHub.ReviewsEnabled, tt.wantReviews)
+			}
+			if got := cfg.GitHub.RunsIssuesFetcher(); got != tt.wantRunsIssues {
+				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantRunsIssues)
+			}
+			if got := cfg.GitHub.RunsReviewer(); got != tt.wantRunsRevs {
+				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantRunsRevs)
+			}
+		})
+	}
+}
+
+func TestGitHubRunsHelpers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cfg         GitHubConfig
+		wantIssues  bool
+		wantReviews bool
+	}{
+		{"all enabled", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: true}, true, true},
+		{"top-level disabled forces both off", GitHubConfig{Enabled: false, IssuesEnabled: true, ReviewsEnabled: true}, false, false},
+		{"issues off, reviews on", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: true}, false, true},
+		{"issues on, reviews off", GitHubConfig{Enabled: true, IssuesEnabled: true, ReviewsEnabled: false}, true, false},
+		{"both sub-toggles off", GitHubConfig{Enabled: true, IssuesEnabled: false, ReviewsEnabled: false}, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.RunsIssuesFetcher(); got != tt.wantIssues {
+				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantIssues)
+			}
+			if got := tt.cfg.RunsReviewer(); got != tt.wantReviews {
+				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviews)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,19 @@
 package config
 
 type GitHubConfig struct {
+	// Enabled is the top-level kill-switch: false forces every GitHub
+	// automation off regardless of the sub-toggles below, so existing configs
+	// need no migration. true defers to IssuesEnabled/ReviewsEnabled.
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
+	// true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
+	// use RunsIssuesFetcher() rather than reading this field directly.
+	IssuesEnabled bool `yaml:"issues_enabled" json:"issuesEnabled"`
+	// ReviewsEnabled gates PR reviewer poll registration specifically.
+	// Defaults to true (see DefaultConfig). Effective state is
+	// Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
+	// field directly.
+	ReviewsEnabled bool `yaml:"reviews_enabled" json:"reviewsEnabled"`
 	// PollerRole splits GitHub search polling (reviews/issues/renovate) across
 	// machines sharing one token. "primary" (or empty) runs the search pollers;
 	// "secondary" skips them so a sibling instance owns the searches and the

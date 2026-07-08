@@ -168,7 +168,9 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `github.enabled` | `bool` | `true` |  |
+| `github.enabled` | `bool` | `true` | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below, so existing configs need no migration. true defers to IssuesEnabled/ReviewsEnabled. |
+| `github.issues_enabled` | `bool` | `true` | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
+| `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
 | `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
 | `github.reviews_slow_seconds` | `int` |  |  |

@@ -118,8 +118,8 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 // initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
 // nil otherwise. Kept separate so Startup stays under the funlen limit.
 func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
-	if !a.cfg.GitHub.Enabled {
-		a.logger.Info("github.disabled")
+	if !a.cfg.GitHub.RunsIssuesFetcher() {
+		a.logger.Info("github.issues.disabled")
 		return nil
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
@@ -161,6 +161,8 @@ func (a *App) logAutomationsSummary() {
 	a.logger.Info("app.automations",
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
+		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
+		"github_reviews", a.cfg.GitHub.RunsReviewer(),
 		"renovate", a.cfg.Renovate.Enabled,
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,

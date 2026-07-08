@@ -522,10 +522,17 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 	a.wg.Go(func() { a.promptLab.run(ctx) })
 }
 
-// startPollHub registers all enabled poll handlers and starts the hub.
-func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
-	a := lm.app
-	hub := poll.NewHub()
+// pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,
+// extracted so tests can substitute a fake and assert on which fetchers were
+// registered without inspecting poll.Hub's private fields.
+type pollRegistrar interface {
+	Register(f poll.Fetcher, initialWait time.Duration)
+}
+
+// registerPollHandlers registers all enabled poll handlers onto reg. Split
+// out of startPollHub so tests can exercise the registration logic (e.g.
+// reviewer gating) directly against a fake pollRegistrar.
+func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesFetcher) {
 	// Periodic GitHub search pollers (reviews/issues/renovate) only run on the
 	// primary instance — a "secondary" machine sharing the same token skips them
 	// so the shared rate budget isn't billed twice. Triage is local (no GitHub
@@ -535,18 +542,29 @@ func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *pol
 		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
 	if a.reviewer != nil {
-		hub.Register(a.reviewer, 10*time.Second)
+		if a.cfg.GitHub.RunsReviewer() {
+			reg.Register(a.reviewer, 10*time.Second)
+		} else {
+			a.logger.Info("github.reviews.disabled")
+		}
 	}
 	if runSearch {
 		if issuesFetcher != nil {
-			hub.Register(issuesFetcher, 20*time.Second)
+			reg.Register(issuesFetcher, 20*time.Second)
 		}
 		if renovatePoller := a.renovate.poller(); renovatePoller != nil {
-			hub.Register(renovatePoller, 15*time.Second)
+			reg.Register(renovatePoller, 15*time.Second)
 		}
 	}
 	if triagePoller := a.triage.poller(); triagePoller != nil {
-		hub.Register(triagePoller, 30*time.Second)
+		reg.Register(triagePoller, 30*time.Second)
 	}
+}
+
+// startPollHub registers all enabled poll handlers and starts the hub.
+func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
+	a := lm.app
+	hub := poll.NewHub()
+	registerPollHandlers(a, hub, issuesFetcher)
 	hub.Start(ctx, &a.wg, a.logger)
 }

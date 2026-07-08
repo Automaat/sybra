@@ -251,6 +251,18 @@ func (c GitHubConfig) RunsSearchPollers() bool {
 	return !strings.EqualFold(strings.TrimSpace(c.PollerRole), "secondary")
 }
 
+// RunsIssuesFetcher reports the effective state of the GitHub Issues fetcher:
+// the top-level kill-switch AND the issues-specific sub-toggle.
+func (c GitHubConfig) RunsIssuesFetcher() bool {
+	return c.Enabled && c.IssuesEnabled
+}
+
+// RunsReviewer reports the effective state of PR reviewer poll registration:
+// the top-level kill-switch AND the reviews-specific sub-toggle.
+func (c GitHubConfig) RunsReviewer() bool {
+	return c.Enabled && c.ReviewsEnabled
+}
+
 func (c GitHubConfig) reviewsFast() time.Duration {
 	return secsOr(c.ReviewsFastSeconds, DefaultReviewsFastSeconds)
 }
@@ -377,7 +389,9 @@ func DefaultConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
-			Enabled: true,
+			Enabled:        true,
+			IssuesEnabled:  true,
+			ReviewsEnabled: true,
 		},
 		Monitor: MonitorConfig{
 			Enabled: true,
