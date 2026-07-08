@@ -467,18 +467,30 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 	}
 
 	report := ""
+	isFail := false
 	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
 		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
 			return false, body, nil
 		}
+		isFail = true
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
 	} else if ExtractTestVerdict(output.Output) == "FAIL" {
+		isFail = true
 		report = plainTestFailureReport(output.Output)
 	}
-	if report == "" {
+	if !isFail {
 		return false, body, nil
 	}
 	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
+		var currentStart int
+		nextBody, currentStart = normalizeTestFailureDeltaBody(body, delta)
+		wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
+		if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
+			return false, body, fmt.Errorf("normalize test failure report: %w", err)
+		}
+		return true, nextBody, nil
+	}
+	if report == "" {
 		return false, body, nil
 	}
 
@@ -497,6 +509,31 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 		return false, body, fmt.Errorf("append test failure report: %w", err)
 	}
 	return true, nextBody, nil
+}
+
+func normalizeTestFailureDeltaBody(body, delta string) (nextBody string, currentStart int) {
+	preAttemptBody := body[:len(body)-len(delta)]
+	strippedPreAttemptBody, priorSections := stripTestFailuresSections(preAttemptBody)
+	strippedDelta, deltaSections := stripTestFailuresSections(delta)
+	if len(deltaSections) == 0 {
+		return body, len(body)
+	}
+
+	nextBody = strippedPreAttemptBody
+	nextBody = appendRawBody(nextBody, strippedDelta)
+	for _, prior := range priorSections {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	for _, prior := range deltaSections[:len(deltaSections)-1] {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	currentSection := deltaSections[len(deltaSections)-1]
+	nextBody = appendRawBody(nextBody, currentSection)
+	currentStart = strings.LastIndex(nextBody, currentSection)
+	if currentStart < 0 {
+		currentStart = len(nextBody)
+	}
+	return nextBody, currentStart
 }
 
 // stripTestFailuresSections removes every "## Test Failures" section from

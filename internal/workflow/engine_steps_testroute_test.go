@@ -1747,6 +1747,72 @@ func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing
 	}
 }
 
+func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	currentReport := "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		"Requirement tested: the status endpoint returns HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	currentBody := initialBody + "\n\n" + currentReport
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-archive-delta",
+		Status:    "testing",
+		Body:      currentBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-archive-delta", Role: testRunnerRole}},
+	})
+
+	err := engine.AdvanceStep("t-archive-delta", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  `{"verdict":"FAIL","outcome":"product_bug"}`,
+		AgentID: "agent-archive-delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-archive-delta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
+		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	}
+	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
+		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
+		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
+	}
+	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+		strings.Contains(current, "Old defect from cycle 1") {
+		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
 func TestAdvanceStep_TestProtocolViolationRetriesRunTestForMalformedVerdict(t *testing.T) {
 	t.Parallel()
 	engine, tasks, agents := makeTestingTaskEngine(t)
