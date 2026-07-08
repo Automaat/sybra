@@ -287,7 +287,7 @@
   const statusOrder: Record<string, number> = {
     'new': 0, 'todo': 1, 'planning': 2, 'plan-review': 3,
     'in-progress': 4, 'in-review': 5, 'testing': 6, 'ready-pr': 7,
-    'human-required': 8, 'done': 9,
+    'human-required': 8, 'blocked': 9, 'done': 10,
   }
   const priorityOrder: Record<string, number> = {
     'urgent': 0, 'high': 1, 'medium': 2, 'low': 3, '': 4,
