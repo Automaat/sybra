@@ -1,6 +1,6 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
-  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare, Copy, Hash } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare, Hash } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
