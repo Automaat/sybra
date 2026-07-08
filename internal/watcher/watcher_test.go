@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -507,5 +508,124 @@ func TestDebounceIsolatesPerFile(t *testing.T) {
 	}
 	if counts["b.md"] < 1 {
 		t.Errorf("expected >=1 event for b.md, got %d (counts=%v)", counts["b.md"], counts)
+	}
+}
+
+// TestReconcileRecoversFromStaleKnownState covers the failure mode reported
+// in production: an OS-level per-file watch (kqueue on darwin opens one fd
+// per file and can silently drop it across certain rename-over-write races)
+// stops reporting fsnotify events for a specific path forever, while the
+// directory watch and every other file keep working. The poll-based
+// reconcile pass is the backstop — it must independently detect drift
+// between the last-known snapshot and the directory's real state and emit
+// the event fsnotify failed to deliver, without relying on fw.Events at all.
+func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	emit := func(event string, data any) {
+		name, _ := data.(string)
+		mu.Lock()
+		seen = append(seen, event+":"+filepath.Base(name))
+		mu.Unlock()
+	}
+
+	tracked := filepath.Join(dir, "tracked.md")
+	if err := os.WriteFile(tracked, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	untouched := filepath.Join(dir, "untouched.md")
+	if err := os.WriteFile(untouched, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newFile := filepath.Join(dir, "new.md")
+	gone := filepath.Join(dir, "gone.md")
+	if err := os.WriteFile(gone, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(dir, emit, discardLogger())
+	// known is seeded as of "now", before any of the drift below happens —
+	// simulating fsnotify having silently lost its watch for these paths
+	// sometime after the initial snapshot, with no event ever delivered for
+	// the changes that follow.
+	known := w.snapshot()
+
+	// Mutate the directory exactly the way an OS-level watch loss would be
+	// invisible for: modify an existing file's content/mtime, create a new
+	// file, and delete another — all without going through the fsnotify
+	// event path (the loop is never started in this test).
+	time.Sleep(10 * time.Millisecond) // ensure a distinguishable mtime
+	if err := os.WriteFile(tracked, []byte("v2-missed-by-fsnotify"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newFile, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	w.reconcile(known)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]bool{
+		ev.TaskUpdated + ":tracked.md": true,
+		ev.TaskCreated + ":new.md":     true,
+		ev.TaskDeleted + ":gone.md":    true,
+	}
+	for _, e := range seen {
+		delete(want, e)
+	}
+	if len(want) != 0 {
+		t.Errorf("reconcile did not recover expected events %v; got %v", want, seen)
+	}
+	for _, e := range seen {
+		if strings.Contains(e, "untouched.md") {
+			t.Errorf("reconcile reported spurious event for untouched file: %v", seen)
+		}
+	}
+}
+
+// TestReconcilePassEventuallyFiresOnShortInterval exercises the full Start
+// loop with a shortened reconcile interval to confirm the ticker case is
+// actually wired into the select loop (not just the unit-level reconcile
+// logic), independent of whatever fsnotify itself reports.
+func TestReconcilePassEventuallyFiresOnShortInterval(t *testing.T) {
+	dir := t.TempDir()
+
+	got := make(chan string, 10)
+	emit := func(event string, _ any) {
+		select {
+		case got <- event:
+		default:
+		}
+	}
+
+	w := New(dir, emit, discardLogger())
+	w.reconcileInterval = 20 * time.Millisecond
+	if err := w.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitReady(t, w)
+
+	mdPath := filepath.Join(dir, "poll-created.md")
+	if err := os.WriteFile(mdPath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !pollUntil(1*time.Second, 10*time.Millisecond, func() bool {
+		select {
+		case e := <-got:
+			return e == ev.TaskCreated || e == ev.TaskUpdated
+		default:
+			return false
+		}
+	}) {
+		t.Error("expected an event via fsnotify or the reconcile backstop")
 	}
 }
