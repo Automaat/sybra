@@ -5,6 +5,7 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
   import TaskStatusBanner from '../components/task-detail/TaskStatusBanner.svelte'
+  import HumanRequiredPanel from '../components/task-detail/HumanRequiredPanel.svelte'
   import TaskMetadataRow from '../components/task-detail/TaskMetadataRow.svelte'
   import TaskPullRequestsPanel from '../components/task-detail/TaskPullRequestsPanel.svelte'
   import TaskDescriptionEditor from '../components/task-detail/TaskDescriptionEditor.svelte'
@@ -153,6 +154,7 @@
       <!-- Persistent header: always visible above the tabs. -->
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
+      <HumanRequiredPanel task={t} />
       {#if t.status === 'plan-review' && activeTab !== 'plan'}
         <!-- Default is Overview, so nudge the pending approve/reject to the fore. -->
         <button
