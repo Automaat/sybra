@@ -144,10 +144,16 @@ func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
 }
 
 func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
-	if cfg == nil || !cfg.GitHub.RunsSearchPollers() {
+	if cfg == nil {
 		return false
 	}
-	return cfg.GitHub.RunsIssuesFetcher() || cfg.GitHub.RunsReviewer()
+	if cfg.GitHub.RunsReviewer() {
+		return true
+	}
+	if !cfg.GitHub.RunsSearchPollers() {
+		return false
+	}
+	return cfg.GitHub.RunsIssuesFetcher() || cfg.Renovate.Enabled
 }
 
 // StartWatchers launches the config-file hot-reload watcher.

@@ -107,12 +107,13 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		enabled        bool
-		issuesEnabled  bool
-		reviewsEnabled bool
-		pollerRole     string
-		want           bool
+		name            string
+		enabled         bool
+		issuesEnabled   bool
+		reviewsEnabled  bool
+		renovateEnabled bool
+		pollerRole      string
+		want            bool
 	}{
 		{
 			name:           "top-level disabled skips budget loop",
@@ -143,12 +144,37 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 			want:           true,
 		},
 		{
-			name:           "secondary poller role skips budget loop",
+			name:           "secondary reviewer still runs budget loop",
 			enabled:        true,
-			issuesEnabled:  true,
+			issuesEnabled:  false,
 			reviewsEnabled: true,
 			pollerRole:     "secondary",
+			want:           true,
+		},
+		{
+			name:           "secondary issues-only skips budget loop",
+			enabled:        true,
+			issuesEnabled:  true,
+			reviewsEnabled: false,
+			pollerRole:     "secondary",
 			want:           false,
+		},
+		{
+			name:            "renovate enabled on primary runs budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
+			reviewsEnabled:  false,
+			renovateEnabled: true,
+			want:            true,
+		},
+		{
+			name:            "secondary renovate-only skips budget loop",
+			enabled:         true,
+			issuesEnabled:   false,
+			reviewsEnabled:  false,
+			pollerRole:      "secondary",
+			renovateEnabled: true,
+			want:            false,
 		},
 	}
 
@@ -162,6 +188,9 @@ func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 					IssuesEnabled:  tt.issuesEnabled,
 					ReviewsEnabled: tt.reviewsEnabled,
 					PollerRole:     tt.pollerRole,
+				},
+				Renovate: config.RenovateConfig{
+					Enabled: tt.renovateEnabled,
 				},
 			}
 
