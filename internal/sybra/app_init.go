@@ -119,7 +119,10 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 // nil otherwise. Kept separate so Startup stays under the funlen limit.
 func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 	if !a.cfg.GitHub.RunsIssuesFetcher() {
-		a.logger.Info("github.issues.disabled")
+		a.logger.Info("github.issues.disabled",
+			"github_enabled", a.cfg.GitHub.Enabled,
+			"issues_enabled", a.cfg.GitHub.IssuesEnabled,
+		)
 		return nil
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)

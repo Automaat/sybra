@@ -315,7 +315,27 @@ export class GitHubAppConfig {
 }
 
 export class GitHubConfig {
+    /**
+     * Enabled is the top-level kill-switch: false forces every GitHub
+     * automation off regardless of the sub-toggles below, so existing configs
+     * need no migration. true defers to IssuesEnabled/ReviewsEnabled.
+     */
     "enabled": boolean;
+
+    /**
+     * IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
+     * true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
+     * use RunsIssuesFetcher() rather than reading this field directly.
+     */
+    "issuesEnabled": boolean;
+
+    /**
+     * ReviewsEnabled gates PR reviewer poll registration specifically.
+     * Defaults to true (see DefaultConfig). Effective state is
+     * Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this
+     * field directly.
+     */
+    "reviewsEnabled": boolean;
 
     /**
      * PollerRole splits GitHub search polling (reviews/issues/renovate) across
@@ -370,6 +390,12 @@ export class GitHubConfig {
         if (!("enabled" in $$source)) {
             this["enabled"] = false;
         }
+        if (!("issuesEnabled" in $$source)) {
+            this["issuesEnabled"] = false;
+        }
+        if (!("reviewsEnabled" in $$source)) {
+            this["reviewsEnabled"] = false;
+        }
         if (!("pollerRole" in $$source)) {
             this["pollerRole"] = "";
         }
@@ -405,10 +431,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField7_0 = $$createType0;
+        const $$createField9_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField7_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField9_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }

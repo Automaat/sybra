@@ -103,6 +103,75 @@ func TestPollHubReviewerRegistration_GitHubReviewToggles(t *testing.T) {
 	}
 }
 
+func TestRunsGitHubRateBudgetLoop(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		enabled        bool
+		issuesEnabled  bool
+		reviewsEnabled bool
+		pollerRole     string
+		want           bool
+	}{
+		{
+			name:           "top-level disabled skips budget loop",
+			enabled:        false,
+			issuesEnabled:  true,
+			reviewsEnabled: true,
+			want:           false,
+		},
+		{
+			name:           "both sub-toggles disabled skips budget loop",
+			enabled:        true,
+			issuesEnabled:  false,
+			reviewsEnabled: false,
+			want:           false,
+		},
+		{
+			name:           "issues fetcher enabled runs budget loop",
+			enabled:        true,
+			issuesEnabled:  true,
+			reviewsEnabled: false,
+			want:           true,
+		},
+		{
+			name:           "reviewer enabled runs budget loop",
+			enabled:        true,
+			issuesEnabled:  false,
+			reviewsEnabled: true,
+			want:           true,
+		},
+		{
+			name:           "secondary poller role skips budget loop",
+			enabled:        true,
+			issuesEnabled:  true,
+			reviewsEnabled: true,
+			pollerRole:     "secondary",
+			want:           false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &config.Config{
+				GitHub: config.GitHubConfig{
+					Enabled:        tt.enabled,
+					IssuesEnabled:  tt.issuesEnabled,
+					ReviewsEnabled: tt.reviewsEnabled,
+					PollerRole:     tt.pollerRole,
+				},
+			}
+
+			if got := runsGitHubRateBudgetLoop(cfg); got != tt.want {
+				t.Errorf("runsGitHubRateBudgetLoop() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestAllowsProjectType_RoutingAcrossMachines verifies the config-driven
 // routing closure that IssuesFetcher/RenovateHandler receive. Two configs
 // (pet-only vs work-only) should answer different sets of project types.

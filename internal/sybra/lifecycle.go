@@ -124,7 +124,7 @@ const rateBudgetRefreshInterval = 60 * time.Second
 // observe directly.
 func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
 	a := lm.app
-	if !a.cfg.GitHub.Enabled {
+	if !runsGitHubRateBudgetLoop(a.cfg) {
 		return
 	}
 	a.wg.Go(func() {
@@ -141,6 +141,13 @@ func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
 			}
 		}
 	})
+}
+
+func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
+	if cfg == nil || !cfg.GitHub.RunsSearchPollers() {
+		return false
+	}
+	return cfg.GitHub.RunsIssuesFetcher() || cfg.GitHub.RunsReviewer()
 }
 
 // StartWatchers launches the config-file hot-reload watcher.
@@ -545,7 +552,10 @@ func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesF
 		if a.cfg.GitHub.RunsReviewer() {
 			reg.Register(a.reviewer, 10*time.Second)
 		} else {
-			a.logger.Info("github.reviews.disabled")
+			a.logger.Info("github.reviews.disabled",
+				"github_enabled", a.cfg.GitHub.Enabled,
+				"reviews_enabled", a.cfg.GitHub.ReviewsEnabled,
+			)
 		}
 	}
 	if runSearch {
