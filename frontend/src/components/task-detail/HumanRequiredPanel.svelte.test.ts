@@ -111,6 +111,18 @@ describe('HumanRequiredPanel', () => {
     expect(screen.getByText('tests failed twice')).toBeDefined()
   })
 
+  it('steers tamper-flagged tasks to Bless instead of the generic dispatch actions', () => {
+    render(HumanRequiredPanel, {
+      props: { task: { ...baseTask, tamperFlagged: true, prNumber: 42 } as never },
+    })
+    expect(screen.getByText(/tamper-flagged/i)).toBeDefined()
+    expect(screen.queryByPlaceholderText('Decision reason (required)...')).toBeNull()
+    expect(screen.queryByText('Re-run implementation')).toBeNull()
+    expect(screen.queryByText('Send to testing')).toBeNull()
+    expect(screen.queryByText('Open PR')).toBeNull()
+    expect(screen.queryByText('Link PR and review')).toBeNull()
+  })
+
   it('renders the auto-review verdict section from the body when present', () => {
     const body = [
       'Some description.',
