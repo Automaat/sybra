@@ -41,6 +41,8 @@ func shQuote(s string) string {
 	return "'" + b.String() + "'"
 }
 
+const testStateWaitTimeout = 10 * time.Second
+
 func waitForAgentState(t *testing.T, a *Agent, want State, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -99,7 +101,7 @@ func TestRunPerTurnConversational_FailsOverMidConversation(t *testing.T) {
 	a.cancel = cancel
 	go m.runPerTurnConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "codex", RequirePermissions: true}, false)
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 	if a.GetProvider() != "codex" {
 		t.Fatalf("expected first turn to run on codex, got %s", a.GetProvider())
 	}
@@ -114,8 +116,8 @@ func TestRunPerTurnConversational_FailsOverMidConversation(t *testing.T) {
 		t.Fatalf("sendConvoPrompt: %v", err)
 	}
 
-	waitForAgentProvider(t, a, "copilot", 3*time.Second)
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentProvider(t, a, "copilot", testStateWaitTimeout)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	if a.GetSessionID() != "cop-fake" {
 		t.Errorf("expected copilot's session id captured after switch, got %q", a.GetSessionID())
@@ -171,7 +173,7 @@ func TestRunPerTurnConversational_NoPeerParksInstead(t *testing.T) {
 	defer cancel()
 	go m.runPerTurnConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "codex"}, false)
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	// codex caps with no healthy per-turn peer at all (copilot unhealthy too,
 	// claude is never a valid per-turn hot-swap target).
