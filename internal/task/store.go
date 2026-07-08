@@ -1486,6 +1486,10 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 		clone.Variables = make(map[string]string, len(wf.Variables))
 		maps.Copy(clone.Variables, wf.Variables)
 	}
+	if wf.StepCounts != nil {
+		clone.StepCounts = make(map[string]int, len(wf.StepCounts))
+		maps.Copy(clone.StepCounts, wf.StepCounts)
+	}
 	if wf.CompletedAt != nil {
 		ts := *wf.CompletedAt
 		clone.CompletedAt = &ts
