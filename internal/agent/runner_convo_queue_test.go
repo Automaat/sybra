@@ -50,7 +50,7 @@ func startSlowPersistentClaude(t *testing.T, id string) (*Manager, *Agent) {
 	a.cancel = cancel
 	go m.runConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "claude"})
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 	return m, a
 }
 
@@ -65,7 +65,7 @@ func TestQueuedFlush_RegatesAndHotSwapsAtTurnBoundary(t *testing.T) {
 	if err := m.SendMessage(a.ID, "turn2"); err != nil {
 		t.Fatalf("SendMessage turn2: %v", err)
 	}
-	waitForAgentState(t, a, StateRunning, 2*time.Second)
+	waitForAgentState(t, a, StateRunning, testStateWaitTimeout)
 
 	// Enqueue a follow-up while turn2 is still running (sleeping in the fake
 	// script), then flip Claude unhealthy before its result arrives.
@@ -80,8 +80,8 @@ func TestQueuedFlush_RegatesAndHotSwapsAtTurnBoundary(t *testing.T) {
 		reasons: map[string]string{"claude": "rate_limited"},
 	})
 
-	waitForAgentProvider(t, a, "copilot", 3*time.Second)
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentProvider(t, a, "copilot", testStateWaitTimeout)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	if a.GetSessionID() != "cop-fake" {
 		t.Errorf("expected copilot session id after queued-flush handoff, got %q", a.GetSessionID())
@@ -110,7 +110,7 @@ func TestQueuedFlush_NoPeerRestoresPromptToFront(t *testing.T) {
 	if err := m.SendMessage(a.ID, "turn2"); err != nil {
 		t.Fatalf("SendMessage turn2: %v", err)
 	}
-	waitForAgentState(t, a, StateRunning, 2*time.Second)
+	waitForAgentState(t, a, StateRunning, testStateWaitTimeout)
 
 	if err := m.SendMessage(a.ID, "turn3"); err != nil {
 		t.Fatalf("SendMessage turn3 (queued): %v", err)
@@ -120,7 +120,7 @@ func TestQueuedFlush_NoPeerRestoresPromptToFront(t *testing.T) {
 		reasons: map[string]string{"claude": "rate_limited"},
 	})
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	if a.GetProvider() != "claude" {
 		t.Errorf("provider must stay claude when no peer is healthy, got %q", a.GetProvider())
@@ -172,12 +172,12 @@ func TestQueuedFlush_CarriesRemainingQueueInOrderAcrossHandoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	a.cancel = cancel
 	go m.runConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "claude"})
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	if err := m.SendMessage(a.ID, "turn2"); err != nil {
 		t.Fatalf("SendMessage turn2: %v", err)
 	}
-	waitForAgentState(t, a, StateRunning, 2*time.Second)
+	waitForAgentState(t, a, StateRunning, testStateWaitTimeout)
 
 	// Enqueue two follow-ups while turn2 runs: the flush should pop and
 	// regate "turn3" (triggering the handoff), while "turn4" stays queued on
@@ -197,8 +197,8 @@ func TestQueuedFlush_CarriesRemainingQueueInOrderAcrossHandoff(t *testing.T) {
 		reasons: map[string]string{"claude": "rate_limited"},
 	})
 
-	waitForAgentProvider(t, a, "copilot", 3*time.Second)
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentProvider(t, a, "copilot", testStateWaitTimeout)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	// turn4 should have replayed automatically (queue drains before the
 	// per-turn loop blocks on its prompt channel), leaving the queue empty.
