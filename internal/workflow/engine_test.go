@@ -103,12 +103,13 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu      sync.Mutex
-	tasks   map[string]*TaskInfo
-	reasons map[string]string
-	steers  map[string]string
-	gets    map[string]int
-	onGet   func(id string, t *TaskInfo, count int)
+	mu        sync.Mutex
+	tasks     map[string]*TaskInfo
+	reasons   map[string]string
+	steers    map[string]string
+	gets      map[string]int
+	onGet     func(id string, t *TaskInfo, count int)
+	appendErr error
 }
 
 func newMemTasks() *memTasks {
@@ -266,6 +267,9 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
