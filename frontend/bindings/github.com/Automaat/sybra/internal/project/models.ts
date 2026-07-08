@@ -5,10 +5,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
-
 /**
  * ChecksConfig defines shell commands run as git hooks in agent worktrees.
  * Commands execute in the worktree root; non-zero exit blocks the git operation.
@@ -130,8 +126,8 @@ export class Project {
      * local HEAD so unpushed commits are included. Empty value treated as "fresh".
      */
     "worktreeBaseRef"?: string;
-    "createdAt": time$0.Time;
-    "updatedAt": time$0.Time;
+    "createdAt": string;
+    "updatedAt": string;
 
     /** Creates a new Project instance. */
     constructor($$source: Partial<Project> = {}) {
@@ -160,10 +156,10 @@ export class Project {
             this["status"] = ProjectStatus.$zero;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = null;
+            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);

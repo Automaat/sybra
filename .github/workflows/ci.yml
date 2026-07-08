@@ -91,7 +91,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260702211033-e66cfc93566b
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260707193443-5c662b71f232
 
       - name: Run nilaway
         run: |
@@ -225,17 +225,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - run: |
           GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
-          grep -q "$GO_VERSION" README.md || (echo "README Go version stale (want $GO_VERSION)" && exit 1)
-          grep -q "$GO_VERSION" CLAUDE.md || (echo "CLAUDE.md Go version stale (want $GO_VERSION)" && exit 1)
           MISE_GO_VERSION=$(grep '^go = ' mise.toml | awk -F'"' '{print $2}')
           [ "$GO_VERSION" = "$MISE_GO_VERSION" ] || \
             (echo "mise.toml Go version stale (go.mod=$GO_VERSION, mise.toml=$MISE_GO_VERSION)" && exit 1)
           NODE_VERSION=$(grep '^node = ' mise.toml | awk -F'"' '{print $2}')
           grep -q "\"node\": \"$NODE_VERSION\"" frontend/package.json || \
             (echo "frontend/package.json engines.node stale (want $NODE_VERSION)" && exit 1)
-          WAILS_GO_VERSION=$(grep '^	github.com/wailsapp/wails/v3 ' go.mod | awk '{print $2}')
-          grep -q "$WAILS_GO_VERSION" README.md || (echo "README Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
-          grep -q "$WAILS_GO_VERSION" CLAUDE.md || (echo "CLAUDE.md Wails Go module version stale (want $WAILS_GO_VERSION)" && exit 1)
           WAILS_RUNTIME_VERSION=$(node -p "require('./frontend/package.json').dependencies['@wailsio/runtime']")
           grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
             (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)

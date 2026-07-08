@@ -8,9 +8,6 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as abtest$0 from "../abtest/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * Breakdown is the per-dimension (provider, role) slice of the effort and
@@ -401,8 +398,8 @@ export class ExperimentSampleStatus {
  * PhaseReport is the per-phase lifecycle-duration breakdown over a window.
  */
 export class PhaseReport {
-    "since": time$0.Time;
-    "until": time$0.Time;
+    "since": string;
+    "until": string;
 
     /**
      * landed tasks analyzed
@@ -414,10 +411,10 @@ export class PhaseReport {
     /** Creates a new PhaseReport instance. */
     constructor($$source: Partial<PhaseReport> = {}) {
         if (!("since" in $$source)) {
-            this["since"] = null;
+            this["since"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("until" in $$source)) {
-            this["until"] = null;
+            this["until"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("cohort" in $$source)) {
             this["cohort"] = 0;
@@ -550,9 +547,9 @@ export class RateEstimate {
  * Report is the persisted, emitted, and CLI-printed output of one evaluation tick.
  */
 export class Report {
-    "generatedAt": time$0.Time;
-    "since": time$0.Time;
-    "until": time$0.Time;
+    "generatedAt": string;
+    "since": string;
+    "until": string;
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
@@ -565,13 +562,13 @@ export class Report {
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
         if (!("generatedAt" in $$source)) {
-            this["generatedAt"] = null;
+            this["generatedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("since" in $$source)) {
-            this["since"] = null;
+            this["since"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("until" in $$source)) {
-            this["until"] = null;
+            this["until"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("overall" in $$source)) {
             this["overall"] = (new Scorecard());
