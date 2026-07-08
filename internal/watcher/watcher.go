@@ -78,8 +78,13 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 	}
 	// known seeds from the directory's current state before Ready() closes so
 	// the first reconcile tick only reports genuine drift, not the initial
-	// population of pre-existing files.
-	known := w.snapshot()
+	// population of pre-existing files. A failed initial scan yields an empty
+	// map; the first successful reconcile then repopulates it (no spurious
+	// deletes, since reconcile skips a failed scan entirely).
+	known, _ := w.snapshot()
+	if known == nil {
+		known = make(map[string]time.Time)
+	}
 	reconcile := time.NewTicker(reconcileInterval)
 	defer reconcile.Stop()
 
@@ -142,7 +147,7 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 			w.logger.Error("watcher.error", "err", err)
 
 		case <-reconcile.C:
-			w.reconcile(known)
+			w.reconcile(known, pending)
 		}
 	}
 }
@@ -150,11 +155,19 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 // snapshot lists the directory's current .md files and their mtimes. It is
 // the reconciliation pass's baseline: anything that changed since the last
 // snapshot but produced no fsnotify event is drift the OS-level watch missed.
-func (w *Watcher) snapshot() map[string]time.Time {
+//
+// The bool reports whether the directory scan itself succeeded. A failed
+// os.ReadDir (transiently unreadable dir, or a mid-rename during the
+// git-checkout recovery that internal/tasksnapshot performs against this same
+// directory) returns (nil, false) so callers can skip the pass rather than
+// mistake an unreadable directory for an empty one — treating that as "every
+// known file was deleted" would fire a board-wide, sticky TaskDeleted storm.
+func (w *Watcher) snapshot() (map[string]time.Time, bool) {
 	state := make(map[string]time.Time)
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
-		return state
+		w.logger.Warn("watcher.snapshot.failed", "dir", w.dir, "err", err)
+		return nil, false
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
@@ -166,19 +179,20 @@ func (w *Watcher) snapshot() map[string]time.Time {
 		}
 		state[filepath.Join(w.dir, entry.Name())] = info.ModTime()
 	}
-	return state
+	return state, true
 }
 
 // refreshSnapshot brings known up to date with whatever the debounce loop
 // just emitted, so a legitimately-delivered fsnotify event doesn't also get
 // re-reported as drift on the next reconcile tick.
 func (w *Watcher) refreshSnapshot(known map[string]time.Time) {
-	fresh := w.snapshot()
-	for name := range known {
-		if _, ok := fresh[name]; !ok {
-			delete(known, name)
-		}
+	fresh, ok := w.snapshot()
+	if !ok {
+		// Scan failed; leave known untouched. Clearing it here would make the
+		// next reconcile tick re-fire TaskCreated for every file.
+		return
 	}
+	clear(known)
 	maps.Copy(known, fresh)
 }
 
@@ -190,22 +204,41 @@ func (w *Watcher) refreshSnapshot(known map[string]time.Time) {
 // rename-over-write (e.g. an out-of-band `sed -i` or any tmp+rename atomic
 // write) — fsnotify's own directory watch does not re-arm a per-file fd on
 // its own for further in-place updates to a file it already lost track of.
-func (w *Watcher) reconcile(known map[string]time.Time) {
-	current := w.snapshot()
+func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnotify.Op) {
+	current, ok := w.snapshot()
+	if !ok {
+		// Scan failed — do not diff against a partial/empty view. Treating an
+		// unreadable directory as "empty" would delete-storm every known file.
+		return
+	}
 
 	for name, mtime := range current {
+		// Skip files still inside the debounce window: the pending flush will
+		// emit their event and refresh known, so reporting drift here would
+		// double-emit the same write.
+		if _, inFlight := pending[name]; inFlight {
+			continue
+		}
 		prev, existed := known[name]
 		switch {
 		case !existed:
 			w.logger.Warn("watcher.reconcile.recovered", "op", "created", "file", name)
 			w.emitFor(name, fsnotify.Create)
 		case !prev.Equal(mtime):
+			// mtime-only diff: a write that preserves the mtime (coarse
+			// filesystem resolution, or a tool that restores it on save) is
+			// invisible to this backstop. Acceptable — the fsnotify path still
+			// covers those; reconcile only recovers writes that also moved the
+			// mtime but produced no OS event.
 			w.logger.Warn("watcher.reconcile.recovered", "op", "updated", "file", name)
 			w.emitFor(name, fsnotify.Write)
 		}
 		known[name] = mtime
 	}
 	for name := range known {
+		if _, inFlight := pending[name]; inFlight {
+			continue
+		}
 		if _, ok := current[name]; !ok {
 			w.logger.Warn("watcher.reconcile.recovered", "op", "deleted", "file", name)
 			w.emit(events.TaskDeleted, name)

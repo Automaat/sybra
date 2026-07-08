@@ -552,7 +552,7 @@ func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
 	// simulating fsnotify having silently lost its watch for these paths
 	// sometime after the initial snapshot, with no event ever delivered for
 	// the changes that follow.
-	known := w.snapshot()
+	known, _ := w.snapshot()
 
 	// Mutate the directory exactly the way an OS-level watch loss would be
 	// invisible for: modify an existing file's content/mtime, create a new
@@ -569,7 +569,7 @@ func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.reconcile(known)
+	w.reconcile(known, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -627,5 +627,55 @@ func TestReconcilePassEventuallyFiresOnShortInterval(t *testing.T) {
 		}
 	}) {
 		t.Error("expected an event via fsnotify or the reconcile backstop")
+	}
+}
+
+// TestReconcileSkipsFailedScan guards the board-wipe failure mode: when the
+// directory scan itself fails (transiently unreadable dir, or a mid-rename
+// during the git-checkout recovery internal/tasksnapshot performs against this
+// same directory), reconcile must NOT treat the unreadable directory as empty
+// and fire TaskDeleted for every known file — the frontend treats those
+// deletes as sticky and would wipe the visible board.
+func TestReconcileSkipsFailedScan(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	emit := func(event string, data any) {
+		name, _ := data.(string)
+		mu.Lock()
+		seen = append(seen, event+":"+filepath.Base(name))
+		mu.Unlock()
+	}
+
+	for _, name := range []string{"a.md", "b.md", "c.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("v1"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := New(dir, emit, discardLogger())
+	known, ok := w.snapshot()
+	if !ok || len(known) != 3 {
+		t.Fatalf("expected a successful 3-file snapshot, got ok=%v known=%v", ok, known)
+	}
+
+	// Remove the directory so the next os.ReadDir fails, simulating a transient
+	// unreadable directory rather than a legitimately empty one.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	w.reconcile(known, nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 0 {
+		t.Errorf("reconcile fired events on a failed scan (should skip): %v", seen)
+	}
+	if len(known) != 3 {
+		t.Errorf("reconcile mutated known on a failed scan: %v", known)
 	}
 }
