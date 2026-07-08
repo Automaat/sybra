@@ -303,6 +303,44 @@ func TestDetect(t *testing.T) {
 			want: []AnomalyKind{KindLostAgent},
 		},
 		{
+			name: "lost_agent suppressed when task just transitioned to in-progress and dispatch hasn't recorded a run yet",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					// Prior completed run from an earlier lifecycle, neither
+					// running nor recent — only the status-transition
+					// timestamp is fresh, mirroring dispatch latency between
+					// the status flip and AddRun/the first agent.* audit
+					// event landing.
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "stopped", StartedAt: now.Add(-4 * time.Hour)},
+					}
+					t.StatusChangedAt = now.Add(-2 * time.Minute)
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "lost_agent still fires when only UpdatedAt (not StatusChangedAt) is recent",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					// The task transitioned to in-progress long ago (outside
+					// the window) but something unrelated (a tag edit, an
+					// audit sidecar write) touched it moments ago. UpdatedAt
+					// alone must never suppress detection — only a real
+					// status transition may.
+					t.StatusChangedAt = now.Add(-1 * time.Hour)
+					t.UpdatedAt = now.Add(-2 * time.Minute)
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindLostAgent},
+		},
+		{
 			name: "failure_spike when failure_rate > threshold",
 			in: DetectInput{
 				Now: now,
