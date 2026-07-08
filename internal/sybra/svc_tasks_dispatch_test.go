@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -17,15 +18,15 @@ type fakeAgentLauncher struct {
 	startCalls int
 }
 
-func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (string, string, string, error) {
+func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	f.startCalls++
 	if f.startErr != nil {
 		return "", "", "", f.startErr
 	}
 	return "fake-agent-id", "", "", nil
 }
-func (f *fakeAgentLauncher) HasRunningAgent(string) bool                       { return false }
-func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool   { return false }
+func (f *fakeAgentLauncher) HasRunningAgent(string) bool                     { return false }
+func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (f *fakeAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
 	return "", false
 }
@@ -99,6 +100,49 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			}
 			if launcher.startCalls == 0 {
 				t.Fatal("expected the matched workflow to start an agent")
+			}
+		})
+	}
+}
+
+// TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
+// the other tests miss: App.initStatusHook fires synchronously inside UpdateMap
+// and, for testing/ready-pr, already dispatches the workflow via
+// dispatchStatusWorkflow before DispatchFromHumanRequired issues its own
+// dispatch. Without treating the resulting ErrWorkflowAlreadyActive as success,
+// the method reverts the task to human-required while the hook-started agent
+// keeps running orphaned. Here the dispatch must succeed and leave the task in
+// the target status.
+func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
+	for _, target := range []string{"testing", "ready-pr", "in-progress"} {
+		t.Run(target, func(t *testing.T) {
+			launcher := &fakeAgentLauncher{}
+			svc, a := setupDispatchTestService(t, launcher)
+			// Wire the app's real status hook against the SAME engine the
+			// service dispatches through, exactly as production does
+			// (services_wire_tasks.go shares one engine instance).
+			a.workflowEngine = svc.workflowEngine
+			a.initStatusHook()
+
+			tk := newHumanRequiredTask(t, a, 0)
+
+			got, err := svc.DispatchFromHumanRequired(tk.ID, target, "looks fine, retry")
+			if err != nil {
+				t.Fatalf("DispatchFromHumanRequired: %v", err)
+			}
+			if string(got.Status) != target {
+				t.Fatalf("status = %q, want %q (must not revert to human-required)", got.Status, target)
+			}
+			if got.Workflow == nil {
+				t.Fatal("expected a workflow to be attached")
+			}
+			if launcher.startCalls == 0 {
+				t.Fatal("expected the workflow to start an agent")
+			}
+			// The hook and DispatchFromHumanRequired must not both start an
+			// agent — the second attempt is absorbed as ErrWorkflowAlreadyActive.
+			if launcher.startCalls != 1 {
+				t.Fatalf("startCalls = %d, want exactly 1 (no orphaned double-dispatch)", launcher.startCalls)
 			}
 		})
 	}
@@ -245,7 +289,10 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 }
 
 func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
-	launcher := &fakeAgentLauncher{startErr: workflow.ErrWorkflowAlreadyActive}
+	// A genuine agent-start failure. Must NOT be ErrWorkflowAlreadyActive —
+	// that sentinel now means "the status-change hook already started the
+	// workflow" and is treated as success, not a dispatch failure.
+	launcher := &fakeAgentLauncher{startErr: errors.New("provider CLI not found")}
 	svc, a := setupDispatchTestService(t, launcher)
 	tk := newHumanRequiredTask(t, a, 0)
 

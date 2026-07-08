@@ -522,7 +522,41 @@ var dispatchTargets = map[string]dispatchTargetSpec{
 // fails closed, reverting the task to human-required with an explanatory
 // status_reason so the operator is never left with a task silently stuck in
 // a target status with no workflow driving it.
+//
+// The whole check-then-write sequence runs under the workflow engine's
+// per-task human-action lock (shared with plan-review's
+// HandleHumanActionRecovering), so a double-click or a second operator cannot
+// race the same stuck task between the guard reads and the status write.
 func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task.Task, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return task.Task{}, conflictError("a decision reason is required")
+	}
+	if _, ok := dispatchTargets[target]; !ok {
+		return task.Task{}, conflictError(fmt.Sprintf("unsupported dispatch target %q", target))
+	}
+
+	var result task.Task
+	run := func() error {
+		out, err := s.dispatchFromHumanRequiredLocked(id, target, reason)
+		result = out
+		return err
+	}
+	// s.workflowEngine is only nil in narrow tests; fall back to running
+	// unlocked there rather than nil-panicking.
+	if s.workflowEngine != nil {
+		if err := s.workflowEngine.WithHumanActionLock(id, run); err != nil {
+			return task.Task{}, err
+		}
+		return result, nil
+	}
+	if err := run(); err != nil {
+		return task.Task{}, err
+	}
+	return result, nil
+}
+
+func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
 		return task.Task{}, err
@@ -530,14 +564,7 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 	if cur.Status != task.StatusHumanRequired {
 		return task.Task{}, conflictError(fmt.Sprintf("task is not human-required (status=%q)", cur.Status))
 	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return task.Task{}, conflictError("a decision reason is required")
-	}
-	spec, ok := dispatchTargets[target]
-	if !ok {
-		return task.Task{}, conflictError(fmt.Sprintf("unsupported dispatch target %q", target))
-	}
+	spec := dispatchTargets[target]
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
 	}
@@ -558,7 +585,16 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 
 	if spec.dispatches {
 		matched, dispatchErr := s.redispatchStatusChanged(id, target)
-		if dispatchErr != nil || matched == "" {
+		// The status write above synchronously fires App.initStatusHook, which
+		// for testing/ready-pr already dispatches the workflow via
+		// dispatchStatusWorkflow before UpdateMap returns. Our own dispatch then
+		// observes that active workflow and returns ErrWorkflowAlreadyActive —
+		// that is the hook having succeeded, not a conflict. Mirror
+		// dispatchStatusWorkflow and treat it as benign; a genuine agent-start
+		// failure surfaces as a different error and still fails closed.
+		hookAlreadyStarted := errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive)
+		dispatchStarted := dispatchErr == nil && matched != ""
+		if !dispatchStarted && !hookAlreadyStarted {
 			failure := "no workflow matched"
 			if dispatchErr != nil {
 				failure = dispatchErr.Error()
@@ -570,26 +606,40 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 				"status_reason": revertReason,
 			}); revertErr != nil {
 				s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
 				return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
 			}
+			// The bounce back to human-required is the event an operator most
+			// needs a durable record of — log it, not just the success path.
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
 			return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 		}
 	}
 
-	if s.audit != nil {
-		if logErr := s.audit.Log(audit.Event{
-			Type:   audit.EventTaskDispatched,
-			TaskID: id,
-			Data: map[string]any{
-				"target":         target,
-				"previousStatus": string(cur.Status),
-			},
-		}); logErr != nil && s.logger != nil {
-			s.logger.Warn("task.dispatch.audit", "task_id", id, "err", logErr)
-		}
-	}
-
+	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
 	return s.tasks.Get(id)
+}
+
+// logDispatchAudit records a human-required dispatch attempt and its outcome
+// ("dispatched"/"reverted"/"revert-failed"). The operator's reason is included
+// so the durable audit record carries the rationale even after status_reason is
+// later overwritten.
+func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outcome string) {
+	if s.audit == nil {
+		return
+	}
+	if logErr := s.audit.Log(audit.Event{
+		Type:   audit.EventTaskDispatched,
+		TaskID: id,
+		Data: map[string]any{
+			"target":         target,
+			"previousStatus": previousStatus,
+			"reason":         reason,
+			"outcome":        outcome,
+		},
+	}); logErr != nil && s.logger != nil {
+		s.logger.Warn("task.dispatch.audit", "task_id", id, "err", logErr)
+	}
 }
 
 // DeleteTask removes a task file from disk and cleans up its worktree.
