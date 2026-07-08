@@ -111,16 +111,16 @@ describe('HumanRequiredPanel', () => {
     expect(screen.getByText('tests failed twice')).toBeDefined()
   })
 
-  it('steers tamper-flagged tasks to Bless instead of the generic dispatch actions', () => {
+  it('shows a Bless hint on tamper-flagged tasks alongside the generic dispatch actions', () => {
     render(HumanRequiredPanel, {
       props: { task: { ...baseTask, tamperFlagged: true, prNumber: 42 } as never },
     })
     expect(screen.getByText(/tamper-flagged/i)).toBeDefined()
-    expect(screen.queryByPlaceholderText('Decision reason (required)...')).toBeNull()
-    expect(screen.queryByText('Re-run implementation')).toBeNull()
-    expect(screen.queryByText('Send to testing')).toBeNull()
-    expect(screen.queryByText('Open PR')).toBeNull()
-    expect(screen.queryByText('Link PR and review')).toBeNull()
+    expect(screen.getByPlaceholderText('Decision reason (required)...')).toBeDefined()
+    expect(screen.getByText('Re-run implementation')).toBeDefined()
+    expect(screen.getByText('Send to testing')).toBeDefined()
+    expect(screen.getByText('Open PR')).toBeDefined()
+    expect(screen.getByText('Link PR and review')).toBeDefined()
   })
 
   it('renders the auto-review verdict section from the body when present', () => {

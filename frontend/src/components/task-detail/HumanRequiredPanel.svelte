@@ -11,10 +11,12 @@
   const { task }: Props = $props()
 
   const verdict = $derived(extractAutoReviewVerdict(task.body ?? ''))
-  // Tamper-flagged tasks must go through Bless (which records the bless tag so
-  // the same unchanged diff isn't re-flagged by detect_tampering). Dispatching
-  // straight to testing/ready-pr would bounce right back to human-required, so
-  // steer the operator to the Bless button rather than the generic actions.
+  // Tamper-flagged tasks should normally go through Bless first (it records the
+  // bless tag so the same unchanged diff isn't re-flagged by detect_tampering) —
+  // dispatching straight to testing/ready-pr without blessing would likely bounce
+  // right back to human-required. Surface that as a hint, but still offer the
+  // generic decision-reason + dispatch actions: the operator may have a reason to
+  // act anyway (e.g. re-run implementation to produce a fresh, unflagged diff).
   const isTamperFlagged = $derived(isTamperFlaggedTask(task))
 
   type Target = 'in-progress' | 'testing' | 'ready-pr' | 'in-review'
@@ -63,10 +65,11 @@
 
     {#if isTamperFlagged}
       <p class="text-sm text-warning-800 dark:text-warning-200">
-        This task is tamper-flagged. Use <span class="font-semibold">Bless</span> to accept the changes
-        and resume review — dispatching it directly would re-trigger the tamper check.
+        This task is tamper-flagged. Prefer <span class="font-semibold">Bless</span> to accept the
+        changes and resume review — dispatching directly may re-trigger the tamper check unless the
+        diff changes first.
       </p>
-    {:else}
+    {/if}
     <textarea
       class="w-full resize-y rounded-lg border border-surface-300 bg-surface-50 p-3 text-sm dark:border-surface-600 dark:bg-surface-800"
       rows="2"
@@ -97,6 +100,5 @@
         </button>
       {/if}
     </div>
-    {/if}
   </div>
 {/if}
