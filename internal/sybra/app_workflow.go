@@ -491,7 +491,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if cfg.Dir == "" && needsWorktree {
 		t = a.agentOrch.AutoAssignProject(t)
 		if t.ProjectID == "" {
-			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree", taskID, role)
+			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 		}
 		if cleanRetryRef != "" {
 			if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
