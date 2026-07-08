@@ -309,7 +309,8 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	}
 	summary, fetchErr := fetchFn()
 	if fetchErr != nil {
-		if github.IsTransientError(fetchErr) {
+		switch {
+		case github.IsTransientError(fetchErr):
 			r.transientFetchFails++
 			if r.transientFetchFails < TransientFetchWarnThreshold {
 				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
@@ -335,7 +336,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 				// above instead of this GraphQL-backed path.
 				r.closeFinishedReviewTasks(tasks, nil)
 			}
-		} else if github.IsAuthError(fetchErr) {
+		case github.IsAuthError(fetchErr):
 			r.transientFetchFails = 0
 			r.authCircuit.RecordFailure(fetchErr)
 			if r.authCircuit.Open() {
@@ -344,7 +345,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 			// Pre-trip: log at Info so the up-to-threshold auth failures don't
 			// flood at WARN before the circuit's single ERROR trip line.
 			r.logger.Info("pr-monitor.fetch", "err", fetchErr)
-		} else {
+		default:
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}

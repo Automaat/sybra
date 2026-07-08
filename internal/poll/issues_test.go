@@ -588,6 +588,32 @@ func TestIssuesFetcher_Poll_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	}
 }
 
+func TestIssuesFetcher_Poll_AuthFailureResetsTransientFetchStreak(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	ctx := context.Background()
+	transientErr := errors.New("dial tcp timeout")
+	authErr := errors.New("gh: HTTP 401: Bad credentials")
+
+	env.fetcher.fetchSnapshot = func([]string, string) (github.IssueSnapshot, error) {
+		return github.IssueSnapshot{}, transientErr
+	}
+	env.fetcher.Poll(ctx)
+	env.fetcher.Poll(ctx)
+	if env.fetcher.transientFetchFails != 2 {
+		t.Fatalf("transientFetchFails = %d, want 2 before auth failure", env.fetcher.transientFetchFails)
+	}
+
+	env.fetcher.fetchSnapshot = func([]string, string) (github.IssueSnapshot, error) {
+		return github.IssueSnapshot{}, authErr
+	}
+	env.fetcher.Poll(ctx)
+	if env.fetcher.transientFetchFails != 0 {
+		t.Fatalf("transientFetchFails = %d, want 0 after auth failure", env.fetcher.transientFetchFails)
+	}
+}
+
 func taskIssueURLs(t *testing.T, tm *task.Manager) []string {
 	t.Helper()
 	tasks, err := tm.List()

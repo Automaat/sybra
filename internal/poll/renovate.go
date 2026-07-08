@@ -27,6 +27,7 @@ type RenovateHandler struct {
 	emit                func(string, any)
 	cfg                 *config.RenovateConfig
 	allowsType          func(project.ProjectType) bool
+	fetchPRsFn          func(context.Context, string, []string) ([]github.RenovatePR, error)
 	lastPRsCount        atomic.Int64
 	transientFetchFails int
 	authCircuit         *AuthCircuit
@@ -120,11 +121,16 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 		return h.slowInterval()
 	}
 
-	prs, err := github.FetchRenovatePRs(ctx, h.cfg.Author, repos)
+	fetchFn := github.FetchRenovatePRs
+	if h.fetchPRsFn != nil {
+		fetchFn = h.fetchPRsFn
+	}
+	prs, err := fetchFn(ctx, h.cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
 		switch {
 		case github.IsAuthError(err):
+			h.transientFetchFails = 0
 			h.authCircuit.RecordFailure(err)
 			if h.authCircuit.Open() {
 				return AuthCircuitBackoff

@@ -120,6 +120,7 @@ func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	if err != nil {
 		switch {
 		case github.IsAuthError(err):
+			f.transientFetchFails = 0
 			f.authCircuit.RecordFailure(err)
 			if f.authCircuit.Open() {
 				return AuthCircuitBackoff
@@ -157,6 +158,7 @@ func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 	if err != nil {
 		switch {
 		case github.IsAuthError(err):
+			f.transientFetchFails = 0
 			f.authCircuit.RecordFailure(err)
 			if !f.authCircuit.Open() {
 				// Pre-trip: Info, not Warn (see Poll's auth branch).
