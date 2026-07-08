@@ -553,9 +553,20 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	if !errors.Is(err, worktree.ErrRebaseFailed) {
 		return false
 	}
-	if recoverConflict != nil && recoverConflict(taskID) {
-		logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
-		return true
+	if recoverConflict != nil {
+		if recoverConflict(taskID) {
+			logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
+			return true
+		}
+		// recoverConflict may have already parked the task human-required with a
+		// specific reason (e.g. an exhausted retry-attempt count) before
+		// declining — see review.Handler.markConflictRecoveryExhausted. Respect
+		// that instead of overwriting it with the generic reason below, so an
+		// operator (or the automated human-review agent) can tell an exhausted
+		// recovery loop apart from a fresh, first-time conflict.
+		if t, err := tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired && t.StatusReason != "" {
+			return true
+		}
 	}
 	if reason, resolved := rebaseBlockedPRAlreadyResolved(tasks, taskID); resolved {
 		if _, uerr := tasks.Update(taskID, task.Update{

@@ -643,6 +643,28 @@ func (r *Handler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []
 	return true
 }
 
+// markConflictRecoveryExhausted records, on the task itself, that autonomous
+// branch-conflict recovery was attempted and gave up rather than declining
+// silently. Without this, agentorch.MarkRebaseBlocked's caller-side fallback
+// writes its generic worktreeerr.RebaseBlockedReason over whatever is here,
+// leaving an operator (or the automated human-review agent reading a stale
+// "recovered" log line) unable to tell an exhausted retry budget apart from
+// recovery that is still in progress. MarkRebaseBlocked checks for this
+// specific status+non-empty-reason combination before overwriting it, so this
+// must run before returning false to the caller.
+func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIssueKind) {
+	attempts := r.prTracker.Retries(taskID, kind)
+	reason := fmt.Sprintf(
+		"branch conflict recovery attempted %d time(s) and failed: resolve conflicts or recreate the task branch",
+		attempts)
+	if _, err := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.branch-conflict.exhausted-status", "task_id", taskID, "err", err)
+	}
+}
+
 // RecoverStaleBranchConflict turns a worktree-prep rebase failure into
 // autonomous conflict resolution instead of a human escalation. The CI-fix and
 // implement/review/test prepare paths rebase the task branch onto base before
@@ -676,6 +698,7 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	// Don't loop forever on a genuinely unresolvable conflict — once the
 	// conflict-fix budget is spent the normal exhaustion path escalates.
 	if r.prTracker.AtCap(taskID, github.PRIssueConflict) {
+		r.markConflictRecoveryExhausted(taskID, github.PRIssueConflict)
 		return false
 	}
 	fetchFn := github.FetchPRForMonitor
@@ -726,6 +749,7 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	taskID := t.ID
 	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
+		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
 		return false
 	}
 

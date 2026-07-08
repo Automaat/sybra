@@ -101,6 +101,48 @@ func TestMarkRebaseBlocked_ParksHumanRequiredWhenNotResolved(t *testing.T) {
 	}
 }
 
+// TestMarkRebaseBlocked_RespectsRecoverConflictsOwnExhaustionReason proves the
+// fix for task bdcc90a4: when recoverConflict declines but has already parked
+// the task human-required with its own specific reason (e.g.
+// review.Handler.markConflictRecoveryExhausted's attempt-count message), the
+// generic worktreeerr.RebaseBlockedReason below must not overwrite it — an
+// operator (or the automated human-review agent) needs the attempt-count
+// detail to tell an exhausted recovery loop apart from a fresh conflict.
+func TestMarkRebaseBlocked_RespectsRecoverConflictsOwnExhaustionReason(t *testing.T) {
+	tasks := newRebaseBlockTestManager(t)
+	tk, err := tasks.Create("exhausted recovery task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const specificReason = "branch conflict recovery attempted 3 time(s) and failed: resolve conflicts or recreate the task branch"
+	recoverConflict := func(taskID string) bool {
+		if _, err := tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(specificReason),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return false
+	}
+
+	handled := MarkRebaseBlocked(tasks, tk.ID, worktree.ErrRebaseFailed, discardSlogLogger(), recoverConflict)
+	if !handled {
+		t.Fatal("MarkRebaseBlocked = false, want true (handled)")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != specificReason {
+		t.Fatalf("reason = %q, want the specific exhaustion reason %q (must not be overwritten by the generic reason)", got.StatusReason, specificReason)
+	}
+}
+
 // TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired covers a task with no
 // project/PR: the resolved-probe must be skipped, not mistaken for resolved.
 func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {

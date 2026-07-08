@@ -894,7 +894,19 @@ const rebaseAbortTimeout = 30 * time.Second
 
 // RebaseOnto rebases the worktree's current branch onto the given ref.
 // Aborts and returns an error on conflict.
+//
+// Skips the rebase entirely when ref is already an ancestor of HEAD (e.g. a
+// prior merge already brought ref's history in, as recoverBranchConflictNoPR
+// does). Plain `git rebase` linearizes history: it drops merge commits and
+// replays HEAD's own pre-merge commits individually onto ref, which
+// re-triggers the exact content conflict the merge just resolved even though
+// ref's tip is fully contained in HEAD. `git merge-base --is-ancestor`
+// considers ref merged in this case, so treating that as "nothing to do"
+// avoids the identical conflict resurfacing on every subsequent prepare.
 func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
+	if isAncestor(ctx, worktreePath, ref, "HEAD") {
+		return nil
+	}
 	if err := executil.Run(ctx, worktreePath, "git", "rebase", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.Background(), rebaseAbortTimeout)
 		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort") //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see rebaseAbortTimeout comment
