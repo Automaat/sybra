@@ -985,7 +985,8 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
-	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD")
+	branch := mustOutputInDir(t, wtPath, "git", "branch", "--show-current")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+strings.TrimSpace(branch))
 
 	// The resumed original step's dispatch re-prepares the same worktree. Before
 	// the fix this hits the identical conflict again and returns
@@ -1296,6 +1297,19 @@ func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
 	}
+}
+
+func mustOutputInDir(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+	}
+	return string(out)
 }
 
 // TestPrepareForTask_BootstrapFailureBlocks confirms a failing setup
