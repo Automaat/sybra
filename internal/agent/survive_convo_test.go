@@ -619,7 +619,7 @@ func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T)
 	if a.GetSessionID() != "cop-fake" {
 		t.Fatalf("expected copilot session id after handoff, got %q", a.GetSessionID())
 	}
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	var sawHandoffPrompt bool
 	for _, ev := range a.ConvoOutput() {
