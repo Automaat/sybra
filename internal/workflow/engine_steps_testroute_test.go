@@ -1342,6 +1342,60 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 	}
 }
 
+func TestTestFailureFingerprint_ToleratesWordingDriftOnSameEvidence(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nI reran the same probe and observed the identical failure again — " +
+		"hitting curl /status still returns HTTP 500 instead of the required HTTP 200. " +
+		"Code evidence: internal/server.go:42"
+
+	if testFailureFingerprint(a) != testFailureFingerprint(b) {
+		t.Fatalf("fingerprints differ for reworded reports describing the same defect:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_DistinguishesDifferentEvidence(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /health\nActual: HTTP 404\nExpected: HTTP 200\n" +
+		"Code evidence: internal/health.go:17"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports describing different defects:\na=%q\nb=%q", a, b)
+	}
+}
+
+// TestTestFailureFingerprint_FallsBackOnSparseReport guards the fallback path:
+// a report too short to yield enough discriminating tokens must still hash
+// deterministically and distinguish from an unrelated sparse report, rather
+// than collapsing to an empty-token hash shared by every terse report.
+func TestTestFailureFingerprint_FallsBackOnSparseReport(t *testing.T) {
+	t.Parallel()
+
+	a := "the button does nothing when clicked"
+	b := "the page never loads at all"
+
+	fa := testFailureFingerprint(a)
+	fb := testFailureFingerprint(b)
+	if fa == "" || fb == "" {
+		t.Fatalf("fingerprints must be non-empty even for sparse reports: a=%q b=%q", fa, fb)
+	}
+	if fa == fb {
+		t.Fatalf("fingerprints matched for different sparse reports:\na=%q\nb=%q", a, b)
+	}
+	// The sparse fallback hashes full lowercased, whitespace-normalized prose,
+	// so it is NOT guaranteed to tolerate synonym drift the way the
+	// token-based path does — but it must still be stable across repeated
+	// calls on byte-identical input.
+	if again := testFailureFingerprint(a); again != fa {
+		t.Fatalf("fingerprint is not deterministic for identical input: %q vs %q", fa, again)
+	}
+}
+
 func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
 	t.Parallel()
 
@@ -2422,8 +2476,117 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
 	}
-	if reason := tasks.Reason("t-dup"); !strings.Contains(reason, "same grounded test failure") {
-		t.Errorf("reason = %q, want duplicate failure", reason)
+	if reason := tasks.Reason("t-dup"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	for _, forbidden := range []string{"proven contradiction", "found contradiction", "requirements are contradictory"} {
+		if reason := tasks.Reason("t-dup"); strings.Contains(strings.ToLower(reason), forbidden) {
+			t.Errorf("reason = %q, must not assert a proven contradiction", reason)
+		}
+	}
+	ti, _ = tasks.GetTask("t-dup")
+	if !strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	}
+	if !strings.Contains(ti.Body, fp) {
+		t.Errorf("body = %q, want the recurring fingerprint referenced", ti.Body)
+	}
+}
+
+// TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent guards against a
+// second call re-appending the spec-decision section when the recurring
+// fingerprint set hasn't changed — the marker must make the append a no-op.
+func TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	fp := "same-repro"
+	runs := []AgentRunInfo{
+		{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		{AgentID: "second", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+	}
+	tasks.Put(TaskInfo{ID: "t-dup-idem", Status: "testing", AgentRuns: runs})
+	route := func() {
+		wf := &Execution{
+			WorkflowID: "testing-task",
+			StartedAt:  now,
+			Variables: map[string]string{
+				"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+				"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+				"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+			},
+		}
+		if _, err := e.execRouteTestResult("t-dup-idem", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-idem")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route()
+	ti := mustGetTaskInfo(t, tasks, "t-dup-idem")
+	first := ti.Body
+	if strings.Count(first, specDecisionHeading) != 1 {
+		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+	}
+	route()
+	ti = mustGetTaskInfo(t, tasks, "t-dup-idem")
+	if ti.Body != first {
+		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision
+// verifies the cap-escalation path also reframes as a spec-decision when the
+// attempts that exhausted the cap include a recurring failure class, per the
+// acceptance criteria ("a single recurring class at cap" still gets the
+// spec-decision framing, not the generic distinct-defects cap message).
+func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	// A recurs at i0/i2 (intervening author at i1) — that pair would have
+	// escalated as an immediate "duplicate" if route_test_result had been
+	// called right after i2 in a real run. This fixture instead reaches cap
+	// without that earlier call (e.g. the recurrence only becomes visible in
+	// hindsight), so the cap branch itself must recognize the recurring
+	// class rather than treating three distinct-looking attempts generically.
+	// The current (last) attempt's own fingerprint ("current") is distinct
+	// from A, so the immediate-duplicate check does not fire here either.
+	runs := []AgentRunInfo{
+		productBugRun(now, "A"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "A"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "current"),
+	}
+	tasks.Put(TaskInfo{ID: "t-cap-recur", Status: "testing", AgentRuns: runs})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "current",
+		},
+	}
+	out, err := e.execRouteTestResult("t-cap-recur", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-cap-recur"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-recur")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-cap-recur"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if !strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
 	}
 }
 

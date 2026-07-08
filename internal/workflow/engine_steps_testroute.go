@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1755,10 +1756,74 @@ func hasReportLinePrefix(report string, prefixes ...string) bool {
 	return false
 }
 
+// fingerprintQuotedRe captures quoted error/value strings a test-runner cites
+// verbatim (command output, error messages, expected/actual literals).
+var fingerprintQuotedRe = regexp.MustCompile("\"[^\"\n]{1,200}\"|'[^'\n]{1,200}'|`[^`\n]{1,200}`")
+
+// fingerprintNumberRe captures counts, HTTP statuses, and other numeric
+// tokens that distinguish otherwise-similar failure prose (e.g. "reappears
+// after 2 occurrences" vs "after 3 occurrences").
+var fingerprintNumberRe = regexp.MustCompile(`-?\d+(?:\.\d+)?%?`)
+
+// fingerprintEnumTokenRe captures enum-like identifiers (SCREAMING_SNAKE,
+// snake_case, dotted paths) that carry semantic meaning independent of
+// surrounding wording — statuses, outcome names, field names.
+var fingerprintEnumTokenRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+\b`)
+
+// fingerprintMinTokens is the minimum count of discriminating tokens
+// (quoted strings, file:line citations, numbers, enum-like identifiers)
+// required before the token-based fingerprint is trusted. Below this, the
+// report is too sparse to distinguish reliably, and testFailureFingerprint
+// falls back to the original whole-prose hash.
+const fingerprintMinTokens = 2
+
+// testFailureFingerprint derives a stable identifier for a test-runner
+// failure report, used to detect when the SAME failure class recurs across
+// reimplementation attempts. Reports describing genuinely different defects
+// must hash differently; reports describing the same defect with minor LLM
+// wording drift (synonyms, reordered sentences, rephrased summaries) must
+// hash the same.
+//
+// The report is reduced to its semantically load-bearing tokens — quoted
+// error/value strings, file:line citations, numeric counts/statuses, and
+// enum-like identifiers — sorted for order-independence and hashed. Prose
+// glue words carry no signal for this purpose and are dropped. When a
+// report is too sparse to yield enough discriminating tokens (short or
+// unusually terse reports), this falls back to the original lowercased,
+// whitespace-normalized full-prose hash so a fingerprint is still produced.
+//
+// NOTE: this is NOT the same hash as the original exact-prose fingerprint.
+// Fingerprints persisted by older runs (AgentRunInfo.TestFailureFingerprint)
+// are not migrated or recomputed — they simply will not match a fingerprint
+// computed by this hardened function until a new test-runner attempt
+// records one. This only delays recurrence detection for tasks whose
+// testing cycle straddles the deploy of this change; it never produces
+// a false recurrence match.
 func testFailureFingerprint(report string) string {
-	normalized := strings.Join(strings.Fields(strings.ToLower(report)), " ")
-	sum := sha256.Sum256([]byte(normalized))
+	basis := fingerprintNormalizedBasis(report)
+	sum := sha256.Sum256([]byte(basis))
 	return hex.EncodeToString(sum[:8])
+}
+
+func fingerprintNormalizedBasis(report string) string {
+	var tokens []string
+	tokens = append(tokens, fingerprintQuotedRe.FindAllString(report, -1)...)
+	tokens = append(tokens, fileLineCitationRe.FindAllString(report, -1)...)
+	tokens = append(tokens, fingerprintNumberRe.FindAllString(report, -1)...)
+	tokens = append(tokens, fingerprintEnumTokenRe.FindAllString(report, -1)...)
+
+	normalized := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" {
+			normalized = append(normalized, tok)
+		}
+	}
+	if len(normalized) < fingerprintMinTokens {
+		return strings.Join(strings.Fields(strings.ToLower(report)), " ")
+	}
+	sort.Strings(normalized)
+	return strings.Join(normalized, "|")
 }
 
 // containsFixSuggestionsInCurrentTestReport scans the agent result and the task
@@ -2086,15 +2151,42 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if duplicate {
-		reason := "same grounded test failure reproduced twice — needs targeted local reproduction/fix from latest ## Test Failures"
+		recurring := recurringProductBugFingerprints(t)
+		if len(recurring) == 0 {
+			// Defensive: countValidProductTestAttempts already confirmed the
+			// current fingerprint recurred with an intervening code-author
+			// run, so this should always be non-empty. Fall back to the
+			// just-finished attempt's own fingerprint so the section still
+			// carries evidence rather than an empty class list.
+			if cf := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]; cf != "" {
+				recurring = []string{cf}
+			}
+		}
+		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+			return StepOutput{}, err
+		}
+		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
 		}
-		e.logger.Warn("workflow.test.duplicate-failure", "task_id", taskID)
+		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "duplicate failure"}, nil
 	}
 
 	if attempts >= limit {
+		if recurring := recurringProductBugFingerprints(t); len(recurring) > 0 {
+			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+				return StepOutput{}, err
+			}
+			reason := fmt.Sprintf(
+				"suspected acceptance-criteria conflict: %d recurring product-bug failure class(es) after %d test attempts (cap %d) — human spec decision needed; see ## Test Failures",
+				len(recurring), attempts, limit)
+			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+				return StepOutput{}, err
+			}
+			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
+		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
@@ -2116,6 +2208,117 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "reimplement"}, nil
+}
+
+// recurringProductBugFingerprints returns the distinct product-bug failure
+// fingerprints (sorted) that recurred at least twice within the current
+// testing cycle, with an intervening code-author run between two of their
+// occurrences — the same "the implementer fixed something and the SAME
+// failure class came back" signal countValidProductTestAttempts uses for its
+// immediate-duplicate check, but surfaced here as a set. This lets cap-time
+// escalation reframe as a spec-decision on ANY recurring class among the
+// attempts that exhausted the cap, not only the just-finished attempt's
+// fingerprint.
+func recurringProductBugFingerprints(t TaskInfo) []string {
+	var fingerprints []string
+	var indices []int
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole || run.ProtocolViolation != "" ||
+			run.TestOutcome != testOutcomeProductBug || run.TestFailureFingerprint == "" {
+			continue
+		}
+		fingerprints = append(fingerprints, run.TestFailureFingerprint)
+		indices = append(indices, i)
+	}
+	seen := make(map[string]bool)
+	var recurring []string
+	for a := range fingerprints {
+		if seen[fingerprints[a]] {
+			continue
+		}
+		for b := a + 1; b < len(fingerprints); b++ {
+			if fingerprints[b] != fingerprints[a] {
+				continue
+			}
+			if hasInterveningCodeAuthorRun(t.AgentRuns, indices[a], indices[b]) {
+				seen[fingerprints[a]] = true
+				recurring = append(recurring, fingerprints[a])
+				break
+			}
+		}
+	}
+	sort.Strings(recurring)
+	return recurring
+}
+
+// specDecisionHeading marks the section appended to a task body when
+// escalating on recurring product-bug failure classes. A distinct heading
+// (not "## Test Failures") keeps it out of testFailSectionOf's scan.
+const specDecisionHeading = "## Spec Decision Needed"
+
+// specDecisionMarker returns a stable HTML-comment marker keyed by the sorted
+// set of recurring fingerprints driving an escalation. appendSpecDecisionSection
+// uses it to skip re-appending an identical section on a rerun (idempotency),
+// while a genuinely new recurring set still gets its own section appended.
+func specDecisionMarker(fingerprints []string) string {
+	sorted := append([]string(nil), fingerprints...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "|")))
+	return "<!-- sybra:spec-decision:" + hex.EncodeToString(sum[:6]) + " -->"
+}
+
+// buildSpecDecisionSection renders the task-body evidence for a spec-decision
+// escalation. It deliberately avoids asserting a proven contradiction —
+// the same recurrence shape can also be produced by two independent
+// sequential bugs — and points at the latest "## Test Failures" section
+// for repros rather than claiming an exact section-to-fingerprint mapping,
+// since AgentRunInfo does not persist historical report text or offsets.
+func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string {
+	sorted := append([]string(nil), fingerprints...)
+	sort.Strings(sorted)
+	var b strings.Builder
+	b.WriteString(specDecisionHeading + "\n\n")
+	b.WriteString(specDecisionMarker(sorted) + "\n\n")
+	fmt.Fprintf(&b,
+		"Manual testing reproduced %d recurring product-bug failure class(es) across an intervening "+
+			"reimplementation attempt (%d test attempt(s), cap %d). This is evidence of a suspected "+
+			"acceptance-criteria conflict — not a confirmed one, since two independent sequential bugs "+
+			"can produce the same recurrence shape. A human spec decision is needed.\n\n",
+		len(sorted), attempts, limit)
+	fmt.Fprintf(&b,
+		"Recurring fingerprint(s): %s. Repros for these failure classes are identifiable in the latest "+
+			"%q section of this task body.\n",
+		strings.Join(sorted, ", "), testFailuresHeading)
+	return b.String()
+}
+
+// appendSpecDecisionSection appends the spec-decision evidence section to the
+// task body, unless a section with an identical marker (same recurring
+// fingerprint set) is already present — reruns then skip instead of
+// duplicating. A new/different recurring set still gets appended, since
+// AppendTaskBody has no in-place replace and the older section remains valid
+// historical evidence.
+func (e *Engine) appendSpecDecisionSection(taskID, body string, fingerprints []string, attempts, limit int) error {
+	if strings.Contains(body, specDecisionMarker(fingerprints)) {
+		return nil
+	}
+	if err := e.tasks.AppendTaskBody(taskID, buildSpecDecisionSection(fingerprints, attempts, limit)); err != nil {
+		return fmt.Errorf("append spec-decision section: %w", err)
+	}
+	return nil
+}
+
+// logSpecDecisionEscalation emits a bounded structured event for a
+// spec-decision escalation: task id, attempt/cap counters, and the distinct
+// recurring-class count and fingerprints. Raw test reports are never logged.
+func (e *Engine) logSpecDecisionEscalation(taskID string, attempts, limit int, fingerprints []string) {
+	e.logger.Warn("workflow.test.spec-decision",
+		"task_id", taskID, "attempts", attempts, "cap", limit,
+		"recurring_classes", len(fingerprints), "fingerprints", fingerprints)
 }
 
 func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (int, bool) {
