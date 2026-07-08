@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1779,6 +1780,95 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 				t.Errorf("reconcileCalled = %v, want %v", reconcileCalled, tt.wantReconcile)
 			}
 		})
+	}
+}
+
+func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	r := New(tasks, projects, nil, nil, logger, nil, func(string, any) {}, nil, nil, nil, nil)
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{}, errors.New("gh: HTTP 401: Bad credentials")
+	}
+
+	ctx := context.Background()
+	for i := range poll.AuthFailureThreshold - 1 {
+		r.pollAndMonitorPRs(ctx)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	next := r.pollAndMonitorPRs(ctx)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+	if next != poll.AuthCircuitBackoff {
+		t.Errorf("pollAndMonitorPRs() interval = %v, want AuthCircuitBackoff (%v)", next, poll.AuthCircuitBackoff)
+	}
+
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) { return github.ReviewSummary{}, nil }
+	r.pollAndMonitorPRs(ctx)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful poll")
+	}
+}
+
+// TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure covers the
+// poller_role: secondary path (Poll -> pollKnownTaskPRs -> fetchKnownTaskPRs),
+// which fetches per-PR and must feed the same auth circuit as the search
+// path — otherwise a dead token re-hammers and floods forever (#1516) on the
+// exact deployment shape documented to run unattended.
+func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	authErr := errors.New("gh: HTTP 401: Bad credentials")
+	perPRFetches := 0
+	r := &Handler{
+		logger:      logger,
+		authCircuit: poll.NewAuthCircuit("reviews", logger),
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			perPRFetches++
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Err: authErr}
+			}
+			return results
+		},
+	}
+	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
+
+	for i := range poll.AuthFailureThreshold - 1 {
+		r.fetchKnownTaskPRs(matchers)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	r.fetchKnownTaskPRs(matchers)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+
+	// A recovered token (clean fetch) closes the breaker again.
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: false}
+		}
+		return results
+	}
+	r.fetchKnownTaskPRs(matchers)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful fetch")
 	}
 }
 

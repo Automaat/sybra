@@ -27,8 +27,10 @@ type RenovateHandler struct {
 	emit                func(string, any)
 	cfg                 *config.RenovateConfig
 	allowsType          func(project.ProjectType) bool
+	fetchPRsFn          func(context.Context, string, []string) ([]github.RenovatePR, error)
 	lastPRsCount        atomic.Int64
 	transientFetchFails int
+	authCircuit         *AuthCircuit
 	// fast/slow are the resolved poll intervals (override-or-default). Zero
 	// falls back to the package constants.
 	fast time.Duration
@@ -64,11 +66,12 @@ func NewRenovateHandler(
 		allowsType = func(project.ProjectType) bool { return true }
 	}
 	return &RenovateHandler{
-		projects:   projects,
-		logger:     logger,
-		emit:       emit,
-		cfg:        cfg,
-		allowsType: allowsType,
+		projects:    projects,
+		logger:      logger,
+		emit:        emit,
+		cfg:         cfg,
+		allowsType:  allowsType,
+		authCircuit: NewAuthCircuit("renovate", logger),
 	}
 }
 
@@ -98,6 +101,10 @@ func (h *RenovateHandler) Repos() []string {
 
 func (h *RenovateHandler) Name() string { return "renovate" }
 
+// AuthCircuitOpen reports whether repeated GitHub auth failures have
+// tripped this poller's circuit breaker (see poll.AuthCircuit).
+func (h *RenovateHandler) AuthCircuitOpen() bool { return h.authCircuit.Open() }
+
 func (h *RenovateHandler) Poll(ctx context.Context) time.Duration {
 	return h.pollRenovatePRs(ctx)
 }
@@ -114,23 +121,38 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 		return h.slowInterval()
 	}
 
-	prs, err := github.FetchRenovatePRs(ctx, h.cfg.Author, repos)
+	fetchFn := github.FetchRenovatePRs
+	if h.fetchPRsFn != nil {
+		fetchFn = h.fetchPRsFn
+	}
+	prs, err := fetchFn(ctx, h.cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
-		if github.IsTransientError(err) {
+		switch {
+		case github.IsAuthError(err):
+			h.transientFetchFails = 0
+			h.authCircuit.RecordFailure(err)
+			if h.authCircuit.Open() {
+				return AuthCircuitBackoff
+			}
+			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
+			// flood before the circuit's single trip line.
+			h.logger.Info("renovate.fetch", "err", err)
+		case github.IsTransientError(err):
 			h.transientFetchFails++
 			if h.transientFetchFails < renovateTransientWarnThreshold {
 				h.logger.Info("renovate.fetch", "err", err)
 			} else {
 				h.logger.Warn("renovate.fetch", "err", err, "consecutive", h.transientFetchFails)
 			}
-		} else {
+		default:
 			h.transientFetchFails = 0
 			h.logger.Warn("renovate.fetch", "err", err)
 		}
 		return h.slowInterval()
 	}
 	h.transientFetchFails = 0
+	h.authCircuit.RecordSuccess()
 
 	h.lastPRsCount.Store(int64(len(prs)))
 	h.emit(events.RenovateUpdated, prs)

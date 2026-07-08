@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -72,6 +73,10 @@ type Handler struct {
 	// re-dispatched to pr-fix when CI fails. nil = renovate disabled.
 	renovatePRsFn       func() []github.PullRequest
 	transientFetchFails int
+	// authCircuit tracks consecutive GitHub auth failures (401s) on the
+	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
+	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
+	authCircuit *poll.AuthCircuit
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -197,6 +202,7 @@ func New(
 		worktrees:           worktrees,
 		renovatePRsFn:       renovatePRsFn,
 		wtFailures:          make(map[string]int),
+		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
@@ -218,6 +224,10 @@ func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]an
 }
 
 func (r *Handler) Name() string { return "reviews" }
+
+// AuthCircuitOpen reports whether repeated GitHub auth failures have
+// tripped this poller's circuit breaker (see poll.AuthCircuit).
+func (r *Handler) AuthCircuitOpen() bool { return r.authCircuit.Open() }
 
 func (r *Handler) Poll(ctx context.Context) time.Duration {
 	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
@@ -252,6 +262,13 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
+	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
+	// token every cycle (#1516) — the next cycle re-probes and closes on
+	// recovery.
+	if r.authCircuit.Open() {
+		return poll.AuthCircuitBackoff
+	}
 	var issues []github.PRIssue
 	if len(matchers) > 0 {
 		issues = github.MatchTaskPRs(monitoredPRs, matchers)
@@ -292,7 +309,8 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	}
 	summary, fetchErr := fetchFn()
 	if fetchErr != nil {
-		if github.IsTransientError(fetchErr) {
+		switch {
+		case github.IsTransientError(fetchErr):
 			r.transientFetchFails++
 			if r.transientFetchFails < TransientFetchWarnThreshold {
 				r.logger.Info("pr-monitor.fetch", "err", fetchErr)
@@ -318,13 +336,23 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 				// above instead of this GraphQL-backed path.
 				r.closeFinishedReviewTasks(tasks, nil)
 			}
-		} else {
+		case github.IsAuthError(fetchErr):
+			r.transientFetchFails = 0
+			r.authCircuit.RecordFailure(fetchErr)
+			if r.authCircuit.Open() {
+				return poll.AuthCircuitBackoff
+			}
+			// Pre-trip: log at Info so the up-to-threshold auth failures don't
+			// flood at WARN before the circuit's single ERROR trip line.
+			r.logger.Info("pr-monitor.fetch", "err", fetchErr)
+		default:
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		}
 		return r.pollSlow()
 	}
 	r.transientFetchFails = 0
+	r.authCircuit.RecordSuccess()
 
 	r.emit("reviews:updated", summary)
 
@@ -592,9 +620,20 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 	}
 
 	results := fetchFn(refs)
+	// A dead server token fails every per-PR fetch with the same auth error.
+	// Warning per PR-ref would emit N lines per cycle (worse than #1516), so
+	// collapse auth failures into a single representative error and feed the
+	// shared auth circuit instead of warn-logging each ref.
+	var authErr error
 	for i := range results {
 		res := &results[i]
 		if res.Err != nil {
+			if github.IsAuthError(res.Err) {
+				if authErr == nil {
+					authErr = res.Err
+				}
+				continue
+			}
 			r.logger.Warn("pr-monitor.known-pr-fetch", "repo", res.Repo, "pr", res.Number, "err", res.Err)
 			continue
 		}
@@ -604,6 +643,14 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 		}
 		prs = append(prs, res.PR)
 		r.updateReadyPRCache(res.Repo, res.Number, res.PR)
+	}
+	if authErr != nil {
+		r.authCircuit.RecordFailure(authErr)
+		if !r.authCircuit.Open() {
+			r.logger.Info("pr-monitor.known-pr-fetch", "err", authErr)
+		}
+	} else {
+		r.authCircuit.RecordSuccess()
 	}
 	return prs
 }

@@ -518,3 +518,15 @@ func IsTransientError(err error) bool {
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "context deadline exceeded")
 }
+
+// IsAuthError reports whether err is a GitHub authentication failure (HTTP
+// 401 / "Bad credentials") that will not resolve on its own — a dead or
+// revoked token needs a human to rotate it, so pollers should circuit-break
+// on this instead of retrying at their normal cadence.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 401") || strings.Contains(msg, "bad credentials")
+}
