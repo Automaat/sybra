@@ -357,8 +357,8 @@ func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abte
 // experiment degraded to normal (non-A/B) dispatch rather than a different
 // variant winning (that partial case is reportProviderDemotion's job). Without
 // this signal the total shutout is indistinguishable from A/B being disabled or
-// no experiment matching the role. Throttled per routing context + provider +
-// reason so a sustained outage does not emit one ERROR per task.
+// no experiment matching the role. Throttled per routing context + experiment +
+// provider + reason so a sustained outage does not emit one ERROR per task.
 func (e *Engine) reportProviderShutout(ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
 	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
 	if err != nil || !ok {
