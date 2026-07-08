@@ -109,6 +109,27 @@ func TestCountStep_SurvivesHistoryTrim(t *testing.T) {
 	}
 }
 
+func TestRecordStep_SeedsStepCountsFromExistingHistory(t *testing.T) {
+	// Simulate a task loaded from disk before StepCounts existed: history is
+	// already populated (and trimmed to the cap) while StepCounts is nil. The
+	// first RecordStep must lazily seed StepCounts from the surviving history
+	// window before appending, so CountStep reflects the pre-existing entries
+	// plus the new one.
+	e := &Execution{}
+	for range maxStepHistory {
+		e.StepHistory = append(e.StepHistory, StepRecord{StepID: "start_replan", Status: "completed"})
+	}
+	if e.StepCounts != nil {
+		t.Fatalf("precondition: expected nil StepCounts, got %v", e.StepCounts)
+	}
+
+	e.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+
+	if got := e.CountStep("start_replan"); got != maxStepHistory+1 {
+		t.Errorf("expected seeded count %d, got %d", maxStepHistory+1, got)
+	}
+}
+
 func TestLastRecord_ReturnsNilForEmptyHistory(t *testing.T) {
 	e := &Execution{}
 
