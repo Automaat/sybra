@@ -2099,6 +2099,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	child := rec.Children["plan_a"]
 	if child == nil {
 		t.Fatal("child plan_a missing")
+		return
 	}
 	if child.AgentID != "agent-1" || child.Status != "pending" {
 		t.Fatalf("child status = %+v, want pending agent-1", child)
@@ -2233,6 +2234,7 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	for id, child := range rec.Children {
 		if child == nil {
 			t.Fatalf("child %s missing", id)
+			return
 		}
 		if child.Status != "pending" {
 			t.Fatalf("child %s status = %q, want pending after transient provider block", id, child.Status)
@@ -5155,6 +5157,7 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 
 	if recovered == nil {
 		t.Fatal("expected StartWorkflow to panic when StartAgent panics")
+		return
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
 		t.Fatal("dispatching claim leaked after panic")
@@ -5266,6 +5269,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin not found")
+		return
 	}
 
 	store := newTestStore(t)
@@ -5287,6 +5291,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	verifyStep := impl.StepByID("verify_commits")
 	if verifyStep == nil {
 		t.Fatal("verify_commits step not found in simple-task-implement")
+		return
 	}
 	comp, err := engine.executeSteps("t1", impl, verifyStep, wf)
 	if err != nil {

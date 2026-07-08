@@ -706,6 +706,7 @@ func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	}
 	if local == nil {
 		t.Fatalf("expected a second (scrubbed) task to be created; got only origin")
+		return
 	}
 	body := local.Title + "\n" + local.Body
 	for _, leak := range []string{workProject, "work-owner", "work-repo", "github.com/work-owner", "KAG-1234"} {
