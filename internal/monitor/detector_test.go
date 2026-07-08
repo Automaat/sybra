@@ -29,6 +29,13 @@ func defaultCfg() config.MonitorConfig {
 	}
 }
 
+// mkTaskDefaultUpdatedAt is a fixed anchor well before every test's `now`
+// (all currently 2026-04-14 or later), so a task an opt doesn't touch reads
+// as long-idle rather than fresh — using real wall-clock time here would
+// make dwell/grace checks (e.g. detectLostAgents' status-flip grace) see a
+// negative duration against a fixed test `now` and wrongly suppress.
+var mkTaskDefaultUpdatedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
 func mkTask(id string, status task.Status, opts ...func(*task.Task)) task.Task {
 	t := task.Task{
 		ID:        id,
@@ -36,7 +43,7 @@ func mkTask(id string, status task.Status, opts ...func(*task.Task)) task.Task {
 		Status:    status,
 		AgentMode: task.AgentModeHeadless,
 		Tags:      []string{"medium"},
-		UpdatedAt: time.Now().Add(-time.Hour).UTC(),
+		UpdatedAt: mkTaskDefaultUpdatedAt,
 	}
 	for _, o := range opts {
 		o(&t)
@@ -301,6 +308,26 @@ func TestDetect(t *testing.T) {
 				Cfg:        cfg,
 			},
 			want: []AnomalyKind{KindLostAgent},
+		},
+		{
+			name: "lost_agent suppressed when task just flipped to in-progress and dispatch hasn't recorded a run yet",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+					// Prior completed runs from an earlier lifecycle, none
+					// running and none recent — only the status-flip
+					// timestamp (UpdatedAt) is fresh, mirroring dispatch
+					// latency between the status change and AddRun/the
+					// first agent.* audit event.
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "stopped", StartedAt: now.Add(-4 * time.Hour)},
+					}
+					t.UpdatedAt = now.Add(-2 * time.Minute)
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
 		},
 		{
 			name: "failure_spike when failure_rate > threshold",

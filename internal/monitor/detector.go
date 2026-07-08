@@ -275,6 +275,17 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if recentRunningRun(t.AgentRuns, in.Now, window) {
 			continue
 		}
+		// Skip if the task itself was updated (e.g. a status flip into
+		// in-progress) within the window. Dispatch (worktree prep, agent
+		// process spawn) can take longer than one monitor cycle to reach
+		// the point where AddRun/AddRunWithStatus records the run or an
+		// agent.* audit event fires — without this, a task is flagged as
+		// lost in the gap between "status flipped to in-progress" and
+		// "dispatch actually recorded", even though no agent was ever given
+		// the chance to start yet. Mirrors detectPRGap's dwell/grace check.
+		if !t.UpdatedAt.IsZero() && in.Now.Sub(t.UpdatedAt) < window {
+			continue
+		}
 		ev := map[string]any{
 			"task_id": t.ID,
 			"title":   t.Title,
