@@ -746,10 +746,7 @@ func (a *App) initLoopAgents() error {
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
 	a.seedDefaultLoopAgents()
-	// loopagent.Scheduler.Sync spawns loop-agent goroutines derived from its
-	// own s.ctx field, bound once from the ctx passed to NewScheduler above
-	// (this same Startup ctx) rather than an explicit per-call parameter.
-	a.loopSched.Sync() //nolint:contextcheck // Scheduler uses its own s.ctx field, see comment above
+	a.loopSched.SyncContext(ctx)
 }
 
 func (a *App) seedDefaultLoopAgents() {

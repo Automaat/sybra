@@ -504,7 +504,9 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 	for _, prior := range priorSections {
 		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
 	}
+	currentStart := len(nextBody)
 	nextBody = appendRawBody(nextBody, report)
+	wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
 	if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
 		return false, body, fmt.Errorf("append test failure report: %w", err)
 	}

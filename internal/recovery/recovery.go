@@ -80,12 +80,7 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// which all key off HasRunningAgentForTask — see them as live and do
 	// not remove their worktrees, gc their chat tasks, mark their runs
 	// stale, or restart them.
-	// ReattachAll derives its per-agent contexts from agent.Manager's own
-	// m.ctx field (bound once at Manager construction from this same App
-	// root context), not from a threaded parameter — see the Engine.SetContext
-	// / e.ctx pattern for why re-plumbing that across ReattachAll's whole
-	// reattach fan-out is out of scope here.
-	if reattached := r.Agents.ReattachAll(); len(reattached) > 0 { //nolint:contextcheck // agent.Manager uses its own m.ctx field, see comment above
+	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
 	r.Worktrees.RepairAll(ctx)
