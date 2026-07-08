@@ -80,6 +80,30 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	}
 }
 
+func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
+	t.Parallel()
+
+	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+
+	for _, forbidden := range []string{
+		"git push origin HEAD",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("branch conflict prompt still hardcodes origin push (%q):\n%s", forbidden, prompt)
+		}
+	}
+	for _, want := range []string{
+		"PUSH_REMOTE=origin",
+		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
+		"git push \"$PUSH_REMOTE\" HEAD:fix/example",
+		"Push to `fork` (not `origin`) when a `fork` remote exists",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
 	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
 
