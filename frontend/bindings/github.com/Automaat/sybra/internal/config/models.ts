@@ -120,6 +120,17 @@ export class AgentDefaults {
      */
     "sandboxMode": string;
 
+    /**
+     * DefaultProjectID pins the project a project-less task auto-assigns to
+     * when it needs an isolated worktree (e.g. a meta/self-referential task
+     * routed to the plan step). Without it, auto-assignment only fires when
+     * exactly one project is registered — on a machine with two or more
+     * projects, a project-less task can never dispatch and always ends up
+     * human-required. Empty means no default (falls back to the
+     * sole-project behavior).
+     */
+    "defaultProjectId": string;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -181,6 +192,9 @@ export class AgentDefaults {
         }
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
+        }
+        if (!("defaultProjectId" in $$source)) {
+            this["defaultProjectId"] = "";
         }
 
         Object.assign(this, $$source);
