@@ -42,6 +42,10 @@ var reattachPIDPoll = time.Second
 // HasRunningAgentForTask sees the reattached agents and does not dispatch
 // duplicates.
 func (m *Manager) ReattachAll() []*Agent {
+	return m.ReattachAllContext(m.ctx)
+}
+
+func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	reg := m.registry()
 	if reg == nil {
 		return nil
@@ -64,12 +68,12 @@ func (m *Manager) ReattachAll() []*Agent {
 				continue
 			}
 			if prov.UsesPerTurnConvo() {
-				if a := m.reattachPerTurnConvo(r, reg); a != nil {
+				if a := m.reattachPerTurnConvo(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
 					out = append(out, a)
 				}
 				continue
 			}
-			if a := m.reattachInteractive(r, reg); a != nil {
+			if a := m.reattachInteractive(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
 				out = append(out, a)
 			}
 			continue
@@ -77,7 +81,7 @@ func (m *Manager) ReattachAll() []*Agent {
 		if r.Mode != "headless" {
 			continue
 		}
-		if !reattachAlive(r) {
+		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
 			// Process gone. If it finished its work before vanishing,
 			// finalize so the workflow advances instead of re-running it.
 			// Otherwise (a genuine crash), bridge its captured session id to
@@ -103,7 +107,7 @@ func (m *Manager) ReattachAll() []*Agent {
 			startOffset = rehydrateFromLog(a, r.LogPath)
 		}
 
-		ctx, cancel := context.WithCancel(m.ctx)
+		ctx, cancel := context.WithCancel(ctx)
 		a.cancel = cancel
 		a.done = make(chan struct{})
 

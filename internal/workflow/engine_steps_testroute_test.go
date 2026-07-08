@@ -544,6 +544,75 @@ func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 	}
 }
 
+func TestStripTestFailuresSectionsRemovesAllMatchingHeadings(t *testing.T) {
+	t.Parallel()
+
+	body := "## Problem\nDo the thing.\n\n" +
+		"## Test Failures\n\nOldest defect, already fixed.\n\n" +
+		"## Test Failures\n\nNewest defect, still open.\n\n" +
+		"## Test Failures are stale\n\nnot a real heading match.\n"
+
+	remaining, removed := stripTestFailuresSections(body)
+
+	if strings.Contains(remaining, "Oldest defect") || strings.Contains(remaining, "Newest defect") {
+		t.Fatalf("remaining body should have both matching sections stripped, got:\n%s", remaining)
+	}
+	if !strings.Contains(remaining, "## Test Failures are stale") {
+		t.Fatalf("remaining body should preserve a non-matching heading, got:\n%s", remaining)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed sections = %d, want 2: %v", len(removed), removed)
+	}
+	if !strings.Contains(removed[0], "Oldest defect") {
+		t.Fatalf("removed[0] should be the oldest section, got %q", removed[0])
+	}
+	if !strings.Contains(removed[1], "Newest defect") {
+		t.Fatalf("removed[1] should be the newest section, got %q", removed[1])
+	}
+}
+
+func TestStripTestFailuresSectionsNoOpWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	body := "## Problem\nNothing to strip here."
+	remaining, removed := stripTestFailuresSections(body)
+	if remaining != body {
+		t.Fatalf("remaining = %q, want unchanged %q", remaining, body)
+	}
+	if removed != nil {
+		t.Fatalf("removed = %v, want nil", removed)
+	}
+}
+
+func TestArchiveTestFailuresSectionRenamesHeadingOnly(t *testing.T) {
+	t.Parallel()
+
+	section := "## Test Failures\n\nSome defect details."
+	got := archiveTestFailuresSection(section)
+	if strings.HasPrefix(got, testFailuresHeading) {
+		t.Fatalf("archived section still starts with the live heading: %q", got)
+	}
+	if !strings.HasPrefix(got, resolvedTestFailuresHeading) {
+		t.Fatalf("archived section = %q, want prefix %q", got, resolvedTestFailuresHeading)
+	}
+	if !strings.Contains(got, "Some defect details.") {
+		t.Fatalf("archived section dropped content: %q", got)
+	}
+}
+
+func TestCurrentTestFailuresTemplateFunc(t *testing.T) {
+	t.Parallel()
+
+	if got := currentTestFailures("## Problem\nno failures here."); got != "" {
+		t.Fatalf("currentTestFailures = %q, want empty", got)
+	}
+
+	body := "## Problem\ntext\n\n## Test Failures\n\ndefect details\n"
+	if got := currentTestFailures(body); got != "## Test Failures\n\ndefect details" {
+		t.Fatalf("currentTestFailures = %q", got)
+	}
+}
+
 func TestHasReportLinePrefixNormalizesPrefixes(t *testing.T) {
 	t.Parallel()
 
@@ -1614,6 +1683,188 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-archive",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-archive", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: a different, still-open defect.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	err := engine.AdvanceStep("t-archive", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-archive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
+		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	}
+	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
+		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
+		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "still-open defect") {
+		t.Fatalf("body should contain the new failure report:\n%s", got.Body)
+	}
+	if strings.Index(got.Body, "## Resolved Test Failures") > strings.Index(got.Body, "still-open defect") {
+		t.Fatalf("archived section should precede the current failure report:\n%s", got.Body)
+	}
+}
+
+func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	currentReport := "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		"Requirement tested: the status endpoint returns HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	currentBody := initialBody + "\n\n" + currentReport
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-archive-delta",
+		Status:    "testing",
+		Body:      currentBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-archive-delta", Role: testRunnerRole}},
+	})
+
+	err := engine.AdvanceStep("t-archive-delta", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  `{"verdict":"FAIL","outcome":"product_bug"}`,
+		AgentID: "agent-archive-delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-archive-delta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
+		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	}
+	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
+		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
+		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
+	}
+	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+		strings.Contains(current, "Old defect from cycle 1") {
+		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-body-start-reset",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-body-start-reset", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: a different, still-open defect.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	if err := engine.AdvanceStep("t-body-start-reset", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-body-start-reset",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-body-start-reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, ok := testFailureBodyDelta(got.Body, got.Workflow, testVerdictSourceStep)
+	if !ok {
+		t.Fatal("testFailureBodyDelta should remain available after archiving prior failures")
+	}
+	if current := currentTestFailures(delta); !strings.Contains(current, "still-open defect") {
+		t.Fatalf("delta should start at the live rewritten failure report, got:\n%s\n\nbody:\n%s", delta, got.Body)
+	}
+	if strings.Contains(delta, "Old defect from cycle 1") {
+		t.Fatalf("delta should not include archived historical failures, got:\n%s", delta)
 	}
 }
 
