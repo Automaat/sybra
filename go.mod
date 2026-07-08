@@ -32,7 +32,6 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect; no v1 released
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect; no v1 released
-	github.com/wailsapp/wails/webview2 v1.0.27 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
