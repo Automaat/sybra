@@ -111,6 +111,26 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_RequiresVerificationBeforeTransient pins that the prompt
+// requires the reviewer to actually re-run a failing command before
+// classifying it as infra_failure/transient, rather than reasoning about
+// plausible causes alone.
+func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Some task", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	prompt := h.buildPrompt(tk, nil)
+	if !strings.Contains(prompt, "actually re-run the exact failing command") {
+		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
+	}
+}
+
 func TestRateLimiter(t *testing.T) {
 	t.Parallel()
 	h, _, _, cleanup := newReviewTestEnv(t)
