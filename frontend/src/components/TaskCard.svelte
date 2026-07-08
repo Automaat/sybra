@@ -317,7 +317,6 @@
       <MoreHorizontal size={14} />
     </button>
     {#if actionsMenuOpen}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button
         type="button"
         tabindex="-1"
