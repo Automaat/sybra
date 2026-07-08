@@ -912,10 +912,13 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
-			"git push origin HEAD:%s\n"+
+			"PUSH_REMOTE=origin\n"+
+			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
+			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
 			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
