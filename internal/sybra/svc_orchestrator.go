@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -134,6 +135,10 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 // turn, as instructed by orchestrator/CLAUDE.md, so this run stays pinned to
 // Claude even when generic task agents can fail over to another provider.
 func (s *OrchestratorService) StartOrchestrator() error {
+	return s.StartOrchestratorContext(context.Background())
+}
+
+func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) error {
 	// Hold the lock across agents.Run so two concurrent callers (the 1-minute
 	// auto-start loop and the UI Start button) cannot both pass the replaceable
 	// guard and leak an orphan brain that takes a real turn. Start is rare and
@@ -146,7 +151,7 @@ func (s *OrchestratorService) StartOrchestrator() error {
 		return conflictError("orchestrator already running")
 	}
 
-	a, err := s.agents.Run(agent.RunConfig{
+	a, err := s.agents.RunContext(ctx, agent.RunConfig{
 		Name:                    orchestratorAgentName,
 		Mode:                    "interactive",
 		Dir:                     config.HomeDir(),

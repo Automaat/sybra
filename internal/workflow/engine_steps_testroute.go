@@ -38,6 +38,12 @@ const (
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
 	testFailuresHeading        = "## Test Failures"
+	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
+	// is renamed to when a newer cycle supersedes it (see
+	// stripTestFailuresSections). Deliberately distinct from testFailuresHeading
+	// so agents pattern-matching for the live heading never mistake archived,
+	// already-superseded reports for the current blocking failure.
+	resolvedTestFailuresHeading = "## Resolved Test Failures (historical)"
 
 	testOutcomePass                 = "pass"
 	testOutcomeProductBug           = "product_bug"
@@ -461,24 +467,130 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 	}
 
 	report := ""
+	isFail := false
 	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
 		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
 			return false, body, nil
 		}
+		isFail = true
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
 	} else if ExtractTestVerdict(output.Output) == "FAIL" {
+		isFail = true
 		report = plainTestFailureReport(output.Output)
+	}
+	if !isFail {
+		return false, body, nil
+	}
+	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
+		var currentStart int
+		nextBody, currentStart = normalizeTestFailureDeltaBody(body, delta)
+		wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
+		if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
+			return false, body, fmt.Errorf("normalize test failure report: %w", err)
+		}
+		return true, nextBody, nil
 	}
 	if report == "" {
 		return false, body, nil
 	}
-	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
-		return false, body, nil
+
+	// Strip any prior "## Test Failures" section(s) before appending the new
+	// one, so at most one is ever live in the body — it is then unambiguously
+	// the current, blocking failure. Priors are archived under a distinctly
+	// different heading rather than dropped, preserving audit history without
+	// reintroducing the ambiguity.
+	strippedBody, priorSections := stripTestFailuresSections(body)
+	nextBody = strippedBody
+	for _, prior := range priorSections {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
 	}
-	if err := e.tasks.AppendTaskBody(taskID, report); err != nil {
+	currentStart := len(nextBody)
+	nextBody = appendRawBody(nextBody, report)
+	wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
+	if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
 		return false, body, fmt.Errorf("append test failure report: %w", err)
 	}
-	return true, appendRawBody(body, report), nil
+	return true, nextBody, nil
+}
+
+func normalizeTestFailureDeltaBody(body, delta string) (nextBody string, currentStart int) {
+	preAttemptBody := body[:len(body)-len(delta)]
+	strippedPreAttemptBody, priorSections := stripTestFailuresSections(preAttemptBody)
+	strippedDelta, deltaSections := stripTestFailuresSections(delta)
+	if len(deltaSections) == 0 {
+		return body, len(body)
+	}
+
+	nextBody = strippedPreAttemptBody
+	nextBody = appendRawBody(nextBody, strippedDelta)
+	for _, prior := range priorSections {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	for _, prior := range deltaSections[:len(deltaSections)-1] {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	currentSection := deltaSections[len(deltaSections)-1]
+	nextBody = appendRawBody(nextBody, currentSection)
+	currentStart = strings.LastIndex(nextBody, currentSection)
+	if currentStart < 0 {
+		currentStart = len(nextBody)
+	}
+	return nextBody, currentStart
+}
+
+// stripTestFailuresSections removes every "## Test Failures" section from
+// body (heading line through the line before the next top-level "## "
+// heading, or end of body) and returns the remaining body plus the removed
+// section contents in document order. Headings inside fenced code blocks are
+// ignored, matching testFailSectionOf's fence handling.
+func stripTestFailuresSections(body string) (remaining string, removed []string) {
+	lines := strings.Split(body, "\n")
+	var out []string
+	inFence := false
+	for i := 0; i < len(lines); {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+		if !inFence && isTestFailuresHeading(trimmed) {
+			start := i
+			j := i + 1
+			sectionInFence := false
+			for j < len(lines) {
+				jTrimmed := strings.TrimSpace(lines[j])
+				if strings.HasPrefix(jTrimmed, "```") || strings.HasPrefix(jTrimmed, "~~~") {
+					sectionInFence = !sectionInFence
+					j++
+					continue
+				}
+				if !sectionInFence && strings.HasPrefix(jTrimmed, "## ") {
+					break
+				}
+				j++
+			}
+			removed = append(removed, strings.TrimSpace(strings.Join(lines[start:j], "\n")))
+			i = j
+			continue
+		}
+		out = append(out, lines[i])
+		i++
+	}
+	remaining = strings.TrimSpace(strings.Join(out, "\n"))
+	return remaining, removed
+}
+
+// archiveTestFailuresSection renames a removed section's heading line from
+// "## Test Failures" to resolvedTestFailuresHeading, preserving the rest of
+// its content for audit.
+func archiveTestFailuresSection(section string) string {
+	lines := strings.SplitN(section, "\n", 2)
+	if len(lines) == 1 {
+		return resolvedTestFailuresHeading
+	}
+	return resolvedTestFailuresHeading + "\n" + lines[1]
 }
 
 func plainTestFailureReport(output string) string {

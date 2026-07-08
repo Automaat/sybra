@@ -37,6 +37,10 @@ export function StartOrchestrator(): $CancellablePromise<void> {
     return $Call.ByID(4069016469);
 }
 
+export function StartOrchestratorContext(): $CancellablePromise<void> {
+    return $Call.ByID(859255404);
+}
+
 /**
  * StopOrchestrator cancels the orchestrator agent's context which unwinds
  * the conversational runner and closes the child claude process.

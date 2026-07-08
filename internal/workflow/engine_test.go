@@ -278,6 +278,17 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 	return nil
 }
 
+func (m *memTasks) ReplaceTaskBody(id, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Body = body
+	return nil
+}
+
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
