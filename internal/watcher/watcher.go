@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,9 +179,7 @@ func (w *Watcher) refreshSnapshot(known map[string]time.Time) {
 			delete(known, name)
 		}
 	}
-	for name, mtime := range fresh {
-		known[name] = mtime
-	}
+	maps.Copy(known, fresh)
 }
 
 // reconcile is the self-healing backstop for lost per-file OS watches (see
