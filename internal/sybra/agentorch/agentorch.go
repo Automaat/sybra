@@ -370,7 +370,7 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 	}
 	t = o.AutoAssignProject(t)
 	if t.ProjectID == "" {
-		return t, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree", taskID)
+		return t, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
 		if resetErr := o.resetWorktreeForCleanRetry(t, cleanRetryRef); resetErr != nil {
@@ -738,23 +738,54 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	return ag, nil
 }
 
-// AutoAssignProject assigns the task to the sole registered project when the
-// task has none and exactly one project is registered. No-op otherwise.
+// AutoAssignProject assigns a project to a project-less task that needs one
+// to dispatch. It prefers the operator-configured agent.default_project_id
+// (checked against the registered set, so a stale/typo'd ID is a no-op
+// rather than a bogus assignment); absent that, it falls back to the sole
+// registered project when exactly one is registered. No-op otherwise —
+// notably when the task already has a project, or when default_project_id
+// is unset and more than one project is registered (ambiguous, needs either
+// config or a human to assign one).
 func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
 	if t.ProjectID != "" || o.projects == nil {
 		return t
 	}
 	projects, err := o.projects.List()
-	if err != nil || len(projects) != 1 {
+	if err != nil {
 		return t
 	}
-	t.ProjectID = projects[0].ID
+	projectID := ""
+	if def := o.defaultProjectID(); def != "" {
+		for _, p := range projects {
+			if p.ID == def {
+				projectID = def
+				break
+			}
+		}
+	}
+	if projectID == "" && len(projects) == 1 {
+		projectID = projects[0].ID
+	}
+	if projectID == "" {
+		return t
+	}
+	t.ProjectID = projectID
 	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
 		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 	} else {
 		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
 	}
 	return t
+}
+
+// defaultProjectID returns the configured agent.default_project_id, or ""
+// when unset or config is unavailable (e.g. in tests that build an
+// Orchestrator without a config).
+func (o *Orchestrator) defaultProjectID() string {
+	if o.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(o.cfg.Agent.DefaultProjectID)
 }
 
 // StartPRFixAgent starts a headless agent to address review comments on
@@ -780,7 +811,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	if !skipWT {
 		t = o.AutoAssignProject(t)
 		if t.ProjectID == "" {
-			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree", taskID)
+			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
 		// context.Background(): StartPRFixAgent implements the recovery package's

@@ -56,6 +56,12 @@ func TestClassifyAgentStartError(t *testing.T) {
 			err:          errors.New(strings.Repeat("x", startReasonMaxLen*2)),
 			wantContains: "...",
 		},
+		{
+			name:          "no project assigned is permanent",
+			err:           fmt.Errorf("task t1 has no project_id: refusing to start plan agent without isolated worktree: %w", ErrNoProjectAssigned),
+			wantPermanent: true,
+			wantContains:  "no project could be assigned",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
