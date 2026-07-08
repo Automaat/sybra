@@ -86,6 +86,7 @@ func TestMonitorRoutingSink_WorkAnomaly_CreatesLocalTaskWithProject(t *testing.T
 	}
 	if routed == nil {
 		t.Fatalf("no routed task created; tasks=%+v", all)
+		return
 	}
 	if routed.ProjectID != "Automaat/sybra" {
 		t.Errorf("ProjectID = %q, want %q", routed.ProjectID, "Automaat/sybra")
@@ -221,6 +222,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testin
 	}
 	if chore == nil {
 		t.Fatalf("chore task not created")
+		return
 	}
 	renamed := "chore(sybra): unblock task " + src.ID + " stuck in human-required"
 	if _, err := tasks.Update(chore.ID, task.Update{Title: &renamed}); err != nil {
