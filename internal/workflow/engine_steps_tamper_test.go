@@ -855,6 +855,7 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	vc := prfix.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing from pr-fix")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "detect_tampering" {
 		t.Errorf("pr-fix verify_commits default goto = %q, want detect_tampering", got)

@@ -97,6 +97,7 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("require_plan_critique")
 	if step == nil {
@@ -603,6 +604,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	fix := prfix.StepByID("fix")
 	if fix == nil {
 		t.Fatal("fix step missing from pr-fix")
+		return
 	}
 	if got, err := ResolveTransition(fix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "route_pr_fix_result" {
 		t.Fatalf("fix next = %q, err=%v; want route_pr_fix_result", got, err)
