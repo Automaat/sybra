@@ -26,10 +26,17 @@ steps:
         review and manual testing pass, so fixes land in the same branch before
         it is opened.
 
-        First run `sybra-cli get --compact {{.Task.ID}}` and check for a "## Test Failures"
-        section. If present, a prior implementation FAILED adversarial manual
-        testing — fix the root cause of every reported defect (not just the
-        symptom); the feature will be re-tested after this run.
+        For full task context, run `sybra-cli get --compact {{.Task.ID}}`.
+        {{- if currenttestfailures .Task.Body}}
+
+        A prior implementation FAILED adversarial manual testing. Fix the root
+        cause of every defect reported below (not just the symptom) — the
+        feature will be re-tested after this run.
+
+        ## Current Test Failures
+
+        {{currenttestfailures .Task.Body}}
+        {{- end}}
 
         Before committing broad/sweep changes ("everywhere", "all", "single
         utility", "unified", "no raw X remains"), derive and run a cheap
