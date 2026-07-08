@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -72,6 +73,10 @@ type Handler struct {
 	// re-dispatched to pr-fix when CI fails. nil = renovate disabled.
 	renovatePRsFn       func() []github.PullRequest
 	transientFetchFails int
+	// authCircuit tracks consecutive GitHub auth failures (401s) on the
+	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
+	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
+	authCircuit *poll.AuthCircuit
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -197,6 +202,7 @@ func New(
 		worktrees:           worktrees,
 		renovatePRsFn:       renovatePRsFn,
 		wtFailures:          make(map[string]int),
+		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
@@ -218,6 +224,10 @@ func (r *Handler) logAudit(eventType, taskID, agentID string, data map[string]an
 }
 
 func (r *Handler) Name() string { return "reviews" }
+
+// AuthCircuitOpen reports whether repeated GitHub auth failures have
+// tripped this poller's circuit breaker (see poll.AuthCircuit).
+func (r *Handler) AuthCircuitOpen() bool { return r.authCircuit.Open() }
 
 func (r *Handler) Poll(ctx context.Context) time.Duration {
 	if r.cfg != nil && !r.cfg.GitHub.RunsSearchPollers() {
@@ -318,6 +328,13 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 				// above instead of this GraphQL-backed path.
 				r.closeFinishedReviewTasks(tasks, nil)
 			}
+		} else if github.IsAuthError(fetchErr) {
+			r.transientFetchFails = 0
+			r.authCircuit.RecordFailure(fetchErr)
+			if r.authCircuit.Open() {
+				return poll.AuthCircuitBackoff
+			}
+			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
 		} else {
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
@@ -325,6 +342,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		return r.pollSlow()
 	}
 	r.transientFetchFails = 0
+	r.authCircuit.RecordSuccess()
 
 	r.emit("reviews:updated", summary)
 

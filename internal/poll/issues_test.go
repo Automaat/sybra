@@ -1,6 +1,8 @@
 package poll
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"testing"
@@ -550,6 +552,40 @@ func TestIssuesFetcher_CrossMachineRouting_PetAndWorkSplit(t *testing.T) {
 		"https://github.com/bigco/work1/issues/2",
 		"https://github.com/bigco/work2/issues/3",
 	})
+}
+
+func TestIssuesFetcher_Poll_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	env.fetcher.fetchSnapshot = func([]string, string) (github.IssueSnapshot, error) {
+		return github.IssueSnapshot{}, errors.New("gh: HTTP 401: Bad credentials")
+	}
+
+	ctx := context.Background()
+	for i := 0; i < AuthFailureThreshold-1; i++ {
+		env.fetcher.Poll(ctx)
+		if env.fetcher.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, AuthFailureThreshold)
+		}
+	}
+
+	next := env.fetcher.Poll(ctx)
+	if !env.fetcher.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", AuthFailureThreshold)
+	}
+	if next != AuthCircuitBackoff {
+		t.Errorf("Poll() interval = %v, want AuthCircuitBackoff (%v)", next, AuthCircuitBackoff)
+	}
+
+	// A subsequent success closes the breaker.
+	env.fetcher.fetchSnapshot = func([]string, string) (github.IssueSnapshot, error) {
+		return github.IssueSnapshot{}, nil
+	}
+	env.fetcher.Poll(ctx)
+	if env.fetcher.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful poll")
+	}
 }
 
 func taskIssueURLs(t *testing.T, tm *task.Manager) []string {

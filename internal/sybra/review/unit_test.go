@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1779,6 +1780,46 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 				t.Errorf("reconcileCalled = %v, want %v", reconcileCalled, tt.wantReconcile)
 			}
 		})
+	}
+}
+
+func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	r := New(tasks, projects, nil, nil, logger, nil, func(string, any) {}, nil, nil, nil, nil)
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{}, errors.New("gh: HTTP 401: Bad credentials")
+	}
+
+	ctx := context.Background()
+	for i := 0; i < poll.AuthFailureThreshold-1; i++ {
+		r.pollAndMonitorPRs(ctx)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	next := r.pollAndMonitorPRs(ctx)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+	if next != poll.AuthCircuitBackoff {
+		t.Errorf("pollAndMonitorPRs() interval = %v, want AuthCircuitBackoff (%v)", next, poll.AuthCircuitBackoff)
+	}
+
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) { return github.ReviewSummary{}, nil }
+	r.pollAndMonitorPRs(ctx)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful poll")
 	}
 }
 

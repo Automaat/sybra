@@ -75,11 +75,13 @@ var (
 	agentsActiveFn      func() map[string]int64
 	renovatePRsFetchFn  func() int64
 	providerHealthFn    func() map[string]int64
+	pollerAuthHealthFn  func() map[string]int64
 	agentsInFlightFn    func() map[string]int64
 	tasksByStatusGauge  metric.Int64ObservableGauge
 	agentsActiveGauge   metric.Int64ObservableGauge
 	renovatePRsGauge    metric.Int64ObservableGauge
 	providerHealthyG    metric.Int64ObservableGauge
+	pollerAuthHealthyG  metric.Int64ObservableGauge
 	agentsInFlightGauge metric.Int64ObservableGauge
 )
 
@@ -366,6 +368,12 @@ func createObservableGauges() error {
 	); err != nil {
 		return err
 	}
+	if pollerAuthHealthyG, err = m.Int64ObservableGauge(
+		"sybra_poller_auth_healthy",
+		metric.WithDescription("Current GitHub poller auth-circuit health (1=healthy, 0=critical/circuit-open), by poller."),
+	); err != nil {
+		return err
+	}
 	if agentsInFlightGauge, err = m.Int64ObservableGauge(
 		"sybra_agents_in_flight",
 		metric.WithDescription("Current in-flight agent count, by provider."),
@@ -374,7 +382,7 @@ func createObservableGauges() error {
 	}
 	_, err = m.RegisterCallback(
 		observe,
-		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, agentsInFlightGauge,
+		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
 	)
 	return err
 }
@@ -385,6 +393,7 @@ func observe(_ context.Context, obs metric.Observer) error {
 	byState := agentsActiveFn
 	prs := renovatePRsFetchFn
 	providerHealth := providerHealthFn
+	pollerAuthHealth := pollerAuthHealthFn
 	inFlight := agentsInFlightFn
 	obsMu.RUnlock()
 
@@ -407,6 +416,12 @@ func observe(_ context.Context, obs metric.Observer) error {
 		for name, healthy := range providerHealth() {
 			obs.ObserveInt64(providerHealthyG, healthy,
 				metric.WithAttributes(attribute.String("provider", name)))
+		}
+	}
+	if pollerAuthHealth != nil {
+		for name, healthy := range pollerAuthHealth() {
+			obs.ObserveInt64(pollerAuthHealthyG, healthy,
+				metric.WithAttributes(attribute.String("poller", name)))
 		}
 	}
 	if inFlight != nil {
@@ -447,6 +462,15 @@ func RegisterRenovatePRsFetched(fn func() int64) {
 func RegisterProviderHealth(fn func() map[string]int64) {
 	obsMu.Lock()
 	providerHealthFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterPollerAuthHealth wires a callback returning GitHub poller name →
+// auth-circuit health (1=healthy, 0=critical/circuit-open). Invoked on every
+// scrape.
+func RegisterPollerAuthHealth(fn func() map[string]int64) {
+	obsMu.Lock()
+	pollerAuthHealthFn = fn
 	obsMu.Unlock()
 }
 
