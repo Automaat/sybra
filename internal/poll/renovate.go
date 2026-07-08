@@ -123,20 +123,23 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 	prs, err := github.FetchRenovatePRs(ctx, h.cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
-		if github.IsAuthError(err) {
+		switch {
+		case github.IsAuthError(err):
 			h.authCircuit.RecordFailure(err)
 			if h.authCircuit.Open() {
 				return AuthCircuitBackoff
 			}
-			h.logger.Warn("renovate.fetch", "err", err)
-		} else if github.IsTransientError(err) {
+			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
+			// flood before the circuit's single trip line.
+			h.logger.Info("renovate.fetch", "err", err)
+		case github.IsTransientError(err):
 			h.transientFetchFails++
 			if h.transientFetchFails < renovateTransientWarnThreshold {
 				h.logger.Info("renovate.fetch", "err", err)
 			} else {
 				h.logger.Warn("renovate.fetch", "err", err, "consecutive", h.transientFetchFails)
 			}
-		} else {
+		default:
 			h.transientFetchFails = 0
 			h.logger.Warn("renovate.fetch", "err", err)
 		}

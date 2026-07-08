@@ -3,14 +3,13 @@ package poll
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
 )
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 func TestAuthCircuit_OpensAfterThreshold(t *testing.T) {
@@ -18,7 +17,7 @@ func TestAuthCircuit_OpensAfterThreshold(t *testing.T) {
 	c := NewAuthCircuit("test", discardLogger())
 	err := errors.New("bad credentials")
 
-	for i := 0; i < AuthFailureThreshold-1; i++ {
+	for i := range AuthFailureThreshold - 1 {
 		c.RecordFailure(err)
 		if c.Open() {
 			t.Fatalf("circuit opened after %d failures, want threshold %d", i+1, AuthFailureThreshold)
@@ -36,7 +35,7 @@ func TestAuthCircuit_RecordSuccessResets(t *testing.T) {
 	c := NewAuthCircuit("test", discardLogger())
 	err := errors.New("bad credentials")
 
-	for i := 0; i < AuthFailureThreshold; i++ {
+	for range AuthFailureThreshold {
 		c.RecordFailure(err)
 	}
 	if !c.Open() {

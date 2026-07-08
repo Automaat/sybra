@@ -1801,7 +1801,7 @@ func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	for i := 0; i < poll.AuthFailureThreshold-1; i++ {
+	for i := range poll.AuthFailureThreshold - 1 {
 		r.pollAndMonitorPRs(ctx)
 		if r.AuthCircuitOpen() {
 			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, poll.AuthFailureThreshold)
@@ -1820,6 +1820,55 @@ func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	r.pollAndMonitorPRs(ctx)
 	if r.AuthCircuitOpen() {
 		t.Error("circuit stayed open after a successful poll")
+	}
+}
+
+// TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure covers the
+// poller_role: secondary path (Poll -> pollKnownTaskPRs -> fetchKnownTaskPRs),
+// which fetches per-PR and must feed the same auth circuit as the search
+// path — otherwise a dead token re-hammers and floods forever (#1516) on the
+// exact deployment shape documented to run unattended.
+func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	authErr := errors.New("gh: HTTP 401: Bad credentials")
+	perPRFetches := 0
+	r := &Handler{
+		logger:      logger,
+		authCircuit: poll.NewAuthCircuit("reviews", logger),
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			perPRFetches++
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Err: authErr}
+			}
+			return results
+		},
+	}
+	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
+
+	for i := range poll.AuthFailureThreshold - 1 {
+		r.fetchKnownTaskPRs(matchers)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	r.fetchKnownTaskPRs(matchers)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+
+	// A recovered token (clean fetch) closes the breaker again.
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: false}
+		}
+		return results
+	}
+	r.fetchKnownTaskPRs(matchers)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful fetch")
 	}
 }
 

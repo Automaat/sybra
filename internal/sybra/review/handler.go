@@ -262,6 +262,13 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
+	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
+	// token every cycle (#1516) — the next cycle re-probes and closes on
+	// recovery.
+	if r.authCircuit.Open() {
+		return poll.AuthCircuitBackoff
+	}
 	var issues []github.PRIssue
 	if len(matchers) > 0 {
 		issues = github.MatchTaskPRs(monitoredPRs, matchers)
@@ -334,7 +341,9 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 			if r.authCircuit.Open() {
 				return poll.AuthCircuitBackoff
 			}
-			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
+			// Pre-trip: log at Info so the up-to-threshold auth failures don't
+			// flood at WARN before the circuit's single ERROR trip line.
+			r.logger.Info("pr-monitor.fetch", "err", fetchErr)
 		} else {
 			r.transientFetchFails = 0
 			r.logger.Warn("pr-monitor.fetch", "err", fetchErr)
@@ -610,9 +619,20 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 	}
 
 	results := fetchFn(refs)
+	// A dead server token fails every per-PR fetch with the same auth error.
+	// Warning per PR-ref would emit N lines per cycle (worse than #1516), so
+	// collapse auth failures into a single representative error and feed the
+	// shared auth circuit instead of warn-logging each ref.
+	var authErr error
 	for i := range results {
 		res := &results[i]
 		if res.Err != nil {
+			if github.IsAuthError(res.Err) {
+				if authErr == nil {
+					authErr = res.Err
+				}
+				continue
+			}
 			r.logger.Warn("pr-monitor.known-pr-fetch", "repo", res.Repo, "pr", res.Number, "err", res.Err)
 			continue
 		}
@@ -622,6 +642,14 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 		}
 		prs = append(prs, res.PR)
 		r.updateReadyPRCache(res.Repo, res.Number, res.PR)
+	}
+	if authErr != nil {
+		r.authCircuit.RecordFailure(authErr)
+		if !r.authCircuit.Open() {
+			r.logger.Info("pr-monitor.known-pr-fetch", "err", authErr)
+		}
+	} else {
+		r.authCircuit.RecordSuccess()
 	}
 	return prs
 }

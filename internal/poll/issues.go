@@ -118,20 +118,23 @@ func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	issues, err := f.fetchAssigned()
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		if github.IsAuthError(err) {
+		switch {
+		case github.IsAuthError(err):
 			f.authCircuit.RecordFailure(err)
 			if f.authCircuit.Open() {
 				return AuthCircuitBackoff
 			}
-			f.logger.Warn("issues.fetch", "err", err)
-		} else if github.IsTransientError(err) {
+			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
+			// flood before the circuit's single trip line.
+			f.logger.Info("issues.fetch", "err", err)
+		case github.IsTransientError(err):
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
 			} else {
 				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
 			}
-		} else {
+		default:
 			f.transientFetchFails = 0
 			f.logger.Warn("issues.fetch", "err", err)
 		}
@@ -152,19 +155,21 @@ func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		if github.IsAuthError(err) {
+		switch {
+		case github.IsAuthError(err):
 			f.authCircuit.RecordFailure(err)
 			if !f.authCircuit.Open() {
-				f.logger.Warn("issues.fetch", "err", err)
+				// Pre-trip: Info, not Warn (see Poll's auth branch).
+				f.logger.Info("issues.fetch", "err", err)
 			}
-		} else if github.IsTransientError(err) {
+		case github.IsTransientError(err):
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
 			} else {
 				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
 			}
-		} else {
+		default:
 			f.transientFetchFails = 0
 			f.logger.Warn("issues.fetch", "err", err)
 		}

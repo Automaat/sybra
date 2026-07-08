@@ -563,7 +563,7 @@ func TestIssuesFetcher_Poll_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	for i := 0; i < AuthFailureThreshold-1; i++ {
+	for i := range AuthFailureThreshold - 1 {
 		env.fetcher.Poll(ctx)
 		if env.fetcher.AuthCircuitOpen() {
 			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, AuthFailureThreshold)
