@@ -1,6 +1,7 @@
 package agentorch
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -319,7 +320,10 @@ func TestAutoAssignProject(t *testing.T) {
 		t.Parallel()
 		tm, ps := newStores(t)
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
-		got := o.AutoAssignProject(task.Task{ID: "t1", ProjectID: "owner/repo"})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1", ProjectID: "owner/repo"})
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
 		if got.ProjectID != "owner/repo" {
 			t.Fatalf("ProjectID = %q, want unchanged", got.ProjectID)
 		}
@@ -336,7 +340,10 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("task Create: %v", err)
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
-		got := o.AutoAssignProject(created)
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
 		if got.ProjectID != "owner/solo" {
 			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/solo")
 		}
@@ -356,7 +363,10 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("task Create: %v", err)
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
-		got := o.AutoAssignProject(created)
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty (ambiguous, no default configured)", got.ProjectID)
 		}
@@ -376,7 +386,10 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("task Create: %v", err)
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/two"}})
-		got := o.AutoAssignProject(created)
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
 		if got.ProjectID != "owner/two" {
 			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/two")
 		}
@@ -396,9 +409,39 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("task Create: %v", err)
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/typo"}})
-		got := o.AutoAssignProject(created)
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty (default_project_id not registered)", got.ProjectID)
+		}
+	})
+
+	t.Run("project list error is returned", func(t *testing.T) {
+		t.Parallel()
+		projectDir := t.TempDir()
+		tm, err := task.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("task.NewStore: %v", err)
+		}
+		ps, err := project.NewStore(projectDir, t.TempDir())
+		if err != nil {
+			t.Fatalf("project.NewStore: %v", err)
+		}
+		if err := os.RemoveAll(projectDir); err != nil {
+			t.Fatalf("RemoveAll(projectDir): %v", err)
+		}
+		if err := os.WriteFile(projectDir, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("WriteFile(projectDir): %v", err)
+		}
+		o := New(task.NewManager(tm, nil), ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1"})
+		if err == nil {
+			t.Fatal("AutoAssignProject() err = nil, want project list error")
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
 		}
 	})
 }

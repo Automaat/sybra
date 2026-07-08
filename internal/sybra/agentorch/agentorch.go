@@ -368,7 +368,11 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 	if skipWT {
 		return t, dir, nil
 	}
-	t = o.AutoAssignProject(t)
+	var assignErr error
+	t, assignErr = o.AutoAssignProject(t)
+	if assignErr != nil {
+		return t, "", assignErr
+	}
 	if t.ProjectID == "" {
 		return t, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 	}
@@ -746,18 +750,19 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 // notably when the task already has a project, or when default_project_id
 // is unset and more than one project is registered (ambiguous, needs either
 // config or a human to assign one).
-func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
+func (o *Orchestrator) AutoAssignProject(t task.Task) (task.Task, error) {
 	if t.ProjectID != "" || o.projects == nil {
-		return t
+		return t, nil
 	}
 	projects, err := o.projects.List()
 	if err != nil {
-		return t
+		o.logger.Warn("auto-assign-project.list-projects", "task_id", t.ID, "err", err)
+		return t, fmt.Errorf("list registered projects for auto-assignment: %w", err)
 	}
 	projectID := ""
 	if def := o.defaultProjectID(); def != "" {
-		for _, p := range projects {
-			if p.ID == def {
+		for i := range projects {
+			if projects[i].ID == def {
 				projectID = def
 				break
 			}
@@ -767,7 +772,7 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
 		projectID = projects[0].ID
 	}
 	if projectID == "" {
-		return t
+		return t, nil
 	}
 	t.ProjectID = projectID
 	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
@@ -775,7 +780,7 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) task.Task {
 	} else {
 		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
 	}
-	return t
+	return t, nil
 }
 
 // defaultProjectID returns the configured agent.default_project_id, or ""
@@ -809,7 +814,10 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, t.AgentMode, researchDir, o.cfg)
 	if !skipWT {
-		t = o.AutoAssignProject(t)
+		t, err = o.AutoAssignProject(t)
+		if err != nil {
+			return err
+		}
 		if t.ProjectID == "" {
 			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 		}
