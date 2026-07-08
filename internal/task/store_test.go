@@ -658,6 +658,9 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	if got.Status != StatusInProgress {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
 	}
+	if !got.StatusChangedAt.After(created.StatusChangedAt) {
+		t.Fatalf("StatusChangedAt = %s, want after create timestamp %s", got.StatusChangedAt, created.StatusChangedAt)
+	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
 	}

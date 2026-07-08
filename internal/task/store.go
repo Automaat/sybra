@@ -1563,10 +1563,13 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	if status != nil {
 		oldStatus := t.Status
 		t.Status = *status
+		now := time.Now().UTC()
+		if oldStatus != t.Status {
+			t.StatusChangedAt = now
+		}
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
 		if !wasTerminal && isTerminal {
-			now := time.Now().UTC()
 			t.ClosedAt = &now
 		} else if wasTerminal && !isTerminal {
 			t.ClosedAt = nil
