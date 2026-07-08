@@ -119,21 +119,51 @@ describe('TaskCard', () => {
   it('calls onclick handler when clicked', async () => {
     const handler = vi.fn()
     render(TaskCard, { props: { task: mockTask, onclick: handler } })
-    await fireEvent.click(screen.getByRole('button'))
+    await fireEvent.click(screen.getByText('Test Task'))
     expect(handler).toHaveBeenCalledOnce()
   })
 
-  it('does not render the move menu without onstatuschange', () => {
+  it('always renders the task actions menu trigger', () => {
     render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
-    expect(screen.queryByLabelText('Move task')).toBeNull()
+    expect(screen.getByLabelText('Task actions')).toBeDefined()
   })
 
-  it('opens the move menu and changes status via the picker', async () => {
-    const onstatuschange = vi.fn()
-    render(TaskCard, { props: { task: mockTask, onclick: () => {}, onstatuschange } })
-    await fireEvent.click(screen.getByLabelText('Move task'))
-    await fireEvent.click(screen.getByText('In Progress'))
-    expect(onstatuschange).toHaveBeenCalledWith('in-progress')
+  it('copies the task ID to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
+    await fireEvent.click(screen.getByLabelText('Task actions'))
+    await fireEvent.click(screen.getByText('Copy task ID'))
+    expect(writeText).toHaveBeenCalledWith('task-1')
+  })
+
+  it('only offers issue/PR copy actions when the task has them', async () => {
+    render(TaskCard, { props: { task: mockTask, onclick: () => {} } })
+    await fireEvent.click(screen.getByLabelText('Task actions'))
+    expect(screen.queryByText('Copy issue link')).toBeNull()
+    expect(screen.queryByText('Copy PR link')).toBeNull()
+  })
+
+  it('offers copy issue/PR links when present', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    render(TaskCard, {
+      props: {
+        task: {
+          ...mockTask,
+          issue: 'https://github.com/owner/repo/issues/7',
+          prNumber: 42,
+          projectId: 'owner/repo',
+        } as Task,
+        onclick: () => {},
+      },
+    })
+    await fireEvent.click(screen.getByLabelText('Task actions'))
+    await fireEvent.click(screen.getByText('Copy issue link'))
+    expect(writeText).toHaveBeenCalledWith('https://github.com/owner/repo/issues/7')
+    await fireEvent.click(screen.getByLabelText('Task actions'))
+    await fireEvent.click(screen.getByText('Copy PR link'))
+    expect(writeText).toHaveBeenCalledWith('https://github.com/owner/repo/pull/42')
   })
 
   it('shows the canonical Plan Review badge for plan-review status', () => {
