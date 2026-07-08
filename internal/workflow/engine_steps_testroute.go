@@ -1770,6 +1770,13 @@ var fingerprintNumberRe = regexp.MustCompile(`-?\d+(?:\.\d+)?%?`)
 // surrounding wording — statuses, outcome names, field names.
 var fingerprintEnumTokenRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+\b`)
 
+// fingerprintPathTokenRe captures endpoint/route-shaped literals such as
+// "/login" or "/api/export". These are often the stable part of a test report
+// when prose drifts between runner attempts.
+var fingerprintPathTokenRe = regexp.MustCompile(`/(?:[A-Za-z0-9][A-Za-z0-9._~-]*)(?:/[A-Za-z0-9][A-Za-z0-9._~-]*)*`)
+
+var fingerprintFilePathTokenRe = regexp.MustCompile(`(?i)\.(?:go|ts|tsx|js|jsx|svelte)$`)
+
 // fingerprintMinTokens is the minimum count of discriminating tokens
 // (quoted strings, file:line citations, numbers, enum-like identifiers)
 // required before the token-based fingerprint is trusted. Below this, the
@@ -1785,12 +1792,13 @@ const fingerprintMinTokens = 2
 // hash the same.
 //
 // The report is reduced to its semantically load-bearing tokens — quoted
-// error/value strings, file:line citations, numeric counts/statuses, and
-// enum-like identifiers — sorted for order-independence and hashed. Prose
-// glue words carry no signal for this purpose and are dropped. When a
-// report is too sparse to yield enough discriminating tokens (short or
-// unusually terse reports), this falls back to the original lowercased,
-// whitespace-normalized full-prose hash so a fingerprint is still produced.
+// error/value strings, endpoint paths, file:line citations, numeric
+// counts/statuses, and enum-like identifiers — sorted for order-independence
+// and hashed. Prose glue words carry no signal for this purpose and are
+// dropped. When a report is too sparse or contains only boilerplate-shaped
+// tokens (for example, a shared file:line and HTTP 500/200 pair), this falls
+// back to the original lowercased, whitespace-normalized full-prose hash so
+// unrelated bugs do not collapse into the same recurrence class.
 //
 // NOTE: this is NOT the same hash as the original exact-prose fingerprint.
 // Fingerprints persisted by older runs (AgentRunInfo.TestFailureFingerprint)
@@ -1807,10 +1815,17 @@ func testFailureFingerprint(report string) string {
 
 func fingerprintNormalizedBasis(report string) string {
 	var tokens []string
-	tokens = append(tokens, fingerprintQuotedRe.FindAllString(report, -1)...)
+	strongTokens := 0
+	quoted := fingerprintQuotedRe.FindAllString(report, -1)
+	paths := fingerprintPathTokenRe.FindAllString(report, -1)
+	enums := fingerprintEnumTokenRe.FindAllString(report, -1)
+
+	tokens = append(tokens, quoted...)
+	tokens = append(tokens, paths...)
 	tokens = append(tokens, fileLineCitationRe.FindAllString(report, -1)...)
 	tokens = append(tokens, fingerprintNumberRe.FindAllString(report, -1)...)
-	tokens = append(tokens, fingerprintEnumTokenRe.FindAllString(report, -1)...)
+	tokens = append(tokens, enums...)
+	strongTokens += len(quoted) + len(paths)
 
 	normalized := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
@@ -1819,7 +1834,13 @@ func fingerprintNormalizedBasis(report string) string {
 			normalized = append(normalized, tok)
 		}
 	}
-	if len(normalized) < fingerprintMinTokens {
+	for _, tok := range enums {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" && !fingerprintFilePathTokenRe.MatchString(tok) {
+			strongTokens++
+		}
+	}
+	if len(normalized) < fingerprintMinTokens || strongTokens == 0 {
 		return strings.Join(strings.Fields(strings.ToLower(report)), " ")
 	}
 	sort.Strings(normalized)
@@ -2162,12 +2183,12 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 				recurring = []string{cf}
 			}
 		}
-		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
-			return StepOutput{}, err
-		}
 		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
+		}
+		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+			e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 		}
 		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "duplicate failure"}, nil
@@ -2175,14 +2196,14 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 
 	if attempts >= limit {
 		if recurring := recurringProductBugFingerprints(t); len(recurring) > 0 {
-			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
-				return StepOutput{}, err
-			}
 			reason := fmt.Sprintf(
 				"suspected acceptance-criteria conflict: %d recurring product-bug failure class(es) after %d test attempts (cap %d) — human spec decision needed; see ## Test Failures",
 				len(recurring), attempts, limit)
 			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 				return StepOutput{}, err
+			}
+			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+				e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 			}
 			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil

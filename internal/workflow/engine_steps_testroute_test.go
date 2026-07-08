@@ -1369,6 +1369,30 @@ func TestTestFailureFingerprint_DistinguishesDifferentEvidence(t *testing.T) {
 	}
 }
 
+func TestTestFailureFingerprint_DistinguishesSharedBoilerplateFileCitation(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /foo\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /bar\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports that share only boilerplate file/status evidence:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_DistinguishesSharedStatusPairWithoutStrongTokens(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nThe login form rejects valid credentials.\nActual: 500\nExpected: 200"
+	b := "## Test Failures\n\nThe dashboard export crashes during download.\nActual: 500\nExpected: 200"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports that share only status numbers:\na=%q\nb=%q", a, b)
+	}
+}
+
 // TestTestFailureFingerprint_FallsBackOnSparseReport guards the fallback path:
 // a report too short to yield enough discriminating tokens must still hash
 // deterministically and distinguish from an unrelated sparse report, rather
@@ -2490,6 +2514,50 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 	}
 	if !strings.Contains(ti.Body, fp) {
 		t.Errorf("body = %q, want the recurring fingerprint referenced", ti.Body)
+	}
+}
+
+func TestRouteTestResult_DuplicateFailureEscalatesWhenSpecDecisionAppendFails(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.appendErr = errors.New("append unavailable")
+	now := time.Now().UTC()
+	fp := "same-repro"
+	tasks.Put(TaskInfo{
+		ID:     "t-dup-append-fails",
+		Status: "testing",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+			{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+			{AgentID: "second", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		},
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+		},
+	}
+
+	out, err := e.execRouteTestResult("t-dup-append-fails", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-append-fails"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "duplicate failure" {
+		t.Errorf("output = %q, want duplicate failure", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t-dup-append-fails")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-dup-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
 	}
 }
 
