@@ -1,0 +1,267 @@
+package sybra
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
+)
+
+// fakeAgentLauncher is a minimal workflow.AgentLauncher used to make
+// run_agent steps deterministic in tests: StartAgent succeeds or fails per
+// startErr without spawning a real provider CLI.
+type fakeAgentLauncher struct {
+	startErr   error
+	startCalls int
+}
+
+func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment) (string, string, string, error) {
+	f.startCalls++
+	if f.startErr != nil {
+		return "", "", "", f.startErr
+	}
+	return "fake-agent-id", "", "", nil
+}
+func (f *fakeAgentLauncher) HasRunningAgent(string) bool                       { return false }
+func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool   { return false }
+func (f *fakeAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
+	return "", false
+}
+func (f *fakeAgentLauncher) StopAgentsForTask(string, string) {}
+func (f *fakeAgentLauncher) SendPrompt(string, string) error  { return nil }
+func (f *fakeAgentLauncher) DefaultProvider() string          { return "" }
+func (f *fakeAgentLauncher) ProviderRateLimited(string) bool  { return false }
+func (f *fakeAgentLauncher) ProviderCanFailover(string) bool  { return false }
+func (f *fakeAgentLauncher) ProviderHealthy(string) bool      { return true }
+
+// setupDispatchTestService builds a TaskService whose workflow engine is
+// wired to a fakeAgentLauncher instead of the real agent.Manager-backed
+// adapter, so run_agent steps succeed/fail deterministically without a real
+// provider CLI on PATH.
+func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskService, *App) {
+	t.Helper()
+	svc, a := setupTaskService(t)
+	ta := &taskAdapter{tasks: a.tasks}
+	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
+	return svc, a
+}
+
+func mustWorkflowStore(t *testing.T) *workflow.Store {
+	t.Helper()
+	store, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(store); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
+	t.Helper()
+	tk, err := a.tasks.Create("fix the thing", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := task.Update{Status: task.Ptr(task.StatusHumanRequired)}
+	if prNumber > 0 {
+		update.PRNumber = task.Ptr(prNumber)
+	}
+	updated, err := a.tasks.Update(tk.ID, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
+}
+
+func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
+	for _, target := range []string{"in-progress", "testing", "ready-pr"} {
+		t.Run(target, func(t *testing.T) {
+			launcher := &fakeAgentLauncher{}
+			svc, a := setupDispatchTestService(t, launcher)
+			tk := newHumanRequiredTask(t, a, 0)
+
+			got, err := svc.DispatchFromHumanRequired(tk.ID, target, "looks fine, retry")
+			if err != nil {
+				t.Fatalf("DispatchFromHumanRequired: %v", err)
+			}
+			if string(got.Status) != target {
+				t.Fatalf("status = %q, want %q", got.Status, target)
+			}
+			if got.StatusReason != "looks fine, retry" {
+				t.Fatalf("status_reason = %q, want the operator reason", got.StatusReason)
+			}
+			if got.Workflow == nil {
+				t.Fatal("expected a workflow to be attached")
+			}
+			if launcher.startCalls == 0 {
+				t.Fatal("expected the matched workflow to start an agent")
+			}
+		})
+	}
+}
+
+func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 42)
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, "in-review", "PR exists, resume monitoring")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("in-review must not dispatch a workflow, got %d agent starts", launcher.startCalls)
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsNonHumanRequiredSource(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk, err := a.tasks.Create("normal task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
+		t.Fatal("expected error dispatching a non-human-required task")
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsEmptyReason(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	for _, reason := range []string{"", "   ", "\t\n"} {
+		if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", reason); err == nil {
+			t.Fatalf("expected error dispatching with reason %q", reason)
+		}
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("expected no agent starts on rejected reason, got %d", launcher.startCalls)
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsUnknownTarget(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "done", "reason"); err == nil {
+		t.Fatal("expected error dispatching to an unsupported target")
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsInReviewWithoutPR(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-review", "reason"); err == nil {
+		t.Fatal("expected error dispatching in-review without a linked PR")
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("expected no agent starts, got %d", launcher.startCalls)
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsRunningAgent(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	// agent.Manager.Run registers the agent in its live registry synchronously
+	// before spawning the (async, here doomed-to-fail) headless subprocess, so
+	// HasRunningAgentForTask observes it as running immediately.
+	if _, err := a.agents.Run(agent.RunConfig{
+		TaskID:   tk.ID,
+		Mode:     "headless",
+		Prompt:   "test",
+		Dir:      t.TempDir(),
+		Provider: "claude",
+		Model:    "sonnet",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
+		t.Fatal("expected error dispatching while an agent is running")
+	}
+}
+
+func TestDispatchFromHumanRequired_RejectsNonTerminalWorkflow(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	wf := &workflow.Execution{WorkflowID: "simple-task-implement", CurrentStep: "implement", State: workflow.ExecWaiting}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
+		t.Fatal("expected error dispatching while a workflow is still active")
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("expected no agent starts, got %d", launcher.startCalls)
+	}
+}
+
+func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
+	// An empty workflow store never matches any trigger, so DispatchEvent
+	// returns ("", nil) and the handler must revert to human-required.
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupTaskService(t)
+	ta := &taskAdapter{tasks: a.tasks}
+	emptyStore, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
+	if err == nil {
+		t.Fatal("expected an error when no workflow matches")
+	}
+
+	got, getErr := a.tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "retry please") {
+		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
+
+func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
+	launcher := &fakeAgentLauncher{startErr: workflow.ErrWorkflowAlreadyActive}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+
+	_, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
+	if err == nil {
+		t.Fatal("expected an error when the agent fails to start")
+	}
+
+	got, getErr := a.tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "retry please") {
+		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
