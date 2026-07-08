@@ -1752,6 +1752,31 @@ func TestCloneWorkflowDoesNotAliasParallelInflight(t *testing.T) {
 	}
 }
 
+// TestCloneWorkflowDoesNotAliasStepCounts guards against cloneWorkflow
+// sharing the StepCounts map (persistent replan/retry counters, see
+// workflow.Execution.StepCounts) between the cache entry and the
+// caller-visible clone — the same aliasing class as ParallelInflight above.
+func TestCloneWorkflowDoesNotAliasStepCounts(t *testing.T) {
+	t.Parallel()
+	orig := workflow.Execution{
+		WorkflowID:  "wf",
+		CurrentStep: "start_replan",
+		State:       workflow.ExecRunning,
+		StepCounts:  map[string]int{"start_replan": 2},
+	}
+
+	clone := cloneWorkflow(orig)
+
+	clone.StepCounts["start_replan"] = 99
+	clone.StepCounts["other"] = 1
+	if orig.StepCounts["start_replan"] != 2 {
+		t.Errorf("clone mutation leaked to original: start_replan=%d", orig.StepCounts["start_replan"])
+	}
+	if _, ok := orig.StepCounts["other"]; ok {
+		t.Error("clone added key 'other' that leaked to original StepCounts map")
+	}
+}
+
 // TestStoreListMutateClonedParallelInflightDoesNotAffectCache exercises the
 // real path: List() returns clones whose ParallelInflight is independent
 // of the Store's cache. Mutating a returned clone must not change what a
