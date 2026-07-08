@@ -25,15 +25,9 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-a.dispatchNudge:
-			// dispatchPass ultimately reaches agent.Manager.Run (via
-			// maybeStartOrchestrator -> OrchestratorService.StartOrchestrator),
-			// a Wails-bound method the frontend also invokes directly with no
-			// arguments, and whose signature is shared by dozens of unrelated
-			// dispatch call sites. Threading ctx through it would be a broad,
-			// unrelated API change rather than a targeted cancellation fix.
-			a.dispatchPass() //nolint:contextcheck // Wails-bound StartOrchestrator + Manager.Run boundary, see comment above
+			a.dispatchPass(ctx)
 		case <-dispatch.C:
-			a.dispatchPass() //nolint:contextcheck // Wails-bound StartOrchestrator + Manager.Run boundary, see comment above
+			a.dispatchPass(ctx)
 		case <-maintenance.C:
 			a.maintenancePass(ctx)
 		}
@@ -43,8 +37,8 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 // dispatchPass runs the cheap scheduling actions that gate a ready task. Safe to
 // run often: maybeStartOrchestrator no-ops when already running, and
 // releaseUnblockedChildren only acts on tasks whose dependencies merged.
-func (a *App) dispatchPass() {
-	a.maybeStartOrchestrator()
+func (a *App) dispatchPass(ctx context.Context) {
+	a.maybeStartOrchestrator(ctx)
 	a.releaseUnblockedChildren()
 }
 
@@ -101,7 +95,7 @@ func (a *App) maintenanceInterval() time.Duration {
 	return time.Duration(s) * time.Second
 }
 
-func (a *App) maybeStartOrchestrator() {
+func (a *App) maybeStartOrchestrator(ctx context.Context) {
 	if a.orchSvc.IsOrchestratorRunning() {
 		return
 	}
@@ -130,7 +124,7 @@ func (a *App) maybeStartOrchestrator() {
 	}
 
 	a.logger.Info("orchestrator.auto-start", "reason", "active tasks detected")
-	if err := a.orchSvc.StartOrchestrator(); err != nil {
+	if err := a.orchSvc.StartOrchestratorContext(ctx); err != nil {
 		a.logger.Error("orchestrator.auto-start.failed", "err", err)
 	}
 }

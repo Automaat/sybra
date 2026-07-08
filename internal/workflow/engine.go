@@ -87,6 +87,11 @@ type TaskProvider interface {
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	AppendTaskBody(id, content string) error
+	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
+	// step to archive/strip a stale "## Test Failures" section before
+	// appending a new one, so at most one such heading is ever live in the
+	// body (see stripTestFailuresSections).
+	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the

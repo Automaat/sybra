@@ -148,6 +148,11 @@ func (a *taskAdapter) AppendTaskBody(id, content string) error {
 	return err
 }
 
+func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
+	_, err := a.tasks.Update(id, task.Update{Body: &body})
+	return err
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err

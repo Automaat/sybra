@@ -31,19 +31,23 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
+	return m.RunContext(m.ctx, cfg)
+}
+
+func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error) {
 	if cfg.Mode == "headless" {
-		if err := m.jitterDispatch(); err != nil {
+		if err := m.jitterDispatchContext(ctx); err != nil {
 			return nil, err
 		}
 	}
 
-	cfg, prov, err := m.prepareRunConfig(cfg)
+	cfg, prov, err := m.prepareRunConfig(cfg) //nolint:contextcheck // provider gating emits via manager-owned app lifecycle, not per-run ctx
 	if err != nil {
 		return nil, err
 	}
 
 	id := uuid.NewString()[:8]
-	ctx, cancel := context.WithCancel(m.ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
@@ -53,7 +57,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, err
 	}
 
-	metrics.AgentStarted(a.Provider, a.Mode)
+	metrics.AgentStarted(a.Provider, a.Mode) //nolint:contextcheck // metrics are process-global accounting, not tied to per-run ctx
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
@@ -69,6 +73,10 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 // gate in the same tick. Returns the context error if the manager shuts down
 // mid-sleep, so the caller aborts the dispatch instead of racing shutdown.
 func (m *Manager) jitterDispatch() error {
+	return m.jitterDispatchContext(m.ctx)
+}
+
+func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	m.mu.RLock()
 	ms := m.dispatchJitterMs
 	m.mu.RUnlock()
@@ -84,8 +92,8 @@ func (m *Manager) jitterDispatch() error {
 	select {
 	case <-time.After(d):
 		return nil
-	case <-m.ctx.Done():
-		return m.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
