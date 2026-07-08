@@ -36,6 +36,13 @@ type Execution struct {
 	// Persisted so a process restart can resume the parent step rather than
 	// stranding half-completed forks.
 	ParallelInflight map[string]*ParallelChildren `yaml:"parallel_inflight,omitempty" json:"parallelInflight,omitempty"`
+	// StepCounts tracks, per step ID, how many times RecordStep has recorded
+	// that step — independent of StepHistory, which RecordStep trims to
+	// maxStepHistory. Replan/retry budgets (CountStep) read from this map so
+	// history eviction can never silently reset a cap. ClearStepRecords resets
+	// a step's count deliberately, for the re-arm case (a fresh attempt cycle
+	// that should not inherit a prior cycle's budget).
+	StepCounts map[string]int `yaml:"step_counts,omitempty" json:"stepCounts,omitempty"`
 }
 
 // ParallelChildren is the in-flight bookkeeping for one `parallel` parent.
@@ -67,6 +74,9 @@ func (e *Execution) Clone() *Execution {
 	}
 	if e.Variables != nil {
 		cloned.Variables = maps.Clone(e.Variables)
+	}
+	if e.StepCounts != nil {
+		cloned.StepCounts = maps.Clone(e.StepCounts)
 	}
 	if e.ParallelInflight != nil {
 		cloned.ParallelInflight = make(map[string]*ParallelChildren, len(e.ParallelInflight))
@@ -134,12 +144,30 @@ func (e *Execution) SetVar(key, value string) {
 	e.Variables[key] = value
 }
 
-// RecordStep appends a step record and trims history to maxStepHistory.
+// RecordStep appends a step record, trims history to maxStepHistory, and
+// increments the step's persistent count (see StepCounts) so trimming never
+// affects CountStep. On the first call for an Execution whose StepCounts is
+// still nil (a task loaded from disk before this field existed, or a
+// hand-built fixture), the map is seeded by counting whatever StepHistory
+// already holds — a one-time migration of the still-live (unevicted) window
+// — before the new record is added.
 func (e *Execution) RecordStep(r StepRecord) {
+	if e.StepCounts == nil {
+		e.StepCounts = stepCountsFromHistory(e.StepHistory)
+	}
 	e.StepHistory = append(e.StepHistory, r)
 	if len(e.StepHistory) > maxStepHistory {
 		e.StepHistory = e.StepHistory[len(e.StepHistory)-maxStepHistory:]
 	}
+	e.StepCounts[r.StepID]++
+}
+
+func stepCountsFromHistory(history []StepRecord) map[string]int {
+	counts := make(map[string]int, len(history))
+	for i := range history {
+		counts[history[i].StepID]++
+	}
+	return counts
 }
 
 // LastRecord returns the most recent step record, or nil.
@@ -150,8 +178,17 @@ func (e *Execution) LastRecord() *StepRecord {
 	return &e.StepHistory[len(e.StepHistory)-1]
 }
 
-// CountStep returns the number of records for a given step ID.
+// CountStep returns the number of times a given step ID has been recorded.
+// Prefers the persistent StepCounts map (unaffected by StepHistory trimming);
+// falls back to scanning StepHistory when StepCounts has never been
+// initialized (RecordStep seeds it lazily — see there) or holds no entry for
+// this step, e.g. right after ClearStepRecords.
 func (e *Execution) CountStep(stepID string) int {
+	if e.StepCounts != nil {
+		if n, ok := e.StepCounts[stepID]; ok {
+			return n
+		}
+	}
 	n := 0
 	for i := range e.StepHistory {
 		if e.StepHistory[i].StepID == stepID {
@@ -161,21 +198,22 @@ func (e *Execution) CountStep(stepID string) int {
 	return n
 }
 
-// ClearStepRecords removes all history records for a given step ID, resetting
-// CountStep(stepID) to 0. Used when a step is deliberately re-armed for a
-// fresh attempt cycle (e.g. route-level auto-retry) so its own in-step
-// max_retries budget is not seen as already exhausted by prior cycles.
+// ClearStepRecords removes all history records for a given step ID and resets
+// its persistent count (see StepCounts), resetting CountStep(stepID) to 0.
+// Used when a step is deliberately re-armed for a fresh attempt cycle (e.g.
+// route-level auto-retry) so its own in-step max_retries budget is not seen
+// as already exhausted by prior cycles.
 func (e *Execution) ClearStepRecords(stepID string) {
-	if len(e.StepHistory) == 0 {
-		return
-	}
-	kept := e.StepHistory[:0]
-	for i := range e.StepHistory {
-		if e.StepHistory[i].StepID != stepID {
-			kept = append(kept, e.StepHistory[i])
+	if len(e.StepHistory) > 0 {
+		kept := e.StepHistory[:0]
+		for i := range e.StepHistory {
+			if e.StepHistory[i].StepID != stepID {
+				kept = append(kept, e.StepHistory[i])
+			}
 		}
+		e.StepHistory = kept
 	}
-	e.StepHistory = kept
+	delete(e.StepCounts, stepID)
 }
 
 // RecordForStep returns the latest record for a given step ID, or nil.
