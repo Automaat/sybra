@@ -11,9 +11,6 @@ import * as json$0 from "../../../../../encoding/json/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as limits$0 from "../limits/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 export class Agent {
     "id": string;
@@ -33,8 +30,8 @@ export class Agent {
      * raw count alongside the estimated USD equivalent persisted on task runs.
      */
     "premiumRequests"?: number;
-    "startedAt": time$0.Time;
-    "lastEventAt": time$0.Time;
+    "startedAt": string;
+    "lastEventAt": string;
     "logPath"?: string;
     "external": boolean;
     "pid"?: number;
@@ -100,10 +97,10 @@ export class Agent {
             this["costUsd"] = 0;
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("lastEventAt" in $$source)) {
-            this["lastEventAt"] = null;
+            this["lastEventAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("external" in $$source)) {
             this["external"] = false;
@@ -145,7 +142,7 @@ export class ConvoEvent {
     "premiumRequests"?: number;
     "limitSnapshot"?: limits$0.Snapshot | null;
     "isPartial"?: boolean;
-    "timestamp": time$0.Time;
+    "timestamp": string;
     "raw"?: json$0.RawMessage;
 
     /**
@@ -161,7 +158,7 @@ export class ConvoEvent {
             this["type"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = null;
+            this["timestamp"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -249,7 +246,7 @@ export class StreamEvent {
      */
     "premium_requests"?: number;
     "subtype"?: string;
-    "timestamp": time$0.Time;
+    "timestamp": string;
 
     /**
      * ErrorType and ErrorStatus carry structured fields from the Anthropic error
@@ -289,7 +286,7 @@ export class StreamEvent {
             this["type"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = null;
+            this["timestamp"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);

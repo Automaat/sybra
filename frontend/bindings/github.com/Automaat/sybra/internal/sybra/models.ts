@@ -11,9 +11,6 @@ import * as config$0 from "../config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as monitor$0 from "../monitor/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AppSettings is the shape of data exchanged with the frontend for the config view.
@@ -303,8 +300,8 @@ export class LoggingSettings {
  */
 export class LoopAgentRun {
     "agentId": string;
-    "startedAt": time$0.Time;
-    "finishedAt": time$0.Time;
+    "startedAt": string;
+    "finishedAt": string;
     "costUsd": number;
     "state": string;
     "durationS": number;
@@ -315,10 +312,10 @@ export class LoopAgentRun {
             this["agentId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("finishedAt" in $$source)) {
-            this["finishedAt"] = null;
+            this["finishedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;

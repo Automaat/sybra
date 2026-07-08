@@ -154,7 +154,7 @@ func TestSendMessage_HotSwapsPersistentClaudeToPerTurnPeerAtTurnBoundary(t *test
 	a.cancel = cancel
 	go m.runConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "claude"})
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 	if a.GetProvider() != "claude" {
 		t.Fatalf("expected first turn to run on claude, got %s", a.GetProvider())
 	}
@@ -169,8 +169,8 @@ func TestSendMessage_HotSwapsPersistentClaudeToPerTurnPeerAtTurnBoundary(t *test
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	waitForAgentProvider(t, a, "copilot", 3*time.Second)
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentProvider(t, a, "copilot", testStateWaitTimeout)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	if a.GetSessionID() != "cop-fake" {
 		t.Errorf("expected copilot's session id captured after handoff, got %q", a.GetSessionID())
@@ -245,7 +245,7 @@ func TestSendMessage_NoPeerBlocksWithoutWritingToCappedClaude(t *testing.T) {
 	a.cancel = cancel
 	go m.runConversational(ctx, a, RunConfig{Prompt: "hi", Provider: "claude"})
 
-	waitForAgentState(t, a, StatePaused, 3*time.Second)
+	waitForAgentState(t, a, StatePaused, testStateWaitTimeout)
 
 	// Claude caps; no healthy per-turn peer at all.
 	m.SetHealthGate(&fakeGate{
