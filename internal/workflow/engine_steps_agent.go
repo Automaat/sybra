@@ -267,6 +267,9 @@ func (e *Engine) selectABVariant(ctx abtest.SelectionContext) (AgentAssignment, 
 	}
 	a, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, providerAllowed, evalPassed)
 	if err != nil || !ok {
+		if err == nil && !ok {
+			e.reportProviderShutout(ctx, eligibility, evalPassed)
+		}
 		return AgentAssignment{}, ok, err
 	}
 	e.reportProviderDemotion(ctx, a, eligibility, evalPassed)
@@ -345,6 +348,35 @@ func (e *Engine) reportProviderDemotion(ctx abtest.SelectionContext, actual abte
 	e.demotionThrottle.Log(e.logger, "workflow.ab.provider_demoted", key, errors.New(msg),
 		"task_id", ctx.TaskID, "workflow_id", ctx.WorkflowID, "role", ctx.Role, "step_id", ctx.StepID,
 		"wanted_provider", wanted.Provider, "selected_provider", actual.Provider, "reason", reason)
+}
+
+// reportProviderShutout detects the silent A/B fallback: filtered selection
+// yielded no assignment (ok=false, err=nil), yet dropping the provider filter
+// would have matched an experiment. That means provider eligibility filtering
+// (CLI missing, unhealthy, rate-limited) excluded *every* variant, so the whole
+// experiment degraded to normal (non-A/B) dispatch rather than a different
+// variant winning (that partial case is reportProviderDemotion's job). Without
+// this signal the total shutout is indistinguishable from A/B being disabled or
+// no experiment matching the role. Throttled per routing context + experiment +
+// provider + reason so a sustained outage does not emit one ERROR per task.
+func (e *Engine) reportProviderShutout(ctx abtest.SelectionContext, eligibility map[string]providerEligibilityStatus, evalPassed abtest.EvalPassed) {
+	wanted, ok, err := abtest.SelectEligibleForContext(e.abTesting, ctx, nil, evalPassed)
+	if err != nil || !ok {
+		return
+	}
+	status, found := eligibility[wanted.Provider]
+	if !found {
+		status = e.providerEligibility(wanted.Provider)
+	}
+	reason := status.reason
+	if reason == "" {
+		reason = "unknown"
+	}
+	key := strings.Join([]string{ctx.WorkflowID, ctx.Role, ctx.StepID, wanted.ExperimentID, wanted.Provider, reason}, "|")
+	msg := fmt.Sprintf("experiment=%s wanted=%s reason=%s fell back to non-A/B dispatch", wanted.ExperimentID, wanted.Provider, reason)
+	e.demotionThrottle.Log(e.logger, "workflow.ab.provider_shutout", key, errors.New(msg),
+		"task_id", ctx.TaskID, "workflow_id", ctx.WorkflowID, "role", ctx.Role, "step_id", ctx.StepID,
+		"experiment_id", wanted.ExperimentID, "wanted_provider", wanted.Provider, "reason", reason)
 }
 
 func (e *Engine) renderAssignedPrompt(taskID string, step *Step, ctx TemplateContext, assignment AgentAssignment, steerLog string) (string, error) {

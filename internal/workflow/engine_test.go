@@ -3470,6 +3470,74 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	}
 }
 
+// TestExecRunAgent_ProviderShutoutEmitsSignal proves the single-provider
+// fallback is observable: when provider filtering excludes *every* variant of
+// an experiment (all variants share one unhealthy provider), the experiment
+// degrades silently to non-A/B dispatch — but that total shutout emits a
+// distinct throttled signal so an operator can tell it apart from A/B being
+// disabled or no experiment matching the role.
+func TestExecRunAgent_ProviderShutoutEmitsSignal(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	// Every variant is on codex, and codex is rate-limited — provider
+	// filtering zeroes out the whole experiment, forcing the fallback.
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, logger)
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-a", Provider: "codex", Model: "gpt-5.5", Weight: 1},
+				{ID: "codex-b", Provider: "codex", Model: "gpt-5.5-mini", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	// Must not error the whole dispatch — falls back to normal selection.
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var shutouts []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_shutout" {
+			shutouts = append(shutouts, r)
+		}
+	}
+	if len(shutouts) != 1 {
+		t.Fatalf("got %d shutout records, want 1: %+v", len(shutouts), shutouts)
+	}
+	first := shutouts[0]
+	if first.Level != slog.LevelError {
+		t.Fatalf("shutout level = %v, want Error", first.Level)
+	}
+	if got := recordAttr(first, "wanted_provider"); got != "codex" {
+		t.Fatalf("wanted_provider = %q, want codex", got)
+	}
+	if got := recordAttr(first, "reason"); got != "rate_limited" {
+		t.Fatalf("reason = %q, want rate_limited", got)
+	}
+	if got := recordAttr(first, "experiment_id"); got != "exp" {
+		t.Fatalf("experiment_id = %q, want exp", got)
+	}
+}
+
 func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

@@ -80,6 +80,19 @@ func selectFromExperiment(exp Experiment, taskID, role, stepID string, providerA
 	}
 	eligible, total := EligibleVariants(exp, providerAllowed, evalPassed)
 	if total <= 0 {
+		if providerAllowed != nil {
+			// Zero eligible variants may mean every variant's provider is
+			// currently unhealthy/rate-limited rather than a real config
+			// error (e.g. all weights zero, or eval-gated out). Re-check
+			// without the provider filter: if variants would otherwise be
+			// eligible, this experiment simply has no healthy provider
+			// right now — defer to normal (non-A/B) provider selection and
+			// failover instead of hard-erroring the whole dispatch.
+			_, unfilteredTotal := EligibleVariants(exp, nil, evalPassed)
+			if unfilteredTotal > 0 {
+				return Assignment{}, false, nil
+			}
+		}
 		return Assignment{}, false, fmt.Errorf("abtest: experiment %q has no eligible positive-weight variants", exp.ID)
 	}
 	pick := hashKey(exp.ID+"|"+key) % uint64(total)

@@ -281,6 +281,50 @@ func TestSelectEligibleSkipsUnavailableProvider(t *testing.T) {
 	}
 }
 
+func TestSelectEligibleFallsBackWhenAllVariantsShareUnhealthyProvider(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "single-provider-exp",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "opus", Weight: 50},
+			{ID: "b", Provider: "claude", Model: "sonnet", Weight: 50},
+		},
+	}}}
+	a, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", func(provider string) bool {
+		return provider != "claude"
+	})
+	if err != nil {
+		t.Fatalf("SelectEligible err = %v, want nil (should defer to normal provider failover)", err)
+	}
+	if ok {
+		t.Fatalf("SelectEligible ok = true, want false so callers fall back to non-AB dispatch; got %+v", a)
+	}
+}
+
+func TestSelectEligibleStillErrorsWhenAllWeightsAreZero(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "zero-weight-exp",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "opus", Weight: 0},
+			{ID: "b", Provider: "codex", Model: "gpt-5.5", Weight: 0},
+		},
+	}}}
+	_, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", func(provider string) bool {
+		return true
+	})
+	if err == nil {
+		t.Fatalf("SelectEligible err = nil, want config error for all-zero-weight experiment")
+	}
+	if ok {
+		t.Fatalf("SelectEligible ok = true, want false")
+	}
+}
+
 func TestSelectPromptSkillPayload(t *testing.T) {
 	enabled := true
 	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
