@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -497,6 +498,18 @@ func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want no recovery workflow dispatched", got.Workflow)
+	}
+	// markConflictRecoveryExhausted must park the task itself with an
+	// attempt-count reason (task bdcc90a4) so an operator — or the automated
+	// human-review agent — can tell an exhausted recovery loop apart from a
+	// fresh, first-time conflict instead of just seeing the generic
+	// worktreeerr.RebaseBlockedReason.
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	wantReason := fmt.Sprintf("branch conflict recovery attempted %d time(s) and failed", github.MaxRetries)
+	if !strings.Contains(got.StatusReason, wantReason) {
+		t.Fatalf("status reason = %q, want it to contain %q", got.StatusReason, wantReason)
 	}
 }
 
