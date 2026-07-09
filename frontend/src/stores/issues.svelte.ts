@@ -45,5 +45,11 @@ class IssueStore {
 
 export const issueStore = new IssueStore()
 if (typeof window !== 'undefined') {
-  issueStore.listen()
+  // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
+  // poisoning the lazy import chunk this module lives in.
+  try {
+    issueStore.listen()
+  } catch (e) {
+    console.warn('issueStore.listen() failed to attach:', e)
+  }
 }

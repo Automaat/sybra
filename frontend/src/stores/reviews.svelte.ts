@@ -83,5 +83,11 @@ class ReviewStore {
 
 export const reviewStore = new ReviewStore()
 if (typeof window !== 'undefined') {
-  reviewStore.listen()
+  // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
+  // poisoning the import chunk this module lives in.
+  try {
+    reviewStore.listen()
+  } catch (e) {
+    console.warn('reviewStore.listen() failed to attach:', e)
+  }
 }
