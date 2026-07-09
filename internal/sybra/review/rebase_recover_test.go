@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
@@ -672,6 +673,176 @@ func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testi
 	}
 	if got.Workflow.State != priorWorkflow.State {
 		t.Fatalf("state = %q, want restored %q", got.Workflow.State, priorWorkflow.State)
+	}
+}
+
+// blockingAgentLauncher implements workflow.AgentLauncher with a StartAgent
+// that signals entryCh once invoked and then blocks until releaseCh closes.
+// Used to genuinely hold the engine's per-task starting marker open for the
+// duration of a concurrent dispatchBranchConflictRecovery attempt — mirroring
+// the real race (restart-stale's raw StartWorkflow(implement) still deep
+// inside its own worktree-prep/StartAgent call when a second recovery path's
+// StartWorkflowWithVars reaches the same task).
+type blockingAgentLauncher struct {
+	entryCh   chan struct{}
+	releaseCh chan struct{}
+}
+
+func (b *blockingAgentLauncher) StartAgent(string, string, string, string, string, string, string, []string, bool, bool, string, string, workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	close(b.entryCh)
+	<-b.releaseCh
+	return "", "", "", workflow.ErrDispatchInFlight
+}
+func (b *blockingAgentLauncher) HasRunningAgent(string) bool                     { return false }
+func (b *blockingAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
+func (b *blockingAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
+	return "", false
+}
+func (b *blockingAgentLauncher) StopAgentsForTask(string, string) {}
+func (b *blockingAgentLauncher) SendPrompt(string, string) error  { return nil }
+func (b *blockingAgentLauncher) DefaultProvider() string          { return "claude" }
+func (b *blockingAgentLauncher) ProviderRateLimited(string) bool  { return false }
+func (b *blockingAgentLauncher) ProviderCanFailover(string) bool  { return false }
+func (b *blockingAgentLauncher) ProviderHealthy(string) bool      { return true }
+
+// TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHeld
+// locks the fix for dispatchBranchConflictRecovery's own re-dispatch call: a
+// concurrent StartWorkflow call for the same task can grab the engine's
+// starting marker sometime during the caller's own (multi-second)
+// PrepareForBranchFix/worktree-setup work — a TOCTOU window
+// TryConflictRecovery's upfront check alone cannot close. When that happens,
+// StartWorkflowWithVars fails with ErrWorkflowAlreadyActive; the caller must
+// queue a retry (QueueConflictRecoveryRetry) instead of restoring the prior
+// workflow and giving up, so the recovery actually runs once the marker
+// releases rather than stranding the task on whatever the concurrent call's
+// own error path decides (e.g. an unaided rebase failure escalating straight
+// to human-required).
+func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHeld(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+
+	tk, err := tasks.Create("blocked dispatch", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("owner/repo"),
+		Status:    task.Ptr(task.StatusInProgress),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wfStore, err := workflow.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const blockerWorkflowID = "blocker-test"
+	if err := wfStore.Save(workflow.Definition{
+		ID:   blockerWorkflowID,
+		Name: "Blocker (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_blocker_test__",
+		}}},
+		Steps: []workflow.Step{{
+			ID:     "block",
+			Name:   "Block",
+			Type:   workflow.StepRunAgent,
+			Config: workflow.StepConfig{Role: "implementation"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wfStore.Save(workflow.Definition{
+		ID:   branchConflictFixTestWorkflowID,
+		Name: "Branch conflict fix (test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_branch_conflict_fix_test2__",
+		}}},
+		Steps: []workflow.Step{{
+			ID:     "set_recovering",
+			Name:   "Mark Recovering",
+			Type:   workflow.StepSetStatus,
+			Config: workflow.StepConfig{Status: "in-progress", StatusReason: "recovering from a branch conflict (no PR yet)"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	launcher := &blockingAgentLauncher{entryCh: make(chan struct{}), releaseCh: make(chan struct{})}
+	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, logger)
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		tasks: tasks, prTracker: github.NewIssueTracker(0),
+		WorkflowEngine: engine, wtFailures: make(map[string]int),
+	}
+	// The real recovery callback re-derives fresh state and re-dispatches —
+	// stood in here without RecoverStaleBranchConflict's PR-fetch/worktree-prep
+	// plumbing, since this test is only proving the queue-and-drain round trip.
+	engine.SetConflictRecovery(func(taskID string) bool {
+		fresh, gerr := tasks.Get(taskID)
+		if gerr != nil {
+			return false
+		}
+		resume := r.captureBranchConflictResumeState(fresh)
+		// Mirrors RecoverStaleBranchConflict/recoverBranchConflictNoPR: clear
+		// the still-attached (now-terminal-in-practice, parked) prior workflow
+		// record before re-dispatching, same as production does before ever
+		// reaching dispatchBranchConflictRecovery.
+		if engine.HasActiveWorkflow(taskID) {
+			if _, cErr := engine.CancelWorkflow(taskID, "test conflict recovery"); cErr != nil {
+				return false
+			}
+		}
+		return r.dispatchBranchConflictRecovery(taskID, "/fake/dir", "main", fresh, "", resume, false)
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- engine.StartWorkflow(tk.ID, blockerWorkflowID) }()
+
+	select {
+	case <-launcher.entryCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker workflow never entered StartAgent")
+	}
+
+	fresh, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume := r.captureBranchConflictResumeState(fresh)
+	if !r.dispatchBranchConflictRecovery(tk.ID, "/fake/dir", "main", fresh, "", resume, false) {
+		t.Fatal("dispatchBranchConflictRecovery = false while marker held, want true (queued for retry)")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != blockerWorkflowID {
+		t.Fatalf("workflow = %+v, want unchanged %s (no restore while a retry is queued)", got.Workflow, blockerWorkflowID)
+	}
+
+	close(launcher.releaseCh)
+	if err := <-done; err != nil {
+		t.Fatalf("blocker workflow start: %v", err)
+	}
+
+	got, err = tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixTestWorkflowID {
+		t.Fatalf("workflow after drain = %+v, want %s dispatched by the drained retry", got.Workflow, branchConflictFixTestWorkflowID)
 	}
 }
 

@@ -915,6 +915,24 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		err = r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars)
 	}
 	if err != nil {
+		// A concurrent StartWorkflow call (e.g. restart-stale's raw
+		// StartWorkflow(implement)) can grab this task's starting/dispatching
+		// marker sometime during the PrepareForBranchFix/worktree-setup work
+		// above — a TOCTOU window the caller's own upfront marker check
+		// (TryConflictRecovery) cannot close, since that check ran before this
+		// multi-second prep started. Rather than restore the prior workflow and
+		// give up (previously stranding the task once the concurrent call's own
+		// unaided rebase failed and escalated to human-required), queue this
+		// recovery for a retry once that call releases the marker — same
+		// deferred-drain contract tryConflictRecovery already gives
+		// push_branch/create_pr. Do NOT restore resume.prior here: the retry
+		// re-derives and re-dispatches from scratch, so restoring now would
+		// just be immediately clobbered by it.
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			r.logger.Info("pr-monitor.branch-conflict.dispatch-queued", "task_id", taskID, "err", err)
+			r.WorkflowEngine.QueueConflictRecoveryRetry(taskID)
+			return true
+		}
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
 		if resume.prior != nil {
 			if _, restoreErr := r.tasks.Update(taskID, task.Update{
