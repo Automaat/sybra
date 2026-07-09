@@ -115,7 +115,6 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	cfg.approvalAddr = m.approvalAddr
-
 	// require_permissions:true relies on the approval hook to gate each tool
 	// call. If the approval server never started (approvalAddr empty) the hook
 	// is silently omitted and the run falls back to CLI defaults — neither the

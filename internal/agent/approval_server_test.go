@@ -223,7 +223,6 @@ func TestFindAgentBySession_MostRecentAmongSameLiveness(t *testing.T) {
 		t.Errorf("findAgentBySession = %q, want %q (most recent)", got, "newer")
 	}
 }
-
 func TestApprovalServer_CanceledContext(t *testing.T) {
 	t.Parallel()
 
