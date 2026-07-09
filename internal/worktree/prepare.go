@@ -611,10 +611,8 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 			m.logger.Warn("worktree.recreate.backup", "task_id", t.ID, "branch", branch, "err", berr)
 		}
 	}
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		if rerr := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); rerr != nil {
-			return fmt.Errorf("remove worktree: %w", rerr)
-		}
+	if rerr := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); rerr != nil {
+		return fmt.Errorf("remove worktree: %w", rerr)
 	}
 	if project.BranchExists(ctx, proj.ClonePath, branch) {
 		if derr := project.DeleteBranch(ctx, proj.ClonePath, branch); derr != nil {

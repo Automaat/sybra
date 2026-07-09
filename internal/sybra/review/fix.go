@@ -832,8 +832,6 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
 		return false
 	}
-	r.prTracker.MarkHandled(taskID, branchRecreateKind, "")
-	r.prTracker.Clear(taskID, branchConflictRetryKind)
 	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
 		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "branch recreated from fresh base"); cancelErr != nil {
 			r.logger.Error("pr-monitor.branch-recreate.cancel", "task_id", taskID, "err", cancelErr)
@@ -848,6 +846,8 @@ func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
 		r.logger.Error("pr-monitor.branch-recreate.status", "task_id", taskID, "err", err)
 		return false
 	}
+	r.prTracker.MarkHandled(taskID, branchRecreateKind, "")
+	r.prTracker.Clear(taskID, branchConflictRetryKind)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{"recreated": true})
 	r.logger.Info("pr-monitor.branch-recreate.done", "task_id", taskID)
 	return true
