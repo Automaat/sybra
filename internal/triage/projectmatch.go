@@ -15,7 +15,19 @@ var githubURLRe = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9][A-Za-z0-
 // and returns the matching registered project's ID ("owner/repo"). Returns ""
 // if no URL is present or no matching project is registered.
 func MatchProject(title, body string, projects []project.Project) string {
-	text := title + "\n" + body
+	return matchProjectInText(title+"\n"+body, projects)
+}
+
+// MatchProjectFromIssue looks at the task's Issue field — the authoritative
+// source-of-truth link when the task originated from a GitHub issue — and
+// returns the matching registered project's ID. Callers should prefer this
+// over MatchProject/the classifier's free-text guess when Issue is set: it
+// is a system-populated link, not a content-similarity guess.
+func MatchProjectFromIssue(issue string, projects []project.Project) string {
+	return matchProjectInText(issue, projects)
+}
+
+func matchProjectInText(text string, projects []project.Project) string {
 	matches := githubURLRe.FindAllStringSubmatch(text, -1)
 	for _, m := range matches {
 		owner, repo := m[1], strings.TrimSuffix(m[2], ".git")
