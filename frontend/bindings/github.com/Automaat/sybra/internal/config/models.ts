@@ -132,6 +132,15 @@ export class AgentDefaults {
     "sandboxMode": string;
 
     /**
+     * HeadlessSteerable controls whether headless claude runs launch with the
+     * stdin/stream-json shape that accepts mid-run steer messages (instead of
+     * the legacy one-shot `-p <prompt>` invocation). nil means not configured
+     * (defaults to true). Set false to restore the legacy launch shape with
+     * no stdin transport — a config-only rollback with no code revert.
+     */
+    "headlessSteerable": boolean | null;
+
+    /**
      * DefaultProjectID pins the project a project-less task auto-assigns to
      * when it needs an isolated worktree (e.g. a meta/self-referential task
      * routed to the plan step). Without it, auto-assignment only fires when
@@ -213,6 +222,9 @@ export class AgentDefaults {
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
         }
+        if (!("headlessSteerable" in $$source)) {
+            this["headlessSteerable"] = null;
+        }
         if (!("defaultProjectId" in $$source)) {
             this["defaultProjectId"] = "";
         }
@@ -227,10 +239,10 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField22_0 = $$createType0;
+        const $$createField23_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField22_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField23_0($$parsedSource["playwrightMcp"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

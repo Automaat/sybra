@@ -715,8 +715,11 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		// Only resume async agent steps where no agent is running.
-		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN {
+		// Only resume async agent steps where no agent is running, plus
+		// classify_task: it's synchronous but can park in ExecWaiting on
+		// engine shutdown mid-classify (see engine_steps_classify.go), and
+		// nothing else re-drives a parked sync step.
+		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN && step.Type != StepClassifyTask {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {

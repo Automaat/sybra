@@ -646,3 +646,179 @@ func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T)
 		t.Fatal("agent did not exit after StopAgent")
 	}
 }
+
+// TestSurviveHeadlessStoresAndReopensFIFO verifies runHeadlessAttemptSurvive's
+// FIFO wiring for a steerable headless claude run: the FIFO path is persisted
+// on the registry record (mirroring startConvoProcessSurvive), and a message
+// written through it actually reaches the detached child.
+func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
+	binDir := makeFakeEchoStdinClaude(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{SurviveRestartDir: regDir})
+
+	a := &Agent{ID: "sv1", TaskID: "t-sv1", Mode: "headless", Provider: "claude", done: make(chan struct{})}
+	cfg := RunConfig{Prompt: "first turn", HeadlessSteerable: true}
+	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+
+	var outFile *os.File
+	var tailOffset int64
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := m.runHeadlessAttemptSurvive(ctx, a, cfg, &outFile, &tailOffset, "claude", args, nil, "claude")
+		resultCh <- err
+	}()
+
+	// Wait for the FIFO to be assigned and persisted.
+	deadline := time.After(5 * time.Second)
+	for a.GetStdinPath() == "" {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for stdin FIFO to be assigned")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	wantFIFO := agentFIFOPath(regDir, "sv1")
+	if a.GetStdinPath() != wantFIFO {
+		t.Fatalf("GetStdinPath() = %q, want %q", a.GetStdinPath(), wantFIFO)
+	}
+
+	var recs []Record
+	deadline = time.After(5 * time.Second)
+	for {
+		var err error
+		recs, err = m.reg.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(recs) == 1 && recs[0].StdinPath == wantFIFO {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for registry record with StdinPath; got %+v", recs)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// The initial prompt was delivered over the FIFO — wait for the fake
+	// binary's echoed result to land in the log.
+	logPath := a.GetLogPath()
+	deadline = time.After(10 * time.Second)
+	for {
+		data, _ := os.ReadFile(logPath)
+		if strings.Contains(string(data), "first turn") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for initial prompt to echo in log; got %q", string(data))
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// End the test quickly rather than waiting on the never-EOF FIFO or the
+	// 90s post-result-hang grace window.
+	m.signalKill(a)
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runHeadlessAttemptSurvive did not return after signalKill")
+	}
+	// Unblocks stopWithSIGINT's internal SIGKILL-escalation goroutine
+	// immediately instead of leaving it sleeping out stopSIGINTGrace —
+	// signalKill's real callers close this via markAgentDone once the
+	// runner goroutine fully exits.
+	close(a.done)
+}
+
+// TestReattachHeadlessReopensFIFO verifies that reattaching a live steerable
+// headless survive record reopens its stdin FIFO (mirroring
+// TestReattachInteractive_ReattachesLiveAgent for the conversational path),
+// so a steer message sent after reattach still reaches the child.
+func TestReattachHeadlessReopensFIFO(t *testing.T) {
+	prev := reattachPIDPoll
+	reattachPIDPoll = 50 * time.Millisecond
+	t.Cleanup(func() { reattachPIDPoll = prev })
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "hd1.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	history := `{"type":"system","subtype":"init","session_id":"sess-hd"}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"earlier"}]}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(history), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var completed atomic.Bool
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) { completed.Store(true) },
+	})
+
+	fifoPath := agentFIFOPath(regDir, "hd1")
+	if err := makeFIFO(fifoPath); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	result := `{"type":"result","result":"ok","session_id":"sess-hd","total_cost_usd":0.1}`
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 0.3; printf '%%s\\n' '%s' >> %q", result, logPath))
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+
+	rec := Record{
+		ID: "hd1", TaskID: "t-hd", Mode: "headless", Provider: "claude",
+		PID: cmd.Process.Pid, LogPath: logPath, StdinPath: fifoPath,
+		SessionID: "sess-hd", StartedAt: time.Now().UTC(), ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
+	}
+	if err := m.reg.Save(rec); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got := m.ReattachAll()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 reattached headless agent, got %d", len(got))
+	}
+	a, err := m.GetAgent("hd1")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if a.GetStdinPath() != fifoPath {
+		t.Fatalf("expected FIFO path restored, got %q", a.GetStdinPath())
+	}
+
+	// reattachHeadless reopens the FIFO from its own goroutine
+	// (go m.reattachHeadless(...) in ReattachAllContext), so poll rather than
+	// assert immediately after ReattachAll returns.
+	fifoDeadline := time.After(5 * time.Second)
+	for !a.convo.hasStdinPipe() {
+		select {
+		case <-fifoDeadline:
+			t.Fatal("expected FIFO reopened as the agent's stdin transport")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	deadline := time.After(5 * time.Second)
+	for !completed.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for reattached headless agent to complete")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if a.GetState() != StateStopped {
+		t.Fatalf("expected stopped after completion, got %s", a.GetState())
+	}
+}

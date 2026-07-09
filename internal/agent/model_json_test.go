@@ -56,6 +56,7 @@ func TestAgentJSONKeySet(t *testing.T) {
 		"awaitingApproval",
 		"cacheCreationInputTokens",
 		"cacheReadInputTokens",
+		"canSteer",
 		"command",
 		"costUsd",
 		"errorKind",
@@ -93,6 +94,7 @@ func TestAgentJSONKeySet(t *testing.T) {
 
 func TestAgentJSONZeroValueKeySet(t *testing.T) {
 	assertJSONKeys(t, Agent{}, []string{
+		"canSteer",
 		"costUsd",
 		"external",
 		"id",

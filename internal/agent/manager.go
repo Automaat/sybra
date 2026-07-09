@@ -56,10 +56,14 @@ type Manager struct {
 	bashTimeoutMs int
 	retryWatchdog int
 	fallbackModel string
-	gate          provider.HealthGate
-	limitGate     LimitGate
-	limitPolicy   limits.Policy
-	limitSink     func(limits.Snapshot)
+	// headlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	headlessSteerable bool
+	gate              provider.HealthGate
+	limitGate         LimitGate
+	limitPolicy       limits.Policy
+	limitSink         func(limits.Snapshot)
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -181,6 +185,10 @@ type ManagerRuntimeConfig struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch. 0 disables jitter.
 	DispatchJitterMs int
+	// HeadlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	HeadlessSteerable bool
 	// PlaywrightMCPEnabled mirrors config.PlaywrightMCPEnabled(). Default-off.
 	PlaywrightMCPEnabled bool
 	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
@@ -214,6 +222,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		taskExists:             cfg.TaskExists,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
+		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
@@ -276,6 +285,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
+	m.headlessSteerable = cfg.HeadlessSteerable
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()

@@ -24,7 +24,7 @@ type Judge interface {
 
 // ClaudeJudge is the production implementation. It spawns `claude -p` with a
 // compact prompt and parses the JSON verdict from the response envelope —
-// identical pattern to internal/triage.ClaudeClassifier.
+// same shape as internal/triage.FallbackClassifier.
 type ClaudeJudge struct {
 	Model  string // default: claude-haiku-4-5-20251001
 	Logger *slog.Logger
