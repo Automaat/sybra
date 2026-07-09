@@ -339,6 +339,14 @@ func TestAutoCommitUncommitted(t *testing.T) {
 		t.Errorf("commit message = %q, want %q", got, "wip: recovered work")
 	}
 
+	bodyOut, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(bodyOut), "Signed-off-by: Sybra <sybra@localhost>") {
+		t.Errorf("commit body missing DCO trailer, got %q", bodyOut)
+	}
+
 	// Idempotent: nothing left to commit on the now-clean tree.
 	if got := AutoCommitUncommitted(context.Background(), dir, "wip: should not commit"); got {
 		t.Fatal("expected no commit on an already-clean tree")
