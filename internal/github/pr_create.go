@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -68,8 +69,8 @@ func CreatePR(ctx context.Context, dir string, req CreatePRRequest) (number int,
 // warnings.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
+	for _, raw := range slices.Backward(lines) {
+		if line := strings.TrimSpace(raw); line != "" {
 			return line
 		}
 	}

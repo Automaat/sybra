@@ -644,13 +644,16 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 // configured — matching PushRemote's routing decision so the PR always
 // points at the branch that was actually pushed.
 func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
-	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
-	if err != nil {
+	if PushRemote(ctx, worktreePath) != "fork" {
 		return branch, nil
 	}
-	owner, _, parseErr := ParseGitHubURL(strings.TrimSpace(forkURL))
-	if parseErr != nil {
-		return "", fmt.Errorf("parse fork remote url: %w", parseErr)
+	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	if err != nil {
+		return "", fmt.Errorf("resolve fork remote url: %w", err)
+	}
+	owner, _, err := ParseGitHubURL(strings.TrimSpace(forkURL))
+	if err != nil {
+		return "", fmt.Errorf("parse fork remote url: %w", err)
 	}
 	return owner + ":" + branch, nil
 }
