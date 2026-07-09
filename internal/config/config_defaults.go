@@ -479,7 +479,7 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
@@ -492,7 +492,7 @@ func WriteRawConfig(data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(configFilePerm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -562,7 +562,9 @@ func load(opts loadOptions) (*Config, error) {
 			return nil, writeErr
 		}
 	}
-	tightenConfigPerms(path, existingFile)
+	if opts.persistLoadReconciles {
+		tightenConfigPerms(path, existingFile)
+	}
 
 	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
@@ -1133,11 +1135,16 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 	}
 }
 
+const (
+	configDirPerm  os.FileMode = 0o700
+	configFilePerm os.FileMode = 0o600
+)
+
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o600)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600
@@ -1145,13 +1152,30 @@ func writeDefaultConfig(path string) error {
 // holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
 // not fatal — Load must still succeed on read-only or restricted filesystems.
 func tightenConfigPerms(path string, existingFile bool) {
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil && !os.IsNotExist(err) {
-		slog.Warn("config: failed to tighten home dir perms", "err", err)
-	}
+	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
 	if existingFile {
-		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
-			slog.Warn("config: failed to tighten config file perms", "err", err)
+		tightenPathPerm(path, configFilePerm, "config file")
+	}
+}
+
+func tightenPathPerm(path string, target os.FileMode, label string) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("config: failed to inspect perms", "path", path, "kind", label, "err", err)
 		}
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		slog.Warn("config: refusing to chmod symlink", "path", path, "kind", label)
+		return
+	}
+	current := info.Mode().Perm()
+	if current&^target == 0 {
+		return
+	}
+	if err := os.Chmod(path, target); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten perms", "path", path, "kind", label, "err", err)
 	}
 }
 
