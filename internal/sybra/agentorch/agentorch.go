@@ -511,9 +511,13 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		ResumeSessionID:         resumeSessionID,
 		ExtraEnv:                extraEnv,
 		MaxTurns:                t.MaxTurns,
-		ForkSubagent:            t.ForkSubagent,
-		SandboxMode:             ResolveSandboxMode(t, o.cfg),
-		ReasoningEffort:         FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		// Always an implementation run (a code-author role, Role.AuthorsCode),
+		// so the task-level opt-in applies unconditionally here — see
+		// agentAdapter.StartAgent for the role-gated equivalent used by
+		// every other role (verifier roles must never fork).
+		ForkSubagent:    t.ForkSubagent,
+		SandboxMode:     ResolveSandboxMode(t, o.cfg),
+		ReasoningEffort: FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
