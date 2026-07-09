@@ -101,7 +101,11 @@ func TestApprovalServer_SafeToolAutoApprove(t *testing.T) {
 	}
 }
 
-func TestApprovalServer_SafeToolMCP(t *testing.T) {
+// TestApprovalServer_MCPNotAutoApproved verifies MCP tools are never
+// blanket-auto-approved: with no manager/agent set up, an mcp__ tool falls
+// through to the unknown-session deny path rather than short-circuiting to
+// allow like the old isSafeTool blanket "mcp__*" match did.
+func TestApprovalServer_MCPNotAutoApproved(t *testing.T) {
 	t.Parallel()
 	srv := newTestApprovalServer(t)
 
@@ -111,8 +115,26 @@ func TestApprovalServer_SafeToolMCP(t *testing.T) {
 		"tool_use_id": "tuid-mcp",
 		"tool_input":  map[string]any{},
 	})
-	if resp.HookSpecificOutput.PermissionDecision != "allow" {
-		t.Errorf("expected allow for mcp__ tool, got %q", resp.HookSpecificOutput.PermissionDecision)
+	if resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("expected deny for mcp__ tool (no blanket auto-approve), got %q", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+// TestApprovalServer_WebFetchNotAutoApproved verifies WebFetch requires
+// approval like any other egress-sensitive tool, since it is a ready
+// exfiltration channel for content ingested from untrusted sources.
+func TestApprovalServer_WebFetchNotAutoApproved(t *testing.T) {
+	t.Parallel()
+	srv := newTestApprovalServer(t)
+
+	resp := postHook(t, srv.Addr(), map[string]any{
+		"session_id":  "any-session",
+		"tool_name":   "WebFetch",
+		"tool_use_id": "tuid-webfetch",
+		"tool_input":  map[string]any{},
+	})
+	if resp.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("expected deny for WebFetch (no blanket auto-approve), got %q", resp.HookSpecificOutput.PermissionDecision)
 	}
 }
 
@@ -508,9 +530,9 @@ func TestIsSafeTool(t *testing.T) {
 		{"Grep", true},
 		{"LSP", true},
 		{"WebSearch", true},
-		{"WebFetch", true},
-		{"mcp__anything", true},
-		{"mcp__fs__read", true},
+		{"WebFetch", false},
+		{"mcp__anything", false},
+		{"mcp__fs__read", false},
 		{"Bash", false},
 		{"Edit", false},
 		{"Write", false},
