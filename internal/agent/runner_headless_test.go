@@ -1985,6 +1985,33 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms(t *
 	}
 }
 
+// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty pins the
+// silent-degradation path: RequirePermissions is set but the approval server
+// never started (approvalAddr empty), so no HTTP approval hook can be wired.
+// The run must still not fall back to --dangerously-skip-permissions — that
+// would turn a requested-but-unavailable gate into an implicit full bypass.
+// prepareRunConfig logs agent.approval.unavailable for exactly this case.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: true,
+		approvalAddr:       "",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--dangerously-skip-permissions" {
+			t.Fatalf("RequirePermissions=true must not bypass permissions even without an approval server: %v", args)
+		}
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "pre-tool-use") {
+			t.Fatalf("no approval hook can be wired without an approval-server address: %v", args)
+		}
+	}
+}
+
 // TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs verifies that Claude and
 // Copilot invocations never receive codex hook args regardless of TaskID.
 func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {

@@ -51,7 +51,7 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 	// call (the CLI has no TTY to prompt), forcing operators to
 	// require_permissions:false — which collapses to
 	// --dangerously-skip-permissions (see claudePermissionArgs).
-	if hookSettings := buildClaudeHookSettings(cfg.approvalAddr, cfg.RequirePermissions); hookSettings != "" {
+	if hookSettings := buildClaudeHookSettings(cfg.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	args = append(args, effortArgs(a.ReasoningEffort)...)

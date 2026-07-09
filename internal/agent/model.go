@@ -1012,6 +1012,17 @@ type RunConfig struct {
 	approvalAddr string
 }
 
+// needsApprovalHook reports whether a run should wire the PreToolUse approval
+// hook. True when permissions are required or an interactive permission-mode is
+// set. Both the headless (provider_claude.go) and conversational
+// (runner_convo.go) call sites gate on this so a future change can't silently
+// desync them: headless runs never set PermissionMode (they use
+// HeadlessPermissionMode for the auto classifier), so for them it collapses to
+// RequirePermissions alone.
+func (cfg RunConfig) needsApprovalHook() bool {
+	return cfg.RequirePermissions || cfg.PermissionMode != ""
+}
+
 // ConvoOutput returns a snapshot of the conversation event buffer.
 func (a *Agent) ConvoOutput() []ConvoEvent {
 	a.mu.RLock()
