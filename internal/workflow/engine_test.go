@@ -2867,6 +2867,36 @@ func TestShellStep_FailingCommandSetsStatusFailed(t *testing.T) {
 	}
 }
 
+func TestShellStep_EmptyRenderedDirFailsClosed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	step := &Step{
+		ID:   "shell-empty-dir",
+		Type: StepShell,
+		Config: StepConfig{
+			Command: "pwd",
+			Dir:     "{{getvar .Vars \"missing_dir\"}}",
+		},
+	}
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Step: *step,
+		Vars: make(map[string]string),
+	}
+
+	_, err := engine.execShell(step, ctx)
+	if err == nil {
+		t.Fatal("expected error for empty rendered dir")
+	}
+	if !strings.Contains(err.Error(), "resolved to empty path") {
+		t.Fatalf("err = %v, want empty-path failure", err)
+	}
+}
+
 func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

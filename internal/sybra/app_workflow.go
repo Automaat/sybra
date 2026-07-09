@@ -42,7 +42,43 @@ var (
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
 	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
+	_ workflow.CostBudgetChecker      = (*agentAdapter)(nil)
+	_ workflow.AttemptWorktreeManager = (*attemptWorktreeAdapter)(nil)
 )
+
+// attemptWorktreeAdapter bridges worktree.Manager → workflow.AttemptWorktreeManager.
+type attemptWorktreeAdapter struct {
+	tasks *task.Manager
+	mgr   *worktree.Manager
+}
+
+func (a *attemptWorktreeAdapter) PrepareAttempt(taskID, attemptID string) (dir, branch string, err error) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return "", "", fmt.Errorf("get task: %w", err)
+	}
+	// context.Background(): AttemptWorktreeManager is a fixed interface
+	// signature invoked from workflow step execution, which never threads a
+	// caller ctx today (see the identical rationale on PrepareForTask calls
+	// elsewhere in this file).
+	return a.mgr.PrepareAttempt(context.Background(), t, attemptID)
+}
+
+func (a *attemptWorktreeAdapter) PromoteAttempt(taskID, winnerDir, winnerBranch string) (string, error) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+	return a.mgr.PromoteAttempt(context.Background(), t, winnerDir, winnerBranch)
+}
+
+func (a *attemptWorktreeAdapter) CleanupAttempts(taskID string, attemptIDs []string) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	a.mgr.CleanupAttempts(context.Background(), t, attemptIDs)
+}
 
 // artifactRecorderAdapter bridges artifact.Store → workflow.ArtifactRecorder.
 type artifactRecorderAdapter struct {
@@ -911,4 +947,10 @@ func (a *agentAdapter) ProviderCanFailover(provider string) bool {
 
 func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
+}
+
+// CheckTaskCostBudget implements workflow.CostBudgetChecker for the
+// best_of_n/judge preflight — see agentorch.Orchestrator.CheckTaskCostBudget.
+func (a *agentAdapter) CheckTaskCostBudget(taskID string) error {
+	return a.agentOrch.CheckTaskCostBudget(taskID)
 }

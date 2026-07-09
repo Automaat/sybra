@@ -2,6 +2,7 @@
   import { ChevronRight } from '@lucide/svelte'
   import MobileSheet from './MobileSheet.svelte'
   import { navStore, type Page } from '../../lib/navigation.svelte.js'
+  import { notificationStore } from '../../stores/notifications.svelte.js'
 
   interface Props {
     open: boolean
@@ -13,6 +14,7 @@
   type Item = { label: string; page: Page; badge?: number }
 
   const items: Item[] = $derived([
+    { label: 'Inbox', page: { kind: 'notifications' }, badge: notificationStore.notifications.length },
     { label: 'Projects', page: { kind: 'project-list' } },
     { label: 'Logbook', page: { kind: 'logbook' } },
     { label: 'GitHub', page: { kind: 'github' } },

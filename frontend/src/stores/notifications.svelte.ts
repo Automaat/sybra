@@ -8,7 +8,7 @@ class NotificationStore {
 
   /** Seeds in-app history only — must never trigger a browser notification. */
   async load(): Promise<void> {
-    this.notifications = (await ListNotifications()) ?? []
+    this.notifications = ((await ListNotifications()) ?? []).slice(0, 50)
   }
 
   /**

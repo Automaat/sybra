@@ -69,6 +69,39 @@ type PromptTransform struct {
 	Text string
 }
 
+// CostBudgetChecker is consulted before fanning out best-of-N attempts
+// (execBestOfN) and before dispatching a budget-preflight run_agent step such
+// as the judge (preflightRunAgentBudget): unlike StartAgentWithAssignment
+// (implementation agents on the canonical worktree), the direct-dispatch
+// AgentLauncher.StartAgent branch — which best-of-N attempts and the judge
+// both use, since they pass a pre-staged `dir` — does not itself enforce the
+// cumulative task cost budget. Engine operates with a nil checker: the
+// preflight is then skipped rather than panicking, so existing engine unit
+// tests that never wire one keep compiling unchanged.
+type CostBudgetChecker interface {
+	// CheckTaskCostBudget returns workflow.ErrTaskCostExceeded (wrapped) when
+	// the task has already spent its configured budget.
+	CheckTaskCostBudget(taskID string) error
+}
+
+// AttemptWorktreeManager creates, promotes, and cleans up the isolated
+// per-attempt worktrees a `best_of_n` step's attempts run in — distinct from
+// the task's shared canonical worktree that `parallel` children use. Engine
+// operates with a nil manager: a best_of_n/promote_best_of_n step then fails
+// closed to human-required with a distinct reason instead of panicking.
+type AttemptWorktreeManager interface {
+	// PrepareAttempt creates (or resumes) an isolated worktree+branch for one
+	// attempt and returns its dir and branch name.
+	PrepareAttempt(taskID, attemptID string) (dir, branch string, err error)
+	// PromoteAttempt fast-forwards the canonical task branch/worktree onto the
+	// winning attempt's HEAD and returns the canonical worktree dir.
+	PromoteAttempt(taskID, winnerDir, winnerBranch string) (canonicalDir string, err error)
+	// CleanupAttempts best-effort removes the given attempts' worktree dirs.
+	// Never returns an error — a leftover directory is disk waste, not a
+	// correctness problem, and must never block workflow advancement.
+	CleanupAttempts(taskID string, attemptIDs []string)
+}
+
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared
 // working directory to run_agent steps, bypassing worktree creation inside
 // the engine. Callers set this before StartWorkflowWithVars when they have
