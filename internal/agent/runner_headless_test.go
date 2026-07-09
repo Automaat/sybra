@@ -130,6 +130,35 @@ func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
 	}
 }
 
+// TestProcessHeadlessLine_TracksBackgroundTasks locks in that a live NDJSON
+// "background_tasks_changed" system event updates the agent's tracked
+// background-task set (used to extend the post-result-hang grace, see
+// TestTerminalResultIdle_BackgroundTaskExtendsGrace), and that a later empty
+// snapshot clears it (REPLACE semantics).
+func TestProcessHeadlessLine_TracksBackgroundTasks(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "bg1", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+	if !a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = false after a live background_tasks_changed event, want true")
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+	if a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = true after an empty background_tasks_changed event, want false")
+	}
+}
+
 // TestProcessHeadlessLine_ResultLogOmitsSessionCostForCodex verifies that
 // agent.headless.result drops the meaningless session_id/cost fields for
 // codex (which never reports them), while keeping them for providers that
@@ -484,6 +513,40 @@ func TestTerminalResultIdle(t *testing.T) {
 			t.Fatal("TerminalResultIdle = false on codex turn.completed idle past grace, want true")
 		}
 	})
+}
+
+// TestTerminalResultIdle_BackgroundTaskExtendsGrace locks in the fix for task
+// 3aeabb65: a headless run that emitted its terminal result but still has a
+// live CLI `run_in_background` task (e.g. npm ci) must not be treated as an
+// idle/hung process at the base grace — only after the extended
+// EffectiveHangGrace window, and never at all once the CLI reports the task
+// set empty again.
+func TestTerminalResultIdle_BackgroundTaskExtendsGrace(t *testing.T) {
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+	a.mu.Lock()
+	a.LastEventAt = time.Now().Add(-2 * time.Minute)
+	a.mu.Unlock()
+	a.SetBackgroundTaskIDs([]string{"bpzdm25og"})
+
+	if !a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = false after SetBackgroundTaskIDs with a live task, want true")
+	}
+	if a.TerminalResultIdle(a.EffectiveHangGrace(90 * time.Second)) {
+		t.Fatal("TerminalResultIdle = true within extended grace while background task is live, want false")
+	}
+	if !a.TerminalResultIdle(90 * time.Second) {
+		t.Fatal("TerminalResultIdle(base grace) = false past base grace, want true regardless of background tasks")
+	}
+
+	// CLI reports the background task finished (REPLACE semantics: empty set).
+	a.SetBackgroundTaskIDs([]string{})
+	if a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = true after task set cleared, want false")
+	}
+	if !a.TerminalResultIdle(a.EffectiveHangGrace(90 * time.Second)) {
+		t.Fatal("TerminalResultIdle = false past base grace once background tasks cleared, want true")
+	}
 }
 
 // TestFinalizeFromResult_IgnoresKillSignalWaitErr covers the fix for the

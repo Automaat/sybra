@@ -526,9 +526,13 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 		// not exited. The run is logically complete — stop the orphan and
 		// finalize from the result so the workflow advances instead of the
 		// stall watchdog escalating a finished run to human-required.
-		if a.TerminalResultIdle(postResultGrace) {
+		// EffectiveHangGrace extends the idle window while a CLI
+		// `run_in_background` task (e.g. npm ci) is still live, so it isn't
+		// killed mid-write just because it produces no NDJSON activity.
+		if a.TerminalResultIdle(a.EffectiveHangGrace(postResultGrace)) {
 			m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
-				"idle_sec", int(time.Since(a.GetLastEventAt()).Seconds()))
+				"idle_sec", int(time.Since(a.GetLastEventAt()).Seconds()),
+				"background_tasks_pending", a.HasBackgroundTasks())
 			a.setCompletedByResult(true)
 			m.signalKill(a)
 			waitExit()
@@ -670,6 +674,10 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if p := provider.SessionFilePath(event.SessionID); p != "" {
 			a.SetSessionFilePath(p)
 		}
+	}
+
+	if event.Type == "system" && event.Subtype == "background_tasks_changed" {
+		a.SetBackgroundTaskIDs(event.BackgroundTaskIDs)
 	}
 
 	if (event.Type == "system" || event.Type == "init") && len(event.PluginErrors) > 0 {
