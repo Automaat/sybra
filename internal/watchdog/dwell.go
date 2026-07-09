@@ -74,7 +74,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		// update) is still making progress — the stall/budget watchdog tick
 		// already covers a genuinely hung run. Escalating here would flip a
 		// healthy in-flight agent to human-required mid-run.
-		if w.agents != nil && w.agents.HasRunningAgentForTask(t.ID) {
+		if w.hasRunningAgent != nil && w.hasRunningAgent(t.ID) {
 			continue
 		}
 		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)

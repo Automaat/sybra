@@ -107,6 +107,11 @@ type Watchdog struct {
 	// the same agent-manager helper the runner uses, so the agent error kind and
 	// provider health gate stay in sync across both paths.
 	recordProviderSignal func(*agent.Agent, provider.Signal, string, time.Duration)
+	// hasRunningAgent reports whether a task has a live running agent. checkDwell
+	// uses it to skip escalating a task whose agent is mid-run but hasn't
+	// touched the task file recently — only the task-file timestamp is stale,
+	// not the agent itself.
+	hasRunningAgent func(taskID string) bool
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -132,6 +137,7 @@ func New(
 		stopCompletedAgent:   agents.StopCompletedAgent,
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
+		hasRunningAgent:      agents.HasRunningAgentForTask,
 	}
 }
 
