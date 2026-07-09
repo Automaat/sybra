@@ -18,6 +18,7 @@ export type Page =
   | { kind: 'workflows' }
   | { kind: 'workflow-detail'; workflowId: string }
   | { kind: 'logbook' }
+  | { kind: 'notifications' }
 
 export type TabKey = 'board' | 'chats' | 'agents' | 'reviews' | 'more'
 
@@ -156,6 +157,7 @@ class NavStore {
       case 'workflows': return 'Workflows'
       case 'workflow-detail': return 'Workflow Editor'
       case 'logbook': return 'Logbook'
+      case 'notifications': return 'Notifications'
     }
   }
 
@@ -223,6 +225,8 @@ export function pageToPath(p: Page): string {
       return `/workflows/${encodeURIComponent(p.workflowId)}`
     case 'logbook':
       return '/logbook'
+    case 'notifications':
+      return '/notifications'
   }
 }
 
@@ -277,6 +281,7 @@ export function pageFromLocation(location: { pathname: string; search: string })
     case 'reviews': return { kind: 'reviews' }
     case 'settings': return { kind: 'settings' }
     case 'logbook': return { kind: 'logbook' }
+    case 'notifications': return { kind: 'notifications' }
     default:
       return board
   }

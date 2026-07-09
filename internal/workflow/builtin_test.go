@@ -1168,3 +1168,87 @@ func mustBuiltinDefinition(t *testing.T, id string) *Definition {
 	t.Fatalf("%s builtin definition not found", id)
 	return nil
 }
+
+// TestBuiltinBestOfN_OptInTriggerPriority locks the opt-in contract: an
+// untagged in-progress task must still select simple-task-implement, and only
+// a task carrying the best-of-n tag selects simple-task-best-of-n-implement
+// — which requires a strictly higher trigger priority so it wins the tie on
+// the same task.status_changed/in-progress event.
+func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
+	t.Parallel()
+
+	implement := mustBuiltinDefinition(t, "simple-task-implement")
+	bestOfN := mustBuiltinDefinition(t, "simple-task-best-of-n-implement")
+
+	if bestOfN.Trigger.Priority <= implement.Trigger.Priority {
+		t.Fatalf("simple-task-best-of-n-implement priority %d must be > simple-task-implement priority %d",
+			bestOfN.Trigger.Priority, implement.Trigger.Priority)
+	}
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	untagged := TaskInfo{ID: "t1", Status: "in-progress", Tags: []string{"backend"}}
+	if got := engine.MatchWorkflow(untagged, "task.status_changed"); got == nil || got.ID != "simple-task-implement" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("untagged in-progress task matched %q, want simple-task-implement", id)
+	}
+
+	tagged := TaskInfo{ID: "t2", Status: "in-progress", Tags: []string{"backend", "best-of-n"}}
+	if got := engine.MatchWorkflow(tagged, "task.status_changed"); got == nil || got.ID != "simple-task-best-of-n-implement" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("best-of-n-tagged in-progress task matched %q, want simple-task-best-of-n-implement", id)
+	}
+}
+
+// TestBuiltinBestOfN_DeclaresMechanicalSteps confirms the opt-in workflow
+// wires both new step types with the promote step correctly cross-referencing
+// the judge and best_of_n steps — a minimal regression net for the YAML
+// staying in sync with model.go's step-type constants.
+func TestBuiltinBestOfN_DeclaresMechanicalSteps(t *testing.T) {
+	t.Parallel()
+
+	def := mustBuiltinDefinition(t, "simple-task-best-of-n-implement")
+
+	var sawBestOfN, sawPromote bool
+	for i := range def.Steps {
+		s := &def.Steps[i]
+		switch s.Type {
+		case StepBestOfN:
+			sawBestOfN = true
+			if s.Config.Attempts < 2 {
+				t.Errorf("best_of_n step %q attempts = %d, want >= 2", s.ID, s.Config.Attempts)
+			}
+		case StepPromoteBestOfN:
+			sawPromote = true
+			if s.Config.JudgeStep == "" || s.Config.BestOfNStep == "" {
+				t.Errorf("promote_best_of_n step %q missing judge_step/best_of_n_step", s.ID)
+			}
+		default:
+			// Every other step type in this workflow (run_agent, verify_commits,
+			// detect_tampering, verify_checks, set_status, ...) is out of scope
+			// for this regression net.
+		}
+	}
+	if !sawBestOfN {
+		t.Error("simple-task-best-of-n-implement has no best_of_n step")
+	}
+	if !sawPromote {
+		t.Error("simple-task-best-of-n-implement has no promote_best_of_n step")
+	}
+}
