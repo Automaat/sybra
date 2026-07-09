@@ -253,40 +253,41 @@ type agentEntry struct {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store            *Store
-	tasks            TaskProvider
-	agents           AgentLauncher
-	prLinker         PRLinker
-	prReviewers      PRReviewRequester
-	prStates         PRStateFetcher
-	prHeads          PRHeadFetcher
-	prCreator        PRCreator
-	prFinder         PRFinder
-	prContentGen     PRContentGenerator
-	worktrees        WorktreeGetter
-	branchSyncer     BranchSyncer
-	checks           CheckConfigGetter
-	manualTests      ManualTestConfigGetter
-	recorder         ArtifactRecorder
-	costBudget       CostBudgetChecker
-	attemptWorktrees AttemptWorktreeManager
-	onComplete       func(CompletionInfo)
-	logger           *slog.Logger
-	ctx              context.Context
-	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}    // taskID → dispatch in progress
-	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
-	resumeError      *logging.ErrorThrottle
-	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
-	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting        abtest.Config
-	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	store              *Store
+	tasks              TaskProvider
+	agents             AgentLauncher
+	prLinker           PRLinker
+	prReviewers        PRReviewRequester
+	prStates           PRStateFetcher
+	prHeads            PRHeadFetcher
+	prCreator          PRCreator
+	prFinder           PRFinder
+	prContentGen       PRContentGenerator
+	worktrees          WorktreeGetter
+	branchSyncer       BranchSyncer
+	checks             CheckConfigGetter
+	manualTests        ManualTestConfigGetter
+	recorder           ArtifactRecorder
+	costBudget         CostBudgetChecker
+	attemptWorktrees   AttemptWorktreeManager
+	divergenceRecovery func(taskID string) bool
+	onComplete         func(CompletionInfo)
+	logger             *slog.Logger
+	ctx                context.Context
+	mu                 sync.Mutex
+	inflightMutexes    map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching        map[string]struct{}    // taskID → dispatch in progress
+	starting           map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction        map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentSteps         map[string]agentEntry  // agentID → {taskID, stepID}
+	dispatchingStep    map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth       map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	resumeError        *logging.ErrorThrottle
+	demotionThrottle   *logging.ErrorThrottle
+	maxTestAttempts    int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	verifyTimeout      time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting          abtest.Config
+	evalGate           *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -358,6 +359,13 @@ func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
 // SetBranchSyncer wires a BranchSyncer used by the `sync_branch` step.
 // Leaving it unset makes the step a no-op (skipped outcome).
 func (e *Engine) SetBranchSyncer(s BranchSyncer) { e.branchSyncer = s }
+
+// SetDivergenceRecovery wires the autonomous branch-conflict recovery invoked
+// when create_pr's push hits a self-inflicted divergence (worktree-reuse
+// rebase, not a real content conflict). Returns true when it took over — the
+// step then parks instead of escalating to human-required. Nil keeps the
+// escalate-to-human fallback. Same callback as agentorch/agent_completion use.
+func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) { e.divergenceRecovery = fn }
 
 // SetCheckConfigGetter wires the project verify-suite resolver used by the
 // `verify_checks` step. Leaving it unset makes the step a no-op.
