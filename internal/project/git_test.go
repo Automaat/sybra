@@ -344,7 +344,7 @@ func TestAutoCommitUncommitted(t *testing.T) {
 		t.Fatalf("git log: %v", err)
 	}
 	if !strings.Contains(string(bodyOut), "Signed-off-by: Sybra <sybra@localhost>") {
-		t.Errorf("commit body missing DCO trailer, got %q", bodyOut)
+		t.Errorf("commit body missing DCO trailer, got %q", string(bodyOut))
 	}
 
 	// Idempotent: nothing left to commit on the now-clean tree.
