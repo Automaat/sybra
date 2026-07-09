@@ -24,6 +24,29 @@ func makeFIFO(path string) error {
 	return syscall.Mkfifo(path, 0o600)
 }
 
+// startHeadlessProcessSurviveStdin assigns a steerable detached headless
+// claude process's stdin to a FIFO, mirroring startConvoProcessSurvive's
+// transport setup exactly (reusing makeFIFO/agentFIFOPath) without branching
+// that function: opened O_RDWR so it never sees EOF and survives the
+// parent's exit, and a reattach reopens it (see reattachHeadless). Called
+// from runHeadlessAttemptSurvive before cmd.Start(); on any error cmd.Stdin
+// is left unset and the caller aborts the attempt.
+func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) error {
+	fifoPath := agentFIFOPath(m.registryDir(), a.ID)
+	if err := makeFIFO(fifoPath); err != nil {
+		return fmt.Errorf("mkfifo: %w", err)
+	}
+	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open fifo: %w", err)
+	}
+	cmd.Stdin = fifo
+	a.convo.replaceStdinPipe(fifo)
+	a.setStdinPath(fifoPath)
+	a.setFinalizing(false)
+	return nil
+}
+
 // startConvoProcessSurvive spawns a detached conversational Claude process
 // whose stdin is a FIFO (opened O_RDWR so it never sees EOF and survives the
 // parent's exit) and whose stdout is the NDJSON log file. The manager reads

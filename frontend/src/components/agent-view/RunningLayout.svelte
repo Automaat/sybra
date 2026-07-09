@@ -7,10 +7,12 @@
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
   import StreamOutput from '../StreamOutput.svelte'
   import ChatView from '../ChatView.svelte'
+  import ChatInput from '../ChatInput.svelte'
   import ActionTimeline from '../ActionTimeline.svelte'
   import ThreePanelLayout from './ThreePanelLayout.svelte'
   import SessionWorkspace from './SessionWorkspace.svelte'
   import AgentSidebarList from './AgentSidebarList.svelte'
+  import { convoStore } from '../../stores/convo.svelte.js'
 
   interface Props {
     a: Agent
@@ -39,6 +41,27 @@
   }: Props = $props()
 
   let timelineOpen = $state(true)
+
+  // Only Claude headless runs currently accept mid-run steer messages (see
+  // agent.headless_steerable / claudeProvider.BuildHeadlessInvocation) —
+  // codex/copilot headless runs keep the Stop-only running view.
+  const isSteerableHeadless = $derived(
+    a.mode === 'headless' && a.provider === 'claude' && a.state === 'running',
+  )
+  let pauseError = $state<string | null>(null)
+
+  async function handleSend(text: string) {
+    await convoStore.sendMessage(a.id, text)
+  }
+
+  async function handlePause() {
+    pauseError = null
+    try {
+      await handleSend('Please pause your current work and wait for further instructions before continuing.')
+    } catch (e) {
+      pauseError = e instanceof Error ? e.message : 'Failed to send pause instruction'
+    }
+  }
 </script>
 
 <ThreePanelLayout>
@@ -90,6 +113,29 @@
             highlightIndex={selectedIndex}
             onvisibleindex={(i) => { if (selectedIndex === null) onselect(i) }}
           />
+          {#if isSteerableHeadless}
+            <div class="mt-2 rounded-lg border border-surface-300 dark:border-surface-700">
+              <div class="flex items-center justify-between px-3 pt-2">
+                <span class="text-xs font-medium text-surface-500">Steer agent</span>
+                <button
+                  type="button"
+                  title="Send a cooperative pause instruction — the agent finishes its current step, then waits"
+                  onclick={handlePause}
+                  class="rounded px-1.5 py-0.5 text-[10px] font-medium text-surface-500 transition-colors
+                    hover:bg-surface-200 dark:hover:bg-surface-700"
+                >
+                  Pause
+                </button>
+              </div>
+              {#if pauseError}
+                <p class="px-3 pt-1 text-xs text-error-600 dark:text-error-400">{pauseError}</p>
+              {/if}
+              <ChatInput
+                placeholder="Send guidance to the running agent..."
+                onsend={handleSend}
+              />
+            </div>
+          {/if}
         {/if}
       </div>
     </div>

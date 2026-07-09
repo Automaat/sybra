@@ -53,9 +53,9 @@ type Manager struct {
 	// RunConfig.HeadlessSteerable.
 	headlessSteerable bool
 	gate              provider.HealthGate
-	limitGate     LimitGate
-	limitPolicy   limits.Policy
-	limitSink     func(limits.Snapshot)
+	limitGate         LimitGate
+	limitPolicy       limits.Policy
+	limitSink         func(limits.Snapshot)
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
