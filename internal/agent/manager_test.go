@@ -999,13 +999,16 @@ func TestShutdownWithGrace_WaitsForDoneChannels(t *testing.T) {
 	m.mu.Unlock()
 
 	// Close done after a short delay — models a well-behaved subprocess
-	// noticing SIGTERM and flushing its result before exiting.
+	// noticing SIGTERM and flushing its result before exiting. start is
+	// sampled before launching the goroutine: sampling it after left a
+	// window where a delayed scheduler could run the sleep first, making
+	// elapsed (measured from start) read under 30ms despite a real wait.
+	start := time.Now()
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		close(done)
 	}()
 
-	start := time.Now()
 	m.ShutdownWithGrace(500 * time.Millisecond)
 	elapsed := time.Since(start)
 	if elapsed > 300*time.Millisecond {

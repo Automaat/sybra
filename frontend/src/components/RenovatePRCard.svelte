@@ -19,9 +19,7 @@
   let busy = $state('')
 
 
-  const isEligible = $derived(
-    isRenovatePRReadyToMerge(pr)
-  )
+  const isEligible = $derived(isRenovatePRReadyToMerge(pr))
 
   async function approve(e: Event) {
     e.stopPropagation()

@@ -9,7 +9,7 @@ import (
 
 type fakeCheckGetter struct{ cmds []string }
 
-func (f *fakeCheckGetter) VerifyCommands(string) []string { return f.cmds }
+func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
 
 func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepVerifyChecks} }
 
@@ -125,6 +125,26 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required (an agent could hang a test to dodge)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	slowOnce := "test -f .timeout-marker || { touch .timeout-marker; sleep 30; }"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{slowOnce})
+	engine.SetVerifyTimeout(200 * time.Millisecond)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (one-off timeout absorbed by suite retry)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
 	}
 }
 

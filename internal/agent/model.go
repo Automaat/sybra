@@ -380,6 +380,13 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// GetStartedAt returns the agent's recorded start time.
+func (a *Agent) GetStartedAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.StartedAt
+}
+
 // SetProviderAndModel updates the agent's provider and (already-normalized)
 // model. Used when a mid-run per-turn provider re-gate fails the agent's
 // current provider over to a healthy peer; Provider/Model are otherwise fixed
@@ -1002,6 +1009,25 @@ type RunConfig struct {
 	// computed once by injectProcessSandbox and consumed by wrapInvocation
 	// at each provider spawn site. Never set by callers.
 	sandbox sandboxSpec
+	// approvalAddr is the manager's HTTP approval-server address
+	// ("127.0.0.1:port"), set by prepareRunConfig for every run. Consumed by
+	// claudeProvider.BuildHeadlessInvocation to wire the PreToolUse approval
+	// hook when RequirePermissions is true — without it, a headless run under
+	// require_permissions:true has no path to grant a tool call and
+	// operators are forced to require_permissions:false, which collapses to
+	// --dangerously-skip-permissions. Never set by callers.
+	approvalAddr string
+}
+
+// needsApprovalHook reports whether a run should wire the PreToolUse approval
+// hook. True when permissions are required or an interactive permission-mode is
+// set. Both the headless (provider_claude.go) and conversational
+// (runner_convo.go) call sites gate on this so a future change can't silently
+// desync them: headless runs never set PermissionMode (they use
+// HeadlessPermissionMode for the auto classifier), so for them it collapses to
+// RequirePermissions alone.
+func (cfg RunConfig) needsApprovalHook() bool {
+	return cfg.RequirePermissions || cfg.PermissionMode != ""
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

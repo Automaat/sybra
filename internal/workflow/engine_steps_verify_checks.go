@@ -38,6 +38,8 @@ const verifyBlessedTag = "verify-blessed"
 // still blocks; the cost is one extra suite run only on the failing command.
 const verifyChecksFlakeRetries = 1
 
+const verifyChecksTimeoutRetries = 1
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
 	Commands   []string `json:"commands"`
@@ -70,7 +72,12 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	if e.checks == nil {
 		return stepDone(step, "skipped: no check config getter")
 	}
-	cmds := e.checks.VerifyCommands(taskID)
+
+	timeout := e.verifyTimeout
+	if timeout <= 0 {
+		timeout = verifyChecksDefaultTimeout
+	}
+	cmds := e.checks.VerifyCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return stepDone(step, "skipped: no verify commands configured")
 	}
@@ -82,15 +89,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 		return stepDone(step, "skipped: no worktree for task")
 	}
 
-	timeout := e.verifyTimeout
-	if timeout <= 0 {
-		timeout = verifyChecksDefaultTimeout
-	}
-	ctx, cancel := context.WithTimeout(e.ctx, timeout)
-	defer cancel()
-
-	maybeMiseTrust(ctx, wtPath)
-	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
@@ -108,8 +107,10 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	// otherwise an agent could hang a test past the budget to dodge the gate.
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
-			reason := "verify suite exceeded the time budget (" + timeout.String() +
-				") — fix slow or hanging tests, or add the `verify-blessed` tag to override"
+			reason := fmt.Sprintf(
+				"verify suite exceeded the time budget (%s) on all %d attempts"+
+					" — fix slow or hanging tests, or add the `verify-blessed` tag to override",
+				timeout, verifyChecksTimeoutRetries+1)
 			return e.flagVerifyChecks(taskID, step, reason, "timeout")
 		}
 		e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
@@ -130,6 +131,23 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
+func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
+	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(e.ctx, timeout)
+		maybeMiseTrust(ctx, wtPath)
+		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+		cancel()
+		if !errors.Is(runErr, context.DeadlineExceeded) || e.ctx.Err() != nil {
+			return failedCmd, output, runErr
+		}
+		if attempt < verifyChecksTimeoutRetries {
+			e.logger.Warn("workflow.verify-checks.timeout-retry",
+				"task_id", taskID, "step", stepID, "attempt", attempt+1, "budget", timeout.String())
+		}
+	}
+	return failedCmd, output, runErr
+}
+
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
