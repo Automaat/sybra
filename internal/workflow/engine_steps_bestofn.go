@@ -96,6 +96,21 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 		return nil, err
 	}
 
+	// Serialize the fan-out loop against AdvanceStep for this task. A
+	// fast-completing attempt agent's onComplete callback can fire — and
+	// block in AdvanceStep on this same per-task mutex (see
+	// acquireInflight/handleFanOutCompletion) — before this loop has finished
+	// dispatching its siblings. advanceBestOfNAttempt persists a freshly
+	// reloaded Execution when it runs; without holding the mutex here, this
+	// loop's own end-of-loop SetWorkflow below (built from an in-memory copy
+	// that predates that completion) would silently clobber it, permanently
+	// losing the earlier attempt's terminal status and deadlocking the parent
+	// in state=waiting — the intermittent e2e timeout this guards against.
+	// Released before finalizeBestOfNParent (which may recurse into
+	// executeSteps/StopAgentsForTask) so it cannot deadlock the way holding
+	// this lock through execRunAgent's StopAgentsForTask would.
+	inflight := e.taskInflightMutex(taskID)
+	inflight.Lock()
 	for i := 1; i <= n; i++ {
 		id := bestOfNAttemptID(i)
 		status := rec.Attempts[id]
@@ -123,11 +138,20 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 			status.Output = "spawn failed: " + err.Error()
 		}
 	}
+	allDone := rec.AllAttemptsDone()
+	var persistErr error
+	if !allDone {
+		persistErr = e.tasks.SetWorkflow(taskID, wfExec)
+	}
+	inflight.Unlock()
+	if persistErr != nil {
+		return nil, persistErr
+	}
 
-	if rec.AllAttemptsDone() {
+	if allDone {
 		return e.finalizeBestOfNParent(taskID, def, step, wfExec)
 	}
-	return nil, e.tasks.SetWorkflow(taskID, wfExec)
+	return nil, nil
 }
 
 // spawnBestOfNAttempt prepares one attempt's isolated worktree and dispatches
