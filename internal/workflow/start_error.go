@@ -30,6 +30,15 @@ var ErrDispatchInFlight = errors.New("agent dispatch already in flight for task"
 // so it must never flip the task to human-required or write a status_reason.
 var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
 
+// ErrAgentPoolBusy is returned by the agent-start path when the global agent
+// pool (agent.MaxConcurrent) is already saturated. The sybra adapter maps
+// agent.ErrMaxConcurrentReached onto this sentinel. Like ErrTestRunnerBusy it
+// is benign and transient — a slot frees when any running agent completes — so
+// the run_agent step parks in ExecWaiting and ResumeStalled retries it. It must
+// never feed the circuit breaker or flip the task to human-required: a
+// transient "too many agents running" is not a dispatch fault.
+var ErrAgentPoolBusy = errors.New("agent pool concurrency cap reached")
+
 // ErrNoProjectAssigned is returned by an agent-start path when a task needs
 // an isolated worktree but has no project_id, and auto-assignment could not
 // resolve one (no agent.default_project_id configured, and more than one
@@ -69,6 +78,8 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		return "", false
 	case errors.Is(err, ErrTestRunnerBusy):
 		// Transient: the testing slot frees and ResumeStalled retries. No reason.
+		return "", false
+	case errors.Is(err, ErrAgentPoolBusy):
 		return "", false
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
@@ -120,6 +131,7 @@ func isTransientCapacityError(err error) bool {
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, ErrAgentPoolBusy) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
