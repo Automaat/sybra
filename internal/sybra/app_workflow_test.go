@@ -381,7 +381,7 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 }
 
 // TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery guards
-// against the nested-claim deadlock in task df8a91f4: a direct-dispatch
+// against a nested-claim deadlock: a direct-dispatch
 // StartAgent call (e.g. the create_pr step) that hits a rebase-blocked
 // worktree-prep error synchronously invokes the conflict-recovery callback
 // (RecoverStaleBranchConflict -> recoverBranchConflictNoPR), which itself
@@ -403,7 +403,7 @@ func TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery(t *te
 		// step dispatch effectively does: claim the SAME per-task dispatch
 		// slot the outer StartAgent call above was holding. If StartAgent
 		// hadn't released it first, this would fail exactly like the fix
-		// step did in task df8a91f4's repro.
+		// step did in the original repro of this deadlock.
 		claimAcquiredDuringRecovery = h.agents.ClaimTaskDispatch(id)
 		if claimAcquiredDuringRecovery {
 			h.agents.ReleaseTaskDispatch(id)

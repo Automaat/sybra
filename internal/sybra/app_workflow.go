@@ -506,45 +506,16 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	cleanRetryReset := false
 	if cfg.Dir == "" && needsWorktree {
-		t, err = a.agentOrch.AutoAssignProject(t)
+		var dir string
+		var released bool
+		t, dir, cleanRetryReset, released, err = a.resolveWorktreeDir(t, taskID, role, cleanRetryRef)
+		if released {
+			claimReleased = true
+		}
 		if err != nil {
 			return "", "", "", err
 		}
-		if t.ProjectID == "" {
-			return "", "", "", fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
-		}
-		if cleanRetryRef != "" {
-			if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
-				return "", "", "", resetErr
-			}
-			cleanRetryReset = true
-		}
-		// context.Background(): StartAgent implements workflow.AgentDispatcher,
-		// a fixed interface signature with no ctx parameter (invoked from many
-		// workflow step-execution call sites); see the Engine.SetContext /
-		// e.ctx pattern for why threading ctx across that interface is out of
-		// scope for this pass.
-		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
-		if wtErr != nil {
-			// Release our dispatch claim before classifying/recovering: a
-			// rebase-blocked wtErr routes through RecoverFromWorktreePrepFailure
-			// -> RecoverStaleBranchConflict, which synchronously starts the
-			// branch-conflict-fix workflow and dispatches ITS OWN "fix" agent for
-			// this same taskID. dispatchClaims is a non-reentrant per-task map
-			// (agent.Manager.ClaimTaskDispatch), so if we still held the claim
-			// here, that nested dispatch would collide with it and park on
-			// ErrDispatchInFlight without ever starting the conflict-resolution
-			// agent -- see task df8a91f4. We're bailing out of this dispatch
-			// attempt regardless (wtErr != nil means we never call a.agents.Run
-			// below), so releasing early is safe: it doesn't overlap with our own
-			// (never-attempted) agent start. Set claimReleased so the outer defer
-			// doesn't fire a second, unguarded delete that could clobber a claim
-			// another dispatcher took during the recovery window.
-			a.agents.ReleaseTaskDispatch(taskID)
-			claimReleased = true
-			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
-		}
-		cfg.Dir = d
+		cfg.Dir = dir
 	}
 	if cfg.Dir != "" && cleanRetryRef != "" && !cleanRetryReset {
 		if resetErr := a.resetWorktreeForRetry(t, cfg.Dir, cleanRetryRef); resetErr != nil {
@@ -578,6 +549,50 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+// resolveWorktreeDir auto-assigns a project to t (if needed), optionally
+// resets the worktree for a clean retry, and prepares the worktree dir for
+// the direct-dispatch path. released reports whether it already released the
+// caller's dispatch claim (see the ReleaseTaskDispatch call below) so the
+// caller's deferred release doesn't fire a second, unguarded delete.
+func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryRef string) (updated task.Task, dir string, cleanRetryReset, released bool, err error) {
+	t, err = a.agentOrch.AutoAssignProject(t)
+	if err != nil {
+		return t, "", false, false, err
+	}
+	if t.ProjectID == "" {
+		return t, "", false, false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
+	}
+	if cleanRetryRef != "" {
+		if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
+			return t, "", false, false, resetErr
+		}
+		cleanRetryReset = true
+	}
+	// context.Background(): StartAgent implements workflow.AgentDispatcher,
+	// a fixed interface signature with no ctx parameter (invoked from many
+	// workflow step-execution call sites); see the Engine.SetContext /
+	// e.ctx pattern for why threading ctx across that interface is out of
+	// scope for this pass.
+	d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
+	if wtErr != nil {
+		// Release our dispatch claim before classifying/recovering: a
+		// rebase-blocked wtErr routes through RecoverFromWorktreePrepFailure
+		// -> RecoverStaleBranchConflict, which synchronously starts the
+		// branch-conflict-fix workflow and dispatches ITS OWN "fix" agent for
+		// this same taskID. dispatchClaims is a non-reentrant per-task map
+		// (agent.Manager.ClaimTaskDispatch), so if we still held the claim
+		// here, that nested dispatch would collide with it and park on
+		// ErrDispatchInFlight without ever starting the conflict-resolution
+		// agent. We're bailing out of this dispatch
+		// attempt regardless (wtErr != nil means we never call a.agents.Run
+		// below), so releasing early is safe: it doesn't overlap with our own
+		// (never-attempted) agent start.
+		a.agents.ReleaseTaskDispatch(taskID)
+		return t, "", cleanRetryReset, true, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
+	}
+	return t, d, cleanRetryReset, false, nil
 }
 
 // claimDirectDispatch serializes the direct-run dispatch path (every role
