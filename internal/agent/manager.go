@@ -269,6 +269,45 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Unlock()
 }
 
+// DispatchClaim is a held per-task dispatch claim returned by
+// TryClaimDispatch. It centralizes the release-at-most-once bookkeeping every
+// dispatch call site used to hand-roll individually (a local `released bool`
+// guarding a deferred delete): releasing early to unblock a nested
+// same-task dispatch (e.g. branch-conflict recovery) can never race a
+// deferred second release into clobbering a claim a different dispatcher has
+// since acquired.
+type DispatchClaim struct {
+	manager  *Manager
+	taskID   string
+	released bool
+}
+
+// TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
+// true ok, the caller MUST release the returned claim exactly once dispatch
+// finishes (success or failure) — typically via `defer claim.Release()` —
+// and MAY call Release earlier to unblock a nested same-task dispatch before
+// the deferred call runs, since Release is idempotent. On ok=false a dispatch
+// is already in flight for the same task and the caller MUST NOT start an
+// agent.
+func (m *Manager) TryClaimDispatch(taskID string) (claim *DispatchClaim, ok bool) {
+	if !m.ClaimTaskDispatch(taskID) {
+		return nil, false
+	}
+	return &DispatchClaim{manager: m, taskID: taskID}, true
+}
+
+// Release releases the claim. Idempotent and nil-safe: a second call (or a
+// call on a nil claim) is a no-op, so an early manual release followed by a
+// deferred Release never double-deletes a claim a different dispatcher has
+// since acquired.
+func (c *DispatchClaim) Release() {
+	if c == nil || c.released {
+		return
+	}
+	c.released = true
+	c.manager.ReleaseTaskDispatch(c.taskID)
+}
+
 // ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
 // affect future Run calls and config reloads without mutating startup-only callbacks.
 func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {

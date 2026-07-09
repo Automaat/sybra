@@ -690,6 +690,51 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+// TestTryClaimDispatch verifies the DispatchClaim wrapper matches
+// ClaimTaskDispatch/ReleaseTaskDispatch semantics (single holder per task,
+// independent tasks unaffected) and that Release is idempotent — a second
+// Release call, or a Release on a nil claim, must not panic or re-delete a
+// claim a different holder has since acquired.
+func TestTryClaimDispatch(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	claim, ok := m.TryClaimDispatch("t1")
+	if !ok || claim == nil {
+		t.Fatal("first claim should succeed")
+	}
+	if _, ok := m.TryClaimDispatch("t1"); ok {
+		t.Error("second claim while held must fail (serializes dispatch)")
+	}
+	if other, ok := m.TryClaimDispatch("t2"); !ok || other == nil {
+		t.Error("claim for a different task must succeed")
+	} else {
+		other.Release()
+	}
+
+	claim.Release()
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should have been released")
+	}
+	m.ReleaseTaskDispatch("t1")
+
+	// Idempotent: a second Release, after another holder has since claimed the
+	// same taskID, must not clobber that foreign claim.
+	claim.Release()
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("setup: expected to reclaim t1")
+	}
+	claim.Release()
+	if m.ClaimTaskDispatch("t1") {
+		t.Error("stale claim's second Release must not clobber a foreign claim taken after the first Release")
+	} else {
+		m.ReleaseTaskDispatch("t1")
+	}
+
+	// Release on a nil claim must not panic.
+	var nilClaim *DispatchClaim
+	nilClaim.Release()
+}
+
 // TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim guards against
 // the sybra#1495 self-deadlock: a dispatcher that holds its own dispatch
 // claim while preparing a worktree (StartAgentWithAssignment holds the claim
