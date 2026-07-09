@@ -99,7 +99,7 @@ func main() {
 	}
 
 	scenario := popScenario()
-	prompt := extractPrompt(os.Args)
+	prompt := promptArg(os.Args)
 	if prompt == "" && scenarioNeedsPromptContext(scenario) {
 		prompt = readInitialPrompt(os.Stdin)
 	}
@@ -438,7 +438,7 @@ func runMalformedPROutput() {
 func runWriteSidecarSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
 	emitResult("Sidecar written.")
@@ -448,7 +448,7 @@ func runRevisePlanSidecars(taskID string) {
 	emitSystem()
 	emitAssistant("Revising fake plan sidecars...")
 	paths := map[string]string{}
-	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude-revision")), 0o644)
 		base := filepath.Base(path)
 		switch {
@@ -492,7 +492,7 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
-	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		if strings.Contains(filepath.Base(path), "sybra-critique") {
 			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
 		}
@@ -663,13 +663,17 @@ func emitRaw(event map[string]any) {
 // Task IDs look like 8-char hex strings (e.g., "a1b2c3d4").
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
 
-func extractPrompt(args []string) string {
+func promptArg(args []string) string {
 	for i, arg := range args {
 		if arg == "-p" && i+1 < len(args) {
 			return args[i+1]
 		}
 	}
 	return ""
+}
+
+func extractPrompt(args []string) string {
+	return promptTaskID(promptArg(args))
 }
 
 func promptTaskID(prompt string) string {
