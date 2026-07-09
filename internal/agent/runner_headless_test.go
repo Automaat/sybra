@@ -2070,6 +2070,25 @@ func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAllow
 	}
 }
 
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerForHeadlessCodex(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "codex",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", cfg.Provider)
+	}
+}
+
 // TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs verifies that Claude and
 // Copilot invocations never receive codex hook args regardless of TaskID.
 func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {

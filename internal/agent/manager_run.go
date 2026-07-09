@@ -116,13 +116,21 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	cfg.approvalAddr = m.approvalAddr
-	// require_permissions:true relies on the approval hook to gate each tool
-	// call. If the approval server never started (approvalAddr empty) the hook
-	// is silently omitted and the run falls back to CLI defaults — neither the
-	// gating the operator asked for nor an explicit bypass. Fail closed rather
-	// than degrading quietly. Skipped when an explicit tool allowlist or the
-	// auto permission-mode classifier already governs the run.
-	if cfg.RequirePermissions && cfg.approvalAddr == "" &&
+	// Headless Claude runs with require_permissions:true rely on Sybra's
+	// approval hook to gate each tool call. If the approval server never
+	// started (approvalAddr empty) the hook is silently omitted and the run
+	// falls back to CLI defaults — neither the gating the operator asked for
+	// nor an explicit bypass. Fail closed rather than degrading quietly.
+	//
+	// Scope this to the exact vulnerable shape:
+	// - claude provider
+	// - headless mode
+	// - no explicit AllowedTools allowlist
+	// - not using Claude's own auto classifier
+	//
+	// Other providers do not depend on this hook for headless execution.
+	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+		cfg.RequirePermissions && cfg.approvalAddr == "" &&
 		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
 		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
 	}
