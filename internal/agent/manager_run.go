@@ -114,6 +114,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	cfg.approvalAddr = m.approvalAddr
 
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
