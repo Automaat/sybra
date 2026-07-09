@@ -105,6 +105,24 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// as a warning. Setting "status" without a reason makes the store clear any
 	// stale reason (e.g. "monitor: awaiting triage").
 
+	// A ☂️-titled task that never went through the GitHub issue fetcher (e.g.
+	// manual sybra-cli create) keeps task_type=normal and is invisible to the
+	// umbrella gate (internal/sybra/app_umbrella_gate.go), which filters
+	// strictly on TaskTypeUmbrella. Dispatching it as a flat implement task
+	// wastes a full run before the agent discovers there's no direct code
+	// surface. Catch it here — before dispatch — and park it for a human to
+	// either set task_type=umbrella or fix the title.
+	effectiveTitle := newTitle
+	if effectiveTitle == "" {
+		effectiveTitle = t.Title
+	}
+	if t.TaskType != task.TaskTypeUmbrella && umbrella.IsUmbrellaIssue(effectiveTitle, t.Tags) {
+		updates["status"] = string(task.StatusHumanRequired)
+		updates["status_reason"] = "☂️-titled task has task_type=normal, not umbrella — " +
+			"guard blocked dispatch to avoid a wasted implement run; " +
+			"set task_type=umbrella to expand it or fix the title if this isn't a tracker"
+	}
+
 	updated, err := mgr.UpdateMap(t.ID, updates)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("update task: %w", err)
