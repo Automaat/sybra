@@ -68,7 +68,7 @@ func newTestTaskManager(t *testing.T) *task.Manager {
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 }
 
-func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
+func TestExpandPlannerDeadlineFallsBackToIndependentParallel(t *testing.T) {
 	restore := githubFetchUmbrellaForTest(t, github.Issue{
 		Title:      "umbrella",
 		URL:        "https://github.com/o/r/issues/100",
@@ -115,11 +115,14 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	if got := ParseExpandFailCount(tracker.Tags); got != 0 {
 		t.Fatalf("expand fail count = %d, want 0 for degraded fallback success", got)
 	}
-	if got := children["o/r#2"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/1" {
-		t.Fatalf("child #2 deps = %v, want issue #1", got)
+	if got := children["o/r#1"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #1 deps = %v, want none (independent-parallel fallback)", got)
 	}
-	if got := children["o/r#3"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/2" {
-		t.Fatalf("child #3 deps = %v, want issue #2", got)
+	if got := children["o/r#2"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #2 deps = %v, want none (independent-parallel fallback)", got)
+	}
+	if got := children["o/r#3"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #3 deps = %v, want none (independent-parallel fallback)", got)
 	}
 }
 

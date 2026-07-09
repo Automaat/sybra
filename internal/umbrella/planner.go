@@ -22,7 +22,7 @@ const plannerAttempts = 3
 
 // errPlannerExhausted marks attemptPlan's exhaustion return (plannerAttempts
 // samples, none parsed/resolved/validated) so Generate can distinguish it from
-// a fatal runner error via errors.Is and fall back to a linear chain instead
+// a fatal runner error via errors.Is and fall back to an independent-parallel plan instead
 // of aborting the whole expansion.
 var errPlannerExhausted = errors.New("planner exhausted retries")
 
@@ -58,7 +58,7 @@ type PlannedChild struct {
 type Plan struct {
 	Children    []PlannedChild `json:"children"`
 	MaxParallel int            `json:"maxParallel"`
-	// Fallback marks a plan built by linearChainFallback instead of the model,
+	// Fallback marks a plan built by independentFallback instead of the model,
 	// so callers can surface degradation loudly. Never persisted on the wire.
 	Fallback bool `json:"-"`
 }
@@ -102,7 +102,7 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // falls back to the original plan rather than failing the whole expansion.
 // If the first attempt exhausts plannerAttempts without ever producing a
 // valid plan, or the planner deadline expires, Generate falls back to a
-// fully-serial linear chain (linearChainFallback) instead of aborting the
+// independent-parallel plan (independentFallback) instead of aborting the
 // expansion; a fatal runner error (couldn't launch the model) is not
 // exhaustion and still aborts.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue, opts ...GenerateOption) (Plan, error) {
@@ -119,7 +119,7 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 	plan, err := attemptPlan(ctx, run, idx, prompt, subs, cfg)
 	if err != nil {
 		if plannerExhausted(err) {
-			return linearChainFallback(subs)
+			return independentFallback(subs)
 		}
 		return Plan{}, err
 	}
@@ -173,19 +173,21 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w: %w", plannerAttempts, errPlannerExhausted, lastErr)
 }
 
-// linearChainFallback builds a fully-serial fallback plan for when the
-// planner exhausts its retries without producing a valid DAG: sub-issues are
-// ordered by numeric issue number (ties and non-numeric refs keep fetch
-// order, via a stable sort), and each open child depends on the previous open
-// child. A closed sub-issue carries no edges — ChildSpecs already drops any
-// dependency on a closed sub-issue as satisfied — so a closed sub-issue in
-// the middle of the chain cannot split the remaining open children into
-// parallel islands; the open child that follows it still chains to the last
-// open child before it. MaxParallel is pinned to 1 and Fallback is set so
-// callers can surface the degradation. The constructed plan still runs
-// through validate as a real guard: a validation failure is returned rather
-// than silently committing a malformed chain.
-func linearChainFallback(subs []SubIssue) (Plan, error) {
+// independentFallback builds an independent-parallel fallback plan for when
+// the planner exhausts its retries without producing a valid DAG: since the
+// planner produced no ordering information at all, assuming total order is
+// the most expensive possible wrong guess (it multiplies wall-clock by N),
+// while assuming no order is cheap and self-healing — every child runs in
+// its own worktree and opens its own PR, so real conflicts surface at
+// merge/review (handled by pr-fix), not at run time. Sub-issues are ordered
+// by numeric issue number (ties and non-numeric refs keep fetch order, via a
+// stable sort) purely for deterministic child ordering; no DependsOn edges
+// are emitted between children. MaxParallel is set to a modest degraded cap
+// and Fallback is set so callers can surface the degradation. The
+// constructed plan still runs through validate as a real guard: a validation
+// failure is returned rather than silently committing a malformed plan.
+func independentFallback(subs []SubIssue) (Plan, error) {
+	const fallbackMaxParallel = 3
 	type numberedSub struct {
 		sub    SubIssue
 		num    int
@@ -220,21 +222,13 @@ func linearChainFallback(subs []SubIssue) (Plan, error) {
 		keyed[idx] = numbered[i]
 	}
 
-	p := Plan{MaxParallel: 1, Fallback: true}
-	prevOpen := ""
+	p := Plan{MaxParallel: fallbackMaxParallel, Fallback: true}
 	for _, ks := range keyed {
 		canon := NormalizeIssueRef(ks.sub.Ref)
-		child := PlannedChild{Ref: canon}
-		if !ks.sub.Closed {
-			if prevOpen != "" {
-				child.DependsOn = []string{prevOpen}
-			}
-			prevOpen = canon
-		}
-		p.Children = append(p.Children, child)
+		p.Children = append(p.Children, PlannedChild{Ref: canon})
 	}
 	if err := p.validate(subs); err != nil {
-		return Plan{}, fmt.Errorf("linear-chain fallback failed validation: %w", err)
+		return Plan{}, fmt.Errorf("independent fallback failed validation: %w", err)
 	}
 	return p, nil
 }
