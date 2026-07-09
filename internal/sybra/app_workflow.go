@@ -45,7 +45,7 @@ type attemptWorktreeAdapter struct {
 	mgr   *worktree.Manager
 }
 
-func (a *attemptWorktreeAdapter) PrepareAttempt(taskID, attemptID string) (string, string, error) {
+func (a *attemptWorktreeAdapter) PrepareAttempt(taskID, attemptID string) (dir, branch string, err error) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return "", "", fmt.Errorf("get task: %w", err)

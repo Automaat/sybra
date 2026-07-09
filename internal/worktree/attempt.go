@@ -159,16 +159,25 @@ func (m *Manager) PromoteAttempt(ctx context.Context, t task.Task, winnerDir, wi
 	}
 	canonicalPath := m.PathFor(t)
 
-	if canonicalHead, exists := project.ResolveBareRef(ctx, proj.ClonePath, "refs/heads/"+canonicalBranch); exists {
+	canonicalHead, exists := project.ResolveBareRef(ctx, proj.ClonePath, "refs/heads/"+canonicalBranch)
+	if exists {
 		if canonicalHead != winnerHead && !project.IsAncestorInBare(ctx, proj.ClonePath, canonicalHead, winnerHead) {
 			return "", fmt.Errorf("%w: canonical %s vs winner %s", ErrPromotionDiverged, shortSHA(canonicalHead), shortSHA(winnerHead))
 		}
 	}
 
-	if err := project.SetBranchTo(ctx, proj.ClonePath, canonicalBranch, winnerHead); err != nil {
-		return "", fmt.Errorf("fast-forward canonical branch: %w", err)
+	// Idempotent no-op: skip the branch move entirely when the canonical ref
+	// already points at the winner's HEAD. `git branch -f` on a branch that is
+	// checked out in a worktree fails outright ("cannot force update the
+	// branch ... used by worktree"), so a re-promotion after the canonical
+	// worktree has already been materialized here would otherwise error every
+	// time instead of being a safe retry.
+	if !exists || canonicalHead != winnerHead {
+		if err := project.SetBranchTo(ctx, proj.ClonePath, canonicalBranch, winnerHead); err != nil {
+			return "", fmt.Errorf("fast-forward canonical branch: %w", err)
+		}
+		m.logger.Info("worktree.attempt.promoted", "task_id", t.ID, "branch", canonicalBranch, "winner_branch", winnerBranch, "head", shortSHA(winnerHead))
 	}
-	m.logger.Info("worktree.attempt.promoted", "task_id", t.ID, "branch", canonicalBranch, "winner_branch", winnerBranch, "head", shortSHA(winnerHead))
 
 	dir, err := m.materializeCanonicalWorktree(ctx, t, proj, canonicalPath, canonicalBranch)
 	if err != nil {
