@@ -184,9 +184,13 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
 	// Serialize dispatch attempts per task to prevent concurrent callers from
-	// both observing "no active workflow" and double-starting.
+	// both observing "no active workflow" and double-starting. Also consult
+	// the shared agent.Manager dispatch-claim coordinator (IsDispatching) so
+	// a claim held by a dispatcher this engine has no local visibility into
+	// (e.g. recovery.RestartStaleInProgress) is treated as busy too — the
+	// engine's own `dispatching` marker alone cannot see that.
 	e.mu.Lock()
-	if _, busy := e.dispatching[taskID]; busy {
+	if _, busy := e.dispatching[taskID]; busy || e.agents.IsDispatching(taskID) {
 		e.mu.Unlock()
 		return "", fmt.Errorf("%w: dispatch in progress", ErrWorkflowAlreadyActive)
 	}

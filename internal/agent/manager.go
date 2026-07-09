@@ -269,6 +269,21 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Unlock()
 }
 
+// IsDispatching reports whether a dispatch claim is currently held for
+// taskID, by any caller of ClaimTaskDispatch/TryClaimDispatch — the workflow
+// engine's execRunAgent, recovery.RestartStaleInProgress (via
+// agentorch.Orchestrator), or a direct non-workflow StartAgent call. This is
+// the single ground-truth answer to "is this task's next run already
+// owned?" that every dispatcher can consult before deciding to redispatch,
+// instead of each maintaining its own separate view of dispatch-in-flight
+// state.
+func (m *Manager) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, held := m.dispatchClaims[taskID]
+	return held
+}
+
 // DispatchClaim is a held per-task dispatch claim returned by
 // TryClaimDispatch. It centralizes the release-at-most-once bookkeeping every
 // dispatch call site used to hand-roll individually (a local `released bool`

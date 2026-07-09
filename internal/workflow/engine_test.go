@@ -381,6 +381,7 @@ type mockAgents struct {
 	providerFailover  bool            // when true, ProviderCanFailover reports true
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
+	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
 }
 
 type panicStartAgents struct{ *mockAgents }
@@ -517,6 +518,24 @@ func (m *mockAgents) SendPrompt(agentID, message string) error {
 }
 
 func (m *mockAgents) DefaultProvider() string { return "claude" }
+
+func (m *mockAgents) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dispatchClaimed[taskID]
+}
+
+// SetDispatchClaimed simulates an out-of-band dispatcher (e.g.
+// recovery.RestartStaleInProgress) holding the shared agent.Manager
+// dispatch claim for taskID, independent of this engine's own bookkeeping.
+func (m *mockAgents) SetDispatchClaimed(taskID string, v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dispatchClaimed == nil {
+		m.dispatchClaimed = make(map[string]bool)
+	}
+	m.dispatchClaimed[taskID] = v
+}
 
 // SimulateComplete marks the agent for a task as no longer running.
 func (m *mockAgents) SimulateComplete(taskID string) {
@@ -4971,6 +4990,71 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	engine.ResumeStalled()
 	if got := agents.CallCount(); got != before+1 {
 		t.Errorf("ResumeStalled after inflight cleared: calls %d → %d (want +1)", before, got)
+	}
+}
+
+// TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher verifies ResumeStalled
+// consults the shared agent.Manager dispatch-claim coordinator (IsDispatching)
+// in addition to its own local dispatching/agentSteps bookkeeping. A claim
+// held by a dispatcher the engine has no local visibility into — e.g.
+// recovery.RestartStaleInProgress dispatching via agentorch.Orchestrator
+// outside the workflow engine entirely — must still block a concurrent
+// ResumeStalled redispatch, closing the exact split-ownership race the
+// engine-local maps alone cannot see.
+func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "planning",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// Simulate an out-of-band dispatcher (recovery.RestartStaleInProgress)
+	// holding the shared agent.Manager claim for t1 — invisible to the
+	// engine's own dispatching/agentSteps maps.
+	agents.SetDispatchClaimed("t1", true)
+
+	before := agents.CallCount()
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before {
+		t.Errorf("ResumeStalled spawned a duplicate agent while the shared claim was held elsewhere: calls %d → %d",
+			before, got)
+	}
+
+	// Once the out-of-band dispatcher releases its claim, ResumeStalled may
+	// proceed as normal.
+	agents.SetDispatchClaimed("t1", false)
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before+1 {
+		t.Errorf("ResumeStalled after shared claim released: calls %d → %d (want +1)", before, got)
+	}
+}
+
+// TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher verifies DispatchEvent
+// also treats a shared agent.Manager dispatch claim held for the task as busy,
+// even when the engine's own local `dispatching` marker is clear.
+func TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
+	agents.SetDispatchClaimed("t1", true)
+
+	_, err := engine.DispatchEvent("t1", "task.created", nil, nil)
+	if !errors.Is(err, ErrWorkflowAlreadyActive) {
+		t.Fatalf("DispatchEvent with shared claim held elsewhere: err = %v, want ErrWorkflowAlreadyActive", err)
 	}
 }
 

@@ -46,6 +46,20 @@ type AgentLauncher interface {
 	// config-disabled provider is never picked as an eligible weighted
 	// variant. Empty name = default provider.
 	ProviderHealthy(provider string) bool
+	// IsDispatching reports whether the shared agent.Manager dispatch-claim
+	// coordinator currently holds a claim for taskID — set for the full
+	// duration of any StartAgent call, including the worktree-prep window
+	// before an agent ID exists, by every dispatcher: this engine's own
+	// execRunAgent, recovery.RestartStaleInProgress, or a direct non-workflow
+	// dispatch. The engine's own dispatching/starting/agentSteps bookkeeping
+	// still serializes workflow-level entry points and tracks step
+	// attribution — a different concern (this task's next *workflow
+	// advance*, not its next *agent process*) — but ownership decisions that
+	// gate a redispatch (DispatchEvent, ResumeStalled,
+	// RescheduleRateLimitedAgent) additionally consult this so a claim held
+	// by a dispatcher outside the engine's own visibility (e.g. recovery) is
+	// never missed.
+	IsDispatching(taskID string) bool
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
