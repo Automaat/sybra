@@ -505,6 +505,10 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 	if alt, _ := lg.ChooseProvider(resolved, candidates, healthy, lp); alt != "" {
 		return true
 	}
+	available, reason := lg.ProviderAvailable(resolved, lp)
+	if available || limits.IsSoftThresholdReason(reason) {
+		return false
+	}
 	// Mirror resolveProviderDecision's last-resort path: when no fully
 	// available peer exists, a soft-threshold-limited peer is still a usable
 	// failover target for a hard-blocked provider (e.g. rate limit reached).

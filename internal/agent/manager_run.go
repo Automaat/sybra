@@ -669,13 +669,17 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		// whether a peer is only soft-threshold limited (e.g. near its
 		// session cap but still dispatching, the same leniency
 		// softLimitLastResort grants the resolved provider itself) — that
-		// peer is still a safe last-resort failover target when resolved
-		// is hard-blocked (e.g. rate limit actually reached).
-		if alt, altReason := lg.ChooseSoftLimitedPeer(resolved, candidateProviders, healthy, lp); alt != "" {
-			gateEvents = append(gateEvents, providerGateEvent{
-				kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
-			})
-			return alt, gateEvents, nil
+		// peer is only a safe last-resort failover target when resolved is
+		// hard-blocked (e.g. rate limit actually reached). If resolved is
+		// itself only soft-threshold limited, keep it so the remaining
+		// budget is not stranded behind another soft-limited peer.
+		if !limits.IsSoftThresholdReason(reason) {
+			if alt, altReason := lg.ChooseSoftLimitedPeer(resolved, candidateProviders, healthy, lp); alt != "" {
+				gateEvents = append(gateEvents, providerGateEvent{
+					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
+				})
+				return alt, gateEvents, nil
+			}
 		}
 		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
 	} else {

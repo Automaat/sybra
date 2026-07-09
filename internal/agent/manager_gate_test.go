@@ -582,6 +582,36 @@ func TestGateProvider_HardLimitFailsOverToSoftLimitedPeer(t *testing.T) {
 	}
 }
 
+// TestGateProvider_SoftThresholdDoesNotFailOverToSoftLimitedPeer ensures the
+// new soft-limited-peer last-resort path only applies when the resolved
+// provider is hard-blocked. If resolved is itself merely near threshold, it
+// should keep using its remaining budget instead of bouncing to another
+// soft-limited peer.
+func TestGateProvider_SoftThresholdDoesNotFailOverToSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "session limit near threshold"},
+			chooseNone:     true,
+			softPeer:       "claude",
+			softPeerReason: "weekly limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.gateProvider(RunConfig{Provider: "codex"})
+	if err != nil {
+		t.Fatalf("soft-threshold provider with only a soft-limited peer must keep remaining budget, got err: %v", err)
+	}
+	if got != "codex" {
+		t.Errorf("got %q, want codex (soft-threshold last resort must not fail over)", got)
+	}
+}
+
 // TestGateProvider_HardLimitFailoverDisabledSkipsSoftLimitedPeer verifies
 // DisableProviderFailover suppresses the new soft-limited-peer path too, not
 // just the exact-quota ChooseProvider path.
@@ -632,5 +662,26 @@ func TestProviderCanFailover_ReportsSoftLimitedPeer(t *testing.T) {
 	}
 	if !m.ProviderCanFailover("codex") {
 		t.Fatal("ProviderCanFailover must report true when only a soft-limited peer is available")
+	}
+}
+
+func TestProviderCanFailover_SoftThresholdDoesNotReportSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "session limit near threshold"},
+			chooseNone:     true,
+			softPeer:       "claude",
+			softPeerReason: "weekly limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if m.ProviderCanFailover("codex") {
+		t.Fatal("ProviderCanFailover must stay false when the resolved provider is only soft-threshold limited")
 	}
 }
