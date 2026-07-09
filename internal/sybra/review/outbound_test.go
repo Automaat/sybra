@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -90,7 +92,6 @@ func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 
 	created := mkOwnPRTask(t, tasks, 42, nil)
-	// Seed a phase, then move the task out of the In Review column.
 	if _, err := tasks.Update(created.ID, task.Update{
 		PRPhase: task.Ptr(PRPhaseAwaitingApproval),
 		Status:  task.Ptr(task.StatusInProgress),
@@ -268,9 +269,95 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 	}
 }
 
-// mkHumanRequiredBlockerTask creates a task parked human-required with the
-// given PR number, status reason, and tags — the shape
-// reconcileHumanRequiredBlockers evaluates.
+func TestExhaustedFixReasonKind(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   github.PRIssueKind
+		wantOK bool
+	}{
+		{"ci_failure", "pr-monitor: auto-fix exhausted after 3 attempts (ci_failure) — needs a human", github.PRIssueCIFailure, true},
+		{"conflict", "pr-monitor: auto-fix exhausted after 3 attempts (conflict) — needs a human", github.PRIssueConflict, true},
+		{"empty", "", "", false},
+		{"unrelated reason", "DCO check failing — needs a human to amend history", "", false},
+		{"missing parens", "pr-monitor: auto-fix exhausted after 3 attempts — needs a human", "", false},
+		{"empty parens", "pr-monitor: auto-fix exhausted after 3 attempts () — needs a human", "", false},
+		{"extra parens after prefix", "pr-monitor: auto-fix exhausted after 3 attempts blah (ci_failure) — needs a human", "", false},
+		{"prefix with unrelated suffix", "pr-monitor: auto-fix exhausted after 3 attempts (ci_failure) and then (comments)", "", false},
+		{"non-numeric attempts", "pr-monitor: auto-fix exhausted after three attempts (ci_failure) — needs a human", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := exhaustedFixReasonKind(tt.reason)
+			if ok != tt.wantOK || got != tt.want {
+				t.Errorf("exhaustedFixReasonKind(%q) = (%q, %v), want (%q, %v)", tt.reason, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestExhaustedFixReasonRoundTrip(t *testing.T) {
+	kinds := []github.PRIssueKind{
+		github.PRIssueCIFailure,
+		github.PRIssueConflict,
+		github.PRIssueComments,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			got, ok := exhaustedFixReasonKind(exhaustedFixReason(3, kind))
+			if !ok || got != kind {
+				t.Errorf("round-trip of %q = (%q, %v), want (%q, true)", kind, got, ok, kind)
+			}
+		})
+	}
+}
+
+func TestHumanRequiredBlockerReconcilable(t *testing.T) {
+	ciReason := exhaustedFixReason(3, github.PRIssueCIFailure)
+	conflictReason := exhaustedFixReason(3, github.PRIssueConflict)
+	tests := []struct {
+		name     string
+		task     *task.Task
+		wantKind github.PRIssueKind
+		wantOK   bool
+	}{
+		{"eligible ci_failure exhaustion", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason}, github.PRIssueCIFailure, true},
+		{"eligible conflict exhaustion", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: conflictReason}, github.PRIssueConflict, true},
+		{"not human-required", &task.Task{Status: task.StatusInReview, PRNumber: 42, StatusReason: ciReason}, "", false},
+		{"no PR linked", &task.Task{Status: task.StatusHumanRequired, StatusReason: ciReason}, "", false},
+		{"draft review reason requires a human", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: "Draft review ready — verify & submit on GitHub"}, "", false},
+		{"comments exhaustion needs a human", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: exhaustedFixReason(3, github.PRIssueComments)}, "", false},
+		{"review-tagged task is inbound", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{"review"}}, "", false},
+		{"latched task does not re-reconcile", &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason, Tags: []string{reconciledLatchTag}}, "", false},
+		{"chat task never own-PR", &task.Task{TaskType: task.TaskTypeChat, Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: ciReason}, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotKind, gotOK := humanRequiredBlockerReconcilable(tt.task)
+			if gotOK != tt.wantOK || gotKind != tt.wantKind {
+				t.Errorf("humanRequiredBlockerReconcilable() = (%q, %v), want (%q, %v)", gotKind, gotOK, tt.wantKind, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestHumanRequiredBlockerReconcileEligible(t *testing.T) {
+	if !humanRequiredBlockerReconcileEligible(&task.Task{
+		Status:       task.StatusHumanRequired,
+		PRNumber:     42,
+		StatusReason: exhaustedFixReason(3, github.PRIssueCIFailure),
+	}) {
+		t.Fatal("expected ci_failure exhaustion to be eligible")
+	}
+	if humanRequiredBlockerReconcileEligible(&task.Task{
+		Status:       task.StatusHumanRequired,
+		PRNumber:     42,
+		StatusReason: exhaustedFixReason(3, github.PRIssueConflict),
+	}) {
+		t.Fatal("conflict exhaustion should stay false for the narrower ci_failure helper")
+	}
+}
+
 func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int, reason string, tags []string) task.Task {
 	t.Helper()
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
@@ -290,15 +377,6 @@ func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int,
 	return updated
 }
 
-func ciExhaustedReason(kind string) string {
-	return "pr-monitor: auto-fix exhausted after 3 attempts (" + kind + ") — needs a human"
-}
-
-// prStateFromJSON builds a github.PRState from a raw JSON PR-state document.
-// PRState.StatusCheckRollup is a slice of an unexported per-package check
-// type, so tests outside internal/github can't construct check entries as Go
-// literals — unmarshaling through the same json tags PRState is normally
-// decoded from is the only way to populate it from this package.
 func prStateFromJSON(raw string) github.PRState {
 	var s github.PRState
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
@@ -339,7 +417,7 @@ func closedPR() github.PRState {
 	return prStateFromJSON(`{"state": "CLOSED", "mergeable": "MERGEABLE"}`)
 }
 
-func TestReconcileHumanRequiredBlockers(t *testing.T) {
+func TestReconcileHumanRequiredBlockersFallbackProbe(t *testing.T) {
 	tests := []struct {
 		name       string
 		reason     string
@@ -348,111 +426,33 @@ func TestReconcileHumanRequiredBlockers(t *testing.T) {
 		wantStatus task.Status
 		wantLatch  bool
 	}{
-		{
-			name:   "ci_failure cleared -> flips to in-review",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return openMergeableGreenPR(), nil
-			},
-			wantStatus: task.StatusInReview,
-			wantLatch:  true,
-		},
-		{
-			name:   "conflict cleared -> flips to in-review",
-			reason: ciExhaustedReason("conflict"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return openMergeableGreenPR(), nil
-			},
-			wantStatus: task.StatusInReview,
-			wantLatch:  true,
-		},
-		{
-			name:   "CI pending -> stays parked",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return openMergeablePendingPR(), nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "CI unknown/empty -> stays parked (fails closed)",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return openMergeableNoChecksPR(), nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "CI failed -> stays parked",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return openMergeableFailedPR(), nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "PR closed -> stays parked",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return closedPR(), nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "fetch error -> stays parked",
-			reason: ciExhaustedReason("ci_failure"),
-			fetchState: func(string, int) (github.PRState, error) {
-				return github.PRState{}, errors.New("boom")
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "human-authored reason -> skipped, never probed",
-			reason: "please double check the migration by hand",
-			fetchState: func(string, int) (github.PRState, error) {
-				t.Fatal("must not probe a human-authored reason")
-				return github.PRState{}, nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "watchdog reason -> skipped, never probed",
-			reason: "watchdog: rate limit",
-			fetchState: func(string, int) (github.PRState, error) {
-				t.Fatal("must not probe a watchdog reason")
-				return github.PRState{}, nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "tamper-flagged reason -> skipped, never probed",
-			reason: workflow.TamperFlaggedReasonPrefix + " tests/foo_test.go",
-			fetchState: func(string, int) (github.PRState, error) {
-				t.Fatal("must not probe a tamper-flagged reason")
-				return github.PRState{}, nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "comment-review exhaustion -> skipped, never probed",
-			reason: ciExhaustedReason("comments"),
-			fetchState: func(string, int) (github.PRState, error) {
-				t.Fatal("must not probe a comments exhaustion")
-				return github.PRState{}, nil
-			},
-			wantStatus: task.StatusHumanRequired,
-		},
-		{
-			name:   "already latched -> skipped, never probed",
-			reason: ciExhaustedReason("ci_failure"),
-			tags:   []string{reconciledLatchTag},
-			fetchState: func(string, int) (github.PRState, error) {
-				t.Fatal("must not re-probe an already-latched task")
-				return github.PRState{}, nil
-			},
-			wantStatus: task.StatusHumanRequired,
-			wantLatch:  true,
-		},
+		{"ci_failure cleared -> flips to in-review", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeableGreenPR(), nil }, task.StatusInReview, true},
+		{"conflict cleared -> flips to in-review", exhaustedFixReason(3, github.PRIssueConflict), nil, func(string, int) (github.PRState, error) { return openMergeableGreenPR(), nil }, task.StatusInReview, true},
+		{"CI pending -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeablePendingPR(), nil }, task.StatusHumanRequired, false},
+		{"CI unknown/empty -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeableNoChecksPR(), nil }, task.StatusHumanRequired, false},
+		{"CI failed -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeableFailedPR(), nil }, task.StatusHumanRequired, false},
+		{"PR closed -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return closedPR(), nil }, task.StatusHumanRequired, false},
+		{"fetch error -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return github.PRState{}, errors.New("boom") }, task.StatusHumanRequired, false},
+		{"human-authored reason -> skipped", "please double check the migration by hand", nil, func(string, int) (github.PRState, error) {
+			t.Fatal("must not probe a human-authored reason")
+			return github.PRState{}, nil
+		}, task.StatusHumanRequired, false},
+		{"watchdog reason -> skipped", "watchdog: rate limit", nil, func(string, int) (github.PRState, error) {
+			t.Fatal("must not probe a watchdog reason")
+			return github.PRState{}, nil
+		}, task.StatusHumanRequired, false},
+		{"tamper-flagged reason -> skipped", workflow.TamperFlaggedReasonPrefix + " tests/foo_test.go", nil, func(string, int) (github.PRState, error) {
+			t.Fatal("must not probe a tamper-flagged reason")
+			return github.PRState{}, nil
+		}, task.StatusHumanRequired, false},
+		{"comments exhaustion -> skipped", exhaustedFixReason(3, github.PRIssueComments), nil, func(string, int) (github.PRState, error) {
+			t.Fatal("must not probe comments exhaustion")
+			return github.PRState{}, nil
+		}, task.StatusHumanRequired, false},
+		{"already latched -> skipped", exhaustedFixReason(3, github.PRIssueCIFailure), []string{reconciledLatchTag}, func(string, int) (github.PRState, error) {
+			t.Fatal("must not re-probe a latched task")
+			return github.PRState{}, nil
+		}, task.StatusHumanRequired, true},
 	}
 
 	for _, tt := range tests {
@@ -465,7 +465,7 @@ func TestReconcileHumanRequiredBlockers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r.reconcileHumanRequiredBlockers(all)
+			r.reconcileHumanRequiredBlockers(all, nil)
 
 			got, err := tasks.Get(created.ID)
 			if err != nil {
@@ -490,30 +490,18 @@ func TestReconcileHumanRequiredBlockers(t *testing.T) {
 	}
 }
 
-// TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR
-// exercises reconcilePRPhases (which drives reactivateLinkedOwnPR) and
-// reconcileHumanRequiredBlockers back to back, in the same order the two
-// poll paths run them, over a task that carries the pr-monitor auto-fix
-// exhausted reason. The two repair paths are mutually exclusive by
-// construction — reactivateLinkedOwnPR only fires on an *empty*
-// statusReason (a workflow-completion race), while the blocker reconciler
-// only fires on the exhausted-fix reason text — so running both must leave
-// exactly one status write, from the blocker reconciler, with no leftover
-// drift-repair side effect.
 func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	r.fetchPRStateFn = func(string, int) (github.PRState, error) {
 		return openMergeableGreenPR(), nil
 	}
 
-	parked := mkHumanRequiredBlockerTask(t, tasks, 42, ciExhaustedReason("ci_failure"), nil)
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// reactivateLinkedOwnPR must be a no-op here: it only reactivates an
-	// empty statusReason, and this task's reason is the exhausted-fix text.
 	r.reconcilePRPhases(all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 	afterPhases, err := tasks.Get(parked.ID)
 	if err != nil {
@@ -527,17 +515,41 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.reconcileHumanRequiredBlockers(all)
+	r.reconcileHumanRequiredBlockers(all, nil)
 
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != task.StatusInReview {
-		t.Errorf("status = %q, want in-review (via reconcileHumanRequiredBlockers)", got.Status)
+		t.Errorf("status = %q, want in-review via blocker reconciliation", got.Status)
 	}
 	if got.StatusReason != "" {
 		t.Errorf("statusReason = %q, want cleared", got.StatusReason)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersClearsOnCleanPR(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Errorf("status reason = %q, want cleared", got.StatusReason)
 	}
 	hasLatch := false
 	for _, tag := range got.Tags {
@@ -547,6 +559,207 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	}
 	if !hasLatch {
 		t.Error("expected reconciledLatchTag after blocker reconciliation")
+	}
+}
+
+func TestReconcileHumanRequiredBlockersStaysParkedWhileCIStillFailing(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "FAILURE"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersStaysParkedWhileChecksStillPending(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{
+		Number:           42,
+		Mergeable:        "MERGEABLE",
+		CIStatus:         "FAILURE",
+		HasPendingChecks: true,
+	}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required while checks are pending", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersStaysParkedOnFreshConflict(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "CONFLICTING", CIStatus: "SUCCESS"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("Draft review ready — verify & submit on GitHub"),
+		PRNumber:     task.Ptr(42),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersSkipsWhenPRNotFound(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.fetchPRStateFn = func(string, int) (github.PRState, error) {
+		return github.PRState{}, errors.New("not found")
+	}
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcileHumanRequiredBlockers(all, nil)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+
+	parked := mkHumanRequiredBlockerTask(t, tasks, 42, exhaustedFixReason(3, github.PRIssueCIFailure), nil)
+
+	var fetched []github.PRRef
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		fetched = refs
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number: ref.Number, Repository: ref.Repo,
+					Mergeable: "MERGEABLE", CIStatus: "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(t.Context())
+
+	if len(fetched) != 1 || fetched[0].Number != 42 {
+		t.Fatalf("fetched refs = %+v, want PR #42", fetched)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:     task.Ptr(42),
+		Branch:       task.Ptr("renovate/lock-file-maintenance"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{
+		Number: 42, Repository: "other/repo",
+		HeadRefName: "renovate/lock-file-maintenance",
+		Mergeable:   "MERGEABLE", CIStatus: "SUCCESS",
+	}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required", got.Status)
 	}
 }
 
@@ -563,7 +776,6 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	}
 	before := cur.UpdatedAt
 
-	// Same phase → no write, status untouched.
 	r.applyPRPhase(&cur, PRPhaseDraft)
 	after, err := tasks.Get(created.ID)
 	if err != nil {

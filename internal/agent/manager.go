@@ -19,6 +19,14 @@ type EmitFunc func(event string, data any)
 // ErrSurvivalRegistry marks failures initializing restart-survival persistence.
 var ErrSurvivalRegistry = errors.New("agent survival registry")
 
+// ErrMaxConcurrentReached is returned by registerRunningAgent when the live
+// agent count is already at MaxConcurrent. It is a transient, self-healing
+// capacity condition (a slot frees when any running agent completes), so
+// callers must park-and-retry rather than escalate — the workflow layer maps
+// it to workflow.ErrAgentPoolBusy. Kept a sentinel (not a bare fmt.Errorf) so
+// that mapping is errors.Is-based, not string-matched.
+var ErrMaxConcurrentReached = errors.New("max concurrent agents reached")
+
 // Guardrails defines per-agent execution limits.
 type Guardrails struct {
 	MaxCostUSD float64

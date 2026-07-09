@@ -243,8 +243,9 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	var (
-		matchers       []github.TaskMatcher
-		closedMatchers []github.TaskMatcher
+		matchers          []github.TaskMatcher
+		closedMatchers    []github.TaskMatcher
+		reconcileMatchers []github.TaskMatcher
 	)
 	for i := range tasks {
 		m := github.TaskMatcher{
@@ -259,9 +260,20 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		} else if prClosedEligible(&tasks[i]) {
 			closedMatchers = append(closedMatchers, m)
 		}
+		if humanRequiredBlockerReconcileEligible(&tasks[i]) {
+			reconcileMatchers = append(reconcileMatchers, m)
+		}
 	}
 
-	monitoredPRs := r.fetchKnownTaskPRs(matchers)
+	// Human-required tasks are never pr-fix dispatch candidates (prMonitorEligible
+	// excludes them), so their PR state is fetched separately here purely to feed
+	// reconcileHumanRequiredBlockers below — fetchMatchers must NOT be reused as
+	// the `matchers` passed to MatchTaskPRs for issue dispatch.
+	fetchMatchers := matchers
+	if len(reconcileMatchers) > 0 {
+		fetchMatchers = append(append([]github.TaskMatcher{}, matchers...), reconcileMatchers...)
+	}
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
 	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
 	// token every cycle (#1516) — the next cycle re-probes and closes on
@@ -286,7 +298,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
-	r.reconcileHumanRequiredBlockers(tasks)
+	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
@@ -410,7 +422,10 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// that whole package is out of scope for this pass.
 	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
 	r.reconcilePRPhases(tasks, monitoredPRs)
-	r.reconcileHumanRequiredBlockers(tasks)
+	// monitoredPRs here is the author:@me search result (r.monitoredPRs), which
+	// already spans every open PR the user authored regardless of task status —
+	// no separate fetch is needed to reach a human-required task's own PR.
+	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 

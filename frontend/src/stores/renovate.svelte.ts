@@ -17,7 +17,7 @@ class RenovateStore {
       (pr) =>
         !pr.isDraft &&
         pr.mergeable === 'MERGEABLE' &&
-        (pr.ciStatus === 'SUCCESS' || pr.ciStatus === ''),
+        (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability),
     )
   }
 
@@ -57,6 +57,12 @@ class RenovateStore {
 }
 
 export const renovateStore = new RenovateStore()
-if (typeof window !== 'undefined' && window.runtime) {
-  renovateStore.listen()
+if (typeof window !== 'undefined') {
+  // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
+  // poisoning the lazy import chunk this module lives in.
+  try {
+    renovateStore.listen()
+  } catch (e) {
+    console.warn('renovateStore.listen() failed to attach:', e)
+  }
 }

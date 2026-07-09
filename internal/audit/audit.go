@@ -36,6 +36,12 @@ const (
 	EventAutoMergeEnabled         = "pr_monitor.auto_merge_enabled"
 	EventPROrphanAdopted          = "pr_monitor.orphan_adopted"
 	EventPRCopilotThreadsResolved = "pr_monitor.copilot_threads_resolved"
+	// EventPRHumanRequiredReconciled records a human-required task parked on
+	// an exhausted CI-failure fix (see review.humanRequiredBlockerReconcileEligible)
+	// being reconciled back to in-review after a live re-probe found the PR
+	// free of every fixable issue kind — the original blocker (e.g. a DCO
+	// check) cleared externally.
+	EventPRHumanRequiredReconciled = "pr_monitor.human_required_reconciled"
 	// EventPRConflictAutoResolved records that a conflict-recovery agent was
 	// skipped because a deterministic git merge of the base branch succeeded
 	// cleanly and was pushed. Data carries only pr and issue kind — never PR
