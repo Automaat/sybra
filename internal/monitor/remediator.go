@@ -85,9 +85,17 @@ func (r *remediator) tagUntriaged(a Anomaly) (string, error) {
 // already human-required and has exceeded its dwell budget. Updating the task
 // file stamps a new UpdatedAt, resetting the dwell timer and suppressing
 // repeated meta-task creation for the same block.
+//
+// When the anomaly's stall correlates with a known, already-tracked
+// lost_agent investigation (detectStuckHumanBlocked's
+// known_lost_agent_investigation evidence), this instead auto-retries the
+// task once — see retryKnownLostAgentStuck.
 func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
+	}
+	if known, _ := a.Evidence["known_lost_agent_investigation"].(bool); known {
+		return r.retryKnownLostAgentStuck(a)
 	}
 	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
 	upd := task.Update{}
@@ -95,6 +103,30 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 		return "", fmt.Errorf("tag human-required task %s stalled: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
+}
+
+// retryKnownLostAgentStuck moves a task out of human-required back to
+// in-progress when its stall already has an open, monitor-filed lost_agent
+// investigation tracking the root cause — no point leaving it parked for a
+// human when recovery can retry it and the finding is already recorded
+// elsewhere. Stamps monitorAutoRetriedTag so a second stall on the same task
+// (the auto-retry did not help) falls back to the normal human-review path
+// instead of bouncing between in-progress and human-required forever.
+func (r *remediator) retryKnownLostAgentStuck(a Anomaly) (string, error) {
+	t, err := r.tasks.Get(a.TaskID)
+	if err != nil {
+		return "", fmt.Errorf("retry known lost_agent stuck task %s: %w", a.TaskID, err)
+	}
+	tags := append(slices.Clone(t.Tags), monitorAutoRetriedTag)
+	upd := task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("monitor: stall matches an already-tracked lost_agent investigation; auto-retrying"),
+		Tags:         &tags,
+	}
+	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+		return "", fmt.Errorf("retry known lost_agent stuck task %s: %w", a.TaskID, err)
+	}
+	return string(a.Kind) + ":retry:" + a.TaskID, nil
 }
 
 // isHumanRequiredStuck reports whether a is a stuck_human_blocked anomaly for
