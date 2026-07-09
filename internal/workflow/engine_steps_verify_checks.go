@@ -233,10 +233,10 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 // found") even though package.json/package-lock.json are untouched and an
 // earlier build in the same worktree succeeded. That looks like a genuine
 // build regression caused by the task's diff but is really a broken
-// toolchain state — see task f8ca18d6. A failed repair is reported back to
-// the caller (rather than silently left for the verify command to surface)
-// so a still-broken install is never run through verify and misattributed
-// to the implementation as a product failure.
+// toolchain state. A failed repair is reported back to the caller (rather
+// than silently left for the verify command to surface) so a still-broken
+// install is never run through verify and misattributed to the
+// implementation as a product failure.
 func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) (repairFailed bool) {
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
@@ -254,7 +254,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
-		cmd := exec.CommandContext(repairCtx, "sh", "-c", "npm ci")
+		cmd := exec.CommandContext(repairCtx, "npm", "ci")
 		cmd.Dir = dir
 		repairErr := cmd.Run()
 		cancel()
@@ -288,13 +288,25 @@ func isCorruptedNodeModules(dir string) bool {
 		return false
 	}
 	nm := filepath.Join(dir, "node_modules")
-	entries, err := os.ReadDir(nm)
-	if err != nil || len(entries) == 0 {
+	if !dirNonEmpty(nm) {
 		return false
 	}
 	_, binErr := os.Stat(filepath.Join(nm, ".bin"))
 	_, lockErr := os.Stat(filepath.Join(nm, ".package-lock.json"))
 	return binErr != nil || lockErr != nil
+}
+
+// dirNonEmpty reports whether dir exists and contains at least one entry,
+// without reading the full directory listing — node_modules on a large
+// install can hold tens of thousands of entries.
+func dirNonEmpty(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
 }
 
 // ownedByNpm reports whether dir's install is owned by npm: it has an npm
