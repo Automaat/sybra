@@ -83,6 +83,7 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 		return nil, fmt.Errorf("nil sandbox config")
 	}
 
+	var startCh chan struct{}
 	for {
 		m.mu.Lock()
 		if inst, ok := m.instances[taskID]; ok {
@@ -101,6 +102,7 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 		}
 		ch := make(chan struct{})
 		m.starting[taskID] = ch
+		startCh = ch
 		m.mu.Unlock()
 		break
 	}
@@ -109,22 +111,29 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 		inst *Instance
 		err  error
 	)
+	defer func() {
+		m.mu.Lock()
+		if m.starting[taskID] == startCh {
+			delete(m.starting, taskID)
+		}
+		if err == nil && inst != nil {
+			m.instances[taskID] = inst
+		}
+		m.mu.Unlock()
+		close(startCh)
+	}()
+
 	if cfg.IsK8s() {
 		inst, err = m.startK8s(ctx, taskID, worktreePath, cfg)
 	} else {
 		inst, err = m.startDocker(ctx, taskID, worktreePath, cfg)
 	}
 
-	m.mu.Lock()
-	ch := m.starting[taskID]
-	delete(m.starting, taskID)
-	if err == nil {
-		m.instances[taskID] = inst
-	}
-	m.mu.Unlock()
-	close(ch)
-
 	if err != nil {
+		return nil, err
+	}
+	if inst == nil {
+		err = fmt.Errorf("sandbox start returned nil instance")
 		return nil, err
 	}
 
