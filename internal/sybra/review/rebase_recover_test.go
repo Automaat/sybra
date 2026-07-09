@@ -693,6 +693,9 @@ func (b *blockingAgentLauncher) StartAgent(string, string, string, string, strin
 	<-b.releaseCh
 	return "", "", "", workflow.ErrDispatchInFlight
 }
+func (b *blockingAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 func (b *blockingAgentLauncher) HasRunningAgent(string) bool                     { return false }
 func (b *blockingAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (b *blockingAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {

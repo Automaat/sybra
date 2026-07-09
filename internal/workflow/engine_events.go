@@ -504,11 +504,13 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	mu.Unlock()
 
-	if e.agents.IsDispatching(taskID) {
+	claim, ok := e.agents.TryClaimDispatch(taskID)
+	if !ok {
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
 			"task_id", taskID, "reason", "claim-held", "step", step.ID)
 		return
 	}
+	defer claim.Release()
 	if e.handleWatchdogRateLimitRetry(&t, step) {
 		return
 	}
