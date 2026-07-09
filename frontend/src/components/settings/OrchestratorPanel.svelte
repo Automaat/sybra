@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import Section from './fields/Section.svelte'
-  import ToggleField from './fields/ToggleField.svelte'
   import NumberField from './fields/NumberField.svelte'
   import AdvancedDisclosure from './fields/AdvancedDisclosure.svelte'
 
@@ -15,18 +14,7 @@
   const d = $derived(defaults.orchestrator)
 </script>
 
-<Section title="Orchestrator" description="Automatic dispatch of triage and planning agents, plus recovery cadence.">
-  <ToggleField label="Auto-triage" description="Automatically dispatch triage agents on task creation"
-    keyPath="orchestrator.auto_triage"
-    bind:checked={settings.orchestrator.autoTriage}
-    modified={o.autoTriage !== d.autoTriage}
-    onreset={() => (settings.orchestrator.autoTriage = d.autoTriage)} />
-  <ToggleField label="Auto-plan" description="Automatically dispatch planning agents on complex tasks"
-    keyPath="orchestrator.auto_plan"
-    bind:checked={settings.orchestrator.autoPlan}
-    modified={o.autoPlan !== d.autoPlan}
-    onreset={() => (settings.orchestrator.autoPlan = d.autoPlan)} />
-
+<Section title="Orchestrator" description="Dispatch and recovery cadence for the in-process monitor loop.">
   <AdvancedDisclosure label="Loop cadence">
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <NumberField id="orch-dispatch" label="Dispatch interval (seconds)" keyPath="orchestrator.dispatch_interval_seconds" min={1}
