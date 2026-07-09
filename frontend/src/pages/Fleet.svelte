@@ -25,8 +25,11 @@
   // failure that must not silently pass off prior data as current ("stale"),
   // or a genuine live load.
   const statsState = $derived.by((): 'absent' | 'stale' | 'live' => {
-    if (statsStore.error) return 'stale'
+    // Null-check first: a first-load failure leaves data === null with an
+    // error set, and there is no prior data to pass off as "stale" — that is
+    // "absent", not "stale". Only report "stale" once we actually have data.
     if (statsStore.data === null) return 'absent'
+    if (statsStore.error) return 'stale'
     return 'live'
   })
   const todaysBurn = $derived(statsStore.data?.today?.totalCostUsd ?? 0)
