@@ -239,10 +239,10 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField22_0 = $$createType0;
+        const $$createField23_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField22_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField23_0($$parsedSource["playwrightMcp"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

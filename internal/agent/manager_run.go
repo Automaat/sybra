@@ -105,6 +105,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
+	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return cfg, nil, gateErr
