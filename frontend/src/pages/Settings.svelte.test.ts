@@ -455,19 +455,25 @@ describe('Settings', () => {
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
     await goTo('Notifications')
-    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
     expect(checkbox.disabled).toBe(true)
     expect(screen.getByText('Not supported in this browser')).toBeDefined()
   })
 
   it('enables browser notifications via a user gesture and requests permission', async () => {
     const FakeNotification = installFakeNotification('default')
-    FakeNotification.requestPermission = vi.fn(async () => 'granted')
+    // Real browsers flip Notification.permission once the user responds to
+    // the prompt; the fake must mirror that or the derived status text (which
+    // re-reads `permission`, not just our own `enabled` flag) never updates.
+    FakeNotification.requestPermission = vi.fn(async () => {
+      FakeNotification.permission = 'granted'
+      return FakeNotification.permission
+    })
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
     await goTo('Notifications')
-    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
     expect(checkbox.checked).toBe(false)
 
     await fireEvent.click(checkbox)
@@ -485,7 +491,7 @@ describe('Settings', () => {
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
     await goTo('Notifications')
-    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
     expect(checkbox.disabled).toBe(true)
     expect(screen.getByText(/Blocked/)).toBeDefined()
   })
@@ -496,7 +502,7 @@ describe('Settings', () => {
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
     await goTo('Notifications')
-    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
     await fireEvent.click(checkbox)
     await vi.waitFor(() => expect(checkbox.checked).toBe(true))
 
