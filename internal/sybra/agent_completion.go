@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
@@ -52,6 +53,8 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		humanReview:    a.humanReview,
 		prTracker:      a.prTracker,
 		cfg:            a.cfg,
+		artifacts:      a.artifacts,
+		workScrub:      a.workScrubContextForTask,
 		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
 		// own guard), same pattern as agentOrch.SetConflictRecovery.
 		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
@@ -80,6 +83,16 @@ type AgentCompletionHandler struct {
 	humanReview    *humanReviewHandler
 	prTracker      *github.IssueTracker
 	cfg            *config.Config
+	// artifacts is the local per-task artifact store. Used to import a
+	// completed test-runner's Playwright MCP evidence (screenshots/console
+	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
+	// no-ops when unset (degraded init / tests).
+	artifacts *artifact.Store
+	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
+	// Used by importTestRunnerEvidence to redact work-repo identifiers from
+	// captured evidence before it lands in the local artifact store. Nil-safe:
+	// a nil func or nil-returning lookup means "not work-typed — import as-is".
+	workScrub func(projectID string) *WorkScrubContext
 
 	// conflictRecovery dispatches the autonomous conflict-fix agent for a
 	// task (review.Handler.RecoverStaleBranchConflict) — reused here so a
@@ -176,6 +189,10 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 
 	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
 		return
+	}
+
+	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+		h.importEvidenceForAgent(ag)
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine

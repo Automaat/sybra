@@ -12,6 +12,7 @@ export {
     MonitorConfig,
     NotificationConfig,
     OrchestratorConfig,
+    PlaywrightMCPConfig,
     ProviderEntryConfig,
     ProviderHealthCheckConfig,
     ProviderLimitsConfig,

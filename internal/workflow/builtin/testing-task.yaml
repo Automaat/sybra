@@ -114,7 +114,12 @@ steps:
         against the sandbox; or drive the desktop task's headless HTTP/server
         equivalent. Automated tests, lint, builds, diff review, and grep are
         support evidence only — they do NOT count as manual testing by
-        themselves.
+        themselves. For a web surface, if mcp__playwright__* tools are
+        available, use them to load pages, click through the flow, and
+        capture screenshots/console errors as visual evidence — stronger than
+        curl/status-code checks alone for anything that renders. The MCP is
+        opt-in and not attached to every run; when unavailable, fall back to
+        curl/browser/devtools without treating its absence as a defect.
 
         Set surface_kind to exactly ONE canonical token: web, cli, server,
         desktop, k8s, library, docs, or none. Use library for internal

@@ -316,6 +316,8 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -697,6 +699,9 @@ func (a *App) initWorkflowEngine() {
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetDivergenceRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
