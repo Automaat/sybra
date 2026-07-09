@@ -31,7 +31,7 @@ func TestExecClassifyTask_Success(t *testing.T) {
 	classifier := &fakeTaskClassifier{}
 	engine.SetTaskClassifier(classifier)
 
-	out, err := engine.execClassifyTask("t1", newClassifyTaskStep())
+	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestExecClassifyTask_NilClassifier(t *testing.T) {
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	// No SetTaskClassifier call — engine must flip to human-required.
 
-	out, err := engine.execClassifyTask("t1", newClassifyTaskStep())
+	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestExecClassifyTask_RetriesTransientFailure(t *testing.T) {
 	classifier := &failNTimesClassifier{failFirst: 2}
 	engine.SetTaskClassifier(classifier)
 
-	out, err := engine.execClassifyTask("t1", newClassifyTaskStep())
+	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
 	}
@@ -117,7 +117,7 @@ func (c *ctxCancelClassifier) ClassifyTask(_ context.Context, _ string) error {
 	return errors.New("provider unavailable")
 }
 
-func TestExecClassifyTask_ContextCanceledResumesInsteadOfParking(t *testing.T) {
+func TestExecClassifyTask_ContextCanceledParksInsteadOfCompleting(t *testing.T) {
 	t.Parallel()
 
 	tasks := newMemTasks()
@@ -131,12 +131,16 @@ func TestExecClassifyTask_ContextCanceledResumesInsteadOfParking(t *testing.T) {
 	cancel()
 	engine.SetContext(ctx)
 
-	out, err := engine.execClassifyTask("t1", newClassifyTaskStep())
-	if err != nil {
-		t.Fatalf("execClassifyTask: %v", err)
+	wfExec := &Execution{CurrentStep: "triage", State: ExecRunning}
+	_, err := engine.execClassifyTask("t1", newClassifyTaskStep(), wfExec)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("execClassifyTask err = %v, want errStepParked", err)
 	}
-	if out.Status != "completed" {
-		t.Errorf("status = %q, want completed", out.Status)
+	if wfExec.State != ExecWaiting {
+		t.Errorf("wfExec.State = %q, want %q", wfExec.State, ExecWaiting)
+	}
+	if wfExec.CurrentStep != "triage" {
+		t.Errorf("wfExec.CurrentStep = %q, want unchanged %q", wfExec.CurrentStep, "triage")
 	}
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status == "human-required" {
@@ -155,7 +159,7 @@ func TestExecClassifyTask_ClassifierError(t *testing.T) {
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetTaskClassifier(&fakeTaskClassifier{err: errors.New("provider unavailable")})
 
-	out, err := engine.execClassifyTask("t1", newClassifyTaskStep())
+	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
 	}

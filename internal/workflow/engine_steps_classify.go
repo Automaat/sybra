@@ -18,7 +18,7 @@ const classifyTaskTimeout = 2 * time.Minute
 // replaces a run_agent step that wrapped a full Sonnet agent invoking the
 // /sybra-triage skill around the same classifier, which was a second LLM
 // call for no benefit.
-func (e *Engine) execClassifyTask(taskID string, step *Step) (StepOutput, error) {
+func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
 	if e.classifier == nil {
 		return e.humanRequiredClassify(taskID, step, "no task classifier configured")
 	}
@@ -37,14 +37,21 @@ func (e *Engine) execClassifyTask(taskID string, step *Step) (StepOutput, error)
 			return StepOutput{StepID: step.ID, Status: "completed"}, nil
 		}
 		// Engine shutdown (parent context canceled), not a classify failure —
-		// leave the task status untouched so the step re-runs on next boot
-		// instead of baking "context canceled" into a permanent human-required
-		// park. Mirrors engine_steps_verify.go's cancellation handling. The
-		// per-step deadline (classifyTaskTimeout) fires on the derived ctx, not
-		// e.ctx, so a genuinely hung classify still escalates below.
+		// park the workflow WITHOUT recording/advancing CurrentStep, so the
+		// step re-runs on next boot instead of a "completed" record baking
+		// "context canceled" into a permanent skip (recording completed here
+		// would let resolveNext advance past triage without it ever having
+		// run). ResumeStalled's step-type allowlist includes classify_task
+		// specifically so this park is actually picked back up, not stranded.
+		// The per-step deadline (classifyTaskTimeout) fires on the derived
+		// ctx, not e.ctx, so a genuinely hung classify still escalates below.
 		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 			e.logger.Warn("workflow.classify-task.canceled", "task_id", taskID, "step", step.ID, "err", err)
-			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+			wfExec.State = ExecWaiting
+			if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+				return StepOutput{}, setErr
+			}
+			return StepOutput{}, errStepParked
 		}
 		if attempt >= len(classifyTaskRetryBackoffs) {
 			break
