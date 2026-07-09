@@ -45,6 +45,12 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
+	if cfg.MCPConfigJSON != "" {
+		// --strict-mcp-config always pairs with --mcp-config: without it Claude
+		// also loads any project/user-level MCP servers, which would leak an
+		// operator's unrelated MCP tools into an unattended test-runner run.
+		args = append(args, "--mcp-config", cfg.MCPConfigJSON, "--strict-mcp-config")
+	}
 	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
