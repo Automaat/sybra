@@ -402,10 +402,6 @@ func coalescedFixPrompt(issues []github.PRIssue, holdSuffix string) string {
 	return prompt
 }
 
-func (r *Handler) handlePRIssue(ctx context.Context, issue github.PRIssue) bool {
-	return r.dispatchFixIssues(ctx, issue.TaskID, []github.PRIssue{issue})
-}
-
 func (r *Handler) handlePRIssueReplacingWorkflow(ctx context.Context, issue github.PRIssue, cancelReason string) bool {
 	return r.dispatchFixIssuesWithOptions(ctx, issue.TaskID, []github.PRIssue{issue}, dispatchFixOptions{
 		replaceActiveWorkflow: true,
@@ -445,7 +441,8 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
 	// or a fresh worktree prep race it. handleTaskPRIssues already applies this
 	// gate for its own callers, but dispatchFixIssues is also reached via
-	// handlePRIssue/RecoverStaleBranchConflict, so it is repeated here.
+	// handlePRIssueReplacingWorkflow/RecoverStaleBranchConflict, so it is
+	// repeated here.
 	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(t.ID) && !opts.replaceActiveWorkflow {
 		return false
 	}
@@ -462,9 +459,9 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return true
 	}
 
-	// dispatchPRIssue -> WorkflowEngine.DispatchEvent eventually reaches
-	// execShell, which derives its context from workflow.Engine's own e.ctx
-	// field (Engine.SetContext), not an explicit parameter threaded here.
+	// dispatchPRIssueWithOptions -> WorkflowEngine.DispatchEvent eventually
+	// reaches execShell, which derives its context from workflow.Engine's own
+	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
 	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
@@ -594,15 +591,11 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 		"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead)
 }
 
-// dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks
-// every coalesced issue in handle as handled so none re-fires next cycle. The
-// primary kind is authoritative for the workflow's pr_issue_kind var (cancel and
-// phase reconciliation key on it); handle carries the full set for the retry
-// tracker.
-func (r *Handler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string) bool {
-	return r.dispatchPRIssueWithOptions(t, primary, handle, prompt, dir, dispatchFixOptions{})
-}
-
+// dispatchPRIssueWithOptions starts the pr-fix workflow for primary and, on
+// success, marks every coalesced issue in handle as handled so none re-fires
+// next cycle. The primary kind is authoritative for the workflow's
+// pr_issue_kind var (cancel and phase reconciliation key on it); handle
+// carries the full set for the retry tracker.
 func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
 	if r.WorkflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
@@ -706,8 +699,9 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 //
 // Returns false (caller escalates to human as before) when there is no linked
 // PR to fix, the PR is closed/unfetchable, or the conflict-fix retry budget is
-// already spent. handlePRIssue's conflict branch prepares via PrepareForFix (no
-// rebase), so this never re-enters the rebasing path that called it.
+// already spent. handlePRIssueReplacingWorkflow's conflict branch prepares via
+// PrepareForFix (no rebase), so this never re-enters the rebasing path that
+// called it.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
