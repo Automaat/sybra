@@ -169,6 +169,7 @@ func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wf
 		err = nil
 	}
 	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
 	return err
 }
 

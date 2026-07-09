@@ -43,6 +43,7 @@ func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID s
 		err = nil
 	}
 	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
 	return err
 }
 
@@ -196,7 +197,10 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	// cleared, or its cascade dispatch re-enters and is dropped. Register the
 	// fire defer *before* the marker-delete defer so LIFO runs it afterwards.
 	var completion *CompletionInfo
-	defer func() { e.fireComplete(completion) }()
+	defer func() {
+		e.fireComplete(completion)
+		e.drainPendingConflictRecovery(taskID)
+	}()
 	defer func() {
 		e.mu.Lock()
 		delete(e.dispatching, taskID)

@@ -253,41 +253,42 @@ type agentEntry struct {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store              *Store
-	tasks              TaskProvider
-	agents             AgentLauncher
-	prLinker           PRLinker
-	prReviewers        PRReviewRequester
-	prStates           PRStateFetcher
-	prHeads            PRHeadFetcher
-	prCreator          PRCreator
-	prFinder           PRFinder
-	prContentGen       PRContentGenerator
-	worktrees          WorktreeGetter
-	branchSyncer       BranchSyncer
-	checks             CheckConfigGetter
-	manualTests        ManualTestConfigGetter
-	recorder           ArtifactRecorder
-	costBudget         CostBudgetChecker
-	attemptWorktrees   AttemptWorktreeManager
-	divergenceRecovery func(taskID string) bool
-	onComplete         func(CompletionInfo)
-	logger             *slog.Logger
-	ctx                context.Context
-	mu                 sync.Mutex
-	inflightMutexes    map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching        map[string]struct{}    // taskID → dispatch in progress
-	starting           map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction        map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps         map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep    map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth       map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
-	resumeError        *logging.ErrorThrottle
-	demotionThrottle   *logging.ErrorThrottle
-	maxTestAttempts    int           // testing → re-implement loop cap (0 → defaultTestAttempts)
-	verifyTimeout      time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting          abtest.Config
-	evalGate           *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	store            *Store
+	tasks            TaskProvider
+	agents           AgentLauncher
+	prLinker         PRLinker
+	prReviewers      PRReviewRequester
+	prStates         PRStateFetcher
+	prHeads          PRHeadFetcher
+	prCreator        PRCreator
+	prFinder         PRFinder
+	prContentGen     PRContentGenerator
+	worktrees        WorktreeGetter
+	branchSyncer     BranchSyncer
+	checks           CheckConfigGetter
+	manualTests      ManualTestConfigGetter
+	recorder         ArtifactRecorder
+	costBudget       CostBudgetChecker
+	attemptWorktrees AttemptWorktreeManager
+	onComplete       func(CompletionInfo)
+	logger           *slog.Logger
+	ctx              context.Context
+	mu               sync.Mutex
+	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}    // taskID → dispatch in progress
+	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
+	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
+	resumeError      *logging.ErrorThrottle
+	demotionThrottle *logging.ErrorThrottle
+	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting        abtest.Config
+	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -310,6 +311,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agentSteps:       make(map[string]agentEntry),
 		dispatchingStep:  make(map[string]int),
 		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]struct{}),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
@@ -360,13 +362,6 @@ func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
 // Leaving it unset makes the step a no-op (skipped outcome).
 func (e *Engine) SetBranchSyncer(s BranchSyncer) { e.branchSyncer = s }
 
-// SetDivergenceRecovery wires the autonomous branch-conflict recovery invoked
-// when create_pr's push hits a self-inflicted divergence (worktree-reuse
-// rebase, not a real content conflict). Returns true when it took over — the
-// step then parks instead of escalating to human-required. Nil keeps the
-// escalate-to-human fallback. Same callback as agentorch/agent_completion use.
-func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) { e.divergenceRecovery = fn }
-
 // SetCheckConfigGetter wires the project verify-suite resolver used by the
 // `verify_checks` step. Leaving it unset makes the step a no-op.
 func (e *Engine) SetCheckConfigGetter(g CheckConfigGetter) { e.checks = g }
@@ -412,6 +407,16 @@ func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetConflictRecovery wires the autonomous branch-conflict recovery callback
+// (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
+// when a push diverges from remote. Same callback agentorch wires for
+// worktree-prep rebase failures — reused here so a self-inflicted divergence
+// discovered at push time (e.g. a reused worktree rebased out from under an
+// earlier merge-based push) gets the same autonomous fix instead of an
+// unconditional human escalation. Leaving it unset preserves the prior
+// behavior: any divergence flips straight to human-required.
+func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {
