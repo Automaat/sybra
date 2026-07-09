@@ -14,7 +14,7 @@ type HumanReviewConfig struct {
 	// "Automaat/sybra" when empty.
 	Repo string `yaml:"repo" json:"repo"`
 	// Model is the Claude model alias (e.g. "sonnet", "opus"). Defaults
-	// to "sonnet" when empty.
+	// to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring.
 	Model string `yaml:"model" json:"model"`
 	// MaxPerHour caps how many review agents may be spawned in any rolling
 	// 60-minute window across all tasks on this machine. Zero falls back
