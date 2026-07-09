@@ -2,6 +2,7 @@
   import { timeAgo } from '$lib/dates.js'
   import type { CheckRunInfo, PullRequest } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
   import { openLink } from '$lib/browser.svelte.js'
+  import { isRenovatePRReadyToMerge } from '$lib/renovate.js'
 
   interface Props {
     pr: PullRequest & { waitingForStability?: boolean }
@@ -17,10 +18,7 @@
 
 
   const isEligible = $derived(
-    !pr.isDraft &&
-    pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability === true) &&
-    (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
+    isRenovatePRReadyToMerge(pr)
   )
 
   const hasFailed = $derived(pr.ciStatus === 'FAILURE')

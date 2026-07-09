@@ -13,6 +13,7 @@
     RerunRenovateChecks,
     FixRenovateCI,
   } from '$lib/api'
+  import { isRenovatePRReadyToMerge } from '$lib/renovate.js'
   import type { CheckRunInfo, PullRequest, RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
   type Tab = 'my-prs' | 'reviews' | 'renovate' | 'issues'
@@ -83,9 +84,7 @@
   ]
 
   function prPriority(pr: PullRequest & { waitingForStability?: boolean }): number {
-    const ready = !pr.isDraft && pr.mergeable === 'MERGEABLE' &&
-      (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability === true) &&
-      (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
+    const ready = isRenovatePRReadyToMerge(pr)
     if (ready) return 0 // ready to merge
     if (!pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED') return 1 // to approve
     if (pr.ciStatus === 'FAILURE' || pr.mergeable === 'CONFLICTING') return 2 // to fix
