@@ -47,6 +47,21 @@ const Schema = `{"type":"object","properties":{"decision":{"type":"string","enum
 
 var fenceRe = regexp.MustCompile("(?s)```\\s*sybra-verdict\\s*\\n(.*?)\\n```")
 
+var placeholderVerdicts = []Decision{
+	{
+		Decision:   "sybra_bug",
+		Summary:    "test",
+		IssueTitle: "test title",
+		IssueBody:  "test body",
+	},
+	{
+		Decision:   "sybra_bug",
+		Summary:    "summary",
+		IssueTitle: "issue title",
+		IssueBody:  "issue body",
+	},
+}
+
 // Parse extracts a Decision from an agent's final assistant text. It tries
 // bare JSON first — the shape produced by a --json-schema structured-output
 // run — decoding only the first JSON value so trailing prose does not
@@ -107,7 +122,22 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 	if v.Summary == "" {
 		return Decision{}, "", errors.New("verdict: empty summary")
 	}
+	if isPlaceholderVerdict(v) {
+		return Decision{}, "", errors.New("verdict: placeholder/example payload")
+	}
 	return v, src, nil
+}
+
+func isPlaceholderVerdict(v Decision) bool {
+	for _, p := range placeholderVerdicts {
+		if v.Decision == p.Decision &&
+			strings.EqualFold(v.Summary, p.Summary) &&
+			strings.EqualFold(v.IssueTitle, p.IssueTitle) &&
+			strings.EqualFold(v.IssueBody, p.IssueBody) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeLabels trims each label and drops any that are blank, so

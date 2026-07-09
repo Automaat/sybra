@@ -87,8 +87,8 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", err
 	}
 	if num > 0 {
-		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...); runErr != nil {
-			return false, foundURL, classifyGHError(runErr)
+		if out, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...); runErr != nil {
+			return false, foundURL, classifyGHError("issue comment", out, runErr)
 		}
 		return false, foundURL, nil
 	}
@@ -108,7 +108,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		"--label", lb.String(),
 	)...)
 	if err != nil {
-		return false, "", classifyGHError(err)
+		return false, "", classifyGHError("issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
 }
@@ -151,7 +151,7 @@ func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number i
 		"--limit", "5",
 	)...)
 	if err != nil {
-		return 0, "", classifyGHError(err)
+		return 0, "", classifyGHError("issue list", out, err)
 	}
 	num, url := parseFirstMatchingIssue(out, title)
 	return num, url, nil
@@ -220,13 +220,29 @@ func parseFirstMatchingIssue(raw []byte, want string) (number int, url string) {
 	}
 }
 
-func classifyGHError(err error) error {
+func classifyGHError(op string, out []byte, err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
+	msg := err.Error() + "\n" + string(out)
 	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
 		return ErrGHRateLimit
 	}
+	if trimmed := sanitizeGHOutput(out); trimmed != "" {
+		return errors.Join(err, errors.New(strings.TrimSpace(op)+": "+trimmed))
+	}
 	return err
+}
+
+func sanitizeGHOutput(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	const maxLines = 5
+	if len(lines) > maxLines {
+		lines = append(lines[:maxLines], "...")
+	}
+	return strings.Join(lines, "\n")
 }

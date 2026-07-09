@@ -14,13 +14,15 @@ import (
 // by subcommand ("label", "issue list", "issue comment", "issue create").
 // Tests mutate the response table per scenario.
 type fakeExecer struct {
-	mu         sync.Mutex
-	calls      [][]string
-	listResp   []byte
-	listErr    error
-	createErr  error
-	commentErr error
-	labelErr   error
+	mu          sync.Mutex
+	calls       [][]string
+	listResp    []byte
+	listErr     error
+	commentResp []byte
+	createErr   error
+	createResp  []byte
+	commentErr  error
+	labelErr    error
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -41,9 +43,9 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 		case "list":
 			return f.listResp, f.listErr
 		case "comment":
-			return nil, f.commentErr
+			return f.commentResp, f.commentErr
 		case "create":
-			return nil, f.createErr
+			return f.createResp, f.createErr
 		}
 	}
 	return nil, nil
@@ -175,6 +177,40 @@ func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if !errors.Is(err, ErrGHRateLimit) {
 		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_ClassifiesRateLimitFromOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("GraphQL: API rate limit exceeded\n"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if !errors.Is(err, ErrGHRateLimit) {
+		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_ErrorIncludesSanitizedOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("first line\nsecond line\nthird line\nfourth line\nfifth line\nsixth line"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
+		t.Fatalf("error did not include sanitized output: %q", msg)
 	}
 }
 

@@ -119,6 +119,11 @@ func TestParse(t *testing.T) {
 			input:   `{"result":{"decision":"sybra_bug","summary":"nested"}}`,
 			wantErr: true,
 		},
+		{
+			name:    "schema placeholder sybra bug fails closed",
+			input:   `{"decision":"sybra_bug","summary":"test","issue_title":"test title","issue_body":"test body"}`,
+			wantErr: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

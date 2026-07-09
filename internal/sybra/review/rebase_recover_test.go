@@ -1027,7 +1027,7 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 // escalating to human-required on the very first transient hit — the bug
 // this test guards against.
 func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(t *testing.T) {
-	launchErr := &provider.UnhealthyError{Provider: "codex", Reason: "rate limit reached"}
+	launchErr := &provider.UnhealthyError{Provider: "codex", Reason: provider.RateLimitReason, RateLimited: true}
 	r, tk := newDispatchFailureHandler(t, launchErr)
 	resume := r.captureBranchConflictResumeState(tk)
 
@@ -1071,6 +1071,21 @@ func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(
 	}
 	if n := r.dispatchFailures[tk.ID]; n != 0 {
 		t.Fatalf("dispatchFailures[%s] = %d after escalation, want reset to 0", tk.ID, n)
+	}
+}
+
+func TestDispatchBranchConflictRecovery_NonTransientProviderUnhealthyEscalatesImmediately(t *testing.T) {
+	r, tk := newDispatchFailureHandler(t, &provider.UnhealthyError{Provider: "codex", Reason: "logged_out"})
+	resume := r.captureBranchConflictResumeState(tk)
+	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+		t.Fatalf("cancel prior workflow: %v", err)
+	}
+
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+		t.Fatal("want false: auth/provider configuration failures must escalate immediately")
+	}
+	if n := r.dispatchFailures[tk.ID]; n != 0 {
+		t.Fatalf("dispatchFailures[%s] = %d, want 0 (non-transient provider error)", tk.ID, n)
 	}
 }
 

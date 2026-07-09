@@ -953,7 +953,7 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
 			}
 		}
-		if errors.Is(err, provider.ErrProviderUnhealthy) {
+		if isTransientBranchConflictDispatchFailure(err) {
 			return r.parkOrEscalateBranchConflictDispatchFailure(taskID, err)
 		}
 		return false
@@ -964,6 +964,14 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
+}
+
+func isTransientBranchConflictDispatchFailure(err error) bool {
+	var ue *provider.UnhealthyError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
 }
 
 // parkOrEscalateBranchConflictDispatchFailure handles a transient

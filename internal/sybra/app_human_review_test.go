@@ -685,6 +685,94 @@ func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
 	}
 }
 
+func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	sink.err = errors.New("rate limited")
+
+	existing, err := tasks.CreateFull("fix(x): y", "existing diagnosis", task.AgentModeHeadless, task.Update{
+		Tags: &[]string{"sybra-bug", "issue-filing-failed"},
+	})
+	if err != nil {
+		t.Fatalf("create existing local bug: %v", err)
+	}
+	tk, err := tasks.Create("Whatever", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "```sybra-verdict\n" + `{"decision":"sybra_bug","summary":"x","issue_title":"fix(x): y","issue_body":"z"}` + "\n```",
+	})
+	h.onComplete(ag)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected no duplicate local fallback task; got %d tasks", len(all))
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load origin: %v", err)
+	}
+	if !strings.Contains(got.Body, "blocked by existing Sybra bug (local fallback)") ||
+		!strings.Contains(got.Body, existing.ID) {
+		t.Fatalf("origin did not link existing local fallback task %s:\n%s", existing.ID, got.Body)
+	}
+}
+
+func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	sink.err = errors.New("rate limited")
+
+	if _, err := tasks.CreateFull("fix(x): y", "unrouted diagnosis", task.AgentModeHeadless, task.Update{
+		Tags: &[]string{"sybra-bug"},
+	}); err != nil {
+		t.Fatalf("create unrelated sybra bug: %v", err)
+	}
+	tk, err := tasks.Create("Whatever", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: "```sybra-verdict\n" + `{"decision":"sybra_bug","summary":"x","issue_title":"fix(x): y","issue_body":"z"}` + "\n```",
+	})
+	h.onComplete(ag)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected a new routed fallback task in addition to unrelated sybra-bug; got %d tasks", len(all))
+	}
+	var routed int
+	for _, tk := range all {
+		if tk.Title == "fix(x): y" && slices.Contains(tk.Tags, "sybra-bug") && slices.Contains(tk.Tags, "issue-filing-failed") {
+			routed++
+		}
+	}
+	if routed != 1 {
+		t.Fatalf("routed fallback task count = %d, want 1; tasks=%+v", routed, all)
+	}
+}
+
 func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
