@@ -448,6 +448,13 @@ func buildBestOfNManifest(stepID string, rec *BestOfNInflight) string {
 	m := bestOfNManifest{ParentStep: stepID}
 	for _, id := range ids {
 		a := rec.Attempts[id]
+		if a == nil {
+			m.Attempts = append(m.Attempts, bestOfNManifestAttempt{
+				AttemptID: id,
+				Status:    "missing",
+			})
+			continue
+		}
 		m.Attempts = append(m.Attempts, bestOfNManifestAttempt{
 			AttemptID: a.AttemptID,
 			Status:    a.Status,

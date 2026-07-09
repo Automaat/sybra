@@ -618,10 +618,25 @@ func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	wf := ti.Workflow
-	wf.BestOfNInflight["attempts"].Attempts["attempt_1"].Status = "completed"
+	if wf == nil {
+		t.Fatal("task workflow = nil")
+	}
+	rec := wf.BestOfNInflight["attempts"]
+	if rec == nil {
+		t.Fatal("best-of-n inflight record = nil")
+	}
+	status := rec.Attempts["attempt_1"]
+	if status == nil {
+		t.Fatal("attempt_1 status = nil")
+	}
+	status.Status = "completed"
 
-	ctx := TemplateContext{Task: ti, Step: *def.StepByID("attempts"), Vars: wf.Variables, Workflow: wf}
-	if _, err := engine.execBestOfN("t1", &def, def.StepByID("attempts"), wf, ctx); !errors.Is(err, errBestOfNParked) {
+	step := def.StepByID("attempts")
+	if step == nil {
+		t.Fatal("attempts step = nil")
+	}
+	ctx := TemplateContext{Task: ti, Step: *step, Vars: wf.Variables, Workflow: wf}
+	if _, err := engine.execBestOfN("t1", &def, step, wf, ctx); !errors.Is(err, errBestOfNParked) {
 		t.Fatalf("execBestOfN resume err = %v, want errBestOfNParked", err)
 	}
 
