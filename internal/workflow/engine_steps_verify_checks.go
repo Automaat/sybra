@@ -65,10 +65,12 @@ type verifyChecksReport struct {
 // toolchain (mise) resolves identically.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
-// verify commands configured, or no worktree. A genuine command failure — or
-// the suite exceeding the time budget (an agent could hang a test to dodge) —
-// blocks. Only engine-shutdown cancellation fails open, so a harness problem on
-// teardown never strands work.
+// verify commands configured, no worktree, or a detected-but-unrepairable
+// corrupted node_modules (broken toolchain state, not the diff — see
+// repairCorruptedNodeModules). A genuine command failure — or the suite
+// exceeding the time budget (an agent could hang a test to dodge) — blocks.
+// Only engine-shutdown cancellation and the node_modules case fail open, so a
+// harness/infra problem never strands or misattributes work.
 func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
@@ -92,6 +94,17 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
+	}
+
+	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
+		// Corruption was detected but the repair itself failed (e.g. `npm ci`
+		// killed again, or no network) — the toolchain is still broken, not
+		// the diff. Running verify against a known-corrupt install would
+		// deterministically fail and misattribute an infra problem to the
+		// implementation, so skip verify entirely rather than flag
+		// human-required.
+		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
+		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
 	}
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
@@ -137,7 +150,6 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
 func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
-	e.repairCorruptedNodeModules(e.ctx, taskID, wtPath)
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, wtPath)
@@ -188,13 +200,14 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 // found") even though package.json/package-lock.json are untouched and an
 // earlier build in the same worktree succeeded. That looks like a genuine
 // build regression caused by the task's diff but is really a broken
-// toolchain state — see task f8ca18d6. Best-effort: a failed repair is
-// logged and left for the verify command itself to surface as the real
-// failure.
-func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) {
+// toolchain state — see task f8ca18d6. A failed repair is reported back to
+// the caller (rather than silently left for the verify command to surface)
+// so a still-broken install is never run through verify and misattributed
+// to the implementation as a product failure.
+func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) (repairFailed bool) {
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
-		return
+		return false
 	}
 	candidates := []string{wtPath}
 	for _, entry := range entries {
@@ -215,8 +228,10 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
 				"task_id", taskID, "dir", dir, "err", repairErr)
+			repairFailed = true
 		}
 	}
+	return repairFailed
 }
 
 // isCorruptedNodeModules reports whether dir looks like an npm project whose
