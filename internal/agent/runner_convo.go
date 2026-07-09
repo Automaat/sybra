@@ -596,7 +596,7 @@ func (m *Manager) SendMessage(agentID, text string) error {
 		return err
 	}
 	if !a.convo.hasStdinPipe() {
-		return conflictError(fmt.Sprintf("agent %s has no stdin pipe (not conversational)", agentID))
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
 	}
 	if a.Mode == "headless" {
 		return m.sendHeadlessSteerMessage(a, text)

@@ -8,7 +8,8 @@ import {
   StartChat,
   StopChat,
 } from '$lib/api'
-import { Agent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 import { extractStepText } from '$lib/step-text.js'
 import type { TimestampedStreamEvent } from '$lib/timeline.js'

@@ -78,6 +78,20 @@ type preparedHeadlessAttempt struct {
 	cleanup func()
 }
 
+func (m *Manager) ensureHeadlessOutputFile(a *Agent, outFile **os.File) {
+	if outFile == nil || *outFile != nil {
+		return
+	}
+	f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
+	if fileErr != nil {
+		m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
+	}
+	if f != nil {
+		a.SetLogPath(f.Name())
+		*outFile = f
+	}
+}
+
 func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	// outFile is opened lazily on first successful cmd.Start and shared across
 	// retry attempts so all output lands in one file. Closed on function exit.
@@ -222,21 +236,12 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	// Open log file on first successful start; subsequent retries append to same file.
-	if *outFile == nil {
-		f, fileErr := logging.NewAgentOutputFile(m.logDir, a.ID)
-		if fileErr != nil {
-			m.logger.Error("agent.output.file", "id", a.ID, "err", fileErr)
-		}
-		if f != nil {
-			a.SetLogPath(f.Name())
-			*outFile = f
-		}
-	}
+	m.ensureHeadlessOutputFile(a, outFile)
 
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir)
 
 	var logWriter io.Writer
-	if *outFile != nil {
+	if outFile != nil && *outFile != nil {
 		logWriter = *outFile
 	}
 
@@ -315,8 +320,9 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	cmd.Stdout = outFile
 
 	// Steerable claude runs get a FIFO stdin, exactly like a detached
-	// conversational agent (startConvoProcessSurvive) — opened O_RDWR so it
-	// never sees EOF and survives the parent's exit; a reattach reopens it.
+	// conversational agent (startConvoProcessSurvive). The parent keeps an
+	// O_RDWR anchor open so the FIFO survives process handoff, while the child
+	// gets a read-only fd and still sees EOF once the writer side closes.
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)

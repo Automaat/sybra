@@ -2336,8 +2336,8 @@ func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
 // reads stream-json user messages from stdin (one per line) and, for each,
 // emits a stream-json result event echoing the message text back — enough
 // to prove a steer message written to the process's stdin produces a further
-// observable turn. Returns the directory containing the binary (the caller
-// passes the full path as headlessInvocation.name; PATH is not required).
+// observable turn. Returns the directory containing the binary so the caller
+// can prepend it to PATH while keeping headlessInvocation.name as "claude".
 func makeFakeEchoStdinClaude(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
