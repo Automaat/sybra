@@ -626,7 +626,12 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
-		OutputSchema:      outputSchema,
+		// fork_subagent is a task-level opt-in, but must never reach a
+		// verifier role (review/test-runner/eval) — a forked subagent's own
+		// token spend would multiply on every independent check, and a
+		// verifier has no need for the parallelism it buys an implementer.
+		ForkSubagent: t.ForkSubagent && r.AuthorsCode(),
+		OutputSchema: outputSchema,
 	}
 	a.withExperiencePrompt(&cfg, r, t)
 
