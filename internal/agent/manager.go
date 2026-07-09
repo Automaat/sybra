@@ -132,6 +132,7 @@ type Manager struct {
 type LimitGate interface {
 	ProviderAvailable(provider string, policy limits.Policy) (bool, string)
 	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
+	ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
 // LimitGateOrNil wraps store as a LimitGate, returning a genuine nil
