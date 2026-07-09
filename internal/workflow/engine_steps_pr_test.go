@@ -269,6 +269,72 @@ func TestExecPushBranch_DivergedRecoveryDeclinesFallsBackToHumanRequired(t *test
 	}
 }
 
+// TestConflictRecovery_DeferredWhileMarkerHeld locks the reentrancy fix: when a
+// per-task starting/dispatching marker is held (push_branch/create_pr reached
+// via DispatchEvent/startWorkflowLocked or a resume re-dispatch), the recovery
+// callback must NOT run inline — doing so re-enters StartWorkflow*/DispatchEvent
+// against the held marker and is silently rejected. It must be queued and run
+// only once drainPendingConflictRecovery fires after the marker releases.
+func TestConflictRecovery_DeferredWhileMarkerHeld(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+
+	var calls int
+	engine.SetConflictRecovery(func(string) bool { calls++; return true })
+
+	// Simulate running inside DispatchEvent: the dispatching marker is held.
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	if parked := engine.tryConflictRecovery("t1"); !parked {
+		t.Fatal("tryConflictRecovery = false, want true (park while marker held)")
+	}
+	if calls != 0 {
+		t.Fatalf("recovery invoked inline under held marker (calls=%d); want deferred", calls)
+	}
+
+	// Marker still held: a premature drain must also not fire the callback.
+	engine.drainPendingConflictRecovery("t1")
+	if calls != 1 {
+		t.Fatalf("recovery calls=%d after drain; want exactly 1", calls)
+	}
+}
+
+// TestDrainPendingConflictRecovery_DeclineEscalates verifies the deferred path's
+// fallback: when the queued recovery declines, the task lands human-required and
+// its parked workflow is terminated — the same terminal outcome the inline path
+// produces.
+func TestDrainPendingConflictRecovery_DeclineEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "ready-pr",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task-pr",
+			CurrentStep: "push_branch",
+			State:       ExecRunning,
+		},
+	})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetConflictRecovery(func(string) bool { return false })
+
+	engine.mu.Lock()
+	engine.pendingRecovery["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	engine.drainPendingConflictRecovery("t1")
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
+		t.Errorf("workflow state = %v, want ExecCompleted (parked workflow terminated)", ti.Workflow)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

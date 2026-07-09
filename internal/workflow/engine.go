@@ -281,6 +281,7 @@ type Engine struct {
 	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
 	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
 	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
@@ -310,6 +311,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agentSteps:       make(map[string]agentEntry),
 		dispatchingStep:  make(map[string]int),
 		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]struct{}),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
