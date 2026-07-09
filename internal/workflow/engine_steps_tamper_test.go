@@ -385,6 +385,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	tamper := impl.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-implement")
+		return
 	}
 	if tamper.Type != StepDetectTampering {
 		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
@@ -394,6 +395,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("verify_commits default goto = %q, want detect_tampering", got)
@@ -878,10 +880,12 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 	tamper := rev.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-review")
+		return
 	}
 	fix := rev.StepByID("fix_review")
 	if fix == nil {
 		t.Fatal("fix_review step missing from simple-task-review")
+		return
 	}
 	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("fix_review goto = %q, want detect_tampering", got)

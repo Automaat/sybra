@@ -99,6 +99,7 @@ func TestSchedulerSyncRestartsOnConfigChange(t *testing.T) {
 	sched.mu.Unlock()
 	if rfAfter == nil {
 		t.Fatal("fetcher gone after restart")
+		return
 	}
 	if rfAfter == rfBefore {
 		t.Fatal("expected fresh runningFetcher after config change")

@@ -262,6 +262,7 @@ steps:
 	}
 	if found == nil {
 		t.Fatal("hand-edited workflow should still load despite invalid field")
+		return
 	}
 
 	// But Save must reject the same definition — strict write-path check.

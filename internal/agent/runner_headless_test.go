@@ -562,6 +562,7 @@ func TestStreamHeadlessOutput_LargeResultContent(t *testing.T) {
 	r := lastResult(a)
 	if r == nil {
 		t.Fatal("no result event captured")
+		return
 	}
 	if len(r.Content) != contentSize {
 		t.Errorf("result content len = %d, want %d (buffer should accept up to 1 MiB)", len(r.Content), contentSize)
@@ -613,6 +614,7 @@ func TestStreamHeadlessOutput_LargeLineUnderBufferCap(t *testing.T) {
 	r := lastResult(a)
 	if r == nil {
 		t.Fatal("no result event captured for 2 MiB line")
+		return
 	}
 	if len(r.Content) != contentSize {
 		t.Errorf("content len = %d, want %d (2 MiB should fit in the 4 MiB buffer)", len(r.Content), contentSize)

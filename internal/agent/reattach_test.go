@@ -124,6 +124,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	}, reg)
 	if perTurnAgent == nil {
 		t.Fatal("reattachPerTurnConvo returned nil, expected a live agent")
+		return
 	}
 	assertAccountingInvariant(t, m)
 
