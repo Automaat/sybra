@@ -14,6 +14,15 @@ import (
 
 const exactSnapshotMaxAge = 30 * time.Minute
 
+// eventMaxAge bounds how long a UsageEvent survives in limits.json.
+// Summary never looks back further than the weekly window (7d, see
+// fallbackWindows) and BackfillLocalSessionFiles defaults to a 14d cutoff
+// (ProviderLimitsConfig.BackfillDays) — 21d leaves a safety margin over both
+// so a slow reload or clock skew can't prune data a consumer still needs.
+// Without this, limits.json grows unbounded (56MB / ~189k events observed in
+// production) since every RecordUsage/Import call only ever appends.
+const eventMaxAge = 21 * 24 * time.Hour
+
 type persisted struct {
 	Snapshots map[string]Snapshot `json:"snapshots"`
 	Events    []UsageEvent        `json:"events"`
@@ -148,9 +157,13 @@ func (s *Store) reloadLocked() error {
 	}
 	s.events = nil
 	s.seen = map[string]struct{}{}
+	cutoff := s.now().UTC().Add(-eventMaxAge)
 	for i := range p.Events {
 		e := p.Events[i]
 		if e.ID == "" {
+			continue
+		}
+		if e.Timestamp.Before(cutoff) {
 			continue
 		}
 		if _, ok := s.seen[e.ID]; ok {
