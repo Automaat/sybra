@@ -50,7 +50,11 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		return out, nil
 	}
 
-	headArg, err := project.HeadArg(e.ctx, wtPath, branch)
+	headArg, err := func() (string, error) {
+		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		defer cancel()
+		return project.HeadArg(ctx, wtPath, branch)
+	}()
 	if err != nil {
 		return e.humanRequiredPR(taskID, step, "could not resolve pr head: "+err.Error())
 	}
@@ -236,8 +240,10 @@ func (e *Engine) verifyPushedHead(taskID, wtPath string, t TaskInfo) {
 		if attempt > 0 {
 			prVerifySleep(prVerifyBackoffs[attempt-1])
 		}
+		shaCtx, shaCancel := context.WithTimeout(e.ctx, shellTimeout)
 		var shaErr error
-		remoteSHA, shaErr = e.prHeads.FetchPRHeadSHA(t.ProjectID, t.PRNumber)
+		remoteSHA, shaErr = e.prHeads.FetchPRHeadSHA(shaCtx, t.ProjectID, t.PRNumber)
+		shaCancel()
 		if shaErr == nil && remoteSHA == localSHA {
 			return
 		}

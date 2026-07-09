@@ -272,8 +272,8 @@ func (prStateFetcherAdapter) FetchPRState(repo string, number int) (github.PRSta
 // the github package. Stateless — all state lives in `gh` / GitHub.
 type prHeadFetcherAdapter struct{}
 
-func (prHeadFetcherAdapter) FetchPRHeadSHA(repo string, number int) (string, error) {
-	return github.FetchPRHeadSHA(repo, number)
+func (prHeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
+	return github.FetchPRHeadSHAContext(ctx, repo, number)
 }
 
 // prCreatorAdapter wires the workflow engine's PRCreator interface to the

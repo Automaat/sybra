@@ -82,7 +82,9 @@ type fakePRHeadFetcher struct {
 	err error
 }
 
-func (f *fakePRHeadFetcher) FetchPRHeadSHA(string, int) (string, error) { return f.sha, f.err }
+func (f *fakePRHeadFetcher) FetchPRHeadSHA(context.Context, string, int) (string, error) {
+	return f.sha, f.err
+}
 
 type fakePRCreator struct {
 	number  int

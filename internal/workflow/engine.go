@@ -180,7 +180,7 @@ type PRStateFetcher interface {
 // to verify a push landed before continuing. Engine operates with a nil
 // fetcher — the step then skips verification and trusts the push exit code.
 type PRHeadFetcher interface {
-	FetchPRHeadSHA(repo string, number int) (string, error)
+	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
 }
 
 // PRCreator opens a new GitHub pull request for an already-pushed branch via

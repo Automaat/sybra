@@ -57,7 +57,7 @@ func CreatePR(ctx context.Context, dir string, req CreatePRRequest) (number int,
 	if number == 0 {
 		return 0, "", fmt.Errorf("gh pr create: could not parse pr number from output: %s", sanitizeGHOutput(out))
 	}
-	sha, shaErr := FetchPRHeadSHA(req.Repo, number)
+	sha, shaErr := FetchPRHeadSHAContext(ctx, req.Repo, number)
 	if shaErr != nil {
 		return number, "", fmt.Errorf("pr #%d created but head sha lookup failed: %w", number, shaErr)
 	}

@@ -69,8 +69,8 @@ func validateContent(c *Content) error {
 	if c.Title == "" {
 		return fmt.Errorf("title is empty")
 	}
-	if len(c.Title) > 100 {
-		return fmt.Errorf("title too long (%d chars, max 100)", len(c.Title))
+	if len(c.Title) > 80 {
+		return fmt.Errorf("title too long (%d chars, max 80)", len(c.Title))
 	}
 	if !strings.Contains(c.Body, "## Motivation") {
 		return fmt.Errorf("body missing '## Motivation' section")
