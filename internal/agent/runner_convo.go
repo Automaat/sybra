@@ -596,13 +596,13 @@ func (m *Manager) SendMessage(agentID, text string) error {
 		return err
 	}
 	if !a.convo.hasStdinPipe() {
-		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
+		return conflictError(fmt.Sprintf("agent %s has no stdin pipe (not conversational)", agentID))
 	}
 	if a.Mode == "headless" {
 		return m.sendHeadlessSteerMessage(a, text)
 	}
 	if a.Mode != "interactive" {
-		return fmt.Errorf("agent %s is not in interactive/conversational mode", agentID)
+		return conflictError(fmt.Sprintf("agent %s is not in interactive/conversational mode", agentID))
 	}
 
 	queued := a.GetState() == StateRunning

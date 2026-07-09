@@ -914,10 +914,10 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 // good) so a message is never silently queued for a process that is exiting.
 func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
 	if a.isFinalizing() {
-		return fmt.Errorf("agent %s is finalizing and can no longer accept messages", a.ID)
+		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
 	}
 	if a.PendingPromptCount() >= maxPendingHeadlessSteerPrompts {
-		return fmt.Errorf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts)
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts))
 	}
 	a.EnqueuePrompt(text)
 	m.saveRegistry(m.ctx, a)

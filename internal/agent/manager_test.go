@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1465,6 +1466,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected queue overflow error")
 	}
+	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
 		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
 	}
@@ -1490,8 +1492,27 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error sending to a finalizing headless agent")
 	}
+	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != 0 {
 		t.Errorf("PendingPromptCount = %d, want 0 (message must not be queued)", got)
+	}
+}
+
+// assertConflictClientError verifies err implements httpapi.ClientError
+// (structurally: error + HTTPStatus() int) with a 409 status, so the HTTP
+// API surfaces it as a clear rejection instead of a generic 500 — see
+// internal/httpapi.ClientError.
+func assertConflictClientError(t *testing.T, err error) {
+	t.Helper()
+	ce, ok := err.(interface {
+		error
+		HTTPStatus() int
+	})
+	if !ok {
+		t.Fatalf("error %v does not implement ClientError (HTTPStatus() int)", err)
+	}
+	if got := ce.HTTPStatus(); got != http.StatusConflict {
+		t.Errorf("HTTPStatus() = %d, want %d", got, http.StatusConflict)
 	}
 }
 
@@ -1508,4 +1529,5 @@ func TestSendMessage_RejectsNoTransport(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when headless agent has no stdin pipe")
 	}
+	assertConflictClientError(t, err)
 }
