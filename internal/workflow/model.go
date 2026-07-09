@@ -127,7 +127,7 @@ const (
 	// resume_status vars captured before the recovery workflow was started;
 	// a missing resume_workflow_id is a no-op (the workflow simply ends, and
 	// normal status-driven cascade dispatch — see
-	// AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+	// completion.Handler.OnWorkflowComplete — picks up whatever workflow
 	// matches the restored task status).
 	StepResumeWorkflow StepType = "resume_workflow"
 	// StepBestOfN runs Config.Attempts implementation agents concurrently,
