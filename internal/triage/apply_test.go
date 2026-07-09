@@ -193,6 +193,41 @@ func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
 	}
 }
 
+func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ deliberately-normal task with umbrella-shaped title", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"tags": []string{umbrellaGuardOptOutTag}}); err != nil {
+		t.Fatalf("UpdateMap tags: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: opt-out tag should exempt the task from the umbrella guard, got %s", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+	if !slices.Contains(updated.Tags, umbrellaGuardOptOutTag) {
+		t.Errorf("tags: opt-out tag %q must survive triage, got %v", umbrellaGuardOptOutTag, updated.Tags)
+	}
+}
+
 func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)

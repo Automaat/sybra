@@ -47,8 +47,11 @@ var (
 	// PR opens, and a "small" bug fix is exactly the case where a subtle
 	// regression is likely to slip past both. `notest` is deliberately not in
 	// this list — it only downgrades evidence requirements (app-start
-	// exemption); it never skips the tester.
-	escapeHatchTags = []string{"noplan", "nocritic", "trivial"}
+	// exemption); it never skips the tester. `notumbrella` opts a task out of
+	// the ☂️-title umbrella guard (see Apply) for the rare genuine case where a
+	// task legitimately keeps task_type=normal despite an umbrella-shaped title
+	// or "umbrella" tag; human/orchestrator-set only, never classifier-emitted.
+	escapeHatchTags = []string{"noplan", "nocritic", "trivial", "notumbrella"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
 	tagAliases = map[string]string{

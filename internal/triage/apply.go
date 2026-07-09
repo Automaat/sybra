@@ -18,7 +18,13 @@ var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.Gate
 
 const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
 	"guard blocked dispatch to avoid a wasted implement run; " +
-	"set task_type=umbrella to expand it or fix the title if this isn't a tracker"
+	"set task_type=umbrella to expand it, add the notumbrella tag to opt out, " +
+	"or fix the title if this isn't a tracker"
+
+// umbrellaGuardOptOutTag opts a task out of the ☂️-title umbrella guard for the
+// genuine case where a task keeps task_type=normal despite an umbrella-shaped
+// title or tag (see escapeHatchTags).
+const umbrellaGuardOptOutTag = "notumbrella"
 
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.
 // All field changes happen in a single UpdateMap call so the write is
@@ -117,7 +123,9 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// wastes a full run before the agent discovers there's no direct code
 	// surface. Catch it here — before dispatch — and park it for a human to
 	// either set task_type=umbrella or fix the title.
-	if !isPRFix && t.TaskType != task.TaskTypeUmbrella && umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
+	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
+		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
+		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
 		updates["status"] = string(task.StatusHumanRequired)
 		updates["status_reason"] = umbrellaNormalTypeStatusReason
 	}
