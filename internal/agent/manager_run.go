@@ -594,10 +594,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -622,10 +619,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
@@ -679,9 +673,14 @@ func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []prov
 		return resolved, gateEvents, nil
 	}
 	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-	return "", gateEvents, &provider.UnhealthyError{
-		Provider: resolved,
-		Reason:   reason,
+	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+}
+
+func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
+	return &provider.UnhealthyError{
+		Provider:    prov,
+		Reason:      reason,
+		RateLimited: reason == provider.RateLimitReason || limits.IsRateLimitReachedReason(reason),
 	}
 }
 
