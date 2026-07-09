@@ -639,6 +639,22 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 	return executil.Run(ctx, worktreePath, "git", "push", "-u", PushRemote(ctx, worktreePath), branch)
 }
 
+// HeadArg returns the `gh pr create --head` value for branch: a bare branch
+// name when pushing to origin, or "fork-owner:branch" when a fork remote is
+// configured — matching PushRemote's routing decision so the PR always
+// points at the branch that was actually pushed.
+func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
+	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	if err != nil {
+		return branch, nil
+	}
+	owner, _, parseErr := ParseGitHubURL(strings.TrimSpace(forkURL))
+	if parseErr != nil {
+		return "", fmt.Errorf("parse fork remote url: %w", parseErr)
+	}
+	return owner + ":" + branch, nil
+}
+
 // CurrentBranch returns the checked-out branch name for a worktree.
 func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 	branch, err := executil.Output(ctx, worktreePath, "git", "branch", "--show-current")
