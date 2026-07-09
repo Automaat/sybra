@@ -802,18 +802,13 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		t = refetched
 	}
 	resume := r.captureBranchConflictResumeState(t)
-	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
-		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "branch conflict recovery"); cancelErr != nil {
-			r.logger.Error("pr-monitor.branch-conflict.cancel-active-workflow", "task_id", taskID, "err", cancelErr)
-			return false
-		}
-	}
+	hadActiveWorkflow := r.WorkflowEngine.HasActiveWorkflow(taskID)
 
 	headSHA, shaErr := project.CurrentCommit(ctx, dir)
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume)
+	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
 }
 
 func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
@@ -837,7 +832,17 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 	return state
 }
 
-func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState) bool {
+// dispatchBranchConflictRecovery starts the branch-conflict-fix workflow,
+// replacing the task's current workflow when hadActiveWorkflow is true.
+//
+// hadActiveWorkflow must NOT be re-derived here via HasActiveWorkflow: this
+// method runs synchronously inside the very step execution of the workflow
+// it may need to replace (create_pr's pushTaskBranch, reached from within
+// simple-task-pr's own start/dispatch call), and using ReplaceWorkflow —
+// rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
+// what avoids a guaranteed reentrant "start in progress" failure there (see
+// workflow.Engine.ReplaceWorkflow's doc).
+func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
 	vars := map[string]string{
 		"prompt":                branchConflictPrompt(t, base) + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
@@ -850,7 +855,13 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		vars["resume_workflow_vars"] = resume.workflowVars
 	}
 
-	if err := r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars); err != nil {
+	var err error
+	if hadActiveWorkflow {
+		err = r.WorkflowEngine.ReplaceWorkflow(taskID, "branch conflict recovery", branchConflictFixWorkflowID, vars)
+	} else {
+		err = r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars)
+	}
+	if err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
 		if resume.prior != nil {
 			if _, restoreErr := r.tasks.Update(taskID, task.Update{

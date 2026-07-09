@@ -65,7 +65,14 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, var
 		delete(e.starting, taskID)
 		e.mu.Unlock()
 	}()
+	return e.startWorkflowCore(taskID, workflowID, startStepID, vars)
+}
 
+// startWorkflowCore is the marker-agnostic body of startWorkflowLocked: build
+// the Execution and run it. Split out so ReplaceWorkflow can perform a
+// cancel-then-start atomically without re-acquiring e.starting — see
+// ReplaceWorkflow's doc for why re-acquiring deadlocks.
+func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
 	// Guard against sequential duplicate starts: the starting map only prevents
 	// overlapping entries. If caller A has completed its Start* call (defer
 	// removed the marker) while caller B is queued behind the mutex, B would
@@ -289,4 +296,32 @@ func (e *Engine) CancelWorkflow(taskID, reason string) (string, error) {
 		"task_id", taskID, "workflow", wfExec.WorkflowID,
 		"step", priorStep, "reason", reason)
 	return priorStep, nil
+}
+
+// ReplaceWorkflow atomically cancels the task's current active workflow
+// (recording cancelReason) and starts newWorkflowID with vars in its place.
+//
+// This exists because CancelWorkflow followed by a separate
+// StartWorkflowWithVars call deadlocks when both run inside the same call
+// stack that is already executing a step of the workflow being replaced —
+// e.g. divergence recovery invoked synchronously from create_pr's
+// pushTaskBranch. That stack already holds e.starting[taskID] (set by the
+// enclosing startWorkflowLocked/DispatchEvent call for the workflow currently
+// executing), so the nested StartWorkflowWithVars always observes the marker
+// busy and fails with ErrWorkflowAlreadyActive ("start in progress") — a
+// guaranteed reentrant failure every time, not a transient race.
+//
+// Safe to call from that nested position: the outer call already serializes
+// concurrent starts for taskID, so ReplaceWorkflow can perform the cancel+
+// start under that same guarantee instead of re-acquiring e.starting.
+func (e *Engine) ReplaceWorkflow(taskID, cancelReason, newWorkflowID string, vars map[string]string) error {
+	if _, err := e.CancelWorkflow(taskID, cancelReason); err != nil {
+		return fmt.Errorf("cancel prior workflow: %w", err)
+	}
+	comp, err := e.startWorkflowCore(taskID, newWorkflowID, "", vars)
+	if errors.Is(err, errBestOfNParked) {
+		err = nil
+	}
+	e.fireComplete(comp)
+	return err
 }
