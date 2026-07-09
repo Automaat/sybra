@@ -287,6 +287,7 @@ type Engine struct {
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -404,6 +405,16 @@ func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetConflictRecovery wires the autonomous branch-conflict recovery callback
+// (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
+// when a push diverges from remote. Same callback agentorch wires for
+// worktree-prep rebase failures — reused here so a self-inflicted divergence
+// discovered at push time (e.g. a reused worktree rebased out from under an
+// earlier merge-based push) gets the same autonomous fix instead of an
+// unconditional human escalation. Leaving it unset preserves the prior
+// behavior: any divergence flips straight to human-required.
+func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

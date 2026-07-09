@@ -166,6 +166,19 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	// prompts instructed. Same for a missing local branch ref — both are
 	// unrecoverable by retrying the push.
 	if errors.Is(pushErr, project.ErrDivergedNeedsResolve) {
+		// Try the same autonomous conflict-fix recovery agentorch dispatches
+		// for worktree-prep rebase conflicts before giving up to a human — a
+		// divergence here is often self-inflicted (a reused worktree rebased
+		// onto a newer base after an earlier merge-based push), and
+		// RecoverStaleBranchConflict resolves it the same way regardless of
+		// origin. It cancels this task's active workflow and starts
+		// branch-conflict-fix in its place (capturing resume state to
+		// re-enter this step on success), so the caller must treat the
+		// current workflow execution as already handled — errStepParked
+		// mirrors parkStepForRetry's contract for exactly that case.
+		if e.conflictRecovery != nil && e.conflictRecovery(taskID) {
+			return StepOutput{}, errStepParked, false
+		}
 		out, err = e.humanRequiredPR(taskID, step, "branch diverged from remote — needs manual conflict resolution (never force-pushed): "+pushErr.Error())
 		return out, err, false
 	}
