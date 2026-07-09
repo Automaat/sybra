@@ -196,6 +196,7 @@ describe('pageToPath', () => {
     [{ kind: 'workflows' }, '/workflows'],
     [{ kind: 'workflow-detail', workflowId: 'wf1' }, '/workflows/wf1'],
     [{ kind: 'logbook' }, '/logbook'],
+    [{ kind: 'notifications' }, '/notifications'],
   ] as const)('serializes %o to %s', (page: any, expected) => {
     expect(pageToPath(page)).toBe(expected)
   })
@@ -222,6 +223,7 @@ describe('pageFromLocation', () => {
     ['/workflows', '', { kind: 'workflows' }],
     ['/workflows/wf1', '', { kind: 'workflow-detail', workflowId: 'wf1' }],
     ['/logbook', '', { kind: 'logbook' }],
+    ['/notifications', '', { kind: 'notifications' }],
     // trailing / duplicate slashes collapse the same as the bare route
     ['/tasks/', '', { kind: 'task-list' }],
     ['//tasks//t1//', '', { kind: 'task-detail', taskId: 't1' }],

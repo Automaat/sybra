@@ -225,6 +225,8 @@ export function pageToPath(p: Page): string {
       return `/workflows/${encodeURIComponent(p.workflowId)}`
     case 'logbook':
       return '/logbook'
+    case 'notifications':
+      return '/notifications'
   }
 }
 
@@ -279,6 +281,7 @@ export function pageFromLocation(location: { pathname: string; search: string })
     case 'reviews': return { kind: 'reviews' }
     case 'settings': return { kind: 'settings' }
     case 'logbook': return { kind: 'logbook' }
+    case 'notifications': return { kind: 'notifications' }
     default:
       return board
   }
