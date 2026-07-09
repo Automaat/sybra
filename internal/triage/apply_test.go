@@ -136,6 +136,63 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 }
 
+func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ refactor(orchestrator): converge implement→test loop under retry cap", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.TaskType != task.TaskTypeNormal {
+		t.Fatalf("precondition: want task_type=normal, got %s", created.TaskType)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "infra", "large", "refactor"},
+		Size:  "large",
+		Type:  "refactor",
+		Mode:  "interactive",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %s, want human-required", updated.Status)
+	}
+	if updated.StatusReason == "" {
+		t.Errorf("status_reason: want non-empty guard explanation")
+	}
+}
+
+func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ tracker for expanded work", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"task_type": string(task.TaskTypeUmbrella)}); err != nil {
+		t.Fatalf("UpdateMap task_type: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: task already umbrella-typed should not be guarded into human-required")
+	}
+}
+
 func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("bump dep on work repo", "https://github.com/example-org/example-repo/pull/9", task.AgentModeHeadless)
