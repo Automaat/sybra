@@ -21,6 +21,14 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *completion.Hand
 		LoopSched:      a.loopSched,
 		PRTracker:      a.prTracker,
 		Cfg:            a.cfg,
+		Artifacts:      a.artifacts,
+		WorkScrub: func(projectID string) *completion.WorkScrubContext {
+			ctx := a.workScrubContextForTask(projectID)
+			if ctx == nil {
+				return nil
+			}
+			return &completion.WorkScrubContext{Blocklist: ctx.Blocklist}
+		},
 		// a.humanReview may be nil (feature disabled) — the method value
 		// still binds cleanly and onComplete guards for a nil receiver.
 		HumanReviewComplete: a.humanReview.onComplete,

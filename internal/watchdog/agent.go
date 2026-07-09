@@ -221,11 +221,16 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 // without its process exiting. No judge inspection is involved — a finished
 // run has nothing left to inspect, it just needs its orphaned process killed.
 func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
-	if !ag.TerminalResultIdle(completedHangGrace) {
+	// EffectiveHangGrace extends the idle window while the CLI still reports
+	// a live `run_in_background` task (e.g. npm ci), so this backstop doesn't
+	// force-stop a process mid-write just because it produced no NDJSON
+	// activity after its terminal result.
+	if !ag.TerminalResultIdle(ag.EffectiveHangGrace(completedHangGrace)) {
 		return
 	}
 	w.logger.Warn("agent.watchdog.completed_hang", "id", ag.ID,
-		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()))
+		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()),
+		"background_tasks_pending", ag.HasBackgroundTasks())
 	stop := w.stopCompletedAgent
 	if stop == nil {
 		stop = w.stopAgent

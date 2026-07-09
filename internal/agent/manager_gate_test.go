@@ -93,6 +93,44 @@ func TestPrepareRunConfig_InteractiveFailsOverLikeHeadless(t *testing.T) {
 	}
 }
 
+// TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
+// locks in that prepareRunConfig — the single chokepoint every headless and
+// interactive run passes through — wires the background-task guardrail into
+// the final prompt for a headless, code-authoring run (SeedWorkingMemory),
+// and leaves other shapes untouched.
+func TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:          "claude",
+		Mode:              "headless",
+		Prompt:            "implement the task",
+		SeedWorkingMemory: true,
+		Dir:               t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Prompt == "implement the task" {
+		t.Fatal("expected background-task guardrail to be appended to a headless code-author prompt")
+	}
+
+	cfg, _, err = m.prepareRunConfig(RunConfig{
+		Provider:          "claude",
+		Mode:              "headless",
+		Prompt:            "review the diff",
+		SeedWorkingMemory: false,
+		Dir:               t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Prompt != "review the diff" {
+		t.Errorf("verifier role (SeedWorkingMemory=false) should not get the guardrail, got: %q", cfg.Prompt)
+	}
+}
+
 func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetHealthGate(&fakeGate{

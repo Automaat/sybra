@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
@@ -54,6 +55,8 @@ type Config struct {
 	LoopSched      *loopagent.Scheduler
 	PRTracker      *github.IssueTracker
 	Cfg            *config.Config
+	Artifacts      *artifact.Store
+	WorkScrub      func(projectID string) *WorkScrubContext
 
 	// HumanReviewComplete routes a completed human-review agent's verdict
 	// back into task state. The caller (internal/sybra) wires this to its
@@ -66,6 +69,12 @@ type Config struct {
 	// diverged fix-review push instead of Sybra's own process force-pushing.
 	// May be nil (degraded init / tests): treated as "no recovery available".
 	ConflictRecovery func(taskID string) bool
+}
+
+// WorkScrubContext carries the subset of work-task scrub state the completion
+// package needs when importing local evidence artifacts.
+type WorkScrubContext struct {
+	Blocklist []string
 }
 
 // Handler reacts to agent.Manager and workflow.Engine terminal-state
@@ -85,6 +94,16 @@ type Handler struct {
 	loopSched      *loopagent.Scheduler
 	prTracker      *github.IssueTracker
 	cfg            *config.Config
+	// artifacts is the local per-task artifact store. Used to import a
+	// completed test-runner's Playwright MCP evidence (screenshots/console
+	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
+	// no-ops when unset (degraded init / tests).
+	artifacts *artifact.Store
+	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
+	// Used by importTestRunnerEvidence to redact work-repo identifiers from
+	// captured evidence before it lands in the local artifact store. Nil-safe:
+	// a nil func or nil-returning lookup means "not work-typed — import as-is".
+	workScrub func(projectID string) *WorkScrubContext
 
 	humanReviewComplete func(*agent.Agent)
 	conflictRecovery    func(taskID string) bool
@@ -105,6 +124,8 @@ func New(cfg Config) *Handler {
 		loopSched:           cfg.LoopSched,
 		prTracker:           cfg.PRTracker,
 		cfg:                 cfg.Cfg,
+		artifacts:           cfg.Artifacts,
+		workScrub:           cfg.WorkScrub,
 		humanReviewComplete: cfg.HumanReviewComplete,
 		conflictRecovery:    cfg.ConflictRecovery,
 	}
@@ -200,6 +221,10 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
 		return
+	}
+
+	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+		h.importEvidenceForAgent(ag)
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine
