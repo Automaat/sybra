@@ -324,12 +324,14 @@ func (c *Config) HumanReviewRepo() string {
 	return "Automaat/sybra"
 }
 
-// HumanReviewModel returns the configured model alias or "sonnet".
+// HumanReviewModel returns the configured model alias or
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog inspector
+// (applyWatchdogDefaults): classifying why a task stalled, not authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "sonnet"
+	return "claude-haiku-4-5-20251001"
 }
 
 // HumanReviewIssueLabel returns the configured label or "sybra-bug".
@@ -1046,7 +1048,9 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IntervalSeconds = 300
 	}
 	if cfg.Monitor.Model == "" {
-		cfg.Monitor.Model = "sonnet"
+		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
+		// classifying an anomaly, not authoring a fix.
+		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30

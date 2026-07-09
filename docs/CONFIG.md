@@ -235,7 +235,7 @@ checkout, leave disabled on the server.
 | `human_review.enabled` | `bool` |  |  |
 | `human_review.sybra_repo_dir` | `string` |  |  |
 | `human_review.repo` | `string` |  | Repo is the owner/name where bug issues are filed. Defaults to "Automaat/sybra" when empty. |
-| `human_review.model` | `string` |  | Model is the Claude model alias (e.g. "sonnet", "opus"). Defaults to "sonnet" when empty. |
+| `human_review.model` | `string` |  | Model is the Claude model alias (e.g. "sonnet", "opus"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
 | `human_review.max_per_hour` | `int` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
 | `human_review.issue_label` | `string` |  | IssueLabel is the label applied to filed issues (in addition to "bug"). Defaults to "sybra-bug". |
 | `human_review.sybra_bug_action` | `string` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: file_issue (default), local_task, block_only, or note_only. |
