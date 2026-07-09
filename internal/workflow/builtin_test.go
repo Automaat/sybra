@@ -326,18 +326,18 @@ func TestBuiltinSimpleTaskPlan_AgentStepsAreHeadless(t *testing.T) {
 		t.Fatal("simple-task-plan builtin definition not found")
 	}
 
-	var agentSteps int
+	var runAgentSteps int
 	for i := range simple.Steps {
 		step := &simple.Steps[i]
 		if step.Type != StepRunAgent {
 			continue
 		}
-		agentSteps++
+		runAgentSteps++
 		if step.Config.Mode != "headless" {
 			t.Errorf("run_agent step %q mode = %q, want headless (autonomous planning agents must stay under watchdog supervision)", step.ID, step.Config.Mode)
 		}
 	}
-	if agentSteps == 0 {
+	if runAgentSteps == 0 {
 		t.Fatal("expected simple-task-plan to contain run_agent steps")
 	}
 }

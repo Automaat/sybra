@@ -96,7 +96,7 @@ func BenchmarkAdvanceStep_Retry(b *testing.B) {
 }
 
 // BenchmarkResumeStalled measures scanning a pool of stalled tasks and
-// re-dispatching them. Exercises ListTasks, per-task state checks, and
+// relaunching them. Exercises ListTasks, per-task state checks, and
 // the inflightMutex map under realistic task counts.
 func BenchmarkResumeStalled(b *testing.B) {
 	const taskCount = 20
