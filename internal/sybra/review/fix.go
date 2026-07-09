@@ -786,8 +786,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
-		r.recordWorktreeFailure(taskID, err)
-		return false
+		return r.parkOrEscalateBranchFixFailure(taskID, err)
 	}
 	if !r.allowPreparedWorktree(taskID, dir) {
 		return false
@@ -863,6 +862,14 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
+	return true
+}
+
+func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
+	r.recordWorktreeFailure(taskID, wtErr)
+	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
+		return false
+	}
 	return true
 }
 
