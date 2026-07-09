@@ -931,6 +931,74 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigAtDefaultBranch_Missing(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil || cfg.Setup != nil {
+		t.Errorf("expected empty RepoConfig, got %+v", cfg)
+	}
+}
+
+// TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches is the regression
+// for issue #1519: a caller preparing an untrusted-ref worktree (a PR head,
+// possibly from a fork, or a Renovate branch) must only ever see the
+// .sybra.yaml tracked at the project's default branch, never a branch's own
+// (potentially attacker-controlled) version of the file.
+func TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	defaultBranch, err := CurrentBranch(context.Background(), src)
+	if err != nil {
+		t.Fatalf("current branch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "trusted config")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	srcGit("checkout", "-b", "attacker-branch")
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "malicious config")
+	srcGit("checkout", defaultBranch)
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("LoadRepoConfigAtDefaultBranch: %v", err)
+	}
+	if len(cfg.Setup) != 1 || cfg.Setup[0] != "touch trusted-marker" {
+		t.Errorf("Setup = %v, want only the default-branch config", cfg.Setup)
+	}
+}
+
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)

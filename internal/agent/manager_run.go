@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -119,6 +120,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	if err := m.injectGolangciCache(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -184,6 +189,19 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 	}
 	cfg.resolvedSandboxHome = dir
+	return nil
+}
+
+func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "golangci-lint-cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("agent.Run: create golangci-lint cache for task %q: %w", cfg.TaskID, err)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE="+dir)
 	return nil
 }
 
@@ -370,7 +388,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
-		return fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
 	}
 	m.agents[a.ID] = a
 	if a.done != nil {

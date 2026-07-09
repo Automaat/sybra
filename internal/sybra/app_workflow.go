@@ -357,7 +357,9 @@ type worktreeGetterAdapter struct {
 }
 
 // checkConfigGetterAdapter resolves a task's verify-suite commands by merging
-// the repo `.sybra.yaml` checks with the app-level project config.
+// the repo `.sybra.yaml` checks (read from the project's trusted default
+// branch, never the checked-out worktree — see resolveTrustedSetupCommands
+// and issue #1519) with the app-level project config.
 type checkConfigGetterAdapter struct {
 	tasks    *task.Manager
 	projects *project.Store
@@ -405,7 +407,7 @@ func (a *manualTestConfigGetterAdapter) ManualTestConfig(taskID string) workflow
 	}
 }
 
-func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
+func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID string) []string {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return nil
@@ -415,13 +417,20 @@ func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
 		return nil
 	}
 	var repoChecks *project.ChecksConfig
-	if repoCfg, rErr := project.LoadRepoConfig(wtPath); rErr == nil && repoCfg != nil {
-		repoChecks = repoCfg.Checks
-	}
 	var appChecks *project.ChecksConfig
 	if t.ProjectID != "" {
 		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
 			appChecks = p.Checks
+			// Read checks.verify from the project's trusted default branch,
+			// never the checked-out worktree: the worktree's own .sybra.yaml
+			// may carry a malicious `checks.verify` planted by a compromised
+			// or prompt-injected agent, and these commands run unsandboxed
+			// via `sh -c` (see resolveTrustedSetupCommands, issue #1519).
+			// ctx carries the caller's verify-step deadline so a hung
+			// git show/symbolic-ref on the bare repo can't block indefinitely.
+			if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(ctx, p.ClonePath); rErr == nil && repoCfg != nil {
+				repoChecks = repoCfg.Checks
+			}
 		}
 	}
 	merged := project.MergeChecks(repoChecks, appChecks)
@@ -468,6 +477,13 @@ type agentAdapter struct {
 	experience *experience.Store
 }
 
+func translatePoolBusy(err error) error {
+	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
+	}
+	return err
+}
+
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
@@ -477,7 +493,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
 		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", translatePoolBusy(err)
 		}
 		return ag.ID, "", baselineRef, nil
 	}
@@ -587,7 +603,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", translatePoolBusy(err)
 	}
 
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
