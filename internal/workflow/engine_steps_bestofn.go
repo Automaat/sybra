@@ -208,7 +208,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 	rec := wfExec.BestOfNInflight[parent.ID]
 	if rec == nil {
 		e.logger.Debug("workflow.best-of-n.stale", "task_id", taskID, "parent", parent.ID, "attempt", attemptID)
-		return nil, nil
+		return
 	}
 	status := rec.Attempts[attemptID]
 	if status == nil {
@@ -261,7 +261,7 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 	rec := wfExec.BestOfNInflight[parent.ID]
 	if rec == nil {
 		// Stale/duplicate finalize — already collapsed by a prior call.
-		return nil, nil
+		return
 	}
 
 	successes := rec.SuccessfulAttemptIDs()
@@ -269,11 +269,13 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 
 	if len(successes) == 0 {
 		delete(wfExec.BestOfNInflight, parent.ID)
+		e.cleanupAllBestOfNAttempts(taskID, rec)
 		return e.failBestOfNClosed(taskID, def, parent, wfExec,
 			"best-of-n: all attempts failed to start or complete")
 	}
 	if len(successes) == 1 {
 		delete(wfExec.BestOfNInflight, parent.ID)
+		e.cleanupAllBestOfNAttempts(taskID, rec)
 		return e.failBestOfNClosed(taskID, def, parent, wfExec,
 			"best-of-n: fewer than 2 successful attempts, cannot judge")
 	}
@@ -312,6 +314,26 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 	}
 	e.logger.Info("workflow.best-of-n.advance", "task_id", taskID, "from", parent.ID, "to", nextStep.ID)
 	return e.executeSteps(taskID, def, nextStep, wfExec)
+}
+
+// cleanupAllBestOfNAttempts best-effort removes every attempt worktree dir
+// once a best_of_n block terminates WITHOUT a promotion (all failed, or too
+// few successes to judge) — mirrors the loser cleanup execPromoteBestOfN does
+// on the success path, so a block that never reaches promotion doesn't leak
+// attempt directories on disk indefinitely.
+func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) {
+	if e.attemptWorktrees == nil || rec == nil {
+		return
+	}
+	ids := make([]string, 0, len(rec.Attempts))
+	for id := range rec.Attempts {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	sort.Strings(ids)
+	e.attemptWorktrees.CleanupAttempts(taskID, ids)
 }
 
 // failBestOfNClosed flips the task to human-required with reason and drives
@@ -498,19 +520,29 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 		}
 	}
 
-	if _, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch); promErr != nil {
+	canonicalDir, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
+	if promErr != nil {
 		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion refused: "+promErr.Error())
 	}
-
-	var losers []string
-	for id := range rec.Attempts {
-		if id != winnerID {
-			losers = append(losers, id)
-		}
+	// Downstream steps (e.g. a shell step pushing the now-canonical branch)
+	// resolve the worktree via the reserved WorkflowVarDir var, same as every
+	// other run_agent-produced dir — see execRunAgent's wfExec.SetVar(WorkflowVarDir, ...).
+	if canonicalDir != "" {
+		wfExec.SetVar(WorkflowVarDir, canonicalDir)
 	}
-	sort.Strings(losers)
-	if len(losers) > 0 {
-		e.attemptWorktrees.CleanupAttempts(taskID, losers)
+
+	// Clean up every attempt dir, including the winner's: PromoteAttempt
+	// fast-forwards the canonical branch and materializes a SEPARATE
+	// canonical worktree (PathFor, not PathForAttempt) — the winner's own
+	// attempt dir is now a redundant duplicate checkout, not the worktree
+	// downstream steps operate in.
+	allAttempts := make([]string, 0, len(rec.Attempts))
+	for id := range rec.Attempts {
+		allAttempts = append(allAttempts, id)
+	}
+	sort.Strings(allAttempts)
+	if len(allAttempts) > 0 {
+		e.attemptWorktrees.CleanupAttempts(taskID, allAttempts)
 	}
 
 	// Persist the loser cleanup + inflight teardown against the CURRENT

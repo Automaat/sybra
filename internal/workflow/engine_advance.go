@@ -43,26 +43,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 	wfExec, def, currentStep := ctx.WfExec, ctx.Def, ctx.Step
 
-	// Parallel-child completion: route to the child-aware path. The parent
-	// step's record + transitions are emitted only after every child has
-	// terminated, so we never go through the single-step record path here.
-	if ctx.ParallelParent != nil {
-		comp, pErr := e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
-		// Release inflight before the completion callback so its cascade
-		// dispatch never runs under the held lock (matches the paths below).
-		release()
-		e.fireComplete(comp)
-		return pErr
-	}
-
-	// Best-of-N attempt completion: same rationale as the ParallelParent
-	// branch above — the parent's record/transitions fire only once every
-	// attempt has terminated.
-	if ctx.BestOfNParent != nil {
-		comp, bErr := e.advanceBestOfNAttempt(taskID, &def, ctx.BestOfNParent, ctx.AttemptID, wfExec, output)
-		release()
-		e.fireComplete(comp)
-		return bErr
+	// Parallel-child / best-of-N-attempt completion: route to the fan-out-
+	// aware path. The parent step's record + transitions are emitted only
+	// after every child/attempt has terminated, so we never go through the
+	// single-step record path below for these.
+	if handled, fErr := e.handleFanOutCompletion(taskID, &def, ctx, currentStep, wfExec, output, release); handled {
+		return fErr
 	}
 
 	ctx.Task = e.withManualTestConfig(ctx.Task)
@@ -155,6 +141,30 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	comp, sErr := e.executeSteps(taskID, &def, nextStep, wfExec)
 	e.fireComplete(comp)
 	return sErr
+}
+
+// handleFanOutCompletion routes a parallel-child or best-of-N-attempt
+// completion to its child-aware advance path — the parent step's record and
+// transitions are emitted only once every child/attempt has terminated, so
+// AdvanceStep's single-step record path below must never run for these.
+// Releases the inflight lock before firing the completion callback, same as
+// every other early-return path in AdvanceStep, so a cascade dispatch never
+// runs under the held lock. handled=false means ctx named neither fan-out
+// kind and the caller should continue its own single-step handling.
+func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx advanceContext, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (handled bool, err error) {
+	if ctx.ParallelParent != nil {
+		comp, pErr := e.advanceParallelChild(taskID, def, ctx.ParallelParent, currentStep, wfExec, output)
+		release()
+		e.fireComplete(comp)
+		return true, pErr
+	}
+	if ctx.BestOfNParent != nil {
+		comp, bErr := e.advanceBestOfNAttempt(taskID, def, ctx.BestOfNParent, ctx.AttemptID, wfExec, output)
+		release()
+		e.fireComplete(comp)
+		return true, bErr
+	}
+	return false, nil
 }
 
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
