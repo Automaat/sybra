@@ -19,6 +19,13 @@ type EmitFunc func(event string, data any)
 // ErrSurvivalRegistry marks failures initializing restart-survival persistence.
 var ErrSurvivalRegistry = errors.New("agent survival registry")
 
+// defaultDeadAgentRetention is how long a completed agent's registry entry
+// (output buffer, prompt, convo buffer) survives after markAgentDone runs,
+// before Manager.deadAgentRetention evicts it. Bounds long-run memory growth
+// (#1532) while leaving a window for callers to read final state
+// (GetAgent/GetConvoOutput/Output) right after a terminal transition.
+const defaultDeadAgentRetention = 10 * time.Minute
+
 // ErrMaxConcurrentReached is returned by registerRunningAgent when the live
 // agent count is already at MaxConcurrent. It is a transient, self-healing
 // capacity condition (a slot frees when any running agent completes), so
@@ -106,6 +113,11 @@ type Manager struct {
 	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
 	// real operator store even though SYBRA_HOME points at the task's sandbox.
 	controlHome string
+
+	// deadAgentRetention bounds how long a completed agent stays in agents
+	// after markAgentDone before being evicted. <= 0 evicts synchronously
+	// (used by tests that need deterministic immediate eviction).
+	deadAgentRetention time.Duration
 
 	// dispatchClaims serializes agent dispatch per task. A claim is held for
 	// the full duration of a StartAgent call — across the (multi-second)
@@ -206,6 +218,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
+		deadAgentRetention:     defaultDeadAgentRetention,
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
