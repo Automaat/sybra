@@ -103,6 +103,25 @@ describe('ToastContainer', () => {
     expect(onviewtask).not.toHaveBeenCalled()
   })
 
+  it('does not resurrect an older, never-shown notification when a visible toast is dismissed', async () => {
+    // List is newest-first: [n4, n3, n2, n1]. Only the top 3 (n4, n3, n2)
+    // ever render as toasts; n1 sits past the 3-slot window. Dismissing n2
+    // must not slide n1 in with a fresh timer.
+    for (const id of ['n4', 'n3', 'n2', 'n1']) {
+      mockNotifications.push(makeNotification({ id, title: `Toast ${id}` }))
+    }
+    render(ToastContainer, { props: {} })
+    expect(screen.getAllByRole('alert').length).toBe(3)
+    expect(screen.queryByText('Toast n1')).toBeNull()
+
+    const n2 = screen.getByText('Toast n2').closest('[role="alert"]')!
+    await fireEvent.click(n2.querySelector('[aria-label="Dismiss"]')!)
+
+    expect(screen.queryByText('Toast n2')).toBeNull()
+    expect(screen.queryByText('Toast n1')).toBeNull()
+    expect(screen.getAllByRole('alert').length).toBe(2)
+  })
+
   it('hides the toast after auto-dismiss without removing it from the store', async () => {
     vi.useFakeTimers()
     try {

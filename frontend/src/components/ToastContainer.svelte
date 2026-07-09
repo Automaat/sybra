@@ -12,8 +12,12 @@
   // Notifications.svelte). Only the inbox's explicit dismiss/clear removes it.
   let hiddenToastIds = $state<Set<string>>(new Set())
 
+  // Slice the top 3 from the full list FIRST, then drop hidden ones. Hiding a
+  // toast must never backfill an older notification that was pushed past the
+  // 3-slot window and therefore never shown as a toast — filtering before
+  // slicing would resurrect it with a fresh slide-in and timer.
   const visible = $derived(
-    notificationStore.notifications.filter((n) => !hiddenToastIds.has(n.id)).slice(0, 3),
+    notificationStore.notifications.slice(0, 3).filter((n) => !hiddenToastIds.has(n.id)),
   )
 
   function levelClass(level: string): string {
