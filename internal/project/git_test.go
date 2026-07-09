@@ -1925,9 +1925,10 @@ func TestMergeOnto_ConflictReturnsErrorAndCleansUp(t *testing.T) {
 }
 
 // TestPushSync_RefusesForceWhenRemoteAdvanced is the defense-in-depth net: when
-// the live remote head no longer matches the stale tracking ref the push
-// decision was based on, PushSync must refuse to push at all rather than
-// clobber the newer commits with a force push.
+// another clone has pushed to the branch since this worktree last synced,
+// PushSync must refresh its view of the remote (rather than compare against
+// its own stale tracking ref) and refuse to push at all instead of clobbering
+// the newer commits with a force push.
 func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
@@ -1944,19 +1945,69 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	makeCommit(t, wtPath, "two-prime")
 
 	// Meanwhile the remote branch advances from another clone. wtPath never
-	// fetches, so its tracking ref stays behind the live remote head.
+	// explicitly fetches, so its cached tracking ref stays behind the live
+	// remote head until PushSync's own fetch refreshes it.
 	advancedSHA := pushRemoteCommit(t, remoteBare, branch, "concurrent-fix")
 
 	err := PushSync(context.Background(), wtPath, branch)
-	if !errors.Is(err, ErrRemoteAdvanced) {
-		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
-	}
 	if !errors.Is(err, ErrDivergedNeedsResolve) {
 		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve", err)
 	}
 	// The remote fix must survive untouched.
 	if got := remoteRefSHA(t, remoteBare, branch); got != advancedSHA {
 		t.Fatalf("remote SHA = %q, want untouched fix %q", got, advancedSHA)
+	}
+}
+
+// TestPushSync_RefreshesStaleCacheBeforeComparing is the regression for the
+// create_pr/branch-conflict-fix tight loop (issue #1628): a stale cached
+// refs/remotes/<remote>/<branch> can point at a commit that is not an
+// ancestor of the true (live) remote head — e.g. left over from a prior
+// divergence — even though the local branch and the live remote head are
+// actually identical right now (a separate recovery path already converged
+// them). Comparing against the stale cache alone would misreport this as an
+// unresolved divergence forever, since the "true" state never gets a chance
+// to update the cache; PushSync must fetch fresh before deciding.
+func TestPushSync_RefreshesStaleCacheBeforeComparing(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	sha1 := makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Legitimately advance and push — this becomes the true, converged state
+	// both locally and on the remote.
+	shaX := makeCommit(t, wtPath, "two-a")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync advance: %v", err)
+	}
+
+	// Build a sibling commit off sha1 purely to obtain a real, valid SHA that
+	// is not an ancestor of shaX — simulating a stale/incorrect cached ref.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", sha1).CombinedOutput(); err != nil {
+		t.Fatalf("reset to sha1: %v: %s", err, out)
+	}
+	shaY := makeCommit(t, wtPath, "two-b")
+	if out, err := exec.Command("git", "-C", wtPath, "merge-base", "--is-ancestor", shaY, shaX).CombinedOutput(); err == nil {
+		t.Fatalf("shaY unexpectedly an ancestor of shaX: %s", out)
+	}
+
+	// Restore local to the true converged state (shaX) but leave the cached
+	// tracking ref corrupted at the unrelated sibling (shaY) — this is the
+	// "stale cache" the fix must not trust blindly.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", shaX).CombinedOutput(); err != nil {
+		t.Fatalf("reset to shaX: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "update-ref", "refs/remotes/origin/"+branch, shaY).CombinedOutput(); err != nil {
+		t.Fatalf("corrupt cached tracking ref: %v: %s", err, out)
+	}
+
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync = %v, want nil (converged after fresh fetch)", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != shaX {
+		t.Fatalf("remote SHA = %q, want unchanged converged state %q", got, shaX)
 	}
 }
 
