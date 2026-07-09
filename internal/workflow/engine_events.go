@@ -504,6 +504,21 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	mu.Unlock()
 
+	e.mu.Lock()
+	if _, dispatching := e.dispatching[taskID]; dispatching {
+		e.mu.Unlock()
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "dispatching", "step", step.ID)
+		return
+	}
+	e.dispatching[taskID] = struct{}{}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
+	}()
+
 	claim, ok := e.agents.TryClaimDispatch(taskID)
 	if !ok {
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
@@ -616,7 +631,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	}
 }
 
-func (e *Engine) canResumeStep(taskID string, step *Step) (reason string, ok bool) {
+func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
 	// Skip tasks whose step is currently being started. Interactive spawns
 	// (worktree creation, rebase, agent process start) take several seconds
 	// during which no agent is yet registered — without this guard the ticker
@@ -633,6 +648,7 @@ func (e *Engine) canResumeStep(taskID string, step *Step) (reason string, ok boo
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	_, dispatching := e.dispatching[taskID]
 	// agentRoutes holds outstanding agents the engine spawned but hasn't yet
 	// routed completion for. Required because interactive agents pass through
 	// StatePaused after their first result event (one-shot path closes stdin →
@@ -654,13 +670,16 @@ func (e *Engine) canResumeStep(taskID string, step *Step) (reason string, ok boo
 	// concurrently with it.
 	claimedElsewhere := e.agents.IsDispatching(taskID)
 
-	if !advancing && !hasOutstandingAgent && !claimedElsewhere {
+	if !advancing && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
+		e.dispatching[taskID] = struct{}{}
 		return "", true
 	}
 
 	switch {
 	case advancing:
 		return "inflight", false
+	case dispatching:
+		return "dispatching", false
 	case hasOutstandingAgent:
 		return "agent-pending-completion", false
 	case claimedElsewhere:
@@ -738,7 +757,7 @@ func (e *Engine) ResumeStalled() {
 		if e.handleWatchdogHangRetry(t, step) {
 			continue
 		}
-		reason, acquired := e.canResumeStep(t.ID, step)
+		reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
 		if !acquired {
 			e.logger.Debug("workflow.resume-stalled.skip",
 				"task_id", t.ID, "reason", reason, "step", step.ID)
@@ -751,6 +770,9 @@ func (e *Engine) ResumeStalled() {
 		// claimed/advancing) never burns budget for a retry that didn't
 		// happen.
 		if e.handleTransientFetchRetry(t, step) {
+			e.mu.Lock()
+			delete(e.dispatching, t.ID)
+			e.mu.Unlock()
 			continue
 		}
 
@@ -759,11 +781,17 @@ func (e *Engine) ResumeStalled() {
 		// already advanced the workflow past this step.
 		fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
 		if skip {
+			e.mu.Lock()
+			delete(e.dispatching, t.ID)
+			e.mu.Unlock()
 			continue
 		}
 
 		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
 		comp, rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
+		e.mu.Lock()
+		delete(e.dispatching, t.ID)
+		e.mu.Unlock()
 		// ResumeStalled only resumes async run_agent steps, so comp is normally
 		// nil (fireComplete no-ops). Kept defensive so the day a sync step
 		// becomes resumable its completion cascades correctly instead of being

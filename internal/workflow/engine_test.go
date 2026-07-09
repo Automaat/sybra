@@ -5128,6 +5128,61 @@ func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_ConcurrentCallsReserveDispatchWindow verifies the engine
+// still keeps its own short-lived per-task reservation between ResumeStalled's
+// preflight and the eventual StartAgent call. The shared agent.Manager claim is
+// only acquired inside StartAgent, so without this earlier reservation two
+// concurrent ResumeStalled loops can both enter executeSteps before any claim
+// exists and race a duplicate start.
+func TestResumeStalled_ConcurrentCallsReserveDispatchWindow(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.startGate = make(chan struct{})
+	agents.startEntered = make(chan struct{}, 2)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "planning",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			engine.ResumeStalled()
+		}()
+	}
+
+	select {
+	case <-agents.startEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ResumeStalled never reached StartAgent")
+	}
+
+	select {
+	case <-agents.startEntered:
+		t.Fatal("second ResumeStalled reached StartAgent while the first dispatch window was still reserved")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(agents.startGate)
+	wg.Wait()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent call count = %d, want 1", got)
+	}
+}
+
 // TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher verifies DispatchEvent
 // also treats a shared agent.Manager dispatch claim held for the task as busy,
 // even when the workflow engine has no active local route for the task.
