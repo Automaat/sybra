@@ -153,6 +153,11 @@ const (
 	// title/body via a single cheap LLM job (internal/prcontent). No agent
 	// session involved; replaces the create-pr agent role.
 	StepCreatePR StepType = "create_pr"
+	// StepClassifyTask deterministically runs the Go triage classifier
+	// (internal/triage) against the task and applies its verdict — no agent
+	// session involved. Replaces a run_agent step that wrapped a full Sonnet
+	// agent invoking the /sybra-triage skill around this same classifier.
+	StepClassifyTask StepType = "classify_task"
 )
 
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of

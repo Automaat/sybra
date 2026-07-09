@@ -224,6 +224,16 @@ type PRContentGenerator interface {
 	GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error)
 }
 
+// TaskClassifier runs the deterministic Go triage classifier directly against
+// a task and applies its verdict. Used by the `classify_task` step, which
+// replaced a run_agent step that wrapped a full Sonnet agent (invoking the
+// /sybra-triage skill) around this same classifier — a second LLM call for
+// no benefit. Engine operates with a nil classifier — the step then flips
+// the task to human-required, since triage is mandatory to route the task.
+type TaskClassifier interface {
+	ClassifyTask(ctx context.Context, taskID string) error
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -267,6 +277,7 @@ type Engine struct {
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
+	classifier       TaskClassifier
 	recorder         ArtifactRecorder
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
@@ -373,6 +384,11 @@ func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualT
 // SetVerifyTimeout overrides the verify_checks time budget. Zero keeps the
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
+
+// SetTaskClassifier wires the deterministic Go triage classifier used by the
+// `classify_task` step. Leaving it unset flips the task to human-required
+// when classify_task is reached, since a task cannot be routed without it.
+func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
 
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset

@@ -70,6 +70,8 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.oneShot = true
 	a.requirePermissions = true
 	a.sandboxMode = "enforce"
+	a.EnqueuePrompt("queued turn 1")
+	a.EnqueuePrompt("queued turn 2")
 
 	want := recordMappingRecord(started)
 	assertRecordFixtureCoversFields(t, want, "ProcStartedAt")
@@ -202,6 +204,7 @@ func recordMappingRecord(started time.Time) Record {
 		CWD:                "/tmp/sybra/worktrees/task-map",
 		StartedAt:          started,
 		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
+		PendingPrompts:     []string{"queued turn 1", "queued turn 2"},
 		OneShot:            true,
 		MaxTurns:           7,
 		RequirePermissions: true,

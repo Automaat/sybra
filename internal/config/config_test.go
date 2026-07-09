@@ -205,6 +205,47 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadTriageModelDefaultsEmpty locks in that Triage.Model is left empty
+// by default rather than defaulted to "sonnet". An empty model lets
+// triage.FallbackClassifier fall through to its llmjob.Cheap tier (haiku);
+// a "sonnet" default here would silently override that cheap tier on every
+// install (see internal/triage/classifier.go's claudeModelOverride).
+func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "" {
+		t.Fatalf("triage.model = %q, want empty (cheap tier)", cfg.Triage.Model)
+	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Fatalf("triage.poll_seconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+}
+
+// TestLoadTriageModelPreservesExplicitOverride ensures an operator-set
+// model still wins over the cheap-tier default.
+func TestLoadTriageModelPreservesExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("triage:\n  model: sonnet\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "sonnet" {
+		t.Fatalf("triage.model = %q, want sonnet", cfg.Triage.Model)
+	}
+}
+
 func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
@@ -376,6 +417,60 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 			}
 			if got := cfg.HumanReviewSybraBugAction(); got != tc.want {
 				t.Fatalf("HumanReviewSybraBugAction() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHumanReviewModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.HumanReviewModel(); got != tc.want {
+				t.Fatalf("HumanReviewModel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMonitorModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Monitor.Model; got != tc.want {
+				t.Fatalf("Monitor.Model = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -852,6 +947,30 @@ func TestPlaywrightMCPExtraArgs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestDefaultHeadlessSteerable(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(true)}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(false)}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.DefaultHeadlessSteerable(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

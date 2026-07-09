@@ -125,6 +125,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// DefaultHeadlessSteerable returns the configured agent.headless_steerable
+// default, or true if unset.
+func (c *Config) DefaultHeadlessSteerable() bool {
+	if c != nil && c.Agent.HeadlessSteerable != nil {
+		return *c.Agent.HeadlessSteerable
+	}
+	return true
+}
+
 // NormalizeHeadlessPermissionMode canonicalizes a headless permission mode value.
 // Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
 // Any other value is rejected with an error.
@@ -340,12 +349,15 @@ func (c *Config) HumanReviewRepo() string {
 	return "Automaat/sybra"
 }
 
-// HumanReviewModel returns the configured model alias or "sonnet".
+// HumanReviewModel returns the configured model name or alias, defaulting to
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// inspector (applyWatchdogDefaults): classifying why a task stalled, not
+// authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "sonnet"
+	return "claude-haiku-4-5-20251001"
 }
 
 // HumanReviewIssueLabel returns the configured label or "sybra-bug".
@@ -636,9 +648,11 @@ func load(opts loadOptions) (*Config, error) {
 	if cfg.Triage.PollSeconds <= 0 {
 		cfg.Triage.PollSeconds = 60
 	}
-	if cfg.Triage.Model == "" {
-		cfg.Triage.Model = "sonnet"
-	}
+	// Triage.Model intentionally has no default override here: an empty
+	// model lets triage.FallbackClassifier fall through to its llmjob.Cheap
+	// tier (haiku), which is ~10x cheaper than sonnet for a structured
+	// classification job. A non-empty value (set explicitly by a user)
+	// still overrides the tier via claudeModelOverride.
 	if cfg.Agent.Provider == "" {
 		cfg.Agent.Provider = "claude"
 	}
@@ -1065,7 +1079,9 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IntervalSeconds = 300
 	}
 	if cfg.Monitor.Model == "" {
-		cfg.Monitor.Model = "sonnet"
+		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
+		// classifying an anomaly, not authoring a fix.
+		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30

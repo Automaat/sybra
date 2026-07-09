@@ -2292,3 +2292,244 @@ func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestHeadlessSteerableInvocation verifies that HeadlessSteerable switches a
+// claude headless invocation to the stdin/stream-json shape (no positional
+// prompt, --input-format stream-json) mirroring buildConvoArgs, and that
+// codex/copilot ignore the flag entirely and keep their normal one-shot
+// argument shape.
+func TestHeadlessSteerableInvocation(t *testing.T) {
+	t.Run("claude_steerable_drops_positional_prompt", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: true})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "do stuff") {
+			t.Errorf("steerable invocation must not pass the prompt positionally; got %v", args)
+		}
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--input-format" && args[i+1] == "stream-json" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("steerable invocation missing --input-format stream-json pair; got %v", args)
+		}
+	})
+
+	t.Run("claude_unsteerable_keeps_legacy_shape", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: false})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if !slices.Contains(args, "do stuff") {
+			t.Errorf("unsteerable invocation must still pass the prompt positionally; got %v", args)
+		}
+		if slices.Contains(args, "--input-format") {
+			t.Errorf("unsteerable invocation must not add --input-format; got %v", args)
+		}
+	})
+
+	for _, provider := range []string{"codex", "copilot"} {
+		t.Run(provider+"_ignores_headless_steerable", func(t *testing.T) {
+			a := &Agent{ID: "a", Provider: provider}
+			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: true})
+			if err != nil {
+				t.Fatalf("buildHeadlessInvocation: %v", err)
+			}
+			if slices.Contains(args, "--input-format") {
+				t.Errorf("%s must ignore HeadlessSteerable; got %v", provider, args)
+			}
+		})
+	}
+}
+
+// TestHeadlessInitialPromptOverStdin verifies that a steerable pipe-backed
+// headless run writes its initial prompt as a stream-json user message over
+// stdin instead of relying on a positional argument.
+func TestHeadlessInitialPromptOverStdin(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	done := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := r.Read(buf)
+		done <- string(buf[:n])
+	}()
+
+	if err := m.writeUserMessage(a, "steer me"); err != nil {
+		t.Fatalf("writeUserMessage: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if !strings.Contains(got, `"type":"user"`) || !strings.Contains(got, "steer me") {
+			t.Errorf("stdin payload = %q, want user envelope containing prompt text", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no data written to stdin within 2s")
+	}
+}
+
+// TestHeadlessDrainsOneAtResult verifies processHeadlessLine's steer
+// drain-or-close boundary: a steerable headless agent with a queued prompt
+// writes it to stdin (and stays alive) instead of closing stdin, exactly
+// like the conversational runner's per-turn queue flush.
+func TestHeadlessDrainsOneAtResult(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	a.EnqueuePrompt("next turn please")
+
+	lines := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := r.Read(buf)
+		lines <- string(buf[:n])
+	}()
+
+	resultLine := []byte(`{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	var lastEmit time.Time
+	prov, err := lookupProvider("claude")
+	if err != nil {
+		t.Fatalf("lookupProvider: %v", err)
+	}
+	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
+	if stop {
+		t.Fatal("processHeadlessLine reported stop for a drained result")
+	}
+
+	select {
+	case got := <-lines:
+		if !strings.Contains(got, "next turn please") {
+			t.Errorf("queued prompt not drained to stdin: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued prompt was not written to stdin within 2s")
+	}
+
+	if a.isFinalizing() {
+		t.Error("agent must not be finalizing after a successful drain")
+	}
+	if !a.convo.hasStdinPipe() {
+		t.Error("stdin pipe must stay open after a successful drain")
+	}
+}
+
+// TestHeadlessUnsteeredClosesAndCompletes verifies that a steerable headless
+// run with no queued follow-up closes stdin and marks the agent finalizing at
+// its terminal result — the unsteered path must behave exactly like today's
+// one-shot completion.
+func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	resultLine := []byte(`{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.1,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	var lastEmit time.Time
+	prov, err := lookupProvider("claude")
+	if err != nil {
+		t.Fatalf("lookupProvider: %v", err)
+	}
+	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
+	if stop {
+		t.Fatal("processHeadlessLine reported stop for an unsteered close")
+	}
+
+	if !a.isFinalizing() {
+		t.Error("agent must be finalizing once stdin is closed with nothing queued")
+	}
+	if a.convo.hasStdinPipe() {
+		t.Error("stdin pipe must be closed once finalizing")
+	}
+}
+
+// TestHeadlessSteerProducesFurtherTurn drives runHeadlessAttemptPipe end to
+// end against an echo fake provider that reflects a stdin-delivered steer
+// message back as a second assistant/result turn, proving the queued message
+// is actually delivered to the running process rather than merely staged.
+func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
+	binDir := makeFakeEchoStdinClaude(t)
+	// inv.name must stay the literal "claude" (see steerableHeadlessInvocation,
+	// which gates the stdin transport on the provider identity, not a raw
+	// binary path) — resolve it to the fake binary via PATH instead, exactly
+	// like the real claude CLI is resolved in production.
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+
+	inv := headlessInvocation{
+		name:    "claude",
+		args:    []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"},
+		command: "claude",
+	}
+	cfg := RunConfig{Prompt: "first turn", HeadlessSteerable: true}
+
+	// Queue the steer message before the run starts so it is ready the
+	// instant the fake binary's first result line is drained.
+	a.EnqueuePrompt("second turn")
+
+	var outFile *os.File
+	t.Cleanup(func() {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
+		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+	}
+
+	var sawSecondTurn bool
+	for _, ev := range a.Output() {
+		if ev.Type == "result" && strings.Contains(ev.Content, "second turn") {
+			sawSecondTurn = true
+		}
+	}
+	if !sawSecondTurn {
+		t.Fatalf("expected a further turn echoing the steer message; got %+v", a.Output())
+	}
+}
+
+// makeFakeEchoStdinClaude writes a fake "claude" binary to a temp dir that
+// reads stream-json user messages from stdin (one per line) and, for each,
+// emits a stream-json result event echoing the message text back — enough
+// to prove a steer message written to the process's stdin produces a further
+// observable turn. Returns the directory containing the binary so the caller
+// can prepend it to PATH while keeping headlessInvocation.name as "claude".
+func makeFakeEchoStdinClaude(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/bash
+while IFS= read -r line; do
+  text=$(echo "$line" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
+  echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$text\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}"
+done
+`
+	path := filepath.Join(dir, "claude")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude binary: %v", err)
+	}
+	return dir
+}
