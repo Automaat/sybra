@@ -16,12 +16,18 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
+const manualProbeEnv = "SYBRA_RUN_MANUAL_PROBE_TESTS"
+
 // TestManualProbe_NestedFixDispatchActuallyStarts simulates production wiring:
 // the conflictRecovery callback synchronously re-enters StartAgentWithAssignment
 // for the SAME taskID (like RecoverStaleBranchConflict -> handlePRIssue ->
 // workflow "fix" step dispatch does), and asserts a real agent actually starts
 // instead of bailing with ErrDispatchInFlight.
 func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
+	if os.Getenv(manualProbeEnv) == "" {
+		t.Skipf("set %s=1 to run the manual nested-dispatch probe", manualProbeEnv)
+	}
+
 	bare, src := initConflictingRepo(t)
 
 	projDir := filepath.Join(t.TempDir(), "projects")
@@ -95,6 +101,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer agentMgr.KillAgentsForTask(tk.ID, 5*time.Second)
 
 	researchDir := t.TempDir()
 	cfg := &config.Config{}
