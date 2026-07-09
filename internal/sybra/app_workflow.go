@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -485,6 +486,26 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID string) []string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" {
+		return nil
+	}
+	wtPath := a.mgr.PathFor(t)
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		return nil
+	}
+	p, pErr := a.projects.Get(t.ProjectID)
+	if pErr != nil {
+		return nil
+	}
+	var repoSetup []string
+	if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(ctx, p.ClonePath); rErr == nil && repoCfg != nil {
+		repoSetup = repoCfg.Setup
+	}
+	return project.MergeSetup(repoSetup, p.SetupCommands)
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -637,14 +658,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	baselineRef = agentorch.CurrentWorktreeHead(cfg.Dir)
-
-	if a.sandboxes != nil {
-		if r == agent.RoleTestRunner {
-			cfg.ExtraEnv = a.agentOrch.SandboxEnv(taskID, cfg.Dir, t)
-		} else if inst := a.sandboxes.Get(taskID); inst != nil {
-			cfg.ExtraEnv = inst.EnvVars()
-		}
-	}
+	a.configureTestRunnerRun(&cfg, taskID, r, t)
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
@@ -654,6 +668,25 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID string, role agent.Role, t task.Task) {
+	if a.sandboxes != nil {
+		if role == agent.RoleTestRunner {
+			cfg.ExtraEnv = a.agentOrch.SandboxEnv(taskID, cfg.Dir, t)
+		} else if inst := a.sandboxes.Get(taskID); inst != nil {
+			cfg.ExtraEnv = inst.EnvVars()
+		}
+	}
+	if role != agent.RoleTestRunner {
+		return
+	}
+	// Eligibility only — Manager.preparePlaywrightMCP decides whether to
+	// actually attach the MCP server, gated on config enablement and the
+	// FINAL resolved provider (not this raw role/provider check), so a
+	// test-runner that fails over to codex never gets a claude-only flag.
+	cfg.PlaywrightMCPEligible = true
+	cfg.PlaywrightMCPOutputDir = filepath.Join(cfg.Dir, worktree.EvidenceDirName)
 }
 
 // resolveWorktreeDir auto-assigns a project to t (if needed), optionally

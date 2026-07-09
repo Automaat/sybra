@@ -1,18 +1,24 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-type fakeCheckGetter struct{ cmds []string }
+type fakeCheckGetter struct{ cmds, setup []string }
 
 func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
+
+func (f *fakeCheckGetter) SetupCommands(context.Context, string) []string { return f.setup }
 
 func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepVerifyChecks} }
 
@@ -148,6 +154,84 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
+	}
+}
+
+func newVerifyChecksEngineWithSetup(t *testing.T, wt string, cmds, setup []string) (*Engine, *memTasks) {
+	t.Helper()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds, setup: setup})
+	return engine, engine.tasks.(*memTasks)
+}
+
+func TestExecVerifyChecks_ToolchainHealRepairs(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`test -f .healed || { echo "vite: command not found" >&2; exit 1; }`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (setup re-run repaired the toolchain)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (heal succeeded)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_ToolchainHealMatchesDashNotFound(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`test -f .healed || { echo "sh: 1: vite: not found" >&2; exit 1; }`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (dash '<cmd>: not found' must trigger heal)", out.Output)
+	}
+}
+
+func TestExecVerifyChecks_ToolchainHealSetupFailsEscalates(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`echo "vite: command not found" >&2; exit 1`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"false"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (setup could not repair)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`test -f .healed || { echo "assertion failed: got 4 want 5" >&2; exit 1; }`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (non-toolchain failure must not trigger setup heal)", out.Output)
 	}
 }
 
@@ -438,5 +522,296 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
 		t.Errorf("clean verify_checks goto = %q, want set_ready_review", got)
+	}
+}
+
+func TestNodeModulesTorn(t *testing.T) {
+	t.Parallel()
+
+	newProject := func(t *testing.T, withLock bool) (dir, nodeModules string) {
+		t.Helper()
+		dir = t.TempDir()
+		if withLock {
+			if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		nodeModules = filepath.Join(dir, "node_modules")
+		if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir, nodeModules
+	}
+
+	t.Run("missing .bin is torn", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, false)
+		if !nodeModulesTorn(dir, nm) {
+			t.Error("want torn: node_modules/.bin missing")
+		}
+	})
+
+	t.Run(".bin file is torn", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, false)
+		if err := os.WriteFile(filepath.Join(nm, ".bin"), []byte("not-a-dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !nodeModulesTorn(dir, nm) {
+			t.Error("want torn: node_modules/.bin exists but is not a directory")
+		}
+	})
+
+	t.Run("no lockfile trusts .bin presence", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, false)
+		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if nodeModulesTorn(dir, nm) {
+			t.Error("want healthy: .bin present, no lockfile to compare stamp against")
+		}
+	})
+
+	t.Run("missing npm stamp is torn", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, true)
+		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if !nodeModulesTorn(dir, nm) {
+			t.Error("want torn: npm never finished writing node_modules/.package-lock.json")
+		}
+	})
+
+	t.Run("stamp older than lockfile is torn", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, true)
+		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stamp := filepath.Join(nm, ".package-lock.json")
+		if err := os.WriteFile(stamp, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(stamp, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if !nodeModulesTorn(dir, nm) {
+			t.Error("want torn: stamp predates the lockfile it should have installed")
+		}
+	})
+
+	t.Run("fresh stamp is healthy", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, true)
+		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(nm, ".package-lock.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if nodeModulesTorn(dir, nm) {
+			t.Error("want healthy: stamp is newer than the lockfile")
+		}
+	})
+}
+
+// fakeNpmOnPath prepends a directory containing a fake `npm` script to PATH
+// for the duration of the test, so repairTornNodeModules's npm call runs the
+// fake instead of a real install. The fake writes a marker file recording its
+// working directory and arguments so the test can assert whether/where/how it
+// ran.
+func fakeNpmOnPath(t *testing.T, markerPath string) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\npwd > %q\nprintf '%%s\\n' \"$*\" >> %q\n", markerPath, markerPath)
+	npmPath := filepath.Join(binDir, "npm")
+	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(frontend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// node_modules present but missing .bin — the torn signature.
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	out, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected npm ci to run and write a marker, got: %v", err)
+	}
+	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want dir and safe args", got)
+	}
+}
+
+func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wt, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// node_modules present but missing .bin — the torn signature.
+	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	out, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected npm ci to run for root package and write a marker, got: %v", err)
+	}
+	if got := string(out); got != wt+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want root dir and safe args", got)
+	}
+}
+
+func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected npm ci to be skipped without lockfile, got err=%v", err)
+	}
+}
+
+func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	npmPath := filepath.Join(binDir, "npm")
+	if err := os.WriteFile(npmPath, []byte("#!/bin/sh\nexit 17\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
+	engine.repairTornNodeModules("t1", wt)
+
+	if !strings.Contains(logBuf.String(), "workflow.verify-checks.npm-repair-failed") {
+		t.Fatalf("expected failed npm repair to be logged, got %q", logBuf.String())
+	}
+}
+
+func TestRepairTornNodeModules_DisablesLifecycleScripts(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte(`{
+  "scripts": {
+    "preinstall": "touch lifecycle-ran"
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	lifecycleMarker := filepath.Join(frontend, "lifecycle-ran")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+pwd > ` + strconv.Quote(marker) + `
+printf '%s\n' "$*" >> ` + strconv.Quote(marker) + `
+case " $* " in
+  *" --ignore-scripts "*) exit 0 ;;
+  *) touch ` + strconv.Quote(lifecycleMarker) + `; exit 0 ;;
+esac
+`
+	npmPath := filepath.Join(binDir, "npm")
+	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	if _, err := os.Stat(lifecycleMarker); !os.IsNotExist(err) {
+		t.Fatalf("repair ran package lifecycle script marker; err = %v", err)
+	}
+	out, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected npm repair marker: %v", err)
+	}
+	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want dir and safe args", got)
+	}
+}
+
+func TestRepairTornNodeModules_SkipsWhenHealthy(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules", ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("expected npm ci NOT to run for a healthy install (no lockfile to compare), marker err = %v", err)
 	}
 }
