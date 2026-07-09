@@ -469,6 +469,13 @@ type agentAdapter struct {
 	experience *experience.Store
 }
 
+func translatePoolBusy(err error) error {
+	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
+	}
+	return err
+}
+
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	// For implementation agents without a pre-staged dir, use the full
 	// orchestrator (handles worktree, project assignment). A workflow that
@@ -478,7 +485,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
 		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", translatePoolBusy(err)
 		}
 		return ag.ID, "", baselineRef, nil
 	}
@@ -588,7 +595,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", translatePoolBusy(err)
 	}
 
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)

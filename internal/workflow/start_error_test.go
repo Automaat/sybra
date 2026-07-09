@@ -68,6 +68,10 @@ func TestClassifyAgentStartError(t *testing.T) {
 			wantPermanent: true,
 			wantContains:  "task cumulative cost exceeds agent.max_task_cost_usd",
 		},
+		{
+			name: "agent pool busy yields empty and transient",
+			err:  fmt.Errorf("start agent: %w", ErrAgentPoolBusy),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,6 +110,20 @@ func TestClassifyAgentStartError_DispatchInFlightSuppressed(t *testing.T) {
 	wrapped := fmt.Errorf("start agent: %w", ErrDispatchInFlight)
 	if r, p := ClassifyAgentStartError(wrapped); r != "" || p {
 		t.Errorf("wrapped: got reason=%q permanent=%v, want empty/false", r, p)
+	}
+}
+
+func TestClassifyAgentStartError_AgentPoolBusySuppressed(t *testing.T) {
+	wrapped := fmt.Errorf("start agent: %w", ErrAgentPoolBusy)
+	reason, permanent := ClassifyAgentStartError(wrapped)
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+	if permanent {
+		t.Error("agent-pool-busy must not be permanent")
+	}
+	if !transientAgentStartError(wrapped) {
+		t.Error("transientAgentStartError() = false, want true")
 	}
 }
 

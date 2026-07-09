@@ -220,6 +220,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 			e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", step.ID)
 			return e.tasks.SetWorkflow(taskID, wfExec)
 		}
+
+		if errors.Is(err, ErrAgentPoolBusy) {
+			wfExec.State = ExecWaiting
+			e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", step.ID)
+			return e.tasks.SetWorkflow(taskID, wfExec)
+		}
 		return fmt.Errorf("start agent: %w", err)
 	}
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
