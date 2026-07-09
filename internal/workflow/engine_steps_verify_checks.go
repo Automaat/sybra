@@ -225,8 +225,18 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 // node_modules/.package-lock.json — both of which a completed `npm ci`
 // always writes. A node_modules that was never installed (absent entirely)
 // is not corrupted, just not yet set up, so it is left alone here.
+//
+// The repair runs `npm ci`, so it only fires for npm-owned installs: dir must
+// have an npm lockfile (package-lock.json or npm-shrinkwrap.json) and must not
+// carry a pnpm/yarn/bun lockfile that hands the install to another package
+// manager. Otherwise a pnpm/yarn/bun workspace — whose node_modules
+// legitimately lacks node_modules/.package-lock.json — would be mistaken for
+// corruption and clobbered by an unrelated `npm ci`.
 func isCorruptedNodeModules(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return false
+	}
+	if !ownedByNpm(dir) {
 		return false
 	}
 	nm := filepath.Join(dir, "node_modules")
@@ -237,6 +247,23 @@ func isCorruptedNodeModules(dir string) bool {
 	_, binErr := os.Stat(filepath.Join(nm, ".bin"))
 	_, lockErr := os.Stat(filepath.Join(nm, ".package-lock.json"))
 	return binErr != nil || lockErr != nil
+}
+
+// ownedByNpm reports whether dir's install is owned by npm: it has an npm
+// lockfile and no competing pnpm/yarn/bun lockfile. A non-npm lockfile wins,
+// since `npm ci` must not run against another package manager's workspace.
+func ownedByNpm(dir string) bool {
+	for _, name := range []string{"pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return false
+		}
+	}
+	for _, name := range []string{"package-lock.json", "npm-shrinkwrap.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {

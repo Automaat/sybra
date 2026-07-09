@@ -192,11 +192,16 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 func TestIsCorruptedNodeModules(t *testing.T) {
 	t.Parallel()
 
-	newProject := func(t *testing.T, withPackageJSON bool, nmEntries map[string]string) string {
+	newProject := func(t *testing.T, withPackageJSON bool, lockfiles []string, nmEntries map[string]string) string {
 		t.Helper()
 		dir := t.TempDir()
 		if withPackageJSON {
 			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range lockfiles {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -227,43 +232,92 @@ func TestIsCorruptedNodeModules(t *testing.T) {
 	tests := []struct {
 		name            string
 		withPackageJSON bool
+		lockfiles       []string
 		nmEntries       map[string]string
 		want            bool
 	}{
 		{
 			name:            "no package.json",
 			withPackageJSON: false,
+			lockfiles:       []string{"package-lock.json"},
 			nmEntries:       map[string]string{"vite": "<dir>"},
 			want:            false,
 		},
 		{
 			name:            "no node_modules at all (not yet installed)",
 			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json"},
 			nmEntries:       nil,
 			want:            false,
 		},
 		{
 			name:            "empty node_modules",
 			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json"},
 			nmEntries:       map[string]string{},
 			want:            false,
 		},
 		{
 			name:            "missing .bin — killed npm ci",
 			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json"},
 			nmEntries:       map[string]string{"vite": "<dir>", ".package-lock.json": "{}"},
 			want:            true,
 		},
 		{
 			name:            "missing .package-lock.json — killed npm ci",
 			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json"},
+			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>"},
+			want:            true,
+		},
+		{
+			name:            "npm-shrinkwrap.json counts as npm lockfile",
+			withPackageJSON: true,
+			lockfiles:       []string{"npm-shrinkwrap.json"},
 			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>"},
 			want:            true,
 		},
 		{
 			name:            "complete install",
 			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json"},
 			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>", ".package-lock.json": "{}"},
+			want:            false,
+		},
+		{
+			name:            "no npm lockfile — not npm-owned",
+			withPackageJSON: true,
+			lockfiles:       nil,
+			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>"},
+			want:            false,
+		},
+		{
+			name:            "pnpm workspace — another package manager owns install",
+			withPackageJSON: true,
+			lockfiles:       []string{"pnpm-lock.yaml"},
+			nmEntries:       map[string]string{"vite": "<dir>"},
+			want:            false,
+		},
+		{
+			name:            "yarn workspace — another package manager owns install",
+			withPackageJSON: true,
+			lockfiles:       []string{"yarn.lock"},
+			nmEntries:       map[string]string{"vite": "<dir>"},
+			want:            false,
+		},
+		{
+			name:            "bun workspace — another package manager owns install",
+			withPackageJSON: true,
+			lockfiles:       []string{"bun.lockb"},
+			nmEntries:       map[string]string{"vite": "<dir>"},
+			want:            false,
+		},
+		{
+			name:            "pnpm lockfile wins over stray npm lockfile",
+			withPackageJSON: true,
+			lockfiles:       []string{"package-lock.json", "pnpm-lock.yaml"},
+			nmEntries:       map[string]string{"vite": "<dir>"},
 			want:            false,
 		},
 	}
@@ -271,7 +325,7 @@ func TestIsCorruptedNodeModules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			dir := newProject(t, tt.withPackageJSON, tt.nmEntries)
+			dir := newProject(t, tt.withPackageJSON, tt.lockfiles, tt.nmEntries)
 			if got := isCorruptedNodeModules(dir); got != tt.want {
 				t.Errorf("isCorruptedNodeModules(%q) = %v, want %v", tt.name, got, tt.want)
 			}
@@ -287,6 +341,9 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,6 +389,39 @@ func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 }
 
+func TestRepairCorruptedNodeModules_SkipsPnpmWorkspace(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	// A pnpm workspace: non-empty node_modules missing .package-lock.json —
+	// which looks "corrupted" to the npm heuristic but is legitimate here.
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "pnpm-lock.yaml"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake `npm` that fails loudly if invoked — the repair must not run `npm ci`
+	// against a pnpm-owned install.
+	binDir := t.TempDir()
+	npmScript := "#!/bin/sh\ntouch invoked\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
+
+	if _, err := os.Stat(filepath.Join(frontend, "invoked")); err == nil {
+		t.Error("npm ci was invoked against a pnpm workspace")
+	}
+}
+
 func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	frontend := filepath.Join(wt, "frontend")
@@ -340,6 +430,9 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
