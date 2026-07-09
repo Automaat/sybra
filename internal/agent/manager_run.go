@@ -399,7 +399,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
-		return fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
 	}
 	m.agents[a.ID] = a
 	if a.done != nil {

@@ -73,6 +73,31 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules:   []string{"added-skip"},
 		},
 		{
+			name:      "capability_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil { t.Skipf(\"symlink unsupported: %v\", err) }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "capability_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil {\n+\t\tt.Skipf(\"symlink unsupported: %v\", err)\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "testing_short_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestSlow(t *testing.T) {\n+\tif testing.Short() {\n+\t\tt.Skip(\"skipping slow test in -short\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "lookpath_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestDocker(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\tt.Skip(\"docker not installed\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "unconditional_skip_after_guard_window_still_flags",
+			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:  "two_new_identical_skips_same_commit_still_flags",
 			patch: "@@ @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestFoo(t *testing.T) {\n}\n\n" +
