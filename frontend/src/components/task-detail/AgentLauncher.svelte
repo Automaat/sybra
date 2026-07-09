@@ -2,6 +2,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../../stores/agents.svelte.js'
   import { connectionStore } from '../../stores/connection.svelte.js'
+  import { needsPlanApproval } from '../../lib/statuses.js'
 
   interface Props {
     task: Task
@@ -45,10 +46,12 @@
   <p class="text-xs text-error-500">{error}</p>
 {/if}
 
-{#if task.status !== 'plan-review'}
-  <!-- A plan-review task's job is to approve/reject the plan (Plan tab), not
-       launch a new ad-hoc run, so the generic "new run" form is collapsed for
-       it. A live running agent still shows via LiveAgentPanel above the tabs. -->
+{#if !needsPlanApproval(task)}
+  <!-- A task awaiting plan approval's job is to approve/reject the plan (Plan
+       tab), not launch a new ad-hoc run, so the generic "new run" form is
+       collapsed for it. Keys off the workflow step (via needsPlanApproval) so a
+       manual status desync can't leak the form back in (issue #1642). A live
+       running agent still shows via LiveAgentPanel above the tabs. -->
   <div class="flex flex-col gap-3">
     <div class="flex flex-col gap-0.5">
       <span class="text-sm font-medium text-surface-500">New agent run</span>

@@ -97,6 +97,7 @@ func detectBoardWide(in DetectInput, counts Counts) []Anomaly {
 func detectPerTask(in DetectInput) []Anomaly {
 	var out []Anomaly
 	stuckBudget := time.Duration(in.Cfg.StuckHumanHours * float64(time.Hour))
+	tracked := openLostAgentInvestigations(in.Tasks)
 	for i := range in.Tasks {
 		t := &in.Tasks[i]
 		if t.TaskType == task.TaskTypeChat {
@@ -108,7 +109,7 @@ func detectPerTask(in DetectInput) []Anomaly {
 		if a := detectUntriaged(t, in.Now); a != nil {
 			out = append(out, *a)
 		}
-		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget); a != nil {
+		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget, tracked); a != nil {
 			out = append(out, *a)
 		}
 		if a := detectPRGap(t, in.Now, time.Duration(in.Cfg.PRGapGraceMinutes)*time.Minute); a != nil {
@@ -116,6 +117,67 @@ func detectPerTask(in DetectInput) []Anomaly {
 		}
 	}
 	out = append(out, detectLostAgents(in)...)
+	return out
+}
+
+// monitorAutoRetriedTag marks a task the monitor has already auto-retried
+// once out of human-required because its stall correlated with a known,
+// already-tracked lost_agent investigation. Present so a second stall on the
+// same task falls back to the normal LLM re-investigation instead of
+// bouncing the task between in-progress and human-required forever.
+const monitorAutoRetriedTag = "monitor:auto-retried"
+
+// lostAgentInvestigationTag is the tag monitorRoutingSink stamps on a local
+// task it files for a KindLostAgent anomaly (see internal/sybra/monitor_sink.go).
+const lostAgentInvestigationTag = "monitor:" + string(KindLostAgent)
+
+// affectedTaskMarkerPrefix precedes the origin task id in a deterministic
+// issue body's "## Affected task" section (see DeterministicIssueBody). Used
+// to recover which task an investigation task was filed for.
+const affectedTaskMarkerPrefix = "## Affected task\n- `"
+
+// openLostAgentInvestigations returns the set of task IDs that already have
+// an open (non-terminal) local investigation task tracking a lost_agent
+// anomaly for them — i.e. monitorRoutingSink already filed (or re-detected
+// into) a task for this exact lost_agent fingerprint, so its root cause is
+// already known and tracked. Used to skip re-dispatching an LLM to
+// rediscover the same finding when the origin task later shows up stuck in
+// human-required.
+type openLostAgentInvestigation struct {
+	observedAt time.Time
+}
+
+func openLostAgentInvestigations(tasks []task.Task) map[string]openLostAgentInvestigation {
+	out := make(map[string]openLostAgentInvestigation)
+	for i := range tasks {
+		t := &tasks[i]
+		if task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if !slices.Contains(t.Tags, lostAgentInvestigationTag) {
+			continue
+		}
+		idx := strings.Index(t.Body, affectedTaskMarkerPrefix)
+		if idx < 0 {
+			continue
+		}
+		rest := t.Body[idx+len(affectedTaskMarkerPrefix):]
+		originID, _, ok := strings.Cut(rest, "`")
+		if !ok || originID == "" {
+			continue
+		}
+		fpMarker := "- Fingerprint: `" + Fingerprint(KindLostAgent, originID, nil) + "`"
+		if !strings.Contains(t.Body, fpMarker) {
+			continue
+		}
+		observedAt := t.UpdatedAt
+		if observedAt.IsZero() {
+			observedAt = t.CreatedAt
+		}
+		if prev, ok := out[originID]; !ok || prev.observedAt.Before(observedAt) {
+			out[originID] = openLostAgentInvestigation{observedAt: observedAt}
+		}
+	}
 	return out
 }
 
@@ -153,7 +215,7 @@ func detectUntriaged(t *task.Task, now time.Time) *Anomaly {
 	}
 }
 
-func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) *Anomaly {
+func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, trackedLostAgent map[string]openLostAgentInvestigation) *Anomaly {
 	// plan-review is intentionally excluded: a plan awaits the human's approval
 	// indefinitely and must never be auto-escalated to human-required. Only tasks
 	// already in human-required are flagged when they exceed their dwell budget.
@@ -192,10 +254,22 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["human_review_verdict"] = dec
 		}
 	}
-	// Skip the LLM only when human-review already confirmed verdict=human;
+	// A task whose stall already has an open, monitor-filed lost_agent
+	// investigation is a known cause, not an ambiguous one — re-dispatching an
+	// LLM here would just rediscover the same finding the investigation task
+	// already recorded. Skip the LLM once and let the remediator auto-retry
+	// instead (remediateHumanRequiredStuck), guarded by monitorAutoRetriedTag
+	// so a second stall on the same task falls through to the normal path
+	// rather than bouncing forever.
+	knownLostAgentCause := currentLostAgentInvestigation(t, trackedLostAgent) && !slices.Contains(t.Tags, monitorAutoRetriedTag)
+	if knownLostAgentCause {
+		ev["known_lost_agent_investigation"] = true
+	}
+	// Skip the LLM when human-review already confirmed verdict=human, or when
+	// the stall correlates with a known, already-tracked lost_agent cause;
 	// otherwise an LLM investigates whether the block is a real human need or a
 	// Sybra misfire.
-	requiresLLM := ev["human_review_verdict"] != "human"
+	requiresLLM := ev["human_review_verdict"] != "human" && !knownLostAgentCause
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,
@@ -205,6 +279,28 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 		Evidence:    ev,
 		DetectedAt:  now,
 	}
+}
+
+func currentLostAgentInvestigation(t *task.Task, tracked map[string]openLostAgentInvestigation) bool {
+	inv, ok := tracked[t.ID]
+	if !ok || inv.observedAt.IsZero() {
+		return false
+	}
+	cutoff := t.UpdatedAt
+	if started := latestAgentRunStarted(t.AgentRuns); !started.IsZero() {
+		cutoff = started
+	}
+	return !inv.observedAt.Before(cutoff)
+}
+
+func latestAgentRunStarted(runs []task.AgentRun) time.Time {
+	var latest time.Time
+	for i := range runs {
+		if runs[i].StartedAt.After(latest) {
+			latest = runs[i].StartedAt
+		}
+	}
+	return latest
 }
 
 func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
@@ -275,15 +371,20 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if recentRunningRun(t.AgentRuns, in.Now, window) {
 			continue
 		}
-		// Skip if the task itself was updated (e.g. a status flip into
-		// in-progress) within the window. Dispatch (worktree prep, agent
-		// process spawn) can take longer than one monitor cycle to reach
-		// the point where AddRun/AddRunWithStatus records the run or an
-		// agent.* audit event fires — without this, a task is flagged as
-		// lost in the gap between "status flipped to in-progress" and
-		// "dispatch actually recorded", even though no agent was ever given
-		// the chance to start yet. Mirrors detectPRGap's dwell/grace check.
-		if !t.UpdatedAt.IsZero() && in.Now.Sub(t.UpdatedAt) < window {
+		// Skip if the task itself transitioned into in-progress within the
+		// window. Dispatch (worktree prep, agent process spawn) can take
+		// longer than one monitor cycle to reach the point where AddRun/the
+		// first agent.* audit event lands, so a task can have zero AgentRuns
+		// yet still be legitimately mid-dispatch. StatusChangedAt is stamped
+		// only on an actual status transition (internal/task Store), unlike
+		// UpdatedAt which any unrelated field write (tags, status_reason, an
+		// audit sidecar) bumps — keying this off UpdatedAt would mask a truly
+		// lost agent for as long as anything kept touching the task. The one
+		// exception is legacy tasks that predate StatusChangedAt persistence:
+		// when that field is absent, fall back to UpdatedAt so a fresh
+		// in-progress flip is not flagged lost before dispatch records a run.
+		if (!t.StatusChangedAt.IsZero() && in.Now.Sub(t.StatusChangedAt) < window) ||
+			(t.StatusChangedAt.IsZero() && !t.UpdatedAt.IsZero() && in.Now.Sub(t.UpdatedAt) < window) {
 			continue
 		}
 		ev := map[string]any{

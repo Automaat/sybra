@@ -71,3 +71,29 @@ func (h *Hub) Start(ctx context.Context, wg *sync.WaitGroup, logger *slog.Logger
 		wg.Go(func() { p.Run(ctx) })
 	}
 }
+
+// AuthHealthReporter is implemented by Fetchers that track a GitHub auth
+// circuit breaker (see AuthCircuit), letting Hub aggregate their state into
+// the poller-health gauge without every caller wiring metrics by hand.
+type AuthHealthReporter interface {
+	AuthCircuitOpen() bool
+}
+
+// AuthHealthSnapshot returns fetcher name -> health (1=healthy, 0=critical)
+// for every registered Fetcher that implements AuthHealthReporter. Suitable
+// for metrics.RegisterPollerAuthHealth.
+func (h *Hub) AuthHealthSnapshot() map[string]int64 {
+	out := make(map[string]int64, len(h.entries))
+	for _, e := range h.entries {
+		r, ok := e.fetcher.(AuthHealthReporter)
+		if !ok {
+			continue
+		}
+		healthy := int64(1)
+		if r.AuthCircuitOpen() {
+			healthy = 0
+		}
+		out[e.fetcher.Name()] = healthy
+	}
+	return out
+}

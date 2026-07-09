@@ -250,13 +250,14 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if err != nil || t.Status == task.StatusHumanRequired {
 		return
 	}
-	reason := fmt.Sprintf(
-		"pr-monitor: auto-fix exhausted after %d attempts (%s) — needs a human",
-		github.MaxRetries, issue.Kind,
-	)
+	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
+	tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
+		return tag == reconciledLatchTag
+	})
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
+		Tags:         task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return
@@ -643,6 +644,28 @@ func (r *Handler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []
 	return true
 }
 
+// markConflictRecoveryExhausted records, on the task itself, that autonomous
+// branch-conflict recovery was attempted and gave up rather than declining
+// silently. Without this, agentorch.MarkRebaseBlocked's caller-side fallback
+// writes its generic worktreeerr.RebaseBlockedReason over whatever is here,
+// leaving an operator (or the automated human-review agent reading a stale
+// "recovered" log line) unable to tell an exhausted retry budget apart from
+// recovery that is still in progress. MarkRebaseBlocked checks for this
+// specific status+non-empty-reason combination before overwriting it, so this
+// must run before returning false to the caller.
+func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIssueKind) {
+	attempts := r.prTracker.Retries(taskID, kind)
+	reason := fmt.Sprintf(
+		"branch conflict recovery attempted %d time(s) and failed: resolve conflicts or recreate the task branch",
+		attempts)
+	if _, err := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.branch-conflict.exhausted-status", "task_id", taskID, "err", err)
+	}
+}
+
 // RecoverStaleBranchConflict turns a worktree-prep rebase failure into
 // autonomous conflict resolution instead of a human escalation. The CI-fix and
 // implement/review/test prepare paths rebase the task branch onto base before
@@ -676,6 +699,7 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	// Don't loop forever on a genuinely unresolvable conflict — once the
 	// conflict-fix budget is spent the normal exhaustion path escalates.
 	if r.prTracker.AtCap(taskID, github.PRIssueConflict) {
+		r.markConflictRecoveryExhausted(taskID, github.PRIssueConflict)
 		return false
 	}
 	fetchFn := github.FetchPRForMonitor
@@ -726,6 +750,7 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	taskID := t.ID
 	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
+		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
 		return false
 	}
 
@@ -765,8 +790,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	dir, err := r.worktrees.PrepareForBranchFix(ctx, t)
 	if err != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.prepare", "task_id", taskID, "err", err)
-		r.recordWorktreeFailure(taskID, err)
-		return false
+		return r.parkOrEscalateBranchFixFailure(taskID, err)
 	}
 	if !r.allowPreparedWorktree(taskID, dir) {
 		return false
@@ -845,6 +869,16 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 	return true
 }
 
+func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
+	r.recordWorktreeFailure(taskID, wtErr)
+	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
+		return false
+	}
+	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
+		"task_id", taskID, "attempts", r.wtFailures[taskID], "limit", wtFailureLimit)
+	return true
+}
+
 func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
 	if r.wtFailures == nil {
 		r.wtFailures = make(map[string]int)
@@ -912,10 +946,13 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
-			"git push origin HEAD:%s\n"+
+			"PUSH_REMOTE=origin\n"+
+			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
+			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
+			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
 			"- Do not force-push or rewrite existing commits — this is a merge, never a rebase; a plain push is always expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+

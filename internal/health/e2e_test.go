@@ -70,6 +70,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		return
 	}
 
 	categories := map[Category]Finding{}
@@ -170,6 +171,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		return
 	}
 	if report.Score != ScoreGood {
 		t.Errorf("Score = %q, want good (findings=%v)", report.Score, findingCategories(report.Findings))

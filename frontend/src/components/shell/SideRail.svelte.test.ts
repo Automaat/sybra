@@ -9,15 +9,26 @@ vi.mock('../../lib/navigation.svelte.js', () => ({
   },
 }))
 
+const mockTaskList: any[] = []
+
 vi.mock('../../stores/tasks.svelte.js', () => ({
   taskStore: {
-    byStatus: vi.fn(() => []),
+    tasksNeedingPlanApproval: vi.fn(() => []),
+    get list() { return mockTaskList },
   },
 }))
 
 vi.mock('../../stores/agents.svelte.js', () => ({
   agentStore: {
     list: [],
+  },
+}))
+
+const mockNotifications: any[] = []
+
+vi.mock('../../stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    get notifications() { return mockNotifications },
   },
 }))
 
@@ -31,6 +42,8 @@ describe('SideRail', () => {
   afterEach(() => {
     cleanup()
     focusModeStore.set(false)
+    mockTaskList.length = 0
+    mockNotifications.length = 0
   })
 
   it('renders nav element', () => {
@@ -49,7 +62,32 @@ describe('SideRail', () => {
     expect(screen.getByText('Logbook')).toBeDefined()
     expect(screen.getByText('Workflows')).toBeDefined()
     expect(screen.getByText('Stats')).toBeDefined()
+    expect(screen.getByText('Inbox')).toBeDefined()
     expect(screen.getByText('Settings')).toBeDefined()
+  })
+
+  it('calls navStore.reset when Inbox clicked', async () => {
+    const { navStore } = await import('../../lib/navigation.svelte.js')
+    render(SideRail)
+    await fireEvent.click(screen.getByText('Inbox'))
+    expect(navStore.reset).toHaveBeenCalledWith({ kind: 'notifications' })
+  })
+
+  it('does not show a needs-you badge on Board when no task needs attention', () => {
+    render(SideRail)
+    expect(screen.queryByLabelText(/task.*need you/)).toBeNull()
+  })
+
+  it('shows a needs-you badge on Board when an active task needs attention', () => {
+    mockTaskList.push({ id: 't1', status: 'human-required', tags: [] })
+    render(SideRail)
+    expect(screen.getByLabelText('1 task need you')).toBeDefined()
+  })
+
+  it('excludes done tasks from the needs-you badge count', () => {
+    mockTaskList.push({ id: 't1', status: 'done', tags: [] })
+    render(SideRail)
+    expect(screen.queryByLabelText(/task.*need you/)).toBeNull()
   })
 
   it('renders the S logo', () => {
@@ -128,5 +166,14 @@ describe('SideRail', () => {
     // Badge appears as small circle with count — no running agents means no badge
     const badges = container.querySelectorAll('.rounded-full.bg-success-500')
     expect(badges).toHaveLength(0)
+  })
+
+  it('shows the full Inbox count in accessible text while keeping the badge readable', () => {
+    mockNotifications.push(...Array.from({ length: 50 }, (_, i) => ({ id: `n-${i}` })))
+    render(SideRail)
+
+    const badge = screen.getByLabelText('50 notifications')
+    expect(badge.textContent).toBe('50')
+    expect(badge.getAttribute('title')).toBe('50 notifications')
   })
 })

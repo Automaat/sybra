@@ -341,6 +341,7 @@ func TestParallel_AllCompleteAdvancesParent(t *testing.T) {
 	rec := findStepRecord(wf, "plan")
 	if rec == nil {
 		t.Fatal("parent step record missing")
+		return
 	}
 	if rec.Status != "completed" {
 		t.Errorf("parent status = %q, want completed", rec.Status)
@@ -379,10 +380,12 @@ func TestParallel_ChildFailRetryThenSucceed(t *testing.T) {
 	rec := wf.ParallelInflight["plan"]
 	if rec == nil {
 		t.Fatal("ParallelInflight cleared before retry")
+		return
 	}
 	got := rec.Children["plan_b"]
 	if got == nil {
 		t.Fatal("plan_b child missing after retry")
+		return
 	}
 	if got.Retries != 1 || got.Status != "pending" {
 		t.Errorf("plan_b after retry: %+v (want retries=1 status=pending)", got)
@@ -464,6 +467,7 @@ func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
 	rec := findStepRecord(wf, "plan")
 	if rec == nil {
 		t.Fatal("parent step record missing — workflow deadlocked in state=waiting")
+		return
 	}
 	if rec.Status != "failed" {
 		t.Errorf("parent status = %q, want failed", rec.Status)

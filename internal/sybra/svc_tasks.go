@@ -127,6 +127,22 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 	return report, nil
 }
 
+// ListTaskProgress returns the agent-authored progress entries for a task.
+// Empty (not an error) when the task has no progress log yet.
+func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry, error) {
+	if s.artifacts == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	entries, err := s.artifacts.ReadProgress(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	return entries, nil
+}
+
 func emptyTamperReport(taskID string) TamperReportDTO {
 	return TamperReportDTO{
 		TaskID:          taskID,
@@ -466,12 +482,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			!s.agents.HasRunningAgentForTask(id) {
 			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
 			s.wg.Go(func() {
-				dispatched, wfErr := s.workflowEngine.DispatchEvent(
-					id,
-					"task.status_changed",
-					map[string]string{"task.status": newStatus},
-					nil,
-				)
+				dispatched, wfErr := s.redispatchStatusChanged(id, newStatus)
 				if wfErr != nil {
 					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
 					return
@@ -484,6 +495,172 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	return t, nil
+}
+
+// redispatchStatusChanged dispatches task.status_changed for the given task
+// and status, so trigger conditions in workflow YAML select the workflow
+// matching the new status rather than replaying a stale saved workflow ID.
+// Shared by UpdateTask's async in-progress restart goroutine and
+// DispatchFromHumanRequired's synchronous dispatch.
+func (s *TaskService) redispatchStatusChanged(id, status string) (string, error) {
+	if s.workflowEngine == nil {
+		return "", errors.New("workflow engine not initialized")
+	}
+	return s.workflowEngine.DispatchEvent(
+		id,
+		"task.status_changed",
+		map[string]string{"task.status": status},
+		nil,
+	)
+}
+
+// dispatchTargetSpec describes one status an operator can dispatch a
+// human-required task to.
+type dispatchTargetSpec struct {
+	// requiresPR gates the target on the task already having a linked PR
+	// (only in-review needs this — dispatching in-review without a PR would
+	// flip the task into PR-monitoring with nothing to monitor).
+	requiresPR bool
+	// dispatches selects whether redispatchStatusChanged runs after the
+	// status write. in-review has no task.status_changed trigger — it is a
+	// plain PR-guarded status flip into the existing PR-monitoring state.
+	dispatches bool
+}
+
+var dispatchTargets = map[string]dispatchTargetSpec{
+	string(task.StatusInProgress): {dispatches: true},
+	string(task.StatusTesting):    {dispatches: true},
+	string(task.StatusReadyPR):    {dispatches: true},
+	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
+}
+
+// DispatchFromHumanRequired flips a task parked in human-required to target
+// (one of in-progress/testing/ready-pr/in-review), recording reason as the
+// audit-visible status_reason. For dispatching targets it synchronously
+// re-enters the workflow via task.status_changed; on any failure to do so it
+// fails closed, reverting the task to human-required with an explanatory
+// status_reason so the operator is never left with a task silently stuck in
+// a target status with no workflow driving it.
+//
+// The whole check-then-write sequence runs under the workflow engine's
+// per-task human-action lock (shared with plan-review's
+// HandleHumanActionRecovering), so a double-click or a second operator cannot
+// race the same stuck task between the guard reads and the status write.
+func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task.Task, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return task.Task{}, conflictError("a decision reason is required")
+	}
+	if _, ok := dispatchTargets[target]; !ok {
+		return task.Task{}, conflictError(fmt.Sprintf("unsupported dispatch target %q", target))
+	}
+
+	var result task.Task
+	run := func() error {
+		out, err := s.dispatchFromHumanRequiredLocked(id, target, reason)
+		result = out
+		return err
+	}
+	// s.workflowEngine is only nil in narrow tests; fall back to running
+	// unlocked there. dispatchFromHumanRequiredLocked's dispatching targets
+	// still go through redispatchStatusChanged, which itself guards against
+	// a nil engine and fails closed rather than nil-panicking.
+	if s.workflowEngine != nil {
+		if err := s.workflowEngine.WithHumanActionLock(id, run); err != nil {
+			return task.Task{}, err
+		}
+		return result, nil
+	}
+	if err := run(); err != nil {
+		return task.Task{}, err
+	}
+	return result, nil
+}
+
+func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
+	cur, err := s.tasks.Get(id)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if cur.Status != task.StatusHumanRequired {
+		return task.Task{}, conflictError(fmt.Sprintf("task is not human-required (status=%q)", cur.Status))
+	}
+	spec := dispatchTargets[target]
+	if spec.requiresPR && cur.PRNumber == 0 {
+		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
+	}
+	if s.agents.HasRunningAgentForTask(id) {
+		return task.Task{}, conflictError("cannot dispatch: an agent is already running for this task")
+	}
+	if cur.Workflow != nil && cur.Workflow.State != workflow.ExecCompleted && cur.Workflow.State != workflow.ExecFailed {
+		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch: task has active workflow %q (state=%s)",
+			cur.Workflow.WorkflowID, cur.Workflow.State))
+	}
+
+	if _, err := s.tasks.UpdateMap(id, map[string]any{
+		"status":        target,
+		"status_reason": reason,
+	}); err != nil {
+		return task.Task{}, err
+	}
+
+	if spec.dispatches {
+		matched, dispatchErr := s.redispatchStatusChanged(id, target)
+		// The status write above synchronously fires App.initStatusHook, which
+		// for testing/ready-pr already dispatches the workflow via
+		// dispatchStatusWorkflow before UpdateMap returns. Our own dispatch then
+		// observes that active workflow and returns ErrWorkflowAlreadyActive —
+		// that is the hook having succeeded, not a conflict. Mirror
+		// dispatchStatusWorkflow and treat it as benign; a genuine agent-start
+		// failure surfaces as a different error and still fails closed.
+		hookAlreadyStarted := errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive)
+		dispatchStarted := dispatchErr == nil && matched != ""
+		if !dispatchStarted && !hookAlreadyStarted {
+			failure := "no workflow matched"
+			if dispatchErr != nil {
+				failure = dispatchErr.Error()
+			}
+			s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
+			revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
+			if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
+				"status":        string(task.StatusHumanRequired),
+				"status_reason": revertReason,
+			}); revertErr != nil {
+				s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
+				return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+			}
+			// The bounce back to human-required is the event an operator most
+			// needs a durable record of — log it, not just the success path.
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+			return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
+		}
+	}
+
+	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
+	return s.tasks.Get(id)
+}
+
+// logDispatchAudit records a human-required dispatch attempt and its outcome
+// ("dispatched"/"reverted"/"revert-failed"). The operator's reason is included
+// so the durable audit record carries the rationale even after status_reason is
+// later overwritten.
+func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outcome string) {
+	if s.audit == nil {
+		return
+	}
+	if logErr := s.audit.Log(audit.Event{
+		Type:   audit.EventTaskDispatched,
+		TaskID: id,
+		Data: map[string]any{
+			"target":         target,
+			"previousStatus": previousStatus,
+			"reason":         reason,
+			"outcome":        outcome,
+		},
+	}); logErr != nil && s.logger != nil {
+		s.logger.Warn("task.dispatch.audit", "task_id", id, "err", logErr)
+	}
 }
 
 // DeleteTask removes a task file from disk and cleans up its worktree.

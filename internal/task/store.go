@@ -485,15 +485,16 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 	now := time.Now().UTC()
 	id := uuid.NewString()[:8]
 	t := Task{
-		ID:        id,
-		Slug:      Slugify(title),
-		Title:     title,
-		Status:    StatusTodo,
-		TaskType:  TaskTypeNormal,
-		AgentMode: mode,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Body:      body,
+		ID:              id,
+		Slug:            Slugify(title),
+		Title:           title,
+		Status:          StatusTodo,
+		TaskType:        TaskTypeNormal,
+		AgentMode:       mode,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		Body:            body,
 	}
 
 	data, err := Marshal(t)
@@ -526,15 +527,16 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	now := time.Now().UTC()
 	id := uuid.NewString()[:8]
 	t := Task{
-		ID:        id,
-		Slug:      Slugify(title),
-		Title:     title,
-		Status:    StatusTodo,
-		TaskType:  TaskTypeNormal,
-		AgentMode: mode,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Body:      body,
+		ID:              id,
+		Slug:            Slugify(title),
+		Title:           title,
+		Status:          StatusTodo,
+		TaskType:        TaskTypeNormal,
+		AgentMode:       mode,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
+		Body:            body,
 	}
 	// Apply initial field overrides before the first disk write so that any
 	// watcher reading the file sees the complete task from the start.
@@ -613,15 +615,16 @@ func (s *Store) CreateChat(projectID string) (Task, error) {
 	id := uuid.NewString()[:8]
 	title := "chat " + now.Format("01-02 15:04")
 	t := Task{
-		ID:        id,
-		Slug:      "chat-" + id,
-		Title:     title,
-		Status:    StatusInProgress,
-		TaskType:  TaskTypeChat,
-		AgentMode: AgentModeInteractive,
-		ProjectID: projectID,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:              id,
+		Slug:            "chat-" + id,
+		Title:           title,
+		Status:          StatusInProgress,
+		TaskType:        TaskTypeChat,
+		AgentMode:       AgentModeInteractive,
+		ProjectID:       projectID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		StatusChangedAt: now,
 	}
 	data, err := Marshal(t)
 	if err != nil {
@@ -1324,6 +1327,9 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		t.TestingCycleStartedAt = &now
 	}
 	t.UpdatedAt = now
+	if t.Status != prevStatus {
+		t.StatusChangedAt = now
+	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
@@ -1486,6 +1492,10 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 		clone.Variables = make(map[string]string, len(wf.Variables))
 		maps.Copy(clone.Variables, wf.Variables)
 	}
+	if wf.StepCounts != nil {
+		clone.StepCounts = make(map[string]int, len(wf.StepCounts))
+		maps.Copy(clone.StepCounts, wf.StepCounts)
+	}
 	if wf.CompletedAt != nil {
 		ts := *wf.CompletedAt
 		clone.CompletedAt = &ts
@@ -1516,6 +1526,32 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 				}
 			}
 			clone.ParallelInflight[k] = &pcClone
+		}
+	}
+	// Deep-copy BestOfNInflight for the same reason as ParallelInflight above:
+	// each attempt's *AttemptStatus must be independent across List()/Get()
+	// clones, or a caller mutating a returned clone's attempt slots (e.g. while
+	// dispatching the next attempt) would silently corrupt the cached copy.
+	if wf.BestOfNInflight != nil {
+		clone.BestOfNInflight = make(map[string]*workflow.BestOfNInflight, len(wf.BestOfNInflight))
+		for k, v := range wf.BestOfNInflight {
+			if v == nil {
+				clone.BestOfNInflight[k] = nil
+				continue
+			}
+			bnClone := *v
+			if v.Attempts != nil {
+				bnClone.Attempts = make(map[string]*workflow.AttemptStatus, len(v.Attempts))
+				for ak, av := range v.Attempts {
+					if av == nil {
+						bnClone.Attempts[ak] = nil
+						continue
+					}
+					asClone := *av
+					bnClone.Attempts[ak] = &asClone
+				}
+			}
+			clone.BestOfNInflight[k] = &bnClone
 		}
 	}
 	return clone
@@ -1557,10 +1593,13 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	if status != nil {
 		oldStatus := t.Status
 		t.Status = *status
+		now := time.Now().UTC()
+		if oldStatus != t.Status {
+			t.StatusChangedAt = now
+		}
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
 		if !wasTerminal && isTerminal {
-			now := time.Now().UTC()
 			t.ClosedAt = &now
 		} else if wasTerminal && !isTerminal {
 			t.ClosedAt = nil

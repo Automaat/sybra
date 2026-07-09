@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
@@ -105,12 +106,9 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 	if err != nil {
 		return nil
 	}
-	if p.Type != project.ProjectTypeWork {
+	bl := p.WorkBlocklist()
+	if bl == nil {
 		return nil
-	}
-	bl := []string{p.ID, p.Owner, p.Repo}
-	if p.URL != "" {
-		bl = append(bl, p.URL)
 	}
 	return &WorkScrubContext{ProjectID: p.ID, Blocklist: bl}
 }
@@ -318,6 +316,8 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -665,18 +665,25 @@ func (a *App) initWorkflowEngine() {
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
+	agentLauncher := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience}
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience},
+		agentLauncher,
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
+	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
+	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
+	a.workflowEngine.SetPRFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
+	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
@@ -692,6 +699,13 @@ func (a *App) initWorkflowEngine() {
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
+	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
+	// (e.g. a reused worktree rebased out from under an earlier merge-based
+	// push) — otherwise it flips straight to human-required with no attempt
+	// at the autonomous fix other divergence sources already get.
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
@@ -746,10 +760,7 @@ func (a *App) initLoopAgents() error {
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
 	a.seedDefaultLoopAgents()
-	// loopagent.Scheduler.Sync spawns loop-agent goroutines derived from its
-	// own s.ctx field, bound once from the ctx passed to NewScheduler above
-	// (this same Startup ctx) rather than an explicit per-call parameter.
-	a.loopSched.Sync() //nolint:contextcheck // Scheduler uses its own s.ctx field, see comment above
+	a.loopSched.SyncContext(ctx)
 }
 
 func (a *App) seedDefaultLoopAgents() {

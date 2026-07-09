@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { SvelteMap } from 'svelte/reactivity'
 
+const mockTasksMap = new SvelteMap<string, any>()
 const mockGet = vi.fn()
 const mockUpdate = vi.fn()
 const mockRemove = vi.fn()
+const mockDispatchFromHumanRequired = vi.fn()
 const mockStart = vi.fn()
 const mockStop = vi.fn()
 const mockByTask = vi.fn()
@@ -11,12 +14,23 @@ const mockByState = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
+const mockListTaskProgress = vi.fn()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
-    get: (...args: unknown[]) => mockGet(...args),
+    tasks: mockTasksMap,
+    get: async (id: string) => {
+      const result = await mockGet(id)
+      mockTasksMap.set(id, result)
+      return result
+    },
     update: (...args: unknown[]) => mockUpdate(...args),
     remove: (...args: unknown[]) => mockRemove(...args),
+    dispatchFromHumanRequired: async (...args: [string, string, string]) => {
+      const result = await mockDispatchFromHumanRequired(...args)
+      mockTasksMap.set(result.id, result)
+      return result
+    },
   },
 }))
 
@@ -66,6 +80,7 @@ vi.mock('$lib/api', () => ({
   StartReview: vi.fn(),
   GetAgentRunLog: vi.fn(),
   GetAgentRunConvoLog: vi.fn(),
+  ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
@@ -101,9 +116,11 @@ const mockTask = {
 
 describe('TaskDetail', () => {
   beforeEach(() => {
+    mockTasksMap.clear()
     mockGet.mockReset()
     mockUpdate.mockReset()
     mockRemove.mockReset()
+    mockDispatchFromHumanRequired.mockReset()
     mockStart.mockReset()
     mockStop.mockReset()
     mockByTask.mockReturnValue(null)
@@ -111,6 +128,8 @@ describe('TaskDetail', () => {
     mockUpdateAgent.mockReset()
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
+    mockListTaskProgress.mockReset()
+    mockListTaskProgress.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -329,6 +348,29 @@ describe('TaskDetail', () => {
       await vi.waitFor(() => {
         expect(screen.getByText('Approve Plan')).toBeDefined()
         expect(screen.getByText('Reject Plan')).toBeDefined()
+      })
+    })
+
+  })
+
+  describe('human-required dispatch', () => {
+    it('reflects the new status after a successful dispatch', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'human-required', statusReason: 'needs a decision' })
+      mockDispatchFromHumanRequired.mockResolvedValue({ ...mockTask, status: 'testing', statusReason: '' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByPlaceholderText('Decision reason (required)...')).toBeDefined()
+      })
+      const textarea = screen.getByPlaceholderText('Decision reason (required)...')
+      await fireEvent.input(textarea, { target: { value: 'looks fine, proceed' } })
+      await fireEvent.click(screen.getByText('Send to testing'))
+      await vi.waitFor(() => {
+        expect(mockDispatchFromHumanRequired).toHaveBeenCalledWith('task-1', 'testing', 'looks fine, proceed')
+      })
+      await vi.waitFor(() => {
+        expect(screen.queryByPlaceholderText('Decision reason (required)...')).toBeNull()
       })
     })
   })

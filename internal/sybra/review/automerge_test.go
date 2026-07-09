@@ -594,6 +594,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	}
 	if merged == nil {
 		t.Fatalf("no %s audit event; events=%+v", audit.EventPRAutoMerged, events)
+		return
 	}
 	if merged.Data["sourced_via_rest"] != true {
 		t.Errorf("sourced_via_rest = %v, want true", merged.Data["sourced_via_rest"])
@@ -889,6 +890,25 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		got, _ := tasks.Get(id)
 		if got.Status != task.StatusHumanRequired {
 			t.Fatalf("ci_failure: status = %q, want human-required", got.Status)
+		}
+	})
+
+	t.Run("fresh escalation clears prior reconciliation latch", func(t *testing.T) {
+		r, tasks, id := newHandler(t)
+		if _, err := tasks.Update(id, task.Update{
+			Tags: task.Ptr([]string{reconciledLatchTag, "keep"}),
+		}); err != nil {
+			t.Fatalf("pre-set tags: %v", err)
+		}
+		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueConflict, TaskID: id, PR: github.PullRequest{Number: 9}})
+		got, _ := tasks.Get(id)
+		for _, tag := range got.Tags {
+			if tag == reconciledLatchTag {
+				t.Fatalf("reconciliation latch still present after fresh escalation: tags=%v", got.Tags)
+			}
+		}
+		if len(got.Tags) != 1 || got.Tags[0] != "keep" {
+			t.Fatalf("tags = %v, want only preserved non-latch tag", got.Tags)
 		}
 	})
 

@@ -101,6 +101,7 @@ func TestTracker_List_FiltersExpiredCompletions(t *testing.T) {
 	if op == nil {
 		tr.mu.Unlock()
 		t.Fatalf("expected op %q to exist", id)
+		return
 	}
 	op.CompletedAt = time.Now().Add(-completionTTL - time.Minute)
 	tr.mu.Unlock()
@@ -119,6 +120,7 @@ func TestTracker_List_KeepsRunningRegardlessOfAge(t *testing.T) {
 	if op == nil {
 		tr.mu.Unlock()
 		t.Fatalf("expected op %q to exist", id)
+		return
 	}
 	op.StartedAt = time.Now().Add(-completionTTL - time.Hour)
 	tr.mu.Unlock()
@@ -274,6 +276,7 @@ func TestTracker_SaveToDisk_DropsTransientState(t *testing.T) {
 	if op == nil {
 		tr.mu.Unlock()
 		t.Fatalf("expected op %q to exist", id)
+		return
 	}
 	op.Status = StatusDone
 	op.CompletedAt = time.Now().Add(-completionTTL - time.Minute)

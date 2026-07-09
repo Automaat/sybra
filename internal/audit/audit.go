@@ -3,10 +3,14 @@ package audit
 import "time"
 
 const (
-	EventTaskCreated         = "task.created"
-	EventTaskStatusChanged   = "task.status_changed"
-	EventTaskTamperBlessed   = "task.tamper_blessed"
-	EventTaskDeleted         = "task.deleted"
+	EventTaskCreated       = "task.created"
+	EventTaskStatusChanged = "task.status_changed"
+	EventTaskTamperBlessed = "task.tamper_blessed"
+	EventTaskDeleted       = "task.deleted"
+	// EventTaskDispatched records a human-required task being manually
+	// dispatched back into the workflow (or flipped to in-review) via the
+	// GUI's HumanRequiredPanel / DispatchFromHumanRequired.
+	EventTaskDispatched      = "task.dispatched"
 	EventAgentStarted        = "agent.started"
 	EventAgentCompleted      = "agent.completed"
 	EventAgentFailed         = "agent.failed"
@@ -43,22 +47,30 @@ const (
 	// carries only the task ID (via the audit envelope) — never branch
 	// names, commit SHAs, or agent output.
 	EventBranchConflictAutoResolved = "pr_monitor.branch_conflict_auto_resolved"
-	EventReviewStarted              = "review.agent_started"
-	EventFixReviewStarted           = "fix_review.agent_started"
-	EventReviewPublished            = "review.published"
-	EventTodoistImported            = "todoist.imported"
-	EventTodoistCompleted           = "todoist.completed"
-	EventRenovateCIFix              = "renovate.ci_fix_started"
-	EventHealthReport               = "health.report"
-	EventAgentStartFailed           = "agent.start_failed"
-	EventProviderGateBlocked        = "provider.gate_blocked"
-	EventHumanReviewSpawned         = "human_review.spawned"
-	EventHumanReviewVerdict         = "human_review.verdict"
-	EventHumanReviewIssue           = "human_review.issue_filed"
-	EventHumanReviewSkipped         = "human_review.skipped"
-	EventExperienceRecorded         = "experience.recorded"
-	EventExperienceSkipped          = "experience.skipped"
-	EventExperienceInjected         = "experience.injected"
+	// EventPRBlockerReconciled records that a human-required task parked by
+	// the pr-monitor auto-fix-exhausted escalation (ci_failure or conflict)
+	// was moved back to in-review because a fresh probe found its linked PR
+	// open, mergeable, and green — the failure that stranded it had since
+	// resolved itself (e.g. a flaky CI re-run, or a human pushing a fix
+	// outside Sybra). Data carries the prior status_reason and the probe
+	// result, never PR titles or agent output.
+	EventPRBlockerReconciled = "pr_monitor.blocker_reconciled"
+	EventReviewStarted       = "review.agent_started"
+	EventFixReviewStarted    = "fix_review.agent_started"
+	EventReviewPublished     = "review.published"
+	EventTodoistImported     = "todoist.imported"
+	EventTodoistCompleted    = "todoist.completed"
+	EventRenovateCIFix       = "renovate.ci_fix_started"
+	EventHealthReport        = "health.report"
+	EventAgentStartFailed    = "agent.start_failed"
+	EventProviderGateBlocked = "provider.gate_blocked"
+	EventHumanReviewSpawned  = "human_review.spawned"
+	EventHumanReviewVerdict  = "human_review.verdict"
+	EventHumanReviewIssue    = "human_review.issue_filed"
+	EventHumanReviewSkipped  = "human_review.skipped"
+	EventExperienceRecorded  = "experience.recorded"
+	EventExperienceSkipped   = "experience.skipped"
+	EventExperienceInjected  = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

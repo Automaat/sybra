@@ -139,6 +139,48 @@ func TestDockerSandbox_Idempotent(t *testing.T) {
 	}
 }
 
+// TestDockerSandbox_ConcurrentSameTask_SingleFlights proves racing Start
+// calls for the same taskID never both pass the "does it exist yet" check
+// and boot two independent sandboxes (issue #1538's TOCTOU at
+// manager.go:77) — every caller must observe the same instance and only
+// one compose project may ever come up for the task.
+func TestDockerSandbox_ConcurrentSameTask_SingleFlights(t *testing.T) {
+	ctx := context.Background()
+	m := newIntegrationManager(t)
+	cfg := &project.SandboxConfig{Image: "nginx:alpine", Port: 80}
+
+	const n = 5
+	insts := make([]*Instance, n)
+	errs := make([]error, n)
+
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			insts[i], errs[i] = m.Start(ctx, "task-single-flight", "", cfg)
+		})
+	}
+	wg.Wait()
+	defer m.Stop("task-single-flight")
+
+	var first *Instance
+	for i := range n {
+		if errs[i] != nil {
+			t.Errorf("task %d Start error: %v", i, errs[i])
+			continue
+		}
+		if first == nil {
+			first = insts[i]
+			continue
+		}
+		if insts[i] != first {
+			t.Errorf("task %d got a different instance than task 0 — duplicate sandbox booted", i)
+		}
+	}
+	if first != nil {
+		assertHTTP200(t, first.URL, 15*time.Second)
+	}
+}
+
 // TestDockerSandbox_StopNotStarted verifies Stop on unknown task is a no-op.
 func TestDockerSandbox_StopNotStarted(t *testing.T) {
 	m := newIntegrationManager(t)

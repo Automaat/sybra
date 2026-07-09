@@ -8,6 +8,14 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
+	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
+	// where each retry stays under the per-run cap but the task's total spend
+	// still balloons unbounded. Checked once per dispatch, before an agent is
+	// started — StartAgentWithAssignment refuses to start and flips the task
+	// to human-required when the task's already-recorded AgentRuns.CostUSD sum
+	// meets or exceeds this. 0 (default) disables the check.
+	MaxTaskCostUSD float64 `yaml:"max_task_cost_usd" json:"maxTaskCostUsd"`
 	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
 	// escalation is auto-continued. Default 0.8 when unset.
 	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
@@ -75,4 +83,27 @@ type AgentDefaults struct {
 	// allowlist, failing the spawn closed if the wrapper is unavailable.
 	// Empty treated as "report".
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// DefaultProjectID pins the project a project-less task auto-assigns to
+	// when it needs an isolated worktree (e.g. a meta/self-referential task
+	// routed to the plan step). Without it, auto-assignment only fires when
+	// exactly one project is registered — on a machine with two or more
+	// projects, a project-less task can never dispatch and always ends up
+	// human-required. Empty means no default (falls back to the
+	// sole-project behavior).
+	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
+	// PlaywrightMCP configures the default-off headless Playwright MCP server
+	// attached to test-runner runs that resolve to the Claude provider.
+	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+}
+
+// PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+// server for visual/console verification. Default-off: Manager.prepareRunConfig
+// only attaches it for headless test-runner runs that resolve to the Claude
+// provider and pass a launcher preflight (see internal/agent/mcp.go).
+type PlaywrightMCPConfig struct {
+	// Enabled opts this machine into attaching the Playwright MCP server.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
+	// --headless --output-dir <dir>` launch command.
+	ExtraArgs []string `yaml:"extra_args" json:"extraArgs"`
 }

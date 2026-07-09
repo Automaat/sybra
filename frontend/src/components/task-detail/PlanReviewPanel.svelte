@@ -2,6 +2,7 @@
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { renderMarkdown } from '../../lib/markdown.js'
+  import { needsPlanApproval } from '../../lib/statuses.js'
   import PlanDecisionReview from './PlanDecisionReview.svelte'
 
   interface Props {
@@ -46,7 +47,7 @@
   }
 </script>
 
-{#if task.status === 'plan-review'}
+{#if needsPlanApproval(task)}
   <div class="flex flex-col gap-3 rounded-lg border border-tertiary-300 bg-tertiary-50 p-4 dark:border-tertiary-700 dark:bg-tertiary-900/30">
     <div class="flex items-center justify-between">
       <span class="text-sm font-semibold text-tertiary-700 dark:text-tertiary-300">Plan Review</span>

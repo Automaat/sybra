@@ -146,9 +146,11 @@ export const GetStats = pick(StatsSvc.GetStats, http.GetStats)
 export const BlessTampering = pick(TaskSvc.BlessTampering, http.BlessTampering)
 export const CreateTask = pick(TaskSvc.CreateTask, http.CreateTask)
 export const DeleteTask = pick(TaskSvc.DeleteTask, http.DeleteTask)
+export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)
 export const GetTamperReport = pick(TaskSvc.GetTamperReport, http.GetTamperReport)
 export const GetTask = pick(TaskSvc.GetTask, http.GetTask)
 export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
+export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
 
 // WorkflowService

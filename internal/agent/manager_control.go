@@ -237,6 +237,32 @@ func (m *Manager) HasLiveRegisteredAgentForTask(taskID string) bool {
 	return m.hasLiveRegisteredAgent(taskID)
 }
 
+// HasLiveHeadlessAgentForTask reports whether a registered headless agent is
+// still live for taskID. It intentionally ignores dispatch claims and
+// conversational agents: the headless watchdog is the only alternate stall
+// detector that can replace dwell escalation for a stale task file.
+func (m *Manager) HasLiveHeadlessAgentForTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.Mode != "headless" {
+			continue
+		}
+		if a.done == nil {
+			if a.GetState() == StateRunning {
+				return true
+			}
+			continue
+		}
+		select {
+		case <-a.done:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // hasLiveRegisteredAgent is the shared core of HasRunningAgentForTask and
 // HasLiveRegisteredAgentForTask. Callers must hold m.mu (read lock is
 // sufficient).

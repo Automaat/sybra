@@ -40,9 +40,10 @@ var ErrBranchDiverged = errors.New("local branch diverged from remote head")
 var ErrDirtyWorktree = errors.New("worktree has uncommitted changes")
 
 // ErrRemoteAdvanced is returned by PushSync when the live remote branch head no
-// longer matches the remote-tracking ref the push decision was based on — the
-// tracking ref is stale, so PushSync cannot even be sure what "diverged" means
-// right now. Always wrapped together with ErrDivergedNeedsResolve.
+// longer matches the remote-tracking ref the push decision was based on, or
+// when the live remote head cannot be verified before deciding whether to push.
+// It is wrapped together with ErrDivergedNeedsResolve only when the verified
+// live remote state also requires agent-driven branch reconciliation.
 var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
 
 // ErrDivergedNeedsResolve is returned by PushSync when the local branch and
@@ -76,6 +77,81 @@ func LoadRepoConfig(worktreePath string) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse .sybra.yaml: %w", err)
 	}
 	return &cfg, nil
+}
+
+// LoadRepoConfigAtDefaultBranch reads .sybra.yaml as tracked at the project's
+// default branch in the bare clone, never from a checked-out worktree.
+// Callers preparing a worktree for an untrusted ref (a PR head, possibly from
+// a fork, or a Renovate branch) must use this instead of LoadRepoConfig: that
+// checked-out ref's own .sybra.yaml is attacker-controlled, and its
+// setup:/checks: commands run via `sh -c` outside the agent permission model
+// (see LoadRepoConfig's callers in internal/worktree for the trusted case,
+// where the checked-out branch is one Sybra created off this same default
+// branch). Returns an empty RepoConfig (not an error) if the file is not
+// tracked at that ref.
+func LoadRepoConfigAtDefaultBranch(ctx context.Context, barePath string) (*RepoConfig, error) {
+	branch, err := DefaultBranch(ctx, barePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve default branch: %w", err)
+	}
+	data, found, err := showFileAtRef(ctx, barePath, "refs/remotes/origin/"+branch, ".sybra.yaml")
+	if errors.Is(err, errRefUnresolved) {
+		// The remote-tracking ref is genuinely absent (e.g. never fetched) — fall
+		// back to the local head, mirroring TrackedFilesAtDefaultBranch. Only a
+		// ref-resolution failure triggers this: a transient error (context
+		// cancellation, disk hiccup) must propagate rather than silently serve
+		// the frozen refs/heads/<branch>, which review/fix worktrees never
+		// advance and so may be stale.
+		data, found, err = showFileAtRef(ctx, barePath, "refs/heads/"+branch, ".sybra.yaml")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read .sybra.yaml at default branch %s: %w", branch, err)
+	}
+	if !found {
+		return &RepoConfig{}, nil
+	}
+	var cfg RepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse .sybra.yaml: %w", err)
+	}
+	return &cfg, nil
+}
+
+// errRefUnresolved marks a showFileAtRef failure where ref itself does not
+// resolve (e.g. a remote-tracking ref that was never fetched). Callers use
+// errors.Is to distinguish this recoverable "try another ref" case from a
+// transient failure (context cancellation, disk error) that must propagate
+// instead of silently falling back to a possibly-stale ref.
+var errRefUnresolved = errors.New("ref does not resolve")
+
+// showFileAtRef returns the bytes of path as tracked at ref in the bare repo
+// via `git show`, without ever materializing a worktree checkout. found is
+// false with a nil error when ref resolves but path is not tracked there —
+// callers treat that the same as a missing file. A ref that does not resolve
+// is returned wrapped in errRefUnresolved so the caller can try a fallback
+// ref; any other failure (e.g. context cancellation) is returned as a plain
+// error so it propagates rather than triggering a fallback.
+func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte, found bool, err error) {
+	cmd := exec.CommandContext(ctx, "git", "-c", "safe.bareRepository=all", "show", ref+":"+path)
+	cmd.Dir = barePath
+	out, runErr := cmd.Output()
+	if runErr == nil {
+		return out, true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		stderr := string(exitErr.Stderr)
+		switch {
+		case strings.Contains(stderr, "does not exist in") || strings.Contains(stderr, "exists on disk, but not in"):
+			return nil, false, nil
+		case strings.Contains(stderr, "invalid object name") ||
+			strings.Contains(stderr, "unknown revision") ||
+			strings.Contains(stderr, "bad revision") ||
+			strings.Contains(stderr, "ambiguous argument"):
+			return nil, false, fmt.Errorf("git show %s:%s: %w: %w", ref, path, errRefUnresolved, runErr)
+		}
+	}
+	return nil, false, fmt.Errorf("git show %s:%s: %w", ref, path, runErr)
 }
 
 // InstallHooks writes pre-commit and pre-push git hooks into the worktree's
@@ -342,7 +418,7 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	commit := exec.CommandContext(ctx, "git",
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
-		"commit", "--no-verify", "--no-gpg-sign", "-m", message)
+		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
 	commit.Dir = wtPath
 	return commit.Run() == nil
 }
@@ -638,6 +714,82 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 	return executil.Run(ctx, worktreePath, "git", "push", "-u", PushRemote(ctx, worktreePath), branch)
 }
 
+// SetBranchTo force-sets a branch ref in the bare clone to point at commit,
+// creating the branch if it does not already exist. Used by best-of-N
+// promotion to fast-forward the canonical task branch onto the winning
+// attempt's HEAD — a `git branch -f` against the shared bare repo, never a
+// push, so it can never rewrite already-published remote history.
+func SetBranchTo(ctx context.Context, barePath, branch, commit string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-f", branch, commit)
+		})
+	})
+}
+
+// DeleteBranch force-removes a local branch ref from the bare repo. Used by
+// best-of-N attempt cleanup so a discarded attempt branch is not silently
+// reused as the base for a later attempt with the same ID. Force-delete (`-D`)
+// because a losing attempt branch is never merged into the canonical branch,
+// so `git branch -d` would refuse it. No-op-safe: deleting a missing branch
+// returns an error the caller logs but does not treat as fatal.
+func DeleteBranch(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-D", branch)
+		})
+	})
+}
+
+// ResolveBareRef resolves a git ref (e.g. "refs/heads/<branch>") to its SHA in
+// the bare repo. Returns ("", false) if the ref does not exist. Exported
+// wrapper around resolveRef for best-of-N promotion's divergence check.
+func ResolveBareRef(ctx context.Context, barePath, ref string) (string, bool) {
+	return resolveRef(ctx, barePath, ref)
+}
+
+// IsAncestorInBare reports whether ancestor is reachable from descendant in
+// the bare repo's history. Returns false when either commit is unknown.
+// Exported for best-of-N promotion's divergence check (isAncestor requires a
+// worktree checkout; promotion only has the bare clone at this point).
+func IsAncestorInBare(ctx context.Context, barePath, ancestor, descendant string) bool {
+	return runBare(ctx, barePath, "merge-base", "--is-ancestor", ancestor, descendant) == nil
+}
+
+// IsWorktreeDirty reports whether a worktree has uncommitted changes
+// (tracked or untracked). Exported for best-of-N promotion's fail-closed
+// dirty-worktree check.
+func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
+	return worktreeDirty(ctx, worktreePath)
+}
+
+// HardResetWorktree resets a worktree's index and working tree to ref (a
+// branch name or commit SHA) via `git reset --hard`. Used by best-of-N
+// promotion to materialize the canonical worktree at the winning attempt's
+// HEAD after SetBranchTo has already moved the shared branch ref.
+func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
+	return executil.Run(ctx, worktreePath, "git", "reset", "--hard", ref)
+}
+
+// HeadArg returns the `gh pr create --head` value for branch: a bare branch
+// name when pushing to origin, or "fork-owner:branch" when a fork remote is
+// configured — matching PushRemote's routing decision so the PR always
+// points at the branch that was actually pushed.
+func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
+	if PushRemote(ctx, worktreePath) != "fork" {
+		return branch, nil
+	}
+	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	if err != nil {
+		return "", fmt.Errorf("resolve fork remote url: %w", err)
+	}
+	owner, _, err := ParseGitHubURL(strings.TrimSpace(forkURL))
+	if err != nil {
+		return "", fmt.Errorf("parse fork remote url: %w", err)
+	}
+	return owner + ":" + branch, nil
+}
+
 // CurrentBranch returns the checked-out branch name for a worktree.
 func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 	branch, err := executil.Output(ctx, worktreePath, "git", "branch", "--show-current")
@@ -684,6 +836,24 @@ func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 	return strings.Fields(out)[0], nil
 }
 
+func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string) (string, bool) {
+	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
+	return sha, err == nil
+}
+
+func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	fetchErr := withNetworkRetry(ctx, func() error {
+		return withLockRetry(func() error {
+			return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
+		})
+	})
+	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
+		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
+	}
+	return nil
+}
+
 // ReconcileWithRemote fast-forwards the worktree's checked-out branch to the
 // remote branch head before a rebase, so remote-only commits (e.g. a review fix
 // pushed from another clone or machine) are carried forward instead of dropped
@@ -709,12 +879,8 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 	// other failure (network/auth/remote misconfig) must propagate, since
 	// continuing on stale history is exactly the data-loss scenario this
 	// function exists to prevent.
-	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	fetchErr := withNetworkRetry(ctx, func() error {
-		return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
-	})
-	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
-		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
+	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
+		return err
 	}
 
 	// An absent branch (first push) means there is nothing to reconcile; any
@@ -765,9 +931,16 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //   - local SHA == remote tracking SHA: no-op
 //   - remote tracking SHA is an ancestor of local (fast-forward): regular push
 //   - histories diverged: never force-pushes. Returns ErrDivergedNeedsResolve
-//     (wrapping ErrRemoteAdvanced when the live remote head has moved past the
-//     stale tracking ref) so the caller can spawn agent work to reconcile the
-//     branches instead of rewriting already-published history.
+//     so the caller can spawn agent work to reconcile the branches instead of
+//     rewriting already-published history. If the live remote advanced since
+//     the cached tracking ref, ErrRemoteAdvanced is wrapped too.
+//
+// Refreshes refs/remotes/<remote>/<branch> from the live remote before
+// comparing, the same way ReconcileWithRemote does — a separate recovery
+// worktree (e.g. branch-conflict-fix) can push this branch directly without
+// ever touching this worktree's cached tracking ref, so comparing against
+// that stale cache can see a divergence the live remote no longer has,
+// re-triggering recovery in a loop even though it already succeeded.
 //
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
@@ -785,11 +958,23 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return err
 	}
 
-	remoteSHA, remoteErr := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
-	if remoteErr != nil {
+	beforeRefreshSHA, beforeRefreshOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
+
+	// Refresh the tracking ref first; a first-push branch has no remote head
+	// yet, so "couldn't find remote ref" is expected and not fatal. Any other
+	// failure (network/auth/remote misconfig) means the live remote state
+	// can't be verified before a push decision — fail closed rather than
+	// fall back to comparing against a possibly-stale cached ref.
+	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
+		return fmt.Errorf("%w: could not verify live remote head before push: %w", ErrRemoteAdvanced, err)
+	}
+
+	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
+	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
 		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
 	}
+	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
 	if localSHA == remoteSHA {
 		return nil
@@ -800,17 +985,13 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
 	}
 
-	// Divergence path: never force-push. Check the live remote head purely to
-	// give a precise error — either outcome means the branch needs
-	// agent-driven resolution (rebase/merge onto the remote), never a rewrite.
-	liveSHA, err := remoteBranchHead(ctx, worktreePath, remote, branch)
-	if err != nil {
-		return fmt.Errorf("%w: %w: could not verify live remote head before push: %w", ErrDivergedNeedsResolve, ErrRemoteAdvanced, err)
+	// Divergence path: never force-push. remoteSHA reflects the freshly
+	// fetched live remote head, so this is a genuine content divergence, not
+	// a stale-cache artifact — the branch needs agent-driven resolution
+	// (rebase/merge onto the remote), never a rewrite.
+	if remoteAdvanced {
+		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
-	if liveSHA != "" && liveSHA != remoteSHA {
-		return fmt.Errorf("%w: %w: tracking %s but remote %s/%s is at %s", ErrDivergedNeedsResolve, ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
-	}
-
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
@@ -894,7 +1075,19 @@ const rebaseAbortTimeout = 30 * time.Second
 
 // RebaseOnto rebases the worktree's current branch onto the given ref.
 // Aborts and returns an error on conflict.
+//
+// Skips the rebase entirely when ref is already an ancestor of HEAD (e.g. a
+// prior merge already brought ref's history in, as recoverBranchConflictNoPR
+// does). Plain `git rebase` linearizes history: it drops merge commits and
+// replays HEAD's own pre-merge commits individually onto ref, which
+// re-triggers the exact content conflict the merge just resolved even though
+// ref's tip is fully contained in HEAD. `git merge-base --is-ancestor`
+// considers ref merged in this case, so treating that as "nothing to do"
+// avoids the identical conflict resurfacing on every subsequent prepare.
 func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
+	if isAncestor(ctx, worktreePath, ref, "HEAD") {
+		return nil
+	}
 	if err := executil.Run(ctx, worktreePath, "git", "rebase", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.Background(), rebaseAbortTimeout)
 		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort") //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see rebaseAbortTimeout comment
@@ -921,7 +1114,7 @@ func MergeOnto(ctx context.Context, worktreePath, ref string) error {
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", ref); err != nil {
+		"merge", "--no-edit", "--no-verify", "--signoff", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 		_ = executil.Run(abortCtx, worktreePath, "git", "merge", "--abort")
 		cancel()
@@ -986,7 +1179,7 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", baseRef)
+		"merge", "--no-edit", "--no-verify", "--signoff", baseRef)
 	if mergeErr != nil {
 		conflict := false
 		var exitErr *exec.ExitError

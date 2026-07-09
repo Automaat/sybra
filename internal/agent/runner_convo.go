@@ -107,8 +107,7 @@ func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	needsApproval := cfg.RequirePermissions || cfg.PermissionMode != ""
-	if hookSettings := buildClaudeHookSettings(m.approvalAddr, needsApproval); hookSettings != "" {
+	if hookSettings := buildClaudeHookSettings(m.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	return args

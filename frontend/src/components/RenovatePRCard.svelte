@@ -7,6 +7,7 @@
     RerunRenovateChecks,
     FixRenovateCI,
   } from '$lib/api'
+  import { isRenovatePRReadyToMerge } from '$lib/renovate.js'
   import { renovateStore } from '../stores/renovate.svelte.js'
 
   interface Props {
@@ -18,12 +19,7 @@
   let busy = $state('')
 
 
-  const isEligible = $derived(
-    !pr.isDraft &&
-    pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
-    (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
-  )
+  const isEligible = $derived(isRenovatePRReadyToMerge(pr))
 
   async function approve(e: Event) {
     e.stopPropagation()
@@ -89,6 +85,9 @@
       <h3 class="text-sm font-semibold leading-tight">{pr.title}</h3>
     </div>
     <div class="flex shrink-0 items-center gap-1.5">
+      {#if pr.waitingForStability}
+        <span class="rounded bg-warning-500/15 px-1.5 py-0.5 text-xs font-medium text-warning-700 dark:text-warning-400" title="Waiting for Renovate stability days (minimum release age) before this PR can be merged">Stability days</span>
+      {/if}
       {#if pr.reviewDecision === 'APPROVED'}
         <span class="rounded bg-success-500/15 px-1.5 py-0.5 text-xs font-medium text-success-700 dark:text-success-400">Approved</span>
       {/if}

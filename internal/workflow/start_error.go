@@ -30,6 +30,34 @@ var ErrDispatchInFlight = errors.New("agent dispatch already in flight for task"
 // so it must never flip the task to human-required or write a status_reason.
 var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
 
+// ErrAgentPoolBusy is returned by the agent-start path when the global agent
+// pool (agent.MaxConcurrent) is already saturated. The sybra adapter maps
+// agent.ErrMaxConcurrentReached onto this sentinel. Like ErrTestRunnerBusy it
+// is benign and transient — a slot frees when any running agent completes — so
+// the run_agent step parks in ExecWaiting and ResumeStalled retries it. It must
+// never feed the circuit breaker or flip the task to human-required: a
+// transient "too many agents running" is not a dispatch fault.
+var ErrAgentPoolBusy = errors.New("agent pool concurrency cap reached")
+
+// ErrNoProjectAssigned is returned by an agent-start path when a task needs
+// an isolated worktree but has no project_id, and auto-assignment could not
+// resolve one (no agent.default_project_id configured, and more than one
+// project is registered — see agentorch.Orchestrator.AutoAssignProject).
+// This is a permanent, structurally-guaranteed failure: nothing about
+// retrying the dispatch changes the outcome, so ClassifyAgentStartError
+// escalates it to human-required on the first attempt instead of burning
+// the circuit breaker's retry budget on identical failures.
+var ErrNoProjectAssigned = errors.New("no project_id: refusing to start agent without isolated worktree")
+
+// ErrTaskCostExceeded is returned by an agent-start path when a task's
+// cumulative AgentRuns cost already meets or exceeds agent.max_task_cost_usd.
+// Unlike the per-run MaxCostUSD guardrail (which resets every attempt), this
+// caps total spend across every retry/dispatch a task has ever had — a
+// permanent failure until a human raises the cap or clears the task's spend,
+// so ClassifyAgentStartError escalates to human-required on the first hit
+// instead of burning the circuit breaker's retry budget on identical checks.
+var ErrTaskCostExceeded = errors.New("task cumulative cost exceeds agent.max_task_cost_usd")
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
@@ -51,6 +79,8 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, ErrTestRunnerBusy):
 		// Transient: the testing slot frees and ResumeStalled retries. No reason.
 		return "", false
+	case errors.Is(err, ErrAgentPoolBusy):
+		return "", false
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
 		// agent is still live in. The agent's own completion (or a later
@@ -60,6 +90,12 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
+	case errors.Is(err, ErrNoProjectAssigned):
+		permanent = true
+		reason = "agent start blocked: no project could be assigned — set agent.default_project_id in config or assign a project to this task manually to resume"
+	case errors.Is(err, ErrTaskCostExceeded):
+		permanent = true
+		reason = "agent start blocked: " + err.Error()
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason
@@ -86,15 +122,18 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 // neither, so it stays escalatable — a human must log in.
 func isTransientCapacityError(err error) bool {
 	var ue *provider.UnhealthyError
-	if errors.As(err, &ue) {
-		return ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+	if !errors.As(err, &ue) {
+		return false
 	}
-	return false
+	rateLimited := ue.RateLimited || ue.Reason == provider.RateLimitReason
+	hasCooldownDeadline := !ue.Until.IsZero()
+	return rateLimited || hasCooldownDeadline
 }
 
 func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
+		errors.Is(err, ErrAgentPoolBusy) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)

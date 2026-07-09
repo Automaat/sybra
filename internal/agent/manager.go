@@ -19,6 +19,14 @@ type EmitFunc func(event string, data any)
 // ErrSurvivalRegistry marks failures initializing restart-survival persistence.
 var ErrSurvivalRegistry = errors.New("agent survival registry")
 
+// ErrMaxConcurrentReached is returned by registerRunningAgent when the live
+// agent count is already at MaxConcurrent. It is a transient, self-healing
+// capacity condition (a slot frees when any running agent completes), so
+// callers must park-and-retry rather than escalate — the workflow layer maps
+// it to workflow.ErrAgentPoolBusy. Kept a sentinel (not a bare fmt.Errorf) so
+// that mapping is errors.Is-based, not string-matched.
+var ErrMaxConcurrentReached = errors.New("max concurrent agents reached")
+
 // Guardrails defines per-agent execution limits.
 type Guardrails struct {
 	MaxCostUSD float64
@@ -65,6 +73,12 @@ type Manager struct {
 	// dispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
 	dispatchJitterMs int
+	// playwrightMCPEnabled mirrors config.PlaywrightMCPEnabled. Default-off:
+	// see Manager.preparePlaywrightMCP for the full attach decision.
+	playwrightMCPEnabled bool
+	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
+	// verbatim to the Playwright MCP launch command.
+	playwrightMCPExtraArgs []string
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
 	// lifetime.
@@ -167,6 +181,10 @@ type ManagerRuntimeConfig struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch. 0 disables jitter.
 	DispatchJitterMs int
+	// PlaywrightMCPEnabled mirrors config.PlaywrightMCPEnabled(). Default-off.
+	PlaywrightMCPEnabled bool
+	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
+	PlaywrightMCPExtraArgs []string
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -198,6 +216,8 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
+		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
+		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
@@ -256,6 +276,8 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
+	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
+	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()
 	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil

@@ -16,7 +16,10 @@ export interface ApprovalRequest {
 
 class ConvoStore {
   conversations = new SvelteMap<string, ConvoEvent[]>()
-  pendingApprovals = new SvelteMap<string, ApprovalRequest>()
+  // Keyed by agentId, then toolUseId — so a toolUseId is only ever looked up
+  // within its own agent's chat, and one agent's approvals never bleed into
+  // another agent's ChatView/BlockedLayout.
+  pendingApprovals = new SvelteMap<string, SvelteMap<string, ApprovalRequest>>()
 
   async getOutput(agentId: string): Promise<ConvoEvent[]> {
     const events = (await GetConvoOutput(agentId)) ?? []
@@ -33,9 +36,13 @@ class ConvoStore {
     await SendMessage(agentId, text)
   }
 
-  async respondApproval(toolUseId: string, approved: boolean): Promise<void> {
+  approvalsFor(agentId: string): ApprovalRequest[] {
+    return [...(this.pendingApprovals.get(agentId)?.values() ?? [])]
+  }
+
+  async respondApproval(agentId: string, toolUseId: string, approved: boolean): Promise<void> {
     await RespondApproval(toolUseId, approved)
-    this.pendingApprovals.delete(toolUseId)
+    this.pendingApprovals.get(agentId)?.delete(toolUseId)
   }
 
   subscribe(agentId: string): () => void {
@@ -49,7 +56,12 @@ class ConvoStore {
     const unsubApproval = EventsOn(
       agentApproval(agentId),
       (req: ApprovalRequest) => {
-        this.pendingApprovals.set(req.toolUseId, req)
+        let forAgent = this.pendingApprovals.get(agentId)
+        if (!forAgent) {
+          forAgent = new SvelteMap<string, ApprovalRequest>()
+          this.pendingApprovals.set(agentId, forAgent)
+        }
+        forAgent.set(req.toolUseId, req)
       },
     )
 

@@ -369,6 +369,13 @@ type Task struct {
 	Workflow              *workflow.Execution `json:"workflow,omitempty"`
 	CreatedAt             time.Time           `json:"createdAt"`
 	UpdatedAt             time.Time           `json:"updatedAt"`
+	// StatusChangedAt marks the last time Status actually transitioned, as
+	// opposed to UpdatedAt which is bumped by any field write (tags, audit
+	// sidecars, status_reason, ...). Detectors that need to know "how long
+	// has this task been in its current status" (e.g. detectLostAgents'
+	// dispatch-latency grace window) must key off this field, not UpdatedAt —
+	// see internal/monitor/detector.go.
+	StatusChangedAt time.Time `json:"statusChangedAt"`
 
 	Body         string `json:"body"`
 	Plan         string `json:"plan,omitempty"`

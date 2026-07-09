@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -125,6 +127,95 @@ func TestProcessHeadlessLine_SuppressesCodexLimitSnapshotOutput(t *testing.T) {
 	}
 	if len(emitted) != 0 {
 		t.Fatalf("emitted output events = %d, want none", len(emitted))
+	}
+}
+
+// TestProcessHeadlessLine_TracksBackgroundTasks locks in that a live NDJSON
+// "background_tasks_changed" system event updates the agent's tracked
+// background-task set (used to extend the post-result-hang grace, see
+// TestTerminalResultIdle_BackgroundTaskExtendsGrace), and that a later empty
+// snapshot clears it (REPLACE semantics).
+func TestProcessHeadlessLine_TracksBackgroundTasks(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "bg1", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+	if !a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = false after a live background_tasks_changed event, want true")
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+	if a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = true after an empty background_tasks_changed event, want false")
+	}
+}
+
+// TestProcessHeadlessLine_WarnsWhenResultArrivesWithLiveBackgroundTasks locks
+// in the fix for task 3aeabb65: a headless CLI process exits (and kills any
+// live background bash task) as soon as its final turn ends, so the terminal
+// result event is the last point Sybra can observe that a background task
+// was still live — and thus at risk of being killed mid-write. This must
+// surface as a warning so an infra-caused corruption (e.g. a killed `npm ci`)
+// isn't silently misdiagnosed as a code defect downstream.
+func TestProcessHeadlessLine_WarnsWhenResultArrivesWithLiveBackgroundTasks(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	prov := providerByName("claude")
+
+	a := &Agent{ID: "bg-result", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("result event must not stop the stream")
+	}
+
+	if !strings.Contains(logBuf.String(), "agent.headless.result_with_live_background_tasks") {
+		t.Fatalf("log = %q, want a warning about the live background task at result time", logBuf.String())
+	}
+}
+
+// TestProcessHeadlessLine_NoWarningWhenBackgroundTasksClearedBeforeResult
+// ensures the warning only fires when Sybra's last known state still shows a
+// live background task — a task that legitimately finished and cleared
+// before the result event must not be flagged.
+func TestProcessHeadlessLine_NoWarningWhenBackgroundTasksClearedBeforeResult(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	prov := providerByName("claude")
+
+	a := &Agent{ID: "bg-cleared", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov)
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov)
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov)
+
+	if strings.Contains(logBuf.String(), "agent.headless.result_with_live_background_tasks") {
+		t.Fatalf("log = %q, background tasks cleared before result — should not warn", logBuf.String())
 	}
 }
 
@@ -484,6 +575,40 @@ func TestTerminalResultIdle(t *testing.T) {
 	})
 }
 
+// TestTerminalResultIdle_BackgroundTaskExtendsGrace locks in the fix for task
+// 3aeabb65: a headless run that emitted its terminal result but still has a
+// live CLI `run_in_background` task (e.g. npm ci) must not be treated as an
+// idle/hung process at the base grace — only after the extended
+// EffectiveHangGrace window, and never at all once the CLI reports the task
+// set empty again.
+func TestTerminalResultIdle_BackgroundTaskExtendsGrace(t *testing.T) {
+	a := &Agent{}
+	a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
+	a.mu.Lock()
+	a.LastEventAt = time.Now().Add(-2 * time.Minute)
+	a.mu.Unlock()
+	a.SetBackgroundTaskIDs([]string{"bpzdm25og"})
+
+	if !a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = false after SetBackgroundTaskIDs with a live task, want true")
+	}
+	if a.TerminalResultIdle(a.EffectiveHangGrace(90 * time.Second)) {
+		t.Fatal("TerminalResultIdle = true within extended grace while background task is live, want false")
+	}
+	if !a.TerminalResultIdle(90 * time.Second) {
+		t.Fatal("TerminalResultIdle(base grace) = false past base grace, want true regardless of background tasks")
+	}
+
+	// CLI reports the background task finished (REPLACE semantics: empty set).
+	a.SetBackgroundTaskIDs([]string{})
+	if a.HasBackgroundTasks() {
+		t.Fatal("HasBackgroundTasks = true after task set cleared, want false")
+	}
+	if !a.TerminalResultIdle(a.EffectiveHangGrace(90 * time.Second)) {
+		t.Fatal("TerminalResultIdle = false past base grace once background tasks cleared, want true")
+	}
+}
+
 // TestFinalizeFromResult_IgnoresKillSignalWaitErr covers the fix for the
 // non-detached (survive_restart: false) headless path: when the watchdog's
 // checkCompletedHang kills a process that already emitted a clean terminal
@@ -562,6 +687,7 @@ func TestStreamHeadlessOutput_LargeResultContent(t *testing.T) {
 	r := lastResult(a)
 	if r == nil {
 		t.Fatal("no result event captured")
+		return
 	}
 	if len(r.Content) != contentSize {
 		t.Errorf("result content len = %d, want %d (buffer should accept up to 1 MiB)", len(r.Content), contentSize)
@@ -613,6 +739,7 @@ func TestStreamHeadlessOutput_LargeLineUnderBufferCap(t *testing.T) {
 	r := lastResult(a)
 	if r == nil {
 		t.Fatal("no result event captured for 2 MiB line")
+		return
 	}
 	if len(r.Content) != contentSize {
 		t.Errorf("content len = %d, want %d (2 MiB should fit in the 4 MiB buffer)", len(r.Content), contentSize)
@@ -962,11 +1089,6 @@ func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
 // so a user who tightens the cost limit mid-run sees escalation on the
 // next result. A regression that cached the guardrails at start of loop
 // would miss the new limit and let the agent keep burning budget.
-//
-// The cost guardrail hard-blocks on breach pending a human decision (mirroring
-// the turns guardrail), so the agent is pre-armed with a buffered
-// escalationCh reply ("continue") to unblock the stream without a live
-// responder.
 func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Same session both times — cost is a cumulative-per-session snapshot,
 	// so result #2's 12.0 is the real running total (not summed with #1's
@@ -997,8 +1119,7 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Start unlimited so result #1 doesn't escalate.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0})
 
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	a.escalationCh <- true
+	a := &Agent{ID: "t", Provider: "claude"}
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()
@@ -1009,12 +1130,10 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	}
 }
 
-// TestGuardrails_CostBlocks_RejectStopsStream verifies the cost guardrail's
-// hard-blocking path: a human reject (escalationCh <- false) must return
-// stop=true and the stream loop must not process any further lines,
-// mirroring the turns-guardrail kill path pinned by
-// TestGuardrails_TurnsBlocks_CostNearCap.
-func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
+// TestGuardrails_CostHardStopsStream verifies the cost guardrail's hard-stop
+// path: breaching MaxCostUSD must stop the stream immediately without waiting
+// for a human response, so no further lines are processed.
+func TestGuardrails_CostHardStopsStream(t *testing.T) {
 	resultLine := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}`
 	trailingLine := `{"type":"assistant","message":{"content":[{"type":"text","text":"should never be processed"}]}}`
 	input := resultLine + "\n" + trailingLine + "\n"
@@ -1037,8 +1156,7 @@ func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
 	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
 
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	a.escalationCh <- false // reject: stop the run.
+	a := &Agent{ID: "t", Provider: "claude"}
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()
@@ -1053,11 +1171,11 @@ func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
 	}
 }
 
-// TestGuardrails_CostBlocks_ContextCancelStopsStream verifies that a
-// context cancellation (e.g. app shutdown) while the cost guardrail is
-// waiting on escalationCh also stops the stream, mirroring the reject path
-// above without requiring a human response.
-func TestGuardrails_CostBlocks_ContextCancelStopsStream(t *testing.T) {
+// TestGuardrails_CostHardStopMarksStopped verifies that a cost hard-stop marks
+// the process as stopped so the runner kills it immediately after the breach
+// and records the reason needed by completion classification. That keeps the
+// run classified as an intentional Sybra stop, not a provider crash.
+func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	input := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
 
 	var (
@@ -1078,26 +1196,84 @@ func TestGuardrails_CostBlocks_ContextCancelStopsStream(t *testing.T) {
 	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
 
-	ctx, cancel := context.WithCancel(t.Context())
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	raised := make(chan bool, 1)
-	go func() {
-		raised <- pollUntil(2*time.Second, time.Millisecond, func() bool {
-			mu.Lock()
-			defer mu.Unlock()
-			return blocked > 0
-		})
-		cancel()
-	}()
-	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+	a := &Agent{ID: "t", Provider: "claude"}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
-	if !<-raised {
-		t.Error("cost escalation was never raised before cancellation")
-	}
 	mu.Lock()
 	defer mu.Unlock()
 	if blocked == 0 {
-		t.Error("expected blocking cost escalation event, got none")
+		t.Error("expected cost escalation event, got none")
+	}
+	if !a.WasStopped() {
+		t.Error("WasStopped() = false, want true after cost hard-stop")
+	}
+	if got := a.EscalationReason; got != "cost" {
+		t.Errorf("EscalationReason = %q, want cost", got)
+	}
+}
+
+// TestGuardrails_CostKillRaceSetsExitErr verifies the fix for the
+// kill-returns-success bug: when a guardrail-killed detached subprocess is
+// not reaped within drainTimeout, the attempt must still record a non-nil
+// ExitErr instead of silently leaving it nil (the zero value), which would
+// make finalizeRun/OnComplete misreport the killed partial run as a clean
+// success. Shrinks drainTimeout and uses a fake claude that ignores SIGINT
+// so the race window is reliably hit without waiting out the real grace.
+func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
+	prevDrain := drainTimeout
+	drainTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prevDrain })
+
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\n" +
+		"trap '' INT TERM\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"sess-race\",\"total_cost_usd\":11.0,\"total_input_tokens\":1,\"total_output_tokens\":1}'\n" +
+		"sleep 10\n"
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: t.TempDir(),
+	})
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
+
+	ag, err := m.Run(RunConfig{
+		TaskID:             "task-race",
+		Name:               "implementation: race",
+		Mode:               "headless",
+		Prompt:             "trigger guardrail kill",
+		Dir:                t.TempDir(),
+		RequirePermissions: false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The fake process ignores SIGINT/SIGTERM and finalizeRun's early return
+	// (the very race under test) closes ag.done before signalKill's SIGKILL
+	// escalation grace elapses, so nothing else in the runner ever kills it.
+	// Force it directly so the runner's own cmd.Wait() goroutine unblocks
+	// instead of leaking past the test.
+	t.Cleanup(func() {
+		if cmd := ag.GetCmd(); cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		time.Sleep(200 * time.Millisecond)
+	})
+
+	// finalizeRun (and the close of ag.done) must not block on the slow
+	// subprocess reap — it happens on the shrunk drainTimeout, well before
+	// the real SIGKILL escalation (stopSIGINTGrace) would land.
+	waitForAgentDone(t, ag, 3*time.Second)
+
+	if !ag.WasStopped() {
+		t.Fatal("expected WasStopped=true after guardrail kill")
+	}
+	if ag.GetExitErr() == nil {
+		t.Fatal("ExitErr = nil after a guardrail kill raced the reap — finalizeRun/OnComplete will misreport this killed run as a clean success")
 	}
 }
 
@@ -1785,6 +1961,63 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 	})
 }
 
+// TestBuildHeadlessInvocation_PlaywrightMCP verifies --mcp-config and
+// --strict-mcp-config are always paired, only appear for claude, and never
+// appear when MCPConfigJSON is empty (the disabled/preflight-failed/non-claude
+// state Manager.preparePlaywrightMCP leaves cfg in).
+func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
+	t.Parallel()
+
+	t.Run("claude_with_mcp_config", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		mcpJSON := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "test",
+			MCPConfigJSON: mcpJSON,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--mcp-config")
+		if idx < 0 {
+			t.Fatalf("args missing --mcp-config; got %v", args)
+		}
+		if idx+1 >= len(args) || args[idx+1] != mcpJSON {
+			t.Errorf("--mcp-config value wrong; args=%v", args)
+		}
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("--mcp-config must always pair with --strict-mcp-config; got %v", args)
+		}
+	})
+
+	t.Run("claude_empty_mcp_config_is_noop", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("mcp flags must be absent when MCPConfigJSON empty; got %v", args)
+		}
+	})
+
+	t.Run("codex_ignores_mcp_config_json", func(t *testing.T) {
+		// MCPConfigJSON is a Claude-only field; a non-claude provider must never
+		// see it, even if some upstream bug leaves it set on the RunConfig.
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "test",
+			MCPConfigJSON: `{"mcpServers":{}}`,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("mcp flags must not appear for codex; got %v", args)
+		}
+	})
+}
+
 // TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless
 // codex always bypasses approvals even when RequirePermissions=true. Interactive
 // mode with RequirePermissions=true must use --sandbox workspace-write.
@@ -1880,6 +2113,160 @@ func TestBuildHeadlessInvocation_ClaudeKlaudiushHookPresent(t *testing.T) {
 		}
 	}
 	t.Fatalf("Claude headless args missing klaudiush --settings hook: %v", args)
+}
+
+// TestBuildHeadlessInvocation_ClaudeApprovalHookWiredWhenRequired verifies
+// that a headless claude run with RequirePermissions=true wires the same
+// PreToolUse HTTP approval hook the conversational runner uses, pointed at
+// the manager's approval-server address. Without this, require_permissions
+// has no path to grant a headless tool call and operators are forced to
+// require_permissions:false, which collapses to --dangerously-skip-permissions.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookWiredWhenRequired(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: true,
+		approvalAddr:       "127.0.0.1:54321",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--dangerously-skip-permissions" {
+			t.Fatalf("RequirePermissions=true must not bypass permissions: %v", args)
+		}
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "http://127.0.0.1:54321/hooks/pre-tool-use") {
+			return
+		}
+	}
+	t.Fatalf("Claude headless args missing approval-server --settings hook: %v", args)
+}
+
+// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms
+// verifies the approval hook is only wired when the run actually needs
+// permission gating — an unattended bypass/auto run must not block on a
+// hook nobody is watching.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: false,
+		approvalAddr:       "127.0.0.1:54321",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "pre-tool-use") {
+			t.Fatalf("approval hook must not be wired without RequirePermissions: %v", args)
+		}
+	}
+}
+
+// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty verifies the
+// lower-level command builder stays fail-closed when no approval hook can be
+// wired. Manager.prepareRunConfig rejects this posture before launch, but the
+// invocation builder itself must still avoid turning a missing gate into an
+// implicit full bypass.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: true,
+		approvalAddr:       "",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--dangerously-skip-permissions" {
+			t.Fatalf("RequirePermissions=true must not bypass permissions even without an approval server: %v", args)
+		}
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "pre-tool-use") {
+			t.Fatalf("no approval hook can be wired without an approval-server address: %v", args)
+		}
+	}
+}
+
+func TestPrepareRunConfig_RejectsRequirePermissionsWithoutApprovalServer(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	_, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "claude",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+	})
+	if err == nil {
+		t.Fatal("prepareRunConfig succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "require_permissions requires a running approval server") {
+		t.Fatalf("prepareRunConfig error = %v, want approval-server requirement", err)
+	}
+}
+
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAutoMode(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:               "claude",
+		Mode:                   "headless",
+		Prompt:                 "do stuff",
+		Dir:                    t.TempDir(),
+		RequirePermissions:     true,
+		HeadlessPermissionMode: "auto",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.HeadlessPermissionMode != "auto" {
+		t.Fatalf("HeadlessPermissionMode = %q, want auto", cfg.HeadlessPermissionMode)
+	}
+}
+
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAllowedToolsPresent(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "claude",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+		AllowedTools:       []string{"Read"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if len(cfg.AllowedTools) != 1 || cfg.AllowedTools[0] != "Read" {
+		t.Fatalf("AllowedTools = %v, want [Read]", cfg.AllowedTools)
+	}
+}
+
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerForHeadlessCodex(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "codex",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", cfg.Provider)
+	}
 }
 
 // TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs verifies that Claude and

@@ -201,6 +201,84 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang covers the
+// gap left by #1456: a "stop" verdict on the "budget" trigger whose
+// ReasonKind is "generic_stall" (e.g. an agent legitimately polling
+// TaskOutput/ScheduleWakeup for a long-running backgrounded verify/test gate)
+// must route through the same retryable watchdog-hang path as a "stall" stop
+// or a "loop"+generic_stall stop, not straight to human-required.
+func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "polling for backgrounded verify command to complete",
+		Recommendation: "stop",
+		ReasonKind:     "generic_stall",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "watchdog hang: polling for backgrounded verify command to complete" {
+		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on generic_stall budget stop verdict")
+	}
+}
+
+// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates ensures a "budget"
+// trigger stop whose ReasonKind is anything other than "generic_stall"
+// (including empty, for older judges) still escalates straight to
+// human-required — only the explicit generic_stall reason gets the retry.
+func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
+	for _, kind := range []string{"", "reward_hacking"} {
+		t.Run(kind, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "burned through budget with no forward progress",
+				Recommendation: "stop",
+				ReasonKind:     kind,
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusHumanRequired {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+			}
+			if got.StatusReason != "watchdog: burned through budget with no forward progress" {
+				t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on budget stop verdict")
+			}
+		})
+	}
+}
+
 // TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating covers #1428:
 // a "stop" verdict with ReasonKind "rate_limit" must route through the
 // provider-health signal path and leave the task in-progress, regardless of
@@ -368,6 +446,31 @@ func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
 
 	if stopped {
 		t.Fatal("stopCompletedAgent called within grace window, want no-op")
+	}
+}
+
+// TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace locks in the fix for
+// task 3aeabb65: a completed agent with a still-live CLI
+// `run_in_background` task (e.g. npm ci) must not be force-stopped at the
+// base completedHangGrace merely because it produced no further NDJSON
+// activity — killing it mid-write corrupted node_modules in the original
+// incident.
+func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now().Add(-10 * time.Minute))
+	ag.SetBackgroundTaskIDs([]string{"bpzdm25og"})
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped {
+		t.Fatal("stopCompletedAgent called while a background task is still live, want no-op")
 	}
 }
 

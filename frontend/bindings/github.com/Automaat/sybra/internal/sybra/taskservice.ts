@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as artifact$0 from "../artifact/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -46,6 +49,26 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DispatchFromHumanRequired flips a task parked in human-required to target
+ * (one of in-progress/testing/ready-pr/in-review), recording reason as the
+ * audit-visible status_reason. For dispatching targets it synchronously
+ * re-enters the workflow via task.status_changed; on any failure to do so it
+ * fails closed, reverting the task to human-required with an explanatory
+ * status_reason so the operator is never left with a task silently stuck in
+ * a target status with no workflow driving it.
+ * 
+ * The whole check-then-write sequence runs under the workflow engine's
+ * per-task human-action lock (shared with plan-review's
+ * HandleHumanActionRecovering), so a double-click or a second operator cannot
+ * race the same stuck task between the guard reads and the status write.
+ */
+export function DispatchFromHumanRequired(id: string, target: string, reason: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(3753750864, id, target, reason).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * GetTamperReport returns the detector report artifact for a tamper-flagged task.
  */
 export function GetTamperReport(taskID: string): $CancellablePromise<$models.TamperReportDTO> {
@@ -64,12 +87,22 @@ export function GetTask(id: string): $CancellablePromise<task$0.Task> {
 }
 
 /**
+ * ListTaskProgress returns the agent-authored progress entries for a task.
+ * Empty (not an error) when the task has no progress log yet.
+ */
+export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
+    return $Call.ByID(821819796, taskID).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
  * Chat tasks are surfaced exclusively through the Chats view.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType4($result);
     });
 }
 
@@ -112,4 +145,6 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $models.TamperReportDTO.createFrom;
-const $$createType2 = $Create.Array($$createType0);
+const $$createType2 = artifact$0.ProgressEntry.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $Create.Array($$createType0);

@@ -56,6 +56,22 @@ func TestClassifyAgentStartError(t *testing.T) {
 			err:          errors.New(strings.Repeat("x", startReasonMaxLen*2)),
 			wantContains: "...",
 		},
+		{
+			name:          "no project assigned is permanent",
+			err:           fmt.Errorf("task t1 has no project_id: refusing to start plan agent without isolated worktree: %w", ErrNoProjectAssigned),
+			wantPermanent: true,
+			wantContains:  "no project could be assigned",
+		},
+		{
+			name:          "task cost exceeded is permanent",
+			err:           fmt.Errorf("start agent: %w: $25.00 spent across 5 run(s), limit $25.00", ErrTaskCostExceeded),
+			wantPermanent: true,
+			wantContains:  "task cumulative cost exceeds agent.max_task_cost_usd",
+		},
+		{
+			name: "agent pool busy yields empty and transient",
+			err:  fmt.Errorf("start agent: %w", ErrAgentPoolBusy),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,6 +110,20 @@ func TestClassifyAgentStartError_DispatchInFlightSuppressed(t *testing.T) {
 	wrapped := fmt.Errorf("start agent: %w", ErrDispatchInFlight)
 	if r, p := ClassifyAgentStartError(wrapped); r != "" || p {
 		t.Errorf("wrapped: got reason=%q permanent=%v, want empty/false", r, p)
+	}
+}
+
+func TestClassifyAgentStartError_AgentPoolBusySuppressed(t *testing.T) {
+	wrapped := fmt.Errorf("start agent: %w", ErrAgentPoolBusy)
+	reason, permanent := ClassifyAgentStartError(wrapped)
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+	if permanent {
+		t.Error("agent-pool-busy must not be permanent")
+	}
+	if !transientAgentStartError(wrapped) {
+		t.Error("transientAgentStartError() = false, want true")
 	}
 }
 
@@ -296,6 +326,32 @@ func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) 
 	got, _ := tasks.GetTask("t1")
 	if got.Status == "human-required" {
 		t.Fatal("transient rate limit escalated to human-required")
+	}
+}
+
+func TestSurfaceStartFailure_QuotaRateLimitDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	quotaLimited := &provider.UnhealthyError{
+		Provider:    "codex",
+		Reason:      "provider reports rate limit reached",
+		RateLimited: true,
+	}
+	if !isTransientCapacityError(quotaLimited) {
+		t.Fatal("quota rate-limit (RateLimited flag, no RateLimitReason/Until) not classified transient")
+	}
+	wf := &Execution{CurrentStep: "code_review_staff", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 2 {
+		engine.surfaceStartFailure("t1", "in-progress", quotaLimited, wf, "code_review_staff")
+		if wf.State == ExecFailed {
+			t.Fatalf("quota rate limit tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if got, _ := tasks.GetTask("t1"); got.Status == "human-required" {
+		t.Fatal("quota rate limit escalated to human-required")
 	}
 }
 

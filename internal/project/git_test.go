@@ -339,6 +339,14 @@ func TestAutoCommitUncommitted(t *testing.T) {
 		t.Errorf("commit message = %q, want %q", got, "wip: recovered work")
 	}
 
+	bodyOut, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(bodyOut), "Signed-off-by: Sybra <sybra@localhost>") {
+		t.Errorf("commit body missing DCO trailer, got %q", string(bodyOut))
+	}
+
 	// Idempotent: nothing left to commit on the now-clean tree.
 	if got := AutoCommitUncommitted(context.Background(), dir, "wip: should not commit"); got {
 		t.Fatal("expected no commit on an already-clean tree")
@@ -923,6 +931,74 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigAtDefaultBranch_Missing(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil || cfg.Setup != nil {
+		t.Errorf("expected empty RepoConfig, got %+v", cfg)
+	}
+}
+
+// TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches is the regression
+// for issue #1519: a caller preparing an untrusted-ref worktree (a PR head,
+// possibly from a fork, or a Renovate branch) must only ever see the
+// .sybra.yaml tracked at the project's default branch, never a branch's own
+// (potentially attacker-controlled) version of the file.
+func TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	defaultBranch, err := CurrentBranch(context.Background(), src)
+	if err != nil {
+		t.Fatalf("current branch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "trusted config")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	srcGit("checkout", "-b", "attacker-branch")
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "malicious config")
+	srcGit("checkout", defaultBranch)
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("LoadRepoConfigAtDefaultBranch: %v", err)
+	}
+	if len(cfg.Setup) != 1 || cfg.Setup[0] != "touch trusted-marker" {
+		t.Errorf("Setup = %v, want only the default-branch config", cfg.Setup)
+	}
+}
+
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -1218,6 +1294,33 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 
 	if got := PushRemote(context.Background(), wtPath); got != "fork" {
 		t.Errorf("PushRemote with fork = %q, want %q", got, "fork")
+	}
+}
+
+func TestHeadArg_NoFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if got != "my-branch" {
+		t.Errorf("HeadArg without fork = %q, want %q", got, "my-branch")
+	}
+}
+
+func TestHeadArg_WithFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/widgets.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if want := "someuser:my-branch"; got != want {
+		t.Errorf("HeadArg with fork = %q, want %q", got, want)
 	}
 }
 
@@ -1925,9 +2028,10 @@ func TestMergeOnto_ConflictReturnsErrorAndCleansUp(t *testing.T) {
 }
 
 // TestPushSync_RefusesForceWhenRemoteAdvanced is the defense-in-depth net: when
-// the live remote head no longer matches the stale tracking ref the push
-// decision was based on, PushSync must refuse to push at all rather than
-// clobber the newer commits with a force push.
+// another clone has pushed to the branch since this worktree last synced,
+// PushSync must refresh its view of the remote (rather than compare against
+// its own stale tracking ref) and refuse to push at all instead of clobbering
+// the newer commits with a force push.
 func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
@@ -1944,19 +2048,72 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	makeCommit(t, wtPath, "two-prime")
 
 	// Meanwhile the remote branch advances from another clone. wtPath never
-	// fetches, so its tracking ref stays behind the live remote head.
+	// explicitly fetches, so its cached tracking ref stays behind the live
+	// remote head until PushSync's own fetch refreshes it.
 	advancedSHA := pushRemoteCommit(t, remoteBare, branch, "concurrent-fix")
 
 	err := PushSync(context.Background(), wtPath, branch)
-	if !errors.Is(err, ErrRemoteAdvanced) {
-		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
-	}
 	if !errors.Is(err, ErrDivergedNeedsResolve) {
 		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve", err)
+	}
+	if !errors.Is(err, ErrRemoteAdvanced) {
+		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
 	}
 	// The remote fix must survive untouched.
 	if got := remoteRefSHA(t, remoteBare, branch); got != advancedSHA {
 		t.Fatalf("remote SHA = %q, want untouched fix %q", got, advancedSHA)
+	}
+}
+
+// TestPushSync_RefreshesStaleCacheBeforeComparing is the regression for the
+// create_pr/branch-conflict-fix tight loop (issue #1628): a stale cached
+// refs/remotes/<remote>/<branch> can point at a commit that is not an
+// ancestor of the true (live) remote head — e.g. left over from a prior
+// divergence — even though the local branch and the live remote head are
+// actually identical right now (a separate recovery path already converged
+// them). Comparing against the stale cache alone would misreport this as an
+// unresolved divergence forever, since the "true" state never gets a chance
+// to update the cache; PushSync must fetch fresh before deciding.
+func TestPushSync_RefreshesStaleCacheBeforeComparing(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	sha1 := makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	// Legitimately advance and push — this becomes the true, converged state
+	// both locally and on the remote.
+	shaX := makeCommit(t, wtPath, "two-a")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync advance: %v", err)
+	}
+
+	// Build a sibling commit off sha1 purely to obtain a real, valid SHA that
+	// is not an ancestor of shaX — simulating a stale/incorrect cached ref.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", sha1).CombinedOutput(); err != nil {
+		t.Fatalf("reset to sha1: %v: %s", err, out)
+	}
+	shaY := makeCommit(t, wtPath, "two-b")
+	if out, err := exec.Command("git", "-C", wtPath, "merge-base", "--is-ancestor", shaY, shaX).CombinedOutput(); err == nil {
+		t.Fatalf("shaY unexpectedly an ancestor of shaX: %s", out)
+	}
+
+	// Restore local to the true converged state (shaX) but leave the cached
+	// tracking ref corrupted at the unrelated sibling (shaY) — this is the
+	// "stale cache" the fix must not trust blindly.
+	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", shaX).CombinedOutput(); err != nil {
+		t.Fatalf("reset to shaX: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "update-ref", "refs/remotes/origin/"+branch, shaY).CombinedOutput(); err != nil {
+		t.Fatalf("corrupt cached tracking ref: %v: %s", err, out)
+	}
+
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync = %v, want nil (converged after fresh fetch)", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != shaX {
+		t.Fatalf("remote SHA = %q, want unchanged converged state %q", got, shaX)
 	}
 }
 
@@ -1980,8 +2137,8 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	}
 	makeCommit(t, wtPath, "two-prime")
 
-	// Break the remote so the live-head verification (ls-remote) errors
-	// instead of returning a SHA.
+	// Break the remote so the live-head verification fetch errors instead of
+	// updating the tracking ref.
 	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git")).CombinedOutput(); err != nil {
 		t.Fatalf("remote set-url: %v: %s", err, out)
 	}
@@ -1990,8 +2147,8 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced (fail closed)", err)
 	}
-	if !errors.Is(err, ErrDivergedNeedsResolve) {
-		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve (fail closed)", err)
+	if errors.Is(err, ErrDivergedNeedsResolve) {
+		t.Fatalf("PushSync = %v, must not return ErrDivergedNeedsResolve for remote verification failure", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != beforeSHA {
 		t.Fatalf("remote SHA = %q, want untouched %q", got, beforeSHA)

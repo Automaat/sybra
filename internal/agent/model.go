@@ -133,6 +133,16 @@ type Agent struct {
 	// status from the result event rather than the kill signal.
 	completedByResult bool
 
+	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
+	// system event (REPLACE semantics: the full set of currently-live
+	// background bash tasks, e.g. a `run_in_background` Bash call). A CC
+	// process can legitimately emit its terminal result while a task like
+	// `npm ci` is still running in the background, producing no further
+	// NDJSON activity — the post-result-hang guards must not mistake that
+	// silence for a hung/orphaned process and kill it mid-write (task
+	// 3aeabb65: a killed `npm ci` left a corrupted, zero-byte node_modules).
+	backgroundTaskIDs []string
+
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
 	// kill). ShutdownWithGrace leaves detached agents running instead of
@@ -380,6 +390,13 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// GetStartedAt returns the agent's recorded start time.
+func (a *Agent) GetStartedAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.StartedAt
+}
+
 // SetProviderAndModel updates the agent's provider and (already-normalized)
 // model. Used when a mid-run per-turn provider re-gate fails the agent's
 // current provider over to a healthy peer; Provider/Model are otherwise fixed
@@ -426,6 +443,7 @@ func (a *Agent) GetSessionFilePath() string {
 // adding to it; only a change in session id banks the previous session's
 // final snapshot and starts counting the new one from there.
 func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
+	cost = sanitizeCostUSD(cost)
 	a.mu.Lock()
 	if sessionID != "" {
 		a.SessionID = sessionID
@@ -585,6 +603,13 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Lock()
 	a.EscalationReason = reason
 	a.mu.Unlock()
+}
+
+// GetEscalationReason returns the current guardrail escalation reason.
+func (a *Agent) GetEscalationReason() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.EscalationReason
 }
 
 // NotePermissionDenial records an auto-mode classifier denial observed during the run.
@@ -819,6 +844,51 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 	return time.Since(a.LastEventAt) >= grace
 }
 
+// backgroundTaskGrace is the extra idle time granted to a post-result-hang
+// guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
+// while the agent has outstanding CLI background bash tasks. Bounded rather
+// than unlimited so a task that never reports completion (e.g. the CLI
+// process dies without emitting a final background_tasks_changed) can't hang
+// a run forever — the guard still fires, just later, once this is exhausted.
+const backgroundTaskGrace = 15 * time.Minute
+
+// SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
+// background bash tasks, mirroring the REPLACE semantics of the CLI's
+// "background_tasks_changed" system event.
+func (a *Agent) SetBackgroundTaskIDs(ids []string) {
+	// Defensive copy, mirroring SetPluginErrors, so a caller that later mutates
+	// or reuses the passed slice can't race the reader in HasBackgroundTasks.
+	// Preserve nil-ness: a nil "no event seen" snapshot must stay distinct from
+	// an empty non-nil "all tasks cleared" one (REPLACE semantics).
+	var cp []string
+	if ids != nil {
+		cp = make([]string, len(ids))
+		copy(cp, ids)
+	}
+	a.mu.Lock()
+	a.backgroundTaskIDs = cp
+	a.mu.Unlock()
+}
+
+// HasBackgroundTasks reports whether the CLI last reported any live
+// background bash tasks still running.
+func (a *Agent) HasBackgroundTasks() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.backgroundTaskIDs) > 0
+}
+
+// EffectiveHangGrace extends base by backgroundTaskGrace while the agent has
+// outstanding background bash tasks, so a post-result-hang guard idle-timing
+// out on silence doesn't kill a process that's still legitimately waiting on
+// a `run_in_background` command (e.g. npm ci) — see backgroundTaskIDs.
+func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
+	if a.HasBackgroundTasks() {
+		return base + backgroundTaskGrace
+	}
+	return base
+}
+
 func (a *Agent) setCompletedByResult(v bool) {
 	a.mu.Lock()
 	a.completedByResult = v
@@ -982,6 +1052,23 @@ type RunConfig struct {
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
 	SandboxMode string
+	// PlaywrightMCPEligible marks a run as a candidate for the headless
+	// Playwright MCP server (set by the workflow dispatcher for RoleTestRunner
+	// runs only; see agentAdapter.StartAgent). Actually attaching MCP
+	// additionally requires config.PlaywrightMCPEnabled, a headless run, and a
+	// final-resolved Claude provider — decided by
+	// Manager.preparePlaywrightMCP, never by the raw requested provider.
+	PlaywrightMCPEligible bool
+	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
+	// server writes screenshots/console logs to. Set by the workflow
+	// dispatcher alongside PlaywrightMCPEligible; empty falls back to
+	// <Dir>/.sybra-evidence.
+	PlaywrightMCPOutputDir string
+	// MCPConfigJSON is the Claude --mcp-config JSON payload for the headless
+	// Playwright MCP server. Set only by Manager.preparePlaywrightMCP after
+	// the final provider resolves to claude and the launcher preflight
+	// succeeds. Claude-only: every other provider ignores this field.
+	MCPConfigJSON string
 	// provider is the implementation selected once at run start after health
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
@@ -994,6 +1081,25 @@ type RunConfig struct {
 	// computed once by injectProcessSandbox and consumed by wrapInvocation
 	// at each provider spawn site. Never set by callers.
 	sandbox sandboxSpec
+	// approvalAddr is the manager's HTTP approval-server address
+	// ("127.0.0.1:port"), set by prepareRunConfig for every run. Consumed by
+	// claudeProvider.BuildHeadlessInvocation to wire the PreToolUse approval
+	// hook when RequirePermissions is true — without it, a headless run under
+	// require_permissions:true has no path to grant a tool call and
+	// operators are forced to require_permissions:false, which collapses to
+	// --dangerously-skip-permissions. Never set by callers.
+	approvalAddr string
+}
+
+// needsApprovalHook reports whether a run should wire the PreToolUse approval
+// hook. True when permissions are required or an interactive permission-mode is
+// set. Both the headless (provider_claude.go) and conversational
+// (runner_convo.go) call sites gate on this so a future change can't silently
+// desync them: headless runs never set PermissionMode (they use
+// HeadlessPermissionMode for the auto classifier), so for them it collapses to
+// RequirePermissions alone.
+func (cfg RunConfig) needsApprovalHook() bool {
+	return cfg.RequirePermissions || cfg.PermissionMode != ""
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

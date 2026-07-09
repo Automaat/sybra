@@ -68,6 +68,10 @@ func NewScheduler(parent context.Context, store *Store, runner AgentRunner, logg
 // Sync reconciles running fetchers with the persisted store. Safe to call
 // concurrently — it serializes via the scheduler mutex.
 func (s *Scheduler) Sync() {
+	s.SyncContext(s.parent)
+}
+
+func (s *Scheduler) SyncContext(ctx context.Context) {
 	all, err := s.store.List()
 	if err != nil {
 		s.logger.Error("loopagent.sync.list", "err", err)
@@ -106,7 +110,7 @@ func (s *Scheduler) Sync() {
 		if _, running := s.fetchers[id]; running {
 			continue
 		}
-		s.startLocked(want[id])
+		s.startLocked(ctx, want[id])
 	}
 
 	if s.emit != nil {
@@ -115,8 +119,8 @@ func (s *Scheduler) Sync() {
 }
 
 // startLocked must be called with s.mu held.
-func (s *Scheduler) startLocked(la LoopAgent) {
-	ctx, cancel := context.WithCancel(s.parent)
+func (s *Scheduler) startLocked(parent context.Context, la LoopAgent) {
+	ctx, cancel := context.WithCancel(parent)
 	s.fetchers[la.ID] = &runningFetcher{
 		cancel:    cancel,
 		updatedAt: la.UpdatedAt,

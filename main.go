@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"fmt"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -68,7 +70,7 @@ func run() (int, error) {
 	log.SetFlags(0)
 	log.SetOutput(slogWriter{logger})
 
-	startPprof(logger)
+	startPprof(logger, cfg.Server.AuthToken)
 
 	logger.Info("browser.in_app", "enabled", cfg.InAppBrowserEnabled())
 
@@ -208,9 +210,10 @@ func openInAppBrowser(app *application.App, url string) {
 	})
 }
 
-// startPprof launches a pprof HTTP server when SYBRA_PPROF is set.
-// Value "1"/"true" uses 127.0.0.1:6060; any other value is used as-is (host:port).
-func startPprof(logger *slog.Logger) {
+// startPprof launches a bearer-token-protected pprof HTTP server when
+// SYBRA_PPROF is set. Value "1"/"true" uses 127.0.0.1:6060; any other value is
+// used as-is (host:port).
+func startPprof(logger *slog.Logger, token string) {
 	addr := os.Getenv("SYBRA_PPROF")
 	if addr == "" {
 		return
@@ -218,12 +221,7 @@ func startPprof(logger *slog.Logger) {
 	if addr == "1" || addr == "true" {
 		addr = "127.0.0.1:6060"
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux := pprofMux(logger, token)
 	go func() {
 		logger.Info("pprof.listen", "addr", addr)
 		srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -231,6 +229,38 @@ func startPprof(logger *slog.Logger) {
 			logger.Error("pprof.serve", "err", err)
 		}
 	}()
+}
+
+func pprofMux(logger *slog.Logger, token string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return pprofAuthMiddleware(token, logger, mux)
+}
+
+func pprofAuthMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !pprofRequestAuthorized(r, token) {
+			logger.Warn("pprof.auth.denied", "path", r.URL.Path, "remote", r.RemoteAddr)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="sybra-pprof"`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprint(w, `{"error":"unauthorized","code":"unauthorized"}`)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func pprofRequestAuthorized(r *http.Request, token string) bool {
+	if token == "" {
+		return false
+	}
+	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) == 1
 }
 
 // slogWriter routes Go's default log.Print output through slog at DEBUG level.

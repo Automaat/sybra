@@ -1,13 +1,18 @@
 package agentorch
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // TestResolveSandboxMode pins the escape-hatch/default precedence: a task
@@ -36,6 +41,129 @@ func TestResolveSandboxMode(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTaskCumulativeCostUSD verifies the sum feeding the
+// agent.max_task_cost_usd gate: every AgentRun's CostUSD counts, regardless
+// of provider or outcome, and an empty run history sums to zero rather than
+// panicking or blocking dispatch.
+func TestTaskCumulativeCostUSD(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		runs []task.AgentRun
+		want float64
+	}{
+		{name: "no runs", runs: nil, want: 0},
+		{name: "single run", runs: []task.AgentRun{{CostUSD: 4.5}}, want: 4.5},
+		{
+			name: "sums across providers and outcomes",
+			runs: []task.AgentRun{
+				{Provider: "claude", CostUSD: 5.0, State: "stopped"},
+				{Provider: "codex", CostUSD: 3.25, State: "stopped"},
+				{Provider: "claude", CostUSD: 0, State: "running"},
+			},
+			want: 8.25,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := taskCumulativeCostUSD(tc.runs); got != tc.want {
+				t.Errorf("taskCumulativeCostUSD() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch verifies the
+// per-task cumulative USD budget gate: once a task's recorded AgentRuns.CostUSD
+// sum meets agent.max_task_cost_usd, StartAgentWithAssignment must refuse to
+// start another agent instead of dispatching yet another run (each individually
+// under the per-run MaxCostUSD cap, but unbounded in aggregate). The gate must
+// fire before any worktree/dispatch work — proven here by the task having no
+// project_id and no worktree manager, which would otherwise surface a
+// different (worktree-related) error.
+func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
+	t.Parallel()
+
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	created, err := tm.Create("cost-capped task", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 4.0, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun 1: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a2", Provider: "claude", CostUSD: 4.5, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun 2: %v", err)
+	}
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{MaxTaskCostUSD: 8.0},
+	})
+
+	_, _, err = o.StartAgentWithAssignment(created.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	if err == nil {
+		t.Fatal("expected dispatch to be refused once cumulative task cost meets the cap, got nil error")
+	}
+	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
+		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
+	}
+	reason, permanent := workflow.ClassifyAgentStartError(err)
+	if !permanent {
+		t.Error("task-cost-exceeded must classify as permanent so the resume loop stops retrying")
+	}
+	if !strings.Contains(reason, "task cumulative cost exceeds") {
+		t.Errorf("reason = %q, missing task-cost explanation", reason)
+	}
+}
+
+func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
+	t.Parallel()
+
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	created, err := tm.Create("cost-capped pr-fix task", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 8.0, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{MaxTaskCostUSD: 8.0},
+	})
+
+	err = o.StartPRFixAgent(created.ID)
+	if err == nil {
+		t.Fatal("expected pr-fix dispatch to be refused once cumulative task cost meets the cap, got nil error")
+	}
+	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
+		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
 	}
 }
 
@@ -290,4 +418,190 @@ func TestBuildTaskStartPrompt(t *testing.T) {
 	if !strings.Contains(got, "# Task: My task") {
 		t.Fatalf("BuildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
 	}
+}
+
+// TestAutoAssignProject pins the fix for a project-less task never dispatching
+// on a machine with more than one registered project: without an explicit
+// agent.default_project_id, auto-assignment only fires for the sole-project
+// case (unchanged legacy behavior); with it configured and the ID present in
+// the registered set, it wins regardless of how many projects exist. An
+// unregistered/typo'd default_project_id must not force a bogus assignment.
+func TestAutoAssignProject(t *testing.T) {
+	t.Parallel()
+
+	newStores := func(t *testing.T) (*task.Manager, *project.Store) {
+		t.Helper()
+		ts, err := task.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("task.NewStore: %v", err)
+		}
+		ps, err := project.NewStore(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatalf("project.NewStore: %v", err)
+		}
+		return task.NewManager(ts, nil), ps
+	}
+
+	t.Run("no-op when project already set", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1", ProjectID: "owner/repo"})
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/repo" {
+			t.Fatalf("ProjectID = %q, want unchanged", got.ProjectID)
+		}
+	})
+
+	t.Run("sole project auto-assigns without config", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/solo" {
+			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/solo")
+		}
+	})
+
+	t.Run("multiple projects without default_project_id stays unassigned", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty (ambiguous, no default configured)", got.ProjectID)
+		}
+	})
+
+	t.Run("multiple projects with configured default_project_id wins", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/two"}})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/two" {
+			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/two")
+		}
+	})
+
+	t.Run("unregistered default_project_id is a no-op", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/typo"}})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty (default_project_id not registered)", got.ProjectID)
+		}
+	})
+
+	t.Run("project list error is returned", func(t *testing.T) {
+		t.Parallel()
+		projectDir := t.TempDir()
+		tm, err := task.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("task.NewStore: %v", err)
+		}
+		ps, err := project.NewStore(projectDir, t.TempDir())
+		if err != nil {
+			t.Fatalf("project.NewStore: %v", err)
+		}
+		if err := os.RemoveAll(projectDir); err != nil {
+			t.Fatalf("RemoveAll(projectDir): %v", err)
+		}
+		if err := os.WriteFile(projectDir, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("WriteFile(projectDir): %v", err)
+		}
+		o := New(task.NewManager(tm, nil), ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1"})
+		if err == nil {
+			t.Fatal("AutoAssignProject() err = nil, want project list error")
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
+		}
+	})
+	t.Run("persist failure returns error and leaves input task unchanged", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		taskDir := filepath.Dir(created.FilePath)
+		if err := os.Chmod(taskDir, 0o500); err != nil {
+			t.Fatalf("Chmod(taskDir): %v", err)
+		}
+		defer func() {
+			_ = os.Chmod(taskDir, 0o700)
+		}()
+
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err == nil {
+			t.Fatal("AutoAssignProject() err = nil, want persist error")
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want unchanged input task after persist failure", got.ProjectID)
+		}
+		stored, getErr := tm.Get(created.ID)
+		if getErr != nil {
+			t.Fatalf("Get(created.ID): %v", getErr)
+		}
+		if stored.ProjectID != "" {
+			t.Fatalf("stored ProjectID = %q, want empty after persist failure", stored.ProjectID)
+		}
+	})
 }

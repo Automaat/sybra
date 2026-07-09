@@ -8,23 +8,20 @@ This session runs in-app as a conversational Claude agent (stream-json over
 stdin/stdout, not tmux). Your output streams into a bounded box on the
 Orchestrator page, so prefer concise updates over verbose narration.
 
-## Starting the monitor loop
+## Monitor loop
 
-On every session start, immediately set up the recurring monitor cycle via
-CronCreate:
+The detector/dispatch cycle described below (triage, PR-gap detection,
+failure detection, health checks) runs in-process inside the Sybra Go
+backend — it is not something this session schedules on a recurring cron
+trigger. The legacy monitor skill mentioned in older docs is deprecated for
+that reason.
 
-```
-CronCreate(schedule="*/5 * * * *", prompt="/sybra-monitor")
-```
-
-Do this before any other work. If a cron job with this prompt already exists,
-skip creation. The monitor loop drives your core work cycle — without it you
-will only act once and then idle.
-
-Sybra's Go watchdog reads `~/.sybra/logs/monitor-heartbeat` on a 1-minute
-tick to detect a dead cron. The `/sybra-monitor` skill writes that file on
-every cycle — if you edit the skill, keep the heartbeat write intact or the
-watchdog will force-restart your session within ~12 minutes.
+Your job as the orchestrator session is judgment-driven work the in-process
+monitor cannot do on its own: triaging ambiguous tasks, reviewing plans,
+deciding on escalations, and reacting to findings the monitor surfaces (e.g.
+via the `monitor:report` event or `sybra-cli monitor scan`). Use
+`sybra-cli --json board` and `sybra-cli --json audit --since 7d --summary` to
+check in on board health periodically rather than waiting to be re-invoked.
 
 ## Core Loop
 
@@ -58,6 +55,8 @@ Complex: new → planning → plan-review → [human approves] → todo → in-p
 | in-progress | in-review | Agent completed, output needs review |
 | in-review | done | Output verified correct |
 | in-progress | todo | Agent failed, needs retry |
+| human-required | in-progress | Monitor auto-retries once when the stall matches a current open `lost_agent` investigation and is not human-confirmed or tamper-flagged |
+| human-required | in-review | PR-monitor re-probes a task parked on an exhausted `ci_failure` fix; when the blocking check (e.g. DCO) has since cleared on the live PR, it unparks back to review (no human needed) |
 | any | human-required | Cannot proceed without human input |
 
 ## Work Project Rules
@@ -223,9 +222,9 @@ Signs an agent is stuck or failed:
 ### Failure Response
 
 1. Check agent output for error patterns
-2. If retriable: reset task to `todo`, update body with failure context
-3. If needs different approach: update body with what was tried, change mode to `interactive`
-4. If blocked on external dependency: set status to human-required, note what's needed
+2. If retriable: reset task to `todo`, record failure context with `sybra-cli progress add <id> --kind failure --message "..."`
+3. If needs different approach: record what was tried with `sybra-cli progress add <id> --kind decision --message "..."`, change mode to `interactive`
+4. If blocked on external dependency: set status to human-required, record what's needed with `sybra-cli progress add <id> --kind blocker --message "..."`
 
 ## Escalation Rules
 
@@ -237,19 +236,24 @@ Escalate to human (mark as `interactive` or `human-required`) when:
 - Task involves irreversible operations (data migration, release)
 - Ambiguity in requirements that can't be resolved from available context
 
-## Decision Log
+## Progress Log
 
-When making non-obvious decisions, update the task body with rationale:
+Record non-obvious decisions, blockers, failures, and status notes in the task's
+**progress log** — an append-only, timestamped channel surfaced in the GUI "Progress"
+tab. This keeps the user-authored task body (the description) clean; never rewrite the
+body to log work.
 
 ```bash
-sybra-cli --json update <id> --body "## Decision
-Chose headless mode because PR is a dependency bump with <50 lines changed.
-
-## Original Description
-..."
+sybra-cli progress add <id> --kind decision --message "Chose headless mode: PR is a dependency bump with <50 lines changed."
 ```
 
-Plans are stored separately from the body. Use `--plan` for plan content:
+`--kind` is one of `progress` | `decision` | `blocker` | `failure` (default `progress`).
+Read it back with `sybra-cli --json progress list <id>`. For work-typed tasks the message
+is scrubbed before persistence, so describe sybra bugs abstractly without quoting work
+identifiers.
+
+Reserve `--body` for the user-authored description only. Plans are stored separately —
+use `--plan` for plan content:
 
 ```bash
 sybra-cli --json update <id> --plan "<full plan markdown>"
@@ -301,7 +305,8 @@ the 2026-07-06 board wipe (#1576): a fresh agent's own test servers, e2e
 suites, and scratch data always land in its sandbox by default. Bare
 `sybra-cli` calls from inside that agent still reach the *real* board through
 `SYBRA_CONTROL_HOME`, injected alongside `SYBRA_HOME` — that's the control
-channel a dispatched agent uses to update its own task's status/plan/body.
+channel a dispatched agent uses to update its own task's status/plan/body and
+append to its progress log.
 Only pass `--home "$SYBRA_HOME"` when an agent needs to inspect its own
 sandbox or an app-under-test it started there.
 

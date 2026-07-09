@@ -8,9 +8,6 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AgentRun records one dispatch of an agent process against a task: what was
@@ -40,7 +37,7 @@ export class AgentRun {
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
     "state": string;
-    "startedAt": time$0.Time;
+    "startedAt": string;
     "costUsd": number;
     "premiumRequests"?: number;
     "prompt"?: string;
@@ -107,7 +104,7 @@ export class AgentRun {
             this["state"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;
@@ -160,7 +157,7 @@ export class ReviewComment {
     "line": number;
     "body": string;
     "resolved": boolean;
-    "createdAt": time$0.Time;
+    "createdAt": string;
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
@@ -177,7 +174,7 @@ export class ReviewComment {
             this["resolved"] = false;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -335,8 +332,8 @@ export class Task {
     "prPhase"?: string;
     "todoistId": string;
     "priority"?: Priority;
-    "dueDate"?: time$0.Time | null;
-    "closedAt"?: time$0.Time | null;
+    "dueDate"?: string | null;
+    "closedAt"?: string | null;
 
     /**
      * Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
@@ -403,11 +400,21 @@ export class Task {
      * counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
      * and all test-runner runs count (correct for first-ever cycles).
      */
-    "testingCycleStartedAt"?: time$0.Time | null;
+    "testingCycleStartedAt"?: string | null;
     "agentRuns": AgentRun[];
     "workflow"?: workflow$0.Execution | null;
-    "createdAt": time$0.Time;
-    "updatedAt": time$0.Time;
+    "createdAt": string;
+    "updatedAt": string;
+
+    /**
+     * StatusChangedAt marks the last time Status actually transitioned, as
+     * opposed to UpdatedAt which is bumped by any field write (tags, audit
+     * sidecars, status_reason, ...). Detectors that need to know "how long
+     * has this task been in its current status" (e.g. detectLostAgents'
+     * dispatch-latency grace window) must key off this field, not UpdatedAt —
+     * see internal/monitor/detector.go.
+     */
+    "statusChangedAt": string;
     "body": string;
     "plan"?: string;
     "planContract"?: string;
@@ -497,10 +504,13 @@ export class Task {
             this["agentRuns"] = [];
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = null;
+            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("statusChangedAt" in $$source)) {
+            this["statusChangedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("body" in $$source)) {
             this["body"] = "";
@@ -524,7 +534,7 @@ export class Task {
         const $$createField18_0 = $$createType0;
         const $$createField37_0 = $$createType2;
         const $$createField38_0 = $$createType4;
-        const $$createField49_0 = $$createType5;
+        const $$createField50_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -542,7 +552,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField38_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField49_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField50_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

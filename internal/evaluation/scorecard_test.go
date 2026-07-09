@@ -448,6 +448,7 @@ func TestCompareByVariantEstimatesAndExperimentStatus(t *testing.T) {
 	observed := rows["observed"]
 	if control == nil || treatment == nil || observed == nil {
 		t.Fatalf("rows by variant = %+v", res.Rows)
+		return
 	}
 	if !control.Baseline || control.BaselineVariantID != "control" {
 		t.Fatalf("control baseline fields = %+v", *control)
@@ -505,6 +506,7 @@ func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
 	rows := rowsByVariant(res.Rows)
 	if rows["treatment"] == nil {
 		t.Fatalf("rows = %+v", res.Rows)
+		return
 	}
 	if rows["treatment"].FailureEstimate.HasDelta || rows["treatment"].Baseline {
 		t.Fatalf("missing baseline should not set delta/baseline: %+v", *rows["treatment"])
@@ -536,6 +538,7 @@ func TestCompareByVariantEmptyExperimentRolesUseObservedRoles(t *testing.T) {
 	treatment := rows["treatment"]
 	if control == nil || treatment == nil {
 		t.Fatalf("rows = %+v", res.Rows)
+		return
 	}
 	if !control.Baseline || control.BaselineVariantID != "control" {
 		t.Fatalf("control baseline fields = %+v", *control)

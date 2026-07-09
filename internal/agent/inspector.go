@@ -120,6 +120,14 @@ repeated tool calls returning empty results, very short assistant messages
 (a handful of tokens), high cache_read_input_tokens with no forward
 progress, or explicit rate-limit/quota/overage text in the log.
 
+Repeated short polling calls (e.g. TaskOutput, ScheduleWakeup) waiting on a
+backgrounded long-running command such as a test suite or verify/build gate
+are NOT a stall by themselves — check whether the polling is waiting on a
+command that legitimately takes many minutes (verify gates, e2e suites,
+builds) before concluding the agent is stuck. Only treat it as a stall if
+the backgrounded command has already finished or errored and the agent
+keeps polling anyway, or if there is no backgrounded command at all.
+
 Output ONLY a single JSON object on the final line, nothing else:
 {"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"|"nudge", "nudge": "corrective steer (only when recommendation is nudge)", "reason_kind": "rate_limit"|"generic_stall"|"reward_hacking"|""}
 

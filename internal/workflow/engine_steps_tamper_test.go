@@ -73,6 +73,31 @@ func TestScanTamperPatch(t *testing.T) {
 			wantRules:   []string{"added-skip"},
 		},
 		{
+			name:      "capability_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil { t.Skipf(\"symlink unsupported: %v\", err) }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "capability_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil {\n+\t\tt.Skipf(\"symlink unsupported: %v\", err)\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "testing_short_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestSlow(t *testing.T) {\n+\tif testing.Short() {\n+\t\tt.Skip(\"skipping slow test in -short\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "lookpath_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestDocker(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\tt.Skip(\"docker not installed\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "unconditional_skip_after_guard_window_still_flags",
+			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
+		},
+		{
 			name:  "two_new_identical_skips_same_commit_still_flags",
 			patch: "@@ @@\n func TestFoo(t *testing.T) {\n+\tt.Skip(\"flaky\")\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestFoo(t *testing.T) {\n}\n\n" +
@@ -385,6 +410,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	tamper := impl.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-implement")
+		return
 	}
 	if tamper.Type != StepDetectTampering {
 		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
@@ -394,6 +420,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("verify_commits default goto = %q, want detect_tampering", got)
@@ -853,6 +880,7 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	vc := prfix.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing from pr-fix")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "detect_tampering" {
 		t.Errorf("pr-fix verify_commits default goto = %q, want detect_tampering", got)
@@ -878,10 +906,12 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 	tamper := rev.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-review")
+		return
 	}
 	fix := rev.StepByID("fix_review")
 	if fix == nil {
 		t.Fatal("fix_review step missing from simple-task-review")
+		return
 	}
 	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("fix_review goto = %q, want detect_tampering", got)

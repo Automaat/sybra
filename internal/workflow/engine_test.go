@@ -103,12 +103,13 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu      sync.Mutex
-	tasks   map[string]*TaskInfo
-	reasons map[string]string
-	steers  map[string]string
-	gets    map[string]int
-	onGet   func(id string, t *TaskInfo, count int)
+	mu        sync.Mutex
+	tasks     map[string]*TaskInfo
+	reasons   map[string]string
+	steers    map[string]string
+	gets      map[string]int
+	onGet     func(id string, t *TaskInfo, count int)
+	appendErr error
 }
 
 func newMemTasks() *memTasks {
@@ -266,6 +267,9 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -275,6 +279,17 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 		body += "\n\n"
 	}
 	t.Body = body + content + "\n"
+	return nil
+}
+
+func (m *memTasks) ReplaceTaskBody(id, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Body = body
 	return nil
 }
 
@@ -2099,6 +2114,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	child := rec.Children["plan_a"]
 	if child == nil {
 		t.Fatal("child plan_a missing")
+		return
 	}
 	if child.AgentID != "agent-1" || child.Status != "pending" {
 		t.Fatalf("child status = %+v, want pending agent-1", child)
@@ -2233,6 +2249,7 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	for id, child := range rec.Children {
 		if child == nil {
 			t.Fatalf("child %s missing", id)
+			return
 		}
 		if child.Status != "pending" {
 			t.Fatalf("child %s status = %q, want pending after transient provider block", id, child.Status)
@@ -2847,6 +2864,36 @@ func TestShellStep_FailingCommandSetsStatusFailed(t *testing.T) {
 	}
 	if output.Status != "failed" {
 		t.Fatalf("expected failed, got %q", output.Status)
+	}
+}
+
+func TestShellStep_EmptyRenderedDirFailsClosed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	step := &Step{
+		ID:   "shell-empty-dir",
+		Type: StepShell,
+		Config: StepConfig{
+			Command: "pwd",
+			Dir:     "{{getvar .Vars \"missing_dir\"}}",
+		},
+	}
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Step: *step,
+		Vars: make(map[string]string),
+	}
+
+	_, err := engine.execShell(step, ctx)
+	if err == nil {
+		t.Fatal("expected error for empty rendered dir")
+	}
+	if !strings.Contains(err.Error(), "resolved to empty path") {
+		t.Fatalf("err = %v, want empty-path failure", err)
 	}
 }
 
@@ -3467,6 +3514,74 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	}
 	if got := recordAttr(second[0], "task_id"); got != "t2" {
 		t.Fatalf("task_id = %q, want t2 on throttled cross-task repeat", got)
+	}
+}
+
+// TestExecRunAgent_ProviderShutoutEmitsSignal proves the single-provider
+// fallback is observable: when provider filtering excludes *every* variant of
+// an experiment (all variants share one unhealthy provider), the experiment
+// degrades silently to non-A/B dispatch — but that total shutout emits a
+// distinct throttled signal so an operator can tell it apart from A/B being
+// disabled or no experiment matching the role.
+func TestExecRunAgent_ProviderShutoutEmitsSignal(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	// Every variant is on codex, and codex is rate-limited — provider
+	// filtering zeroes out the whole experiment, forcing the fallback.
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, logger)
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-a", Provider: "codex", Model: "gpt-5.5", Weight: 1},
+				{ID: "codex-b", Provider: "codex", Model: "gpt-5.5-mini", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	// Must not error the whole dispatch — falls back to normal selection.
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var shutouts []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_shutout" {
+			shutouts = append(shutouts, r)
+		}
+	}
+	if len(shutouts) != 1 {
+		t.Fatalf("got %d shutout records, want 1: %+v", len(shutouts), shutouts)
+	}
+	first := shutouts[0]
+	if first.Level != slog.LevelError {
+		t.Fatalf("shutout level = %v, want Error", first.Level)
+	}
+	if got := recordAttr(first, "wanted_provider"); got != "codex" {
+		t.Fatalf("wanted_provider = %q, want codex", got)
+	}
+	if got := recordAttr(first, "reason"); got != "rate_limited" {
+		t.Fatalf("reason = %q, want rate_limited", got)
+	}
+	if got := recordAttr(first, "experiment_id"); got != "exp" {
+		t.Fatalf("experiment_id = %q, want exp", got)
 	}
 }
 
@@ -5087,6 +5202,7 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 
 	if recovered == nil {
 		t.Fatal("expected StartWorkflow to panic when StartAgent panics")
+		return
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
 		t.Fatal("dispatching claim leaked after panic")
@@ -5198,6 +5314,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin not found")
+		return
 	}
 
 	store := newTestStore(t)
@@ -5219,6 +5336,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	verifyStep := impl.StepByID("verify_commits")
 	if verifyStep == nil {
 		t.Fatal("verify_commits step not found in simple-task-implement")
+		return
 	}
 	comp, err := engine.executeSteps("t1", impl, verifyStep, wf)
 	if err != nil {

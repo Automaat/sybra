@@ -1,16 +1,18 @@
 <script lang="ts">
   import { timeAgo } from '$lib/dates.js'
-  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare } from '@lucide/svelte'
+  import { CheckCircle, XCircle, Clock, GitPullRequest, GitPullRequestDraft, CircleDot, AlertTriangle, MoreHorizontal, Eye, PenLine, Hourglass, ShieldCheck, Loader, Wrench, MessageSquare, Hash } from '@lucide/svelte'
   import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
-  import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
-  import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, reviewPhaseNeedsYou, type ReviewPhaseIcon } from '../lib/review-phase.js'
-  import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
+  import { notificationStore } from '../stores/notifications.svelte.js'
+  import { awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
+  import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, type ReviewPhaseIcon } from '../lib/review-phase.js'
+  import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, type PRPhaseIcon } from '../lib/pr-phase.js'
+  import { activeTaskNeedsUserAttention } from '../lib/task-attention.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import { taskTotalCost, taskRunCount, formatCostShort } from '../lib/cost.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
-  import StatusPicker from './StatusPicker.svelte'
   import Pill from './Pill.svelte'
 
   interface Props {
@@ -18,13 +20,12 @@
     umbrellaProgress?: UmbrellaProgress | null
     onclick: () => void
     focused?: boolean
-    onstatuschange?: (status: string) => void
   }
 
-  const { task: t, umbrellaProgress = null, onclick, focused = false, onstatuschange }: Props = $props()
+  const { task: t, umbrellaProgress = null, onclick, focused = false }: Props = $props()
 
   let dragging = $state(false)
-  let moveMenuOpen = $state(false)
+  let actionsMenuOpen = $state(false)
 
   // O(1) lookup into the store's precomputed per-task status map instead of
   // scanning the full agent list 4× per render.
@@ -53,7 +54,14 @@
   // Task is waiting on the user (not an agent) — drives the red tile accent.
   // The strict own-PR phases (draft / approved) count too, so the card flags
   // "your move" while staying in the In Review column.
-  const needsYou = $derived(awaitsHuman(t.status) || prPhaseNeedsYou(t) || reviewPhaseNeedsYou(t))
+  const needsYou = $derived(activeTaskNeedsUserAttention(t))
+
+  // Cumulative cost across every agent run this task has ever dispatched.
+  // Derived off the task record alone (never the agent store's live output
+  // stream), so a stream event never re-sorts or re-renders every card.
+  const totalCost = $derived(taskTotalCost(t))
+  const runCount = $derived(taskRunCount(t))
+  const costIsHigh = $derived(totalCost >= 5 || runCount >= 5)
 
   // A granular sub-state folded into this column that ISN'T an attention state
   // (e.g. `new` in Todo, `ready-review` in In Review). The column shows the
@@ -68,6 +76,35 @@
   }
 
   const visibleTags = $derived((t.tags ?? []).filter((tag) => tag !== 'umbrella-gated'))
+
+  // Prefer the live PR record's URL; fall back to constructing one from the
+  // task's own project + PR number when the review store hasn't matched it.
+  const prLink = $derived(
+    topPR?.url || (t.prNumber && t.projectId ? `https://github.com/${t.projectId}/pull/${t.prNumber}` : ''),
+  )
+
+  async function copyToClipboard(value: string, label: string) {
+    actionsMenuOpen = false
+    try {
+      await navigator.clipboard.writeText(value)
+      notificationStore.pushLocal('success', 'Copied', label)
+    } catch (e) {
+      notificationStore.pushLocal('error', 'Copy failed', String(e))
+    }
+  }
+
+  $effect(() => {
+    if (!actionsMenuOpen) return
+    function onKeydown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        actionsMenuOpen = false
+      }
+    }
+    window.addEventListener('keydown', onKeydown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeydown, { capture: true })
+  })
 
 </script>
 
@@ -265,6 +302,15 @@
       {/if}
     {/if}
 
+    {#if runCount > 0}
+      <span
+        class="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 {costIsHigh ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
+        title="{formatCostShort(totalCost)} across {runCount} agent {runCount === 1 ? 'run' : 'runs'}"
+      >
+        {formatCostShort(totalCost)}{#if runCount > 1} · {runCount} runs{/if}
+      </span>
+    {/if}
+
     <span class="ml-auto text-[11px] text-surface-400/80">{timeAgo(t.updatedAt)}</span>
   </div>
   </button>
@@ -276,22 +322,59 @@
       <kbd class="rounded bg-surface-200 px-1 py-0.5 font-mono text-xs dark:bg-surface-700">⌘I</kbd><span>sidebar</span>
     </div>
   {/if}
-  {#if onstatuschange}
+  <div class="absolute right-1 top-1">
     <button
       type="button"
-      onclick={(e) => { e.stopPropagation(); moveMenuOpen = true }}
-      class="absolute right-1 top-1 rounded p-1 text-surface-400 opacity-0 transition-opacity hover:bg-surface-200 hover:text-surface-600 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-surface-600 dark:hover:text-surface-300"
-      aria-label="Move task"
-      title="Move to…"
+      onclick={(e) => { e.stopPropagation(); actionsMenuOpen = !actionsMenuOpen }}
+      class="rounded p-1 text-surface-400 opacity-0 transition-opacity hover:bg-surface-200 hover:text-surface-600 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-surface-600 dark:hover:text-surface-300 {actionsMenuOpen ? 'opacity-100' : ''}"
+      aria-haspopup="menu"
+      aria-expanded={actionsMenuOpen}
+      aria-label="Task actions"
+      title="Copy…"
     >
       <MoreHorizontal size={14} />
     </button>
-    {#if moveMenuOpen}
-      <StatusPicker
-        currentStatus={t.status}
-        onpick={(s) => { onstatuschange?.(s); moveMenuOpen = false }}
-        onclose={() => { moveMenuOpen = false }}
-      />
+    {#if actionsMenuOpen}
+      <button
+        type="button"
+        tabindex="-1"
+        class="fixed inset-0 z-40 cursor-default"
+        aria-label="Close menu"
+        onclick={(e) => { e.stopPropagation(); actionsMenuOpen = false }}
+      ></button>
+      <div role="menu" class="absolute right-0 z-50 mt-1 w-44 rounded-lg py-1 elevation-popover">
+        <button
+          type="button"
+          role="menuitem"
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-200 dark:hover:bg-surface-700"
+          onclick={(e) => { e.stopPropagation(); copyToClipboard(t.id, 'Task ID copied') }}
+        >
+          <Hash size={12} class="shrink-0 text-surface-400" />
+          Copy task ID
+        </button>
+        {#if t.issue}
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-200 dark:hover:bg-surface-700"
+            onclick={(e) => { e.stopPropagation(); copyToClipboard(t.issue, 'Issue link copied') }}
+          >
+            <CircleDot size={12} class="shrink-0 text-surface-400" />
+            Copy issue link
+          </button>
+        {/if}
+        {#if prLink}
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-200 dark:hover:bg-surface-700"
+            onclick={(e) => { e.stopPropagation(); copyToClipboard(prLink, 'PR link copied') }}
+          >
+            <GitPullRequest size={12} class="shrink-0 text-surface-400" />
+            Copy PR link
+          </button>
+        {/if}
+      </div>
     {/if}
-  {/if}
+  </div>
 </div>

@@ -11,9 +11,6 @@ import * as json$0 from "../../../../../encoding/json/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as limits$0 from "../limits/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 export class Agent {
     "id": string;
@@ -33,8 +30,8 @@ export class Agent {
      * raw count alongside the estimated USD equivalent persisted on task runs.
      */
     "premiumRequests"?: number;
-    "startedAt": time$0.Time;
-    "lastEventAt": time$0.Time;
+    "startedAt": string;
+    "lastEventAt": string;
     "logPath"?: string;
     "external": boolean;
     "pid"?: number;
@@ -100,10 +97,10 @@ export class Agent {
             this["costUsd"] = 0;
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("lastEventAt" in $$source)) {
-            this["lastEventAt"] = null;
+            this["lastEventAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("external" in $$source)) {
             this["external"] = false;
@@ -145,7 +142,7 @@ export class ConvoEvent {
     "premiumRequests"?: number;
     "limitSnapshot"?: limits$0.Snapshot | null;
     "isPartial"?: boolean;
-    "timestamp": time$0.Time;
+    "timestamp": string;
     "raw"?: json$0.RawMessage;
 
     /**
@@ -161,7 +158,7 @@ export class ConvoEvent {
             this["type"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = null;
+            this["timestamp"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -249,7 +246,7 @@ export class StreamEvent {
      */
     "premium_requests"?: number;
     "subtype"?: string;
-    "timestamp": time$0.Time;
+    "timestamp": string;
 
     /**
      * ErrorType and ErrorStatus carry structured fields from the Anthropic error
@@ -268,6 +265,20 @@ export class StreamEvent {
      * PluginErrors carries plugin load failures surfaced by the init event.
      */
     "plugin_errors"?: string[];
+
+    /**
+     * BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+     * a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+     * of every CLI background bash task still live after the change. See
+     * Agent.SetBackgroundTaskIDs / Agent.EffectiveHangGrace.
+     * 
+     * NOTE: omitempty collapses an empty-but-non-nil "all tasks cleared" slice
+     * into the same absent-key wire form as a nil "no event seen" value. That
+     * REPLACE-semantics distinction is preserved at the Go/ClaudeEvent level
+     * but lost across this JSON boundary — fix the tag when a frontend consumer
+     * that needs the cleared signal actually lands.
+     */
+    "background_task_ids"?: string[];
 
     /**
      * ToolCalls is the number of tool_use blocks in this event: all tool uses
@@ -289,7 +300,7 @@ export class StreamEvent {
             this["type"] = "";
         }
         if (!("timestamp" in $$source)) {
-            this["timestamp"] = null;
+            this["timestamp"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -301,7 +312,8 @@ export class StreamEvent {
     static createFrom($$source: any = {}): StreamEvent {
         const $$createField14_0 = $$createType8;
         const $$createField15_0 = $$createType0;
-        const $$createField17_0 = $$createType6;
+        const $$createField16_0 = $$createType0;
+        const $$createField18_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
             $$parsedSource["plan_steps"] = $$createField14_0($$parsedSource["plan_steps"]);
@@ -309,8 +321,11 @@ export class StreamEvent {
         if ("plugin_errors" in $$parsedSource) {
             $$parsedSource["plugin_errors"] = $$createField15_0($$parsedSource["plugin_errors"]);
         }
+        if ("background_task_ids" in $$parsedSource) {
+            $$parsedSource["background_task_ids"] = $$createField16_0($$parsedSource["background_task_ids"]);
+        }
         if ("limit_snapshot" in $$parsedSource) {
-            $$parsedSource["limit_snapshot"] = $$createField17_0($$parsedSource["limit_snapshot"]);
+            $$parsedSource["limit_snapshot"] = $$createField18_0($$parsedSource["limit_snapshot"]);
         }
         return new StreamEvent($$parsedSource as Partial<StreamEvent>);
     }

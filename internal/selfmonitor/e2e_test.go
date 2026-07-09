@@ -175,6 +175,7 @@ func TestE2EPipelineDistillsFindingFromRealFiles(t *testing.T) {
 	inv := report.Findings[0]
 	if inv.LogSummary == nil {
 		t.Fatal("LogSummary = nil, want distilled summary")
+		return
 	}
 	if inv.LogSummary.TotalToolCalls != 5 {
 		t.Errorf("TotalToolCalls = %d, want 5", inv.LogSummary.TotalToolCalls)
@@ -317,6 +318,7 @@ func TestE2ELogFileResolutionOrder(t *testing.T) {
 			if tt.wantAnalyzed {
 				if got == nil {
 					t.Fatal("LogSummary = nil, want analyzed summary")
+					return
 				}
 				if got.TotalToolCalls != tt.wantTotalTool {
 					t.Errorf("TotalToolCalls = %d, want %d", got.TotalToolCalls, tt.wantTotalTool)

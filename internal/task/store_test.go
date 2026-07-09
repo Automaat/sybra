@@ -658,6 +658,9 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	if got.Status != StatusInProgress {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
 	}
+	if got.StatusChangedAt.Before(created.StatusChangedAt) {
+		t.Fatalf("StatusChangedAt = %s, want at or after create timestamp %s", got.StatusChangedAt, created.StatusChangedAt)
+	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
 	}
@@ -1721,19 +1724,23 @@ func TestCloneWorkflowDoesNotAliasParallelInflight(t *testing.T) {
 	cloneParent := clone.ParallelInflight["parent"]
 	if cloneParent == nil {
 		t.Fatal("clone: parent entry missing")
+		return
 	}
 	origParent := orig.ParallelInflight["parent"]
 	if origParent == nil {
 		t.Fatal("orig: parent entry missing")
+		return
 	}
 	cloneChildA := cloneParent.Children["a"]
 	if cloneChildA == nil {
 		t.Fatal("clone: child 'a' missing")
+		return
 	}
 	cloneChildA.Status = "completed"
 	origChildA := origParent.Children["a"]
 	if origChildA == nil {
 		t.Fatal("orig: child 'a' missing after clone mutation")
+		return
 	}
 	if origChildA.Status != "pending" {
 		t.Errorf("clone mutation of ChildStatus leaked to original: status=%q", origChildA.Status)
@@ -1749,6 +1756,31 @@ func TestCloneWorkflowDoesNotAliasParallelInflight(t *testing.T) {
 	clone.ParallelInflight["other"] = &workflow.ParallelChildren{ParentStepID: "other"}
 	if _, ok := orig.ParallelInflight["other"]; ok {
 		t.Error("clone added parent key 'other' that leaked to original ParallelInflight map")
+	}
+}
+
+// TestCloneWorkflowDoesNotAliasStepCounts guards against cloneWorkflow
+// sharing the StepCounts map (persistent replan/retry counters, see
+// workflow.Execution.StepCounts) between the cache entry and the
+// caller-visible clone — the same aliasing class as ParallelInflight above.
+func TestCloneWorkflowDoesNotAliasStepCounts(t *testing.T) {
+	t.Parallel()
+	orig := workflow.Execution{
+		WorkflowID:  "wf",
+		CurrentStep: "start_replan",
+		State:       workflow.ExecRunning,
+		StepCounts:  map[string]int{"start_replan": 2},
+	}
+
+	clone := cloneWorkflow(orig)
+
+	clone.StepCounts["start_replan"] = 99
+	clone.StepCounts["other"] = 1
+	if orig.StepCounts["start_replan"] != 2 {
+		t.Errorf("clone mutation leaked to original: start_replan=%d", orig.StepCounts["start_replan"])
+	}
+	if _, ok := orig.StepCounts["other"]; ok {
+		t.Error("clone added key 'other' that leaked to original StepCounts map")
 	}
 }
 
@@ -1795,10 +1827,12 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	firstParent := first[0].Workflow.ParallelInflight["parent"]
 	if firstParent == nil {
 		t.Fatal("first: parent entry missing")
+		return
 	}
 	firstChildA := firstParent.Children["a"]
 	if firstChildA == nil {
 		t.Fatal("first: child 'a' missing")
+		return
 	}
 	firstChildA.Status = "MUTATED-BY-CALLER"
 	firstParent.Children["b"] = &workflow.ChildStatus{Status: "MUTATED"}
@@ -1813,10 +1847,12 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	secondParent := second[0].Workflow.ParallelInflight["parent"]
 	if secondParent == nil {
 		t.Fatal("second: parent entry missing")
+		return
 	}
 	secondChildA := secondParent.Children["a"]
 	if secondChildA == nil {
 		t.Fatal("second: child 'a' missing")
+		return
 	}
 	if secondChildA.Status != "pending" {
 		t.Errorf("cache corrupted: ChildStatus.Status = %q, want %q", secondChildA.Status, "pending")
