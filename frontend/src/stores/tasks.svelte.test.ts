@@ -313,4 +313,36 @@ describe('TaskStore', () => {
       expect(taskStore.byStatus('all')).toHaveLength(2)
     })
   })
+
+  describe('tasksNeedingPlanApproval', () => {
+    it('includes a task whose workflow is waiting on review_plan even if status desynced away from plan-review', () => {
+      taskStore.tasks.set(
+        't1',
+        makeTask({
+          id: 't1',
+          status: 'planning',
+          workflow: { currentStep: 'review_plan', state: 'waiting' },
+        }),
+      )
+      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'todo' }))
+
+      const result = taskStore.tasksNeedingPlanApproval()
+
+      expect(result).toHaveLength(1)
+      expect(result[0].id).toBe('t1')
+    })
+
+    it('excludes a task with a stale plan-review status once its workflow has moved on', () => {
+      taskStore.tasks.set(
+        't1',
+        makeTask({
+          id: 't1',
+          status: 'plan-review',
+          workflow: { currentStep: 'implement', state: 'running' },
+        }),
+      )
+
+      expect(taskStore.tasksNeedingPlanApproval()).toHaveLength(0)
+    })
+  })
 })
