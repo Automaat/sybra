@@ -70,6 +70,14 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		if now.Sub(t.UpdatedAt) <= budget {
 			continue
 		}
+		// A long-running headless agent that hasn't touched the task file (no
+		// status/body update) is still covered by the headless stall/budget
+		// watchdog. Escalating here would flip a healthy in-flight agent to
+		// human-required mid-run.
+		if w.hasLiveHeadlessAgent != nil && w.hasLiveHeadlessAgent(t.ID) {
+			w.logger.Debug("watchdog.dwell.skip_live_headless_agent", "task_id", t.ID)
+			continue
+		}
 		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)
 		w.logger.Info("watchdog.dwell.escalate",
 			"task_id", t.ID, "status", string(t.Status),
