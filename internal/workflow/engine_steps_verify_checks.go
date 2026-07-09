@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +40,11 @@ const verifyBlessedTag = "verify-blessed"
 const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
+
+// verifyChecksNodeModulesRepairTimeout bounds a single `npm ci` repair run
+// (see repairIncompleteNodeModules). Independent of verifyTimeout: repair is
+// a one-off best-effort side step, not part of the suite's own budget.
+const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -90,6 +96,17 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	}
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+
+	// A real command failure (not a timeout/cancel) can be an artifact of a
+	// half-installed node_modules rather than the diff under test — e.g. a
+	// backgrounded `npm ci` reaped mid-install when its parent agent process
+	// was torn down (issue b3ec32b3) leaves package dirs present but the
+	// `.bin` symlink layer missing, so any devDependency binary the suite
+	// shells out to (vite, tsc, eslint, …) reports "command not found" on an
+	// otherwise-correct diff. Repair once and re-run before flagging.
+	if runErr == nil && failedCmd != "" && e.repairIncompleteNodeModules(taskID, wtPath) {
+		failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	}
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
@@ -169,6 +186,79 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 			return
 		}
 	}
+}
+
+// repairIncompleteNodeModules re-runs `npm ci` for every npm project
+// directory under wtPath whose node_modules looks half-installed (see
+// findIncompleteNodeModulesDirs). Returns true if at least one repair
+// command was attempted, signalling the caller to retry the verify suite
+// once more. Best-effort: a failed `npm ci` here is not itself a verify
+// failure — the retried verify run surfaces the real error if repair did
+// not fix it.
+func (e *Engine) repairIncompleteNodeModules(taskID, wtPath string) bool {
+	dirs := findIncompleteNodeModulesDirs(wtPath)
+	if len(dirs) == 0 {
+		return false
+	}
+	for _, dir := range dirs {
+		e.logger.Warn("workflow.verify-checks.node-modules-incomplete", "task_id", taskID, "dir", dir)
+		ctx, cancel := context.WithTimeout(e.ctx, verifyChecksNodeModulesRepairTimeout)
+		cmd := exec.CommandContext(ctx, "sh", "-c", "npm ci")
+		cmd.Dir = dir
+		repairErr := cmd.Run()
+		cancel()
+		if repairErr != nil {
+			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
+				"task_id", taskID, "dir", dir, "err", repairErr)
+			continue
+		}
+		e.logger.Info("workflow.verify-checks.node-modules-repaired", "task_id", taskID, "dir", dir)
+	}
+	return true
+}
+
+// findIncompleteNodeModulesDirs walks wtPath for npm project directories
+// (package-lock.json present) whose node_modules exists but has no `.bin`
+// subdirectory — the signature of an install interrupted after packages were
+// unpacked but before npm wrote the bin symlink layer. Never descends into
+// node_modules itself (nested lockfiles inside dependencies are not our
+// project's install).
+func findIncompleteNodeModulesDirs(wtPath string) []string {
+	var dirs []string
+	walkErr := filepath.WalkDir(wtPath, func(path string, d fs.DirEntry, statErr error) error {
+		if statErr != nil {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == ".git" || d.Name() == "node_modules" {
+			return filepath.SkipDir
+		}
+		if isIncompleteNodeModulesDir(path) {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	_ = walkErr // best-effort scan: a walk error just means less coverage, not a failure
+	return dirs
+}
+
+// isIncompleteNodeModulesDir reports whether dir is an npm project
+// (package-lock.json present) whose node_modules exists but has no `.bin`
+// subdirectory — the signature of an install interrupted after packages were
+// unpacked but before npm wrote the bin symlink layer.
+func isIncompleteNodeModulesDir(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
+		return false
+	}
+	nmPath := filepath.Join(dir, "node_modules")
+	nmInfo, err := os.Stat(nmPath)
+	if err != nil || !nmInfo.IsDir() {
+		return false // no install yet — not our concern, not a repair target
+	}
+	_, binErr := os.Stat(filepath.Join(nmPath, ".bin"))
+	return binErr != nil
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {

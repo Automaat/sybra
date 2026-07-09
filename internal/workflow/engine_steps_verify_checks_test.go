@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -166,6 +168,78 @@ func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged (retry passed)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_NodeModulesRepairRetries(t *testing.T) {
+	// No t.Parallel: t.Setenv (PATH override below) forbids it.
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	// Simulate a half-installed node_modules: package-lock.json + node_modules
+	// present, but the `.bin` symlink layer missing — the signature of an
+	// `npm ci` reaped mid-install (issue b3ec32b3).
+	if err := os.WriteFile(filepath.Join(wt, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake `npm` on PATH: `npm ci` creates node_modules/.bin, simulating a
+	// successful repair without a real network install.
+	fakeBin := t.TempDir()
+	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	// The verify command fails until node_modules/.bin exists.
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"test -d node_modules/.bin"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (repair should fix node_modules before flagging)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (repair should have avoided human-required)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_NodeModulesRepairDoesNotMaskRealFailure(t *testing.T) {
+	// No t.Parallel: t.Setenv (PATH override below) forbids it.
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	if err := os.WriteFile(filepath.Join(wt, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// `npm ci` "succeeds" but does not fix anything — the verify command
+	// keeps failing on its own merits, so the gate must still flag it
+	// instead of looping or silently passing.
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"exit 1"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (repair must not mask a genuine failure)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
 	}
 }
 
