@@ -40,6 +40,11 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
+// verifyChecksNodeModulesRepairTimeout bounds a single repair `npm ci`
+// invocation, mirroring the project's frontend setup batch timeout
+// (docs/CONFIG.md's `setup:` commands get 5 minutes).
+const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
+
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
 	Commands   []string `json:"commands"`
@@ -132,6 +137,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
 func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
+	e.repairCorruptedNodeModules(e.ctx, taskID, wtPath)
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, wtPath)
@@ -169,6 +175,68 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 			return
 		}
 	}
+}
+
+// repairCorruptedNodeModules scans the worktree root and its immediate
+// subdirectories (e.g. `frontend/`) for an npm project whose node_modules
+// was left behind by an interrupted install, and repairs it with a fresh
+// `npm ci` before the verify commands run.
+//
+// Under host memory pressure, a concurrent `npm ci` in another worktree can
+// get SIGKILLed mid-write, leaving a partially-populated node_modules that
+// fails every subsequent build deterministically (e.g. "vite: command not
+// found") even though package.json/package-lock.json are untouched and an
+// earlier build in the same worktree succeeded. That looks like a genuine
+// build regression caused by the task's diff but is really a broken
+// toolchain state — see task f8ca18d6. Best-effort: a failed repair is
+// logged and left for the verify command itself to surface as the real
+// failure.
+func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) {
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return
+	}
+	candidates := []string{wtPath}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			candidates = append(candidates, filepath.Join(wtPath, entry.Name()))
+		}
+	}
+	for _, dir := range candidates {
+		if !isCorruptedNodeModules(dir) {
+			continue
+		}
+		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
+		cmd := exec.CommandContext(repairCtx, "sh", "-c", "npm ci")
+		cmd.Dir = dir
+		repairErr := cmd.Run()
+		cancel()
+		if repairErr != nil {
+			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
+				"task_id", taskID, "dir", dir, "err", repairErr)
+		}
+	}
+}
+
+// isCorruptedNodeModules reports whether dir looks like an npm project whose
+// node_modules was left partially installed by a killed `npm ci`: present
+// and non-empty, but missing node_modules/.bin or
+// node_modules/.package-lock.json — both of which a completed `npm ci`
+// always writes. A node_modules that was never installed (absent entirely)
+// is not corrupted, just not yet set up, so it is left alone here.
+func isCorruptedNodeModules(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return false
+	}
+	nm := filepath.Join(dir, "node_modules")
+	entries, err := os.ReadDir(nm)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	_, binErr := os.Stat(filepath.Join(nm, ".bin"))
+	_, lockErr := os.Stat(filepath.Join(nm, ".package-lock.json"))
+	return binErr != nil || lockErr != nil
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {

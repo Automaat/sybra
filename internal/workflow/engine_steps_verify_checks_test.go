@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -184,6 +186,185 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	}
 	if failed != "" {
 		t.Errorf("failedCmd = %q, want empty (deadline is not a command failure)", failed)
+	}
+}
+
+func TestIsCorruptedNodeModules(t *testing.T) {
+	t.Parallel()
+
+	newProject := func(t *testing.T, withPackageJSON bool, nmEntries map[string]string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if withPackageJSON {
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if nmEntries != nil {
+			nm := filepath.Join(dir, "node_modules")
+			if err := os.MkdirAll(nm, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range nmEntries {
+				full := filepath.Join(nm, name)
+				if content == "<dir>" {
+					if err := os.MkdirAll(full, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return dir
+	}
+
+	tests := []struct {
+		name            string
+		withPackageJSON bool
+		nmEntries       map[string]string
+		want            bool
+	}{
+		{
+			name:            "no package.json",
+			withPackageJSON: false,
+			nmEntries:       map[string]string{"vite": "<dir>"},
+			want:            false,
+		},
+		{
+			name:            "no node_modules at all (not yet installed)",
+			withPackageJSON: true,
+			nmEntries:       nil,
+			want:            false,
+		},
+		{
+			name:            "empty node_modules",
+			withPackageJSON: true,
+			nmEntries:       map[string]string{},
+			want:            false,
+		},
+		{
+			name:            "missing .bin — killed npm ci",
+			withPackageJSON: true,
+			nmEntries:       map[string]string{"vite": "<dir>", ".package-lock.json": "{}"},
+			want:            true,
+		},
+		{
+			name:            "missing .package-lock.json — killed npm ci",
+			withPackageJSON: true,
+			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>"},
+			want:            true,
+		},
+		{
+			name:            "complete install",
+			withPackageJSON: true,
+			nmEntries:       map[string]string{"vite": "<dir>", ".bin": "<dir>", ".package-lock.json": "{}"},
+			want:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := newProject(t, tt.withPackageJSON, tt.nmEntries)
+			if got := isCorruptedNodeModules(dir); got != tt.want {
+				t.Errorf("isCorruptedNodeModules(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake `npm` on PATH standing in for a real install: `npm ci` writes the
+	// two files whose absence signals a killed install, into the invoking
+	// directory ($PWD, i.e. cmd.Dir).
+	binDir := t.TempDir()
+	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
+
+	if _, err := os.Stat(filepath.Join(nm, ".bin")); err != nil {
+		t.Errorf("expected node_modules/.bin to be repaired: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(nm, ".package-lock.json")); err != nil {
+		t.Errorf("expected node_modules/.package-lock.json to be repaired: %v", err)
+	}
+}
+
+func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nm, ".package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No fake npm on PATH — if the engine tried to repair a healthy install
+	// it would fail loudly (npm ci would error or hit the network); a
+	// successful, silent no-op proves the healthy install was left alone.
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
+}
+
+func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// The verify command only passes once node_modules/.bin exists — proving
+	// the repair ran before the command, not after.
+	cmd := "test -d frontend/node_modules/.bin"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (repair should have fixed node_modules first)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged", ti.Status)
 	}
 }
 
