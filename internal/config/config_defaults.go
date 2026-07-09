@@ -125,6 +125,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// DefaultHeadlessSteerable returns the configured agent.headless_steerable
+// default, or true if unset.
+func (c *Config) DefaultHeadlessSteerable() bool {
+	if c != nil && c.Agent.HeadlessSteerable != nil {
+		return *c.Agent.HeadlessSteerable
+	}
+	return true
+}
+
 // NormalizeHeadlessPermissionMode canonicalizes a headless permission mode value.
 // Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
 // Any other value is rejected with an error.

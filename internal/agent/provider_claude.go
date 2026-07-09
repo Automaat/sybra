@@ -37,7 +37,15 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	args := []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	var args []string
+	if cfg.HeadlessSteerable {
+		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the
+		// first user message) rather than as a positional argument, so a
+		// running turn can accept further steer messages the same way.
+		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	} else {
+		args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	}
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}

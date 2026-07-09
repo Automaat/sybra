@@ -154,6 +154,16 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 	return prepared, nil
 }
 
+// steerableHeadlessInvocation reports whether this attempt was built with the
+// stdin/stream-json shape: cfg.HeadlessSteerable requests it, but only
+// claudeProvider.BuildHeadlessInvocation actually honors the field — codex
+// and copilot ignore it and keep their normal one-shot argument shape, so a
+// stdin pipe/FIFO must never be attached for them (nothing would ever read
+// or need it).
+func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
+	return cfg.HeadlessSteerable && providerName == "claude"
+}
+
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
 	cmd := newProviderCmd(ctx, &cfg, false, inv.name, inv.args...)
 	if a.sessionCWD != "" {
@@ -170,13 +180,36 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		return false, fmt.Errorf("stdout pipe: %w", pipeErr)
 	}
 
+	steerable := steerableHeadlessInvocation(cfg, inv.name)
+	if steerable {
+		stdinPipe, stdinErr := cmd.StdinPipe()
+		if stdinErr != nil {
+			return false, fmt.Errorf("stdin pipe: %w", stdinErr)
+		}
+		a.convo.replaceStdinPipe(stdinPipe)
+		a.setFinalizing(false)
+	}
+
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
 	if startErr := cmd.Start(); startErr != nil {
+		if steerable {
+			a.convo.closeStdinPipe()
+		}
 		return false, fmt.Errorf("start %s: %w", inv.name, startErr)
 	}
 	a.SetCmd(cmd)
+
+	// The prompt is delivered as the first user message over stdin instead of
+	// a positional argument (see BuildHeadlessInvocation), mirroring the
+	// conversational runner's initial-prompt handling: a resumed run
+	// (session already set) must not resend it.
+	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
+		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+		}
+	}
 
 	// Open log file on first successful start; subsequent retries append to same file.
 	if *outFile == nil {
@@ -199,6 +232,14 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 
 	prevLen := len(a.Output())
 	m.streamHeadlessOutput(ctx, a, stdout, logWriter)
+
+	if steerable {
+		// The child may still be waiting on a never-closed stdin (no steer
+		// message queued at the last result, but the finalizing close raced
+		// with the child's own exit) — make sure it is not left open past
+		// this attempt.
+		a.convo.closeStdinPipe()
+	}
 
 	waitErr := cmd.Wait()
 
@@ -273,6 +314,27 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	a.Command = command
 	cmd.Stdout = *outFile
 
+	// Steerable claude runs get a FIFO stdin, exactly like a detached
+	// conversational agent (startConvoProcessSurvive) — opened O_RDWR so it
+	// never sees EOF and survives the parent's exit; a reattach reopens it.
+	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
+	// codex/copilot keep the plain no-stdin invocation unchanged.
+	steerable := steerableHeadlessInvocation(cfg, name)
+	if steerable {
+		fifoPath := agentFIFOPath(m.registryDir(), a.ID)
+		if err := makeFIFO(fifoPath); err != nil {
+			return false, fmt.Errorf("mkfifo: %w", err)
+		}
+		fifo, ferr := os.OpenFile(fifoPath, os.O_RDWR, 0)
+		if ferr != nil {
+			return false, fmt.Errorf("open fifo: %w", ferr)
+		}
+		cmd.Stdin = fifo
+		a.convo.replaceStdinPipe(fifo)
+		a.setStdinPath(fifoPath)
+		a.setFinalizing(false)
+	}
+
 	stderrPath := logPath + ".stderr"
 	if stderrF, ferr := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); ferr == nil {
 		cmd.Stderr = stderrF
@@ -280,12 +342,25 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	}
 
 	if startErr := cmd.Start(); startErr != nil {
+		if steerable {
+			a.convo.closeStdinPipe()
+		}
 		return false, fmt.Errorf("start %s: %w", name, startErr)
 	}
 	a.SetCmd(cmd)
 	a.setDetached(true)
 	m.saveRegistry(ctx, a)
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
+
+	// The prompt is delivered as the first user message over the FIFO instead
+	// of a positional argument (see BuildHeadlessInvocation); a resumed run
+	// (session already set) must not resend it. Mirrors
+	// runConvoAttemptSurvive's initial-prompt handling.
+	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
+		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+		}
+	}
 
 	procDone := make(chan struct{})
 	var waitErr error
@@ -733,8 +808,53 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 				return true
 			}
 		}
+
+		// Steerable headless runs keep the process alive at this turn
+		// boundary: flush a queued steer message so it lands back-to-back,
+		// or close stdin so the child sees EOF and exits exactly like an
+		// unsteered one-shot run. Gated on hasStdinPipe so a non-steerable
+		// (legacy one-shot) run is completely unaffected.
+		if a.convo.hasStdinPipe() {
+			if next, ok := a.PopPendingPrompt(); ok {
+				if writeErr := m.writeUserMessage(a, next); writeErr != nil {
+					m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
+					a.RestorePendingPrompt(next)
+					a.setFinalizing(true)
+					a.convo.closeStdinPipe()
+				} else {
+					m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
+				}
+			} else {
+				a.setFinalizing(true)
+				a.convo.closeStdinPipe()
+			}
+		}
 	}
 	return false
+}
+
+// sendHeadlessSteerMessage queues a follow-up message for a steerable
+// headless claude run. Unlike the conversational turn boundary
+// (advanceClaudeTurn), there is no idle state to write into directly — a
+// headless agent stays StateRunning for its whole run — so every message is
+// queued and flushed at the next "result" event boundary (processHeadlessLine).
+// Rejects once the run has begun finalizing (its stdin is being closed for
+// good) so a message is never silently queued for a process that is exiting.
+func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
+	if a.isFinalizing() {
+		return fmt.Errorf("agent %s is finalizing and can no longer accept messages", a.ID)
+	}
+	a.EnqueuePrompt(text)
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
+
+	// Surface the sent message immediately in StreamOutput — the CLI only
+	// echoes tool-result/assistant turns back over stdout, never the
+	// injected user text itself (mirrors ConvoEvent's user_input in
+	// runner_convo.go's SendMessage).
+	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
+	a.AppendOutput(ev)
+	m.emit(events.AgentOutput(a.ID), ev)
+	return nil
 }
 
 // checkCostGuardrail hard-stops a headless run on a breach of MaxCostUSD.

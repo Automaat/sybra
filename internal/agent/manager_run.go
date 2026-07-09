@@ -114,6 +114,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	if cfg.Mode == "headless" {
+		m.mu.RLock()
+		cfg.HeadlessSteerable = m.headlessSteerable
+		m.mu.RUnlock()
+	}
 
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
