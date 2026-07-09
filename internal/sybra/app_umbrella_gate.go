@@ -34,7 +34,7 @@ type umbrellaState struct {
 	anyHR        bool
 	anyCancelled bool
 	anyBlocked   bool // non-gated child stuck in `blocked` (e.g. human-review flip)
-	released     int // children released so far this tick (counts toward the cap)
+	released     int  // children released so far this tick (counts toward the cap)
 	children     []umbrellaProgressChild
 }
 
