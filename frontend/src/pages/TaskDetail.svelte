@@ -1,10 +1,10 @@
 <script lang="ts">
   import { ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
-  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
   import TaskStatusBanner from '../components/task-detail/TaskStatusBanner.svelte'
+  import HumanRequiredPanel from '../components/task-detail/HumanRequiredPanel.svelte'
   import TaskMetadataRow from '../components/task-detail/TaskMetadataRow.svelte'
   import TaskPullRequestsPanel from '../components/task-detail/TaskPullRequestsPanel.svelte'
   import TaskDescriptionEditor from '../components/task-detail/TaskDescriptionEditor.svelte'
@@ -25,7 +25,7 @@
 
   const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
 
-  let t = $state<Task | null>(null)
+  const t = $derived(taskStore.tasks.get(taskId) ?? null)
   let error = $state('')
   // The detail body is split into tabs so a big task (plan + review + many runs)
   // is scannable instead of a single long scroll. Default is always Overview.
@@ -72,7 +72,8 @@
 
   async function loadTask() {
     try {
-      t = await taskStore.get(taskId)
+      await taskStore.get(taskId)
+      error = ''
     } catch (e) {
       error = String(e)
     }
@@ -153,6 +154,7 @@
       <!-- Persistent header: always visible above the tabs. -->
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
+      <HumanRequiredPanel task={t} />
       {#if t.status === 'plan-review' && activeTab !== 'plan'}
         <!-- Default is Overview, so nudge the pending approve/reject to the fore. -->
         <button

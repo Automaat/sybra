@@ -63,6 +63,15 @@ func (e *Engine) HandleHumanActionRecovering(
 	})
 }
 
+// WithHumanActionLock runs fn under the per-task human-action lock, serializing
+// it against concurrent human decisions on the same task — plan-review
+// approvals via HandleHumanActionRecovering and operator dispatch from
+// human-required all share this lock, so two humans (or a double-click) cannot
+// race the same stuck task.
+func (e *Engine) WithHumanActionLock(taskID string, fn func() error) error {
+	return e.withHumanActionLock(taskID, fn)
+}
+
 func (e *Engine) withHumanActionLock(taskID string, fn func() error) error {
 	// Serialize concurrent human actions per task so double-click races do not
 	// both mutate workflow vars and attempt to advance the same wait_human step.
