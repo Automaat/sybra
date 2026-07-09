@@ -70,12 +70,19 @@ class NavStore {
 
   private pushHistory(p: Page) {
     if (!this.urlRoutingActive || this.handlingPopstate) return
-    window.history.pushState(null, '', pageToPath(p))
+    // Safari (and some embedded webviews) rate-limits history writes (~100 /
+    // 30s) and throws past the limit. Swallow it: the in-memory page is
+    // authoritative, and a missed URL sync is preferable to an unhandled throw.
+    try {
+      window.history.pushState(null, '', pageToPath(p))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
   }
 
   private replaceHistory(p: Page) {
     if (!this.urlRoutingActive || this.handlingPopstate) return
-    window.history.replaceState(null, '', pageToPath(p))
+    try {
+      window.history.replaceState(null, '', pageToPath(p))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
   }
 
   /**
@@ -97,6 +104,12 @@ class NavStore {
       this.handlingPopstate = true
       try {
         this.page = pageFromLocation(window.location)
+        // Pop the mirror stack so canGoBack reflects real depth after a
+        // browser back. Otherwise navigate() (which always pushes) leaves the
+        // stack non-empty, keeping MobileAppBar's back chevron visible; a
+        // second press would call window.history.back() again and walk the
+        // tab's session history past the app.
+        this.stack = this.stack.slice(0, -1)
       } finally {
         this.handlingPopstate = false
       }

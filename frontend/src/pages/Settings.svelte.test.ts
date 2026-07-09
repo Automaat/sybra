@@ -126,6 +126,7 @@ describe('Settings', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('shows loading state while GetSettings is pending', () => {
@@ -451,6 +452,7 @@ describe('Settings', () => {
   })
 
   it('shows browser notifications as unsupported and disabled when the API is missing', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
@@ -461,6 +463,7 @@ describe('Settings', () => {
   })
 
   it('enables browser notifications via a user gesture and requests permission', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
     const FakeNotification = installFakeNotification('default')
     // Real browsers flip Notification.permission once the user responds to
     // the prompt; the fake must mirror that or the derived status text (which
@@ -486,6 +489,7 @@ describe('Settings', () => {
   })
 
   it('does not prompt again once permission was previously denied', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
     installFakeNotification('denied')
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
@@ -497,6 +501,7 @@ describe('Settings', () => {
   })
 
   it('unchecking browser notifications disables the preference without re-prompting', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
     const FakeNotification = installFakeNotification('granted')
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
@@ -510,6 +515,17 @@ describe('Settings', () => {
 
     await vi.waitFor(() => expect(checkbox.checked).toBe(false))
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled()
+  })
+
+  it('hides the browser-notification toggle in desktop mode', async () => {
+    installFakeNotification('granted') // API present, but desktop must not expose it
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    // Native macOS toggle stays; the browser toggle is web-only.
+    expect(screen.getByLabelText(/Desktop notifications/)).toBeDefined()
+    expect(screen.queryByLabelText(/Browser notifications/)).toBeNull()
   })
 
   it('toggles autoTriage', async () => {

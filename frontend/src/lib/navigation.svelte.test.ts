@@ -305,19 +305,23 @@ describe('startUrlRouting', () => {
     stop()
   })
 
-  it('a popstate-driven page change does not mutate the internal stack', () => {
+  it('a popstate-driven back pops the internal stack so canGoBack stays accurate', () => {
     window.history.pushState(null, '', '/tasks')
     const stop = navStore.startUrlRouting()
     navStore.navigate({ kind: 'settings' })
     expect(navStore.stack).toHaveLength(1)
+    expect(navStore.canGoBack).toBe(true)
 
-    window.history.pushState(null, '', '/agents')
+    // A real browser back moves the URL and fires popstate. The stack must be
+    // popped in lockstep, otherwise navigate()'s push leaves it non-empty and
+    // canGoBack keeps reporting true — a second back() would then walk the
+    // tab's session history past the app entirely.
+    window.history.pushState(null, '', '/tasks')
     window.dispatchEvent(new PopStateEvent('popstate'))
 
-    expect(navStore.page).toEqual({ kind: 'agents' })
-    // The internal stack is intentionally left stale — URL-driven back/forward
-    // bypasses it entirely once URL routing is active.
-    expect(navStore.stack).toHaveLength(1)
+    expect(navStore.page).toEqual({ kind: 'task-list' })
+    expect(navStore.stack).toHaveLength(0)
+    expect(navStore.canGoBack).toBe(false)
     stop()
   })
 

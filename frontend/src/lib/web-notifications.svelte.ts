@@ -24,6 +24,12 @@ export type BrowserNotificationPermission = 'unsupported' | 'granted' | 'denied'
 
 class BrowserNotificationStore {
   enabled = $state(false)
+  // Reactive invalidation signal for the `permission` getter. The getter reads
+  // the live window.Notification.permission (not a $state), so it registers no
+  // dependency on its own; a default->denied transition leaves `enabled`
+  // unchanged at false, so derived UI reading `permission` would never re-run.
+  // Bumping this on requestEnable() forces those readers to re-evaluate.
+  private permissionEpoch = $state(0)
 
   constructor() {
     this.enabled = safeLocalStorage()?.getItem(STORAGE_KEY) === '1'
@@ -34,6 +40,7 @@ class BrowserNotificationStore {
   }
 
   get permission(): BrowserNotificationPermission {
+    void this.permissionEpoch // register reactive dependency for derived readers
     if (!this.supported) return 'unsupported'
     return window.Notification.permission
   }
@@ -46,6 +53,7 @@ class BrowserNotificationStore {
       perm = await window.Notification.requestPermission()
     }
     this.enabled = perm === 'granted'
+    this.permissionEpoch++
     this.persist()
     return perm
   }
