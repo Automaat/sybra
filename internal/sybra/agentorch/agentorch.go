@@ -816,13 +816,15 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) (task.Task, error) {
 	if projectID == "" {
 		return t, nil
 	}
-	t.ProjectID = projectID
-	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(t.ProjectID)}); err != nil {
+	assigned := t
+	assigned.ProjectID = projectID
+	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(assigned.ProjectID)}); err != nil {
 		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
+		return t, fmt.Errorf("persist auto-assigned project %q for task %s: %w", projectID, t.ID, err)
 	} else {
-		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", t.ProjectID)
+		o.logger.Info("auto-assign-project", "task_id", t.ID, "project", assigned.ProjectID)
 	}
-	return t, nil
+	return assigned, nil
 }
 
 // defaultProjectID returns the configured agent.default_project_id, or ""

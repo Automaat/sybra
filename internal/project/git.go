@@ -40,9 +40,10 @@ var ErrBranchDiverged = errors.New("local branch diverged from remote head")
 var ErrDirtyWorktree = errors.New("worktree has uncommitted changes")
 
 // ErrRemoteAdvanced is returned by PushSync when the live remote branch head no
-// longer matches the remote-tracking ref the push decision was based on — the
-// tracking ref is stale, so PushSync cannot even be sure what "diverged" means
-// right now. Always wrapped together with ErrDivergedNeedsResolve.
+// longer matches the remote-tracking ref the push decision was based on, or
+// when the live remote head cannot be verified before deciding whether to push.
+// It is wrapped together with ErrDivergedNeedsResolve only when the verified
+// live remote state also requires agent-driven branch reconciliation.
 var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
 
 // ErrDivergedNeedsResolve is returned by PushSync when the local branch and
@@ -684,6 +685,24 @@ func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 	return strings.Fields(out)[0], nil
 }
 
+func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string) (string, bool) {
+	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
+	return sha, err == nil
+}
+
+func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	fetchErr := withNetworkRetry(ctx, func() error {
+		return withLockRetry(func() error {
+			return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
+		})
+	})
+	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
+		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
+	}
+	return nil
+}
+
 // ReconcileWithRemote fast-forwards the worktree's checked-out branch to the
 // remote branch head before a rebase, so remote-only commits (e.g. a review fix
 // pushed from another clone or machine) are carried forward instead of dropped
@@ -709,12 +728,8 @@ func ReconcileWithRemote(ctx context.Context, worktreePath, branch string) error
 	// other failure (network/auth/remote misconfig) must propagate, since
 	// continuing on stale history is exactly the data-loss scenario this
 	// function exists to prevent.
-	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	fetchErr := withNetworkRetry(ctx, func() error {
-		return executil.Run(ctx, worktreePath, "git", "fetch", remote, refspec)
-	})
-	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
-		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
+	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
+		return err
 	}
 
 	// An absent branch (first push) means there is nothing to reconcile; any
@@ -765,9 +780,16 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //   - local SHA == remote tracking SHA: no-op
 //   - remote tracking SHA is an ancestor of local (fast-forward): regular push
 //   - histories diverged: never force-pushes. Returns ErrDivergedNeedsResolve
-//     (wrapping ErrRemoteAdvanced when the live remote head has moved past the
-//     stale tracking ref) so the caller can spawn agent work to reconcile the
-//     branches instead of rewriting already-published history.
+//     so the caller can spawn agent work to reconcile the branches instead of
+//     rewriting already-published history. If the live remote advanced since
+//     the cached tracking ref, ErrRemoteAdvanced is wrapped too.
+//
+// Refreshes refs/remotes/<remote>/<branch> from the live remote before
+// comparing, the same way ReconcileWithRemote does — a separate recovery
+// worktree (e.g. branch-conflict-fix) can push this branch directly without
+// ever touching this worktree's cached tracking ref, so comparing against
+// that stale cache can see a divergence the live remote no longer has,
+// re-triggering recovery in a loop even though it already succeeded.
 //
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
@@ -785,11 +807,23 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return err
 	}
 
-	remoteSHA, remoteErr := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
-	if remoteErr != nil {
+	beforeRefreshSHA, beforeRefreshOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
+
+	// Refresh the tracking ref first; a first-push branch has no remote head
+	// yet, so "couldn't find remote ref" is expected and not fatal. Any other
+	// failure (network/auth/remote misconfig) means the live remote state
+	// can't be verified before a push decision — fail closed rather than
+	// fall back to comparing against a possibly-stale cached ref.
+	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
+		return fmt.Errorf("%w: could not verify live remote head before push: %w", ErrRemoteAdvanced, err)
+	}
+
+	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
+	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
 		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
 	}
+	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
 	if localSHA == remoteSHA {
 		return nil
@@ -800,17 +834,13 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
 	}
 
-	// Divergence path: never force-push. Check the live remote head purely to
-	// give a precise error — either outcome means the branch needs
-	// agent-driven resolution (rebase/merge onto the remote), never a rewrite.
-	liveSHA, err := remoteBranchHead(ctx, worktreePath, remote, branch)
-	if err != nil {
-		return fmt.Errorf("%w: %w: could not verify live remote head before push: %w", ErrDivergedNeedsResolve, ErrRemoteAdvanced, err)
+	// Divergence path: never force-push. remoteSHA reflects the freshly
+	// fetched live remote head, so this is a genuine content divergence, not
+	// a stale-cache artifact — the branch needs agent-driven resolution
+	// (rebase/merge onto the remote), never a rewrite.
+	if remoteAdvanced {
+		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
-	if liveSHA != "" && liveSHA != remoteSHA {
-		return fmt.Errorf("%w: %w: tracking %s but remote %s/%s is at %s", ErrDivergedNeedsResolve, ErrRemoteAdvanced, remoteSHA[:min(7, len(remoteSHA))], remote, branch, liveSHA[:min(7, len(liveSHA))])
-	}
-
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 }
 
