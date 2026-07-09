@@ -143,8 +143,12 @@ const affectedTaskMarkerPrefix = "## Affected task\n- `"
 // already known and tracked. Used to skip re-dispatching an LLM to
 // rediscover the same finding when the origin task later shows up stuck in
 // human-required.
-func openLostAgentInvestigations(tasks []task.Task) map[string]bool {
-	out := make(map[string]bool)
+type openLostAgentInvestigation struct {
+	observedAt time.Time
+}
+
+func openLostAgentInvestigations(tasks []task.Task) map[string]openLostAgentInvestigation {
+	out := make(map[string]openLostAgentInvestigation)
 	for i := range tasks {
 		t := &tasks[i]
 		if task.IsTerminalStatus(t.Status) {
@@ -159,8 +163,19 @@ func openLostAgentInvestigations(tasks []task.Task) map[string]bool {
 		}
 		rest := t.Body[idx+len(affectedTaskMarkerPrefix):]
 		originID, _, ok := strings.Cut(rest, "`")
-		if ok && originID != "" {
-			out[originID] = true
+		if !ok || originID == "" {
+			continue
+		}
+		fpMarker := "- Fingerprint: `" + Fingerprint(KindLostAgent, originID, nil) + "`"
+		if !strings.Contains(t.Body, fpMarker) {
+			continue
+		}
+		observedAt := t.UpdatedAt
+		if observedAt.IsZero() {
+			observedAt = t.CreatedAt
+		}
+		if prev, ok := out[originID]; !ok || prev.observedAt.Before(observedAt) {
+			out[originID] = openLostAgentInvestigation{observedAt: observedAt}
 		}
 	}
 	return out
@@ -200,7 +215,7 @@ func detectUntriaged(t *task.Task, now time.Time) *Anomaly {
 	}
 }
 
-func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, trackedLostAgent map[string]bool) *Anomaly {
+func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, trackedLostAgent map[string]openLostAgentInvestigation) *Anomaly {
 	// plan-review is intentionally excluded: a plan awaits the human's approval
 	// indefinitely and must never be auto-escalated to human-required. Only tasks
 	// already in human-required are flagged when they exceed their dwell budget.
@@ -246,7 +261,7 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, 
 	// instead (remediateHumanRequiredStuck), guarded by monitorAutoRetriedTag
 	// so a second stall on the same task falls through to the normal path
 	// rather than bouncing forever.
-	knownLostAgentCause := trackedLostAgent[t.ID] && !slices.Contains(t.Tags, monitorAutoRetriedTag)
+	knownLostAgentCause := currentLostAgentInvestigation(t, trackedLostAgent) && !slices.Contains(t.Tags, monitorAutoRetriedTag)
 	if knownLostAgentCause {
 		ev["known_lost_agent_investigation"] = true
 	}
@@ -264,6 +279,28 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, 
 		Evidence:    ev,
 		DetectedAt:  now,
 	}
+}
+
+func currentLostAgentInvestigation(t *task.Task, tracked map[string]openLostAgentInvestigation) bool {
+	inv, ok := tracked[t.ID]
+	if !ok || inv.observedAt.IsZero() {
+		return false
+	}
+	cutoff := t.UpdatedAt
+	if started := latestAgentRunStarted(t.AgentRuns); !started.IsZero() {
+		cutoff = started
+	}
+	return !inv.observedAt.Before(cutoff)
+}
+
+func latestAgentRunStarted(runs []task.AgentRun) time.Time {
+	var latest time.Time
+	for i := range runs {
+		if runs[i].StartedAt.After(latest) {
+			latest = runs[i].StartedAt
+		}
+	}
+	return latest
 }
 
 func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {

@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // taskAPI is the slice of task.Manager the remediator + service needs. Keeps
@@ -95,8 +96,19 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 		return "", fmt.Errorf("stuck_human_blocked without task id")
 	}
 	if known, _ := a.Evidence["known_lost_agent_investigation"].(bool); known {
-		return r.retryKnownLostAgentStuck(a)
+		t, err := r.tasks.Get(a.TaskID)
+		if err != nil {
+			return "", fmt.Errorf("inspect known lost_agent stuck task %s: %w", a.TaskID, err)
+		}
+		if humanReviewVerdict(a) == "human" || workflow.IsTamperFlaggedReason(t.StatusReason) {
+			return r.refreshHumanRequiredStuck(a)
+		}
+		return r.retryKnownLostAgentStuck(a, t)
 	}
+	return r.refreshHumanRequiredStuck(a)
+}
+
+func (r *remediator) refreshHumanRequiredStuck(a Anomaly) (string, error) {
 	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
 	upd := task.Update{}
 	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
@@ -112,11 +124,7 @@ func (r *remediator) remediateHumanRequiredStuck(a Anomaly) (string, error) {
 // elsewhere. Stamps monitorAutoRetriedTag so a second stall on the same task
 // (the auto-retry did not help) falls back to the normal human-review path
 // instead of bouncing between in-progress and human-required forever.
-func (r *remediator) retryKnownLostAgentStuck(a Anomaly) (string, error) {
-	t, err := r.tasks.Get(a.TaskID)
-	if err != nil {
-		return "", fmt.Errorf("retry known lost_agent stuck task %s: %w", a.TaskID, err)
-	}
+func (r *remediator) retryKnownLostAgentStuck(a Anomaly, t task.Task) (string, error) {
 	tags := append(slices.Clone(t.Tags), monitorAutoRetriedTag)
 	upd := task.Update{
 		Status:       task.Ptr(task.StatusInProgress),
@@ -127,6 +135,11 @@ func (r *remediator) retryKnownLostAgentStuck(a Anomaly) (string, error) {
 		return "", fmt.Errorf("retry known lost_agent stuck task %s: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":retry:" + a.TaskID, nil
+}
+
+func humanReviewVerdict(a Anomaly) string {
+	verdict, _ := a.Evidence["human_review_verdict"].(string)
+	return verdict
 }
 
 // isHumanRequiredStuck reports whether a is a stuck_human_blocked anomaly for

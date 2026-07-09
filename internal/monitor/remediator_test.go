@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
@@ -187,6 +188,79 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing
 	// Original tags must be preserved, not clobbered.
 	if !slices.Contains(*u.u.Tags, "medium") {
 		t.Errorf("tags = %v, want to still contain %q", *u.u.Tags, "medium")
+	}
+}
+
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr3", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "waiting for human-provided context"
+		t.Tags = []string{"medium"}
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr3",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+			"human_review_verdict":           "human",
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status != nil {
+		t.Fatalf("status must not change for human-confirmed block, got %v", u.u.Status)
+	}
+	if u.u.Tags != nil {
+		t.Fatalf("tags must not change for human-confirmed block, got %v", *u.u.Tags)
+	}
+}
+
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr4", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = workflow.TamperFlaggedReasonPrefix + " removed coverage in internal/foo_test.go"
+		t.Tags = []string{"medium"}
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr4",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+		},
+	}
+
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.u.Status != nil {
+		t.Fatalf("status must not change for tamper-flagged block, got %v", u.u.Status)
+	}
+	if u.u.Tags != nil {
+		t.Fatalf("tags must not change for tamper-flagged block, got %v", *u.u.Tags)
 	}
 }
 

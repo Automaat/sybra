@@ -58,6 +58,7 @@ Complex: new → planning → plan-review → [human approves] → todo → in-p
 | in-progress | in-review | Agent completed, output needs review |
 | in-review | done | Output verified correct |
 | in-progress | todo | Agent failed, needs retry |
+| human-required | in-progress | Monitor auto-retries once when the stall matches a current open `lost_agent` investigation and is not human-confirmed or tamper-flagged |
 | any | human-required | Cannot proceed without human input |
 
 ## Work Project Rules

@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -996,6 +997,62 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 		}
 		if !got.RequiresLLM {
 			t.Error("a task already auto-retried once must fall back to the normal LLM path on a second stall")
+		}
+	})
+
+	t.Run("RequiresLLM=true when the investigation predates the current agent run", func(t *testing.T) {
+		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{
+				{AgentID: "new-run", State: "stopped", StartedAt: now.Add(-2 * time.Hour)},
+			}
+		})
+		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation.UpdatedAt = now.Add(-4 * time.Hour)
+		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
+		report := Detect(in)
+
+		var got *Anomaly
+		for i := range report.Anomalies {
+			if report.Anomalies[i].Kind == KindStuckHumanBlocked {
+				got = &report.Anomalies[i]
+			}
+		}
+		if got == nil {
+			t.Fatal("want a stuck_human_blocked anomaly for the stalled task")
+		}
+		if !got.RequiresLLM {
+			t.Error("a stale investigation from an earlier run must not suppress the LLM re-investigation")
+		}
+		if known, _ := got.Evidence["known_lost_agent_investigation"].(bool); known {
+			t.Error("stale investigation must not set known_lost_agent_investigation=true")
+		}
+	})
+
+	t.Run("RequiresLLM=true when the investigation fingerprint does not match the affected task", func(t *testing.T) {
+		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation.Body = strings.ReplaceAll(
+			investigation.Body,
+			"- Fingerprint: `"+Fingerprint(KindLostAgent, "orig", nil)+"`",
+			"- Fingerprint: `"+Fingerprint(KindLostAgent, "other", nil)+"`",
+		)
+		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
+		report := Detect(in)
+
+		var got *Anomaly
+		for i := range report.Anomalies {
+			if report.Anomalies[i].Kind == KindStuckHumanBlocked {
+				got = &report.Anomalies[i]
+			}
+		}
+		if got == nil {
+			t.Fatal("want a stuck_human_blocked anomaly for the stalled task")
+		}
+		if !got.RequiresLLM {
+			t.Error("a mismatched investigation fingerprint must not suppress the LLM re-investigation")
 		}
 	})
 }
