@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -44,6 +45,9 @@ const verifyChecksTimeoutRetries = 1
 // invocation, mirroring the project's frontend setup batch timeout
 // (docs/CONFIG.md's `setup:` commands get 5 minutes).
 const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
+
+var verifyMissingToolchainRe = regexp.MustCompile(
+	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -109,6 +113,12 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
+	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
+		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
+			failedCmd, output, runErr = fc, out, rErr
+		}
+	}
+
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
 	}
@@ -164,6 +174,29 @@ func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, t
 		}
 	}
 	return failedCmd, output, runErr
+}
+
+func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
+	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
+	setup := e.checks.SetupCommands(setupCtx, taskID)
+	if len(setup) == 0 {
+		cancel()
+		return false, "", "", nil
+	}
+	e.logger.Warn("workflow.verify-checks.toolchain-heal",
+		"task_id", taskID, "step", stepID, "setup_commands", len(setup))
+	maybeMiseTrust(setupCtx, wtPath)
+	sFailed, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
+	cancel()
+	if sFailed != "" || sErr != nil {
+		e.logger.Warn("workflow.verify-checks.toolchain-heal.setup-failed",
+			"task_id", taskID, "cmd", trimDiffLine(sFailed), "err", sErr, "tail", tailString(sOut, 400))
+		return false, "", "", nil
+	}
+	failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
+	e.logger.Info("workflow.verify-checks.toolchain-heal.reran",
+		"task_id", taskID, "step", stepID, "still_failing", failedCmd != "" || runErr != nil)
+	return true, failedCmd, output, runErr
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {

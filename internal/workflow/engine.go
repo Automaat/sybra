@@ -139,6 +139,7 @@ type BranchSyncer interface {
 // operates with a nil getter (step skips), so unit tests need not wire one.
 type CheckConfigGetter interface {
 	VerifyCommands(ctx context.Context, taskID string) []string
+	SetupCommands(ctx context.Context, taskID string) []string
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
