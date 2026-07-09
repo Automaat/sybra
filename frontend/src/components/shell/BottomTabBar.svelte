@@ -3,6 +3,7 @@
   import { navStore, type TabKey } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
+  import { activeTaskNeedsUserAttention } from '../../lib/task-attention.js'
 
   interface Props {
     onmore: () => void
@@ -22,6 +23,11 @@
     taskStore.tasksNeedingPlanApproval().length
   )
 
+  // Global "needs you" signal — same semantics as the SideRail Board badge.
+  const needsYouCount = $derived(
+    taskStore.list.filter(activeTaskNeedsUserAttention).length
+  )
+
   function tab(key: TabKey, action: () => void) {
     return {
       key,
@@ -39,12 +45,20 @@
     type="button"
     onclick={() => navStore.reset({ kind: 'task-list' })}
     data-active={navStore.activeTab === 'board' || undefined}
-    class="tap flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium text-surface-500 transition-colors active:bg-surface-100 dark:active:bg-surface-800"
+    class="tap relative flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium text-surface-500 transition-colors active:bg-surface-100 dark:active:bg-surface-800"
     class:text-primary-600={navStore.activeTab === 'board'}
     class:dark:text-primary-400={navStore.activeTab === 'board'}
     aria-label="Board"
   >
-    <ClipboardList size={24} />
+    <div class="relative">
+      <ClipboardList size={24} />
+      {#if needsYouCount > 0}
+        <span
+          class="absolute -right-1.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-error-500 px-1 text-[9px] font-bold text-white"
+          title="{needsYouCount} task{needsYouCount === 1 ? '' : 's'} need you"
+        >{needsYouCount}</span>
+      {/if}
+    </div>
     Board
   </button>
 

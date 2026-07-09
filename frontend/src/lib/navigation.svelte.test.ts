@@ -150,6 +150,7 @@ describe('NavStore', () => {
       [{ kind: 'workflows' }, 'Workflows'],
       [{ kind: 'workflow-detail', workflowId: 'wf1' }, 'Workflow Editor'],
       [{ kind: 'logbook' }, 'Logbook'],
+      [{ kind: 'notifications' }, 'Notifications'],
     ] as const)('pageTitle for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.pageTitle).toBe(expected)
@@ -167,6 +168,7 @@ describe('NavStore', () => {
       [{ kind: 'reviews' }, 'reviews'],
       [{ kind: 'settings' }, 'more'],
       [{ kind: 'stats' }, 'more'],
+      [{ kind: 'notifications' }, 'more'],
     ] as const)('activeTab for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.activeTab).toBe(expected)
@@ -194,6 +196,7 @@ describe('pageToPath', () => {
     [{ kind: 'workflows' }, '/workflows'],
     [{ kind: 'workflow-detail', workflowId: 'wf1' }, '/workflows/wf1'],
     [{ kind: 'logbook' }, '/logbook'],
+    [{ kind: 'notifications' }, '/notifications'],
   ] as const)('serializes %o to %s', (page: any, expected) => {
     expect(pageToPath(page)).toBe(expected)
   })
@@ -220,6 +223,7 @@ describe('pageFromLocation', () => {
     ['/workflows', '', { kind: 'workflows' }],
     ['/workflows/wf1', '', { kind: 'workflow-detail', workflowId: 'wf1' }],
     ['/logbook', '', { kind: 'logbook' }],
+    ['/notifications', '', { kind: 'notifications' }],
     // trailing / duplicate slashes collapse the same as the bare route
     ['/tasks/', '', { kind: 'task-list' }],
     ['//tasks//t1//', '', { kind: 'task-detail', taskId: 't1' }],

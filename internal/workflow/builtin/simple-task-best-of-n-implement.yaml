@@ -1,0 +1,199 @@
+id: simple-task-best-of-n-implement
+name: Simple Task — Best-of-N Implement
+description: >-
+  Opt-in variant of simple-task-implement (tag `best-of-n`). Runs N
+  implementation attempts, each in its own isolated worktree/branch, then an
+  automated judge agent picks a winner, and a mechanical promote_best_of_n
+  step fast-forwards only the winner onto the canonical task branch/worktree
+  before the normal verify_commits/detect_tampering/verify_checks/review
+  pipeline continues unchanged. Higher trigger priority than
+  simple-task-implement so a best-of-n-tagged task selects this workflow
+  instead; an untagged task still selects simple-task-implement.
+builtin: true
+trigger:
+  on: task.status_changed
+  priority: 10
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+    - field: task.tags
+      operator: contains
+      value: best-of-n
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  - id: attempts
+    name: Best-of-N Attempts
+    type: best_of_n
+    config:
+      role: implementation
+      mode: "{{.Task.AgentMode}}"
+      model: sonnet
+      attempts: 3
+      max_retries: 1
+      prompt: >-
+        Implement this task in this isolated attempt worktree. Commit your
+        work when you are done, but do NOT push the branch and do NOT open a
+        PR — this is one of several parallel attempts; an automated judge
+        will compare every attempt and only the winner is promoted to the
+        canonical branch/PR. Losing attempts (including yours, if not
+        selected) are discarded.
+
+        For full task context, run `sybra-cli get --compact {{.Task.ID}}`.
+
+        Never weaken, skip, delete, comment out, or hardcode tests,
+        snapshots, or fixtures to make checks pass, and never edit CI config
+        to neuter a gate. Tampering is detected mechanically and will block
+        the task regardless of which attempt is picked.
+        {{- if .Task.PlanContract}}
+
+        ## Executable Plan Contract
+
+        ```json
+        {{plancontractjson .Task.PlanContract .Task.ID}}
+        ```
+        {{- else if .Task.Plan}}
+
+        ## Plan
+
+        {{.Task.Plan}}
+        {{- end}}
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: judge
+
+  # Automated judge (run_agent, headless): reads the attempt manifest
+  # (attempt IDs, branches, isolated worktree dirs) and inspects each
+  # attempt's diff directly (e.g. `git -C <dir> diff <base>...HEAD`) — reads
+  # are unrestricted even in enforce-mode sandbox, so a judge with no
+  # pre-staged dir of its own can still freely inspect every attempt. Must
+  # emit ONLY a compact JSON object naming exactly one winner_attempt_id;
+  # promote_best_of_n mechanically validates this output and fails closed to
+  # human-required on anything malformed, ambiguous, or missing.
+  - id: judge
+    name: Judge Attempts
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: sonnet
+      max_retries: 1
+      # The judge dispatches directly (pre-staged dir), bypassing the launcher's
+      # own budget enforcement — preflight the task cost budget here so an
+      # over-budget task fails closed to human-required before spending on the
+      # (most expensive) judge run rather than at promotion.
+      budget_preflight: true
+      prompt: >-
+        You are judging several independent implementation attempts for the
+        same task so the best one can be promoted. The attempt manifest
+        (attempt id, status, provider, branch, isolated worktree dir) is
+        below as JSON:
+
+        ```json
+        {{getvar .Vars "bestofn.attempts.manifest"}}
+        ```
+
+        For each attempt with status "completed", inspect its actual diff by
+        running `git -C <dir> log --oneline -5` and `git -C <dir> diff
+        HEAD~<n>..HEAD` (or diff against the attempt's merge-base with the
+        project default branch) inside its listed dir. Score each completed
+        attempt on: correctness/completeness against the task description,
+        test coverage, and code quality. Do not consider attempts whose
+        status is not "completed".
+
+        Respond with ONLY a single compact JSON object on its own line, no
+        surrounding prose or markdown fences:
+        `{"winner_attempt_id": "attempt_N", "scores": [{"attempt_id":
+        "attempt_N", "score": 0-10}, ...], "rationale": "one or two
+        sentences"}`. Name exactly one winner_attempt_id from the attempts
+        listed above with status "completed".
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: promote
+
+  # Mechanical (no-LLM) step: parses the judge's JSON, mechanically validates
+  # winner_attempt_id, and fast-forwards the canonical task branch/worktree
+  # onto the winning attempt. Malformed/ambiguous/unknown judge output and an
+  # unsafe promotion (diverged branch, existing PR, dirty winner worktree)
+  # each fail closed to human-required with a distinct reason.
+  - id: promote
+    name: Promote Winning Attempt
+    type: promote_best_of_n
+    config:
+      judge_step: judge
+      best_of_n_step: attempts
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: push_winner
+
+  # The winner's attempt branch was never pushed (attempts are local-only by
+  # design); push the now-canonical branch before the usual verify/review
+  # pipeline, mirroring simple-task-implement's "commit + push" contract.
+  - id: push_winner
+    name: Push Winning Branch
+    type: shell
+    config:
+      command: git push -u origin HEAD
+      dir: '{{getvar .Vars "_dir"}}'
+    next:
+      - goto: verify_commits
+
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
+      - goto: detect_tampering
+
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_checks
+
+  - id: verify_checks
+    name: Verify Checks
+    type: verify_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: set_ready_review
+
+  - id: set_ready_review
+    name: Hand Off to Review
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""
