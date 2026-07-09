@@ -856,8 +856,17 @@ const backgroundTaskGrace = 15 * time.Minute
 // background bash tasks, mirroring the REPLACE semantics of the CLI's
 // "background_tasks_changed" system event.
 func (a *Agent) SetBackgroundTaskIDs(ids []string) {
+	// Defensive copy, mirroring SetPluginErrors, so a caller that later mutates
+	// or reuses the passed slice can't race the reader in HasBackgroundTasks.
+	// Preserve nil-ness: a nil "no event seen" snapshot must stay distinct from
+	// an empty non-nil "all tasks cleared" one (REPLACE semantics).
+	var cp []string
+	if ids != nil {
+		cp = make([]string, len(ids))
+		copy(cp, ids)
+	}
 	a.mu.Lock()
-	a.backgroundTaskIDs = ids
+	a.backgroundTaskIDs = cp
 	a.mu.Unlock()
 }
 
