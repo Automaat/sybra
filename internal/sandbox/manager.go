@@ -46,6 +46,7 @@ func (i *Instance) EnvVars() []string {
 type Manager struct {
 	mu        sync.Mutex
 	instances map[string]*Instance
+	starting  map[string]chan struct{} // taskID -> closed when its in-flight Start finishes
 	logger    *slog.Logger
 	dataDir   string // e.g. ~/.sybra/sandboxes
 }
@@ -57,6 +58,7 @@ func NewManager(dataDir string, logger *slog.Logger) *Manager {
 	}
 	return &Manager{
 		instances: make(map[string]*Instance),
+		starting:  make(map[string]chan struct{}),
 		logger:    logger,
 		dataDir:   dataDir,
 	}
@@ -70,18 +72,38 @@ func (m *Manager) Get(taskID string) *Instance {
 }
 
 // Start ensures a sandbox is running for the given task. Idempotent: if one
-// is already running the existing instance is returned. Returns an error if cfg is nil.
+// is already running the existing instance is returned. Concurrent Start
+// calls for the same taskID single-flight through the starting map — only
+// the first launches the sandbox, the rest wait for it and reuse its
+// result — so two racing callers can never both pass the "does it exist
+// yet" check and boot a duplicate cluster (issue #1538). Returns an error
+// if cfg is nil.
 func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil sandbox config")
 	}
-	m.mu.Lock()
-	if inst, ok := m.instances[taskID]; ok {
+
+	for {
+		m.mu.Lock()
+		if inst, ok := m.instances[taskID]; ok {
+			m.mu.Unlock()
+			m.logger.Info("sandbox.reuse", "task_id", taskID, "url", inst.URL)
+			return inst, nil
+		}
+		if ch, ok := m.starting[taskID]; ok {
+			m.mu.Unlock()
+			select {
+			case <-ch:
+				continue // re-check instances/starting under lock
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		m.starting[taskID] = ch
 		m.mu.Unlock()
-		m.logger.Info("sandbox.reuse", "task_id", taskID, "url", inst.URL)
-		return inst, nil
+		break
 	}
-	m.mu.Unlock()
 
 	var (
 		inst *Instance
@@ -92,13 +114,19 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 	} else {
 		inst, err = m.startDocker(ctx, taskID, worktreePath, cfg)
 	}
+
+	m.mu.Lock()
+	ch := m.starting[taskID]
+	delete(m.starting, taskID)
+	if err == nil {
+		m.instances[taskID] = inst
+	}
+	m.mu.Unlock()
+	close(ch)
+
 	if err != nil {
 		return nil, err
 	}
-
-	m.mu.Lock()
-	m.instances[taskID] = inst
-	m.mu.Unlock()
 
 	m.logger.Info("sandbox.started", "task_id", taskID, "url", inst.URL)
 	return inst, nil
