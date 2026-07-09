@@ -146,6 +146,7 @@ describe('NavStore', () => {
       [{ kind: 'workflows' }, 'Workflows'],
       [{ kind: 'workflow-detail', workflowId: 'wf1' }, 'Workflow Editor'],
       [{ kind: 'logbook' }, 'Logbook'],
+      [{ kind: 'notifications' }, 'Notifications'],
     ] as const)('pageTitle for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.pageTitle).toBe(expected)
@@ -163,6 +164,7 @@ describe('NavStore', () => {
       [{ kind: 'reviews' }, 'reviews'],
       [{ kind: 'settings' }, 'more'],
       [{ kind: 'stats' }, 'more'],
+      [{ kind: 'notifications' }, 'more'],
     ] as const)('activeTab for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.activeTab).toBe(expected)

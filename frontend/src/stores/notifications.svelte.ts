@@ -6,7 +6,7 @@ class NotificationStore {
   notifications = $state<Notification[]>([])
 
   async load(): Promise<void> {
-    this.notifications = (await ListNotifications()) ?? []
+    this.notifications = ((await ListNotifications()) ?? []).slice(0, 50)
   }
 
   listen(): () => void {

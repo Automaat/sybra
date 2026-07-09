@@ -5,9 +5,10 @@
   import { agentStore } from '../stores/agents.svelte.js'
   import { reviewStore } from '../stores/reviews.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { awaitsHuman, awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
-  import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, reviewPhaseNeedsYou, type ReviewPhaseIcon } from '../lib/review-phase.js'
-  import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, prPhaseNeedsYou, type PRPhaseIcon } from '../lib/pr-phase.js'
+  import { awaitsHumanLabel, coreStatus, statusLabel } from '../lib/statuses.js'
+  import { isReviewTask as isReviewTaskFn, reviewPhaseMeta, type ReviewPhaseIcon } from '../lib/review-phase.js'
+  import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, type PRPhaseIcon } from '../lib/pr-phase.js'
+  import { taskNeedsUserAttention } from '../lib/task-attention.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
@@ -52,7 +53,7 @@
   // Task is waiting on the user (not an agent) — drives the red tile accent.
   // The strict own-PR phases (draft / approved) count too, so the card flags
   // "your move" while staying in the In Review column.
-  const needsYou = $derived(awaitsHuman(t.status) || prPhaseNeedsYou(t) || reviewPhaseNeedsYou(t))
+  const needsYou = $derived(taskNeedsUserAttention(t))
 
   // A granular sub-state folded into this column that ISN'T an attention state
   // (e.g. `new` in Todo, `ready-review` in In Review). The column shows the
