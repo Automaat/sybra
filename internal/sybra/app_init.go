@@ -316,6 +316,8 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 

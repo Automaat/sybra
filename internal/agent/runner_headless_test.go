@@ -1838,6 +1838,63 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 	})
 }
 
+// TestBuildHeadlessInvocation_PlaywrightMCP verifies --mcp-config and
+// --strict-mcp-config are always paired, only appear for claude, and never
+// appear when MCPConfigJSON is empty (the disabled/preflight-failed/non-claude
+// state Manager.preparePlaywrightMCP leaves cfg in).
+func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
+	t.Parallel()
+
+	t.Run("claude_with_mcp_config", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		mcpJSON := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "test",
+			MCPConfigJSON: mcpJSON,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--mcp-config")
+		if idx < 0 {
+			t.Fatalf("args missing --mcp-config; got %v", args)
+		}
+		if idx+1 >= len(args) || args[idx+1] != mcpJSON {
+			t.Errorf("--mcp-config value wrong; args=%v", args)
+		}
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("--mcp-config must always pair with --strict-mcp-config; got %v", args)
+		}
+	})
+
+	t.Run("claude_empty_mcp_config_is_noop", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "claude"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("mcp flags must be absent when MCPConfigJSON empty; got %v", args)
+		}
+	})
+
+	t.Run("codex_ignores_mcp_config_json", func(t *testing.T) {
+		// MCPConfigJSON is a Claude-only field; a non-claude provider must never
+		// see it, even if some upstream bug leaves it set on the RunConfig.
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+			Prompt:        "test",
+			MCPConfigJSON: `{"mcpServers":{}}`,
+		})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
+			t.Fatalf("mcp flags must not appear for codex; got %v", args)
+		}
+	})
+}
+
 // TestCodexSandboxArgs_HeadlessAlwaysBypasses pins the invariant that headless
 // codex always bypasses approvals even when RequirePermissions=true. Interactive
 // mode with RequirePermissions=true must use --sandbox workspace-write.

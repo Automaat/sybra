@@ -812,6 +812,49 @@ func TestDefaultRequirePermissions(t *testing.T) {
 	}
 }
 
+func TestPlaywrightMCPEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"zero value", &Config{}, false},
+		{"explicit true", &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{Enabled: true}}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{Enabled: false}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.PlaywrightMCPEnabled(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaywrightMCPExtraArgs(t *testing.T) {
+	t.Parallel()
+	if got := (*Config)(nil).PlaywrightMCPExtraArgs(); got != nil {
+		t.Errorf("nil config: got %v, want nil", got)
+	}
+	if got := (&Config{}).PlaywrightMCPExtraArgs(); got != nil {
+		t.Errorf("zero value: got %v, want nil", got)
+	}
+	cfg := &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{ExtraArgs: []string{"--browser", "firefox"}}}}
+	got := cfg.PlaywrightMCPExtraArgs()
+	want := []string{"--browser", "firefox"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
