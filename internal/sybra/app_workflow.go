@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -28,6 +29,7 @@ import (
 // Compile-time interface checks.
 var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
@@ -231,6 +233,34 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
+	return err
+}
+
+// taskClassifierAdapter bridges internal/triage's deterministic classifier to
+// workflow.TaskClassifier for the `classify_task` step. It runs the same
+// classify+apply pipeline as `sybra-cli triage classify <id>` and the
+// poll-based auto-triage handler (internal/poll.TriageHandler), so the
+// workflow step no longer needs a full agent session to reach it.
+type taskClassifierAdapter struct {
+	tasks      *task.Manager
+	projects   *project.Store
+	classifier triage.Classifier
+	audit      *audit.Logger
+}
+
+func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	var projects []project.Project
+	if a.projects != nil {
+		projects, err = a.projects.List()
+		if err != nil {
+			return err
+		}
+	}
+	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
 	return err
 }
 

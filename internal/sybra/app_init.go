@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -678,6 +679,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		projects:   a.projects,
+		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:      a.audit,
+	})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
