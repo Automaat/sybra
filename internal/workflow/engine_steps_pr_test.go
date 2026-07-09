@@ -99,6 +99,18 @@ func (f *fakePRCreator) CreatePR(_ context.Context, _ string, req PRCreateReques
 	return f.number, f.headSHA, nil
 }
 
+type fakePRFinder struct {
+	number int
+	found  bool
+	err    error
+	calls  int
+}
+
+func (f *fakePRFinder) FindPRForBranch(context.Context, string, string) (number int, found bool, err error) {
+	f.calls++
+	return f.number, f.found, f.err
+}
+
 type fakePRContentGenerator struct {
 	title, body string
 	err         error
@@ -236,6 +248,75 @@ func TestExecCreatePR_Success(t *testing.T) {
 	}
 	if creator.gotReq.Title != "feat(x): y" {
 		t.Errorf("CreatePR title = %q", creator.gotReq.Title)
+	}
+}
+
+func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	finder := &fakePRFinder{number: 77, found: true}
+	engine.SetPRFinder(finder)
+	// A creator IS wired so the test proves the guard short-circuits BEFORE
+	// reaching it, not that creation was merely unconfigured.
+	creator := &fakePRCreator{number: 999, headSHA: headSHA(t, wtPath)}
+	engine.SetPRCreator(creator)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	if finder.calls != 1 {
+		t.Errorf("finder calls = %d, want 1", finder.calls)
+	}
+	if creator.gotReq.Repo != "" {
+		t.Error("CreatePR must not be called when an existing PR is found")
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 77 {
+		t.Errorf("PRNumber = %d, want 77 (linked from existing PR)", ti.PRNumber)
+	}
+	if ti.Status == "human-required" {
+		t.Errorf("task should not be human-required: %s", tasks.Reason("t1"))
+	}
+}
+
+func TestExecCreatePR_FinderErrorFallsThroughToCreate(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	// A lookup failure must be treated as "no PR found" so create_pr proceeds
+	// rather than getting stuck — matching the best-effort docstring.
+	engine.SetPRFinder(&fakePRFinder{err: errors.New("gh unreachable")})
+	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
+	engine.SetPRCreator(creator)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	if creator.gotReq.Repo == "" {
+		t.Error("CreatePR must be called when the finder errors (best-effort)")
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42", ti.PRNumber)
 	}
 }
 

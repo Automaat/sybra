@@ -193,6 +193,14 @@ type PRCreator interface {
 	CreatePR(ctx context.Context, dir string, req PRCreateRequest) (number int, headSHA string, err error)
 }
 
+// PRFinder looks up an open PR by its head branch, backing the create_pr
+// idempotency guard (a prior run may have created the PR but crashed before
+// persisting pr_number). Engine operates with a nil finder — the guard is
+// then skipped and create_pr always attempts a fresh push/create.
+type PRFinder interface {
+	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
+}
+
 // PRCreateRequest describes a new pull request to open for an
 // already-pushed branch.
 type PRCreateRequest struct {
@@ -252,6 +260,7 @@ type Engine struct {
 	prStates         PRStateFetcher
 	prHeads          PRHeadFetcher
 	prCreator        PRCreator
+	prFinder         PRFinder
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	branchSyncer     BranchSyncer
@@ -330,6 +339,10 @@ func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
 // `create_pr` step. Leaving it unset flips the task to human-required when
 // create_pr is reached, since a PR cannot be opened without it.
 func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
+
+// SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
+// idempotency guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.

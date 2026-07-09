@@ -673,6 +673,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
 	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
 	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
+	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})

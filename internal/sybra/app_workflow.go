@@ -32,6 +32,7 @@ var (
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
 	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
 	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
+	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
@@ -287,6 +288,14 @@ func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.P
 		Title: req.Title,
 		Body:  req.Body,
 	})
+}
+
+// prFinderAdapter wires the workflow engine's PRFinder interface to the github
+// package. Stateless — all state lives in `gh` / GitHub.
+type prFinderAdapter struct{}
+
+func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
+	return github.FindPRForBranch(ctx, repo, head)
 }
 
 // prContentGeneratorAdapter wires the workflow engine's PRContentGenerator

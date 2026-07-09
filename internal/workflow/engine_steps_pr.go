@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -202,23 +201,23 @@ func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring
 // the gh-list idempotency guard the retired create-pr agent ran before
-// creating a new PR. Best-effort: a lookup failure is treated as "no PR
-// found" so create_pr proceeds rather than getting stuck.
+// creating a new PR. Delegates to the injected PRFinder (github.FindPRForBranch
+// under ghGate/ghEnv) so the lookup shares the same rate-limit pacing and
+// GitHub identity as the create call it guards. Best-effort: a nil finder or a
+// lookup failure is treated as "no PR found" so create_pr proceeds rather than
+// getting stuck.
 func (e *Engine) findExistingPRForBranch(repo, branch string) (number int, ok bool) {
+	if e.prFinder == nil {
+		return 0, false
+	}
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list", "--repo", repo, "--head", branch, "--json", "number", "--limit", "1")
-	out, err := cmd.Output()
+	num, found, err := e.prFinder.FindPRForBranch(ctx, repo, branch)
 	if err != nil {
+		e.logger.Warn("workflow.create-pr.find-existing", "repo", repo, "head", branch, "err", err)
 		return 0, false
 	}
-	var prs []struct {
-		Number int `json:"number"`
-	}
-	if jsonErr := json.Unmarshal(out, &prs); jsonErr != nil || len(prs) == 0 {
-		return 0, false
-	}
-	return prs[0].Number, prs[0].Number > 0
+	return num, found
 }
 
 // verifyPushedHead best-effort verifies the PR head now matches local HEAD
