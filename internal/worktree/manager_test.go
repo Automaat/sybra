@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -581,6 +583,63 @@ func TestRunSetup_ParentCancellationKillsProcess(t *testing.T) {
 	if dur > 3*time.Second {
 		t.Errorf("parent cancellation did not abort setup quickly: took %s", dur)
 	}
+}
+
+// TestRunSetup_TimeoutKillsProcessGroup proves a grandchild spawned by a
+// setup command (e.g. a backgrounded daemon started by npm install) is
+// killed along with the shell when the batch timeout fires, not left
+// running as an orphan (issue #1538).
+func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	m := New(Config{
+		WorktreesDir: wtDir,
+		LogsDir:      logsDir,
+		Logger:       discardLogger(),
+		SetupTimeout: 800 * time.Millisecond,
+	})
+
+	pidFile := filepath.Join(wtDir, "child.pid")
+	// Background a grandchild that writes its pid immediately (well before
+	// the setup timeout fires) then outlives `sh`, staying alive for the
+	// rest of the test unless the whole process group is killed.
+	cmd := fmt.Sprintf("(sh -c 'echo $$ > %q; sleep 10') & disown; sleep 10", pidFile)
+
+	err := m.runSetup(context.Background(), "task-timeout-pg", wtDir, []string{cmd})
+	if err == nil {
+		t.Fatal("expected error on timeout")
+	}
+
+	// Give the grandchild a moment to have written its pid before we assert
+	// it's gone — the write happens near-instantly after it forks, well
+	// before the setup timeout above ever fires.
+	deadline := time.Now().Add(3 * time.Second)
+	var pidRaw []byte
+	for time.Now().Before(deadline) {
+		pidRaw, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("grandchild never wrote pid file: %v", err)
+	}
+
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
+	if convErr != nil {
+		t.Fatalf("parse pid: %v", convErr)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscallKillErr := syscall.Kill(pid, 0); syscallKillErr != nil {
+			return // grandchild is gone — process group was killed
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("grandchild pid %d still alive after setup timeout", pid)
 }
 
 // TestRunSetup_NoLogsDir — when no LogsDir is configured the hook still
