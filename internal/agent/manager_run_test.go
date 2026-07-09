@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // TestRegisterMarkAgentDone_ProviderAccountingInvariant locks in that
@@ -171,5 +173,27 @@ func TestRun_JitterSkippedForInteractiveMode(t *testing.T) {
 	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("interactive Run must skip jitter, took %s", elapsed)
+	}
+}
+
+func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{provider.RateLimitReason, true},
+		{"provider reports rate limit reached", true},
+		{"provider disabled", false},
+		{"logged out", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		ue := newProviderUnhealthy("codex", c.reason)
+		if ue.RateLimited != c.want {
+			t.Errorf("newProviderUnhealthy(%q).RateLimited = %v, want %v", c.reason, ue.RateLimited, c.want)
+		}
+		if ue.Provider != "codex" || ue.Reason != c.reason {
+			t.Errorf("newProviderUnhealthy dropped fields: %+v", ue)
+		}
 	}
 }

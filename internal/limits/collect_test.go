@@ -469,3 +469,22 @@ func TestIsSoftThresholdReason(t *testing.T) {
 		}
 	}
 }
+
+func TestIsRateLimitReachedReason(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{quotaReasonRateLimitReached, true},
+		{quotaReasonProviderDisabled, false},
+		{quotaReasonWeeklyThreshold, false},
+		{quotaReasonSessionThreshold, false},
+		{"rate_limited", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsRateLimitReachedReason(c.reason); got != c.want {
+			t.Errorf("IsRateLimitReachedReason(%q) = %v, want %v", c.reason, got, c.want)
+		}
+	}
+}
