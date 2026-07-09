@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"

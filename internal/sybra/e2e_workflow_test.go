@@ -330,16 +330,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		// Guard with hasResult so agents that exit-0 without any result event
 		// (no_result scenario) are not back-filled with assistant text.
 		if hasResult && result == "" {
-			// Same "last assistant event" fallback as
-			// completion.Handler.OnComplete (internal/sybra/completion),
-			// inlined here since this file is package sybra and that helper
-			// is now private to the extracted completion package.
-			for i := range slices.Backward(output) {
-				if output[i].Type == "assistant" {
-					result = output[i].Content
-					break
-				}
-			}
+			result = lastAssistantText(ag)
 		}
 		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
 			AgentID:  ag.ID,
