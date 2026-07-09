@@ -316,6 +316,8 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -663,10 +665,11 @@ func (a *App) initWorkflowEngine() {
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
+	agentLauncher := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience}
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience},
+		agentLauncher,
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
@@ -679,6 +682,8 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
+	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
@@ -694,6 +699,13 @@ func (a *App) initWorkflowEngine() {
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
+	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
+	// (e.g. a reused worktree rebased out from under an earlier merge-based
+	// push) — otherwise it flips straight to human-required with no attempt
+	// at the autonomous fix other divergence sources already get.
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.

@@ -541,6 +541,20 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 	return total
 }
 
+// CheckTaskCostBudget re-exports the cumulative task cost-budget check
+// (agent.max_task_cost_usd) for dispatch paths that bypass
+// StartAgentWithAssignment — e.g. workflow.execBestOfN, whose attempts and
+// judge step dispatch through the direct-dispatch StartAgent branch, which
+// does not itself enforce the budget. Returns workflow.ErrTaskCostExceeded
+// (wrapped) when the task has already spent its budget.
+func (o *Orchestrator) CheckTaskCostBudget(taskID string) error {
+	t, err := o.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	return o.enforceTaskCostBudget(t)
+}
+
 func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 	if o.cfg == nil || o.cfg.Agent.MaxTaskCostUSD <= 0 {
 		return nil

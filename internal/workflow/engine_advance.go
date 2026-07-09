@@ -43,16 +43,12 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	}
 	wfExec, def, currentStep := ctx.WfExec, ctx.Def, ctx.Step
 
-	// Parallel-child completion: route to the child-aware path. The parent
-	// step's record + transitions are emitted only after every child has
-	// terminated, so we never go through the single-step record path here.
-	if ctx.ParallelParent != nil {
-		comp, pErr := e.advanceParallelChild(taskID, &def, ctx.ParallelParent, currentStep, wfExec, output)
-		// Release inflight before the completion callback so its cascade
-		// dispatch never runs under the held lock (matches the paths below).
-		release()
-		e.fireComplete(comp)
-		return pErr
+	// Parallel-child / best-of-N-attempt completion: route to the fan-out-
+	// aware path. The parent step's record + transitions are emitted only
+	// after every child/attempt has terminated, so we never go through the
+	// single-step record path below for these.
+	if handled, fErr := e.handleFanOutCompletion(taskID, &def, ctx, currentStep, wfExec, output, release); handled {
+		return fErr
 	}
 
 	ctx.Task = e.withManualTestConfig(ctx.Task)
@@ -101,9 +97,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 				return err
 			}
 			release()
-			comp, sErr := e.executeSteps(taskID, &def, currentStep, wfExec)
-			e.fireComplete(comp)
-			return sErr
+			return e.executeNextSteps(taskID, &def, currentStep, wfExec)
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 			"attempts", retries)
@@ -142,9 +136,41 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
-	comp, sErr := e.executeSteps(taskID, &def, nextStep, wfExec)
+	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
+}
+
+// handleFanOutCompletion routes a parallel-child or best-of-N-attempt
+// completion to its child-aware advance path — the parent step's record and
+// transitions are emitted only once every child/attempt has terminated, so
+// AdvanceStep's single-step record path below must never run for these.
+// Releases the inflight lock before firing the completion callback, same as
+// every other early-return path in AdvanceStep, so a cascade dispatch never
+// runs under the held lock. handled=false means ctx named neither fan-out
+// kind and the caller should continue its own single-step handling.
+func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx advanceContext, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (handled bool, err error) {
+	if ctx.ParallelParent != nil {
+		comp, pErr := e.advanceParallelChild(taskID, def, ctx.ParallelParent, currentStep, wfExec, output)
+		release()
+		e.fireComplete(comp)
+		return true, pErr
+	}
+	if ctx.BestOfNParent != nil {
+		comp, bErr := e.advanceBestOfNAttempt(taskID, def, ctx.BestOfNParent, ctx.AttemptID, wfExec, output)
+		release()
+		e.fireComplete(comp)
+		return true, bErr
+	}
+	return false, nil
+}
+
+func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
+	comp, err := e.executeSteps(taskID, def, step, wfExec)
+	if errors.Is(err, errBestOfNParked) {
+		err = nil
+	}
 	e.fireComplete(comp)
-	return sErr
+	e.drainPendingConflictRecovery(taskID)
+	return err
 }
 
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
@@ -191,6 +217,13 @@ type advanceContext struct {
 	Step           *Step
 	Task           TaskInfo
 	ParallelParent *Step
+	// BestOfNParent and AttemptID are set together when the current step is a
+	// `best_of_n` block and output.StepID names one of its synthetic attempts
+	// (see bestOfNAttemptStepKey) — attempts have no corresponding YAML Step,
+	// unlike `parallel` children, so they cannot populate ParallelParent/Step
+	// via StepByID.
+	BestOfNParent *Step
+	AttemptID     string
 }
 
 // loadAdvanceContext validates and resolves the state needed by AdvanceStep.
@@ -239,15 +272,24 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		return advanceContext{}, false, fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
 	}
 	var parallelParent *Step
+	var bestOfNParent *Step
+	var attemptID string
 	resolvedStep := currentStep
 	if output.StepID != t.Workflow.CurrentStep {
-		if currentStep.Type == StepParallel && parallelHasChild(currentStep, output.StepID) {
+		switch {
+		case currentStep.Type == StepParallel && parallelHasChild(currentStep, output.StepID):
 			parallelParent = currentStep
 			resolvedStep = def.StepByID(output.StepID) // child (StepByID recurses)
 			if resolvedStep == nil {
 				return advanceContext{}, false, fmt.Errorf("parallel child %s not found in workflow %s", output.StepID, def.ID)
 			}
-		} else {
+		case currentStep.Type == StepBestOfN && bestOfNStepMatches(currentStep, output.StepID):
+			parentID, aID, _ := splitBestOfNAttemptStepKey(output.StepID)
+			_ = parentID // == currentStep.ID, already checked by bestOfNStepMatches
+			bestOfNParent = currentStep
+			attemptID = aID
+			resolvedStep = currentStep
+		default:
 			e.logger.Debug("workflow.advance.skip",
 				"task_id", taskID, "reason", "stale_step",
 				"output_step", output.StepID, "current_step", t.Workflow.CurrentStep,
@@ -271,6 +313,8 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		Step:           resolvedStep,
 		Task:           t,
 		ParallelParent: parallelParent,
+		BestOfNParent:  bestOfNParent,
+		AttemptID:      attemptID,
 	}, false, nil
 }
 
@@ -286,6 +330,16 @@ func parallelHasChild(parent *Step, childID string) bool {
 		}
 	}
 	return false
+}
+
+// bestOfNStepMatches reports whether outputStepID is a synthetic attempt
+// stepID (see bestOfNAttemptStepKey) belonging to the given best_of_n parent.
+func bestOfNStepMatches(parent *Step, outputStepID string) bool {
+	if parent == nil || parent.Type != StepBestOfN {
+		return false
+	}
+	parentID, _, ok := splitBestOfNAttemptStepKey(outputStepID)
+	return ok && parentID == parent.ID
 }
 
 // dispatchStepError wraps an error that occurred while executeSteps was
@@ -381,12 +435,21 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// will call AdvanceStep later.
 		switch step.Type {
 		case StepRunAgent:
+			if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
+				return comp, wrapDispatchErr(step.ID, bErr)
+			}
 			return nil, wrapDispatchErr(step.ID, e.execRunAgent(taskID, step, wfExec, ctx))
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)
+		case StepBestOfN:
+			comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
+			if errors.Is(err, errBestOfNParked) {
+				return nil, errBestOfNParked
+			}
+			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPushBranch, StepCreatePR:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -488,6 +551,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execSyncBranch(taskID, step)
 	case StepResumeWorkflow:
 		return e.execResumeWorkflow(taskID, step, wfExec)
+	case StepPromoteBestOfN:
+		return e.execPromoteBestOfN(taskID, step)
 	case StepPushBranch:
 		return e.execPushBranch(taskID, step, wfExec, t)
 	case StepCreatePR:

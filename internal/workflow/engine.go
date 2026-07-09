@@ -139,6 +139,7 @@ type BranchSyncer interface {
 // operates with a nil getter (step skips), so unit tests need not wire one.
 type CheckConfigGetter interface {
 	VerifyCommands(ctx context.Context, taskID string) []string
+	SetupCommands(ctx context.Context, taskID string) []string
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
@@ -267,6 +268,8 @@ type Engine struct {
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
 	recorder         ArtifactRecorder
+	costBudget       CostBudgetChecker
+	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	logger           *slog.Logger
 	ctx              context.Context
@@ -278,12 +281,14 @@ type Engine struct {
 	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
 	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
 	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -306,6 +311,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agentSteps:       make(map[string]agentEntry),
 		dispatchingStep:  make(map[string]int),
 		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]struct{}),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
@@ -374,6 +380,17 @@ func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 // tests remain unchanged.
 func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
 
+// SetCostBudgetChecker wires the cumulative task cost-budget preflight used
+// by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it
+// unset skips the preflight — see CostBudgetChecker's doc comment.
+func (e *Engine) SetCostBudgetChecker(c CostBudgetChecker) { e.costBudget = c }
+
+// SetAttemptWorktreeManager wires the isolated per-attempt worktree
+// lifecycle used by `best_of_n`/`promote_best_of_n`. Leaving it unset fails
+// those steps closed to human-required — see AttemptWorktreeManager's doc
+// comment.
+func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) { e.attemptWorktrees = m }
+
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.
 func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
@@ -390,6 +407,16 @@ func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetConflictRecovery wires the autonomous branch-conflict recovery callback
+// (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
+// when a push diverges from remote. Same callback agentorch wires for
+// worktree-prep rebase failures — reused here so a self-inflicted divergence
+// discovered at push time (e.g. a reused worktree rebased out from under an
+// earlier merge-based push) gets the same autonomous fix instead of an
+// unconditional human escalation. Leaving it unset preserves the prior
+// behavior: any divergence flips straight to human-required.
+func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

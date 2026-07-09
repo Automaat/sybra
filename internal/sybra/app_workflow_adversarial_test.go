@@ -102,7 +102,7 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 
 	// Attacker-controlled .sybra.yaml planted directly in the task's own
 	// worktree (e.g. by a compromised implementation agent).
-	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  verify:\n    - echo UNTRUSTED_WORKTREE\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  verify:\n    - echo UNTRUSTED_WORKTREE\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,5 +115,12 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 	got := getter.VerifyCommands(t.Context(), tk.ID)
 	if len(got) != 1 || got[0] != "echo TRUSTED_DEFAULT_BRANCH" {
 		t.Fatalf("VerifyCommands = %#v, want only trusted default-branch command", got)
+	}
+
+	gotSetup := getter.SetupCommands(t.Context(), tk.ID)
+	for _, c := range gotSetup {
+		if c == "echo UNTRUSTED_SETUP" {
+			t.Fatalf("SetupCommands leaked the untrusted worktree setup: %#v", gotSetup)
+		}
 	}
 }

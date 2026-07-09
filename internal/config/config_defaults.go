@@ -190,6 +190,22 @@ func (c *Config) DefaultSandboxMode() string {
 	return mode
 }
 
+// PlaywrightMCPEnabled reports whether test-runner runs should attach a
+// headless Playwright MCP server for visual/console verification. Default
+// false — an operator must opt in.
+func (c *Config) PlaywrightMCPEnabled() bool {
+	return c != nil && c.Agent.PlaywrightMCP.Enabled
+}
+
+// PlaywrightMCPExtraArgs returns the configured extra Playwright MCP launcher
+// args, appended verbatim after --output-dir.
+func (c *Config) PlaywrightMCPExtraArgs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Agent.PlaywrightMCP.ExtraArgs
+}
+
 // SurviveRestartEnabled reports whether agent subprocesses should be
 // detached to survive an app restart and reattached on the next startup.
 // Defaults to true when unset.
@@ -481,7 +497,7 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
@@ -494,7 +510,7 @@ func WriteRawConfig(data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(configFilePerm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -563,6 +579,9 @@ func load(opts loadOptions) (*Config, error) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
+	}
+	if opts.persistLoadReconciles {
+		tightenConfigPerms(path, existingFile)
 	}
 
 	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
@@ -1136,11 +1155,48 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 	}
 }
 
+const (
+	configDirPerm  os.FileMode = 0o700
+	configFilePerm os.FileMode = 0o600
+)
+
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), configFilePerm)
+}
+
+// tightenConfigPerms retrofits the config directory and file to 0o700/0o600
+// on installs created before those became the write-time default (config.yaml
+// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// not fatal — Load must still succeed on read-only or restricted filesystems.
+func tightenConfigPerms(path string, existingFile bool) {
+	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
+	if existingFile {
+		tightenPathPerm(path, configFilePerm, "config file")
+	}
+}
+
+func tightenPathPerm(path string, target os.FileMode, label string) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("config: failed to inspect perms", "path", path, "kind", label, "err", err)
+		}
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		slog.Warn("config: refusing to chmod symlink", "path", path, "kind", label)
+		return
+	}
+	current := info.Mode().Perm()
+	if current&^target == 0 {
+		return
+	}
+	if err := os.Chmod(path, target); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten perms", "path", path, "kind", label, "err", err)
+	}
 }
 
 func configPath() string {

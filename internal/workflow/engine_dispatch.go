@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -38,7 +39,11 @@ func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID s
 	// it. This is what lets a synchronous mechanical workflow (e.g.
 	// simple-task-handoff) cascade into its successor.
 	comp, err := e.startWorkflowLocked(taskID, workflowID, startStepID, vars)
+	if errors.Is(err, errBestOfNParked) {
+		err = nil
+	}
 	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
 	return err
 }
 
@@ -107,7 +112,11 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, var
 	}
 
 	e.logger.Info("workflow.start", "task_id", taskID, "workflow", workflowID, "step", start.ID)
-	return e.executeSteps(taskID, &def, start, wfExec)
+	comp, err := e.executeSteps(taskID, &def, start, wfExec)
+	if errors.Is(err, errBestOfNParked) {
+		return nil, errBestOfNParked
+	}
+	return comp, err
 }
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.
@@ -180,7 +189,10 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	// cleared, or its cascade dispatch re-enters and is dropped. Register the
 	// fire defer *before* the marker-delete defer so LIFO runs it afterwards.
 	var completion *CompletionInfo
-	defer func() { e.fireComplete(completion) }()
+	defer func() {
+		e.fireComplete(completion)
+		e.drainPendingConflictRecovery(taskID)
+	}()
 	defer func() {
 		e.mu.Lock()
 		delete(e.dispatching, taskID)
@@ -202,6 +214,9 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 		return "", nil
 	}
 	comp, sErr := e.startWorkflowLocked(taskID, def.ID, "", vars)
+	if errors.Is(sErr, errBestOfNParked) {
+		sErr = nil
+	}
 	if sErr != nil {
 		return "", fmt.Errorf("start %s: %w", def.ID, sErr)
 	}
