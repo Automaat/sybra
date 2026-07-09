@@ -858,8 +858,9 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 //
 // hadActiveWorkflow must NOT be re-derived here via HasActiveWorkflow: this
 // method runs synchronously inside the very step execution of the workflow
-// it may need to replace (create_pr/push_existing_pr's pushTaskBranch, reached
-// from within simple-task-pr's own start/dispatch call), and using ReplaceWorkflow —
+// it may need to replace (create_pr or push_existing_pr's pushTaskBranch,
+// reached from within simple-task-pr's own start/dispatch call), and using
+// ReplaceWorkflow —
 // rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
