@@ -322,6 +322,13 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	return t, nil
 }
 
+// Touch bumps a task's updated_at and emits task:updated without changing any
+// field. Used to wake the file watcher so out-of-process writers (e.g. a CLI
+// appending a progress entry) can signal the desktop app to refetch.
+func (m *Manager) Touch(id string) (Task, error) {
+	return m.Update(id, Update{})
+}
+
 // Delete removes a task and emits task:deleted.
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)

@@ -106,12 +106,9 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 	if err != nil {
 		return nil
 	}
-	if p.Type != project.ProjectTypeWork {
+	bl := p.WorkBlocklist()
+	if bl == nil {
 		return nil
-	}
-	bl := []string{p.ID, p.Owner, p.Repo}
-	if p.URL != "" {
-		bl = append(bl, p.URL)
 	}
 	return &WorkScrubContext{ProjectID: p.ID, Blocklist: bl}
 }
