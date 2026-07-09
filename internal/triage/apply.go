@@ -37,10 +37,17 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// and generic title/body scanning.
 	projectID := strings.TrimSpace(t.ProjectID)
 	projectType, resolved := projectTypeFor(projectID, projects)
+	// A non-empty t.ProjectID that fails to resolve is stale (renamed/deleted
+	// project) and must be explicitly cleared below if re-resolution also
+	// comes up empty — otherwise the task stays stuck on an unresolvable id.
+	stale := projectID != "" && !resolved
 	if !resolved {
 		projectID = MatchProjectFromIssue(t.Issue, projects)
 		if projectID == "" {
-			projectID = strings.TrimSpace(v.ProjectID)
+			guess := strings.TrimSpace(v.ProjectID)
+			if _, ok := projectTypeFor(guess, projects); ok {
+				projectID = guess
+			}
 		}
 		if projectID == "" {
 			projectID = MatchProject(t.Title, t.Body, projects)
@@ -81,7 +88,7 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	mode := RouteMode(v.Mode, v.Type, projectType)
 	updates["agent_mode"] = mode
 
-	if projectID != "" {
+	if projectID != "" || stale {
 		updates["project_id"] = projectID
 	}
 

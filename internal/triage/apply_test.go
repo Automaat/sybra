@@ -366,6 +366,64 @@ func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("investigate flaky retry loop", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo"},
+	}
+	// Classifier hallucinates/typos a project id that isn't registered.
+	v := Verdict{
+		Title:     "fix(retry): stop flaky retry loop",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "unregistered-org/unregistered-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want empty (unregistered classifier guess must not be persisted)", updated.ProjectID)
+	}
+}
+
+func TestApplyClearsStaleProjectIDWhenReResolutionFails(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// project_id from a project that has since been renamed/deleted, with no
+	// Issue URL and no classifier/title-body match available to re-resolve it.
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("old-org/renamed-repo")})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "refactor(ingestion): split pipeline stages",
+		Size:  "small",
+		Type:  "refactor",
+		Mode:  "headless",
+		Tags:  []string{"backend", "small", "refactor"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want empty (stale id must be cleared, not left dangling)", updated.ProjectID)
+	}
+}
+
 func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	// Create a work-project task that would normally go to planning.
