@@ -950,6 +950,30 @@ func TestPlaywrightMCPExtraArgs(t *testing.T) {
 	}
 }
 
+func TestDefaultHeadlessSteerable(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(true)}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(false)}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.DefaultHeadlessSteerable(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

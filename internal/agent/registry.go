@@ -35,6 +35,7 @@ type Record struct {
 	StartedAt      time.Time `yaml:"started_at"`
 	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
 	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
+	PendingPrompts []string  `yaml:"pending_prompts,omitempty"` // queued follow-up turns
 	OneShot        bool      `yaml:"one_shot,omitempty"`
 	MaxTurns       int       `yaml:"max_turns,omitempty"`
 	// RequirePermissions preserves a codex chat's sandbox/approval choice
