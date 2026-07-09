@@ -6,16 +6,16 @@ import (
 )
 
 // TestExecPushBranch_DivergedRecovery_NestedStartWorkflowFails documents the
-// bug behind local task e8bb0d98: push_branch's divergence-recovery callback
-// runs synchronously inside the very call (StartWorkflowWithVars/
-// DispatchEvent) that already holds e.starting[taskID] for the workflow
-// being recovered. A callback that reacts to the divergence by calling the
-// ordinary StartWorkflowWithVars — the naive "CancelWorkflow then Start"
-// pattern — always observes that marker busy and fails with
-// ErrWorkflowAlreadyActive ("start in progress"), even though nothing else
-// is concurrently touching the task. This is a guaranteed reentrant
-// deadlock, not a transient race; callers must use ReplaceWorkflow instead
-// (see TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds).
+// bug behind local task e8bb0d98: push_branch queues divergence recovery until
+// StartWorkflowWithVars/DispatchEvent releases its per-task markers, then
+// invokes the callback while the original workflow is still non-terminal. A
+// callback that reacts to the divergence by calling the ordinary
+// StartWorkflowWithVars — the naive "CancelWorkflow then Start" pattern —
+// therefore fails with ErrWorkflowAlreadyActive because the task already has
+// an active workflow attached, even though nothing else is concurrently
+// touching it. Callers must use ReplaceWorkflow instead so the recovery
+// workflow takes over atomically (see
+// TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds).
 func TestExecPushBranch_DivergedRecovery_NestedStartWorkflowFails(t *testing.T) {
 	_, wtPath := newPRWorktree(t, "feat/existing-pr")
 	commitFile(t, wtPath, "one.txt", "one")
