@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/prompteval"
@@ -236,8 +237,8 @@ type Engine struct {
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
 // when SetTestingMaxAttempts was never called. Mirrors
-// config.DefaultTestingMaxAttempts (kept as a literal to avoid a config import).
-const defaultTestAttempts = 3
+// config.DefaultTestingMaxAttempts directly.
+const defaultTestAttempts = config.DefaultTestingMaxAttempts
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {

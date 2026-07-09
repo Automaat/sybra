@@ -215,8 +215,13 @@ func (c *Config) InAppBrowserEnabled() bool {
 const DefaultTestingMaxConcurrent = 3
 
 // DefaultTestingMaxAttempts bounds the testing → in-progress re-implementation
-// loop when TestingConfig.MaxAttempts is unset.
-const DefaultTestingMaxAttempts = 3
+// loop when TestingConfig.MaxAttempts is unset. This is a cost backstop, not
+// the primary stall detector — workflow.countValidProductTestAttempts
+// escalates immediately on a genuine stall (same grounded failure fingerprint
+// twice with an intervening code-author run), so a sequence that keeps
+// finding distinct grounded defects should not be starved by a low count
+// here.
+const DefaultTestingMaxAttempts = 10
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {

@@ -1284,3 +1284,21 @@ func TestLoadReconcileKeepsVersionedBackupsPerPriorBuiltinVersion(t *testing.T) 
 		t.Fatal("v1 backup should not be empty")
 	}
 }
+
+func TestTestingMaxAttemptsDefault(t *testing.T) {
+	t.Parallel()
+	var cfg *Config
+	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
+		t.Errorf("nil config TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
+	}
+
+	cfg = &Config{}
+	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
+		t.Errorf("zero-value TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
+	}
+
+	cfg.Testing.MaxAttempts = 5
+	if got := cfg.TestingMaxAttempts(); got != 5 {
+		t.Errorf("configured TestingMaxAttempts() = %d, want 5", got)
+	}
+}
