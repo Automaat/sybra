@@ -150,6 +150,7 @@ export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired,
 export const GetTamperReport = pick(TaskSvc.GetTamperReport, http.GetTamperReport)
 export const GetTask = pick(TaskSvc.GetTask, http.GetTask)
 export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
+export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
 
 // WorkflowService

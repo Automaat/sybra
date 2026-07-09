@@ -26,13 +26,15 @@ const (
 	KindPlan Kind = "plan"
 	// KindTrace holds an append-only NDJSON stream of step-completion events.
 	KindTrace Kind = "trace"
+
+	KindProgress Kind = "progress"
 	// KindGeneric is a catch-all for helper blobs that don't fit the above.
 	KindGeneric Kind = "generic"
 )
 
 func (k Kind) defaultExt() string {
 	switch k {
-	case KindTrace:
+	case KindTrace, KindProgress:
 		return ".jsonl"
 	default:
 		return ".md"
