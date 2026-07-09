@@ -597,7 +597,17 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 
 	cmd := exec.CommandContext(shellCtx, "bash", "-c", command)
 	if step.Config.Dir != "" {
-		cmd.Dir = step.Config.Dir
+		// Rendered the same as Command: lets a shell step target a
+		// dynamically-resolved dir (e.g. best-of-n's canonical worktree,
+		// only known after promote_best_of_n) via {{getvar .Vars "_dir"}}.
+		dir, dErr := RenderTemplate(step.Config.Dir, ctx)
+		if dErr != nil {
+			return StepOutput{}, fmt.Errorf("render dir: %w", dErr)
+		}
+		if strings.TrimSpace(dir) == "" {
+			return StepOutput{}, errors.New("render dir: resolved to empty path")
+		}
+		cmd.Dir = dir
 	}
 
 	// Expose task fields as env vars to avoid shell injection via template interpolation.

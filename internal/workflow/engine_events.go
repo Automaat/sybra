@@ -651,7 +651,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	// tight ResumeStalled loop dispatches a duplicate.
 	hasOutstandingAgent := false
 	for _, entry := range e.agentSteps {
-		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID)) {
+		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID) || bestOfNStepMatches(step, entry.stepID)) {
 			hasOutstandingAgent = true
 			break
 		}
@@ -715,7 +715,7 @@ func (e *Engine) ResumeStalled() {
 		}
 
 		// Only resume async agent steps where no agent is running.
-		if step.Type != StepRunAgent && step.Type != StepParallel {
+		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
