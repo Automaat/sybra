@@ -167,4 +167,13 @@ describe('SideRail', () => {
     const badges = container.querySelectorAll('.rounded-full.bg-success-500')
     expect(badges).toHaveLength(0)
   })
+
+  it('shows the full Inbox count in accessible text while keeping the badge readable', () => {
+    mockNotifications.push(...Array.from({ length: 50 }, (_, i) => ({ id: `n-${i}` })))
+    render(SideRail)
+
+    const badge = screen.getByLabelText('50 notifications')
+    expect(badge.textContent).toBe('50')
+    expect(badge.getAttribute('title')).toBe('50 notifications')
+  })
 })

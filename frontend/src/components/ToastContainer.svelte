@@ -1,3 +1,21 @@
+<script module lang="ts">
+  export function pruneHiddenToastIds(
+    hiddenToastIds: Set<string>,
+    notifications: Array<{ id: string }>,
+  ): Set<string> {
+    const liveIds = new Set(notifications.map((n) => n.id))
+    let hasStaleIds = false
+    for (const id of hiddenToastIds) {
+      if (!liveIds.has(id)) {
+        hasStaleIds = true
+        break
+      }
+    }
+    if (!hasStaleIds) return hiddenToastIds
+    return new Set([...hiddenToastIds].filter((id) => liveIds.has(id)))
+  }
+</script>
+
 <script lang="ts">
   import { notificationStore } from '../stores/notifications.svelte.js'
   import { fly } from 'svelte/transition'
@@ -11,6 +29,15 @@
   // must survive in the Inbox after its toast auto-dismisses (see
   // Notifications.svelte). Only the inbox's explicit dismiss/clear removes it.
   let hiddenToastIds = $state<Set<string>>(new Set())
+
+  // Once a notification leaves the store, its toast-dismissal marker can go
+  // too; otherwise this set grows for the lifetime of the session.
+  $effect(() => {
+    const pruned = pruneHiddenToastIds(hiddenToastIds, notificationStore.notifications)
+    if (pruned !== hiddenToastIds) {
+      hiddenToastIds = pruned
+    }
+  })
 
   // Slice the top 3 from the full list FIRST, then drop hidden ones. Hiding a
   // toast must never backfill an older notification that was pushed past the

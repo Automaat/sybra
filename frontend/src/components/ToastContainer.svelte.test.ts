@@ -20,7 +20,9 @@ vi.mock('../stores/notifications.svelte.js', () => ({
   },
 }))
 
-const ToastContainer = (await import('./ToastContainer.svelte')).default
+const toastContainerModule = await import('./ToastContainer.svelte')
+const ToastContainer = toastContainerModule.default
+const { pruneHiddenToastIds } = toastContainerModule
 
 function makeNotification(overrides: Record<string, unknown> = {}) {
   return {
@@ -138,5 +140,19 @@ describe('ToastContainer', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('prunes hidden IDs that no longer exist in the notification list', () => {
+    const hidden = new Set(['keep', 'drop'])
+    const pruned = pruneHiddenToastIds(hidden, [makeNotification({ id: 'keep' })])
+
+    expect([...pruned]).toEqual(['keep'])
+  })
+
+  it('reuses the same hidden-ID set when there is nothing to prune', () => {
+    const hidden = new Set(['keep'])
+    const pruned = pruneHiddenToastIds(hidden, [makeNotification({ id: 'keep' })])
+
+    expect(pruned).toBe(hidden)
   })
 })
