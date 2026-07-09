@@ -1,16 +1,123 @@
 package review
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 const linkedPRDriftWindow = 10 * time.Minute
+
+// reconciledLatchTag marks a task whose human-required blocker was already
+// auto-reconciled by reconcileHumanRequiredBlockers, so a later poll cycle
+// (which would otherwise see the same task, now back in-review, cycle to
+// human-required again on a fresh unrelated failure, and re-match the old
+// reason text) never double-reconciles the same escalation.
+const reconciledLatchTag = "monitor:reconciled"
+
+// prMonitorExhaustedReasonRe matches the status_reason text escalateExhaustedFix
+// writes when a pr-fix retry budget is spent, capturing the issue kind.
+var prMonitorExhaustedReasonRe = regexp.MustCompile(`^pr-monitor: auto-fix exhausted after \d+ attempts \((\w+)\) — needs a human$`)
+
+// humanRequiredBlockerReconcilable reports whether t is a human-required task
+// parked solely by the pr-monitor auto-fix-exhausted escalation for a
+// ci_failure or conflict issue — the only kinds a live PR probe can decide
+// resolved itself. Excludes watchdog stops, tamper flags, comment-review
+// exhaustion (no CI-state probe can tell whether reviewer feedback was
+// actually addressed), human-authored reasons, and tasks already reconciled
+// once (latch tag present, to prevent flip-flopping).
+func humanRequiredBlockerReconcilable(t *task.Task) (kind string, ok bool) {
+	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
+		return "", false
+	}
+	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {
+		return "", false
+	}
+	if slices.Contains(t.Tags, reconciledLatchTag) {
+		return "", false
+	}
+	reason := strings.TrimSpace(t.StatusReason)
+	if workflow.IsTamperFlaggedReason(reason) {
+		return "", false
+	}
+	m := prMonitorExhaustedReasonRe.FindStringSubmatch(reason)
+	if m == nil {
+		return "", false
+	}
+	kind = m[1]
+	if kind != string(github.PRIssueCIFailure) && kind != string(github.PRIssueConflict) {
+		return "", false
+	}
+	return kind, true
+}
+
+// reconcileHumanRequiredBlockers re-probes the linked PR of every task
+// eligible per humanRequiredBlockerReconcilable and moves it back to
+// in-review when the PR is unambiguously ready: open, mergeable, CI green,
+// and nothing still pending. Any other outcome (pending/failed/unknown/empty
+// CI, not mergeable, closed, or a fetch error) leaves the task parked — an
+// empty CIStatus must fail closed here (unlike the general-purpose
+// PRState.Resolved(), which treats it as passing) because a task landed in
+// human-required specifically for a CI failure, so "no CI signal at all" is
+// far more likely a fetch/config gap than a genuinely check-less PR.
+func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task) {
+	fetchFn := github.FetchPRState
+	if r.fetchPRStateFn != nil {
+		fetchFn = r.fetchPRStateFn
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		kind, ok := humanRequiredBlockerReconcilable(t)
+		if !ok || t.ProjectID == "" {
+			continue
+		}
+
+		state, err := fetchFn(t.ProjectID, t.PRNumber)
+		if err != nil {
+			r.logger.Info("pr-monitor.reconcile-blocker.probe-failed",
+				"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "err", err)
+			continue
+		}
+		ciStatus := state.CIStatus()
+		ready := state.State == "OPEN" && state.Mergeable == "MERGEABLE" &&
+			ciStatus == "SUCCESS" && !state.HasPendingChecks()
+		if !ready {
+			r.logger.Info("pr-monitor.reconcile-blocker.not-ready",
+				"task_id", t.ID, "pr", t.PRNumber, "kind", kind,
+				"state", state.State, "mergeable", state.Mergeable,
+				"ci_status", ciStatus, "pending", state.HasPendingChecks())
+			continue
+		}
+
+		priorReason := t.StatusReason
+		tags := append(append([]string{}, t.Tags...), reconciledLatchTag)
+		updated, err := r.tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusInReview),
+			StatusReason: task.Ptr(""),
+			Tags:         task.Ptr(tags),
+		})
+		if err != nil {
+			r.logger.Error("pr-monitor.reconcile-blocker", "task_id", t.ID, "err", err)
+			continue
+		}
+		tasks[i] = updated
+
+		r.logAudit(audit.EventPRBlockerReconciled, t.ID, "", map[string]any{
+			"pr": t.PRNumber, "kind": kind, "prior_reason": priorReason,
+			"probe": map[string]any{
+				"state": state.State, "mergeable": state.Mergeable, "ci_status": ciStatus,
+			},
+		})
+		r.logger.Info("pr-monitor.reconcile-blocker",
+			"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "prior_reason", priorReason)
+	}
+}
 
 // reconcilePRPhases recomputes the lifecycle phase of every outbound own-PR
 // task (status in-review/ready-review, not tag `review`) from the live

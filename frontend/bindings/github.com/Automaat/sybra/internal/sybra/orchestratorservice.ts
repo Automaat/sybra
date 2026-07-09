@@ -29,9 +29,10 @@ export function IsOrchestratorRunning(): $CancellablePromise<boolean> {
 /**
  * StartOrchestrator launches the orchestrator as an in-app conversational
  * Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
- * The orchestrator bootstraps its own monitor loop via CronCreate on first
- * turn, as instructed by orchestrator/CLAUDE.md, so this run stays pinned to
- * Claude even when generic task agents can fail over to another provider.
+ * The detector/dispatch loop runs in-process in the Go backend (see
+ * LifecycleManager.startMonitorService); this session handles the
+ * judgment-driven work on top of it, so it stays pinned to Claude even when
+ * generic task agents can fail over to another provider.
  */
 export function StartOrchestrator(): $CancellablePromise<void> {
     return $Call.ByID(4069016469);

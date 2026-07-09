@@ -144,8 +144,6 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `orchestrator.auto_triage` | `bool` |  |  |
-| `orchestrator.auto_plan` | `bool` |  |  |
 | `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
 | `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
 

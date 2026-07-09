@@ -8,23 +8,20 @@ This session runs in-app as a conversational Claude agent (stream-json over
 stdin/stdout, not tmux). Your output streams into a bounded box on the
 Orchestrator page, so prefer concise updates over verbose narration.
 
-## Starting the monitor loop
+## Monitor loop
 
-On every session start, immediately set up the recurring monitor cycle via
-CronCreate:
+The detector/dispatch cycle described below (triage, PR-gap detection,
+failure detection, health checks) runs in-process inside the Sybra Go
+backend — it is not something this session schedules on a recurring cron
+trigger. The legacy monitor skill mentioned in older docs is deprecated for
+that reason.
 
-```
-CronCreate(schedule="*/5 * * * *", prompt="/sybra-monitor")
-```
-
-Do this before any other work. If a cron job with this prompt already exists,
-skip creation. The monitor loop drives your core work cycle — without it you
-will only act once and then idle.
-
-Sybra's Go watchdog reads `~/.sybra/logs/monitor-heartbeat` on a 1-minute
-tick to detect a dead cron. The `/sybra-monitor` skill writes that file on
-every cycle — if you edit the skill, keep the heartbeat write intact or the
-watchdog will force-restart your session within ~12 minutes.
+Your job as the orchestrator session is judgment-driven work the in-process
+monitor cannot do on its own: triaging ambiguous tasks, reviewing plans,
+deciding on escalations, and reacting to findings the monitor surfaces (e.g.
+via the `monitor:report` event or `sybra-cli monitor scan`). Use
+`sybra-cli --json board` and `sybra-cli --json audit --since 7d --summary` to
+check in on board health periodically rather than waiting to be re-invoked.
 
 ## Core Loop
 

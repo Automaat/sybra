@@ -286,6 +286,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	r.scanForReverts(ctx, tasks)
 	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
+	r.reconcileHumanRequiredBlockers(tasks)
 	r.closeFinishedReviewTasks(tasks, nil)
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
@@ -409,6 +410,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// that whole package is out of scope for this pass.
 	r.reconcileReviewPhases(tasks, summary) //nolint:contextcheck // github package's legacy ctx-less gh path, see comment above
 	r.reconcilePRPhases(tasks, monitoredPRs)
+	r.reconcileHumanRequiredBlockers(tasks)
 	r.closeFinishedReviewTasks(tasks, openReviewPRs(summary))
 	r.maybeArmNativeAutoMerge(tasks, monitoredPRs, issues)
 
