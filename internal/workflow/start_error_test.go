@@ -62,6 +62,12 @@ func TestClassifyAgentStartError(t *testing.T) {
 			wantPermanent: true,
 			wantContains:  "no project could be assigned",
 		},
+		{
+			name:          "task cost exceeded is permanent",
+			err:           fmt.Errorf("start agent: %w: $25.00 spent across 5 run(s), limit $25.00", ErrTaskCostExceeded),
+			wantPermanent: true,
+			wantContains:  "task cumulative cost exceeds agent.max_task_cost_usd",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

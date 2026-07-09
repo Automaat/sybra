@@ -24,6 +24,14 @@ import (
 // running for the next instance to reattach.
 var errSurviveShutdown = errors.New("agent: detached, leaving process running for reattach")
 
+// errStoppedPendingReap is recorded as the agent's exit error when an
+// intentional stop (guardrail kill or StopAgent) signalled the subprocess but
+// it had not been reaped by cmd.Wait() within drainTimeout. Without this,
+// finalizeRun/OnComplete would see a nil ExitErr — the zero value carried
+// over from before the kill — and misreport the killed partial run as a
+// clean success in cost/audit metrics.
+var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
+
 // headlessTailPoll is how often the detached/reattached tailer polls the
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
@@ -301,6 +309,9 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	select {
 	case <-procDone:
 	default:
+		if a.WasStopped() {
+			a.SetExitErr(errStoppedPendingReap)
+		}
 		return false, nil
 	}
 
@@ -404,8 +415,9 @@ func resultStreamError(streamEvents []StreamEvent) error {
 
 // drainTimeout bounds how long the tailer waits for a process it just
 // asked to stop (guardrail kill or StopAgent) to actually exit before it
-// gives up and finalizes anyway.
-const drainTimeout = stopSIGINTGrace + 2*time.Second
+// gives up and finalizes anyway. Var (not const) so tests can shrink it
+// instead of waiting out the real grace window.
+var drainTimeout = stopSIGINTGrace + 2*time.Second
 
 // tailHeadlessFile follows an NDJSON log file written by a detached or
 // reattached subprocess, feeding each complete line through

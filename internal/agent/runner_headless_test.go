@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1084,6 +1086,71 @@ func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	}
 	if got := a.EscalationReason; got != "cost" {
 		t.Errorf("EscalationReason = %q, want cost", got)
+	}
+}
+
+// TestGuardrails_CostKillRaceSetsExitErr verifies the fix for the
+// kill-returns-success bug: when a guardrail-killed detached subprocess is
+// not reaped within drainTimeout, the attempt must still record a non-nil
+// ExitErr instead of silently leaving it nil (the zero value), which would
+// make finalizeRun/OnComplete misreport the killed partial run as a clean
+// success. Shrinks drainTimeout and uses a fake claude that ignores SIGINT
+// so the race window is reliably hit without waiting out the real grace.
+func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
+	prevDrain := drainTimeout
+	drainTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prevDrain })
+
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\n" +
+		"trap '' INT TERM\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"sess-race\",\"total_cost_usd\":11.0,\"total_input_tokens\":1,\"total_output_tokens\":1}'\n" +
+		"sleep 10\n"
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: t.TempDir(),
+	})
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
+
+	ag, err := m.Run(RunConfig{
+		TaskID:             "task-race",
+		Name:               "implementation: race",
+		Mode:               "headless",
+		Prompt:             "trigger guardrail kill",
+		Dir:                t.TempDir(),
+		RequirePermissions: false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The fake process ignores SIGINT/SIGTERM and finalizeRun's early return
+	// (the very race under test) closes ag.done before signalKill's SIGKILL
+	// escalation grace elapses, so nothing else in the runner ever kills it.
+	// Force it directly so the runner's own cmd.Wait() goroutine unblocks
+	// instead of leaking past the test.
+	t.Cleanup(func() {
+		if cmd := ag.GetCmd(); cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		time.Sleep(200 * time.Millisecond)
+	})
+
+	// finalizeRun (and the close of ag.done) must not block on the slow
+	// subprocess reap — it happens on the shrunk drainTimeout, well before
+	// the real SIGKILL escalation (stopSIGINTGrace) would land.
+	waitForAgentDone(t, ag, 3*time.Second)
+
+	if !ag.WasStopped() {
+		t.Fatal("expected WasStopped=true after guardrail kill")
+	}
+	if ag.GetExitErr() == nil {
+		t.Fatal("ExitErr = nil after a guardrail kill raced the reap — finalizeRun/OnComplete will misreport this killed run as a clean success")
 	}
 }
 

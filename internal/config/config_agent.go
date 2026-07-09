@@ -8,6 +8,14 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
+	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
+	// where each retry stays under the per-run cap but the task's total spend
+	// still balloons unbounded. Checked once per dispatch, before an agent is
+	// started — StartAgentWithAssignment refuses to start and flips the task
+	// to human-required when the task's already-recorded AgentRuns.CostUSD sum
+	// meets or exceeds this. 0 (default) disables the check.
+	MaxTaskCostUSD float64 `yaml:"max_task_cost_usd" json:"maxTaskCostUsd"`
 	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
 	// escalation is auto-continued. Default 0.8 when unset.
 	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
