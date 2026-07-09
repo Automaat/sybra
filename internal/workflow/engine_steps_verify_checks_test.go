@@ -177,7 +177,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
+	failed, _, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
 	}
@@ -189,6 +189,16 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	}
 }
 
+func writeFakeNPMScript(t *testing.T, script string) {
+	t.Helper()
+	bin := t.TempDir()
+	npmPath := filepath.Join(bin, "npm")
+	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake npm: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // writeFakeNPM installs a stub `npm` on PATH that only understands `npm ci`:
 // it recreates node_modules/.bin and node_modules/.package-lock.json in the
 // current directory, mirroring what a real `npm ci` does for the purposes of
@@ -196,18 +206,13 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 // exercise the "repair itself fails" path.
 func writeFakeNPM(t *testing.T, succeed bool) {
 	t.Helper()
-	bin := t.TempDir()
 	script := "#!/bin/sh\n"
 	if succeed {
 		script += "if [ \"$1\" = \"ci\" ]; then mkdir -p node_modules/.bin && touch node_modules/.package-lock.json && exit 0; fi\nexit 1\n"
 	} else {
 		script += "exit 1\n"
 	}
-	npmPath := filepath.Join(bin, "npm")
-	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake npm: %v", err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFakeNPMScript(t, script)
 }
 
 // makeCorruptedNodeModules creates dir/node_modules missing .bin and
@@ -220,6 +225,9 @@ func makeCorruptedNodeModules(t *testing.T, dir string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write package-lock.json: %v", err)
 	}
 }
 
@@ -240,6 +248,22 @@ func TestFindCorruptedNodeModules(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(healthyDir, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(healthyDir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// pnpm/yarn-style project: package.json and broken node_modules are not
+	// enough to run an npm-specific repair without package-lock.json.
+	nonNpmDir := filepath.Join(root, "pnpm-app")
+	if err := os.MkdirAll(filepath.Join(nonNpmDir, "node_modules", "some-pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nonNpmDir, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nonNpmDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 9\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -282,6 +306,61 @@ func TestExecVerifyChecks_NodeModulesRepairRecoversFromCorruption(t *testing.T) 
 	}
 }
 
+func TestExecVerifyChecks_NodeModulesRepairCancelSkips(t *testing.T) {
+	// Not t.Parallel(): mutates PATH and installs a fake npm.
+	writeFakeNPMScript(t, "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then touch npm-started; while :; do :; done; fi\nexit 1\n")
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	frontend := filepath.Join(wt, "frontend")
+	makeCorruptedNodeModules(t, frontend)
+
+	cmd := "cd frontend && test -d node_modules/.bin"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	parentCtx, cancel := context.WithCancel(context.Background())
+	engine.SetContext(parentCtx)
+	t.Cleanup(cancel)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	type result struct {
+		out StepOutput
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+		done <- result{out: out, err: err}
+	}()
+
+	started := filepath.Join(frontend, "npm-started")
+	deadline := time.After(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("fake npm ci did not start")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("unexpected error: %v", res.err)
+		}
+		if res.out.Output != "skipped: context canceled" {
+			t.Fatalf("Output = %q, want skipped: context canceled", res.out.Output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("execVerifyChecks did not return after engine context cancellation")
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged after engine cancellation", ti.Status)
+	}
+}
+
 func TestExecVerifyChecks_NodeModulesRepairFailureStillBlocks(t *testing.T) {
 	// Not t.Parallel(): writeFakeNPM uses t.Setenv, which forbids it.
 	writeFakeNPM(t, false) // repair itself fails every time
@@ -302,6 +381,31 @@ func TestExecVerifyChecks_NodeModulesRepairFailureStillBlocks(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_NodeModulesRepairScopesToFailedCommandDir(t *testing.T) {
+	// Not t.Parallel(): writeFakeNPM uses t.Setenv, which forbids it.
+	writeFakeNPM(t, true)
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	frontend := filepath.Join(wt, "frontend")
+	docs := filepath.Join(wt, "docs")
+	makeCorruptedNodeModules(t, frontend)
+	makeCorruptedNodeModules(t, docs)
+
+	cmd := "cd frontend && test -d node_modules/.bin"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if _, err := os.Stat(filepath.Join(docs, "node_modules", ".bin")); err == nil {
+		t.Fatal("unrelated docs/node_modules was repaired")
 	}
 }
 

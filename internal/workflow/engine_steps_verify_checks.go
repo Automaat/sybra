@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,6 +45,11 @@ const verifyChecksTimeoutRetries = 1
 // descends into the worktree, so a repo with a deep source layout doesn't
 // pay for a full-tree walk on every verify run.
 const nodeModulesRepairMaxDepth = 3
+
+// nodeModulesRepairTimeoutCap bounds the best-effort npm repair step. The
+// verify suite gets a larger budget because it is the project-declared gate;
+// repair is only an infra recovery attempt before retrying the failed command.
+const nodeModulesRepairTimeoutCap = 3 * time.Minute
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -104,20 +110,24 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 		return stepDone(step, "skipped: no worktree for task")
 	}
 
-	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
+	failedCmd, failedIndex, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	var repairDirs []string
 	repairSucceeded := false
 	if failedCmd != "" && runErr == nil {
-		repairDirs = findCorruptedNodeModules(wtPath)
+		repairDirs = findCorruptedNodeModules(verifyCommandScanRoot(wtPath, failedCmd))
 		if len(repairDirs) > 0 {
-			repairSucceeded = e.repairCorruptedNodeModules(taskID, repairDirs, timeout)
-			if repairSucceeded {
+			var repairErr error
+			repairSucceeded, repairErr = e.repairCorruptedNodeModules(taskID, repairDirs, nodeModulesRepairTimeout(timeout))
+			if repairErr != nil {
+				runErr = repairErr
+			} else if repairSucceeded {
 				retryCmds := cmds
-				if idx := slices.Index(cmds, failedCmd); idx >= 0 {
-					retryCmds = cmds[idx:]
+				if failedIndex >= 0 {
+					retryCmds = cmds[failedIndex:]
 				}
-				retryFailed, retryOutput, retryErr := e.runVerifySuiteWithRetry(taskID, wtPath, retryCmds, timeout, step.ID)
+				retryFailed, _, retryOutput, retryErr :=
+					e.runVerifySuiteWithRetry(taskID, wtPath, retryCmds, timeout, step.ID)
 				output += retryOutput
 				if retryErr == nil {
 					failedCmd, runErr = retryFailed, nil
@@ -169,21 +179,27 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
-func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
+func (e *Engine) runVerifySuiteWithRetry(
+	taskID, wtPath string,
+	cmds []string,
+	timeout time.Duration,
+	stepID string,
+) (failedCmd string, failedIndex int, output string, runErr error) {
+	failedIndex = -1
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, wtPath)
-		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+		failedCmd, failedIndex, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 		cancel()
 		if !errors.Is(runErr, context.DeadlineExceeded) || e.ctx.Err() != nil {
-			return failedCmd, output, runErr
+			return failedCmd, failedIndex, output, runErr
 		}
 		if attempt < verifyChecksTimeoutRetries {
 			e.logger.Warn("workflow.verify-checks.timeout-retry",
 				"task_id", taskID, "step", stepID, "attempt", attempt+1, "budget", timeout.String())
 		}
 	}
-	return failedCmd, output, runErr
+	return failedCmd, failedIndex, output, runErr
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
@@ -209,7 +225,7 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 	}
 }
 
-// findCorruptedNodeModules scans wtPath (bounded depth) for npm-project
+// findCorruptedNodeModules scans rootPath (bounded depth) for npm-project
 // directories whose node_modules was left in a structurally broken state —
 // the signature of an `npm ci`/install killed mid-write (e.g. by host memory
 // pressure reaping the process): node_modules exists but is missing .bin/ or
@@ -217,7 +233,7 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 // not found" even though the code under test never touched the frontend. A
 // wholesale-missing node_modules (never installed) is left alone — that is a
 // setup-command problem, not something this gate should paper over.
-func findCorruptedNodeModules(wtPath string) []string {
+func findCorruptedNodeModules(rootPath string) []string {
 	var corrupted []string
 	var walk func(dir string, depth int)
 	walk = func(dir string, depth int) {
@@ -229,10 +245,16 @@ func findCorruptedNodeModules(wtPath string) []string {
 			return
 		}
 		hasPackageJSON := false
+		hasPackageLock := false
 		for _, entry := range entries {
-			if !entry.IsDir() && entry.Name() == "package.json" {
+			if entry.IsDir() {
+				continue
+			}
+			switch entry.Name() {
+			case "package.json":
 				hasPackageJSON = true
-				break
+			case "package-lock.json":
+				hasPackageLock = true
 			}
 		}
 		for _, entry := range entries {
@@ -244,7 +266,7 @@ func findCorruptedNodeModules(wtPath string) []string {
 				continue
 			}
 			if name == "node_modules" {
-				if hasPackageJSON && isCorruptedNodeModules(filepath.Join(dir, name)) {
+				if hasPackageJSON && hasPackageLock && isCorruptedNodeModules(filepath.Join(dir, name)) {
 					corrupted = append(corrupted, dir)
 				}
 				continue // never descend into node_modules itself
@@ -252,8 +274,40 @@ func findCorruptedNodeModules(wtPath string) []string {
 			walk(filepath.Join(dir, name), depth+1)
 		}
 	}
-	walk(wtPath, 0)
+	walk(rootPath, 0)
 	return corrupted
+}
+
+func verifyCommandScanRoot(wtPath, rawCmd string) string {
+	dir, ok := leadingShellCD(rawCmd)
+	if !ok {
+		return wtPath
+	}
+	clean := filepath.Clean(strings.Trim(dir, `"'`))
+	if clean == "." || filepath.IsAbs(clean) {
+		return wtPath
+	}
+	root := filepath.Join(wtPath, clean)
+	rel, err := filepath.Rel(wtPath, root)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return wtPath
+	}
+	return root
+}
+
+func leadingShellCD(rawCmd string) (string, bool) {
+	cmd := strings.TrimSpace(rawCmd)
+	if !strings.HasPrefix(cmd, "cd ") {
+		return "", false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(cmd, "cd "))
+	for _, sep := range []string{"&&", ";"} {
+		if before, _, ok := strings.Cut(rest, sep); ok {
+			dir := strings.TrimSpace(before)
+			return dir, dir != ""
+		}
+	}
+	return "", false
 }
 
 // isCorruptedNodeModules reports whether nodeModulesPath looks like a
@@ -275,16 +329,23 @@ func isCorruptedNodeModules(nodeModulesPath string) bool {
 // itself fails, since that signals a real problem (missing lockfile, no
 // network) rather than a recoverable partial install; the caller then falls
 // through to its normal fail-and-block path instead of masking it.
-func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeout time.Duration) bool {
+func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeout time.Duration) (bool, error) {
 	repaired := true
 	for _, dir := range dirs {
+		if ctxErr := e.ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
 		e.logger.Warn("workflow.verify-checks.node-modules-corrupted", "task_id", taskID, "dir", dir)
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, dir)
-		cmd := exec.CommandContext(ctx, "sh", "-c", "npm ci")
+		cmd := exec.CommandContext(ctx, "npm", "ci")
 		cmd.Dir = dir
 		out, runErr := cmd.CombinedOutput()
+		ctxErr := e.ctx.Err()
 		cancel()
+		if ctxErr != nil {
+			return false, ctxErr
+		}
 		if runErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
 				"task_id", taskID, "dir", dir, "err", runErr, "output", tailString(string(out), 2000))
@@ -293,7 +354,14 @@ func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeou
 		}
 		e.logger.Info("workflow.verify-checks.node-modules-repaired", "task_id", taskID, "dir", dir)
 	}
-	return repaired
+	return repaired, nil
+}
+
+func nodeModulesRepairTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > nodeModulesRepairTimeoutCap {
+		return nodeModulesRepairTimeoutCap
+	}
+	return timeout
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {
@@ -309,13 +377,17 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 // spent; the caller decides the policy (fail closed on our deadline, open on
 // shutdown). Output streams into a fixed-size tail buffer so a flood of
 // stdout/stderr cannot exhaust memory.
-func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
+func (e *Engine) runVerifyCommands(
+	ctx context.Context,
+	taskID, wtPath string,
+	cmds []string,
+) (failedCmd string, failedIndex int, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
-	for _, raw := range cmds {
+	for idx, raw := range cmds {
 		passed := false
 		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", tail.String(), ctxErr
+				return "", -1, tail.String(), ctxErr
 			}
 			if attempt > 0 {
 				_, _ = fmt.Fprintf(tail,
@@ -335,14 +407,14 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 				break // passed (possibly on retry) — go to the next command
 			}
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", tail.String(), ctxErr // deadline/cancel: do not retry
+				return "", -1, tail.String(), ctxErr // deadline/cancel: do not retry
 			}
 		}
 		if !passed {
-			return raw, tail.String(), nil // failed every attempt → block
+			return raw, idx, tail.String(), nil // failed every attempt → block
 		}
 	}
-	return "", tail.String(), nil
+	return "", -1, tail.String(), nil
 }
 
 // boundedTail is a concurrency-safe io.Writer that retains only the last `max`
