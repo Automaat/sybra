@@ -65,6 +65,8 @@ func init() {
 	// retry loop — tests drive attempt counts via the linker queue.
 	prVerifySleep = func(time.Duration) {}
 	prVerifyBackoffs = []time.Duration{0, 0, 0}
+	// Skip real backoff waits in the classify_task retry loop.
+	classifyTaskRetryBackoffs = []time.Duration{0, 0, 0}
 }
 
 func discardLogger() *slog.Logger {

@@ -17,6 +17,7 @@ import (
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -134,6 +135,24 @@ func TestInitAgentManagerClosesApprovalServerOnFailure(t *testing.T) {
 	}
 }
 
+// fakeTriageClassifier is a deterministic triage.Classifier stand-in for
+// tests: it keeps the task's existing title and always routes it to a small
+// chore, headless, todo — no LLM call involved. Wired into setupTaskService
+// so the builtin simple-task-plan workflow's classify_task step completes
+// the way its old run_agent predecessor did in tests, without a real
+// provider on the other end.
+type fakeTriageClassifier struct{}
+
+func (fakeTriageClassifier) Classify(_ context.Context, t task.Task, _ []project.Project) (triage.Verdict, error) {
+	return triage.Verdict{
+		Title: t.Title,
+		Tags:  []string{"chore", "small"},
+		Size:  "small",
+		Type:  "chore",
+		Mode:  "headless",
+	}, nil
+}
+
 func setupTaskService(t *testing.T) (*TaskService, *App) {
 	t.Helper()
 	a := setupApp(t)
@@ -150,6 +169,18 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
 	engine := workflow.NewEngine(wfStore, ta, aa, a.logger)
+	// Bind the test context so a background workflow (spawned by CreateTask)
+	// unwinds when the test ends — otherwise classify_task's retry backoff can
+	// outlive the task dir's cleanup and leak a sleeping goroutine.
+	engine.SetContext(t.Context())
+	// The triage step is now a deterministic classify_task step (no agent
+	// dispatch); wire a fake classifier so simple-task-plan's triage step
+	// completes without a real LLM call, mirroring how run_agent steps used
+	// to complete instantly against the mocked agent manager.
+	engine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
 
 	svc := &TaskService{
 		tasks:          a.tasks,
