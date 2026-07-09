@@ -182,7 +182,24 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
+	// Serialize event-driven workflow dispatch attempts per task. The shared
+	// agent.Manager claim only appears once a run_agent step reaches StartAgent;
+	// DispatchEvent needs its own earlier reservation so two callers cannot both
+	// observe "no active workflow" and double-start before any agent claim
+	// exists. Still consult the shared claim too: an out-of-band dispatcher may
+	// already own the task's next agent launch even when the engine has no local
+	// marker yet.
+	e.mu.Lock()
+	if _, busy := e.dispatching[taskID]; busy {
+		e.mu.Unlock()
+		return "", fmt.Errorf("%w: dispatch in progress", ErrWorkflowAlreadyActive)
+	}
+	e.dispatching[taskID] = struct{}{}
+	e.mu.Unlock()
 	if e.agents.IsDispatching(taskID) {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
 		return "", fmt.Errorf("%w: dispatch in progress", ErrWorkflowAlreadyActive)
 	}
 	// If the matched workflow finishes synchronously (a mechanical workflow with
@@ -192,6 +209,11 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	defer func() {
 		e.fireComplete(completion)
 		e.drainPendingConflictRecovery(taskID)
+	}()
+	defer func() {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
 	}()
 
 	t, err := e.tasks.GetTask(taskID)
