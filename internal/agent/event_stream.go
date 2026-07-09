@@ -48,6 +48,12 @@ type StreamEvent struct {
 	// a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
 	// of every CLI background bash task still live after the change. See
 	// Agent.SetBackgroundTaskIDs / Agent.EffectiveHangGrace.
+	//
+	// NOTE: omitempty collapses an empty-but-non-nil "all tasks cleared" slice
+	// into the same absent-key wire form as a nil "no event seen" value. That
+	// REPLACE-semantics distinction is preserved at the Go/ClaudeEvent level
+	// but lost across this JSON boundary — fix the tag when a frontend consumer
+	// that needs the cleared signal actually lands.
 	BackgroundTaskIDs []string `json:"background_task_ids,omitempty"`
 	// ToolCalls is the number of tool_use blocks in this event: all tool uses
 	// in a Claude assistant turn, or a single Codex tool_use. The runner
