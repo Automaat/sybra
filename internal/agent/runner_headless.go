@@ -728,6 +728,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
 				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 		}
+		m.warnIfResultHasLiveBackgroundTasks(a)
 		// Persist the captured session ID so a reattach or restart-stale
 		// recovery can pass --resume. No-op when survival is disabled.
 		if event.SessionID != "" {
@@ -743,6 +744,24 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		}
 	}
 	return false
+}
+
+// warnIfResultHasLiveBackgroundTasks logs a warning when a terminal result
+// event arrives while Sybra's last known state still shows a live CLI
+// background bash task. A headless process exits as soon as its final turn
+// ends and tears down any such task at that point — Sybra cannot make an
+// already-exiting process wait longer. A task killed mid-write (e.g. `npm
+// ci` extracting packages) leaves the worktree silently corrupted, which
+// then fails a later step (verify_checks, build) deterministically and gets
+// misdiagnosed as a code defect instead of an infra one (see task
+// 3aeabb65). The result event is the last point Sybra observes the agent's
+// own view of its live tasks, so it's the only place this can be caught.
+func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
+	if !a.HasBackgroundTasks() {
+		return
+	}
+	m.logger.Warn("agent.headless.result_with_live_background_tasks", "id", a.ID,
+		"hint", "headless turn ended while a background bash task was still running; it will be killed with the process, which can leave partial writes in the worktree")
 }
 
 // checkCostGuardrail hard-stops a headless run on a breach of MaxCostUSD.

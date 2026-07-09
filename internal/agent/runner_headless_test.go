@@ -159,6 +159,66 @@ func TestProcessHeadlessLine_TracksBackgroundTasks(t *testing.T) {
 	}
 }
 
+// TestProcessHeadlessLine_WarnsWhenResultArrivesWithLiveBackgroundTasks locks
+// in the fix for task 3aeabb65: a headless CLI process exits (and kills any
+// live background bash task) as soon as its final turn ends, so the terminal
+// result event is the last point Sybra can observe that a background task
+// was still live — and thus at risk of being killed mid-write. This must
+// surface as a warning so an infra-caused corruption (e.g. a killed `npm ci`)
+// isn't silently misdiagnosed as a code defect downstream.
+func TestProcessHeadlessLine_WarnsWhenResultArrivesWithLiveBackgroundTasks(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	prov := providerByName("claude")
+
+	a := &Agent{ID: "bg-result", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed event must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("result event must not stop the stream")
+	}
+
+	if !strings.Contains(logBuf.String(), "agent.headless.result_with_live_background_tasks") {
+		t.Fatalf("log = %q, want a warning about the live background task at result time", logBuf.String())
+	}
+}
+
+// TestProcessHeadlessLine_NoWarningWhenBackgroundTasksClearedBeforeResult
+// ensures the warning only fires when Sybra's last known state still shows a
+// live background task — a task that legitimately finished and cleared
+// before the result event must not be flagged.
+func TestProcessHeadlessLine_NoWarningWhenBackgroundTasksClearedBeforeResult(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	prov := providerByName("claude")
+
+	a := &Agent{ID: "bg-cleared", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	lastEmit := time.Now().Add(-time.Minute)
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov)
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov)
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov)
+
+	if strings.Contains(logBuf.String(), "agent.headless.result_with_live_background_tasks") {
+		t.Fatalf("log = %q, background tasks cleared before result — should not warn", logBuf.String())
+	}
+}
+
 // TestProcessHeadlessLine_ResultLogOmitsSessionCostForCodex verifies that
 // agent.headless.result drops the meaningless session_id/cost fields for
 // codex (which never reports them), while keeping them for providers that
