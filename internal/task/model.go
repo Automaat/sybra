@@ -189,6 +189,16 @@ func ValidateAgentProvider(s string) (string, error) {
 	return s, nil
 }
 
+// RunOutcomeSuccess and RunOutcomeFailure are the values AgentRun.Outcome
+// takes once a run reaches a definitive terminal result. Left empty for runs
+// that are still in flight or ended in an inconclusive stall (signal kill,
+// stop-before-result, provider rate limit) that is eligible for retry rather
+// than a real success or failure.
+const (
+	RunOutcomeSuccess = "success"
+	RunOutcomeFailure = "failure"
+)
+
 // AgentRun records one dispatch of an agent process against a task: what was
 // asked, which provider/model ran it, how it concluded, and the metadata
 // downstream deterministic routing (test outcome, tamper detection, A/B
@@ -208,6 +218,14 @@ type AgentRun struct {
 	AssignmentKey   string    `json:"assignmentKey,omitempty"`
 	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
 	State           string    `json:"state"`
+	// Outcome records the terminal result the completion handler actually
+	// observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
+	// ("stopped" covers both a clean finish and a failed one) and independent
+	// of Result (truncated to maxResultLen, so its presence/absence cannot
+	// tell success from failure either). Empty means the run never reached a
+	// definitive terminal outcome (still running, or stalled/rate-limited and
+	// due for retry) — callers must not infer success from Outcome == "".
+	Outcome         string    `json:"outcome,omitempty"`
 	StartedAt       time.Time `json:"startedAt"`
 	CostUSD         float64   `json:"costUsd"`
 	PremiumRequests float64   `json:"premiumRequests,omitempty"`

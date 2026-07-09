@@ -753,6 +753,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 
 	patch := RunPatch{
 		State:                  Ptr("done"),
+		Outcome:                Ptr(RunOutcomeSuccess),
 		CostUSD:                Ptr(1.23),
 		PremiumRequests:        Ptr(2.5),
 		Result:                 Ptr("completed with result"),
@@ -802,6 +803,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		AssignmentKey:          "task-abc123",
 		ReasoningEffort:        "high",
 		State:                  "done",
+		Outcome:                RunOutcomeSuccess,
 		CostUSD:                1.23,
 		PremiumRequests:        2.5,
 		Result:                 "completed with result",

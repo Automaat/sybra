@@ -1595,11 +1595,12 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
-// HeadSHA and string verdict/test/session values ignore empty strings, and
-// VerdictRendered is a latch that only ever flips true.
+// HeadSHA, Outcome, and string verdict/test/session values ignore empty
+// strings, and VerdictRendered is a latch that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
 	State   *string
+	Outcome *string
 	Result  *string
 	LogFile *string
 	HeadSHA *string
@@ -1631,6 +1632,9 @@ type RunPatch struct {
 func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	if p.State != nil {
 		run.State = *p.State
+	}
+	if p.Outcome != nil && *p.Outcome != "" {
+		run.Outcome = *p.Outcome
 	}
 	if p.Result != nil {
 		run.Result = *p.Result
