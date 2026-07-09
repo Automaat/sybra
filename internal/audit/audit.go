@@ -3,10 +3,14 @@ package audit
 import "time"
 
 const (
-	EventTaskCreated         = "task.created"
-	EventTaskStatusChanged   = "task.status_changed"
-	EventTaskTamperBlessed   = "task.tamper_blessed"
-	EventTaskDeleted         = "task.deleted"
+	EventTaskCreated       = "task.created"
+	EventTaskStatusChanged = "task.status_changed"
+	EventTaskTamperBlessed = "task.tamper_blessed"
+	EventTaskDeleted       = "task.deleted"
+	// EventTaskDispatched records a human-required task being manually
+	// dispatched back into the workflow (or flipped to in-review) via the
+	// GUI's HumanRequiredPanel / DispatchFromHumanRequired.
+	EventTaskDispatched      = "task.dispatched"
 	EventAgentStarted        = "agent.started"
 	EventAgentCompleted      = "agent.completed"
 	EventAgentFailed         = "agent.failed"

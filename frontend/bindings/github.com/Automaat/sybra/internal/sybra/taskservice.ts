@@ -46,6 +46,26 @@ export function DeleteTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * DispatchFromHumanRequired flips a task parked in human-required to target
+ * (one of in-progress/testing/ready-pr/in-review), recording reason as the
+ * audit-visible status_reason. For dispatching targets it synchronously
+ * re-enters the workflow via task.status_changed; on any failure to do so it
+ * fails closed, reverting the task to human-required with an explanatory
+ * status_reason so the operator is never left with a task silently stuck in
+ * a target status with no workflow driving it.
+ * 
+ * The whole check-then-write sequence runs under the workflow engine's
+ * per-task human-action lock (shared with plan-review's
+ * HandleHumanActionRecovering), so a double-click or a second operator cannot
+ * race the same stuck task between the guard reads and the status write.
+ */
+export function DispatchFromHumanRequired(id: string, target: string, reason: string): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(3753750864, id, target, reason).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * GetTamperReport returns the detector report artifact for a tamper-flagged task.
  */
 export function GetTamperReport(taskID: string): $CancellablePromise<$models.TamperReportDTO> {

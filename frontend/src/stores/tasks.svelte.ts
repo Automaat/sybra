@@ -9,6 +9,7 @@ import {
   RejectPlan,
   SendPlanMessage,
   HasLivePlanAgent,
+  DispatchFromHumanRequired,
 } from '$lib/api'
 import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import { EntityStore } from './entity-store.svelte.js'
@@ -142,6 +143,12 @@ class TaskStore extends EntityStore<Task> {
 
   async hasLivePlanAgent(id: string): Promise<boolean> {
     return HasLivePlanAgent(id)
+  }
+
+  async dispatchFromHumanRequired(id: string, target: string, reason: string): Promise<Task> {
+    const result = await DispatchFromHumanRequired(id, target, reason)
+    this.set(result.id, result)
+    return result
   }
 }
 
