@@ -133,6 +133,16 @@ type Agent struct {
 	// status from the result event rather than the kill signal.
 	completedByResult bool
 
+	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
+	// system event (REPLACE semantics: the full set of currently-live
+	// background bash tasks, e.g. a `run_in_background` Bash call). A CC
+	// process can legitimately emit its terminal result while a task like
+	// `npm ci` is still running in the background, producing no further
+	// NDJSON activity — the post-result-hang guards must not mistake that
+	// silence for a hung/orphaned process and kill it mid-write (task
+	// 3aeabb65: a killed `npm ci` left a corrupted, zero-byte node_modules).
+	backgroundTaskIDs []string
+
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
 	// kill). ShutdownWithGrace leaves detached agents running instead of
@@ -832,6 +842,51 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 		return false
 	}
 	return time.Since(a.LastEventAt) >= grace
+}
+
+// backgroundTaskGrace is the extra idle time granted to a post-result-hang
+// guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
+// while the agent has outstanding CLI background bash tasks. Bounded rather
+// than unlimited so a task that never reports completion (e.g. the CLI
+// process dies without emitting a final background_tasks_changed) can't hang
+// a run forever — the guard still fires, just later, once this is exhausted.
+const backgroundTaskGrace = 15 * time.Minute
+
+// SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
+// background bash tasks, mirroring the REPLACE semantics of the CLI's
+// "background_tasks_changed" system event.
+func (a *Agent) SetBackgroundTaskIDs(ids []string) {
+	// Defensive copy, mirroring SetPluginErrors, so a caller that later mutates
+	// or reuses the passed slice can't race the reader in HasBackgroundTasks.
+	// Preserve nil-ness: a nil "no event seen" snapshot must stay distinct from
+	// an empty non-nil "all tasks cleared" one (REPLACE semantics).
+	var cp []string
+	if ids != nil {
+		cp = make([]string, len(ids))
+		copy(cp, ids)
+	}
+	a.mu.Lock()
+	a.backgroundTaskIDs = cp
+	a.mu.Unlock()
+}
+
+// HasBackgroundTasks reports whether the CLI last reported any live
+// background bash tasks still running.
+func (a *Agent) HasBackgroundTasks() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.backgroundTaskIDs) > 0
+}
+
+// EffectiveHangGrace extends base by backgroundTaskGrace while the agent has
+// outstanding background bash tasks, so a post-result-hang guard idle-timing
+// out on silence doesn't kill a process that's still legitimately waiting on
+// a `run_in_background` command (e.g. npm ci) — see backgroundTaskIDs.
+func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
+	if a.HasBackgroundTasks() {
+		return base + backgroundTaskGrace
+	}
+	return base
 }
 
 func (a *Agent) setCompletedByResult(v bool) {
