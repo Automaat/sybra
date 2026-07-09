@@ -250,10 +250,7 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 	if err != nil || t.Status == task.StatusHumanRequired {
 		return
 	}
-	reason := fmt.Sprintf(
-		"pr-monitor: auto-fix exhausted after %d attempts (%s) — needs a human",
-		github.MaxRetries, issue.Kind,
-	)
+	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),

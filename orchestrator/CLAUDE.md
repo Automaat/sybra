@@ -59,6 +59,7 @@ Complex: new → planning → plan-review → [human approves] → todo → in-p
 | in-review | done | Output verified correct |
 | in-progress | todo | Agent failed, needs retry |
 | human-required | in-progress | Monitor auto-retries once when the stall matches a current open `lost_agent` investigation and is not human-confirmed or tamper-flagged |
+| human-required | in-review | PR-monitor re-probes a task parked on an exhausted `ci_failure` fix; when the blocking check (e.g. DCO) has since cleared on the live PR, it unparks back to review (no human needed) |
 | any | human-required | Cannot proceed without human input |
 
 ## Work Project Rules
