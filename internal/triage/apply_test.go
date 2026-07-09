@@ -325,6 +325,47 @@ func TestApplyIssueURLOutranksClassifierGuess(t *testing.T) {
 	}
 }
 
+func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A project_id set under a prior name that is no longer registered (renamed
+	// or deleted). It must not lock the task to an empty project type.
+	created, err = mgr.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("old-org/renamed-repo"),
+		Issue:     task.Ptr("https://github.com/example-org/example-repo/issues/1"),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "refactor(ingestion): split pipeline stages",
+		Size:  "small",
+		Type:  "refactor",
+		Mode:  "headless",
+		Tags:  []string{"backend", "small", "refactor"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "example-org/example-repo" {
+		t.Errorf("project_id: got %q, want example-org/example-repo (stale ID must re-resolve)", updated.ProjectID)
+	}
+	// Re-resolution must recover the work project type so its forced routing applies.
+	if updated.AgentMode != task.AgentModeInteractive {
+		t.Errorf("mode: got %q, want interactive (work-typed routing must apply after re-resolve)", updated.AgentMode)
+	}
+	if updated.Status != task.StatusPlanning {
+		t.Errorf("status: got %s, want planning", updated.Status)
+	}
+}
+
 func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	// Create a work-project task that would normally go to planning.

@@ -27,29 +27,25 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 
 	// t.ProjectID is sticky: once set (e.g. by the GitHub issue fetcher at
 	// task creation), the classifier's free-text guess must never override
-	// it with a lower-confidence, content-similarity match. Only fill it in
-	// when currently empty, and prefer the task's own Issue URL — the
-	// authoritative source-of-truth link — over the classifier's guess and
-	// generic title/body scanning.
+	// it with a lower-confidence, content-similarity match. But a sticky ID
+	// is only authoritative while it still resolves to a registered project —
+	// a renamed/deleted project leaves a stale ID that would otherwise lock
+	// the task to an empty project type, silently skipping the work-typed
+	// forced-interactive/forced-planning routing. So keep it only when it
+	// resolves; otherwise re-resolve, preferring the task's own Issue URL —
+	// the authoritative source-of-truth link — over the classifier's guess
+	// and generic title/body scanning.
 	projectID := strings.TrimSpace(t.ProjectID)
-	if projectID == "" {
+	projectType, resolved := projectTypeFor(projectID, projects)
+	if !resolved {
 		projectID = MatchProjectFromIssue(t.Issue, projects)
-	}
-	if projectID == "" {
-		projectID = strings.TrimSpace(v.ProjectID)
-	}
-	if projectID == "" {
-		projectID = MatchProject(t.Title, t.Body, projects)
-	}
-
-	projectType := ""
-	if projectID != "" {
-		for i := range projects {
-			if projects[i].ID == projectID {
-				projectType = string(projects[i].Type)
-				break
-			}
+		if projectID == "" {
+			projectID = strings.TrimSpace(v.ProjectID)
 		}
+		if projectID == "" {
+			projectID = MatchProject(t.Title, t.Body, projects)
+		}
+		projectType, _ = projectTypeFor(projectID, projects)
 	}
 
 	newTitle := strings.TrimSpace(v.Title)
@@ -107,6 +103,20 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
 	return updated, nil
+}
+
+// projectTypeFor returns the registered project type for id and whether id
+// resolves to a registered project. An empty id never resolves.
+func projectTypeFor(id string, projects []project.Project) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	for i := range projects {
+		if projects[i].ID == id {
+			return string(projects[i].Type), true
+		}
+	}
+	return "", false
 }
 
 // prependOriginalTitle adds a line preserving the original verbose title
