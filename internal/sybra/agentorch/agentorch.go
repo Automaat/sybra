@@ -437,11 +437,8 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	if t.TaskType == task.TaskTypeUmbrella {
 		return nil, "", fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
 	}
-	if o.cfg != nil && o.cfg.Agent.MaxTaskCostUSD > 0 {
-		if spent := taskCumulativeCostUSD(t.AgentRuns); spent >= o.cfg.Agent.MaxTaskCostUSD {
-			return nil, "", fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
-				workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
-		}
+	if err := o.enforceTaskCostBudget(t); err != nil {
+		return nil, "", err
 	}
 	researchDir := ""
 	if o.cfg != nil {
@@ -518,6 +515,18 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 		total += runs[i].CostUSD
 	}
 	return total
+}
+
+func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
+	if o.cfg == nil || o.cfg.Agent.MaxTaskCostUSD <= 0 {
+		return nil
+	}
+	spent := taskCumulativeCostUSD(t.AgentRuns)
+	if spent < o.cfg.Agent.MaxTaskCostUSD {
+		return nil
+	}
+	return fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
+		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
 }
 
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
@@ -838,6 +847,9 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
+		return err
+	}
+	if err := o.enforceTaskCostBudget(t); err != nil {
 		return err
 	}
 

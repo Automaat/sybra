@@ -32,6 +32,8 @@ var errSurviveShutdown = errors.New("agent: detached, leaving process running fo
 // clean success in cost/audit metrics.
 var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
 
+var errCostGuardrailExceeded = errors.New("agent: cost guardrail exceeded")
+
 // headlessTailPoll is how often the detached/reattached tailer polls the
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
@@ -213,6 +215,11 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	stderrOut := stderrBuf.String()
+	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+		a.SetExitErr(errCostGuardrailExceeded)
+		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
+		return false, nil
+	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
@@ -326,6 +333,11 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	var stderrOut string
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
+	}
+	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+		a.SetExitErr(errCostGuardrailExceeded)
+		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
+		return false, nil
 	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr

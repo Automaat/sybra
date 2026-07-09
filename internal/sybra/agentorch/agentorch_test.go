@@ -130,6 +130,42 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 }
 
+func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
+	t.Parallel()
+
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	created, err := tm.Create("cost-capped pr-fix task", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 8.0, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{MaxTaskCostUSD: 8.0},
+	})
+
+	err = o.StartPRFixAgent(created.ID)
+	if err == nil {
+		t.Fatal("expected pr-fix dispatch to be refused once cumulative task cost meets the cap, got nil error")
+	}
+	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
+		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
+	}
+}
+
 // TestPickImplementationResumeSession pins two regression guards on the
 // resume-session walker:
 //

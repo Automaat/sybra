@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/limits"
@@ -724,7 +725,7 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		Subtype:      raw.Subtype,
 		Text:         raw.Result,
 		SessionID:    raw.SessionID,
-		CostUSD:      raw.TotalCostUSD,
+		CostUSD:      sanitizeCostUSD(raw.TotalCostUSD),
 		InputTokens:  raw.TotalInputTokens,
 		OutputTokens: raw.TotalOutputTokens,
 	}
@@ -749,6 +750,13 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		r.ErrorStatus = raw.APIStatus
 	}
 	return r
+}
+
+func sanitizeCostUSD(cost float64) float64 {
+	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
+		return 0
+	}
+	return cost
 }
 
 // copyRaw returns an independent copy of line as json.RawMessage.

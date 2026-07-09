@@ -1048,10 +1048,9 @@ func TestGuardrails_CostHardStopsStream(t *testing.T) {
 	}
 }
 
-// TestGuardrails_CostHardStopMarksStopped verifies that a cost hard-stop is
-// classified as an intentional Sybra stop, not a provider crash. Completion
-// handling uses WasStopped to clear the workflow step and make the run
-// resumable when a provider session id was captured.
+// TestGuardrails_CostHardStopMarksStopped verifies that a cost hard-stop marks
+// the process as stopped so the runner kills it immediately after the breach
+// and records the reason needed by completion classification.
 func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	input := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
 

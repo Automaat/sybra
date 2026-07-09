@@ -298,7 +298,11 @@ func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultCon
 		return true
 	}
 	rateLimited := isRateLimitedRun(ag, exitErr)
-	stopStalled := ag.WasStopped() && !ag.WasCompletedByResult()
+	// Cost guardrails intentionally hard-stop the subprocess, but they are a
+	// budget failure, not an infra stall. Let them flow through the bounded
+	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
+	stopStalled := ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
 	if isSignalKill(exitErr) || stopStalled || rateLimited {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
