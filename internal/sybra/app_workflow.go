@@ -313,7 +313,9 @@ type worktreeGetterAdapter struct {
 }
 
 // checkConfigGetterAdapter resolves a task's verify-suite commands by merging
-// the repo `.sybra.yaml` checks with the app-level project config.
+// the repo `.sybra.yaml` checks (read from the project's trusted default
+// branch, never the checked-out worktree — see resolveTrustedSetupCommands
+// and issue #1519) with the app-level project config.
 type checkConfigGetterAdapter struct {
 	tasks    *task.Manager
 	projects *project.Store
@@ -371,13 +373,18 @@ func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
 		return nil
 	}
 	var repoChecks *project.ChecksConfig
-	if repoCfg, rErr := project.LoadRepoConfig(wtPath); rErr == nil && repoCfg != nil {
-		repoChecks = repoCfg.Checks
-	}
 	var appChecks *project.ChecksConfig
 	if t.ProjectID != "" {
 		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
 			appChecks = p.Checks
+			// Read checks.verify from the project's trusted default branch,
+			// never the checked-out worktree: the worktree's own .sybra.yaml
+			// may carry a malicious `checks.verify` planted by a compromised
+			// or prompt-injected agent, and these commands run unsandboxed
+			// via `sh -c` (see resolveTrustedSetupCommands, issue #1519).
+			if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(context.Background(), p.ClonePath); rErr == nil && repoCfg != nil {
+				repoChecks = repoCfg.Checks
+			}
 		}
 	}
 	merged := project.MergeChecks(repoChecks, appChecks)
