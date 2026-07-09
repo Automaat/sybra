@@ -1,17 +1,27 @@
 import { EventsOn, ListNotifications } from '$lib/api'
 import { Level, Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import { Notification as NotificationEvent } from '../lib/events.js'
+import { showBrowserNotification } from '../lib/web-notifications.js'
 
 class NotificationStore {
   notifications = $state<Notification[]>([])
 
+  /** Seeds in-app history only — must never trigger a browser notification. */
   async load(): Promise<void> {
     this.notifications = (await ListNotifications()) ?? []
   }
 
-  listen(): () => void {
+  /**
+   * Subscribes to live backend notification events. onNavigateTask, if given,
+   * is called when the user clicks a browser notification for a task.
+   */
+  listen(onNavigateTask?: (taskId: string) => void): () => void {
     return EventsOn(NotificationEvent, (n: Notification) => {
       this.notifications = [n, ...this.notifications].slice(0, 50)
+      showBrowserNotification(
+        { id: n.id, title: n.title, message: n.message, taskId: n.taskId },
+        onNavigateTask,
+      )
     })
   }
 
