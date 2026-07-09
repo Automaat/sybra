@@ -702,7 +702,7 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetDivergenceRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
-	// to the AgentCompletionHandler constructed there.
+	// to the completion.Handler constructed there.
 }
 
 func (a *App) initAgentConfig() {

@@ -43,6 +43,7 @@ import (
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
@@ -107,7 +108,7 @@ type App struct {
 	dispatchNudge   chan struct{}
 	recovery        *recovery.Recovery
 	snapshotter     *tasksnapshot.Snapshotter
-	agentCompletion *AgentCompletionHandler
+	agentCompletion *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
