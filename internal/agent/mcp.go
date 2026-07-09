@@ -95,16 +95,20 @@ func preflightPlaywrightMCP(wtPath, outputDir string) (string, error) {
 	if wtPath == "" {
 		return "", fmt.Errorf("no worktree dir")
 	}
-	// context.Background(): preparePlaywrightMCP runs inside
-	// Manager.prepareRunConfig, which has no ctx parameter (see the sandbox
-	// injection helpers alongside it).
-	if err := worktree.ExcludeEvidenceDir(context.Background(), wtPath); err != nil {
-		return "", fmt.Errorf("exclude evidence dir: %w", err)
-	}
 	if outputDir == "" {
 		outputDir = filepath.Join(wtPath, worktree.EvidenceDirName)
 	}
-	if err := clearEvidenceOutputDir(wtPath, outputDir); err != nil {
+	relOutputDir, err := validateEvidenceOutputDir(wtPath, outputDir)
+	if err != nil {
+		return "", err
+	}
+	// context.Background(): preparePlaywrightMCP runs inside
+	// Manager.prepareRunConfig, which has no ctx parameter (see the sandbox
+	// injection helpers alongside it).
+	if err := worktree.ExcludeWorktreePath(context.Background(), wtPath, relOutputDir); err != nil {
+		return "", fmt.Errorf("exclude evidence dir: %w", err)
+	}
+	if err := clearEvidenceOutputDir(outputDir); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
@@ -122,14 +126,18 @@ func preflightPlaywrightMCP(wtPath, outputDir string) (string, error) {
 	return outputDir, nil
 }
 
-func clearEvidenceOutputDir(wtPath, outputDir string) error {
+func validateEvidenceOutputDir(wtPath, outputDir string) (string, error) {
 	rel, err := filepath.Rel(wtPath, outputDir)
 	if err != nil {
-		return fmt.Errorf("resolve evidence output dir: %w", err)
+		return "", fmt.Errorf("resolve evidence output dir: %w", err)
 	}
 	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("evidence output dir %q must be inside worktree %q", outputDir, wtPath)
+		return "", fmt.Errorf("evidence output dir %q must be inside worktree %q", outputDir, wtPath)
 	}
+	return filepath.Clean(rel), nil
+}
+
+func clearEvidenceOutputDir(outputDir string) error {
 	if err := os.RemoveAll(outputDir); err != nil {
 		return fmt.Errorf("clear evidence output dir: %w", err)
 	}

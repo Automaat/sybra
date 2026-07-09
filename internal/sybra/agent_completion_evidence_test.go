@@ -32,9 +32,9 @@ func listEvidenceMetas(t *testing.T, store *artifact.Store, taskID string) []art
 		t.Fatal(err)
 	}
 	var out []artifact.Meta
-	for _, m := range metas {
-		if m.Kind == artifact.KindGeneric {
-			out = append(out, m)
+	for i := range metas {
+		if metas[i].Kind == artifact.KindGeneric {
+			out = append(out, metas[i])
 		}
 	}
 	return out
@@ -285,6 +285,34 @@ func TestImportTestRunnerEvidence_ScrubsWorkTypedContent(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "[redacted]") {
 		t.Fatalf("expected redaction placeholder in scrubbed content, got %q", content)
+	}
+}
+
+func TestImportTestRunnerEvidence_SkipsBinaryWorkTypedContent(t *testing.T) {
+	h, store := newEvidenceTestHandler(t)
+	h.workScrub = func(projectID string) *WorkScrubContext {
+		if projectID != "owner/work-repo" {
+			return nil
+		}
+		return &WorkScrubContext{ProjectID: projectID, Blocklist: []string{"konghq/kong-mesh"}}
+	}
+
+	wt := t.TempDir()
+	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pngHeader := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}
+	if err := os.WriteFile(filepath.Join(evidenceDir, "shot.png"), pngHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
+	h.importTestRunnerEvidence(ag, wt, "owner/work-repo")
+
+	metas := listEvidenceMetas(t, store, ag.TaskID)
+	if len(metas) != 0 {
+		t.Fatalf("expected binary work-task evidence to be skipped, got %+v", metas)
 	}
 }
 

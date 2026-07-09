@@ -100,7 +100,7 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		if info, statErr := os.Stat(outputDir); statErr != nil || !info.IsDir() {
 			t.Fatalf("output dir not created: %v", statErr)
 		}
-		if info, statErr := os.Stat(filepath.Join(outputDir, "browsers")); statErr != nil || !info.IsDir() {
+		if info, statErr := os.Stat(filepath.Join(outputDir, worktree.EvidenceBrowsersDirName)); statErr != nil || !info.IsDir() {
 			t.Fatalf("browsers dir not created: %v", statErr)
 		}
 		if info, statErr := os.Stat(filepath.Join(outputDir, worktree.EvidenceNPMCacheDirName)); statErr != nil || !info.IsDir() {
@@ -133,6 +133,13 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		}
 		if outputDir != custom {
 			t.Errorf("outputDir = %q, want %q", outputDir, custom)
+		}
+		out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if len(out) != 0 {
+			t.Fatalf("expected configured evidence dir excluded from git status; got:\n%s", out)
 		}
 	})
 }

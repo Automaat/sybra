@@ -101,6 +101,31 @@ func TestExcludeEvidenceDir_AddsToInfoExclude(t *testing.T) {
 	}
 }
 
+func TestExcludeWorktreePath_AddsRelativePathToInfoExclude(t *testing.T) {
+	wt := t.TempDir()
+	mustRunInDir(t, wt, "git", "init", "-b", "main")
+
+	rel := filepath.Join("custom-evidence", "screens")
+	if err := os.MkdirAll(filepath.Join(wt, rel), 0o755); err != nil {
+		t.Fatalf("mkdir custom evidence dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, rel, "shot.png"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write evidence file: %v", err)
+	}
+
+	if err := ExcludeWorktreePath(context.Background(), wt, rel); err != nil {
+		t.Fatalf("ExcludeWorktreePath: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), rel) {
+		t.Fatalf("expected %s to be ignored by git, got status:\n%s", rel, out)
+	}
+}
+
 func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 	wt := t.TempDir()
 	mustRunInDir(t, wt, "git", "init", "-b", "main")

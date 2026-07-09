@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -29,6 +30,19 @@ const maxEvidenceFileSize = 10 * 1024 * 1024 // 10MB
 // allowed name charset (see artifact.validName) from an evidence file's stem
 // and extension.
 var evidenceNameSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+var textEvidenceExtensions = map[string]struct{}{
+	".csv":  {},
+	".htm":  {},
+	".html": {},
+	".json": {},
+	".log":  {},
+	".md":   {},
+	".txt":  {},
+	".xml":  {},
+	".yaml": {},
+	".yml":  {},
+}
 
 func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
 	if h.tasks == nil || h.worktrees == nil {
@@ -122,8 +136,9 @@ func (h *AgentCompletionHandler) surfaceEvidenceImport(ag *agent.Agent, imported
 // importEvidenceEntry imports a single evidence-dir entry. ok reports whether
 // a file was actually imported (false for a silently-skipped directory or
 // symlink); err is non-nil only for a genuine failure worth logging. scrubCtx
-// is non-nil only for work-typed tasks — when set, content is redacted
-// through scrub.Scrub before it is written to the artifact store.
+// is non-nil only for work-typed tasks — when set, only known text evidence
+// is imported and redacted through scrub.Scrub before it is written to the
+// artifact store.
 func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string, e os.DirEntry, index int, scrubCtx *WorkScrubContext) (ok bool, err error) {
 	info, err := e.Info()
 	if err != nil {
@@ -144,6 +159,9 @@ func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string
 		return false, err
 	}
 	if scrubCtx != nil {
+		if !isTextEvidenceFile(e.Name(), content) {
+			return false, nil
+		}
 		scrubbed, _ := scrub.Scrub(string(content), scrubCtx.Blocklist)
 		content = []byte(scrubbed)
 	}
@@ -158,6 +176,13 @@ func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string
 		return false, err
 	}
 	return true, nil
+}
+
+func isTextEvidenceFile(name string, content []byte) bool {
+	if _, ok := textEvidenceExtensions[strings.ToLower(filepath.Ext(name))]; ok {
+		return true
+	}
+	return !bytes.Contains(content, []byte{0})
 }
 
 // sanitizeEvidenceName derives a store-safe, collision-resistant artifact name
