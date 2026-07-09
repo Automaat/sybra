@@ -11,6 +11,7 @@ export type Page =
   | { kind: 'agents'; tab?: string }
   | { kind: 'agent-detail'; agentId: string }
   | { kind: 'github' }
+  | { kind: 'fleet' }
   | { kind: 'stats' }
   | { kind: 'evaluation' }
   | { kind: 'reviews' }
@@ -150,6 +151,7 @@ class NavStore {
       case 'agents': return 'Agents'
       case 'agent-detail': return 'Agent Detail'
       case 'github': return 'GitHub'
+      case 'fleet': return 'Fleet'
       case 'stats': return 'Stats'
       case 'evaluation': return 'Evaluation'
       case 'reviews': return 'Reviews'
@@ -211,6 +213,8 @@ export function pageToPath(p: Page): string {
       return `/agents/${encodeURIComponent(p.agentId)}`
     case 'github':
       return '/github'
+    case 'fleet':
+      return '/fleet'
     case 'stats':
       return '/stats'
     case 'evaluation':
@@ -276,6 +280,7 @@ export function pageFromLocation(location: { pathname: string; search: string })
       return workflowId ? { kind: 'workflow-detail', workflowId } : { kind: 'workflows' }
     }
     case 'github': return { kind: 'github' }
+    case 'fleet': return { kind: 'fleet' }
     case 'stats': return { kind: 'stats' }
     case 'evaluation': return { kind: 'evaluation' }
     case 'reviews': return { kind: 'reviews' }

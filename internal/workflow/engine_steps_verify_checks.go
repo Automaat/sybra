@@ -41,6 +41,11 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
+// verifyChecksNodeModulesRepairTimeout bounds a single repair `npm ci`
+// invocation, mirroring the project's frontend setup batch timeout
+// (docs/CONFIG.md's `setup:` commands get 5 minutes).
+const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
+
 var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
@@ -64,10 +69,12 @@ type verifyChecksReport struct {
 // toolchain (mise) resolves identically.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
-// verify commands configured, or no worktree. A genuine command failure — or
-// the suite exceeding the time budget (an agent could hang a test to dodge) —
-// blocks. Only engine-shutdown cancellation fails open, so a harness problem on
-// teardown never strands work.
+// verify commands configured, no worktree, or a detected-but-unrepairable
+// corrupted node_modules (broken toolchain state, not the diff — see
+// repairCorruptedNodeModules). A genuine command failure — or the suite
+// exceeding the time budget (an agent could hang a test to dodge) — blocks.
+// Only engine-shutdown cancellation and the node_modules case fail open, so a
+// harness/infra problem never strands or misattributes work.
 func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
@@ -92,6 +99,18 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
 	}
+
+	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
+		// Corruption was detected but the repair itself failed (e.g. `npm ci`
+		// killed again, or no network) — the toolchain is still broken, not
+		// the diff. Running verify against a known-corrupt install would
+		// deterministically fail and misattribute an infra problem to the
+		// implementation, so skip verify entirely rather than flag
+		// human-required.
+		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
+		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
+	}
+	e.repairTornNodeModules(taskID, wtPath)
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
@@ -189,6 +208,94 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	return stepDone(step, "flagged")
 }
 
+// repairTornNodeModulesTimeout bounds the best-effort `npm ci` repair below,
+// separate from the verify budget so a repair can never eat into the time
+// the actual verify commands get.
+const repairTornNodeModulesTimeout = 3 * time.Minute
+
+// repairTornNodeModules scans the worktree root and immediate subdirectories
+// for an npm project (a package.json) whose node_modules looks torn and repairs
+// it with a single `npm ci --ignore-scripts` before verify commands trust the
+// install. This is a defensive fix for a race between verify_checks and a
+// still-running (or killed mid-flight) `npm ci` left behind by something else
+// in the same worktree, such as an implementation agent's own backgrounded
+// `mise run verify`/`npm ci` that its session never waited on: the setup-time
+// install was healthy, but by the time verify_checks runs, node_modules can be
+// left half torn-down, and every npm-run command in it then fails with
+// "command not found" — a false implementation-defect signal. Best-effort: a
+// repair failure surfaces via the verify command's own failure, same as before
+// this existed.
+//
+// Lifecycle scripts are deliberately disabled because package.json is
+// branch-controlled; verify command configuration comes from the trusted base
+// branch, and this best-effort repair must not introduce a new unsandboxed
+// execution path controlled by the implementation branch.
+//
+// "Torn" mirrors the staleness check scripts/sybra-dev-supervisor.sh already
+// uses for the desktop dev loop: node_modules/.bin missing (an install that
+// never completed or was gutted mid-run), or npm's own
+// node_modules/.package-lock.json stamp missing/older than package-lock.json
+// (an install that was interrupted before npm finished writing its stamp).
+func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
+	e.repairTornNodeModulesInDir(taskID, wtPath, ".")
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(wtPath, entry.Name())
+		e.repairTornNodeModulesInDir(taskID, dir, entry.Name())
+	}
+}
+
+func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
+		return // npm ci requires a lockfile; skip non-npm or lockfile-less projects
+	}
+	nodeModules := filepath.Join(dir, "node_modules")
+	info, err := os.Stat(nodeModules)
+	if err != nil || !info.IsDir() {
+		return // no install yet — not this gate's problem
+	}
+	if !nodeModulesTorn(dir, nodeModules) {
+		return
+	}
+
+	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
+	ctx, cancel := context.WithTimeout(e.ctx, repairTornNodeModulesTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		e.logger.Warn("workflow.verify-checks.npm-repair-failed", "task_id", taskID, "dir", label, "err", err)
+	}
+}
+
+// nodeModulesTorn reports whether nodeModules (an existing directory inside
+// dir) looks like an install that never finished cleanly.
+func nodeModulesTorn(dir, nodeModules string) bool {
+	binInfo, err := os.Stat(filepath.Join(nodeModules, ".bin"))
+	if err != nil || !binInfo.IsDir() {
+		return true
+	}
+	lockPath := filepath.Join(dir, "package-lock.json")
+	lockInfo, err := os.Stat(lockPath)
+	if err != nil {
+		return false // no lockfile to compare against — .bin presence is all we can check
+	}
+	stampInfo, err := os.Stat(filepath.Join(nodeModules, ".package-lock.json"))
+	if err != nil {
+		return true // npm never finished writing its own stamp
+	}
+	return stampInfo.ModTime().Before(lockInfo.ModTime())
+}
+
 // maybeMiseTrust trusts a mise config in the worktree before running verify
 // commands, mirroring worktree setup. A task that adds or edits mise config
 // would otherwise hit "config not trusted" and fail verify on honest work.
@@ -202,6 +309,110 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 			return
 		}
 	}
+}
+
+// repairCorruptedNodeModules scans the worktree root and its immediate
+// subdirectories (e.g. `frontend/`) for an npm project whose node_modules
+// was left behind by an interrupted install, and repairs it with a fresh
+// `npm ci` before the verify commands run.
+//
+// Under host memory pressure, a concurrent `npm ci` in another worktree can
+// get SIGKILLed mid-write, leaving a partially-populated node_modules that
+// fails every subsequent build deterministically (e.g. "vite: command not
+// found") even though package.json/package-lock.json are untouched and an
+// earlier build in the same worktree succeeded. That looks like a genuine
+// build regression caused by the task's diff but is really a broken
+// toolchain state. A failed repair is reported back to the caller (rather
+// than silently left for the verify command to surface) so a still-broken
+// install is never run through verify and misattributed to the
+// implementation as a product failure.
+func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) (repairFailed bool) {
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return false
+	}
+	candidates := []string{wtPath}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			candidates = append(candidates, filepath.Join(wtPath, entry.Name()))
+		}
+	}
+	for _, dir := range candidates {
+		if !isCorruptedNodeModules(dir) {
+			continue
+		}
+		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
+		cmd := exec.CommandContext(repairCtx, "npm", "ci")
+		cmd.Dir = dir
+		repairErr := cmd.Run()
+		cancel()
+		if repairErr != nil {
+			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
+				"task_id", taskID, "dir", dir, "err", repairErr)
+			repairFailed = true
+		}
+	}
+	return repairFailed
+}
+
+// isCorruptedNodeModules reports whether dir looks like an npm project whose
+// node_modules was left partially installed by a killed `npm ci`: present
+// and non-empty, but missing node_modules/.bin or
+// node_modules/.package-lock.json — both of which a completed `npm ci`
+// always writes. A node_modules that was never installed (absent entirely)
+// is not corrupted, just not yet set up, so it is left alone here.
+//
+// The repair runs `npm ci`, so it only fires for npm-owned installs: dir must
+// have an npm lockfile (package-lock.json or npm-shrinkwrap.json) and must not
+// carry a pnpm/yarn/bun lockfile that hands the install to another package
+// manager. Otherwise a pnpm/yarn/bun workspace — whose node_modules
+// legitimately lacks node_modules/.package-lock.json — would be mistaken for
+// corruption and clobbered by an unrelated `npm ci`.
+func isCorruptedNodeModules(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return false
+	}
+	if !ownedByNpm(dir) {
+		return false
+	}
+	nm := filepath.Join(dir, "node_modules")
+	if !dirNonEmpty(nm) {
+		return false
+	}
+	_, binErr := os.Stat(filepath.Join(nm, ".bin"))
+	_, lockErr := os.Stat(filepath.Join(nm, ".package-lock.json"))
+	return binErr != nil || lockErr != nil
+}
+
+// dirNonEmpty reports whether dir exists and contains at least one entry,
+// without reading the full directory listing — node_modules on a large
+// install can hold tens of thousands of entries.
+func dirNonEmpty(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
+}
+
+// ownedByNpm reports whether dir's install is owned by npm: it has an npm
+// lockfile and no competing pnpm/yarn/bun lockfile. A non-npm lockfile wins,
+// since `npm ci` must not run against another package manager's workspace.
+func ownedByNpm(dir string) bool {
+	for _, name := range []string{"pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return false
+		}
+	}
+	for _, name := range []string{"package-lock.json", "npm-shrinkwrap.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {

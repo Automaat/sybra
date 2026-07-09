@@ -166,6 +166,25 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	// prompts instructed. Same for a missing local branch ref — both are
 	// unrecoverable by retrying the push.
 	if errors.Is(pushErr, project.ErrDivergedNeedsResolve) {
+		// Try the same autonomous conflict-fix recovery agentorch dispatches
+		// for worktree-prep rebase conflicts before giving up to a human — a
+		// divergence here is often self-inflicted (a reused worktree rebased
+		// onto a newer base after an earlier merge-based push), and
+		// RecoverStaleBranchConflict resolves it the same way regardless of
+		// origin. It cancels this task's active workflow and starts
+		// branch-conflict-fix in its place (capturing resume state to
+		// re-enter this step on success), so the caller must treat the
+		// current workflow execution as already handled — errStepParked
+		// mirrors parkStepForRetry's contract for exactly that case.
+		if e.conflictRecovery != nil {
+			e.logger.Info("workflow.pr-tail.branch-conflict.recover",
+				"task_id", taskID, "step", step.ID)
+			if e.tryConflictRecovery(taskID) {
+				return StepOutput{}, errStepParked, false
+			}
+			// Recovery ran inline (no marker held) and declined — fall through
+			// to the human escalation below.
+		}
 		out, err = e.humanRequiredPR(taskID, step, "branch diverged from remote — needs manual conflict resolution (never force-pushed): "+pushErr.Error())
 		return out, err, false
 	}
@@ -176,6 +195,66 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 
 	out, err = e.classifyPRGitError(taskID, step, wfExec, t, pushErr, "git push")
 	return out, err, false
+}
+
+// tryConflictRecovery attempts autonomous branch-conflict recovery for a
+// diverged push and reports whether the step must park.
+//
+// The callback (review.Handler.RecoverStaleBranchConflict) cancels this task's
+// active workflow and re-dispatches branch-conflict-fix — a re-entry into
+// StartWorkflow*/DispatchEvent. When push_branch/create_pr runs inside one of
+// those calls (DispatchEvent → startWorkflowLocked, or a resume re-dispatch),
+// the per-task starting/dispatching marker is still held, so invoking recovery
+// now would hit ErrWorkflowAlreadyActive and silently no-op — the reentrancy
+// trap that made this whole path dead on arrival. Detect that case by the held
+// marker and queue the recovery instead; drainPendingConflictRecovery runs it
+// once the outer call releases the marker (returns true → park now). When no
+// marker is held (the AdvanceStep tail, or a direct call), recovery is safe to
+// run inline and its own verdict is returned.
+func (e *Engine) tryConflictRecovery(taskID string) bool {
+	e.mu.Lock()
+	_, starting := e.starting[taskID]
+	_, dispatching := e.dispatching[taskID]
+	if starting || dispatching {
+		if e.pendingRecovery == nil {
+			e.pendingRecovery = make(map[string]struct{})
+		}
+		e.pendingRecovery[taskID] = struct{}{}
+		e.mu.Unlock()
+		return true
+	}
+	e.mu.Unlock()
+	return e.conflictRecovery(taskID)
+}
+
+// drainPendingConflictRecovery runs a branch-conflict recovery that
+// tryConflictRecovery deferred because a per-task marker was held when the
+// diverged push was detected. It MUST be called only after the caller has
+// released its starting/dispatching marker (alongside fireComplete), so the
+// callback's re-dispatch is not rejected as re-entrant. No-op when nothing was
+// queued for the task. When recovery is unavailable or declines, the task is
+// escalated to human-required and its parked workflow terminated — the same
+// terminal outcome the inline divergence path produces.
+func (e *Engine) drainPendingConflictRecovery(taskID string) {
+	e.mu.Lock()
+	_, pending := e.pendingRecovery[taskID]
+	if pending {
+		delete(e.pendingRecovery, taskID)
+	}
+	e.mu.Unlock()
+	if !pending {
+		return
+	}
+	if e.conflictRecovery != nil && e.conflictRecovery(taskID) {
+		return // recovery cancelled this workflow and dispatched branch-conflict-fix
+	}
+	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)
+	}
+	if _, err := e.CancelWorkflow(taskID, reason); err != nil {
+		e.logger.Error("workflow.pr-tail.conflict-recovery.cancel", "task_id", taskID, "err", err)
+	}
 }
 
 // classifyPRGitError inspects a push/create failure and either parks the

@@ -317,6 +317,8 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -704,6 +706,13 @@ func (a *App) initWorkflowEngine() {
 	// orchestrator is built before the reviewer.
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
+	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
+	// (e.g. a reused worktree rebased out from under an earlier merge-based
+	// push) — otherwise it flips straight to human-required with no attempt
+	// at the autonomous fix other divergence sources already get.
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
