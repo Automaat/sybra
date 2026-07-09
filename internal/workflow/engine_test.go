@@ -5915,6 +5915,7 @@ func TestLooksLikeTransientGitHub(t *testing.T) {
 		{"dns failure", "could not resolve host: api.github.com", true},
 		{"name resolution failure", "temporary failure in name resolution", true},
 		{"i/o timeout", "context deadline exceeded (i/o timeout)", true},
+		{"bare context deadline exceeded", "gh pr create: : context deadline exceeded", true},
 		{"502", "502 Bad Gateway", true},
 		{"503", "503 Service Unavailable", true},
 		{"bare HTTP 502", "gh failed: HTTP 502", true},
