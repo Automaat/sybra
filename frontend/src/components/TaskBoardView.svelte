@@ -186,7 +186,6 @@
                 umbrellaProgress={umbrellaProgress(t)}
                 onclick={() => onselect(t.id)}
                 focused={focusedTaskId === t.id}
-                onstatuschange={(s) => onmove(t.id, s)}
               />
             </div>
           {/each}
