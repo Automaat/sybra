@@ -283,6 +283,31 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	}
 }
 
+// TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed reproduces the
+// narrow-test-only nil-workflowEngine fallback: with no engine wired,
+// dispatching to a dispatching target (in-progress/testing/ready-pr) must
+// fail closed via redispatchStatusChanged's nil guard and revert the task
+// to human-required, rather than nil-panicking inside DispatchEvent.
+func TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine = nil
+	tk := newHumanRequiredTask(t, a, 0)
+
+	_, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
+	if err == nil {
+		t.Fatal("expected an error with no workflow engine wired")
+	}
+
+	got, getErr := a.tasks.Get(tk.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	}
+}
+
 func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	// A genuine agent-start failure. Must NOT be ErrWorkflowAlreadyActive —
 	// that sentinel now means "the status-change hook already started the

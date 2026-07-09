@@ -487,6 +487,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 // Shared by UpdateTask's async in-progress restart goroutine and
 // DispatchFromHumanRequired's synchronous dispatch.
 func (s *TaskService) redispatchStatusChanged(id, status string) (string, error) {
+	if s.workflowEngine == nil {
+		return "", errors.New("workflow engine not initialized")
+	}
 	return s.workflowEngine.DispatchEvent(
 		id,
 		"task.status_changed",
@@ -543,7 +546,9 @@ func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task
 		return err
 	}
 	// s.workflowEngine is only nil in narrow tests; fall back to running
-	// unlocked there rather than nil-panicking.
+	// unlocked there. dispatchFromHumanRequiredLocked's dispatching targets
+	// still go through redispatchStatusChanged, which itself guards against
+	// a nil engine and fails closed rather than nil-panicking.
 	if s.workflowEngine != nil {
 		if err := s.workflowEngine.WithHumanActionLock(id, run); err != nil {
 			return task.Task{}, err
