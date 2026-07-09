@@ -25,6 +25,8 @@ func FuzzScrub(f *testing.F) {
 		{"\xef\xbb\xbf owner-prefix owner", "owner"},
 		{"multi line\nblock\nlist", "block"},
 		{"overlap: aaaaa", "aa"},
+		{"see https://github.com/work-org/secret-repo-2/pull/9 for context", ""},
+		{"task from work-org here", "act"},
 	}
 	for _, s := range seeds {
 		f.Add(s.text, s.block)
