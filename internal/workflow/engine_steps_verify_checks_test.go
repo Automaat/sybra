@@ -1,11 +1,15 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,6 +258,17 @@ func TestNodeModulesTorn(t *testing.T) {
 		}
 	})
 
+	t.Run(".bin file is torn", func(t *testing.T) {
+		t.Parallel()
+		dir, nm := newProject(t, false)
+		if err := os.WriteFile(filepath.Join(nm, ".bin"), []byte("not-a-dir"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !nodeModulesTorn(dir, nm) {
+			t.Error("want torn: node_modules/.bin exists but is not a directory")
+		}
+	})
+
 	t.Run("no lockfile trusts .bin presence", func(t *testing.T) {
 		t.Parallel()
 		dir, nm := newProject(t, false)
@@ -318,7 +333,7 @@ func TestNodeModulesTorn(t *testing.T) {
 func fakeNpmOnPath(t *testing.T, markerPath string) {
 	t.Helper()
 	binDir := t.TempDir()
-	script := "#!/bin/sh\npwd > " + markerPath + "\nprintf '%s\\n' \"$*\" >> " + markerPath + "\n"
+	script := fmt.Sprintf("#!/bin/sh\npwd > %q\nprintf '%%s\\n' \"$*\" >> %q\n", markerPath, markerPath)
 	npmPath := filepath.Join(binDir, "npm")
 	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -333,6 +348,9 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// node_modules present but missing .bin — the torn signature.
@@ -360,6 +378,9 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(wt, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// node_modules present but missing .bin — the torn signature.
 	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
@@ -380,6 +401,58 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	}
 }
 
+func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected npm ci to be skipped without lockfile, got err=%v", err)
+	}
+}
+
+func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	npmPath := filepath.Join(binDir, "npm")
+	if err := os.WriteFile(npmPath, []byte("#!/bin/sh\nexit 17\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
+	engine.repairTornNodeModules("t1", wt)
+
+	if !strings.Contains(logBuf.String(), "workflow.verify-checks.npm-repair-failed") {
+		t.Fatalf("expected failed npm repair to be logged, got %q", logBuf.String())
+	}
+}
+
 func TestRepairTornNodeModules_DisablesLifecycleScripts(t *testing.T) {
 	wt := t.TempDir()
 	frontend := filepath.Join(wt, "frontend")
@@ -391,6 +464,9 @@ func TestRepairTornNodeModules_DisablesLifecycleScripts(t *testing.T) {
     "preinstall": "touch lifecycle-ran"
   }
 }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

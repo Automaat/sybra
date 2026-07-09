@@ -205,6 +205,9 @@ func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return
 	}
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
+		return // npm ci requires a lockfile; skip non-npm or lockfile-less projects
+	}
 	nodeModules := filepath.Join(dir, "node_modules")
 	info, err := os.Stat(nodeModules)
 	if err != nil || !info.IsDir() {
@@ -219,13 +222,16 @@ func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts")
 	cmd.Dir = dir
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		e.logger.Warn("workflow.verify-checks.npm-repair-failed", "task_id", taskID, "dir", label, "err", err)
+	}
 }
 
 // nodeModulesTorn reports whether nodeModules (an existing directory inside
 // dir) looks like an install that never finished cleanly.
 func nodeModulesTorn(dir, nodeModules string) bool {
-	if _, err := os.Stat(filepath.Join(nodeModules, ".bin")); err != nil {
+	binInfo, err := os.Stat(filepath.Join(nodeModules, ".bin"))
+	if err != nil || !binInfo.IsDir() {
 		return true
 	}
 	lockPath := filepath.Join(dir, "package-lock.json")
