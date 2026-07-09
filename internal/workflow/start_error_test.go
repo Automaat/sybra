@@ -329,6 +329,32 @@ func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) 
 	}
 }
 
+func TestSurfaceStartFailure_QuotaRateLimitDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	quotaLimited := &provider.UnhealthyError{
+		Provider:    "codex",
+		Reason:      "provider reports rate limit reached",
+		RateLimited: true,
+	}
+	if !isTransientCapacityError(quotaLimited) {
+		t.Fatal("quota rate-limit (RateLimited flag, no RateLimitReason/Until) not classified transient")
+	}
+	wf := &Execution{CurrentStep: "code_review_staff", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 2 {
+		engine.surfaceStartFailure("t1", "in-progress", quotaLimited, wf, "code_review_staff")
+		if wf.State == ExecFailed {
+			t.Fatalf("quota rate limit tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if got, _ := tasks.GetTask("t1"); got.Status == "human-required" {
+		t.Fatal("quota rate limit escalated to human-required")
+	}
+}
+
 func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})

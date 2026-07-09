@@ -123,7 +123,7 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 func isTransientCapacityError(err error) bool {
 	var ue *provider.UnhealthyError
 	if errors.As(err, &ue) {
-		return ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+		return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
 	}
 	return false
 }
