@@ -442,6 +442,15 @@ func IsSoftThresholdReason(reason string) bool {
 	return reason == quotaReasonSessionThreshold || reason == quotaReasonWeeklyThreshold
 }
 
+// IsRateLimitReachedReason reports whether a ProviderAvailable "unavailable"
+// reason is a hard rate-limit-reached block. Unlike provider-disabled (a config
+// kill-switch that stays until a human re-enables it), a reached rate limit is
+// transient and self-heals when the quota window rolls over, so callers mark it
+// on the gate error to keep it off the dispatch circuit breaker.
+func IsRateLimitReachedReason(reason string) bool {
+	return reason == quotaReasonRateLimitReached
+}
+
 func quotaLimited(ps ProviderSummary, snap Snapshot, policy Policy) (limited bool, reason string) {
 	if ps.Confidence != ConfidenceExact {
 		return false, ""
