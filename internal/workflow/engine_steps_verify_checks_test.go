@@ -128,6 +128,26 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	slowOnce := "test -f .timeout-marker || { touch .timeout-marker; sleep 30; }"
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{slowOnce})
+	engine.SetVerifyTimeout(200 * time.Millisecond)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (one-off timeout absorbed by suite retry)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
+	}
+}
+
 func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
