@@ -342,6 +342,96 @@ func TestDrainPendingConflictRecovery_DeclineEscalates(t *testing.T) {
 	}
 }
 
+// TestTryConflictRecovery_ExportedWrapperQueuesWhileMarkerHeld locks the fix
+// for callers outside this package (agentorch's worktree-prep rebase-failure
+// path, the fix-review push-divergence handler) that invoke the same
+// recovery callback as push_branch/create_pr but from outside a workflow
+// step — e.g. a rebase conflict discovered deep inside execRunAgent's own
+// worktree prep, still within the same synchronous StartWorkflow call that
+// holds the starting marker. TryConflictRecovery must defer exactly like the
+// unexported tryConflictRecovery push_branch/create_pr already uses.
+func TestTryConflictRecovery_ExportedWrapperQueuesWhileMarkerHeld(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+
+	var calls int
+	engine.SetConflictRecovery(func(string) bool { calls++; return true })
+
+	// Simulate running inside the same synchronous StartWorkflow call that
+	// holds the starting marker (e.g. restart-stale's raw
+	// StartWorkflow(implement) reentering via a worktree-prep rebase failure).
+	engine.mu.Lock()
+	engine.starting["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	if recovered := engine.TryConflictRecovery("t1"); !recovered {
+		t.Fatal("TryConflictRecovery = false, want true (queued while marker held)")
+	}
+	if calls != 0 {
+		t.Fatalf("recovery invoked inline under held marker (calls=%d); want deferred", calls)
+	}
+
+	engine.mu.Lock()
+	delete(engine.starting, "t1")
+	engine.mu.Unlock()
+
+	engine.drainPendingConflictRecovery("t1")
+	if calls != 1 {
+		t.Fatalf("recovery calls=%d after drain; want exactly 1", calls)
+	}
+}
+
+// TestTryConflictRecovery_NilSafe mirrors RecoverStaleBranchConflict's own
+// nil-receiver guard: wiring TryConflictRecovery as a callback ahead of a
+// possibly-nil *Engine during degraded init must not panic.
+func TestTryConflictRecovery_NilSafe(t *testing.T) {
+	var engine *Engine
+	if engine.TryConflictRecovery("t1") {
+		t.Fatal("TryConflictRecovery on nil engine = true, want false")
+	}
+}
+
+// TestTryConflictRecovery_NoRecoveryWiredReturnsFalse ensures a nil
+// conflictRecovery callback (recovery never wired) is reported as declined,
+// not queued or panicked.
+func TestTryConflictRecovery_NoRecoveryWiredReturnsFalse(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+
+	if engine.TryConflictRecovery("t1") {
+		t.Fatal("TryConflictRecovery with no recovery wired = true, want false")
+	}
+}
+
+// TestQueueConflictRecoveryRetry_DrainedByLaterMarkerRelease locks the fix
+// for dispatchBranchConflictRecovery's own re-dispatch call: when its
+// StartWorkflowWithVars hits ErrWorkflowAlreadyActive because a concurrent
+// StartWorkflow call grabbed the marker sometime during the caller's own
+// (multi-second) worktree-prep work — a TOCTOU window TryConflictRecovery's
+// upfront check alone cannot close — QueueConflictRecoveryRetry must defer a
+// retry that drainPendingConflictRecovery picks up once that call's marker
+// releases, exactly like a push_branch/create_pr divergence would.
+func TestQueueConflictRecoveryRetry_DrainedByLaterMarkerRelease(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+
+	var calls int
+	engine.SetConflictRecovery(func(string) bool { calls++; return true })
+
+	engine.QueueConflictRecoveryRetry("t1")
+	if calls != 0 {
+		t.Fatalf("recovery invoked before any marker released (calls=%d); want deferred", calls)
+	}
+
+	engine.drainPendingConflictRecovery("t1")
+	if calls != 1 {
+		t.Fatalf("recovery calls=%d after drain; want exactly 1", calls)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
