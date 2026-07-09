@@ -52,6 +52,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -171,6 +172,59 @@ var scenarioHandlers = map[string]func(string){
 	"perf_burst":            func(string) { runPerfBurst() },
 	"perf_long":             func(string) { runPerfLong() },
 	"sybra_home_sentinel":   runSybraHomeSentinel,
+	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
+	"best_of_n_judge":       func(string) { runBestOfNJudge() },
+}
+
+// runBestOfNAttempt simulates one best-of-N implementation attempt: it
+// derives a unique filename from its own cwd (the attempt's isolated
+// worktree dir, e.g. ".../task-attempt_2") and commits it there. Using cwd
+// rather than an env var means every attempt agent can share this single
+// scenario name — dispatch order between concurrently-running attempts
+// never matters, unlike a scenario-file sequence keyed by invocation order.
+// Never pushes, matching the best-of-n attempt contract (PromoteAttempt
+// moves the canonical branch locally once a winner is judged).
+func runBestOfNAttempt() {
+	emitSystem()
+	cwd, err := os.Getwd()
+	if err != nil {
+		emitResult("best_of_n_attempt: getwd failed: " + err.Error())
+		os.Exit(1)
+	}
+	name := filepath.Base(cwd)
+	fname := "attempt-" + name + ".txt"
+	if err := os.WriteFile(filepath.Join(cwd, fname), []byte("attempt work from "+name+"\n"), 0o644); err != nil {
+		emitResult("best_of_n_attempt: write failed: " + err.Error())
+		os.Exit(1)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "fake-claude@test.local"},
+		{"config", "user.name", "Fake Claude"},
+		{"add", fname},
+		{"commit", "-m", "best-of-n attempt work: " + name},
+	} {
+		runGitIn(cwd, args...)
+	}
+	emitAssistant("Implemented attempt in " + name)
+	emitResult("Implementation done for " + name + ". Committed, did not push.")
+}
+
+// runBestOfNJudge simulates the automated judge: it always names attempt_2
+// the winner, giving e2e tests a deterministic, mechanically-parseable
+// verdict without needing the fake binary to actually read/diff attempts.
+func runBestOfNJudge() {
+	emitSystem()
+	emitAssistant("Judging attempts...")
+	emitResult(`{"winner_attempt_id": "attempt_2", "scores": [{"attempt_id":"attempt_1","score":5},{"attempt_id":"attempt_2","score":9}], "rationale": "attempt_2 is more complete"}`)
+}
+
+func runGitIn(dir string, args ...string) {
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		emitResult("best_of_n_attempt: git " + strings.Join(args, " ") + " failed: " + err.Error() + ": " + string(out))
+		os.Exit(1)
+	}
 }
 
 func runScenario(scenario, taskID string) bool {
