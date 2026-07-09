@@ -42,10 +42,40 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
-// verifyChecksNodeModulesRepairTimeout bounds a single `npm ci` repair run
+// verifyChecksNodeModulesRepairTimeout bounds a single install repair run
 // (see repairIncompleteNodeModules). Independent of verifyTimeout: repair is
 // a one-off best-effort side step, not part of the suite's own budget.
 const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
+
+// nodeInstallManager describes how to detect and repair a half-installed
+// node_modules for one package manager. installMarkers are the files a
+// *successful* install writes as its final step, relative to node_modules;
+// their absence (with the lockfile present) is the signature of an install
+// interrupted mid-reify (issue b3ec32b3). Detection keys off the completion
+// marker rather than `.bin` because a legitimate install whose dependency
+// tree provides no CLI binaries never creates `.bin`, which would otherwise
+// misclassify it as permanently incomplete.
+type nodeInstallManager struct {
+	lockfile       string
+	installMarkers []string
+	repairCmd      string
+}
+
+// nodeInstallManagers is ordered by precedence: the first lockfile found in a
+// directory picks the manager. Each repairCmd is a deterministic
+// install-from-lockfile invocation.
+var nodeInstallManagers = []nodeInstallManager{
+	{lockfile: "package-lock.json", installMarkers: []string{".package-lock.json"}, repairCmd: "npm ci"},
+	{lockfile: "pnpm-lock.yaml", installMarkers: []string{".modules.yaml"}, repairCmd: "pnpm install --frozen-lockfile"},
+	{lockfile: "yarn.lock", installMarkers: []string{".yarn-state.yml", ".yarn-integrity"}, repairCmd: "yarn install --frozen-lockfile"},
+}
+
+// nodeRepairTarget is a directory with an incomplete install and the command
+// that reinstalls it from its lockfile.
+type nodeRepairTarget struct {
+	dir string
+	cmd string
+}
 
 var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
@@ -103,11 +133,13 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 
 	// A real command failure (not a timeout/cancel) can be an artifact of a
 	// half-installed node_modules rather than the diff under test — e.g. a
-	// backgrounded `npm ci` reaped mid-install when its parent agent process
-	// was torn down (issue b3ec32b3) leaves package dirs present but the
-	// `.bin` symlink layer missing, so any devDependency binary the suite
-	// shells out to (vite, tsc, eslint, …) reports "command not found" on an
-	// otherwise-correct diff. Repair once and re-run before flagging.
+	// backgrounded install reaped mid-run when its parent agent process was
+	// torn down (issue b3ec32b3) leaves package dirs present but the install
+	// unfinalized, so any devDependency binary the suite shells out to (vite,
+	// tsc, eslint, …) reports "command not found" on an otherwise-correct diff.
+	// Detection keys off the missing install-completion marker, so only a
+	// genuinely interrupted install triggers a repair. Repair once and re-run
+	// before flagging.
 	if runErr == nil && failedCmd != "" && e.repairIncompleteNodeModules(taskID, wtPath) {
 		failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 	}
@@ -221,43 +253,47 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 	}
 }
 
-// repairIncompleteNodeModules re-runs `npm ci` for every npm project
-// directory under wtPath whose node_modules looks half-installed (see
-// findIncompleteNodeModulesDirs). Returns true if at least one repair
-// command was attempted, signalling the caller to retry the verify suite
-// once more. Best-effort: a failed `npm ci` here is not itself a verify
-// failure — the retried verify run surfaces the real error if repair did
-// not fix it.
+// repairIncompleteNodeModules re-runs the lockfile install for every node
+// project directory under wtPath whose node_modules looks half-installed (see
+// findIncompleteNodeModulesDirs). Returns true only when at least one repair
+// actually succeeded — a caller retries the verify suite only if the toolchain
+// might now be fixed; retrying after every repair failed just burns the suite
+// budget on a state known not to have changed. Best-effort: a failed install
+// here is not itself a verify failure — the retried verify run surfaces the
+// real error if repair did not fix it.
 func (e *Engine) repairIncompleteNodeModules(taskID, wtPath string) bool {
-	dirs := findIncompleteNodeModulesDirs(wtPath)
-	if len(dirs) == 0 {
+	targets := findIncompleteNodeModulesDirs(wtPath)
+	if len(targets) == 0 {
 		return false
 	}
-	for _, dir := range dirs {
-		e.logger.Warn("workflow.verify-checks.node-modules-incomplete", "task_id", taskID, "dir", dir)
+	repaired := false
+	for _, target := range targets {
+		e.logger.Warn("workflow.verify-checks.node-modules-incomplete",
+			"task_id", taskID, "dir", target.dir, "cmd", target.cmd)
 		ctx, cancel := context.WithTimeout(e.ctx, verifyChecksNodeModulesRepairTimeout)
-		cmd := exec.CommandContext(ctx, "sh", "-c", "npm ci")
-		cmd.Dir = dir
-		repairErr := cmd.Run()
+		cmd := exec.CommandContext(ctx, "sh", "-c", target.cmd)
+		cmd.Dir = target.dir
+		out, repairErr := cmd.CombinedOutput()
 		cancel()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
-				"task_id", taskID, "dir", dir, "err", repairErr)
+				"task_id", taskID, "dir", target.dir, "err", repairErr, "tail", tailString(string(out), 400))
 			continue
 		}
-		e.logger.Info("workflow.verify-checks.node-modules-repaired", "task_id", taskID, "dir", dir)
+		repaired = true
+		e.logger.Info("workflow.verify-checks.node-modules-repaired", "task_id", taskID, "dir", target.dir)
 	}
-	return true
+	return repaired
 }
 
-// findIncompleteNodeModulesDirs walks wtPath for npm project directories
-// (package-lock.json present) whose node_modules exists but has no `.bin`
-// subdirectory — the signature of an install interrupted after packages were
-// unpacked but before npm wrote the bin symlink layer. Never descends into
-// node_modules itself (nested lockfiles inside dependencies are not our
-// project's install).
-func findIncompleteNodeModulesDirs(wtPath string) []string {
-	var dirs []string
+// findIncompleteNodeModulesDirs walks wtPath for node project directories
+// (a supported lockfile present) whose node_modules exists but is missing its
+// install-completion marker — the signature of an install interrupted after
+// packages were unpacked but before the package manager finalized the tree.
+// Never descends into node_modules itself (nested lockfiles inside
+// dependencies are not our project's install).
+func findIncompleteNodeModulesDirs(wtPath string) []nodeRepairTarget {
+	var targets []nodeRepairTarget
 	walkErr := filepath.WalkDir(wtPath, func(path string, d fs.DirEntry, statErr error) error {
 		if statErr != nil {
 			return filepath.SkipDir
@@ -268,30 +304,39 @@ func findIncompleteNodeModulesDirs(wtPath string) []string {
 		if d.Name() == ".git" || d.Name() == "node_modules" {
 			return filepath.SkipDir
 		}
-		if isIncompleteNodeModulesDir(path) {
-			dirs = append(dirs, path)
+		if mgr, ok := incompleteNodeModulesManager(path); ok {
+			targets = append(targets, nodeRepairTarget{dir: path, cmd: mgr.repairCmd})
 		}
 		return nil
 	})
 	_ = walkErr // best-effort scan: a walk error just means less coverage, not a failure
-	return dirs
+	return targets
 }
 
-// isIncompleteNodeModulesDir reports whether dir is an npm project
-// (package-lock.json present) whose node_modules exists but has no `.bin`
-// subdirectory — the signature of an install interrupted after packages were
-// unpacked but before npm wrote the bin symlink layer.
-func isIncompleteNodeModulesDir(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
-		return false
+// incompleteNodeModulesManager reports the package manager for dir when dir is
+// a node project (a supported lockfile present) whose node_modules exists but
+// is missing every install-completion marker for that manager — the signature
+// of an install interrupted before it finalized the dependency tree. The
+// marker check (not `.bin` presence) avoids misclassifying a legitimately
+// complete install whose dependencies provide no CLI binaries.
+func incompleteNodeModulesManager(dir string) (nodeInstallManager, bool) {
+	for _, mgr := range nodeInstallManagers {
+		if _, err := os.Stat(filepath.Join(dir, mgr.lockfile)); err != nil {
+			continue
+		}
+		nmPath := filepath.Join(dir, "node_modules")
+		nmInfo, err := os.Stat(nmPath)
+		if err != nil || !nmInfo.IsDir() {
+			return nodeInstallManager{}, false // no install yet — not our concern, not a repair target
+		}
+		for _, marker := range mgr.installMarkers {
+			if _, err := os.Stat(filepath.Join(nmPath, marker)); err == nil {
+				return nodeInstallManager{}, false // install completed — nothing to repair
+			}
+		}
+		return mgr, true
 	}
-	nmPath := filepath.Join(dir, "node_modules")
-	nmInfo, err := os.Stat(nmPath)
-	if err != nil || !nmInfo.IsDir() {
-		return false // no install yet — not our concern, not a repair target
-	}
-	_, binErr := os.Stat(filepath.Join(nmPath, ".bin"))
-	return binErr != nil
+	return nodeInstallManager{}, false
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {

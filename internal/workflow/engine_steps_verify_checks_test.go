@@ -323,6 +323,65 @@ func TestExecVerifyChecks_NodeModulesRepairDoesNotMaskRealFailure(t *testing.T) 
 	}
 }
 
+func TestIncompleteNodeModulesManager(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		lock    string   // lockfile to create (empty = none)
+		nmFiles []string // files to create under node_modules (relative)
+		nmExist bool     // create node_modules dir at all
+		wantOK  bool
+		wantCmd string
+	}{
+		{name: "npm interrupted (no marker)", lock: "package-lock.json", nmExist: true, wantOK: true, wantCmd: "npm ci"},
+		{
+			name: "npm complete without .bin is not incomplete", lock: "package-lock.json",
+			nmExist: true, nmFiles: []string{".package-lock.json"}, wantOK: false,
+		},
+		{name: "no lockfile", nmExist: true, wantOK: false},
+		{name: "no node_modules yet", lock: "package-lock.json", wantOK: false},
+		{name: "pnpm interrupted", lock: "pnpm-lock.yaml", nmExist: true, wantOK: true, wantCmd: "pnpm install --frozen-lockfile"},
+		{
+			name: "pnpm complete", lock: "pnpm-lock.yaml",
+			nmExist: true, nmFiles: []string{".modules.yaml"}, wantOK: false,
+		},
+		{name: "yarn interrupted", lock: "yarn.lock", nmExist: true, wantOK: true, wantCmd: "yarn install --frozen-lockfile"},
+		{
+			name: "yarn classic complete via integrity", lock: "yarn.lock",
+			nmExist: true, nmFiles: []string{".yarn-integrity"}, wantOK: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if tc.lock != "" {
+				if err := os.WriteFile(filepath.Join(dir, tc.lock), []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.nmExist {
+				nm := filepath.Join(dir, "node_modules")
+				if err := os.MkdirAll(nm, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for _, f := range tc.nmFiles {
+					if err := os.WriteFile(filepath.Join(nm, f), []byte("x"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			mgr, ok := incompleteNodeModulesManager(dir)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && mgr.repairCmd != tc.wantCmd {
+				t.Errorf("repairCmd = %q, want %q", mgr.repairCmd, tc.wantCmd)
+			}
+		})
+	}
+}
+
 func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
