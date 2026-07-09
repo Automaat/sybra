@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/project"
@@ -17,9 +18,31 @@ func newTestAgentManager(tb testing.TB, ctx context.Context, emit agent.EmitFunc
 	if len(cfgs) > 0 {
 		cfg = cfgs[0]
 	}
+	var approvalServer *agent.ApprovalServer
+	if cfg.ApprovalAddr == "" {
+		srv, err := agent.NewApprovalServer(ctx, emit, logger, 0)
+		if err != nil {
+			tb.Fatalf("NewApprovalServer: %v", err)
+		}
+		approvalServer = srv
+		cfg.ApprovalAddr = srv.Addr()
+	}
 	m, err := agent.NewManager(ctx, emit, logger, logDir, cfg)
 	if err != nil {
+		if approvalServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = approvalServer.Shutdown(shutdownCtx)
+			cancel()
+		}
 		tb.Fatalf("NewManager: %v", err)
+	}
+	if approvalServer != nil {
+		approvalServer.SetManager(m)
+		tb.Cleanup(func() {
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = approvalServer.Shutdown(shutdownCtx)
+			cancel()
+		})
 	}
 	return m
 }

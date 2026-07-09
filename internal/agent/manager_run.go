@@ -115,6 +115,25 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	cfg.approvalAddr = m.approvalAddr
+	// Headless Claude runs with require_permissions:true rely on Sybra's
+	// approval hook to gate each tool call. If the approval server never
+	// started (approvalAddr empty) the hook is silently omitted and the run
+	// falls back to CLI defaults — neither the gating the operator asked for
+	// nor an explicit bypass. Fail closed rather than degrading quietly.
+	//
+	// Scope this to the exact vulnerable shape:
+	// - claude provider
+	// - headless mode
+	// - no explicit AllowedTools allowlist
+	// - not using Claude's own auto classifier
+	//
+	// Other providers do not depend on this hook for headless execution.
+	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+		cfg.RequirePermissions && cfg.approvalAddr == "" &&
+		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
+		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
+	}
 
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
@@ -573,10 +592,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -601,10 +617,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
@@ -658,9 +671,14 @@ func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []prov
 		return resolved, gateEvents, nil
 	}
 	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-	return "", gateEvents, &provider.UnhealthyError{
-		Provider: resolved,
-		Reason:   reason,
+	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+}
+
+func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
+	return &provider.UnhealthyError{
+		Provider:    prov,
+		Reason:      reason,
+		RateLimited: reason == provider.RateLimitReason || limits.IsRateLimitReachedReason(reason),
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 const MaxParallelTagPrefix = "umbrella-max-parallel:"
 
 // FallbackTag marks an umbrella tracker whose DAG was built by
-// linearChainFallback (the planner exhausted its retries) instead of the
+// independentFallback (the planner exhausted its retries) instead of the
 // model, so a systematically-failing planner is board-visible rather than
 // silently masked.
 const FallbackTag = "umbrella-planner-fallback"
