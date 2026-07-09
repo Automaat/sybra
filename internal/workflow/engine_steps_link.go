@@ -247,6 +247,7 @@ func looksLikeTransientGitHub(output string) bool {
 		"temporary failure in name resolution",
 		"i/o timeout",
 		"timed out",
+		"context deadline exceeded",
 		"tls handshake",
 		"tls:",
 	}
