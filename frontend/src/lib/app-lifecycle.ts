@@ -14,6 +14,7 @@ import { notificationStore } from '../stores/notifications.svelte.js'
 import { bgopStore } from '../stores/bgops.svelte.js'
 import { connectionStore } from '../stores/connection.svelte.js'
 import { reviewStore } from '../stores/reviews.svelte.js'
+import { navStore } from './navigation.svelte.js'
 
 export type DegradedWarning = { subsystem: string; reason: string }
 
@@ -114,7 +115,7 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
     unsubTaskDeleted()
   }
   notificationStore.load()
-  const unsubNotif = notificationStore.listen()
+  const unsubNotif = notificationStore.listen((taskId) => navStore.navigate({ kind: 'task-detail', taskId }))
   bgopStore.load()
   const unsubBgops = bgopStore.listen()
   const unsubDegraded = EventsOn(ev.StartupDegraded, (w: DegradedWarning) => hooks.onDegraded(w))
