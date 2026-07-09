@@ -22,6 +22,7 @@ type AgentCompletion struct {
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
 	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error)
+	TryClaimDispatch(taskID string) (DispatchClaim, bool)
 	HasRunningAgent(taskID string) bool
 	// HasOtherRunningAgentForTask reports whether an agent other than
 	// exceptAgentID is still running for the task. verify_commits uses it to
@@ -60,6 +61,14 @@ type AgentLauncher interface {
 	// by a dispatcher outside the engine's own visibility (e.g. recovery) is
 	// never missed.
 	IsDispatching(taskID string) bool
+}
+
+// DispatchClaim is the workflow-visible handle for a held per-task dispatch
+// claim. Agent launcher implementations typically back this with
+// agent.Manager's dispatch claim, but the workflow only needs idempotent
+// release semantics.
+type DispatchClaim interface {
+	Release()
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.

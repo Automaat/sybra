@@ -227,6 +227,10 @@ func (a *agentAdapter) DefaultProvider() string {
 	return a.agents.DefaultProvider()
 }
 
+func (a *agentAdapter) TryClaimDispatch(taskID string) (workflow.DispatchClaim, bool) {
+	return a.agents.TryClaimDispatch(taskID)
+}
+
 func (a *agentAdapter) ProviderRateLimited(provider string) bool {
 	return a.agents.ProviderRateLimited(provider)
 }

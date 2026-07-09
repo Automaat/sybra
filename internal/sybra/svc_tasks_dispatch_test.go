@@ -29,6 +29,9 @@ func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _
 	}
 	return "fake-agent-id", "", "", nil
 }
+func (f *fakeAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 func (f *fakeAgentLauncher) HasRunningAgent(string) bool                     { return false }
 func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (f *fakeAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {

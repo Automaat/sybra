@@ -382,6 +382,8 @@ type mockAgents struct {
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
+	startGate         chan struct{}
+	startEntered      chan struct{}
 }
 
 type panicStartAgents struct{ *mockAgents }
@@ -398,6 +400,15 @@ func newMockAgents() *mockAgents {
 }
 
 func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	if m.startEntered != nil {
+		select {
+		case m.startEntered <- struct{}{}:
+		default:
+		}
+	}
+	if m.startGate != nil {
+		<-m.startGate
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -519,10 +530,36 @@ func (m *mockAgents) SendPrompt(agentID, message string) error {
 
 func (m *mockAgents) DefaultProvider() string { return "claude" }
 
+func (m *mockAgents) TryClaimDispatch(taskID string) (DispatchClaim, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dispatchClaimed == nil {
+		m.dispatchClaimed = make(map[string]bool)
+	}
+	if m.dispatchClaimed[taskID] {
+		return nil, false
+	}
+	m.dispatchClaimed[taskID] = true
+	return mockDispatchClaim{m: m, taskID: taskID}, true
+}
+
 func (m *mockAgents) IsDispatching(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dispatchClaimed[taskID]
+}
+
+type mockDispatchClaim struct {
+	m      *mockAgents
+	taskID string
+}
+
+func (c mockDispatchClaim) Release() {
+	c.m.mu.Lock()
+	defer c.m.mu.Unlock()
+	if c.m.dispatchClaimed != nil {
+		delete(c.m.dispatchClaimed, c.taskID)
+	}
 }
 
 // SetDispatchClaimed simulates an out-of-band dispatcher (e.g.
@@ -2071,6 +2108,59 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 	}
 	if got.StatusReason != "watchdog: rate limit: org-level quota exhausted" {
 		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
+		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
+	}
+}
+
+func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.startEntered = make(chan struct{}, 1)
+	agents.startGate = make(chan struct{})
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine.agentRoutes["limited-agent-1"] = agentRoute{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent-2"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		engine.RescheduleRateLimitedAgent("t1", "limited-agent-1")
+	}()
+
+	<-agents.startEntered
+
+	go func() {
+		defer wg.Done()
+		engine.RescheduleRateLimitedAgent("t1", "limited-agent-2")
+	}()
+
+	close(agents.startGate)
+	wg.Wait()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
 	}
 	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
 		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])

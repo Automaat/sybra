@@ -945,6 +945,10 @@ func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
 }
 
+func (a *agentAdapter) TryClaimDispatch(taskID string) (workflow.DispatchClaim, bool) {
+	return a.agents.TryClaimDispatch(taskID)
+}
+
 func (a *agentAdapter) IsDispatching(taskID string) bool {
 	return a.agents.IsDispatching(taskID)
 }
