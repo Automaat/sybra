@@ -698,6 +698,9 @@ func (a *App) initWorkflowEngine() {
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetDivergenceRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the AgentCompletionHandler constructed there.
 }

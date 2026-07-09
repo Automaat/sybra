@@ -203,6 +203,59 @@ func TestExecPushBranch_DivergedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
+func TestExecPushBranch_DivergedRecoveryParks(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "one.txt", "one")
+	commitFile(t, wtPath, "two.txt", "two")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/existing-pr")
+	runGit(t, wtPath, "reset", "--hard", "HEAD~1")
+	commitFile(t, wtPath, "two-prime.txt", "two-prime")
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	recovered := false
+	engine.SetDivergenceRecovery(func(string) bool { recovered = true; return true })
+
+	_, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked (recovery took over)", err)
+	}
+	if !recovered {
+		t.Fatal("divergence recovery was not invoked")
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status == "human-required" {
+		t.Errorf("task escalated to human-required despite recovery taking over")
+	}
+}
+
+func TestExecPushBranch_DivergedRecoveryDeclinesEscalates(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "one.txt", "one")
+	commitFile(t, wtPath, "two.txt", "two")
+	runGit(t, wtPath, "push", "-u", "origin", "feat/existing-pr")
+	runGit(t, wtPath, "reset", "--hard", "HEAD~1")
+	commitFile(t, wtPath, "two-prime.txt", "two-prime")
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetDivergenceRecovery(func(string) bool { return false })
+
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required (recovery declined)", ti.Status)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
