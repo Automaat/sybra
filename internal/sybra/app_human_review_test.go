@@ -131,6 +131,27 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_RequiresRecheckingSupersededFailures pins that the prompt
+// tells the reviewer to re-verify a test-runner product_bug FAIL against
+// current acceptance criteria/repo state when the task body's own later
+// wording supersedes the requirement text the FAIL quotes, instead of
+// synthesizing a human-required status_reason from a stale verdict.
+func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Some task", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	prompt := h.buildPrompt(tk, nil)
+	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
+		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
+	}
+}
+
 func TestRateLimiter(t *testing.T) {
 	t.Parallel()
 	h, _, _, cleanup := newReviewTestEnv(t)
