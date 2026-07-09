@@ -964,11 +964,6 @@ func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
 // so a user who tightens the cost limit mid-run sees escalation on the
 // next result. A regression that cached the guardrails at start of loop
 // would miss the new limit and let the agent keep burning budget.
-//
-// The cost guardrail hard-blocks on breach pending a human decision (mirroring
-// the turns guardrail), so the agent is pre-armed with a buffered
-// escalationCh reply ("continue") to unblock the stream without a live
-// responder.
 func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Same session both times — cost is a cumulative-per-session snapshot,
 	// so result #2's 12.0 is the real running total (not summed with #1's
@@ -999,8 +994,7 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	// Start unlimited so result #1 doesn't escalate.
 	m.SetGuardrails(Guardrails{MaxCostUSD: 0})
 
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	a.escalationCh <- true
+	a := &Agent{ID: "t", Provider: "claude"}
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()
@@ -1011,12 +1005,10 @@ func TestGuardrails_SetMidRunVisibleToStream(t *testing.T) {
 	}
 }
 
-// TestGuardrails_CostBlocks_RejectStopsStream verifies the cost guardrail's
-// hard-blocking path: a human reject (escalationCh <- false) must return
-// stop=true and the stream loop must not process any further lines,
-// mirroring the turns-guardrail kill path pinned by
-// TestGuardrails_TurnsBlocks_CostNearCap.
-func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
+// TestGuardrails_CostHardStopsStream verifies the cost guardrail's hard-stop
+// path: breaching MaxCostUSD must stop the stream immediately without waiting
+// for a human response, so no further lines are processed.
+func TestGuardrails_CostHardStopsStream(t *testing.T) {
 	resultLine := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}`
 	trailingLine := `{"type":"assistant","message":{"content":[{"type":"text","text":"should never be processed"}]}}`
 	input := resultLine + "\n" + trailingLine + "\n"
@@ -1039,8 +1031,7 @@ func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
 	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
 
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	a.escalationCh <- false // reject: stop the run.
+	a := &Agent{ID: "t", Provider: "claude"}
 	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
 	mu.Lock()
@@ -1055,11 +1046,11 @@ func TestGuardrails_CostBlocks_RejectStopsStream(t *testing.T) {
 	}
 }
 
-// TestGuardrails_CostBlocks_ContextCancelStopsStream verifies that a
-// context cancellation (e.g. app shutdown) while the cost guardrail is
-// waiting on escalationCh also stops the stream, mirroring the reject path
-// above without requiring a human response.
-func TestGuardrails_CostBlocks_ContextCancelStopsStream(t *testing.T) {
+// TestGuardrails_CostHardStopMarksStopped verifies that a cost hard-stop is
+// classified as an intentional Sybra stop, not a provider crash. Completion
+// handling uses WasStopped to clear the workflow step and make the run
+// resumable when a provider session id was captured.
+func TestGuardrails_CostHardStopMarksStopped(t *testing.T) {
 	input := `{"type":"result","result":"r","session_id":"s1","total_cost_usd":11.0,"total_input_tokens":1,"total_output_tokens":1}` + "\n"
 
 	var (
@@ -1080,26 +1071,19 @@ func TestGuardrails_CostBlocks_ContextCancelStopsStream(t *testing.T) {
 	m := mustNewManager(t, context.Background(), emit, logger, t.TempDir())
 	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
 
-	ctx, cancel := context.WithCancel(t.Context())
-	a := &Agent{ID: "t", Provider: "claude", escalationCh: make(chan bool, 1)}
-	raised := make(chan bool, 1)
-	go func() {
-		raised <- pollUntil(2*time.Second, time.Millisecond, func() bool {
-			mu.Lock()
-			defer mu.Unlock()
-			return blocked > 0
-		})
-		cancel()
-	}()
-	m.streamHeadlessOutput(ctx, a, bytes.NewReader([]byte(input)), nil)
+	a := &Agent{ID: "t", Provider: "claude"}
+	m.streamHeadlessOutput(t.Context(), a, bytes.NewReader([]byte(input)), nil)
 
-	if !<-raised {
-		t.Error("cost escalation was never raised before cancellation")
-	}
 	mu.Lock()
 	defer mu.Unlock()
 	if blocked == 0 {
-		t.Error("expected blocking cost escalation event, got none")
+		t.Error("expected cost escalation event, got none")
+	}
+	if !a.WasStopped() {
+		t.Error("WasStopped() = false, want true after cost hard-stop")
+	}
+	if got := a.EscalationReason; got != "cost" {
+		t.Errorf("EscalationReason = %q, want cost", got)
 	}
 }
 
