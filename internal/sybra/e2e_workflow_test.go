@@ -655,6 +655,40 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	}
 }
 
+// TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath verifies that a cost
+// guardrail stop is a normal failed agent completion, not an infra stall.
+// If notifyWorkflowEngine routes it through ClearAgentStep, the second
+// scenario below is never dispatched until ResumeStalled runs and the
+// workflow remains stuck at triage.
+func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
+	env := setupE2EMulti(t, []string{"high_cost", "triage"})
+	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 10.0})
+
+	h := &AgentCompletionHandler{
+		DomainHandler:  DomainHandler{logger: e2eLogger()},
+		tasks:          env.tasks,
+		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		workflowEngine: env.engine,
+	}
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("cost hard-stop task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "cost-stopped triage retries through failed-completion path", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage"
+	})
+}
+
 // TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that
 // when the watchdog reaps a finished-but-alive agent via StopCompletedAgent
 // (clean terminal result emitted, process never exited), the workflow still

@@ -426,6 +426,7 @@ func (a *Agent) GetSessionFilePath() string {
 // adding to it; only a change in session id banks the previous session's
 // final snapshot and starts counting the new one from there.
 func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
+	cost = sanitizeCostUSD(cost)
 	a.mu.Lock()
 	if sessionID != "" {
 		a.SessionID = sessionID
@@ -585,6 +586,13 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Lock()
 	a.EscalationReason = reason
 	a.mu.Unlock()
+}
+
+// GetEscalationReason returns the current guardrail escalation reason.
+func (a *Agent) GetEscalationReason() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.EscalationReason
 }
 
 // NotePermissionDenial records an auto-mode classifier denial observed during the run.

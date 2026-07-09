@@ -104,6 +104,7 @@ couldn't catch).
 | `agent.research_machine_dir` | `string` |  |  |
 | `agent.max_cost_usd` | `float64` | `5` |  |
 | `agent.max_turns` | `int` | `150` |  |
+| `agent.max_task_cost_usd` | `float64` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike MaxCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
 | `agent.turn_cost_fraction` | `float64` |  | TurnCostFraction is the fraction of MaxCostUSD below which a turns escalation is auto-continued. Default 0.8 when unset. |
 | `agent.turn_multiplier` | `float64` |  | TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset. |
 | `agent.require_permissions` | `*bool` | _(nil)_ | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
