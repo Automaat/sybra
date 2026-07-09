@@ -1229,6 +1229,33 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 	}
 }
 
+func TestHeadArg_NoFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if got != "my-branch" {
+		t.Errorf("HeadArg without fork = %q, want %q", got, "my-branch")
+	}
+}
+
+func TestHeadArg_WithFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/widgets.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if want := "someuser:my-branch"; got != want {
+		t.Errorf("HeadArg with fork = %q, want %q", got, want)
+	}
+}
+
 // TestPushUpstream_RoutesToFork verifies that PushUpstream targets the fork
 // remote when one is configured — this is the core kuma-PR-from-fork fix.
 // Without this routing, sybra's initial branch push lands on the upstream
