@@ -52,6 +52,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -97,7 +98,11 @@ func main() {
 	}
 
 	scenario := popScenario()
-	if !runScenario(scenario, extractTaskID(os.Args)) {
+	prompt := extractPrompt(os.Args)
+	if prompt == "" && scenarioNeedsPromptContext(scenario) {
+		prompt = readInitialPrompt(os.Stdin)
+	}
+	if !runScenario(scenario, promptTaskID(prompt), prompt) {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
@@ -174,6 +179,50 @@ var scenarioHandlers = map[string]func(string){
 	"sybra_home_sentinel":   runSybraHomeSentinel,
 	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
 	"best_of_n_judge":       func(string) { runBestOfNJudge() },
+}
+
+func scenarioNeedsPromptContext(scenario string) bool {
+	switch scenario {
+	case "triage",
+		"triage_to_planning",
+		"triage_to_planning_nocritic",
+		"triage_to_planning_noplan",
+		"triage_to_done",
+		"triage_to_in_review",
+		"triage_to_human_required",
+		"evaluate",
+		"write_sidecar_success",
+		"revise_plan_sidecars",
+		"plan_critic_success":
+		return true
+	default:
+		return false
+	}
+}
+
+func readInitialPrompt(r io.Reader) string {
+	br := bufio.NewReader(r)
+	line, err := br.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return ""
+	}
+	return parseUserPromptLine(line)
+}
+
+func parseUserPromptLine(line []byte) string {
+	var msg struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(line), &msg); err != nil {
+		return ""
+	}
+	if msg.Type != "user" {
+		return ""
+	}
+	return strings.TrimSpace(msg.Message.Content)
 }
 
 // runBestOfNAttempt simulates one best-of-N implementation attempt: it
@@ -388,7 +437,7 @@ func runMalformedPROutput() {
 func runWriteSidecarSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
 	emitResult("Sidecar written.")
@@ -398,7 +447,7 @@ func runRevisePlanSidecars(taskID string) {
 	emitSystem()
 	emitAssistant("Revising fake plan sidecars...")
 	paths := map[string]string{}
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude-revision")), 0o644)
 		base := filepath.Base(path)
 		switch {
@@ -613,13 +662,18 @@ func emitRaw(event map[string]any) {
 // Task IDs look like 8-char hex strings (e.g., "a1b2c3d4").
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
 
-func extractTaskID(args []string) string {
+func extractPrompt(args []string) string {
 	for i, arg := range args {
 		if arg == "-p" && i+1 < len(args) {
-			if matches := taskIDRe.FindStringSubmatch(args[i+1]); len(matches) > 1 {
-				return matches[1]
-			}
+			return args[i+1]
 		}
+	}
+	return ""
+}
+
+func promptTaskID(prompt string) string {
+	if matches := taskIDRe.FindStringSubmatch(prompt); len(matches) > 1 {
+		return matches[1]
 	}
 	return ""
 }
@@ -630,19 +684,15 @@ func extractTaskID(args []string) string {
 // without needing per-kind variants.
 var sidecarPathRe = regexp.MustCompile(`(?:/tmp/sybra-|\.sybra-)[A-Za-z0-9_./-]+\.(?:md|json)`)
 
-func extractSidecarPaths(args []string) []string {
+func extractSidecarPaths(prompt string) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for i, arg := range args {
-		if arg == "-p" && i+1 < len(args) {
-			for _, m := range sidecarPathRe.FindAllString(args[i+1], -1) {
-				if _, ok := seen[m]; ok {
-					continue
-				}
-				seen[m] = struct{}{}
-				out = append(out, m)
-			}
+	for _, m := range sidecarPathRe.FindAllString(prompt, -1) {
+		if _, ok := seen[m]; ok {
+			continue
 		}
+		seen[m] = struct{}{}
+		out = append(out, m)
 	}
 	return out
 }
