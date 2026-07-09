@@ -8,12 +8,13 @@ const mockRespondApproval = vi.fn()
 const mockSubscribe = vi.fn((..._args: unknown[]) => () => {})
 
 const conversations = new SvelteMap<string, unknown[]>()
-const pendingApprovals = new SvelteMap<string, unknown>()
+const pendingApprovals = new SvelteMap<string, SvelteMap<string, unknown>>()
 
 vi.mock('../stores/convo.svelte.js', () => ({
   convoStore: {
     conversations,
     pendingApprovals,
+    approvalsFor: (agentId: string) => [...(pendingApprovals.get(agentId)?.values() ?? [])],
     getOutput: (...args: unknown[]) => mockGetOutput(...args),
     sendMessage: (...args: unknown[]) => mockSendMessage(...args),
     respondApproval: (...args: unknown[]) => mockRespondApproval(...args),
@@ -58,17 +59,33 @@ describe('ChatView', () => {
   // a follow-up while a tool-use is awaiting consent would race the queue
   // ahead of the approval handshake.
   it('disables input when a tool approval is pending', async () => {
-    pendingApprovals.set('tool-1', {
+    pendingApprovals.set('a1', new SvelteMap([['tool-1', {
       toolUseId: 'tool-1',
       toolName: 'Bash',
       input: {},
-    })
+    }]]))
 
     render(ChatView, { props: { agentId: 'a1', agentState: 'paused' } })
 
     const textarea = await screen.findByRole('textbox')
     expect((textarea as HTMLTextAreaElement).disabled).toBe(true)
     expect((textarea as HTMLTextAreaElement).placeholder).toBe('Waiting for approval...')
+  })
+
+  // Regression: a second agent's pending approval must not leak into this
+  // agent's ChatView — approvals are scoped per agentId.
+  it('does not show another agent\'s pending approval', async () => {
+    pendingApprovals.set('a2', new SvelteMap([['tool-2', {
+      toolUseId: 'tool-2',
+      toolName: 'Write',
+      input: {},
+    }]]))
+
+    render(ChatView, { props: { agentId: 'a1', agentState: 'paused' } })
+
+    const textarea = await screen.findByRole('textbox')
+    expect((textarea as HTMLTextAreaElement).disabled).toBe(false)
+    expect((textarea as HTMLTextAreaElement).placeholder).toBe('Type a message...')
   })
 
   it('forwards typed messages to convoStore.sendMessage', async () => {
