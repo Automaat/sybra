@@ -110,6 +110,32 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "placeholder summary fails closed",
+			input:   `{"decision":"sybra_bug","summary":"test","issue_title":"test title","issue_body":"test body"}`,
+			wantErr: true,
+		},
+		{
+			name:    "placeholder summary case-insensitive fails closed",
+			input:   `{"decision":"human","summary":"  Test  "}`,
+			wantErr: true,
+		},
+		{
+			name: "placeholder issue title fails closed even with real summary",
+			input: `{"decision":"sybra_bug","summary":"verify_commits flipped despite push",` +
+				`"issue_title":"test title","issue_body":"real body"}`,
+			wantErr: true,
+		},
+		{
+			name: "summary merely mentioning test is not a placeholder",
+			input: `{"decision":"sybra_bug","summary":"the test suite is flaky",` +
+				`"issue_title":"fix(ci): flaky test","issue_body":"real body"}`,
+			want: Decision{
+				Decision: "sybra_bug", Summary: "the test suite is flaky",
+				IssueTitle: "fix(ci): flaky test", IssueBody: "real body",
+			},
+			wantSource: SourceJSON,
+		},
+		{
 			name:    "envelope-shaped input fails closed",
 			input:   `{"structured_output":{"decision":"human","summary":"nested, should not be found"}}`,
 			wantErr: true,

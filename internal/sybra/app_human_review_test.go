@@ -691,41 +691,53 @@ func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {
 	defer cleanup()
 	sink.err = errors.New("rate limited")
 
-	existing, err := tasks.CreateFull("fix(x): y", "existing diagnosis", task.AgentModeHeadless, task.Update{
-		Tags: &[]string{"sybra-bug", "issue-filing-failed"},
-	})
-	if err != nil {
-		t.Fatalf("create existing local bug: %v", err)
-	}
 	tk, err := tasks.Create("Whatever", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
-		t.Fatalf("flip: %v", err)
+	verdictContent := "```sybra-verdict\n" +
+		`{"decision":"sybra_bug","summary":"branch stale before agent start","issue_title":"fix(workflow): stale branch race","issue_body":"z"}` +
+		"\n```"
+
+	runOnce := func() {
+		if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+			t.Fatalf("flip: %v", err)
+		}
+		ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+		ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: verdictContent})
+		h.onComplete(ag)
 	}
 
-	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
-	ag.AppendOutput(agent.StreamEvent{
-		Type:    "assistant",
-		Content: "```sybra-verdict\n" + `{"decision":"sybra_bug","summary":"x","issue_title":"fix(x): y","issue_body":"z"}` + "\n```",
-	})
-	h.onComplete(ag)
+	runOnce()
+	runOnce()
 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("expected no duplicate local fallback task; got %d tasks", len(all))
+	var localBugTasks []task.Task
+	for _, lt := range all {
+		if lt.ID == tk.ID {
+			continue
+		}
+		localBugTasks = append(localBugTasks, lt)
 	}
+	if len(localBugTasks) != 1 {
+		t.Fatalf("want exactly 1 local fallback task after two runs, got %d: %+v", len(localBugTasks), localBugTasks)
+	}
+
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
-		t.Fatalf("re-load origin: %v", err)
+		t.Fatalf("re-load: %v", err)
 	}
-	if !strings.Contains(got.Body, "blocked by existing Sybra bug (local fallback)") ||
-		!strings.Contains(got.Body, existing.ID) {
-		t.Fatalf("origin did not link existing local fallback task %s:\n%s", existing.ID, got.Body)
+	if got.Status != task.StatusBlocked {
+		t.Errorf("status: got %q want blocked", got.Status)
+	}
+	if !strings.Contains(got.Body, "Auto-review verdict: blocked by Sybra bug (already filed)") {
+		t.Errorf("expected dedup note on second run; got:\n%s", got.Body)
+	}
+	if strings.Count(got.Body, "Linked local Sybra bug") > 1 {
+		t.Errorf("expected only one fresh-filing note, got body:\n%s", got.Body)
 	}
 }
 
@@ -735,10 +747,10 @@ func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T)
 	defer cleanup()
 	sink.err = errors.New("rate limited")
 
-	if _, err := tasks.CreateFull("fix(x): y", "unrouted diagnosis", task.AgentModeHeadless, task.Update{
-		Tags: &[]string{"sybra-bug"},
+	if _, err := tasks.CreateFull("fix(workflow): stale branch race", "existing unrelated bug", task.AgentModeHeadless, task.Update{
+		Tags: task.Ptr([]string{"sybra-bug"}),
 	}); err != nil {
-		t.Fatalf("create unrelated sybra bug: %v", err)
+		t.Fatalf("seed unrelated sybra-bug task: %v", err)
 	}
 	tk, err := tasks.Create("Whatever", "Body.", "headless")
 	if err != nil {
@@ -750,8 +762,10 @@ func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T)
 
 	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	ag.AppendOutput(agent.StreamEvent{
-		Type:    "assistant",
-		Content: "```sybra-verdict\n" + `{"decision":"sybra_bug","summary":"x","issue_title":"fix(x): y","issue_body":"z"}` + "\n```",
+		Type: "assistant",
+		Content: "```sybra-verdict\n" +
+			`{"decision":"sybra_bug","summary":"branch stale before agent start","issue_title":"fix(workflow): stale branch race","issue_body":"z"}` +
+			"\n```",
 	})
 	h.onComplete(ag)
 
@@ -759,17 +773,28 @@ func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("expected a new routed fallback task in addition to unrelated sybra-bug; got %d tasks", len(all))
-	}
-	var routed int
-	for _, tk := range all {
-		if tk.Title == "fix(x): y" && slices.Contains(tk.Tags, "sybra-bug") && slices.Contains(tk.Tags, "issue-filing-failed") {
-			routed++
+	localFallbackCount := 0
+	for _, got := range all {
+		if got.ID == tk.ID {
+			continue
+		}
+		if slices.Contains(got.Tags, "issue-filing-failed") {
+			localFallbackCount++
 		}
 	}
-	if routed != 1 {
-		t.Fatalf("routed fallback task count = %d, want 1; tasks=%+v", routed, all)
+	if localFallbackCount != 1 {
+		t.Fatalf("want exactly 1 new local fallback task, got %d", localFallbackCount)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !strings.Contains(got.Body, "blocked by Sybra bug (local fallback)") {
+		t.Errorf("expected fresh local fallback note, got:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "already filed") {
+		t.Errorf("must not dedupe against unrelated sybra-bug task; got:\n%s", got.Body)
 	}
 }
 
@@ -898,6 +923,46 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	}
 	if sink.calls != 0 {
 		t.Errorf("sink should not be called on malformed verdict; calls=%d", sink.calls)
+	}
+}
+
+// TestOnComplete_PlaceholderVerdict_RejectedNotFiled pins task 2379fece's
+// repro: a run that returns a placeholder/echoed-schema payload
+// (summary="test", issue_title="test title", issue_body="test body") must
+// not file a GitHub issue or block the task — verdict.Parse rejects it, so
+// onComplete treats it like any other unparseable verdict.
+func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Some task", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"sybra_bug","summary":"test","issue_title":"test title","issue_body":"test body"}`,
+	})
+	h.onComplete(ag)
+
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called for placeholder verdict; calls=%d", sink.calls)
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %q want human-required (placeholder verdict must not block)", got.Status)
+	}
+	if !strings.Contains(got.Body, "unparseable verdict") {
+		t.Errorf("expected unparseable-verdict note; got:\n%s", got.Body)
 	}
 }
 

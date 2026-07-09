@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -87,8 +88,9 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", err
 	}
 	if num > 0 {
-		if out, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...); runErr != nil {
-			return false, foundURL, classifyGHError("issue comment", out, runErr)
+		out, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...)
+		if runErr != nil {
+			return false, foundURL, classifyGHError("gh issue comment", out, runErr)
 		}
 		return false, foundURL, nil
 	}
@@ -108,7 +110,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		"--label", lb.String(),
 	)...)
 	if err != nil {
-		return false, "", classifyGHError("issue create", out, err)
+		return false, "", classifyGHError("gh issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
 }
@@ -151,7 +153,7 @@ func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number i
 		"--limit", "5",
 	)...)
 	if err != nil {
-		return 0, "", classifyGHError("issue list", out, err)
+		return 0, "", classifyGHError("gh issue list", out, err)
 	}
 	num, url := parseFirstMatchingIssue(out, title)
 	return num, url, nil
@@ -228,16 +230,28 @@ func classifyGHError(op string, out []byte, err error) error {
 	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
 		return ErrGHRateLimit
 	}
-	if trimmed := sanitizeGHOutput(out); trimmed != "" {
-		return errors.Join(err, errors.New(strings.TrimSpace(op)+": "+trimmed))
+	if detail := sanitizeGHOutput(out); detail != "" {
+		return fmt.Errorf("%s: %s: %w", op, detail, err)
 	}
-	return err
+	return fmt.Errorf("%s: %w", op, err)
 }
 
 func sanitizeGHOutput(out []byte) string {
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return ""
+	}
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "<!doctype html") || strings.Contains(lower, "<html") {
+		for i := len(s) - 1; i >= 0; i-- {
+			if s[i] != '\n' {
+				continue
+			}
+			if line := strings.TrimSpace(s[i+1:]); strings.HasPrefix(line, "gh:") {
+				return line
+			}
+		}
+		return "GitHub returned an HTML error page"
 	}
 	lines := strings.Split(s, "\n")
 	const maxLines = 5

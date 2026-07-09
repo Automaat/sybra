@@ -18,9 +18,9 @@ type fakeExecer struct {
 	calls       [][]string
 	listResp    []byte
 	listErr     error
-	commentResp []byte
-	createErr   error
 	createResp  []byte
+	createErr   error
+	commentResp []byte
 	commentErr  error
 	labelErr    error
 }
@@ -168,8 +168,9 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 
 func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	fe := &fakeExecer{
-		listResp:  []byte(`[]`),
-		createErr: errors.New("HTTP 403: API rate limit exceeded for 1.2.3.4"),
+		listResp:   []byte(`[]`),
+		createErr:  errors.New("exit status 1"),
+		createResp: []byte("gh: API rate limit exceeded for 1.2.3.4"),
 	}
 	s := newTestSink(fe)
 
@@ -195,7 +196,7 @@ func TestGHIssueSink_ClassifiesRateLimitFromOutput(t *testing.T) {
 	}
 }
 
-func TestGHIssueSink_ErrorIncludesSanitizedOutput(t *testing.T) {
+func TestGHIssueSink_CreateErrorIncludesSanitizedOutput(t *testing.T) {
 	fe := &fakeExecer{
 		listResp:   []byte(`[]`),
 		createResp: []byte("first line\nsecond line\nthird line\nfourth line\nfifth line\nsixth line"),
@@ -206,11 +207,30 @@ func TestGHIssueSink_ErrorIncludesSanitizedOutput(t *testing.T) {
 	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
 	_, err := s.Submit(context.Background(), a, "body")
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected create error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
+	if !strings.Contains(msg, "gh issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
 		t.Fatalf("error did not include sanitized output: %q", msg)
+	}
+}
+
+func TestGHIssueSink_CommentErrorIncludesOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:    []byte(`[{"number":87,"title":"[monitor] failure_spike"}]`),
+		commentResp: []byte("GraphQL: Could not resolve to an Issue with the number of 87"),
+		commentErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected comment error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gh issue comment") || !strings.Contains(msg, "Could not resolve") {
+		t.Fatalf("error did not include operation and gh output: %v", err)
 	}
 }
 
@@ -253,6 +273,36 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 	}
 	if comments[0][2] != "42" {
 		t.Errorf("wrong issue number commented: got %s want 42", comments[0][2])
+	}
+}
+
+func TestSanitizeGHOutput_CaseInsensitiveHTML(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "uppercase doctype collapses to status line",
+			in:   "<!DOCTYPE HTML>\n<html><body>Unicorn</body></html>\ngh: HTTP 504",
+			want: "gh: HTTP 504",
+		},
+		{
+			name: "mixed-case html with no trailing gh line",
+			in:   "<!DoCtYpE hTmL><HtMl><body>Unicorn</body></HtMl>",
+			want: "GitHub returned an HTML error page",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeGHOutput([]byte(tt.in)); got != tt.want {
+				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
