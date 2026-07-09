@@ -1,4 +1,4 @@
-package sybra
+package completion
 
 import (
 	"errors"

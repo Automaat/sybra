@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -278,7 +279,16 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		// Guard with hasResult so agents that exit-0 without any result event
 		// (no_result scenario) are not back-filled with assistant text.
 		if hasResult && result == "" {
-			result = lastAssistantText(ag)
+			// Same "last assistant event" fallback as
+			// completion.Handler.OnComplete (internal/sybra/completion),
+			// inlined here since this file is package sybra and that helper
+			// is now private to the extracted completion package.
+			for i := range slices.Backward(output) {
+				if output[i].Type == "assistant" {
+					result = output[i].Content
+					break
+				}
+			}
 		}
 		engine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
 			AgentID:  ag.ID,
@@ -289,7 +299,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	}
 
 	// Mirror production cascade wiring (sybra/services.go →
-	// AgentCompletionHandler.OnWorkflowComplete) so tests that span multiple
+	// completion.Handler.OnWorkflowComplete) so tests that span multiple
 	// chained workflows (simple-task-plan → simple-task-implement →
 	// simple-task-review) advance through the cascade exactly like the
 	// desktop app does.
@@ -546,13 +556,13 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 	// First call: agent dies with SIGTERM. Second call (via ResumeStalled): success.
 	env := setupE2EMulti(t, []string{"signal_kill", "triage"})
 
-	// Wire production AgentCompletionHandler so the signal kill guard fires.
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	// Wire production completion.Handler so the signal kill guard fires.
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("signal kill task", "", "headless")
@@ -605,13 +615,13 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	// principle advance if the guard didn't fire.
 	env := setupE2EMulti(t, []string{"hang", "triage"})
 
-	// Wire production AgentCompletionHandler so the signal kill guard fires.
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	// Wire production completion.Handler so the signal kill guard fires.
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("stop agent task", "", "headless")
@@ -664,12 +674,12 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	env := setupE2EMulti(t, []string{"high_cost", "triage"})
 	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 10.0})
 
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("cost hard-stop task", "", "headless")
@@ -701,12 +711,12 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success_then_hang", "triage"})
 
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("stop completed agent task", "", "headless")
