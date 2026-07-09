@@ -205,6 +205,47 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadTriageModelDefaultsEmpty locks in that Triage.Model is left empty
+// by default rather than defaulted to "sonnet". An empty model lets
+// triage.FallbackClassifier fall through to its llmjob.Cheap tier (haiku);
+// a "sonnet" default here would silently override that cheap tier on every
+// install (see internal/triage/classifier.go's claudeModelOverride).
+func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "" {
+		t.Fatalf("triage.model = %q, want empty (cheap tier)", cfg.Triage.Model)
+	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Fatalf("triage.poll_seconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+}
+
+// TestLoadTriageModelPreservesExplicitOverride ensures an operator-set
+// model still wins over the cheap-tier default.
+func TestLoadTriageModelPreservesExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("triage:\n  model: sonnet\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "sonnet" {
+		t.Fatalf("triage.model = %q, want sonnet", cfg.Triage.Model)
+	}
+}
+
 func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

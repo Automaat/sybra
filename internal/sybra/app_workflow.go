@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -27,6 +28,7 @@ import (
 // Compile-time interface checks.
 var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
@@ -195,6 +197,56 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
+}
+
+// taskClassifierAdapter bridges internal/triage's deterministic classifier to
+// workflow.TaskClassifier for the `classify_task` step. It runs the same
+// classify+apply pipeline as `sybra-cli triage classify <id>` and the
+// poll-based auto-triage handler (internal/poll.TriageHandler), so the
+// workflow step no longer needs a full agent session to reach it.
+type taskClassifierAdapter struct {
+	tasks      *task.Manager
+	projects   *project.Store
+	classifier triage.Classifier
+	audit      *audit.Logger
+}
+
+func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	var projects []project.Project
+	if a.projects != nil {
+		projects, err = a.projects.List()
+		if err != nil {
+			return err
+		}
+	}
+	v, err := a.classifier.Classify(ctx, t, projects)
+	if err != nil {
+		return err
+	}
+	updated, err := triage.Apply(a.tasks, t, v, projects)
+	if err != nil {
+		return err
+	}
+	if a.audit != nil {
+		_ = a.audit.Log(audit.Event{
+			Type:   audit.EventTriageClassified,
+			TaskID: t.ID,
+			Data: map[string]any{
+				"title":      v.Title,
+				"tags":       v.Tags,
+				"size":       v.Size,
+				"type":       v.Type,
+				"mode":       v.Mode,
+				"project_id": updated.ProjectID,
+				"status":     string(updated.Status),
+			},
+		})
+	}
+	return nil
 }
 
 func taskToInfo(t task.Task) workflow.TaskInfo {
