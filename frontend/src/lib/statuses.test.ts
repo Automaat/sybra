@@ -151,4 +151,22 @@ describe('needsPlanApproval — keyed off workflow, not stale status (issue #164
       }),
     ).toBe(false)
   })
+
+  it('falls back to status when only currentStep is populated (state missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'review_plan' },
+      }),
+    ).toBe(true)
+  })
+
+  it('falls back to status when only state is populated (currentStep missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { state: 'waiting' },
+      }),
+    ).toBe(true)
+  })
 })

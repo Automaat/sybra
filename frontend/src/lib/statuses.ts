@@ -134,13 +134,19 @@ export function awaitsHuman(status: string): boolean {
  * --status` desyncs the task's outer status from its active workflow (see
  * issue #1642) — the workflow, not the possibly-stale status string, is the
  * source of truth for whether a human decision is actually pending.
+ *
+ * Requires *both* currentStep and state to be non-empty before trusting the
+ * workflow — a workflow with only one populated (e.g. an older serialized
+ * execution, or ExecState's zero value) is not a reliable signal either way,
+ * so falls back to status rather than risk a false negative that hides the
+ * approval UI.
  */
 export function needsPlanApproval(task: {
   status?: string
   workflow?: { currentStep?: string; state?: string } | null
 }): boolean {
   const wf = task.workflow
-  if (wf?.currentStep || wf?.state) {
+  if (wf?.currentStep && wf?.state) {
     return wf.currentStep === 'review_plan' && wf.state === 'waiting'
   }
   return task.status === 'plan-review'
