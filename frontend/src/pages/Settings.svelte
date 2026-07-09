@@ -20,6 +20,35 @@
   import { focusModeStore } from '../lib/focus-mode.svelte.js'
   import { viewModeStore } from '../lib/view-mode.svelte.js'
   import { inAppBrowserStore } from '../lib/browser.svelte.js'
+  import { browserNotificationStore } from '../lib/web-notifications.svelte.js'
+
+  // Web-only: the desktop Wails build has its own native macOS notifications
+  // and no browser Notification permission model to expose.
+  const isWeb = import.meta.env.VITE_MODE === 'web'
+
+  const browserNotificationStatus = $derived.by(() => {
+    // Read `enabled` unconditionally so it's always a tracked dependency —
+    // requestEnable()/disable() only flip `enabled`, not `permission` or
+    // `supported` (both plain reads of window.Notification), so if `enabled`
+    // were only read inside the 'granted' branch below, a first render with
+    // permission 'default' would never register it as a dependency and this
+    // derived would go stale after the user grants permission.
+    const enabled = browserNotificationStore.enabled
+    if (!browserNotificationStore.supported) return 'Not supported in this browser'
+    switch (browserNotificationStore.permission) {
+      case 'denied': return 'Blocked — allow notifications for this site in your browser settings'
+      case 'granted': return enabled ? 'On — live Sybra notifications will show as browser notifications' : 'Off'
+      default: return 'Off — enabling will ask your browser for permission'
+    }
+  })
+
+  async function toggleBrowserNotifications(checked: boolean) {
+    if (checked) {
+      await browserNotificationStore.requestEnable()
+    } else {
+      browserNotificationStore.disable()
+    }
+  }
 
   function setFocusMode(on: boolean) {
     focusModeStore.set(on)
@@ -345,6 +374,21 @@
                 <input type="checkbox" class="h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500" bind:checked={settings.notification.desktop} />
                 <span class="text-sm">Desktop notifications (macOS)</span>
               </label>
+              {#if isWeb}
+                <label class="mt-5 flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    class="mt-0.5 h-4 w-4 cursor-pointer rounded border-surface-300 accent-primary-500 disabled:cursor-not-allowed"
+                    checked={browserNotificationStore.enabled}
+                    disabled={!browserNotificationStore.supported || browserNotificationStore.permission === 'denied'}
+                    onchange={(e) => toggleBrowserNotifications((e.target as HTMLInputElement).checked)}
+                  />
+                  <span class="flex flex-col">
+                    <span class="text-sm font-medium">Browser notifications</span>
+                    <span class="text-xs text-surface-500 dark:text-surface-400">{browserNotificationStatus}</span>
+                  </span>
+                </label>
+              {/if}
             </section>
           {/if}
 
