@@ -1953,6 +1953,9 @@ func TestPushSync_RefusesForceWhenRemoteAdvanced(t *testing.T) {
 	if !errors.Is(err, ErrDivergedNeedsResolve) {
 		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve", err)
 	}
+	if !errors.Is(err, ErrRemoteAdvanced) {
+		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced", err)
+	}
 	// The remote fix must survive untouched.
 	if got := remoteRefSHA(t, remoteBare, branch); got != advancedSHA {
 		t.Fatalf("remote SHA = %q, want untouched fix %q", got, advancedSHA)
@@ -2031,8 +2034,8 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	}
 	makeCommit(t, wtPath, "two-prime")
 
-	// Break the remote so the live-head verification (ls-remote) errors
-	// instead of returning a SHA.
+	// Break the remote so the live-head verification fetch errors instead of
+	// updating the tracking ref.
 	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git")).CombinedOutput(); err != nil {
 		t.Fatalf("remote set-url: %v: %s", err, out)
 	}
@@ -2041,8 +2044,8 @@ func TestPushSync_FailsClosedWhenRemoteHeadUnverifiable(t *testing.T) {
 	if !errors.Is(err, ErrRemoteAdvanced) {
 		t.Fatalf("PushSync = %v, want ErrRemoteAdvanced (fail closed)", err)
 	}
-	if !errors.Is(err, ErrDivergedNeedsResolve) {
-		t.Fatalf("PushSync = %v, want ErrDivergedNeedsResolve (fail closed)", err)
+	if errors.Is(err, ErrDivergedNeedsResolve) {
+		t.Fatalf("PushSync = %v, must not return ErrDivergedNeedsResolve for remote verification failure", err)
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != beforeSHA {
 		t.Fatalf("remote SHA = %q, want untouched %q", got, beforeSHA)
