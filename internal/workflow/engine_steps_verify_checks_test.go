@@ -356,6 +356,27 @@ func TestFindCorruptedNodeModules(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
+	// Symlinked directories must be skipped so the scan cannot escape the
+	// worktree or hand npm a symlink target to rewrite.
+	symlinkTarget := t.TempDir()
+	makeCorruptedNodeModules(t, symlinkTarget)
+	if err := os.Symlink(symlinkTarget, filepath.Join(root, "linked")); err != nil {
+		t.Fatalf("symlink dir: %v", err)
+	}
+	symlinkedNodeModulesDir := filepath.Join(root, "symlinked-node-modules")
+	if err := os.MkdirAll(symlinkedNodeModulesDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(symlinkedNodeModulesDir, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(symlinkedNodeModulesDir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(symlinkTarget, "node_modules"), filepath.Join(symlinkedNodeModulesDir, "node_modules")); err != nil {
+		t.Fatalf("symlink node_modules: %v", err)
+	}
+
 	got := findCorruptedNodeModules(root)
 	if len(got) != 1 || got[0] != corruptedDir {
 		t.Fatalf("findCorruptedNodeModules = %v, want [%s]", got, corruptedDir)
@@ -388,7 +409,7 @@ func TestExecVerifyChecks_NodeModulesRepairRecoversFromCorruption(t *testing.T) 
 
 func TestExecVerifyChecks_NodeModulesRepairCancelSkips(t *testing.T) {
 	// Not t.Parallel(): mutates PATH and installs a fake npm.
-	writeFakeNPMScript(t, "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then touch npm-started; while :; do :; done; fi\nexit 1\n")
+	writeFakeNPMScript(t, "#!/bin/sh\nif [ \"$1\" = \"ci\" ]; then touch npm-started; while :; do sleep 0.1; done; fi\nexit 1\n")
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	frontend := filepath.Join(wt, "frontend")
 	makeCorruptedNodeModules(t, frontend)

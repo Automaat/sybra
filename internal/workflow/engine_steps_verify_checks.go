@@ -280,7 +280,7 @@ func findCorruptedNodeModules(rootPath string) []string {
 		hasPackageJSON := false
 		hasPackageLock := false
 		for _, entry := range entries {
-			if entry.IsDir() {
+			if entry.IsDir() || isSymlinkDirEntry(entry) {
 				continue
 			}
 			switch entry.Name() {
@@ -291,7 +291,7 @@ func findCorruptedNodeModules(rootPath string) []string {
 			}
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
+			if isSymlinkDirEntry(entry) || !entry.IsDir() {
 				continue
 			}
 			name := entry.Name()
@@ -309,6 +309,14 @@ func findCorruptedNodeModules(rootPath string) []string {
 	}
 	walk(rootPath, 0)
 	return corrupted
+}
+
+func isSymlinkDirEntry(entry os.DirEntry) bool {
+	info, err := entry.Info()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
 }
 
 func verifyCommandScanRoot(wtPath, rawCmd string) string {
@@ -346,6 +354,10 @@ func leadingShellCD(rawCmd string) (string, bool) {
 // isCorruptedNodeModules reports whether nodeModulesPath looks like a
 // partial install rather than a complete one.
 func isCorruptedNodeModules(nodeModulesPath string) bool {
+	info, err := os.Lstat(nodeModulesPath)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	if _, err := os.Stat(filepath.Join(nodeModulesPath, ".bin")); err != nil {
 		return true
 	}
@@ -373,7 +385,11 @@ func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeou
 		maybeMiseTrust(ctx, dir)
 		cmd := exec.CommandContext(ctx, "npm", "ci")
 		cmd.Dir = dir
-		out, runErr := cmd.CombinedOutput()
+		tail := &boundedTail{max: verifyChecksMaxOutput}
+		cmd.Stdout = tail
+		cmd.Stderr = tail
+		runErr := cmd.Run()
+		out := tail.String()
 		ctxErr := e.ctx.Err()
 		cancel()
 		if ctxErr != nil {
@@ -381,7 +397,7 @@ func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeou
 		}
 		if runErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
-				"task_id", taskID, "dir", dir, "err", runErr, "output", tailString(string(out), 2000))
+				"task_id", taskID, "dir", dir, "err", runErr, "output", tailString(out, 2000))
 			repaired = false
 			continue
 		}
