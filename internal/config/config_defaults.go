@@ -199,6 +199,22 @@ func (c *Config) DefaultSandboxMode() string {
 	return mode
 }
 
+// PlaywrightMCPEnabled reports whether test-runner runs should attach a
+// headless Playwright MCP server for visual/console verification. Default
+// false — an operator must opt in.
+func (c *Config) PlaywrightMCPEnabled() bool {
+	return c != nil && c.Agent.PlaywrightMCP.Enabled
+}
+
+// PlaywrightMCPExtraArgs returns the configured extra Playwright MCP launcher
+// args, appended verbatim after --output-dir.
+func (c *Config) PlaywrightMCPExtraArgs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Agent.PlaywrightMCP.ExtraArgs
+}
+
 // SurviveRestartEnabled reports whether agent subprocesses should be
 // detached to survive an app restart and reattached on the next startup.
 // Defaults to true when unset.

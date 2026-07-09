@@ -97,4 +97,19 @@ type AgentDefaults struct {
 	// human-required. Empty means no default (falls back to the
 	// sole-project behavior).
 	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
+	// PlaywrightMCP configures the default-off headless Playwright MCP server
+	// attached to test-runner runs that resolve to the Claude provider.
+	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+}
+
+// PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+// server for visual/console verification. Default-off: Manager.prepareRunConfig
+// only attaches it for headless test-runner runs that resolve to the Claude
+// provider and pass a launcher preflight (see internal/agent/mcp.go).
+type PlaywrightMCPConfig struct {
+	// Enabled opts this machine into attaching the Playwright MCP server.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
+	// --headless --output-dir <dir>` launch command.
+	ExtraArgs []string `yaml:"extra_args" json:"extraArgs"`
 }

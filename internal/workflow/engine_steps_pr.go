@@ -166,6 +166,10 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	// prompts instructed. Same for a missing local branch ref — both are
 	// unrecoverable by retrying the push.
 	if errors.Is(pushErr, project.ErrDivergedNeedsResolve) {
+		if e.divergenceRecovery != nil && e.divergenceRecovery(taskID) {
+			e.logger.Info("workflow.pr-tail.diverged-recovery", "task_id", taskID, "step", step.ID)
+			return StepOutput{}, errStepParked, false
+		}
 		out, err = e.humanRequiredPR(taskID, step, "branch diverged from remote — needs manual conflict resolution (never force-pushed): "+pushErr.Error())
 		return out, err, false
 	}
