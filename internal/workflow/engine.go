@@ -139,6 +139,7 @@ type BranchSyncer interface {
 // operates with a nil getter (step skips), so unit tests need not wire one.
 type CheckConfigGetter interface {
 	VerifyCommands(ctx context.Context, taskID string) []string
+	SetupCommands(ctx context.Context, taskID string) []string
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
@@ -267,6 +268,8 @@ type Engine struct {
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
 	recorder         ArtifactRecorder
+	costBudget       CostBudgetChecker
+	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	logger           *slog.Logger
 	ctx              context.Context
@@ -373,6 +376,17 @@ func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 // disables artifact recording — all calls are nil-guarded so engine unit
 // tests remain unchanged.
 func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
+
+// SetCostBudgetChecker wires the cumulative task cost-budget preflight used
+// by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it
+// unset skips the preflight — see CostBudgetChecker's doc comment.
+func (e *Engine) SetCostBudgetChecker(c CostBudgetChecker) { e.costBudget = c }
+
+// SetAttemptWorktreeManager wires the isolated per-attempt worktree
+// lifecycle used by `best_of_n`/`promote_best_of_n`. Leaving it unset fails
+// those steps closed to human-required — see AttemptWorktreeManager's doc
+// comment.
+func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) { e.attemptWorktrees = m }
 
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.

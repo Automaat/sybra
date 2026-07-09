@@ -1528,6 +1528,32 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 			clone.ParallelInflight[k] = &pcClone
 		}
 	}
+	// Deep-copy BestOfNInflight for the same reason as ParallelInflight above:
+	// each attempt's *AttemptStatus must be independent across List()/Get()
+	// clones, or a caller mutating a returned clone's attempt slots (e.g. while
+	// dispatching the next attempt) would silently corrupt the cached copy.
+	if wf.BestOfNInflight != nil {
+		clone.BestOfNInflight = make(map[string]*workflow.BestOfNInflight, len(wf.BestOfNInflight))
+		for k, v := range wf.BestOfNInflight {
+			if v == nil {
+				clone.BestOfNInflight[k] = nil
+				continue
+			}
+			bnClone := *v
+			if v.Attempts != nil {
+				bnClone.Attempts = make(map[string]*workflow.AttemptStatus, len(v.Attempts))
+				for ak, av := range v.Attempts {
+					if av == nil {
+						bnClone.Attempts[ak] = nil
+						continue
+					}
+					asClone := *av
+					bnClone.Attempts[ak] = &asClone
+				}
+			}
+			clone.BestOfNInflight[k] = &bnClone
+		}
+	}
 	return clone
 }
 
