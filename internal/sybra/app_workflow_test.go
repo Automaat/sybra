@@ -249,17 +249,22 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 }
 
-// TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery guards
-// against the nested-claim deadlock in task df8a91f4: a direct-dispatch
-// StartAgent call (e.g. the create_pr step) that hits a rebase-blocked
-// worktree-prep error synchronously invokes the conflict-recovery callback
-// (RecoverStaleBranchConflict -> recoverBranchConflictNoPR), which itself
-// dispatches a nested "fix" agent for the SAME task ID through the SAME
-// non-reentrant dispatchClaims map. If the outer StartAgent still held its
-// claim while the recovery callback ran, the nested dispatch would always
-// see ErrDispatchInFlight and the conflict-resolution agent would never
-// start. This asserts the claim is released before the callback fires.
-func TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery(t *testing.T) {
+// conflictRecoveryHarness bundles the real-git fixture used to drive a
+// direct-dispatch StartAgent into a rebase-blocked worktree-prep error and its
+// synchronous conflict-recovery callback.
+type conflictRecoveryHarness struct {
+	aa        *agentAdapter
+	agents    *agent.Manager
+	agentOrch *agentorch.Orchestrator
+	taskID    string
+}
+
+// setupConflictRecoveryHarness builds a git repo + bare remote + worktree whose
+// next PrepareForTask hits ErrRebaseFailed, wiring an agentAdapter over it. The
+// caller installs its own SetConflictRecovery callback before invoking
+// StartAgent.
+func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
+	t.Helper()
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
 	for _, args := range [][]string{
@@ -371,33 +376,84 @@ func TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery(t *te
 	}
 
 	agentOrch := agentorch.New(taskMgr, projects, agents, nil, logger, wm, nil)
+	aa := &agentAdapter{agents: agents, agentOrch: agentOrch, tasks: taskMgr, projects: projects}
+	return conflictRecoveryHarness{aa: aa, agents: agents, agentOrch: agentOrch, taskID: tk.ID}
+}
+
+// TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery guards
+// against the nested-claim deadlock in task df8a91f4: a direct-dispatch
+// StartAgent call (e.g. the create_pr step) that hits a rebase-blocked
+// worktree-prep error synchronously invokes the conflict-recovery callback
+// (RecoverStaleBranchConflict -> recoverBranchConflictNoPR), which itself
+// dispatches a nested "fix" agent for the SAME task ID through the SAME
+// non-reentrant dispatchClaims map. If the outer StartAgent still held its
+// claim while the recovery callback ran, the nested dispatch would always
+// see ErrDispatchInFlight and the conflict-resolution agent would never
+// start. This asserts the claim is released before the callback fires.
+func TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery(t *testing.T) {
+	h := setupConflictRecoveryHarness(t)
 
 	var claimAcquiredDuringRecovery, recoveryCalled bool
-	agentOrch.SetConflictRecovery(func(id string) bool {
+	h.agentOrch.SetConflictRecovery(func(id string) bool {
 		recoveryCalled = true
-		if id != tk.ID {
-			t.Errorf("conflict recovery got task id %q, want %q", id, tk.ID)
+		if id != h.taskID {
+			t.Errorf("conflict recovery got task id %q, want %q", id, h.taskID)
 		}
 		// This is what the nested branch-conflict-fix workflow's own "fix"
 		// step dispatch effectively does: claim the SAME per-task dispatch
 		// slot the outer StartAgent call above was holding. If StartAgent
 		// hadn't released it first, this would fail exactly like the fix
 		// step did in task df8a91f4's repro.
-		claimAcquiredDuringRecovery = agents.ClaimTaskDispatch(id)
+		claimAcquiredDuringRecovery = h.agents.ClaimTaskDispatch(id)
 		if claimAcquiredDuringRecovery {
-			agents.ReleaseTaskDispatch(id)
+			h.agents.ReleaseTaskDispatch(id)
 		}
 		return false
 	})
 
-	aa := &agentAdapter{agents: agents, agentOrch: agentOrch, tasks: taskMgr, projects: projects}
-	_, _, _, err = aa.StartAgent(tk.ID, string(agent.RolePRFix), "headless", "sonnet", "claude", "prompt", "", nil, true, false, "", "", workflow.AgentAssignment{})
+	_, _, _, err := h.aa.StartAgent(h.taskID, string(agent.RolePRFix), "headless", "sonnet", "claude", "prompt", "", nil, true, false, "", "", workflow.AgentAssignment{})
 	t.Logf("StartAgent err=%v recoveryCalled=%v claimAcquired=%v", err, recoveryCalled, claimAcquiredDuringRecovery)
 	if !errors.Is(err, workflow.ErrDispatchInFlight) {
 		t.Fatalf("StartAgent() err = %v, want ErrDispatchInFlight", err)
 	}
 	if !claimAcquiredDuringRecovery {
 		t.Fatal("conflict-recovery callback could not claim task dispatch — StartAgent still held it, reproducing the nested-claim deadlock")
+	}
+}
+
+// TestAgentAdapterStartAgentDoesNotClobberForeignClaimAfterRecovery guards
+// against the double-release hazard: StartAgent releases its dispatch claim
+// early before the recovery callback so a nested recovery dispatch can
+// re-enter, but the outer deferred release must NOT fire a second, unguarded
+// delete when StartAgent returns. If it does, an independent dispatcher (e.g.
+// ResumeStalled) that claimed the same taskID during the network-bound
+// recovery window loses its claim — reintroducing the duplicate-agent race
+// the claim map exists to prevent. Because ReleaseTaskDispatch is keyed only
+// by taskID with no ownership token, a foreign claim taken during recovery
+// must survive StartAgent's return.
+func TestAgentAdapterStartAgentDoesNotClobberForeignClaimAfterRecovery(t *testing.T) {
+	h := setupConflictRecoveryHarness(t)
+
+	// Model an independent dispatcher (ResumeStalled) that grabs the freed slot
+	// during the recovery window and keeps holding it — it does NOT release
+	// inline. StartAgent's return must leave this foreign claim intact.
+	var foreignClaimAcquired bool
+	h.agentOrch.SetConflictRecovery(func(id string) bool {
+		foreignClaimAcquired = h.agents.ClaimTaskDispatch(id)
+		return false
+	})
+
+	_, _, _, err := h.aa.StartAgent(h.taskID, string(agent.RolePRFix), "headless", "sonnet", "claude", "prompt", "", nil, true, false, "", "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartAgent() err = %v, want ErrDispatchInFlight", err)
+	}
+	if !foreignClaimAcquired {
+		t.Fatal("foreign dispatcher could not claim during recovery — StartAgent still held it")
+	}
+	// The foreign claim must still be held: a re-claim attempt must fail. If
+	// StartAgent's stale defer clobbered it, ClaimTaskDispatch would succeed.
+	if h.agents.ClaimTaskDispatch(h.taskID) {
+		t.Fatal("foreign dispatch claim was clobbered by StartAgent's stale deferred release — double-release hazard")
 	}
 }
 

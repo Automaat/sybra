@@ -444,7 +444,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if err := a.claimDirectDispatch(taskID); err != nil {
 		return "", "", "", err
 	}
-	defer a.agents.ReleaseTaskDispatch(taskID)
+	// claimReleased guards against a double release: the worktree-prep recovery
+	// path (below) releases the claim early so a nested recovery dispatch can
+	// re-enter for the same taskID. Because ReleaseTaskDispatch is an
+	// unconditional delete() keyed only by taskID (no ownership token), an
+	// unguarded defer would fire a second delete on return and could clobber a
+	// live claim taken by an independent dispatcher (e.g. ResumeStalled) during
+	// the network-bound recovery window.
+	claimReleased := false
+	defer func() {
+		if !claimReleased {
+			a.agents.ReleaseTaskDispatch(taskID)
+		}
+	}()
 
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -525,8 +537,11 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 			// agent -- see task df8a91f4. We're bailing out of this dispatch
 			// attempt regardless (wtErr != nil means we never call a.agents.Run
 			// below), so releasing early is safe: it doesn't overlap with our own
-			// (never-attempted) agent start.
+			// (never-attempted) agent start. Set claimReleased so the outer defer
+			// doesn't fire a second, unguarded delete that could clobber a claim
+			// another dispatcher took during the recovery window.
 			a.agents.ReleaseTaskDispatch(taskID)
+			claimReleased = true
 			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
 		}
 		cfg.Dir = d
