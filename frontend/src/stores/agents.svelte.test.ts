@@ -20,7 +20,7 @@ vi.mock('$lib/api', () => ({
 const { agentStore } = await import('./agents.svelte.js')
 
 function makeAgent(overrides: Record<string, unknown> = {}): Agent {
-  return Agent.createFrom({
+  return {
     id: 'test-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -30,7 +30,7 @@ function makeAgent(overrides: Record<string, unknown> = {}): Agent {
     startedAt: new Date().toISOString(),
     external: false,
     ...overrides,
-  })
+  }
 }
 
 describe('AgentStore', () => {

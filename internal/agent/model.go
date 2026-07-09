@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"slices"
 	"sync"
@@ -87,6 +88,15 @@ type Agent struct {
 	// --resume to continue the conversation.
 	Resumable bool `json:"resumable,omitempty"`
 
+	// CanSteer reports whether SendMessage will currently be accepted for this
+	// agent — i.e. it has a live stdin transport and is not finalizing. It is a
+	// backend-authoritative capability so the UI does not have to re-derive
+	// steerability from mode/provider/state heuristics (which are wrong for a
+	// rollback-disabled or legacy-reattached run that has no stdin transport).
+	// The stored value is ignored: MarshalJSON always overrides it with the
+	// live computation, so it is never stale on the wire.
+	CanSteer bool `json:"canSteer"`
+
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
 	convoBuffer     []ConvoEvent
@@ -132,6 +142,13 @@ type Agent struct {
 	// exited on its own. It tells the finalize path to derive completion
 	// status from the result event rather than the kill signal.
 	completedByResult bool
+
+	// finalizing marks a steerable headless run whose stdin was closed after
+	// its terminal result event because no further steer message was queued
+	// (see processHeadlessLine). Once set, SendMessage rejects rather than
+	// queuing a message that would never be delivered — the child is on its
+	// way out.
+	finalizing bool
 
 	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
 	// system event (REPLACE semantics: the full set of currently-live
@@ -182,6 +199,17 @@ type Agent struct {
 	mu sync.RWMutex
 }
 
+// MarshalJSON snapshots Agent with a fresh backend-derived capability bit.
+// CanSteer changes when stdin/finalizing state changes, so recompute it at
+// serialization time in addition to transition-time refreshes.
+func (a *Agent) MarshalJSON() ([]byte, error) {
+	a.refreshCanSteer()
+	type alias Agent
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return json.Marshal((*alias)(a))
+}
+
 // pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
 // persistent-Claude -> per-turn provider switch. See Agent.handoff.
 type pendingConvoHandoff struct {
@@ -216,6 +244,7 @@ func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
 		ID:                 a.ID,
 		TaskID:             a.TaskID,
@@ -233,6 +262,7 @@ func (a *Agent) toRecord() Record {
 		CWD:                a.sessionCWD,
 		StartedAt:          a.StartedAt,
 		StdinPath:          a.convo.stdinPath,
+		PendingPrompts:     pendingPrompts,
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
@@ -264,7 +294,7 @@ func fromRecord(r Record) *Agent {
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
 		oneShot:            r.OneShot,
-		convo:              convoIO{stdinPath: r.StdinPath},
+		convo:              convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
 		requirePermissions: r.RequirePermissions,
 		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
@@ -277,6 +307,7 @@ func (a *Agent) SetState(s State) {
 	a.mu.Lock()
 	a.State = s
 	a.mu.Unlock()
+	a.refreshCanSteer()
 }
 
 // SetAwaitingApproval marks whether the agent is paused pending tool approval.
@@ -764,6 +795,51 @@ func (a *Agent) hasPromptChannel() bool {
 	return a.convo.promptCh != nil
 }
 
+// setFinalizing marks a steerable headless run as closing its stdin down for
+// good (no further steer message can be delivered).
+func (a *Agent) setFinalizing(v bool) {
+	a.mu.Lock()
+	a.finalizing = v
+	a.mu.Unlock()
+	a.refreshCanSteer()
+}
+
+// isFinalizing reports whether the agent's stdin has been closed for good.
+func (a *Agent) isFinalizing() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.finalizing
+}
+
+// computeCanSteer reports whether SendMessage would currently be accepted for
+// this agent: a live stdin transport, not finalizing, and a steerable
+// mode/provider (interactive, or headless claude). Mirrors the SendMessage
+// gate so the UI capability never disagrees with the backend.
+func (a *Agent) computeCanSteer() bool {
+	if !a.convo.hasStdinPipe() || a.isFinalizing() {
+		return false
+	}
+	switch a.Mode {
+	case "interactive":
+		return true
+	case "headless":
+		return a.GetProvider() == "claude"
+	default:
+		return false
+	}
+}
+
+// refreshCanSteer recomputes and stores the CanSteer capability. Called from
+// the state/finalizing/stdin-transport transitions that can change it, so the
+// value serialized on the next AgentState emit is current. Must be called
+// without a.mu held (computeCanSteer takes a.mu.RLock via isFinalizing).
+func (a *Agent) refreshCanSteer() {
+	v := a.computeCanSteer()
+	a.mu.Lock()
+	a.CanSteer = v
+	a.mu.Unlock()
+}
+
 // setDetached marks whether the agent's subprocess is detached for
 // restart survival.
 func (a *Agent) setDetached(v bool) {
@@ -1040,6 +1116,13 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// HeadlessSteerable, when true, launches a claude headless run with the
+	// stdin/stream-json shape (mirroring the conversational invocation)
+	// instead of the legacy one-shot `-p <prompt>` invocation, so the running
+	// agent can accept mid-run steer messages over stdin. Resolved from
+	// agent.headless_steerable by Manager.prepareRunConfig; only Claude
+	// currently honors it (see claudeProvider.BuildHeadlessInvocation).
+	HeadlessSteerable bool
 	// HeadlessPermissionMode overrides the permission posture for this run.
 	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
 	// "bypass" (or empty) keeps --dangerously-skip-permissions.
