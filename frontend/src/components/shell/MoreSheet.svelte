@@ -15,6 +15,7 @@
 
   const items: Item[] = $derived([
     { label: 'Inbox', page: { kind: 'notifications' }, badge: notificationStore.notifications.length },
+    { label: 'Fleet', page: { kind: 'fleet' } },
     { label: 'Projects', page: { kind: 'project-list' } },
     { label: 'Logbook', page: { kind: 'logbook' } },
     { label: 'GitHub', page: { kind: 'github' } },
