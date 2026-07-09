@@ -185,19 +185,13 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
+	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+		h.importEvidenceForAgent(ag)
+	}
+
 	// Worktree and sandbox cleanup for terminal tasks (after engine
 	// advances, so status is final).
 	if t, err := h.tasks.Get(ag.TaskID); err == nil && task.IsTerminalStatus(t.Status) {
-		// Import evidence synchronously, before the async worktree removal
-		// below races it away — the whole point of a "terminal" completion is
-		// that the worktree may vanish shortly after this call returns.
-		if agent.RoleFromName(ag.Name) == agent.RoleTestRunner && h.worktrees != nil {
-			if wtPath := h.worktrees.PathFor(t); wtPath != "" {
-				if _, statErr := os.Stat(wtPath); statErr == nil {
-					h.importTestRunnerEvidence(ag, wtPath)
-				}
-			}
-		}
 		// context.Background(): OnComplete implements agent.Manager's
 		// onComplete callback, a fixed func(*Agent) signature with no ctx.
 		go h.worktrees.Remove(context.Background(), ag.TaskID)

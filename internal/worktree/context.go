@@ -25,6 +25,16 @@ const contextFileName = ".sybra-context.md"
 // importer share one name instead of duplicating the literal.
 const EvidenceDirName = ".sybra-evidence"
 
+// EvidenceBrowsersDirName is the child directory used for Playwright browser
+// downloads. Keeping it under EvidenceDirName makes it writable in the
+// per-worktree process sandbox and keeps all visual-verification scratch data
+// git-excluded together.
+const EvidenceBrowsersDirName = "browsers"
+
+// EvidenceNPMCacheDirName is the child directory used for npx/npm package
+// cache writes when launching the Playwright MCP server.
+const EvidenceNPMCacheDirName = "npm-cache"
+
 // ExcludeEvidenceDir git-excludes EvidenceDirName from wtPath so `git add -A`
 // never sweeps agent-captured screenshots/logs into a commit. Delegates to the
 // package-private addToInfoExclude — exported narrowly for internal/agent's

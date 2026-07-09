@@ -565,7 +565,6 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		evidenceDir := filepath.Join(cfg.Dir, worktree.EvidenceDirName)
 		cfg.PlaywrightMCPEligible = true
 		cfg.PlaywrightMCPOutputDir = evidenceDir
-		cfg.ExtraEnv = append(cfg.ExtraEnv, "PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(evidenceDir, "browsers"))
 	}
 
 	ag, err := a.agents.Run(cfg)

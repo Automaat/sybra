@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -68,11 +69,18 @@ func (m *Manager) preparePlaywrightMCP(cfg *RunConfig) {
 		m.logger.Warn("agent.playwright_mcp.preflight_failed", "task_id", cfg.TaskID, "err", err)
 		return
 	}
+	browsersDir := filepath.Join(outputDir, worktree.EvidenceBrowsersDirName)
+	npmCacheDir := filepath.Join(outputDir, worktree.EvidenceNPMCacheDirName)
 	mcpJSON, err := buildPlaywrightMCPConfig(outputDir, extraArgs)
 	if err != nil {
 		m.logger.Warn("agent.playwright_mcp.config_failed", "task_id", cfg.TaskID, "err", err)
 		return
 	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "PLAYWRIGHT_BROWSERS_PATH", "npm_config_cache")
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"PLAYWRIGHT_BROWSERS_PATH="+browsersDir,
+		"npm_config_cache="+npmCacheDir,
+	)
 	cfg.MCPConfigJSON = mcpJSON
 	m.logger.Info("agent.playwright_mcp.enabled", "task_id", cfg.TaskID, "output_dir", outputDir)
 }
@@ -96,15 +104,34 @@ func preflightPlaywrightMCP(wtPath, outputDir string) (string, error) {
 	if outputDir == "" {
 		outputDir = filepath.Join(wtPath, worktree.EvidenceDirName)
 	}
+	if err := clearEvidenceOutputDir(wtPath, outputDir); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("create evidence output dir: %w", err)
 	}
-	browsersDir := filepath.Join(outputDir, "browsers")
-	if err := os.MkdirAll(browsersDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(outputDir, worktree.EvidenceBrowsersDirName), 0o755); err != nil {
 		return "", fmt.Errorf("create evidence browsers dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outputDir, worktree.EvidenceNPMCacheDirName), 0o755); err != nil {
+		return "", fmt.Errorf("create evidence npm cache dir: %w", err)
 	}
 	if _, err := exec.LookPath("npx"); err != nil {
 		return "", fmt.Errorf("npx not found: %w", err)
 	}
 	return outputDir, nil
+}
+
+func clearEvidenceOutputDir(wtPath, outputDir string) error {
+	rel, err := filepath.Rel(wtPath, outputDir)
+	if err != nil {
+		return fmt.Errorf("resolve evidence output dir: %w", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("evidence output dir %q must be inside worktree %q", outputDir, wtPath)
+	}
+	if err := os.RemoveAll(outputDir); err != nil {
+		return fmt.Errorf("clear evidence output dir: %w", err)
+	}
+	return nil
 }

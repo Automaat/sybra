@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/worktree"
@@ -102,6 +103,9 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		if info, statErr := os.Stat(filepath.Join(outputDir, "browsers")); statErr != nil || !info.IsDir() {
 			t.Fatalf("browsers dir not created: %v", statErr)
 		}
+		if info, statErr := os.Stat(filepath.Join(outputDir, worktree.EvidenceNPMCacheDirName)); statErr != nil || !info.IsDir() {
+			t.Fatalf("npm cache dir not created: %v", statErr)
+		}
 
 		out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 		if err != nil {
@@ -143,6 +147,11 @@ func TestPreparePlaywrightMCP(t *testing.T) {
 		if cfg.MCPConfigJSON != "" {
 			t.Errorf("expected empty MCPConfigJSON when config disabled; got %q", cfg.MCPConfigJSON)
 		}
+		if slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool {
+			return strings.HasPrefix(kv, "PLAYWRIGHT_BROWSERS_PATH=") || strings.HasPrefix(kv, "npm_config_cache=")
+		}) {
+			t.Fatalf("disabled config must not inject playwright env, got %v", cfg.ExtraEnv)
+		}
 	})
 
 	t.Run("not_eligible_leaves_mcp_config_json_empty", func(t *testing.T) {
@@ -168,6 +177,11 @@ func TestPreparePlaywrightMCP(t *testing.T) {
 		m.preparePlaywrightMCP(&cfg)
 		if cfg.MCPConfigJSON != "" {
 			t.Errorf("expected empty MCPConfigJSON for non-claude resolved provider; got %q", cfg.MCPConfigJSON)
+		}
+		if slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool {
+			return strings.HasPrefix(kv, "PLAYWRIGHT_BROWSERS_PATH=") || strings.HasPrefix(kv, "npm_config_cache=")
+		}) {
+			t.Fatalf("non-claude provider must not inject playwright env, got %v", cfg.ExtraEnv)
 		}
 	})
 
@@ -195,6 +209,15 @@ func TestPreparePlaywrightMCP(t *testing.T) {
 		}
 		if !jsonContainsArgs(t, cfg.MCPConfigJSON, "--output-dir", filepath.Join(wt, worktree.EvidenceDirName)) {
 			t.Errorf("expected output dir in mcp config; got %s", cfg.MCPConfigJSON)
+		}
+		wantEnv := []string{
+			"PLAYWRIGHT_BROWSERS_PATH=" + filepath.Join(wt, worktree.EvidenceDirName, worktree.EvidenceBrowsersDirName),
+			"npm_config_cache=" + filepath.Join(wt, worktree.EvidenceDirName, worktree.EvidenceNPMCacheDirName),
+		}
+		for _, want := range wantEnv {
+			if !slices.Contains(cfg.ExtraEnv, want) {
+				t.Fatalf("ExtraEnv = %v, missing %q", cfg.ExtraEnv, want)
+			}
 		}
 	})
 

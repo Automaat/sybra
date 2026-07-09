@@ -29,6 +29,21 @@ const maxEvidenceFileSize = 10 * 1024 * 1024 // 10MB
 // and extension.
 var evidenceNameSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
+func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
+	if h.tasks == nil || h.worktrees == nil {
+		return
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		return
+	}
+	if wtPath := h.worktrees.PathFor(t); wtPath != "" {
+		if _, statErr := os.Stat(wtPath); statErr == nil {
+			h.importTestRunnerEvidence(ag, wtPath)
+		}
+	}
+}
+
 // importTestRunnerEvidence walks a completed test-runner's evidence directory
 // (worktree.EvidenceDirName, populated by a headless Playwright MCP server —
 // see internal/agent/mcp.go) and imports bounded, sanitized regular files into
@@ -79,6 +94,9 @@ func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string
 	}
 	if e.IsDir() || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return false, nil // skip: only plain regular files are imported
+	}
+	if !ag.StartedAt.IsZero() && info.ModTime().Before(ag.StartedAt) {
+		return false, nil
 	}
 	if info.Size() > maxEvidenceFileSize {
 		return false, fmt.Errorf("file %d bytes exceeds %d byte cap", info.Size(), maxEvidenceFileSize)

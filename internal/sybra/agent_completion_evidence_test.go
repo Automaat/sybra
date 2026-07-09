@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
@@ -209,5 +210,43 @@ func TestImportTestRunnerEvidence_RerunDoesNotOverwritePriorImport(t *testing.T)
 	}
 	if len(metas) != 2 {
 		t.Fatalf("expected both runs' evidence preserved as distinct artifacts, got %d: %+v", len(metas), metas)
+	}
+}
+
+func TestImportTestRunnerEvidence_SkipsFilesOlderThanRun(t *testing.T) {
+	h, store := newEvidenceTestHandler(t)
+	wt := t.TempDir()
+	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(evidenceDir, "stale.png")
+	fresh := filepath.Join(evidenceDir, "fresh.png")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(stale, startedAt.Add(-time.Second), startedAt.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fresh, []byte("fresh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fresh, startedAt.Add(time.Second), startedAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1", StartedAt: startedAt}
+	h.importTestRunnerEvidence(ag, wt)
+
+	metas, err := store.List(ag.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected only fresh evidence imported, got %d: %+v", len(metas), metas)
+	}
+	if metas[0].SourcePath != fresh {
+		t.Fatalf("imported SourcePath = %q, want %q", metas[0].SourcePath, fresh)
 	}
 }
