@@ -151,7 +151,7 @@ export class StreamEvent {
      * a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
      * of every CLI background bash task still live after the change. See
      * Agent.SetBackgroundTaskIDs / Agent.EffectiveHangGrace.
-     *
+     * 
      * NOTE: omitempty collapses an empty-but-non-nil "all tasks cleared" slice
      * into the same absent-key wire form as a nil "no event seen" value. That
      * REPLACE-semantics distinction is preserved at the Go/ClaudeEvent level
