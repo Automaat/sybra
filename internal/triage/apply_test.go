@@ -261,6 +261,37 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	}
 }
 
+func TestApplyExistingProjectWinsOverClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("migrate vault e2e", "https://github.com/kumahq/kuma/blob/main/test/framework.go", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("kong/kong-mesh")})
+	if err != nil {
+		t.Fatalf("Update project: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "kong/kong-mesh", Owner: "kong", Repo: "kong-mesh", Type: project.ProjectTypeWork},
+		{ID: "kumahq/kuma", Owner: "kumahq", Repo: "kuma", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title:     "test(mesh): migrate vault e2e",
+		Size:      "medium",
+		Type:      "refactor",
+		Mode:      "headless",
+		Tags:      []string{"backend", "test", "medium", "refactor"},
+		ProjectID: "kumahq/kuma",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "kong/kong-mesh" {
+		t.Errorf("project_id: got %q, want kong/kong-mesh (existing routing must win over classifier guess)", updated.ProjectID)
+	}
+}
+
 func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	// Create a work-project task that would normally go to planning.

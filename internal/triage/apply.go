@@ -25,9 +25,9 @@ var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.Gate
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
-	projectID := strings.TrimSpace(v.ProjectID)
+	projectID := strings.TrimSpace(t.ProjectID)
 	if projectID == "" {
-		projectID = strings.TrimSpace(t.ProjectID)
+		projectID = strings.TrimSpace(v.ProjectID)
 	}
 	if projectID == "" {
 		projectID = MatchProject(t.Title, t.Body, projects)
