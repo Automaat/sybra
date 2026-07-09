@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -290,8 +292,28 @@ func TestExhaustedFixReasonKind(t *testing.T) {
 	}
 }
 
+// TestExhaustedFixReasonRoundTrip pins the producer (exhaustedFixReason, the
+// string escalateExhaustedFix parks with) and the parser (exhaustedFixReasonKind
+// the reconciler gates on) to each other. Without this, a wording tweak in the
+// producer silently stops the reconciler from ever firing.
+func TestExhaustedFixReasonRoundTrip(t *testing.T) {
+	kinds := []github.PRIssueKind{
+		github.PRIssueCIFailure,
+		github.PRIssueConflict,
+		github.PRIssueComments,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			got, ok := exhaustedFixReasonKind(exhaustedFixReason(3, kind))
+			if !ok || got != kind {
+				t.Errorf("round-trip of %q = (%q, %v), want (%q, true)", kind, got, ok, kind)
+			}
+		})
+	}
+}
+
 func TestHumanRequiredBlockerReconcileEligible(t *testing.T) {
-	ciReason := "pr-monitor: auto-fix exhausted after 3 attempts (ci_failure) — needs a human"
+	ciReason := exhaustedFixReason(3, github.PRIssueCIFailure)
 	tests := []struct {
 		name string
 		task *task.Task
@@ -314,7 +336,7 @@ func TestHumanRequiredBlockerReconcileEligible(t *testing.T) {
 		},
 		{
 			name: "conflict exhaustion is not reconciled here",
-			task: &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: "pr-monitor: auto-fix exhausted after 3 attempts (conflict) — needs a human"},
+			task: &task.Task{Status: task.StatusHumanRequired, PRNumber: 42, StatusReason: exhaustedFixReason(3, github.PRIssueConflict)},
 			want: false,
 		},
 		{
@@ -352,7 +374,7 @@ func mkExhaustedCITask(t *testing.T, tasks *task.Manager, prNumber int) task.Tas
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("pr-monitor: auto-fix exhausted after 3 attempts (ci_failure) — needs a human"),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
 		PRNumber:     task.Ptr(prNumber),
 		ProjectID:    task.Ptr("Automaat/sybra"),
 	})
@@ -483,6 +505,95 @@ func TestReconcileHumanRequiredBlockersSkipsWhenPRNotFound(t *testing.T) {
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+// TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker exercises the secondary
+// poller path end-to-end: a human-required task parked on an exhausted
+// ci_failure fix must have its PR folded into fetchMatchers, fetched, and
+// reconciled back to in-review once the check clears — the plumbing in
+// pollKnownTaskPRs the direct reconcileHumanRequiredBlockers tests bypass.
+func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	r.authCircuit = poll.NewAuthCircuit("reviews", r.logger)
+	// PollerRole secondary routes Poll → pollKnownTaskPRs (no search leg).
+	r.cfg = &config.Config{GitHub: config.GitHubConfig{PollerRole: "secondary"}}
+
+	parked := mkExhaustedCITask(t, tasks, 42)
+
+	var fetched []github.PRRef
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		fetched = refs
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{
+				Repo: ref.Repo, Number: ref.Number, Open: true,
+				PR: github.PullRequest{
+					Number: ref.Number, Repository: ref.Repo,
+					Mergeable: "MERGEABLE", CIStatus: "SUCCESS",
+				},
+			}
+		}
+		return results
+	}
+
+	r.Poll(t.Context())
+
+	if len(fetched) != 1 || fetched[0].Number != 42 {
+		t.Fatalf("fetched refs = %+v, want the parked task's PR #42", fetched)
+	}
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Errorf("status = %q, want in-review (reconciled via pollKnownTaskPRs plumbing)", got.Status)
+	}
+}
+
+// TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision guards the
+// repo-scoped matchingPR: a clean same-named branch in a different repo must
+// not be treated as the parked task's PR going green, which would wrongly
+// unpark it. The by-branch fallback is repo-blind without the scoping guard.
+func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+
+	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	parked, err := tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:     task.Ptr(42),
+		Branch:       task.Ptr("renovate/lock-file-maintenance"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A clean PR reusing both the same number and branch name in a different
+	// repo — neither the by-number nor the by-branch lookup may match it.
+	prs := []github.PullRequest{{
+		Number: 42, Repository: "other/repo",
+		HeadRefName: "renovate/lock-file-maintenance",
+		Mergeable:   "MERGEABLE", CIStatus: "SUCCESS",
+	}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required (cross-repo branch must not unpark)", got.Status)
 	}
 }
 

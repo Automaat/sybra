@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -76,11 +77,29 @@ func matchingPR(t *task.Task, byNumber map[int]*github.PullRequest, byBranch map
 	if t == nil {
 		return nil
 	}
-	pr := byNumber[t.PRNumber]
-	if pr == nil {
-		pr = byBranch[t.Branch]
+	// Both maps are repo-blind (keyed by a bare PR number / branch name), so
+	// under the global author:@me search (pollAndMonitorPRs) a reused PR number
+	// or a same-named branch in a different repo can collide. Reject any
+	// candidate whose repo doesn't match the task's project before it can drive
+	// a status-mutating reconciler (reconcileHumanRequiredBlockers, #1641).
+	if pr := byNumber[t.PRNumber]; sameProjectPR(pr, t) {
+		return pr
 	}
-	return pr
+	if pr := byBranch[t.Branch]; sameProjectPR(pr, t) {
+		return pr
+	}
+	return nil
+}
+
+// sameProjectPR reports whether pr belongs to the task's project. A missing
+// repo on either side (per-task fetch that doesn't populate Repository, or a
+// task without a ProjectID) is treated as a match to preserve the pre-scoping
+// behaviour — the guard only ever rejects a positively-mismatched repo.
+func sameProjectPR(pr *github.PullRequest, t *task.Task) bool {
+	if pr == nil {
+		return false
+	}
+	return t.ProjectID == "" || pr.Repository == "" || pr.Repository == t.ProjectID
 }
 
 func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
@@ -152,6 +171,15 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 // never to a human- or agent-authored explanation that merely mentions a
 // check by name.
 const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
+
+// exhaustedFixReason renders the StatusReason escalateExhaustedFix parks a task
+// with. It is the sole producer of the string exhaustedFixReasonKind parses back
+// into a PRIssueKind — deriving both from exhaustedFixReasonPrefix keeps them in
+// lockstep (round-tripped in outbound_test.go), so a wording tweak cannot
+// silently stop the reconciler from firing.
+func exhaustedFixReason(attempts int, kind github.PRIssueKind) string {
+	return fmt.Sprintf("%s%d attempts (%s) — needs a human", exhaustedFixReasonPrefix, attempts, kind)
+}
 
 func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	if !strings.HasPrefix(reason, exhaustedFixReasonPrefix) {
