@@ -444,7 +444,15 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	if err := a.claimDirectDispatch(taskID); err != nil {
 		return "", "", "", err
 	}
-	defer a.agents.ReleaseTaskDispatch(taskID)
+	released := false
+	releaseDispatch := func() {
+		if released {
+			return
+		}
+		released = true
+		a.agents.ReleaseTaskDispatch(taskID)
+	}
+	defer releaseDispatch()
 
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -514,7 +522,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// scope for this pass.
 		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
-			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
+			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr, releaseDispatch)
 		}
 		cfg.Dir = d
 	}
@@ -572,9 +580,15 @@ func (a *agentAdapter) claimDirectDispatch(taskID string) error {
 // timing collision with a stale "no agent running" read upstream, not a real
 // worktree conflict — treat it like ErrDispatchInFlight so the step parks
 // and retries once the agent is genuinely idle, instead of escalating.
-func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr error) error {
+func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr error, releaseDispatch func()) error {
 	if errors.Is(wtErr, worktreeerr.ErrAgentRunning) {
 		return workflow.ErrDispatchInFlight
+	}
+	if errors.Is(wtErr, worktreeerr.ErrRebaseFailed) {
+		// Branch-conflict recovery synchronously dispatches a same-task fix
+		// agent. Release this direct-path claim first, or that nested dispatch
+		// sees ErrDispatchInFlight and recovery never starts.
+		releaseDispatch()
 	}
 	// handled=true covers every branch of RecoverFromWorktreePrepFailure that
 	// already wrote the task's terminal status itself: an autonomous

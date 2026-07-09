@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -246,6 +247,134 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
 	}
+}
+
+func mustRunInDirWorkflow(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+	}
+}
+
+func initDirectDispatchConflictingRepo(t *testing.T) (bare, src string) {
+	t.Helper()
+	src = t.TempDir()
+	mustRunInDirWorkflow(t, "", "git", "init", "-b", "main", src)
+	mustRunInDirWorkflow(t, src, "git", "config", "user.email", "test@test.com")
+	mustRunInDirWorkflow(t, src, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDirWorkflow(t, src, "git", "add", ".")
+	mustRunInDirWorkflow(t, src, "git", "commit", "-m", "init")
+
+	bare = filepath.Join(t.TempDir(), "origin.git")
+	mustRunInDirWorkflow(t, "", "git", "clone", "--bare", src, bare)
+	mustRunInDirWorkflow(t, bare, "git", "-c", "safe.bareRepository=all", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	mustRunInDirWorkflow(t, bare, "git", "-c", "safe.bareRepository=all", "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	return bare, src
+}
+
+func TestAgentAdapterDirectDispatchReleasesClaimBeforeConflictRecovery(t *testing.T) {
+	bare, src := initDirectDispatchConflictingRepo(t)
+
+	tmp := t.TempDir()
+	projectsDir := filepath.Join(tmp, "projects")
+	projects, err := project.NewStore(projectsDir, filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := project.Project{
+		ID:        "test/proj",
+		Name:      "proj",
+		Owner:     "test",
+		Repo:      "proj",
+		URL:       bare,
+		ClonePath: bare,
+		Type:      project.ProjectTypePet,
+		Status:    project.ProjectStatusReady,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	seedExperienceProject(t, projectsDir, proj)
+
+	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(taskStore, nil)
+	wtMgr := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Projects:     projects,
+		Tasks:        tasks,
+		Logger:       discardLogger(),
+		LogsDir:      t.TempDir(),
+		SetupTimeout: 30 * time.Second,
+	})
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, discardLogger(), t.TempDir())
+	orch := agentorch.New(tasks, projects, agentMgr, nil, discardLogger(), wtMgr, &config.Config{})
+
+	created, err := tasks.Create("direct conflicting task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := wtMgr.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDirWorkflow(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDirWorkflow(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDirWorkflow(t, wtPath, "git", "add", "README.md")
+	mustRunInDirWorkflow(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDirWorkflow(t, src, "git", "add", "README.md")
+	mustRunInDirWorkflow(t, src, "git", "commit", "-m", "upstream edit")
+
+	var recoveryCalled, claimHeldOnRecovery bool
+	orch.SetConflictRecovery(func(taskID string) bool {
+		recoveryCalled = true
+		claimAvailable := agentMgr.ClaimTaskDispatch(taskID)
+		claimHeldOnRecovery = !claimAvailable
+		if claimAvailable {
+			agentMgr.ReleaseTaskDispatch(taskID)
+		}
+		return false
+	})
+
+	adapter := &agentAdapter{agents: agentMgr, agentOrch: orch, tasks: tasks}
+	agentID, _, _, err := adapter.StartAgent(created.ID, string(agent.RolePRFix), "headless", "sonnet", "claude", "prompt", "", nil, true, false, "", "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartAgent() err = %v, want ErrDispatchInFlight after handled rebase failure", err)
+	}
+	if agentID != "" {
+		t.Fatalf("StartAgent() agentID = %q, want empty on worktree-prep failure", agentID)
+	}
+	if !recoveryCalled {
+		t.Fatal("conflict recovery callback was never invoked")
+	}
+	if claimHeldOnRecovery {
+		t.Fatal("dispatch claim was still held when direct-dispatch conflict recovery ran")
+	}
+	if !agentMgr.ClaimTaskDispatch(created.ID) {
+		t.Fatal("dispatch claim leaked after direct dispatch returned")
+	}
+	agentMgr.ReleaseTaskDispatch(created.ID)
 }
 
 func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
