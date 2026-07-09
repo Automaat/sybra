@@ -44,6 +44,11 @@ type StreamEvent struct {
 	PlanSteps []PlanStep `json:"plan_steps,omitempty"`
 	// PluginErrors carries plugin load failures surfaced by the init event.
 	PluginErrors []string `json:"plugin_errors,omitempty"`
+	// BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+	// a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+	// of every CLI background bash task still live after the change. See
+	// Agent.SetBackgroundTaskIDs / Agent.EffectiveHangGrace.
+	BackgroundTaskIDs []string `json:"background_task_ids,omitempty"`
 	// ToolCalls is the number of tool_use blocks in this event: all tool uses
 	// in a Claude assistant turn, or a single Codex tool_use. The runner
 	// accumulates these into Agent.ToolCalls.
