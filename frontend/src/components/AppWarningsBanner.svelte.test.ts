@@ -80,4 +80,27 @@ describe('AppWarningsBanner', () => {
     await fireEvent.click(buttons[1])
     expect(ondismissDegraded).toHaveBeenCalledWith(1)
   })
+
+  it('renders repeated umbrella degraded warnings independently and dismisses by index', async () => {
+    const ondismissDegraded = vi.fn()
+    render(AppWarningsBanner, {
+      props: {
+        ...baseProps,
+        degradedWarnings: [
+          { subsystem: 'umbrella', reason: 'https://github.com/o/r/issues/1 degraded' },
+          { subsystem: 'umbrella', reason: 'https://github.com/o/r/issues/2 degraded' },
+        ],
+        ondismissDegraded,
+      } as never,
+    })
+    expect(screen.getByText(/issues\/1 degraded/)).toBeDefined()
+    expect(screen.getByText(/issues\/2 degraded/)).toBeDefined()
+    const buttons = screen.getAllByLabelText('Dismiss')
+    expect(buttons).toHaveLength(2)
+    await fireEvent.click(buttons[1])
+    expect(ondismissDegraded).toHaveBeenCalledWith(1)
+    // The first warning survives — only its dismiss handler should have been
+    // called with a different index if clicked separately.
+    expect(screen.getByText(/issues\/1 degraded/)).toBeDefined()
+  })
 })

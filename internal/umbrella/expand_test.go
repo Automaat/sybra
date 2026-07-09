@@ -91,6 +91,12 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	if res.Created != 3 {
 		t.Fatalf("Created = %d, want 3", res.Created)
 	}
+	if res.ChildCount != 3 {
+		t.Fatalf("ChildCount = %d, want 3", res.ChildCount)
+	}
+	if res.MaxParallel != 1 {
+		t.Fatalf("MaxParallel = %d, want 1 (linear chain fallback pins max-parallel to 1)", res.MaxParallel)
+	}
 
 	all, err := tasks.List()
 	if err != nil {
