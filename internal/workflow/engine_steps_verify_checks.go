@@ -180,15 +180,23 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	return stepDone(step, "flagged")
 }
 
-// maybeMiseTrust trusts a mise config in the worktree before running verify
-// commands, mirroring worktree setup. A task that adds or edits mise config
-// would otherwise hit "config not trusted" and fail verify on honest work.
-// Best-effort: errors are ignored (the verify command surfaces any real issue).
-func maybeMiseTrust(ctx context.Context, wtPath string) {
-	for _, name := range []string{"mise.toml", ".mise.toml", "mise.local.toml"} {
-		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
+// miseConfigNames are the mise config filenames that gate `mise exec` behind
+// "config not trusted", checked wherever this code needs to know whether a
+// directory carries mise config — kept as one list so npmReinstallCommand and
+// maybeMiseTrust can never drift out of sync on which names count (notably
+// .mise.local.toml, easy to miss since it's less common than mise.toml).
+var miseConfigNames = []string{"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml"}
+
+// maybeMiseTrust trusts a mise config in dir before running verify commands or
+// a toolchain repair there, mirroring worktree setup. A task that adds or
+// edits mise config would otherwise hit "config not trusted" and fail verify
+// on honest work. Best-effort: errors are ignored (the verify command surfaces
+// any real issue).
+func maybeMiseTrust(ctx context.Context, dir string) {
+	for _, name := range miseConfigNames {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			cmd := exec.CommandContext(ctx, "sh", "-c", "mise trust --yes")
-			cmd.Dir = wtPath
+			cmd.Dir = dir
 			_ = cmd.Run()
 			return
 		}
@@ -249,27 +257,32 @@ func nodeToolchainDirs(wtPath, rawCmd string) []string {
 }
 
 // repairCorruptToolchain re-provisions a single directory's Node toolchain when
-// it has silently gone corrupt since worktree setup (see ensureNodeToolchain).
+// it looks missing or has silently gone corrupt since worktree setup (see
+// ensureNodeToolchain). A truncated install can leave node_modules/.bin
+// entirely absent (ReadDir error), present but empty, or present with
+// zero-byte entries — all three shapes are treated as "needs a repair",
+// matching the missing-or-corrupted contract from the PR description.
 func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir string, tail io.Writer) {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return // not a Node project — nothing to check
 	}
 	binDir := filepath.Join(dir, "node_modules", ".bin")
 	entries, err := os.ReadDir(binDir)
-	if err != nil || len(entries) == 0 {
-		return // never installed (or setup's own npm ci is still the right owner) — leave it to the verify command
-	}
-	if nodeModulesBinNonEmpty(binDir, entries) {
+	if err == nil && nodeModulesBinNonEmpty(binDir, entries) {
 		return // toolchain looks intact
 	}
 
 	reinstall := npmReinstallCommand(wtPath)
 	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
 	_, _ = fmt.Fprintf(tail,
-		"[verify] node_modules/.bin in %s looks corrupt (entries present but empty) — re-running %q\n", dir, reinstall)
+		"[verify] node_modules/.bin in %s looks missing or corrupt — re-running %q\n", dir, reinstall)
 
 	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
 	defer cancel()
+	maybeMiseTrust(repairCtx, wtPath) // npmReinstallCommand resolves the mise config from wtPath, not dir
+	if dir != wtPath {
+		maybeMiseTrust(repairCtx, dir) // a subdirectory (e.g. frontend/) can carry its own mise config too
+	}
 	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 	cmd.Dir = dir
 	cmd.Stdout = tail
@@ -289,7 +302,7 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 // outside a mise-wrapped invocation. Falls back to bare `npm ci` when there is
 // no mise config to resolve the toolchain from.
 func npmReinstallCommand(wtPath string) string {
-	for _, name := range []string{"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml"} {
+	for _, name := range miseConfigNames {
 		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
 			return "mise exec -- npm ci"
 		}

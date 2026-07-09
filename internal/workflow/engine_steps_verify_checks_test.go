@@ -201,7 +201,7 @@ func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 	// (ls lists entries, du -sh reports 0 bytes).
 	writeTestFile(t, filepath.Join(binDir, "vite"), "")
 
-	fakeNPM(t, dir, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -215,6 +215,23 @@ func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 	}
 }
 
+func TestEnsureNodeToolchain_RepairsMissingBin(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin never created — a truncated install can wipe out the
+	// whole directory, not just leave zero-byte entries behind.
+
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to have run for a missing node_modules/.bin, got: %v", err)
+	}
+}
+
 func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
@@ -224,7 +241,7 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n")
 
-	fakeNPM(t, dir, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -248,7 +265,7 @@ func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "")
 
-	fakeNPM(t, frontend, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -269,7 +286,7 @@ func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
-	fakeNPM(t, root, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -292,7 +309,7 @@ func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(spaced, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
-	fakeNPM(t, spaced, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -314,7 +331,7 @@ func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
 		writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt in both
 	}
 	// Shared fake npm on PATH; it drops the marker in whichever cwd it runs.
-	fakeNPM(t, root, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -337,7 +354,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(outside, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
-	fakeNPM(t, outside, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	wt := filepath.Join(root, "wt")
 	if err := os.MkdirAll(wt, 0o755); err != nil {
@@ -354,7 +371,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 
 func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
 	dir := t.TempDir() // no package.json
-	fakeNPM(t, dir, "marker-npm-ci-ran")
+	fakeNPM(t, "marker-npm-ci-ran")
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -369,7 +386,7 @@ func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
 // test, so ensureNodeToolchain's `sh -c "npm ci"` is observable without
 // depending on a real npm install. Running it drops a marker file named
 // markerName into its working directory.
-func fakeNPM(t *testing.T, cwdHint, markerName string) {
+func fakeNPM(t *testing.T, markerName string) {
 	t.Helper()
 	fakeBin := t.TempDir()
 	script := "#!/bin/sh\ntouch \"" + markerName + "\"\nexit 0\n"
