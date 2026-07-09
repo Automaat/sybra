@@ -379,12 +379,10 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		// only on an actual status transition (internal/task Store), unlike
 		// UpdatedAt which any unrelated field write (tags, status_reason, an
 		// audit sidecar) bumps — keying this off UpdatedAt would mask a truly
-		// lost agent for as long as anything kept touching the task. The one
-		// exception is legacy tasks that predate StatusChangedAt persistence:
-		// when that field is absent, fall back to UpdatedAt so a fresh
-		// in-progress flip is not flagged lost before dispatch records a run.
-		if (!t.StatusChangedAt.IsZero() && in.Now.Sub(t.StatusChangedAt) < window) ||
-			(t.StatusChangedAt.IsZero() && !t.UpdatedAt.IsZero() && in.Now.Sub(t.UpdatedAt) < window) {
+		// lost agent for as long as anything kept touching the task. Legacy
+		// task files are backfilled by the task store on their next write
+		// rather than permanently falling back here.
+		if !t.StatusChangedAt.IsZero() && in.Now.Sub(t.StatusChangedAt) < window {
 			continue
 		}
 		ev := map[string]any{

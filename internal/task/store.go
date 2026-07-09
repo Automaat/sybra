@@ -282,6 +282,7 @@ func (s *Store) List() ([]Task, error) {
 		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
 			ts := t.UpdatedAt
 			t.ClosedAt = &ts
+			backfillStatusChangedAt(&t, ts)
 			if data, merr := Marshal(t); merr == nil {
 				_ = fsutil.AtomicWrite(p, data)
 			}
@@ -1326,9 +1327,12 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		u.TestingCycleStartedAt == nil {
 		t.TestingCycleStartedAt = &now
 	}
+	statusChangedBackfill := statusChangedAtBackfill(t, now)
 	t.UpdatedAt = now
 	if t.Status != prevStatus {
 		t.StatusChangedAt = now
+	} else if t.StatusChangedAt.IsZero() {
+		t.StatusChangedAt = statusChangedBackfill
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	if err := s.writeSidecars(id, u, &t); err != nil {
@@ -1596,6 +1600,8 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		now := time.Now().UTC()
 		if oldStatus != t.Status {
 			t.StatusChangedAt = now
+		} else {
+			backfillStatusChangedAt(&t, now)
 		}
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1604,6 +1610,8 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		} else if wasTerminal && !isTerminal {
 			t.ClosedAt = nil
 		}
+	} else {
+		backfillStatusChangedAt(&t, time.Now().UTC())
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
 	d, err := Marshal(t)
@@ -1615,6 +1623,24 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	}
 	s.storeTaskCache(t)
 	return nil
+}
+
+func backfillStatusChangedAt(t *Task, fallback time.Time) {
+	if !t.StatusChangedAt.IsZero() {
+		return
+	}
+	t.StatusChangedAt = statusChangedAtBackfill(*t, fallback)
+}
+
+func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
+	switch {
+	case !t.UpdatedAt.IsZero():
+		return t.UpdatedAt
+	case !t.CreatedAt.IsZero():
+		return t.CreatedAt
+	default:
+		return fallback
+	}
 }
 
 // RunPatch describes a partial update to an AgentRun. Every field is a
@@ -1760,6 +1786,7 @@ func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	if !found {
 		return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 	}
+	backfillStatusChangedAt(&t, time.Now().UTC())
 	d, err := Marshal(t)
 	if err != nil {
 		return err
