@@ -1985,12 +1985,11 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms(t *
 	}
 }
 
-// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty pins the
-// silent-degradation path: RequirePermissions is set but the approval server
-// never started (approvalAddr empty), so no HTTP approval hook can be wired.
-// The run must still not fall back to --dangerously-skip-permissions — that
-// would turn a requested-but-unavailable gate into an implicit full bypass.
-// prepareRunConfig logs agent.approval.unavailable for exactly this case.
+// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty verifies the
+// lower-level command builder stays fail-closed when no approval hook can be
+// wired. Manager.prepareRunConfig rejects this posture before launch, but the
+// invocation builder itself must still avoid turning a missing gate into an
+// implicit full bypass.
 func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty(t *testing.T) {
 	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
 	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
@@ -2009,6 +2008,65 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty(t *testin
 			strings.Contains(args[i+1], "pre-tool-use") {
 			t.Fatalf("no approval hook can be wired without an approval-server address: %v", args)
 		}
+	}
+}
+
+func TestPrepareRunConfig_RejectsRequirePermissionsWithoutApprovalServer(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	_, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "claude",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+	})
+	if err == nil {
+		t.Fatal("prepareRunConfig succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "require_permissions requires a running approval server") {
+		t.Fatalf("prepareRunConfig error = %v, want approval-server requirement", err)
+	}
+}
+
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAutoMode(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:               "claude",
+		Mode:                   "headless",
+		Prompt:                 "do stuff",
+		Dir:                    t.TempDir(),
+		RequirePermissions:     true,
+		HeadlessPermissionMode: "auto",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.HeadlessPermissionMode != "auto" {
+		t.Fatalf("HeadlessPermissionMode = %q, want auto", cfg.HeadlessPermissionMode)
+	}
+}
+
+func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAllowedToolsPresent(t *testing.T) {
+	t.Parallel()
+
+	m := newParseTestManager(t)
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:           "claude",
+		Mode:               "headless",
+		Prompt:             "do stuff",
+		Dir:                t.TempDir(),
+		RequirePermissions: true,
+		AllowedTools:       []string{"Read"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if len(cfg.AllowedTools) != 1 || cfg.AllowedTools[0] != "Read" {
+		t.Fatalf("AllowedTools = %v, want [Read]", cfg.AllowedTools)
 	}
 }
 

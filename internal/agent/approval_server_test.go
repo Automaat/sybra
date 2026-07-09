@@ -223,6 +223,49 @@ func TestFindAgentBySession_MostRecentAmongSameLiveness(t *testing.T) {
 		t.Errorf("findAgentBySession = %q, want %q (most recent)", got, "newer")
 	}
 }
+
+func TestFindAgentBySession_DeterministicTieBreakOnAgentID(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	started := time.Now()
+	low := &Agent{
+		ID:        "agent-a",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: started,
+	}
+	high := &Agent{
+		ID:        "agent-b",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: started,
+	}
+	mgr.mu.Lock()
+	mgr.agents[low.ID] = low
+	mgr.agents[high.ID] = high
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("same-session"); got != "agent-b" {
+		t.Errorf("findAgentBySession = %q, want %q (deterministic agent ID tie-break)", got, "agent-b")
+	}
+}
+
+func TestFindAgentBySessionWithRetry_EmptySessionReturnsImmediately(t *testing.T) {
+	t.Parallel()
+
+	srv := &ApprovalServer{}
+	start := time.Now()
+	if got := srv.findAgentBySessionWithRetry(context.Background(), " \t "); got != "" {
+		t.Fatalf("findAgentBySessionWithRetry(empty) = %q, want empty", got)
+	}
+	if elapsed := time.Since(start); elapsed >= sessionLookupBackoff {
+		t.Fatalf("findAgentBySessionWithRetry(empty) took %v, want < %v", elapsed, sessionLookupBackoff)
+	}
+}
 func TestApprovalServer_CanceledContext(t *testing.T) {
 	t.Parallel()
 

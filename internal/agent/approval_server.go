@@ -290,6 +290,9 @@ const (
 // stdout parser has recorded the session ID. Returns "" if still unresolved
 // after the bounded wait or if the request is canceled.
 func (s *ApprovalServer) findAgentBySessionWithRetry(ctx context.Context, sessionID string) string {
+	if strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
 	for attempt := 0; ; attempt++ {
 		if id := s.findAgentBySession(sessionID); id != "" {
 			return id
@@ -314,7 +317,12 @@ func betterSessionMatch(candidate, incumbent *Agent) bool {
 	if candStopped != incStopped {
 		return !candStopped
 	}
-	return candidate.StartedAt.After(incumbent.StartedAt)
+	candStarted := candidate.GetStartedAt()
+	incStarted := incumbent.GetStartedAt()
+	if !candStarted.Equal(incStarted) {
+		return candStarted.After(incStarted)
+	}
+	return candidate.ID > incumbent.ID
 }
 
 func isSafeTool(name string) bool {

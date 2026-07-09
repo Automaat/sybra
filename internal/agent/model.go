@@ -380,6 +380,13 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// GetStartedAt returns the agent's recorded start time.
+func (a *Agent) GetStartedAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.StartedAt
+}
+
 // SetProviderAndModel updates the agent's provider and (already-normalized)
 // model. Used when a mid-run per-turn provider re-gate fails the agent's
 // current provider over to a healthy peer; Provider/Model are otherwise fixed
