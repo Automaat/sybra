@@ -325,11 +325,18 @@ func betterSessionMatch(candidate, incumbent *Agent) bool {
 	return candidate.ID > incumbent.ID
 }
 
+// isSafeTool reports whether a tool is safe to auto-approve without a
+// human prompt. MCP tools are never auto-approved here: their capabilities
+// are arbitrary and server-defined, so a blanket "mcp__*" allow would let an
+// injected agent reach dangerous or egress-capable tools unattended.
+// WebFetch is excluded too — it's an egress-sensitive tool (attacker-supplied
+// URL is a ready exfiltration channel for ingested content). WebSearch stays
+// safe: it can only issue search queries, not fetch arbitrary attacker-chosen
+// destinations.
 func isSafeTool(name string) bool {
-	safe := []string{"Read", "Glob", "Grep", "LSP", "WebSearch", "WebFetch"}
-	lower := strings.ToLower(name)
+	safe := []string{"Read", "Glob", "Grep", "LSP", "WebSearch"}
 	for _, s := range safe {
-		if strings.EqualFold(s, name) || strings.HasPrefix(lower, "mcp__") {
+		if strings.EqualFold(s, name) {
 			return true
 		}
 	}
