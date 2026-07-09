@@ -278,10 +278,18 @@ func (s *Store) List() ([]Task, error) {
 			t.PlanDrafts = map[string]string{}
 		}
 		// One-time migration: stamp ClosedAt for legacy terminal tasks that
-		// predate the ClosedAt field. UpdatedAt is the best approximation.
-		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+		// predate the ClosedAt field, and backfill StatusChangedAt for any
+		// legacy task (terminal or not) that predates that field. Detectors
+		// like the lost-agent grace window key off StatusChangedAt and must
+		// never see a permanent zero value on a read-only path — List is the
+		// only path that observes a task between writes, so it must perform
+		// this backfill itself rather than waiting on the next Update/AddRun.
+		needsMigration := t.StatusChangedAt.IsZero() || (IsTerminalStatus(t.Status) && t.ClosedAt == nil)
+		if needsMigration {
 			ts := t.UpdatedAt
-			t.ClosedAt = &ts
+			if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+				t.ClosedAt = &ts
+			}
 			backfillStatusChangedAt(&t, ts)
 			if data, merr := Marshal(t); merr == nil {
 				_ = fsutil.AtomicWrite(p, data)

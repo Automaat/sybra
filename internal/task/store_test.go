@@ -730,6 +730,64 @@ func TestStoreAddRunBackfillsLegacyStatusChangedAt(t *testing.T) {
 	}
 }
 
+// TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus guards
+// against the false-positive lost_agent regression: a legacy in-progress
+// task with no StatusChangedAt and no intervening Update/AddRun call is
+// only ever observed through List() (the read path monitor scan uses), so
+// List must backfill it there rather than leaving it permanently zero.
+func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Legacy in-progress", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 45, 0, 0, time.UTC)
+	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var got *Task
+	for i := range tasks {
+		if tasks[i].ID == created.ID {
+			got = &tasks[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("task %s not found in List() result", created.ID)
+	}
+	if got.StatusChangedAt.IsZero() {
+		t.Fatal("StatusChangedAt is still zero after List(), want backfilled from legacy UpdatedAt")
+	}
+	if !got.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("StatusChangedAt = %s, want legacy UpdatedAt %s", got.StatusChangedAt, legacyUpdatedAt)
+	}
+	if got.ClosedAt != nil {
+		t.Fatalf("ClosedAt = %v, want nil for non-terminal status", got.ClosedAt)
+	}
+
+	// Re-read from a fresh store (cache bypassed) to confirm the backfill
+	// was persisted to disk, not just returned in-memory.
+	reopened, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("persisted StatusChangedAt = %s, want %s", persisted.StatusChangedAt, legacyUpdatedAt)
+	}
+}
+
 func TestStoreUpdateRun(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
