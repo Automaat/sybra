@@ -181,15 +181,24 @@ func exhaustedFixReason(attempts int, kind github.PRIssueKind) string {
 	return fmt.Sprintf("%s%d attempts (%s) — needs a human", exhaustedFixReasonPrefix, attempts, kind)
 }
 func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
-	if !strings.HasPrefix(reason, exhaustedFixReasonPrefix) {
+	rest, ok := strings.CutPrefix(reason, exhaustedFixReasonPrefix)
+	if !ok {
 		return "", false
 	}
-	open := strings.IndexByte(reason, '(')
-	closeIdx := strings.IndexByte(reason, ')')
-	if open < 0 || closeIdx <= open+1 {
+	attempts, afterAttempts, ok := strings.Cut(rest, " attempts (")
+	if !ok || attempts == "" {
 		return "", false
 	}
-	return github.PRIssueKind(reason[open+1 : closeIdx]), true
+	for i := range attempts {
+		if attempts[i] < '0' || attempts[i] > '9' {
+			return "", false
+		}
+	}
+	kind, suffixOK := strings.CutSuffix(afterAttempts, ") — needs a human")
+	if !suffixOK || kind == "" || strings.ContainsAny(kind, "()") {
+		return "", false
+	}
+	return github.PRIssueKind(kind), true
 }
 
 // humanRequiredBlockerReconcileEligible reports whether a human-required task
@@ -251,6 +260,13 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		if pr == nil || pr.IsDraft {
 			// Not found this cycle (closed/merged, or not yet surfaced by the
 			// fetch) or still a draft — leave parked, re-probe next poll.
+			continue
+		}
+		if pr.CIStatus == "PENDING" || pr.HasPendingChecks {
+			// MatchTaskPRs intentionally suppresses ci_failure while any check is
+			// still queued/running, so guard that live state here too: a parked
+			// ci_failure task only reconciles once the check run set has fully
+			// settled and no fixable issue remains.
 			continue
 		}
 		issues := github.MatchTaskPRs([]github.PullRequest{*pr}, []github.TaskMatcher{

@@ -281,6 +281,9 @@ func TestExhaustedFixReasonKind(t *testing.T) {
 		{"unrelated reason", "DCO check failing — needs a human to amend history", "", false},
 		{"missing parens", "pr-monitor: auto-fix exhausted after 3 attempts — needs a human", "", false},
 		{"empty parens", "pr-monitor: auto-fix exhausted after 3 attempts () — needs a human", "", false},
+		{"extra parens after prefix", "pr-monitor: auto-fix exhausted after 3 attempts blah (ci_failure) — needs a human", "", false},
+		{"prefix with unrelated suffix", "pr-monitor: auto-fix exhausted after 3 attempts (ci_failure) and then (comments)", "", false},
+		{"non-numeric attempts", "pr-monitor: auto-fix exhausted after three attempts (ci_failure) — needs a human", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -426,6 +429,32 @@ func TestReconcileHumanRequiredBlockersStaysParkedWhileCIStillFailing(t *testing
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
+	}
+}
+
+func TestReconcileHumanRequiredBlockersStaysParkedWhileChecksStillPending(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+	r.prTracker = github.NewIssueTracker(0)
+	parked := mkExhaustedCITask(t, tasks, 42)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := []github.PullRequest{{
+		Number:           42,
+		Mergeable:        "MERGEABLE",
+		CIStatus:         "FAILURE",
+		HasPendingChecks: true,
+	}}
+	r.reconcileHumanRequiredBlockers(all, prs)
+
+	got, err := tasks.Get(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want still human-required while checks are pending", got.Status)
 	}
 }
 
