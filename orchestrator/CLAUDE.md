@@ -224,9 +224,9 @@ Signs an agent is stuck or failed:
 ### Failure Response
 
 1. Check agent output for error patterns
-2. If retriable: reset task to `todo`, update body with failure context
-3. If needs different approach: update body with what was tried, change mode to `interactive`
-4. If blocked on external dependency: set status to human-required, note what's needed
+2. If retriable: reset task to `todo`, record failure context with `sybra-cli progress add <id> --kind failure --message "..."`
+3. If needs different approach: record what was tried with `sybra-cli progress add <id> --kind decision --message "..."`, change mode to `interactive`
+4. If blocked on external dependency: set status to human-required, record what's needed with `sybra-cli progress add <id> --kind blocker --message "..."`
 
 ## Escalation Rules
 
@@ -238,19 +238,24 @@ Escalate to human (mark as `interactive` or `human-required`) when:
 - Task involves irreversible operations (data migration, release)
 - Ambiguity in requirements that can't be resolved from available context
 
-## Decision Log
+## Progress Log
 
-When making non-obvious decisions, update the task body with rationale:
+Record non-obvious decisions, blockers, failures, and status notes in the task's
+**progress log** — an append-only, timestamped channel surfaced in the GUI "Progress"
+tab. This keeps the user-authored task body (the description) clean; never rewrite the
+body to log work.
 
 ```bash
-sybra-cli --json update <id> --body "## Decision
-Chose headless mode because PR is a dependency bump with <50 lines changed.
-
-## Original Description
-..."
+sybra-cli progress add <id> --kind decision --message "Chose headless mode: PR is a dependency bump with <50 lines changed."
 ```
 
-Plans are stored separately from the body. Use `--plan` for plan content:
+`--kind` is one of `progress` | `decision` | `blocker` | `failure` (default `progress`).
+Read it back with `sybra-cli --json progress list <id>`. For work-typed tasks the message
+is scrubbed before persistence, so describe sybra bugs abstractly without quoting work
+identifiers.
+
+Reserve `--body` for the user-authored description only. Plans are stored separately —
+use `--plan` for plan content:
 
 ```bash
 sybra-cli --json update <id> --plan "<full plan markdown>"
@@ -302,7 +307,8 @@ the 2026-07-06 board wipe (#1576): a fresh agent's own test servers, e2e
 suites, and scratch data always land in its sandbox by default. Bare
 `sybra-cli` calls from inside that agent still reach the *real* board through
 `SYBRA_CONTROL_HOME`, injected alongside `SYBRA_HOME` — that's the control
-channel a dispatched agent uses to update its own task's status/plan/body.
+channel a dispatched agent uses to update its own task's status/plan/body and
+append to its progress log.
 Only pass `--home "$SYBRA_HOME"` when an agent needs to inspect its own
 sandbox or an app-under-test it started there.
 
