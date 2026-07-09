@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
@@ -52,6 +53,7 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		humanReview:    a.humanReview,
 		prTracker:      a.prTracker,
 		cfg:            a.cfg,
+		artifacts:      a.artifacts,
 		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
 		// own guard), same pattern as agentOrch.SetConflictRecovery.
 		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
@@ -80,6 +82,11 @@ type AgentCompletionHandler struct {
 	humanReview    *humanReviewHandler
 	prTracker      *github.IssueTracker
 	cfg            *config.Config
+	// artifacts is the local per-task artifact store. Used to import a
+	// completed test-runner's Playwright MCP evidence (screenshots/console
+	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
+	// no-ops when unset (degraded init / tests).
+	artifacts *artifact.Store
 
 	// conflictRecovery dispatches the autonomous conflict-fix agent for a
 	// task (review.Handler.RecoverStaleBranchConflict) — reused here so a
@@ -181,6 +188,16 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// Worktree and sandbox cleanup for terminal tasks (after engine
 	// advances, so status is final).
 	if t, err := h.tasks.Get(ag.TaskID); err == nil && task.IsTerminalStatus(t.Status) {
+		// Import evidence synchronously, before the async worktree removal
+		// below races it away — the whole point of a "terminal" completion is
+		// that the worktree may vanish shortly after this call returns.
+		if agent.RoleFromName(ag.Name) == agent.RoleTestRunner && h.worktrees != nil {
+			if wtPath := h.worktrees.PathFor(t); wtPath != "" {
+				if _, statErr := os.Stat(wtPath); statErr == nil {
+					h.importTestRunnerEvidence(ag, wtPath)
+				}
+			}
+		}
 		// context.Background(): OnComplete implements agent.Manager's
 		// onComplete callback, a fixed func(*Agent) signature with no ctx.
 		go h.worktrees.Remove(context.Background(), ag.TaskID)

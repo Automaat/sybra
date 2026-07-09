@@ -123,6 +123,8 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	m.preparePlaywrightMCP(&cfg)
+
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs

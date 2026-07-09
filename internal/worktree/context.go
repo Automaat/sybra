@@ -19,6 +19,21 @@ import (
 // branches via shared bare-repo refs.
 const contextFileName = ".sybra-context.md"
 
+// EvidenceDirName is the per-worktree directory a headless Playwright MCP
+// server (see internal/agent/mcp.go) writes screenshots/console logs to.
+// Exported so internal/agent's MCP preflight and internal/sybra's evidence
+// importer share one name instead of duplicating the literal.
+const EvidenceDirName = ".sybra-evidence"
+
+// ExcludeEvidenceDir git-excludes EvidenceDirName from wtPath so `git add -A`
+// never sweeps agent-captured screenshots/logs into a commit. Delegates to the
+// package-private addToInfoExclude — exported narrowly for internal/agent's
+// MCP preflight, which runs before the normal run-agent worktree machinery
+// touches info/exclude.
+func ExcludeEvidenceDir(ctx context.Context, wtPath string) error {
+	return addToInfoExclude(ctx, wtPath, EvidenceDirName)
+}
+
 // writeContextFile drops a markdown identity beacon at the worktree root and
 // best-effort-excludes it from `git status` so agents don't accidentally
 // commit it. Errors are surfaced to the caller; the beacon is load-bearing

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -548,6 +549,16 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		} else if inst := a.sandboxes.Get(taskID); inst != nil {
 			cfg.ExtraEnv = inst.EnvVars()
 		}
+	}
+	if r == agent.RoleTestRunner {
+		// Eligibility only — Manager.preparePlaywrightMCP decides whether to
+		// actually attach the MCP server, gated on config enablement and the
+		// FINAL resolved provider (not this raw role/provider check), so a
+		// test-runner that fails over to codex never gets a claude-only flag.
+		evidenceDir := filepath.Join(cfg.Dir, worktree.EvidenceDirName)
+		cfg.PlaywrightMCPEligible = true
+		cfg.PlaywrightMCPOutputDir = evidenceDir
+		cfg.ExtraEnv = append(cfg.ExtraEnv, "PLAYWRIGHT_BROWSERS_PATH="+filepath.Join(evidenceDir, "browsers"))
 	}
 
 	ag, err := a.agents.Run(cfg)
