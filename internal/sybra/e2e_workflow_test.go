@@ -2056,12 +2056,14 @@ func TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement(t *testing.T) {
 }
 
 // TestE2E_TestingTaskWorkflow_FailEscalatesAtCap verifies that once the task has
-// failed testing TestingMaxAttempts times (engine default 3 — here pre-seeded
-// with 2 prior test-runner runs plus this one), it escalates to human-required
+// failed testing TestingMaxAttempts times (pinned to 3 here via
+// SetTestingMaxAttempts, independent of the engine default — pre-seeded with
+// 2 prior test-runner runs plus this one), it escalates to human-required
 // instead of looping back to implement.
 func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 	env := setupE2EMulti(t, []string{"test_fail"})
 	installTestingTaskWorkflow(t, env)
+	env.engine.SetTestingMaxAttempts(3)
 
 	created, err := env.tasks.Create("manual test cap", "", "headless")
 	if err != nil {
