@@ -208,6 +208,9 @@ func (w *Watcher) refreshSnapshot(known map[string]time.Time) bool {
 // write) — fsnotify's own directory watch does not re-arm a per-file fd on
 // its own for further in-place updates to a file it already lost track of.
 func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnotify.Op, baselineReady bool) bool {
+	if known == nil {
+		known = make(map[string]time.Time)
+	}
 	current, ok := w.snapshot()
 	if !ok {
 		// Scan failed — do not diff against a partial/empty view. Treating an
