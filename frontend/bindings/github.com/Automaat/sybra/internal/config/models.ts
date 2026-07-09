@@ -15,6 +15,17 @@ export class AgentDefaults {
     "maxTurns": number;
 
     /**
+     * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
+     * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
+     * where each retry stays under the per-run cap but the task's total spend
+     * still balloons unbounded. Checked once per dispatch, before an agent is
+     * started — StartAgentWithAssignment refuses to start and flips the task
+     * to human-required when the task's already-recorded AgentRuns.CostUSD sum
+     * meets or exceeds this. 0 (default) disables the check.
+     */
+    "maxTaskCostUsd": number;
+
+    /**
      * TurnCostFraction is the fraction of MaxCostUSD below which a turns
      * escalation is auto-continued. Default 0.8 when unset.
      */
@@ -153,6 +164,9 @@ export class AgentDefaults {
         }
         if (!("maxTurns" in $$source)) {
             this["maxTurns"] = 0;
+        }
+        if (!("maxTaskCostUsd" in $$source)) {
+            this["maxTaskCostUsd"] = 0;
         }
         if (!("turnCostFraction" in $$source)) {
             this["turnCostFraction"] = 0;
