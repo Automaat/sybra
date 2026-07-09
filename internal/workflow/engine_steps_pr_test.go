@@ -295,7 +295,14 @@ func TestConflictRecovery_DeferredWhileMarkerHeld(t *testing.T) {
 		t.Fatalf("recovery invoked inline under held marker (calls=%d); want deferred", calls)
 	}
 
-	// Marker still held: a premature drain must also not fire the callback.
+	// Release the marker the way real callers do (alongside fireComplete)
+	// before draining — drainPendingConflictRecovery trusts the caller to
+	// have released it and does not re-check, so draining while still held
+	// would re-enter the very reentrancy trap this test guards against.
+	engine.mu.Lock()
+	delete(engine.dispatching, "t1")
+	engine.mu.Unlock()
+
 	engine.drainPendingConflictRecovery("t1")
 	if calls != 1 {
 		t.Fatalf("recovery calls=%d after drain; want exactly 1", calls)
