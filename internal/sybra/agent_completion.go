@@ -55,9 +55,15 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		cfg:            a.cfg,
 		artifacts:      a.artifacts,
 		workScrub:      a.workScrubContextForTask,
-		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
-		// own guard), same pattern as agentOrch.SetConflictRecovery.
-		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
+		// Routed through workflowEngine.TryConflictRecovery, not
+		// a.reviewer.RecoverStaleBranchConflict directly — same reentrancy
+		// hazard as agentOrch.SetConflictRecovery below: this callback can run
+		// while a StartWorkflow call for the same task is still executing
+		// elsewhere, and TryConflictRecovery queues the retry instead of
+		// racing into ErrWorkflowAlreadyActive. a.workflowEngine is set by
+		// initWorkflowEngine, which always runs before wireServices (and this
+		// constructor) in App.Start.
+		conflictRecovery: a.workflowEngine.TryConflictRecovery,
 	}
 }
 

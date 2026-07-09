@@ -227,6 +227,46 @@ func (e *Engine) tryConflictRecovery(taskID string) bool {
 	return e.conflictRecovery(taskID)
 }
 
+// TryConflictRecovery is the exported entry point for callers outside this
+// package that invoke the same review.Handler.RecoverStaleBranchConflict
+// callback as push_branch/create_pr: agentorch's worktree-prep rebase-failure
+// path (MarkRebaseBlockedWithRecoveryResult) and the fix-review
+// push-divergence handler. A rebase conflict discovered while this task's own
+// StartWorkflow call is still executing (e.g. execRunAgent's worktree prep,
+// deep inside the same synchronous stack that holds the starting marker)
+// needs the identical queue-instead-of-reenter treatment tryConflictRecovery
+// already gives push_branch/create_pr — without it, the recovery callback
+// races straight into ErrWorkflowAlreadyActive and gives up, stranding the
+// task on a raw ClassifyAgentStartError escalation instead of the autonomous
+// fix. Nil-receiver-safe (mirrors RecoverStaleBranchConflict's own guard) so
+// wiring this in ahead of a possibly-nil workflowEngine during degraded init
+// is safe. Returns false when the receiver or the recovery callback is nil.
+func (e *Engine) TryConflictRecovery(taskID string) bool {
+	if e == nil || e.conflictRecovery == nil {
+		return false
+	}
+	return e.tryConflictRecovery(taskID)
+}
+
+// QueueConflictRecoveryRetry defers a conflict-recovery retry until this
+// task's starting/dispatching marker next releases, for a caller whose own
+// re-dispatch of the recovery workflow (e.g. dispatchBranchConflictRecovery's
+// StartWorkflowWithVars call) hit ErrWorkflowAlreadyActive despite
+// TryConflictRecovery's entry check having found no marker held. The marker
+// can be grabbed by a concurrent StartWorkflow call sometime during the
+// caller's own multi-second worktree-prep work — a TOCTOU window
+// TryConflictRecovery's up-front check alone cannot close. drainPendingConflictRecovery
+// re-invokes the full recovery callback once whichever call currently holds
+// the marker releases it.
+func (e *Engine) QueueConflictRecoveryRetry(taskID string) {
+	e.mu.Lock()
+	if e.pendingRecovery == nil {
+		e.pendingRecovery = make(map[string]struct{})
+	}
+	e.pendingRecovery[taskID] = struct{}{}
+	e.mu.Unlock()
+}
+
 // drainPendingConflictRecovery runs a branch-conflict recovery that
 // tryConflictRecovery deferred because a per-task marker was held when the
 // diverged push was detected. It MUST be called only after the caller has
