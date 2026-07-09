@@ -82,9 +82,9 @@
     { id: 'issues', label: 'Issues', count: () => issueStore.count },
   ]
 
-  function prPriority(pr: PullRequest): number {
+  function prPriority(pr: PullRequest & { waitingForStability?: boolean }): number {
     const ready = !pr.isDraft && pr.mergeable === 'MERGEABLE' &&
-      (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+      (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability === true) &&
       (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
     if (ready) return 0 // ready to merge
     if (!pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED') return 1 // to approve

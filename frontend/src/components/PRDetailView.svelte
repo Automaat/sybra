@@ -4,7 +4,7 @@
   import { openLink } from '$lib/browser.svelte.js'
 
   interface Props {
-    pr: PullRequest
+    pr: PullRequest & { waitingForStability?: boolean }
     checkRuns?: CheckRunInfo[]
     onback: () => void
     onapprove?: () => void
@@ -19,7 +19,7 @@
   const isEligible = $derived(
     !pr.isDraft &&
     pr.mergeable === 'MERGEABLE' &&
-    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '') &&
+    (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability === true) &&
     (pr.reviewDecision === 'APPROVED' || pr.reviewDecision === '')
   )
 
