@@ -138,6 +138,7 @@ func TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove(t *testing.
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("route_critique_verdict")
 	if step == nil {
