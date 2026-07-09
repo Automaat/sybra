@@ -7,7 +7,14 @@
   }
   let { onviewtask }: Props = $props()
 
-  const visible = $derived(notificationStore.notifications.slice(0, 3))
+  // Toasts hide locally without deleting from the store — the notification
+  // must survive in the Inbox after its toast auto-dismisses (see
+  // Notifications.svelte). Only the inbox's explicit dismiss/clear removes it.
+  let hiddenToastIds = $state<Set<string>>(new Set())
+
+  const visible = $derived(
+    notificationStore.notifications.filter((n) => !hiddenToastIds.has(n.id)).slice(0, 3),
+  )
 
   function levelClass(level: string): string {
     switch (level) {
@@ -23,7 +30,7 @@
   }
 
   function dismiss(id: string) {
-    notificationStore.dismiss(id)
+    hiddenToastIds = new Set(hiddenToastIds).add(id)
   }
 
   function autoDismiss(_node: HTMLElement, id: string) {

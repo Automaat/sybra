@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp } from '@lucide/svelte'
+  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp, Bell } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
+  import { notificationStore } from '../../stores/notifications.svelte.js'
   import { focusModeStore } from '../../lib/focus-mode.svelte.js'
+  import { activeTaskNeedsUserAttention } from '../../lib/task-attention.js'
 
   // Focus mode collapses the rail to the core destinations; "More" expands the
   // full nav so advanced views stay reachable.
@@ -21,6 +23,15 @@
   const reviewCount = $derived(
     taskStore.tasksNeedingPlanApproval().length
   )
+
+  // Global "needs you" signal — every active task awaiting the operator,
+  // regardless of which board column/filter is currently visible. Same
+  // attention semantics as the board toolbar counter and card accent.
+  const needsYouCount = $derived(
+    taskStore.list.filter(activeTaskNeedsUserAttention).length
+  )
+
+  const notificationCount = $derived(notificationStore.notifications.length)
 
   interface NavItem {
     kind: string[]
@@ -41,6 +52,7 @@
   ]
 
   const secondaryItems: NavItem[] = [
+    { kind: ['notifications'], label: 'Inbox', icon: Bell, onclick: () => navStore.reset({ kind: 'notifications' }) },
     { kind: ['logbook'], label: 'Logbook', icon: Archive, onclick: () => navStore.reset({ kind: 'logbook' }) },
     { kind: ['project-list', 'project-detail'], label: 'Projects', icon: Folder, onclick: () => navStore.reset({ kind: 'project-list' }) },
     { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },
@@ -81,12 +93,20 @@
   >
     <div class="relative">
       <Icon size={18} />
-      {#if item.label === 'Chats' && interactiveAgentCount > 0}
+      {#if item.label === 'Board' && needsYouCount > 0}
+        <span
+          class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-error-500 text-[8px] font-bold text-white"
+          title="{needsYouCount} task{needsYouCount === 1 ? '' : 's'} need you"
+          aria-label="{needsYouCount} task{needsYouCount === 1 ? '' : 's'} need you"
+        >{needsYouCount}</span>
+      {:else if item.label === 'Chats' && interactiveAgentCount > 0}
         <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary-500 text-[8px] font-bold text-white">{interactiveAgentCount}</span>
       {:else if item.label === 'Agents' && runningAgentCount > 0}
         <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-success-500 text-[8px] font-bold text-white">{runningAgentCount}</span>
       {:else if item.label === 'Reviews' && reviewCount > 0}
         <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-warning-500 text-[8px] font-bold text-white">{reviewCount}</span>
+      {:else if item.label === 'Inbox' && notificationCount > 0}
+        <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-secondary-500 text-[8px] font-bold text-white">{notificationCount}</span>
       {/if}
     </div>
     <span class="leading-tight">{item.label}</span>

@@ -51,6 +51,16 @@ describe('NotificationStore', () => {
 
       expect(notificationStore.notifications).toHaveLength(0)
     })
+
+    it('caps result at 50 entries, matching the event and local paths', async () => {
+      const ns = Array.from({ length: 75 }, (_, i) => makeNotification({ id: `n${i}` }))
+      mockListNotifications.mockResolvedValue(ns)
+
+      await notificationStore.load()
+
+      expect(notificationStore.notifications).toHaveLength(50)
+      expect(notificationStore.notifications[0].id).toBe('n0')
+    })
   })
 
   describe('listen', () => {

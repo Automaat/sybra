@@ -25,6 +25,7 @@
   const loadWorkflowList = lazyComponent(() => import('../pages/WorkflowList.svelte'))
   const loadWorkflowDetail = lazyComponent(() => import('../pages/WorkflowDetail.svelte'))
   const loadLogbook = lazyComponent(() => import('../pages/Logbook.svelte'))
+  const loadNotifications = lazyComponent(() => import('../pages/Notifications.svelte'))
 
   interface Props {
     sidebarTaskId: string | null
@@ -154,6 +155,10 @@
   {:else if navStore.page.kind === 'logbook'}
     {#await loadLogbook() then Logbook}
       <Logbook onviewtask={navTaskDetail} />
+    {/await}
+  {:else if navStore.page.kind === 'notifications'}
+    {#await loadNotifications() then Notifications}
+      <Notifications onviewtask={navTaskDetail} onviewagent={navAgentDetail} />
     {/await}
   {:else if navStore.page.kind === 'settings'}
     {#await loadSettings() then Settings}
