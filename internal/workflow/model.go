@@ -284,6 +284,9 @@ func (d *Definition) Validate() error {
 	seenIDs := make(map[string]bool, len(d.Steps))
 	for i := range d.Steps {
 		s := &d.Steps[i]
+		if strings.Contains(s.ID, bestOfNAttemptSep) {
+			return fmt.Errorf("step %q: step ids must not contain %q", s.ID, bestOfNAttemptSep)
+		}
 		if s.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: max_retries %d exceeds limit %d", s.ID, s.Config.MaxRetries, maxRetries)
 		}

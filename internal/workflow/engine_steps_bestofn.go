@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var errBestOfNParked = errors.New("best-of-n parked waiting for attempt completion")
+
 // bestOfNAttemptSep separates a best_of_n parent step ID from a synthetic
 // attempt ID (e.g. "implement_n::attempt_2") in the compound stepID stashed
 // in agentSteps for an attempt agent. Attempts have no corresponding YAML
@@ -26,11 +28,16 @@ func bestOfNAttemptStepKey(parentID, attemptID string) string {
 
 // splitBestOfNAttemptStepKey reverses bestOfNAttemptStepKey.
 func splitBestOfNAttemptStepKey(key string) (parentID, attemptID string, ok bool) {
-	parent, attempt, found := strings.Cut(key, bestOfNAttemptSep)
-	if !found {
+	idx := strings.LastIndex(key, bestOfNAttemptSep)
+	if idx < 0 {
 		return "", "", false
 	}
-	return parent, attempt, true
+	parentID = key[:idx]
+	attemptID = key[idx+len(bestOfNAttemptSep):]
+	if parentID == "" || attemptID == "" {
+		return "", "", false
+	}
+	return parentID, attemptID, true
 }
 
 func attemptProviderFor(providers []string, n int) string {
@@ -151,7 +158,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	if allDone {
 		return e.finalizeBestOfNParent(taskID, def, step, wfExec)
 	}
-	return nil, nil
+	return nil, errBestOfNParked
 }
 
 // spawnBestOfNAttempt prepares one attempt's isolated worktree and dispatches

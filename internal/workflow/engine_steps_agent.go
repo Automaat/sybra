@@ -604,6 +604,9 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 		if dErr != nil {
 			return StepOutput{}, fmt.Errorf("render dir: %w", dErr)
 		}
+		if strings.TrimSpace(dir) == "" {
+			return StepOutput{}, errors.New("render dir: resolved to empty path")
+		}
 		cmd.Dir = dir
 	}
 

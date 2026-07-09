@@ -97,9 +97,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 				return err
 			}
 			release()
-			comp, sErr := e.executeSteps(taskID, &def, currentStep, wfExec)
-			e.fireComplete(comp)
-			return sErr
+			return e.executeNextSteps(taskID, &def, currentStep, wfExec)
 		}
 		e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 			"attempts", retries)
@@ -138,9 +136,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
-	comp, sErr := e.executeSteps(taskID, &def, nextStep, wfExec)
-	e.fireComplete(comp)
-	return sErr
+	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
 }
 
 // handleFanOutCompletion routes a parallel-child or best-of-N-attempt
@@ -165,6 +161,15 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 		return true, bErr
 	}
 	return false, nil
+}
+
+func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {
+	comp, err := e.executeSteps(taskID, def, step, wfExec)
+	if errors.Is(err, errBestOfNParked) {
+		err = nil
+	}
+	e.fireComplete(comp)
+	return err
 }
 
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
@@ -436,7 +441,11 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)
 		case StepBestOfN:
-			return e.execBestOfN(taskID, def, step, wfExec, ctx)
+			comp, err := e.execBestOfN(taskID, def, step, wfExec, ctx)
+			if errors.Is(err, errBestOfNParked) {
+				return nil, errBestOfNParked
+			}
+			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
 		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPromoteBestOfN:

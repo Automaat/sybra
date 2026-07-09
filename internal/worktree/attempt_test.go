@@ -21,6 +21,8 @@ func commitFile(t *testing.T, wtPath, name, content, msg string) {
 	if err := os.WriteFile(filepath.Join(wtPath, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	mustRunInDir(t, wtPath, "git", "add", name)
 	mustRunInDir(t, wtPath, "git", "commit", "-m", msg)
 }

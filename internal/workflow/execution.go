@@ -45,7 +45,7 @@ type Execution struct {
 	StepCounts map[string]int `yaml:"step_counts,omitempty" json:"stepCounts,omitempty"`
 	// BestOfNInflight tracks per-parent-step state for in-flight `best_of_n`
 	// blocks. Keyed by the parent (best_of_n) step ID. Unlike ParallelInflight,
-	// each attempt's slot also records its own worktree dir/branch/head SHA,
+	// each attempt's slot also records its own worktree dir/branch,
 	// since — unlike a parallel child — a best-of-N attempt has no worktree the
 	// engine can otherwise rediscover (it is not the task's canonical
 	// worktree). Persisted so a process restart can resume the fan-out and so
@@ -67,12 +67,11 @@ type AttemptStatus struct {
 	Provider  string `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Model     string `yaml:"model,omitempty" json:"model,omitempty"`
 	AgentID   string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
-	// Dir/Branch/HeadSHA locate the attempt's isolated worktree so
+	// Dir/Branch locate the attempt's isolated worktree so
 	// promoteBestOfN can promote the winner without depending on any live
 	// agent/registry state.
-	Dir     string `yaml:"dir,omitempty" json:"dir,omitempty"`
-	Branch  string `yaml:"branch,omitempty" json:"branch,omitempty"`
-	HeadSHA string `yaml:"head_sha,omitempty" json:"headSha,omitempty"`
+	Dir    string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	Branch string `yaml:"branch,omitempty" json:"branch,omitempty"`
 	// Status: "pending" | "completed" | "failed".
 	Status  string `yaml:"status" json:"status"`
 	Output  string `yaml:"output,omitempty" json:"output,omitempty"`
