@@ -619,7 +619,7 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	}
 	if recoverConflict != nil {
 		if recoverConflict(taskID) {
-			logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
+			logger.Info("worktree.rebase-block.handled", "task_id", taskID)
 			return true
 		}
 	}

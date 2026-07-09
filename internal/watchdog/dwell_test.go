@@ -103,6 +103,75 @@ func TestCheckDwell_SkipsTodoTask(t *testing.T) {
 	}
 }
 
+func TestCheckDwell_SkipsTaskWithRunningAgent(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+
+	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	w := &Watchdog{
+		tasks:                mgr,
+		logger:               slog.New(slog.DiscardHandler),
+		hasLiveHeadlessAgent: func(taskID string) bool { return taskID == tk.ID },
+	}
+
+	// checkDwell with "now" 48h ahead so the default 12h budget would be
+	// exceeded, but a live running agent must suppress the escalation — only
+	// the task file is stale, not the agent doing the work.
+	w.checkDwell(tk.UpdatedAt.Add(48 * time.Hour))
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (running agent should suppress dwell escalation)", got.Status)
+	}
+}
+
+func TestCheckDwell_EscalatesWhenNoLiveHeadlessAgent(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+
+	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	w := &Watchdog{
+		tasks:                mgr,
+		logger:               slog.New(slog.DiscardHandler),
+		hasLiveHeadlessAgent: func(taskID string) bool { return false },
+	}
+
+	w.checkDwell(tk.UpdatedAt.Add(48 * time.Hour))
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required when no live headless agent backs the task", got.Status)
+	}
+}
+
 func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
