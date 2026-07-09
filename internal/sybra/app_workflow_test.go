@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
@@ -245,4 +246,29 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
 	}
+}
+
+func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := task.NewManager(store, nil)
+	created, err := mgr.Create("missing task race", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Delete(created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &agentAdapter{tasks: mgr}
+	adapter.recordSystemAgentStart(created.ID, string(agent.RolePlan), "headless", agent.RunConfig{Prompt: "prompt"}, &agent.Agent{
+		ID:        "agent-1",
+		Provider:  "claude",
+		Model:     "sonnet",
+		StartedAt: time.Now().UTC(),
+	})
 }

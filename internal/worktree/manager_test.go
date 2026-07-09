@@ -921,6 +921,93 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged reproduces the
+// branch-conflict-fix recovery loop from task bdcc90a4: recoverBranchConflictNoPR
+// resolves a rebase-block by merging base into the task's own branch (never a
+// rebase) and pushing, then resumes the task's original interrupted step. That
+// next step calls PrepareForTask again, which reuses the worktree and rebases
+// it onto base via reconcileAndRebase. A plain `git rebase` linearizes
+// history — it drops the merge commit and replays the branch's own pre-merge
+// commit individually onto base — so it re-hits the exact same content
+// conflict the merge just resolved, even though base's tip is fully contained
+// in the branch. RebaseOnto must recognize base is already merged in (an
+// ancestor of HEAD) and skip rebasing instead of looping forever.
+func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("merged-then-rebased task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	// First re-prepare hits the genuine, unresolvable-via-rebase conflict —
+	// same as TestPrepareForTask_RebaseConflictFailsClosed.
+	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); !errors.Is(err, ErrRebaseFailed) {
+		t.Fatalf("PrepareForTask error = %v, want ErrRebaseFailed", err)
+	}
+
+	// Simulate recoverBranchConflictNoPR: fetch base, merge it into the
+	// branch (never a rebase), resolve the conflict, commit, and push — this
+	// is exactly what dispatchBranchConflictRecovery's pr-fix agent does.
+	mustRunInDir(t, wtPath, "git", "fetch", "origin")
+	mergeErr := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run()
+	if mergeErr == nil {
+		t.Fatal("expected the merge to stop for conflicts, got a clean merge")
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
+	branch := mustOutputInDir(t, wtPath, "git", "branch", "--show-current")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+strings.TrimSpace(branch))
+
+	// The resumed original step's dispatch re-prepares the same worktree. Before
+	// the fix this hits the identical conflict again and returns
+	// ErrRebaseFailed forever; it must now succeed since base is already merged in.
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask after merge recovery should succeed, got err: %v", err)
+	}
+	if gotPath == "" {
+		t.Fatal("PrepareForTask path is empty, want the recovered worktree path")
+	}
+
+	got, err := os.ReadFile(filepath.Join(gotPath, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "branch edit\nupstream edit\n"; string(got) != want {
+		t.Fatalf("README.md = %q, want %q (the merge-resolved content, untouched by a skipped rebase)", got, want)
+	}
+}
+
 // TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed proves the fix for
 // the bug where a network blip during reconcileAndRebase's remote fetch was
 // indistinguishable from a genuine content conflict: both wrapped
@@ -1210,6 +1297,19 @@ func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
 	}
+}
+
+func mustOutputInDir(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+	}
+	return string(out)
 }
 
 // TestPrepareForTask_BootstrapFailureBlocks confirms a failing setup
