@@ -690,6 +690,33 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+// TestIsDispatching verifies the read-only peek other coordinators (e.g.
+// internal/workflow.Engine's DispatchEvent/ResumeStalled) consult as the
+// single ground truth for "does some dispatcher already own this task's next
+// run" — without itself acquiring or releasing a claim.
+func TestIsDispatching(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if m.IsDispatching("t1") {
+		t.Error("unclaimed task should not report dispatching")
+	}
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should succeed")
+	}
+	if !m.IsDispatching("t1") {
+		t.Error("claimed task should report dispatching")
+	}
+	if m.IsDispatching("t2") {
+		t.Error("a different, unclaimed task must not be affected")
+	}
+
+	m.ReleaseTaskDispatch("t1")
+	if m.IsDispatching("t1") {
+		t.Error("released claim should no longer report dispatching")
+	}
+}
+
 // TestTryClaimDispatch verifies the DispatchClaim wrapper matches
 // ClaimTaskDispatch/ReleaseTaskDispatch semantics (single holder per task,
 // independent tasks unaffected) and that Release is idempotent — a second

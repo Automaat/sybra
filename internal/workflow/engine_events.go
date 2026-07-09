@@ -505,7 +505,10 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	mu.Unlock()
 
 	e.mu.Lock()
-	if _, dispatching := e.dispatching[taskID]; dispatching {
+	// Consult the shared agent.Manager dispatch-claim coordinator too — see
+	// IsDispatching's doc for why the engine-local `dispatching` marker alone
+	// cannot see a claim held by an outside dispatcher (e.g. recovery).
+	if _, dispatching := e.dispatching[taskID]; dispatching || e.agents.IsDispatching(taskID) {
 		e.mu.Unlock()
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
 			"task_id", taskID, "reason", "dispatching", "step", step.ID)
@@ -658,7 +661,14 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		}
 	}
 
-	if !advancing && !dispatching && !hasOutstandingAgent {
+	// Also consult the shared agent.Manager dispatch-claim coordinator: a
+	// claim it holds for taskID (e.g. recovery.RestartStaleInProgress mid
+	// dispatch) is invisible to this engine's own dispatching/agentSteps
+	// bookkeeping, and without this check ResumeStalled could redispatch
+	// concurrently with it.
+	claimedElsewhere := e.agents.IsDispatching(taskID)
+
+	if !advancing && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
 		e.dispatching[taskID] = struct{}{}
 		return "", true
 	}
@@ -668,6 +678,8 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		return "inflight", false
 	case hasOutstandingAgent:
 		return "agent-pending-completion", false
+	case claimedElsewhere:
+		return "claimed-elsewhere", false
 	default:
 		return "dispatching", false
 	}

@@ -945,6 +945,10 @@ func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
 }
 
+func (a *agentAdapter) IsDispatching(taskID string) bool {
+	return a.agents.IsDispatching(taskID)
+}
+
 // CheckTaskCostBudget implements workflow.CostBudgetChecker for the
 // best_of_n/judge preflight — see agentorch.Orchestrator.CheckTaskCostBudget.
 func (a *agentAdapter) CheckTaskCostBudget(taskID string) error {
