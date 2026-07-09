@@ -18,7 +18,7 @@
   let errorMsg = $state('')
   let hasLiveAgent = $state(false)
 
-  const allReviewTasks = $derived(taskStore.byStatus('plan-review'))
+  const allReviewTasks = $derived(taskStore.tasksNeedingPlanApproval())
 
   const selectedTask = $derived(
     selectedId ? taskStore.items.get(selectedId) ?? null : null,
