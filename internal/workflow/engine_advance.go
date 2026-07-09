@@ -448,7 +448,7 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return comp, err
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPromoteBestOfN:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPromoteBestOfN, StepPushBranch, StepCreatePR:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -552,6 +552,10 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execResumeWorkflow(taskID, step, wfExec)
 	case StepPromoteBestOfN:
 		return e.execPromoteBestOfN(taskID, step)
+	case StepPushBranch:
+		return e.execPushBranch(taskID, step, wfExec, t)
+	case StepCreatePR:
+		return e.execCreatePR(taskID, step, wfExec, t)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}

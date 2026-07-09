@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -29,6 +30,10 @@ var (
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
+	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
+	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
+	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
+	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
@@ -297,6 +302,54 @@ type prStateFetcherAdapter struct{}
 
 func (prStateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState, error) {
 	return github.FetchPRState(repo, number)
+}
+
+// prHeadFetcherAdapter wires the workflow engine's PRHeadFetcher interface to
+// the github package. Stateless — all state lives in `gh` / GitHub.
+type prHeadFetcherAdapter struct{}
+
+func (prHeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
+	return github.FetchPRHeadSHAContext(ctx, repo, number)
+}
+
+// prCreatorAdapter wires the workflow engine's PRCreator interface to the
+// github package. Stateless — all state lives in `gh` / GitHub.
+type prCreatorAdapter struct{}
+
+func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.PRCreateRequest) (number int, headSHA string, err error) {
+	return github.CreatePR(ctx, dir, github.CreatePRRequest{
+		Repo:  req.Repo,
+		Head:  req.Head,
+		Draft: req.Draft,
+		Title: req.Title,
+		Body:  req.Body,
+	})
+}
+
+// prFinderAdapter wires the workflow engine's PRFinder interface to the github
+// package. Stateless — all state lives in `gh` / GitHub.
+type prFinderAdapter struct{}
+
+func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
+	return github.FindPRForBranch(ctx, repo, head)
+}
+
+// prContentGeneratorAdapter wires the workflow engine's PRContentGenerator
+// interface to internal/prcontent's LLM-backed drafter.
+type prContentGeneratorAdapter struct {
+	gen prcontent.Generator
+}
+
+func (a prContentGeneratorAdapter) GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error) {
+	c, err := a.gen.Generate(ctx, prcontent.Request{
+		TaskTitle:      taskTitle,
+		TaskBody:       taskBody,
+		CommitSubjects: commitSubjects,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return c.Title, c.Body, nil
 }
 
 // prReviewRequesterAdapter asks users who left actionable PR feedback to

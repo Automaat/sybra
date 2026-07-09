@@ -176,6 +176,53 @@ type PRStateFetcher interface {
 	FetchPRState(repo string, number int) (github.PRState, error)
 }
 
+// PRHeadFetcher looks up a PR's live head commit SHA. Used by `push_branch`
+// to verify a push landed before continuing. Engine operates with a nil
+// fetcher — the step then skips verification and trusts the push exit code.
+type PRHeadFetcher interface {
+	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
+}
+
+// PRCreator opens a new GitHub pull request for an already-pushed branch via
+// `gh pr create`, run inside the task's worktree so gh resolves the same
+// repo/fork context an interactive invocation would. Used by the `create_pr`
+// step — the deterministic replacement for the create-pr agent. Engine
+// operates with a nil PRCreator — the step then flips the task to
+// human-required, since PR creation is mandatory to progress.
+type PRCreator interface {
+	CreatePR(ctx context.Context, dir string, req PRCreateRequest) (number int, headSHA string, err error)
+}
+
+// PRFinder looks up an open PR by its head branch, backing the create_pr
+// idempotency guard (a prior run may have created the PR but crashed before
+// persisting pr_number). Engine operates with a nil finder — the guard is
+// then skipped and create_pr always attempts a fresh push/create.
+type PRFinder interface {
+	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
+}
+
+// PRCreateRequest describes a new pull request to open for an
+// already-pushed branch.
+type PRCreateRequest struct {
+	// Repo is the base repo the PR is opened against, "owner/name".
+	Repo string
+	// Head is the `gh pr create --head` value: a bare branch name, or
+	// "fork-owner:branch" when the branch lives on a fork.
+	Head  string
+	Draft bool
+	Title string
+	Body  string
+}
+
+// PRContentGenerator drafts the PR title/body for the `create_pr` step via a
+// single cheap LLM job — the only LLM involvement left in the create_pr
+// tail now that push/create are deterministic Go. Engine operates with a nil
+// generator — the step then falls back to a templated title/body derived
+// from the task itself, so tests and misconfigured deployments still work.
+type PRContentGenerator interface {
+	GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error)
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -211,6 +258,10 @@ type Engine struct {
 	prLinker         PRLinker
 	prReviewers      PRReviewRequester
 	prStates         PRStateFetcher
+	prHeads          PRHeadFetcher
+	prCreator        PRCreator
+	prFinder         PRFinder
+	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
@@ -281,6 +332,23 @@ func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 // re-probe the live PR before parking human-required. Leaving it unset skips
 // the re-probe and trusts the agent's sentinel as-is.
 func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
+
+// SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
+// push landed. Leaving it unset skips the verification.
+func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
+
+// SetPRCreator wires an implementation of `gh pr create` used by the
+// `create_pr` step. Leaving it unset flips the task to human-required when
+// create_pr is reached, since a PR cannot be opened without it.
+func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
+
+// SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
+// idempotency guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
+
+// SetPRContentGenerator wires the LLM-backed title/body drafter used by the
+// `create_pr` step. Leaving it unset falls back to a templated title/body.
+func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
 
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.

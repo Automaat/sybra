@@ -263,10 +263,10 @@ func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
 // FetchPRHeadSHA returns the head commit SHA of a PR. Used to detect a fresh
 // push by the PR author after a review was submitted.
 func FetchPRHeadSHA(repo string, number int) (string, error) {
-	return fetchPRHeadSHAWith(defaultExecer, repo, number)
+	return fetchPRHeadSHAWith(context.TODO(), defaultExecer, repo, number)
 }
 
-func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
+func fetchPRHeadSHAWith(ctx context.Context, e execer, repo string, number int) (string, error) {
 	key := prCacheKey(repo, number)
 	if runtimeCacheEnabled(e) {
 		if cached, ok := prHeadSHACache.Get(key); ok {
@@ -274,7 +274,7 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", strconv.Itoa(number),
+	out, err := runE(ctx, e, "pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "headRefOid")
 	if err != nil {
 		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -494,19 +494,12 @@ func fetchPRHeadStateWith(ctx context.Context, e execer, repo string, number int
 	return raw.HeadRefOid, raw.State == "OPEN", raw.UpdatedAt, nil
 }
 
-// FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA for the poll path.
+// FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA, so a stalled gh
+// call releases the global ghGate instead of blocking the caller's shell
+// timeout for the kernel TCP timeout. Used by the create_pr/push_branch
+// workflow steps, whose callers already bound the context via shellTimeout.
 func FetchPRHeadSHAContext(ctx context.Context, repo string, number int) (string, error) {
-	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "headRefOid")
-	if err != nil {
-		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, sanitizeGHOutput(out), err)
-	}
-	var raw struct {
-		HeadRefOid string `json:"headRefOid"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return "", fmt.Errorf("parse pr head: %w", err)
-	}
-	return raw.HeadRefOid, nil
+	return fetchPRHeadSHAWith(ctx, defaultExecer, repo, number)
 }
 
 // FetchPRMergeCommitContext returns the default-branch commit SHA a merged PR

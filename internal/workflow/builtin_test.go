@@ -664,7 +664,13 @@ func TestBuiltinDefinitions_NeverInstructForcePush(t *testing.T) {
 	}
 }
 
-func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
+// TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic proves create_pr and
+// push_existing_pr are the mechanized `create_pr`/`push_branch` step types,
+// not an agent whose prompt hand-rolls fork-remote routing/never-force-push
+// logic in shell. That routing now lives in project.HeadArg/PushSync (see
+// TestHeadArg_WithFork/NoFork and TestPushSync_* in internal/project), and
+// this test just guards against a regression back to a run_agent step.
+func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
 	if err != nil {
@@ -681,32 +687,29 @@ func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 		t.Fatal("simple-task-pr builtin definition not found")
 		return
 	}
-	step := simple.StepByID("create_pr")
-	if step == nil {
+
+	createStep := simple.StepByID("create_pr")
+	if createStep == nil {
 		t.Fatal("create_pr step not found in simple-task-pr")
 		return
 	}
-	prompt := step.Config.Prompt
-	for _, want := range []string{
-		`remote.fork.url`,
-		`PUSH_REMOTE="fork"`,
-		`REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"`,
-		`--head "$HEAD_ARG"`,
-		`git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"`,
-		`headRefOid`,
-		`test "$LOCAL_SHA" = "$PR_SHA"`,
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("create_pr prompt missing %q", want)
-		}
+	if createStep.Type != StepCreatePR {
+		t.Fatalf("create_pr step type = %q, want %q", createStep.Type, StepCreatePR)
 	}
-	for _, forbidden := range []string{
-		"git push -u origin HEAD",
-		"git push --force-with-lease -u origin HEAD",
-	} {
-		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("create_pr prompt still hardcodes %q", forbidden)
-		}
+	if createStep.Config.Prompt != "" {
+		t.Fatalf("create_pr step still carries an agent prompt: %q", createStep.Config.Prompt)
+	}
+
+	pushStep := simple.StepByID("push_existing_pr")
+	if pushStep == nil {
+		t.Fatal("push_existing_pr step not found in simple-task-pr")
+		return
+	}
+	if pushStep.Type != StepPushBranch {
+		t.Fatalf("push_existing_pr step type = %q, want %q", pushStep.Type, StepPushBranch)
+	}
+	if pushStep.Config.Prompt != "" {
+		t.Fatalf("push_existing_pr step still carries an agent prompt: %q", pushStep.Config.Prompt)
 	}
 }
 
