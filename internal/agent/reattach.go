@@ -367,8 +367,21 @@ func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistr
 // reattachHeadless tails a reattached subprocess's log file from
 // startOffset until the process exits (or the app shuts down), then
 // finalizes the agent through the same completion path as a freshly run
-// one.
+// one. A steerable headless run's stdin FIFO (see runHeadlessAttemptSurvive)
+// is reopened first so a steer message sent after this reattach still
+// reaches the child, mirroring reattachConvo.
 func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset int64, procStart string) {
+	if sp := a.GetStdinPath(); sp != "" {
+		if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
+			if installErr := a.convo.installStdinPipe(fifo); installErr != nil {
+				_ = fifo.Close()
+				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", installErr)
+			}
+		} else {
+			m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
+		}
+	}
+
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 

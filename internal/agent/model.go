@@ -133,6 +133,13 @@ type Agent struct {
 	// status from the result event rather than the kill signal.
 	completedByResult bool
 
+	// finalizing marks a steerable headless run whose stdin was closed after
+	// its terminal result event because no further steer message was queued
+	// (see processHeadlessLine). Once set, SendMessage rejects rather than
+	// queuing a message that would never be delivered — the child is on its
+	// way out.
+	finalizing bool
+
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
 	// kill). ShutdownWithGrace leaves detached agents running instead of
@@ -747,6 +754,21 @@ func (a *Agent) hasPromptChannel() bool {
 	return a.convo.promptCh != nil
 }
 
+// setFinalizing marks a steerable headless run as closing its stdin down for
+// good (no further steer message can be delivered).
+func (a *Agent) setFinalizing(v bool) {
+	a.mu.Lock()
+	a.finalizing = v
+	a.mu.Unlock()
+}
+
+// isFinalizing reports whether the agent's stdin has been closed for good.
+func (a *Agent) isFinalizing() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.finalizing
+}
+
 // setDetached marks whether the agent's subprocess is detached for
 // restart survival.
 func (a *Agent) setDetached(v bool) {
@@ -978,6 +1000,13 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// HeadlessSteerable, when true, launches a claude headless run with the
+	// stdin/stream-json shape (mirroring the conversational invocation)
+	// instead of the legacy one-shot `-p <prompt>` invocation, so the running
+	// agent can accept mid-run steer messages over stdin. Resolved from
+	// agent.headless_steerable by Manager.prepareRunConfig; only Claude
+	// currently honors it (see claudeProvider.BuildHeadlessInvocation).
+	HeadlessSteerable bool
 	// HeadlessPermissionMode overrides the permission posture for this run.
 	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
 	// "bypass" (or empty) keeps --dangerously-skip-permissions.

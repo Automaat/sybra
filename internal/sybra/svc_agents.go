@@ -53,7 +53,9 @@ func (s *AgentService) GetAgentOutput(agentID string) ([]agent.StreamEvent, erro
 	return ag.Output(), nil
 }
 
-// SendMessage sends a follow-up message to a conversational agent.
+// SendMessage sends a follow-up message to any live agent with a stdin
+// transport: a conversational (interactive) agent, or a steerable headless
+// claude run.
 func (s *AgentService) SendMessage(agentID, text string) error {
 	return s.agents.SendMessage(agentID, text)
 }
