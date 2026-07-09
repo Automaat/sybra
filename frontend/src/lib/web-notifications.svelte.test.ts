@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+vi.stubEnv('VITE_MODE', 'web')
+
 const {
   browserNotificationStore,
   showBrowserNotification,
@@ -194,6 +196,19 @@ describe('showBrowserNotification', () => {
 
     expect(instances).toHaveLength(1)
     expect(instances[0].title).toBe('A')
+  })
+
+  it('bounds the dedupe set so long-lived tabs do not retain every notification id forever', async () => {
+    const { instances } = installFakeNotification('granted')
+    await browserNotificationStore.requestEnable()
+
+    for (let i = 0; i <= 256; i++) {
+      showBrowserNotification({ id: `n-${i}`, title: `T${i}`, message: 'M' })
+    }
+    showBrowserNotification({ id: 'n-0', title: 'Replayed', message: 'M' })
+
+    expect(instances).toHaveLength(258)
+    expect(instances.at(-1)?.title).toBe('Replayed')
   })
 
   it('invokes onNavigateTask when a taskId-bearing notification is clicked', async () => {

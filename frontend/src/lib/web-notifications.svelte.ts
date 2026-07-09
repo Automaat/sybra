@@ -7,6 +7,11 @@
 // this module calls Notification.requestPermission() on its own.
 
 const STORAGE_KEY = 'sybra.browserNotificationsEnabled'
+const MAX_SHOWN_IDS = 256
+
+function isWebMode(): boolean {
+  return import.meta.env.VITE_MODE === 'web'
+}
 
 function safeLocalStorage(): Storage | null {
   try {
@@ -36,7 +41,7 @@ class BrowserNotificationStore {
   }
 
   get supported(): boolean {
-    return typeof window !== 'undefined' && 'Notification' in window
+    return isWebMode() && typeof window !== 'undefined' && 'Notification' in window
   }
 
   get permission(): BrowserNotificationPermission {
@@ -73,6 +78,7 @@ export const browserNotificationStore = new BrowserNotificationStore()
 // Module-level so it survives across repeated listen()/unlisten() cycles —
 // dedupe must hold for the life of the tab, not just one subscription.
 const shownIds = new Set<string>()
+const shownIdOrder: string[] = []
 
 export type ShowableNotification = {
   id: string
@@ -91,10 +97,16 @@ export function showBrowserNotification(
   n: ShowableNotification,
   onNavigateTask?: (taskId: string) => void,
 ): void {
+  if (!isWebMode()) return
   if (!browserNotificationStore.enabled) return
   if (browserNotificationStore.permission !== 'granted') return
   if (shownIds.has(n.id)) return
   shownIds.add(n.id)
+  shownIdOrder.push(n.id)
+  if (shownIdOrder.length > MAX_SHOWN_IDS) {
+    const evictedId = shownIdOrder.shift()
+    if (evictedId) shownIds.delete(evictedId)
+  }
 
   const browserNotif = new window.Notification(n.title, { body: n.message, tag: n.id })
   if (n.taskId) {
@@ -109,4 +121,5 @@ export function showBrowserNotification(
 /** Test-only: clears the dedupe set between cases. */
 export function resetShownBrowserNotifications(): void {
   shownIds.clear()
+  shownIdOrder.length = 0
 }

@@ -98,18 +98,26 @@ class NavStore {
     this.stack = []
     // Normalize the URL (e.g. drop an unknown path) without creating a
     // history entry for the page the user already landed on.
-    window.history.replaceState(null, '', pageToPath(initial))
+    try {
+      window.history.replaceState(null, '', pageToPath(initial))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
 
     const onPopState = () => {
+      const prevPage = this.page
+      const nextPage = pageFromLocation(window.location)
+      const lastStackPage = this.stack[this.stack.length - 1]
       this.handlingPopstate = true
       try {
-        this.page = pageFromLocation(window.location)
-        // Pop the mirror stack so canGoBack reflects real depth after a
-        // browser back. Otherwise navigate() (which always pushes) leaves the
-        // stack non-empty, keeping MobileAppBar's back chevron visible; a
-        // second press would call window.history.back() again and walk the
-        // tab's session history past the app.
-        this.stack = this.stack.slice(0, -1)
+        this.page = nextPage
+        if (lastStackPage && samePage(lastStackPage, nextPage)) {
+          // Browser back reached the same page as our last in-app entry, so
+          // pop the mirror stack in lockstep.
+          this.stack = this.stack.slice(0, -1)
+        } else if (!samePage(prevPage, nextPage)) {
+          // Browser forward moved to a later in-app page. Mirror navigate() by
+          // restoring the current page as the new "back" target.
+          this.stack = [...this.stack, prevPage]
+        }
       } finally {
         this.handlingPopstate = false
       }

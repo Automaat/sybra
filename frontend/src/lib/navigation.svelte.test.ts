@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 
 const { navStore, pageToPath, pageFromLocation } = await import('./navigation.svelte.js')
 
@@ -264,6 +264,15 @@ describe('startUrlRouting', () => {
     stop()
   })
 
+  it('swallows a replaceState failure during initial URL normalization', () => {
+    window.history.pushState(null, '', '/nope')
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {
+      throw new Error('rate limited')
+    })
+    expect(() => navStore.startUrlRouting()).not.toThrow()
+    replaceState.mockRestore()
+  })
+
   it('navigate() pushes a new history entry with the serialized path', () => {
     window.history.pushState(null, '', '/tasks')
     const stop = navStore.startUrlRouting()
@@ -322,6 +331,25 @@ describe('startUrlRouting', () => {
     expect(navStore.page).toEqual({ kind: 'task-list' })
     expect(navStore.stack).toHaveLength(0)
     expect(navStore.canGoBack).toBe(false)
+    stop()
+  })
+
+  it('a popstate-driven forward restores the back target instead of clearing it', () => {
+    window.history.pushState(null, '', '/tasks')
+    const stop = navStore.startUrlRouting()
+    navStore.navigate({ kind: 'settings' })
+    expect(navStore.stack).toEqual([{ kind: 'task-list' }])
+
+    window.history.pushState(null, '', '/tasks')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(navStore.page).toEqual({ kind: 'task-list' })
+    expect(navStore.stack).toHaveLength(0)
+
+    window.history.replaceState(null, '', '/settings')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(navStore.page).toEqual({ kind: 'settings' })
+    expect(navStore.stack).toEqual([{ kind: 'task-list' }])
+    expect(navStore.canGoBack).toBe(true)
     stop()
   })
 
