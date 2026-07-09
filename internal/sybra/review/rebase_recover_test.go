@@ -1038,7 +1038,7 @@ func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(
 		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
 		}
-		if !r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+		if !r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
 			t.Fatalf("attempt %d: want true (parked for retry) on transient provider-unhealthy dispatch failure", i+1)
 		}
 		got, err := r.tasks.Get(tk.ID)
@@ -1056,7 +1056,7 @@ func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow before final attempt: %v", err)
 	}
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
 		t.Fatal("budget-exhausted attempt: want false (escalate)")
 	}
 	got, err := r.tasks.Get(tk.ID)
@@ -1085,7 +1085,7 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 		t.Fatalf("cancel prior workflow: %v", err)
 	}
 
-	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
 		t.Fatal("want false: non-transient dispatch error must escalate immediately")
 	}
 	got, err := r.tasks.Get(tk.ID)
