@@ -604,9 +604,6 @@ export class NotificationConfig {
 }
 
 export class OrchestratorConfig {
-    "autoTriage": boolean;
-    "autoPlan": boolean;
-
     /**
      * DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
      * dispatch pass (start the orchestrator, release unblocked children). Kept
@@ -625,12 +622,6 @@ export class OrchestratorConfig {
 
     /** Creates a new OrchestratorConfig instance. */
     constructor($$source: Partial<OrchestratorConfig> = {}) {
-        if (!("autoTriage" in $$source)) {
-            this["autoTriage"] = false;
-        }
-        if (!("autoPlan" in $$source)) {
-            this["autoPlan"] = false;
-        }
         if (!("dispatchIntervalSeconds" in $$source)) {
             this["dispatchIntervalSeconds"] = 0;
         }
