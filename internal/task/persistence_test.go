@@ -302,6 +302,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.CreatedAt = now
 	case "UpdatedAt":
 		task.UpdatedAt = later
+	case "StatusChangedAt":
+		task.StatusChangedAt = later
 	default:
 		t.Fatalf("no persistence test value for Task.%s", name)
 	}

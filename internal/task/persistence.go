@@ -51,6 +51,7 @@ type taskFrontmatter struct {
 	Workflow               *workflow.Execution `yaml:"workflow,omitempty"`
 	CreatedAt              time.Time           `yaml:"created_at"`
 	UpdatedAt              time.Time           `yaml:"updated_at"`
+	StatusChangedAt        time.Time           `yaml:"status_changed_at,omitempty"`
 }
 
 type agentRunRecord struct {
@@ -125,6 +126,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		Workflow:               fm.Workflow,
 		CreatedAt:              fm.CreatedAt,
 		UpdatedAt:              fm.UpdatedAt,
+		StatusChangedAt:        fm.StatusChangedAt,
 		Body:                   body,
 	}
 	if t.TaskType == "" {
@@ -181,6 +183,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
 		UpdatedAt:              t.UpdatedAt,
+		StatusChangedAt:        t.StatusChangedAt,
 	}
 }
 
