@@ -95,6 +95,46 @@ func TestScrub(t *testing.T) {
 			wantHas:    []string{"innocent text"},
 			wantNotHas: []string{Placeholder},
 		},
+		{
+			name:       "blocklist match is case-insensitive",
+			text:       "task came from WORK-ORG/Secret-Repo with details",
+			blocklist:  []string{"work-org/secret-repo", "work-org"},
+			wantCount:  1,
+			wantHas:    []string{Placeholder, "with details"},
+			wantNotHas: []string{"WORK-ORG", "Secret-Repo"},
+		},
+		{
+			name:       "jira key redacted case-insensitively",
+			text:       "this is blocked by kag-1234 over in tickets",
+			blocklist:  nil,
+			wantCount:  1,
+			wantHas:    []string{Placeholder, "over in tickets"},
+			wantNotHas: []string{"kag-1234"},
+		},
+		{
+			name:       "github URL redacted case-insensitively with www",
+			text:       "see HTTPS://WWW.GITHUB.COM/work-org/secret-repo/pull/42 for context",
+			blocklist:  nil,
+			wantCount:  1,
+			wantHas:    []string{Placeholder, "for context"},
+			wantNotHas: []string{"work-org", "secret-repo", "/pull/42"},
+		},
+		{
+			name:       "github enterprise host redacted",
+			text:       "see https://github.mycorp.com/work-org/secret-repo/pull/9 for context",
+			blocklist:  nil,
+			wantCount:  1,
+			wantHas:    []string{Placeholder, "for context"},
+			wantNotHas: []string{"work-org", "secret-repo", "/pull/9"},
+		},
+		{
+			name:       "url-encoded github URL redacted",
+			text:       "see https%3A%2F%2Fgithub.com%2Fwork-org%2Fsecret-repo%2Fpull%2F9 for context",
+			blocklist:  nil,
+			wantCount:  1,
+			wantHas:    []string{Placeholder, "for context"},
+			wantNotHas: []string{"work-org", "secret-repo"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
