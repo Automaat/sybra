@@ -33,6 +33,31 @@ var errSurviveShutdown = errors.New("agent: detached, leaving process running fo
 var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
 var errCostGuardrailExceeded = errors.New("agent: cost guardrail exceeded")
 
+// errBackgroundTaskLiveAtExit is recorded as the agent's exit error when the
+// headless subprocess exits (naturally, or after the post-result-hang guard
+// gave up waiting) while the CLI's last known state still shows a live
+// `run_in_background` bash task. The process exiting kills that task
+// mid-write, which can silently corrupt the worktree (task 3aeabb65); a run
+// left this way must not be reported as a clean success (ExitErr nil) to
+// OnComplete/fireComplete, since the workflow would otherwise hand a
+// possibly-corrupted worktree to the next stage.
+var errBackgroundTaskLiveAtExit = errors.New("agent: process exited while a background bash task was still running")
+
+// checkLiveBackgroundTasksAtExit returns errBackgroundTaskLiveAtExit if the
+// agent's last reported CLI state still shows a live background bash task.
+// Called at every point a headless attempt is about to report a clean exit,
+// so the guardrail described on backgroundTaskGuardrail is enforced even
+// when the provider ignores the prompt instruction and ends its turn with a
+// task still running.
+func checkLiveBackgroundTasksAtExit(m *Manager, a *Agent) error {
+	if !a.HasBackgroundTasks() {
+		return nil
+	}
+	m.logger.Warn("agent.headless.exit_with_live_background_tasks", "id", a.ID,
+		"hint", "headless process exited while a background bash task was still running; the run is marked failed instead of a clean success to prevent handing off a possibly-corrupted worktree")
+	return errBackgroundTaskLiveAtExit
+}
+
 // headlessTailPoll is how often the detached/reattached tailer polls the
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
@@ -219,28 +244,9 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
 	}
-	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
-		waitErr = streamErr
+	if retry := m.resolveHeadlessAttemptExit(a, waitErr, stderrOut, prevLen); retry {
+		return true, nil
 	}
-	// Only inspect the events produced during this attempt. Some CLIs report
-	// quota exhaustion as an exit-0 result event, so classify provider health
-	// even when the process itself looked successful.
-	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
-	if waitErr != nil {
-		a.SetExitErr(waitErr)
-		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
-		if shouldRetry(stderrOut, attemptEvents, m.logger) {
-			logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
-			return true, nil
-		}
-		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
-	} else {
-		a.SetExitErr(nil)
-		if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-			a.SetExitErr(errProviderRateLimited)
-		}
-	}
-	logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -338,29 +344,41 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
 	}
+	if retry := m.resolveHeadlessAttemptExit(a, waitErr, stderrOut, prevLen); retry {
+		return true, nil
+	}
+	return false, nil
+}
+
+// resolveHeadlessAttemptExit inspects a headless attempt's process wait
+// error and stream events once the process has actually exited, sets the
+// agent's final ExitErr, and reports whether the caller should retry.
+// Shared by runHeadlessAttemptPipe and runHeadlessAttemptSurvive, which
+// otherwise duplicate this classification verbatim.
+func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut string, prevLen int) (retry bool) {
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
-	// Only inspect events from this attempt, mirroring the legacy path —
-	// otherwise a transient 529 from an earlier attempt makes every later
-	// attempt retry regardless of its real failure.
+	// Only inspect the events produced during this attempt. Some CLIs report
+	// quota exhaustion as an exit-0 result event, so classify provider health
+	// even when the process itself looked successful.
 	attemptEvents := attemptEventsFrom(a.Output(), prevLen)
-	if waitErr != nil {
+	switch {
+	case waitErr != nil:
 		a.SetExitErr(waitErr)
 		m.logger.Error("agent.headless.exit", "id", a.ID, "err", waitErr)
 		if shouldRetry(stderrOut, attemptEvents, m.logger) {
 			logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
-			return true, nil
+			return true
 		}
 		m.reportProviderHealthSignal(a, stderrOut, attemptEvents)
-	} else {
-		a.SetExitErr(nil)
-		if m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-			a.SetExitErr(errProviderRateLimited)
-		}
+	case m.reportCleanProviderHealthSignal(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit:
+		a.SetExitErr(errProviderRateLimited)
+	default:
+		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 	}
 	logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
-	return false, nil
+	return false
 }
 
 // finalizeFromResult sets the exit status of a run that the post-result-hang
@@ -377,7 +395,7 @@ func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
 		a.SetExitErr(errProviderRateLimited)
 		return
 	}
-	a.SetExitErr(nil)
+	a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 }
 
 // logAttemptStderr logs a completed attempt's captured stderr. Codex (and
