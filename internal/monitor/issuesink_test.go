@@ -14,13 +14,15 @@ import (
 // by subcommand ("label", "issue list", "issue comment", "issue create").
 // Tests mutate the response table per scenario.
 type fakeExecer struct {
-	mu         sync.Mutex
-	calls      [][]string
-	listResp   []byte
-	listErr    error
-	createErr  error
-	commentErr error
-	labelErr   error
+	mu          sync.Mutex
+	calls       [][]string
+	listResp    []byte
+	listErr     error
+	createResp  []byte
+	createErr   error
+	commentResp []byte
+	commentErr  error
+	labelErr    error
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -41,9 +43,9 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 		case "list":
 			return f.listResp, f.listErr
 		case "comment":
-			return nil, f.commentErr
+			return f.commentResp, f.commentErr
 		case "create":
-			return nil, f.createErr
+			return f.createResp, f.createErr
 		}
 	}
 	return nil, nil
@@ -166,8 +168,9 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 
 func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	fe := &fakeExecer{
-		listResp:  []byte(`[]`),
-		createErr: errors.New("HTTP 403: API rate limit exceeded for 1.2.3.4"),
+		listResp:   []byte(`[]`),
+		createErr:  errors.New("exit status 1"),
+		createResp: []byte("gh: API rate limit exceeded for 1.2.3.4"),
 	}
 	s := newTestSink(fe)
 
@@ -175,6 +178,44 @@ func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if !errors.Is(err, ErrGHRateLimit) {
 		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_CreateErrorIncludesOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("GraphQL: Resource not accessible by integration"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected create error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gh issue create") || !strings.Contains(msg, "Resource not accessible") {
+		t.Fatalf("error did not include operation and gh output: %v", err)
+	}
+}
+
+func TestGHIssueSink_CommentErrorIncludesOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:    []byte(`[{"number":87,"title":"[monitor] failure_spike"}]`),
+		commentResp: []byte("GraphQL: Could not resolve to an Issue with the number of 87"),
+		commentErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected comment error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gh issue comment") || !strings.Contains(msg, "Could not resolve") {
+		t.Fatalf("error did not include operation and gh output: %v", err)
 	}
 }
 
