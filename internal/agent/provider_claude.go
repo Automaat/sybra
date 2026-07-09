@@ -51,7 +51,13 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		// operator's unrelated MCP tools into an unattended test-runner run.
 		args = append(args, "--mcp-config", cfg.MCPConfigJSON, "--strict-mcp-config")
 	}
-	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
+	// Wire the same PreToolUse approval hook the conversational runner uses
+	// whenever this run requires permission gating. Without this, a headless
+	// agent under require_permissions:true has no path to approve a tool
+	// call (the CLI has no TTY to prompt), forcing operators to
+	// require_permissions:false — which collapses to
+	// --dangerously-skip-permissions (see claudePermissionArgs).
+	if hookSettings := buildClaudeHookSettings(cfg.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	args = append(args, effortArgs(a.ReasoningEffort)...)

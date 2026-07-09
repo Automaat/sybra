@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/worktree"
@@ -75,14 +76,7 @@ func jsonContainsArgs(t *testing.T, raw string, want ...string) bool {
 	}
 	args := parsed.McpServers.Playwright.Args
 	for _, w := range want {
-		found := false
-		for _, a := range args {
-			if a == w {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(args, w) {
 			return false
 		}
 	}
