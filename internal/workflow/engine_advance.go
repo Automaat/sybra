@@ -55,6 +55,16 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return pErr
 	}
 
+	// Best-of-N attempt completion: same rationale as the ParallelParent
+	// branch above — the parent's record/transitions fire only once every
+	// attempt has terminated.
+	if ctx.BestOfNParent != nil {
+		comp, bErr := e.advanceBestOfNAttempt(taskID, &def, ctx.BestOfNParent, ctx.AttemptID, wfExec, output)
+		release()
+		e.fireComplete(comp)
+		return bErr
+	}
+
 	ctx.Task = e.withManualTestConfig(ctx.Task)
 	if err := e.prepareTestStepCompletion(taskID, ctx.Task, &output, wfExec, &ctx.Task.Body); err != nil {
 		return err
@@ -191,6 +201,13 @@ type advanceContext struct {
 	Step           *Step
 	Task           TaskInfo
 	ParallelParent *Step
+	// BestOfNParent and AttemptID are set together when the current step is a
+	// `best_of_n` block and output.StepID names one of its synthetic attempts
+	// (see bestOfNAttemptStepKey) — attempts have no corresponding YAML Step,
+	// unlike `parallel` children, so they cannot populate ParallelParent/Step
+	// via StepByID.
+	BestOfNParent *Step
+	AttemptID     string
 }
 
 // loadAdvanceContext validates and resolves the state needed by AdvanceStep.
@@ -239,15 +256,24 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		return advanceContext{}, false, fmt.Errorf("step %s not found in workflow %s", t.Workflow.CurrentStep, def.ID)
 	}
 	var parallelParent *Step
+	var bestOfNParent *Step
+	var attemptID string
 	resolvedStep := currentStep
 	if output.StepID != t.Workflow.CurrentStep {
-		if currentStep.Type == StepParallel && parallelHasChild(currentStep, output.StepID) {
+		switch {
+		case currentStep.Type == StepParallel && parallelHasChild(currentStep, output.StepID):
 			parallelParent = currentStep
 			resolvedStep = def.StepByID(output.StepID) // child (StepByID recurses)
 			if resolvedStep == nil {
 				return advanceContext{}, false, fmt.Errorf("parallel child %s not found in workflow %s", output.StepID, def.ID)
 			}
-		} else {
+		case currentStep.Type == StepBestOfN && bestOfNStepMatches(currentStep, output.StepID):
+			parentID, aID, _ := splitBestOfNAttemptStepKey(output.StepID)
+			_ = parentID // == currentStep.ID, already checked by bestOfNStepMatches
+			bestOfNParent = currentStep
+			attemptID = aID
+			resolvedStep = currentStep
+		default:
 			e.logger.Debug("workflow.advance.skip",
 				"task_id", taskID, "reason", "stale_step",
 				"output_step", output.StepID, "current_step", t.Workflow.CurrentStep,
@@ -271,6 +297,8 @@ func (e *Engine) loadAdvanceContext(taskID string, output StepOutput) (advanceCo
 		Step:           resolvedStep,
 		Task:           t,
 		ParallelParent: parallelParent,
+		BestOfNParent:  bestOfNParent,
+		AttemptID:      attemptID,
 	}, false, nil
 }
 
@@ -286,6 +314,16 @@ func parallelHasChild(parent *Step, childID string) bool {
 		}
 	}
 	return false
+}
+
+// bestOfNStepMatches reports whether outputStepID is a synthetic attempt
+// stepID (see bestOfNAttemptStepKey) belonging to the given best_of_n parent.
+func bestOfNStepMatches(parent *Step, outputStepID string) bool {
+	if parent == nil || parent.Type != StepBestOfN {
+		return false
+	}
+	parentID, _, ok := splitBestOfNAttemptStepKey(outputStepID)
+	return ok && parentID == parent.ID
 }
 
 // dispatchStepError wraps an error that occurred while executeSteps was
@@ -384,9 +422,11 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 			return nil, wrapDispatchErr(step.ID, e.execRunAgent(taskID, step, wfExec, ctx))
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)
+		case StepBestOfN:
+			return e.execBestOfN(taskID, def, step, wfExec, ctx)
 		case StepWaitHuman:
 			return nil, wrapDispatchErr(step.ID, e.execWaitHuman(taskID, step, wfExec))
-		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow:
+		case StepSetStatus, StepCondition, StepShell, StepEnsurePRClosesIssue, StepStampPRAttribution, StepRerequestReview, StepVerifyCommits, StepLinkPRAndReview, StepEvaluate, StepRequireSidecar, StepValidatePlan, StepValidatePlanContract, StepTriageReview, StepDetectTampering, StepVerifyChecks, StepRoutePRFixResult, StepRouteTestResult, StepSyncBranch, StepResumeWorkflow, StepPromoteBestOfN:
 			// handled below as sync steps
 		default:
 			return nil, fmt.Errorf("unknown step type %q", step.Type)
@@ -488,6 +528,8 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.execSyncBranch(taskID, step)
 	case StepResumeWorkflow:
 		return e.execResumeWorkflow(taskID, step, wfExec)
+	case StepPromoteBestOfN:
+		return e.execPromoteBestOfN(taskID, step)
 	default:
 		return StepOutput{}, fmt.Errorf("unknown step type %q", step.Type)
 	}
