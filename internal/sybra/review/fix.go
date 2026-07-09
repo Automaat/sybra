@@ -251,9 +251,13 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		return
 	}
 	reason := exhaustedFixReason(github.MaxRetries, issue.Kind)
+	tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
+		return tag == reconciledLatchTag
+	})
 	if _, err := r.tasks.Update(issue.TaskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
+		Tags:         task.Ptr(tags),
 	}); err != nil {
 		r.logger.Error("pr-monitor.fix-exhausted.escalate", "task_id", issue.TaskID, "err", err)
 		return

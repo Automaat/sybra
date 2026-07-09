@@ -349,12 +349,12 @@ func TestHumanRequiredBlockerReconcileEligible(t *testing.T) {
 	}) {
 		t.Fatal("expected ci_failure exhaustion to be eligible")
 	}
-	if humanRequiredBlockerReconcileEligible(&task.Task{
+	if !humanRequiredBlockerReconcileEligible(&task.Task{
 		Status:       task.StatusHumanRequired,
 		PRNumber:     42,
 		StatusReason: exhaustedFixReason(3, github.PRIssueConflict),
 	}) {
-		t.Fatal("conflict exhaustion should stay false for the narrower ci_failure helper")
+		t.Fatal("expected conflict exhaustion to be eligible")
 	}
 }
 

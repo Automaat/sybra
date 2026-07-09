@@ -239,12 +239,11 @@ func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok
 	return kind, true
 }
 
-// humanRequiredBlockerReconcileEligible preserves the narrower ci_failure-only
-// helper used by existing callers/tests. The broader blocker reconciler uses
-// humanRequiredBlockerReconcilable so conflict exhaustion can also self-heal.
+// humanRequiredBlockerReconcileEligible reports whether a task should have its
+// PR included in the known-PR prefetch for blocker reconciliation.
 func humanRequiredBlockerReconcileEligible(t *task.Task) bool {
-	kind, ok := humanRequiredBlockerReconcilable(t)
-	return ok && kind == github.PRIssueCIFailure
+	_, ok := humanRequiredBlockerReconcilable(t)
+	return ok
 }
 
 // hasFixableIssue reports whether any issue in the slice is a kind pr-fix
