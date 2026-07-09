@@ -261,6 +261,70 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	}
 }
 
+func TestApplyExistingProjectIDNotOverriddenByClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("correct-org/correct-repo")})
+	if err != nil {
+		t.Fatalf("Update project: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
+		{ID: "wrong-org/wrong-repo", Owner: "wrong-org", Repo: "wrong-repo"},
+	}
+	// Simulate the classifier misfiring: it guesses an unrelated registered
+	// project from vocabulary overlap in the title/body.
+	v := Verdict{
+		Title:     "fix(workflow): handle completion race",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "wrong-org/wrong-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "correct-org/correct-repo" {
+		t.Errorf("project_id: got %q, want correct-org/correct-repo (existing project_id must be sticky)", updated.ProjectID)
+	}
+}
+
+func TestApplyIssueURLOutranksClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{Issue: task.Ptr("https://github.com/correct-org/correct-repo/issues/9")})
+	if err != nil {
+		t.Fatalf("Update issue: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
+		{ID: "wrong-org/wrong-repo", Owner: "wrong-org", Repo: "wrong-repo"},
+	}
+	v := Verdict{
+		Title:     "fix(workflow): handle completion race",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "wrong-org/wrong-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "correct-org/correct-repo" {
+		t.Errorf("project_id: got %q, want correct-org/correct-repo (issue URL must outrank classifier guess)", updated.ProjectID)
+	}
+}
+
 func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	mgr := newTestManager(t)
 	// Create a work-project task that would normally go to planning.
