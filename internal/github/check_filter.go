@@ -70,6 +70,36 @@ func hasAnyPrefix(name string, prefixes []string) bool {
 	return false
 }
 
+var stabilityCheckPrefixes = []string{
+	"renovate/stability-days",
+	"renovate/minimum-release-age",
+}
+
+func isStabilityCheck(name string) bool {
+	return hasAnyPrefix(name, stabilityCheckPrefixes)
+}
+
+func renovateWaitingForStability(contexts []gqlCheckContext) bool {
+	var sawStabilityPending, sawOtherBlocker bool
+	for i := range contexts {
+		name := contexts[i].effectiveName()
+		if isStabilityCheck(name) {
+			if effectiveCheckState(contexts[i]) == "PENDING" {
+				sawStabilityPending = true
+			}
+			continue
+		}
+		if isNonGatingCheck(name) {
+			continue
+		}
+		switch effectiveCheckState(contexts[i]) {
+		case "FAILURE", "PENDING":
+			sawOtherBlocker = true
+		}
+	}
+	return sawStabilityPending && !sawOtherBlocker
+}
+
 // effectiveCheckState normalizes a single context to one of
 // SUCCESS/FAILURE/PENDING. Returns "" when the context is malformed
 // (no usable typename and no state fields).

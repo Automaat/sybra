@@ -220,6 +220,35 @@ func (m *Manager) resolveSetupCommands(wtPath string, proj project.Project) []st
 	return merged
 }
 
+// resolveTrustedSetupCommands loads .sybra.yaml from the project's default
+// branch in the bare clone — never the checked-out worktree — and merges its
+// `setup:` block with the project's app-level SetupCommands. Use this instead
+// of resolveSetupCommands whenever the worktree's checked-out ref is
+// untrusted (PrepareForReview/PrepareForFix check out a PR head, which may be
+// a fork or a Renovate branch): that ref's own .sybra.yaml is
+// attacker-controlled, and its setup commands run via `sh -c` outside the
+// agent permission model (issue #1519).
+func (m *Manager) resolveTrustedSetupCommands(ctx context.Context, proj project.Project) []string {
+	repoCfg, err := project.LoadRepoConfigAtDefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		m.logger.Warn("worktree.repo-config-setup-trusted",
+			"project", proj.ID, "err", err)
+		return proj.SetupCommands
+	}
+	var repoSetup []string
+	if repoCfg != nil {
+		repoSetup = repoCfg.Setup
+	}
+	merged := project.MergeSetup(repoSetup, proj.SetupCommands)
+	if len(merged) > 0 {
+		m.logger.Info("worktree.setup-resolved-trusted",
+			"project", proj.ID,
+			"repo_cmds", len(repoSetup), "app_cmds", len(proj.SetupCommands),
+			"total", len(merged))
+	}
+	return merged
+}
+
 func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project.Project) {
 	repoCfg, err := project.LoadRepoConfig(wtPath)
 	if err != nil {

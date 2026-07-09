@@ -173,8 +173,10 @@ func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
 		pr := convertCommonPR(n, viewer)
 
 		var checks []CheckRunInfo
+		var waitingForStability bool
 		if len(n.Commits.Nodes) > 0 {
 			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
+				waitingForStability = renovateWaitingForStability(rollup.Contexts.Nodes)
 				for _, ctx := range rollup.Contexts.Nodes {
 					if ctx.Name == "" {
 						continue
@@ -188,7 +190,7 @@ func convertRenovatePRs(nodes []gqlPR, viewer string) []RenovatePR {
 			}
 		}
 
-		prs = append(prs, RenovatePR{PullRequest: pr, CheckRuns: checks})
+		prs = append(prs, RenovatePR{PullRequest: pr, CheckRuns: checks, WaitingForStability: waitingForStability})
 	}
 	return prs
 }
