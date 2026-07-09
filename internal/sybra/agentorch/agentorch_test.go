@@ -1,6 +1,7 @@
 package agentorch
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // TestResolveSandboxMode pins the escape-hatch/default precedence: a task
@@ -38,6 +40,93 @@ func TestResolveSandboxMode(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTaskCumulativeCostUSD verifies the sum feeding the
+// agent.max_task_cost_usd gate: every AgentRun's CostUSD counts, regardless
+// of provider or outcome, and an empty run history sums to zero rather than
+// panicking or blocking dispatch.
+func TestTaskCumulativeCostUSD(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		runs []task.AgentRun
+		want float64
+	}{
+		{name: "no runs", runs: nil, want: 0},
+		{name: "single run", runs: []task.AgentRun{{CostUSD: 4.5}}, want: 4.5},
+		{
+			name: "sums across providers and outcomes",
+			runs: []task.AgentRun{
+				{Provider: "claude", CostUSD: 5.0, State: "stopped"},
+				{Provider: "codex", CostUSD: 3.25, State: "stopped"},
+				{Provider: "claude", CostUSD: 0, State: "running"},
+			},
+			want: 8.25,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := taskCumulativeCostUSD(tc.runs); got != tc.want {
+				t.Errorf("taskCumulativeCostUSD() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch verifies the
+// per-task cumulative USD budget gate: once a task's recorded AgentRuns.CostUSD
+// sum meets agent.max_task_cost_usd, StartAgentWithAssignment must refuse to
+// start another agent instead of dispatching yet another run (each individually
+// under the per-run MaxCostUSD cap, but unbounded in aggregate). The gate must
+// fire before any worktree/dispatch work — proven here by the task having no
+// project_id and no worktree manager, which would otherwise surface a
+// different (worktree-related) error.
+func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
+	t.Parallel()
+
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	created, err := tm.Create("cost-capped task", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 4.0, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun 1: %v", err)
+	}
+	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a2", Provider: "claude", CostUSD: 4.5, State: "stopped"}); err != nil {
+		t.Fatalf("AddRun 2: %v", err)
+	}
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{MaxTaskCostUSD: 8.0},
+	})
+
+	_, _, err = o.StartAgentWithAssignment(created.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	if err == nil {
+		t.Fatal("expected dispatch to be refused once cumulative task cost meets the cap, got nil error")
+	}
+	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
+		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
+	}
+	reason, permanent := workflow.ClassifyAgentStartError(err)
+	if !permanent {
+		t.Error("task-cost-exceeded must classify as permanent so the resume loop stops retrying")
+	}
+	if !strings.Contains(reason, "task cumulative cost exceeds") {
+		t.Errorf("reason = %q, missing task-cost explanation", reason)
 	}
 }
 

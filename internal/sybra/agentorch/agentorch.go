@@ -437,6 +437,12 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	if t.TaskType == task.TaskTypeUmbrella {
 		return nil, "", fmt.Errorf("task %s is an umbrella tracker; it runs no agent", taskID)
 	}
+	if o.cfg != nil && o.cfg.Agent.MaxTaskCostUSD > 0 {
+		if spent := taskCumulativeCostUSD(t.AgentRuns); spent >= o.cfg.Agent.MaxTaskCostUSD {
+			return nil, "", fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
+				workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
+		}
+	}
 	researchDir := ""
 	if o.cfg != nil {
 		researchDir = o.cfg.Agent.ResearchMachineDir
@@ -500,6 +506,18 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+// taskCumulativeCostUSD sums CostUSD across every AgentRun a task has ever
+// had, regardless of provider or outcome. Used to enforce
+// agent.max_task_cost_usd, which — unlike the per-run MaxCostUSD guardrail —
+// must not reset on retry.
+func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
+	var total float64
+	for i := range runs {
+		total += runs[i].CostUSD
+	}
+	return total
 }
 
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {

@@ -40,6 +40,15 @@ var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
 // the circuit breaker's retry budget on identical failures.
 var ErrNoProjectAssigned = errors.New("no project_id: refusing to start agent without isolated worktree")
 
+// ErrTaskCostExceeded is returned by an agent-start path when a task's
+// cumulative AgentRuns cost already meets or exceeds agent.max_task_cost_usd.
+// Unlike the per-run MaxCostUSD guardrail (which resets every attempt), this
+// caps total spend across every retry/dispatch a task has ever had — a
+// permanent failure until a human raises the cap or clears the task's spend,
+// so ClassifyAgentStartError escalates to human-required on the first hit
+// instead of burning the circuit breaker's retry budget on identical checks.
+var ErrTaskCostExceeded = errors.New("task cumulative cost exceeds agent.max_task_cost_usd")
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
@@ -73,6 +82,9 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, ErrNoProjectAssigned):
 		permanent = true
 		reason = "agent start blocked: no project could be assigned — set agent.default_project_id in config or assign a project to this task manually to resume"
+	case errors.Is(err, ErrTaskCostExceeded):
+		permanent = true
+		reason = "agent start blocked: " + err.Error()
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason
