@@ -467,6 +467,17 @@ func (m *Manager) markAgentDone(a *Agent) {
 				}
 			}
 		}
+		// Evict the finished agent from the live registry so its output
+		// buffer and prompt do not accumulate forever on a long-lived
+		// server. All completion side effects (recordCompletion/fireComplete,
+		// task-status advancement, stats persistence) already ran before
+		// markAgentDone was called, so nothing downstream reads m.agents for
+		// this ID again — only delete() the entry we're already holding
+		// m.mu for, i.e. do not remove agents whose id was reused by a
+		// still-live registration.
+		if cur, ok := m.agents[a.ID]; ok && cur == a {
+			delete(m.agents, a.ID)
+		}
 		m.mu.Unlock()
 	})
 }

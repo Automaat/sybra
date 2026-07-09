@@ -58,6 +58,65 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 	}
 }
 
+// TestMarkAgentDone_EvictsFromRegistry locks in that a finished agent is
+// removed from m.agents once its terminal path runs, so a long-lived server
+// does not accumulate output buffers and prompts for every agent that ever
+// ran (#1532).
+func TestMarkAgentDone_EvictsFromRegistry(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a := &Agent{ID: "evict-me", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if _, err := m.GetAgent(a.ID); err != nil {
+		t.Fatalf("agent should be registered before completion: %v", err)
+	}
+
+	m.markAgentDone(a)
+
+	if _, err := m.GetAgent(a.ID); err == nil {
+		t.Fatal("expected evicted agent to be absent from the registry")
+	}
+	for _, la := range m.ListAgents() {
+		if la.ID == a.ID {
+			t.Fatal("evicted agent still present in ListAgents()")
+		}
+	}
+
+	// Idempotent: a repeated terminal call must not panic or misbehave once
+	// the entry is already gone.
+	m.markAgentDone(a)
+}
+
+// TestMarkAgentDone_DoesNotEvictReplacementAgent guards against evicting a
+// still-live agent that reused the same ID as one whose terminal path is
+// racing behind it (e.g. a fresh dispatch landing while a stale finalize for
+// the same task/agent id is still unwinding).
+func TestMarkAgentDone_DoesNotEvictReplacementAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	stale := &Agent{ID: "reused-id", done: make(chan struct{})}
+	if err := m.registerRunningAgent(stale, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(stale): %v", err)
+	}
+
+	fresh := &Agent{ID: "reused-id", done: make(chan struct{})}
+	if err := m.registerRunningAgent(fresh, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fresh): %v", err)
+	}
+
+	m.markAgentDone(stale)
+
+	got, err := m.GetAgent(fresh.ID)
+	if err != nil {
+		t.Fatalf("fresh registration should survive stale markAgentDone: %v", err)
+	}
+	if got != fresh {
+		t.Fatal("registry entry was replaced unexpectedly")
+	}
+}
+
 // TestRegisterRunningAgent_ConcurrentAccountingRace spreads concurrent
 // registrations across providers (mirrors a dispatch wave under the soft
 // in-flight cap) and asserts the invariant holds under the race detector.
