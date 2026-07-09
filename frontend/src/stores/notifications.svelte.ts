@@ -1,7 +1,7 @@
 import { EventsOn, ListNotifications } from '$lib/api'
 import { Level, Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import { Notification as NotificationEvent } from '../lib/events.js'
-import { showBrowserNotification } from '../lib/web-notifications.js'
+import { showBrowserNotification } from '../lib/web-notifications.svelte.js'
 
 class NotificationStore {
   notifications = $state<Notification[]>([])

@@ -34,6 +34,20 @@ vi.mock('$lib/api', () => ({
 }))
 
 const Settings = (await import('./Settings.svelte')).default
+const { browserNotificationStore } = await import('../lib/web-notifications.svelte.js')
+
+function installFakeNotification(permission: NotificationPermission) {
+  class FakeNotification {
+    static permission = permission
+    static requestPermission = vi.fn(async () => FakeNotification.permission)
+  }
+  ;(window as unknown as { Notification: unknown }).Notification = FakeNotification
+  return FakeNotification
+}
+
+function uninstallNotification() {
+  delete (window as unknown as { Notification?: unknown }).Notification
+}
 
 function baseSettings() {
   return {
@@ -90,6 +104,9 @@ describe('Settings', () => {
     mockProviderHealthEnabled.mockResolvedValue(false)
     mockGetProviderHealth.mockResolvedValue([])
     mockEventsOn.mockReturnValue(vi.fn())
+    localStorage.clear()
+    browserNotificationStore.disable()
+    uninstallNotification()
 
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -431,6 +448,62 @@ describe('Settings', () => {
     await vi.waitFor(() => {
       expect(checkbox.checked).toBe(true)
     })
+  })
+
+  it('shows browser notifications as unsupported and disabled when the API is missing', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
+    expect(screen.getByText('Not supported in this browser')).toBeDefined()
+  })
+
+  it('enables browser notifications via a user gesture and requests permission', async () => {
+    const FakeNotification = installFakeNotification('default')
+    FakeNotification.requestPermission = vi.fn(async () => 'granted')
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+
+    await fireEvent.click(checkbox)
+
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(checkbox.checked).toBe(true)
+      expect(screen.getByText(/live Sybra notifications will show/)).toBeDefined()
+    })
+  })
+
+  it('does not prompt again once permission was previously denied', async () => {
+    installFakeNotification('denied')
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
+    expect(screen.getByText(/Blocked/)).toBeDefined()
+  })
+
+  it('unchecking browser notifications disables the preference without re-prompting', async () => {
+    const FakeNotification = installFakeNotification('granted')
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText('Browser notifications') as HTMLInputElement
+    await fireEvent.click(checkbox)
+    await vi.waitFor(() => expect(checkbox.checked).toBe(true))
+
+    await fireEvent.click(checkbox)
+
+    await vi.waitFor(() => expect(checkbox.checked).toBe(false))
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled()
   })
 
   it('toggles autoTriage', async () => {
