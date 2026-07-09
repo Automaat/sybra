@@ -507,7 +507,7 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
 	}
 	return wtPath, nil
@@ -659,7 +659,7 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)
 	}
 	// pr-fix tasks must push to the existing PR's head branch on origin — not
