@@ -112,7 +112,7 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 		mgr:      wm,
 	}
 
-	got := getter.VerifyCommands(tk.ID)
+	got := getter.VerifyCommands(t.Context(), tk.ID)
 	if len(got) != 1 || got[0] != "echo TRUSTED_DEFAULT_BRANCH" {
 		t.Fatalf("VerifyCommands = %#v, want only trusted default-branch command", got)
 	}

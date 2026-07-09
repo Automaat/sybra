@@ -363,7 +363,7 @@ func (a *manualTestConfigGetterAdapter) ManualTestConfig(taskID string) workflow
 	}
 }
 
-func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
+func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID string) []string {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return nil
@@ -382,7 +382,9 @@ func (a *checkConfigGetterAdapter) VerifyCommands(taskID string) []string {
 			// may carry a malicious `checks.verify` planted by a compromised
 			// or prompt-injected agent, and these commands run unsandboxed
 			// via `sh -c` (see resolveTrustedSetupCommands, issue #1519).
-			if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(context.Background(), p.ClonePath); rErr == nil && repoCfg != nil {
+			// ctx carries the caller's verify-step deadline so a hung
+			// git show/symbolic-ref on the bare repo can't block indefinitely.
+			if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(ctx, p.ClonePath); rErr == nil && repoCfg != nil {
 				repoChecks = repoCfg.Checks
 			}
 		}
