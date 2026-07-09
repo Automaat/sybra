@@ -2658,6 +2658,330 @@ func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *te
 	}
 }
 
+// TestNonConvergingProductBugLoop exercises nonConvergingProductBugLoop
+// directly against the filtering rules it must share with
+// recurringProductBugFingerprints, but without requiring fingerprint
+// equality between the paired attempts.
+func TestNonConvergingProductBugLoop(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name string
+		t    TaskInfo
+		want bool
+	}{
+		{
+			name: "distinct fingerprints separated by implementation run",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				productBugRun(now.Add(2*time.Minute), "B"),
+			}},
+			want: true,
+		},
+		{
+			name: "no author gap between adjacent product-bug attempts",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				productBugRun(now.Add(time.Minute), "B"),
+			}},
+			want: false,
+		},
+		{
+			name: "protocol-violation run ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "bad", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), ProtocolViolation: testProtocolFixSuggestions, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "B"},
+			}},
+			want: false,
+		},
+		{
+			name: "infra-failure outcome ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "infra", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeInfraFailure},
+			}},
+			want: false,
+		},
+		{
+			name: "missing-evidence outcome ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "missing", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeMissingEvidence},
+			}},
+			want: false,
+		},
+		{
+			name: "prior-cycle runs before TestingCycleStartedAt ignored",
+			t: func() TaskInfo {
+				cycleStart := now.Add(10 * time.Minute)
+				return TaskInfo{
+					TestingCycleStartedAt: &cycleStart,
+					AgentRuns: []AgentRunInfo{
+						productBugRun(now, "A"),
+						{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+						productBugRun(cycleStart.Add(time.Minute), "B"),
+					},
+				}
+			}(),
+			want: false,
+		},
+		{
+			name: "non-author run between product-bug attempts does not count as a gap",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "reviewer", Role: "review", StartedAt: now.Add(time.Minute)},
+				productBugRun(now.Add(2*time.Minute), "B"),
+			}},
+			want: false,
+		},
+		{
+			name: "noise runs between filtered pairs still resolve via original indices",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "infra-noise", Role: testRunnerRole, StartedAt: now.Add(time.Minute), TestOutcome: testOutcomeInfraFailure},
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(2 * time.Minute)},
+				productBugRun(now.Add(3*time.Minute), "B"),
+			}},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nonConvergingProductBugLoop(tc.t); got != tc.want {
+				t.Errorf("nonConvergingProductBugLoop() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframesAsSpecDecision
+// is the regression test for the recurring-fingerprint narrowing gap: a
+// live adversarial test-runner naturally exercises different concrete repro
+// evidence (different fixture ids/literals) each attempt while describing
+// the SAME conceptual failure mode, so an exact-fingerprint recurrence check
+// never fires even though the loop is genuinely ping-ponging. The cap must
+// still reframe as a suspected acceptance-criteria conflict.
+func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframesAsSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-distinct", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-distinct")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	reason := tasks.Reason("t-cap-distinct")
+	if !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if !strings.Contains(reason, "contradictory spec") || !strings.Contains(reason, "hard defect") {
+		t.Errorf("reason = %q, want it to name both a contradictory spec and a hard defect", reason)
+	}
+	for _, forbidden := range []string{"proven contradiction", "found contradiction", "requirements are contradictory"} {
+		if strings.Contains(strings.ToLower(reason), forbidden) {
+			t.Errorf("reason = %q, must not assert a proven contradiction", reason)
+		}
+	}
+	if strings.Contains(reason, "recurring class") || strings.Contains(reason, "recurring product-bug failure class(es)") {
+		t.Errorf("reason = %q, must not report a count of recurring classes", reason)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason
+// verifies the generic cap-time floor is preserved when the product-bug
+// attempts that exhausted the cap were never separated by a code-author run
+// (e.g. the test-runner retried without a fix in between) — this is not a
+// non-converging implement/test loop, so no spec-decision section belongs
+// on the body.
+func TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		productBugRun(now.Add(time.Minute), "fp-2"),
+		productBugRun(now.Add(2*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-no-author-gap", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-no-author-gap")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	reason := tasks.Reason("t-cap-no-author-gap")
+	if strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, must not use spec-decision reframing without an author gap", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, must not gain a spec-decision section without an author gap", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails verifies
+// that a body-append failure during the non-convergence cap reframe still
+// leaves the task in human-required with the softened suspected-spec reason,
+// and does not propagate the append error out of the route step.
+func TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.appendErr = errors.New("append unavailable")
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-append-fails", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t-cap-append-fails")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-cap-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing despite append failure", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	}
+}
+
+// TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent verifies
+// the empty-recurring-evidence spec-decision section (no exact fingerprint
+// recurred, only non-convergence) uses a stable marker, renders no blank
+// "Recurring fingerprint(s):" list, and does not duplicate on a second call
+// with the same empty evidence set.
+func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testing.T) {
+	t.Parallel()
+	section1 := buildSpecDecisionSection(nil, 3, 3)
+	section2 := buildSpecDecisionSection([]string{}, 3, 3)
+	if section1 != section2 {
+		t.Errorf("empty-recurring sections differ:\n%q\n%q", section1, section2)
+	}
+	if !strings.Contains(section1, specDecisionMarker(nil)) {
+		t.Errorf("section = %q, want the stable empty-set marker", section1)
+	}
+	if strings.Contains(section1, "Recurring fingerprint(s): .") || strings.Contains(section1, "Recurring fingerprint(s): \n") {
+		t.Errorf("section = %q, must not render a blank fingerprint list", section1)
+	}
+	if !strings.Contains(section1, testFailuresHeading) {
+		t.Errorf("section = %q, want a pointer to the latest %q section", section1, testFailuresHeading)
+	}
+
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	tasks.Put(TaskInfo{ID: "t-cap-empty-idem", Status: "testing", AgentRuns: runs})
+	route := func() {
+		wf := &Execution{
+			WorkflowID: "testing-task",
+			StartedAt:  now,
+			Variables: map[string]string{
+				"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+				"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+				"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "fp-3",
+			},
+		}
+		if _, err := e.execRouteTestResult("t-cap-empty-idem", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-cap-empty-idem")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route()
+	ti := mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
+	first := ti.Body
+	if strings.Count(first, specDecisionHeading) != 1 {
+		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+	}
+	route()
+	ti = mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
+	if ti.Body != first {
+		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	}
+}
+
+// TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision verifies
+// prior-cycle product-bug runs and their author gaps do not bleed into a new
+// testing cycle's non-convergence check — only runs at/after
+// TestingCycleStartedAt may drive a spec-decision reframe.
+func TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+
+	priorCycleEnd := time.Now().UTC().Add(-time.Hour)
+	newCycleStart := time.Now().UTC()
+
+	// Prior cycle already ping-ponged (author gap between distinct
+	// fingerprints) and hit human-required — that history must not count
+	// toward the new cycle's non-convergence check. Single new run in the
+	// current cycle — no new author gap yet.
+	runs := []AgentRunInfo{
+		productBugRun(priorCycleEnd.Add(-2*time.Minute), "old-1"),
+		{AgentID: "impl-old", Role: "implementation", StartedAt: priorCycleEnd.Add(-time.Minute)},
+		productBugRun(priorCycleEnd, "old-2"),
+		productBugRun(newCycleStart.Add(time.Minute), "new-1"),
+	}
+
+	out, err := runRouteTestResult(e, tasks, "t-redispatch-spec", "FAIL", newCycleStart, runs, &newCycleStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Errorf("output = %q, want reimplement (prior-cycle runs must not drive a spec-decision reframe)", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-redispatch-spec")
+	if ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress", ti.Status)
+	}
+	if reason := tasks.Reason("t-redispatch-spec"); strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, must not reframe as spec-decision from prior-cycle evidence", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, must not gain a spec-decision section from prior-cycle evidence", ti.Body)
+	}
+}
+
 func TestRouteTestResult_DuplicateFailureWithoutInterveningFixDoesNotEscalate(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)

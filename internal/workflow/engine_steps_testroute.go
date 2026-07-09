@@ -2190,22 +2190,28 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
 			e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 		}
-		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
+		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, false)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "duplicate failure"}, nil
 	}
 
 	if attempts >= limit {
-		if recurring := recurringProductBugFingerprints(t); len(recurring) > 0 {
+		if nonConvergingProductBugLoop(t) {
+			// Evidence only — the reframe below fires on non-convergence
+			// (ping-ponging product-bug attempts with an intervening
+			// code-author run) even when concrete repro evidence differs
+			// across attempts and no exact fingerprint recurred, so
+			// `recurring` may legitimately be empty here.
+			recurring := recurringProductBugFingerprints(t)
 			reason := fmt.Sprintf(
-				"suspected acceptance-criteria conflict: %d recurring product-bug failure class(es) after %d test attempts (cap %d) — human spec decision needed; see ## Test Failures",
-				len(recurring), attempts, limit)
+				"suspected acceptance-criteria conflict: the implement/test loop failed to converge over %d product-bug attempt(s) (cap %d) — could be a contradictory spec or a hard defect the fixes keep missing; human spec decision needed; see ## Test Failures",
+				attempts, limit)
 			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 				return StepOutput{}, err
 			}
 			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
 				e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 			}
-			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring)
+			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, true)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
 		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
@@ -2276,6 +2282,36 @@ func recurringProductBugFingerprints(t TaskInfo) []string {
 	return recurring
 }
 
+// nonConvergingProductBugLoop reports whether the implement/test loop has
+// ping-ponged between valid product-bug test-runner attempts within the
+// current testing cycle, regardless of whether their fingerprints match.
+// Unlike recurringProductBugFingerprints (which requires the SAME failure
+// class to reappear byte-for-byte), this only requires two valid product-bug
+// attempts separated by a code-author run — the realistic shape when a live
+// tester re-probes the same conceptual defect but picks different concrete
+// repro evidence (fixture values, ids, quoted literals) each time, which
+// would otherwise fingerprint differently and hide the recurrence.
+func nonConvergingProductBugLoop(t TaskInfo) bool {
+	var indices []int
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole || run.ProtocolViolation != "" ||
+			run.TestOutcome != testOutcomeProductBug || run.TestFailureFingerprint == "" {
+			continue
+		}
+		indices = append(indices, i)
+	}
+	for i := 1; i < len(indices); i++ {
+		if hasInterveningCodeAuthorRun(t.AgentRuns, indices[i-1], indices[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // specDecisionHeading marks the section appended to a task body when
 // escalating on recurring product-bug failure classes. A distinct heading
 // (not "## Test Failures") keeps it out of testFailSectionOf's scan.
@@ -2304,6 +2340,18 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 	var b strings.Builder
 	b.WriteString(specDecisionHeading + "\n\n")
 	b.WriteString(specDecisionMarker(sorted) + "\n\n")
+	if len(sorted) == 0 {
+		fmt.Fprintf(&b,
+			"The implement/test loop failed to converge over %d product-bug test attempt(s) (cap %d), but "+
+				"the concrete repro evidence differed across attempts — a fresh test-runner agent can pick a "+
+				"different repro (fixture values, ids, quoted literals) to demonstrate the same conceptual "+
+				"defect each time, so no exact fingerprint recurred. This is evidence of a suspected "+
+				"acceptance-criteria conflict — not a confirmed one, since a hard defect the fixes keep "+
+				"missing can look the same. A human spec decision is needed; inspect the latest %q section "+
+				"of this task body for the most recent repro.\n",
+			attempts, limit, testFailuresHeading)
+		return b.String()
+	}
 	fmt.Fprintf(&b,
 		"Manual testing reproduced %d recurring product-bug failure class(es) across an intervening "+
 			"reimplementation attempt (%d test attempt(s), cap %d). This is evidence of a suspected "+
@@ -2334,12 +2382,16 @@ func (e *Engine) appendSpecDecisionSection(taskID, body string, fingerprints []s
 }
 
 // logSpecDecisionEscalation emits a bounded structured event for a
-// spec-decision escalation: task id, attempt/cap counters, and the distinct
-// recurring-class count and fingerprints. Raw test reports are never logged.
-func (e *Engine) logSpecDecisionEscalation(taskID string, attempts, limit int, fingerprints []string) {
+// spec-decision escalation: task id, attempt/cap counters, the distinct
+// recurring-class count and fingerprints, and whether the escalation fired
+// via the cap-time non-convergence path (nonConvergingProductBugLoop) rather
+// than the pre-cap exact-fingerprint duplicate shortcut. Raw test reports are
+// never logged.
+func (e *Engine) logSpecDecisionEscalation(taskID string, attempts, limit int, fingerprints []string, nonConvergingCap bool) {
 	e.logger.Warn("workflow.test.spec-decision",
 		"task_id", taskID, "attempts", attempts, "cap", limit,
-		"recurring_classes", len(fingerprints), "fingerprints", fingerprints)
+		"recurring_classes", len(fingerprints), "fingerprints", fingerprints,
+		"non_converging_cap", nonConvergingCap)
 }
 
 func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (int, bool) {
