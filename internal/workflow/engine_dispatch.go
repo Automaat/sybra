@@ -179,7 +179,8 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 //
 // If the task already has a non-terminal workflow running, returns
 // ErrWorkflowAlreadyActive and does not dispatch. Callers that intentionally
-// want to replace an active workflow should use StartWorkflowWithVars.
+// want to replace an active workflow should use ReplaceWorkflow or
+// ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
 	// Serialize dispatch attempts per task to prevent concurrent callers from
 	// both observing "no active workflow" and double-starting.
@@ -224,6 +225,29 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 		return "", fmt.Errorf("start %s: %w", def.ID, sErr)
 	}
 	completion = comp
+	return def.ID, nil
+}
+
+// ReplaceWorkflowForEvent matches event exactly like DispatchEvent, then
+// replaces the task's active workflow with the matched definition.
+//
+// This is for reentrant recovery paths that are already executing inside the
+// workflow being replaced: they must keep trigger conditions authoritative, but
+// cannot call DispatchEvent because the outer workflow start still owns the
+// per-task starting marker. Callers from ordinary external event sources should
+// keep using DispatchEvent so the dispatching marker serializes them.
+func (e *Engine) ReplaceWorkflowForEvent(taskID, event string, extraFields, vars map[string]string, cancelReason string) (string, error) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+	def := e.matchWorkflow(t, event, extraFields)
+	if def == nil {
+		return "", nil
+	}
+	if err := e.ReplaceWorkflow(taskID, cancelReason, def.ID, vars); err != nil {
+		return "", fmt.Errorf("replace with %s: %w", def.ID, err)
+	}
 	return def.ID, nil
 }
 
