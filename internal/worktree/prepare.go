@@ -574,7 +574,12 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	// Read setup from the trusted default branch, never the checked-out worktree:
+	// this branch already carries commits an implementation agent pushed in an
+	// earlier run, so its own .sybra.yaml is not Sybra-authored and a compromised
+	// agent could plant a malicious setup: block that runs via unsandboxed
+	// `sh -c` (same class as issue #1519 — see resolveTrustedSetupCommands).
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("branch-fix setup: %w", err)
 	}
 	// pr-fix-role recovery runs must push straight to origin (the task's own
