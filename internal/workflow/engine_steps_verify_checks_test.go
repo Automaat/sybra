@@ -310,13 +310,14 @@ func TestNodeModulesTorn(t *testing.T) {
 }
 
 // fakeNpmOnPath prepends a directory containing a fake `npm` script to PATH
-// for the duration of the test, so repairTornNodeModules's `npm ci` call runs
-// the fake instead of a real install. The fake writes a marker file recording
-// its working directory so the test can assert whether/where it ran.
+// for the duration of the test, so repairTornNodeModules's npm call runs the
+// fake instead of a real install. The fake writes a marker file recording its
+// working directory and arguments so the test can assert whether/where/how it
+// ran.
 func fakeNpmOnPath(t *testing.T, markerPath string) {
 	t.Helper()
 	binDir := t.TempDir()
-	script := "#!/bin/sh\npwd > " + markerPath + "\n"
+	script := "#!/bin/sh\npwd > " + markerPath + "\nprintf '%s\\n' \"$*\" >> " + markerPath + "\n"
 	npmPath := filepath.Join(binDir, "npm")
 	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -348,8 +349,33 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected npm ci to run and write a marker, got: %v", err)
 	}
-	if got := string(out); got != frontend+"\n" {
-		t.Errorf("npm ci ran in %q, want %q", got, frontend+"\n")
+	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want dir and safe args", got)
+	}
+}
+
+func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wt, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// node_modules present but missing .bin — the torn signature.
+	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	fakeNpmOnPath(t, marker)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	out, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected npm ci to run for root package and write a marker, got: %v", err)
+	}
+	if got := string(out); got != wt+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want root dir and safe args", got)
 	}
 }
 

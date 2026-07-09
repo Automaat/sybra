@@ -163,18 +163,23 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 // the actual verify commands get.
 const repairTornNodeModulesTimeout = 3 * time.Minute
 
-// repairTornNodeModules scans the worktree's immediate subdirectories for an
-// npm project (a package.json) whose node_modules looks torn and repairs it
-// with a single `npm ci` before verify commands trust the install. This is a
-// defensive fix for a race between verify_checks and a still-running (or
-// killed mid-flight) `npm ci` left behind by something else in the same
-// worktree, such as an implementation agent's own backgrounded `mise run
-// verify`/`npm ci` that its session never waited on: the setup-time install
-// was healthy, but by the time verify_checks runs, node_modules can be left
-// half torn-down, and every npm-run command in it then fails with "command
-// not found" — a false implementation-defect signal. Best-effort: a repair
-// failure surfaces via the verify command's own failure, same as before this
-// existed.
+// repairTornNodeModules scans the worktree root and immediate subdirectories
+// for an npm project (a package.json) whose node_modules looks torn and repairs
+// it with a single `npm ci --ignore-scripts` before verify commands trust the
+// install. This is a defensive fix for a race between verify_checks and a
+// still-running (or killed mid-flight) `npm ci` left behind by something else
+// in the same worktree, such as an implementation agent's own backgrounded
+// `mise run verify`/`npm ci` that its session never waited on: the setup-time
+// install was healthy, but by the time verify_checks runs, node_modules can be
+// left half torn-down, and every npm-run command in it then fails with
+// "command not found" — a false implementation-defect signal. Best-effort: a
+// repair failure surfaces via the verify command's own failure, same as before
+// this existed.
+//
+// Lifecycle scripts are deliberately disabled because package.json is
+// branch-controlled; verify command configuration comes from the trusted base
+// branch, and this best-effort repair must not introduce a new unsandboxed
+// execution path controlled by the implementation branch.
 //
 // "Torn" mirrors the staleness check scripts/sybra-dev-supervisor.sh already
 // uses for the desktop dev loop: node_modules/.bin missing (an install that
@@ -182,6 +187,8 @@ const repairTornNodeModulesTimeout = 3 * time.Minute
 // node_modules/.package-lock.json stamp missing/older than package-lock.json
 // (an install that was interrupted before npm finished writing its stamp).
 func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
+	e.repairTornNodeModulesInDir(taskID, wtPath, ".")
+
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
 		return
@@ -191,25 +198,29 @@ func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
 			continue
 		}
 		dir := filepath.Join(wtPath, entry.Name())
-		if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
-			continue
-		}
-		nodeModules := filepath.Join(dir, "node_modules")
-		info, err := os.Stat(nodeModules)
-		if err != nil || !info.IsDir() {
-			continue // no install yet — not this gate's problem
-		}
-		if !nodeModulesTorn(dir, nodeModules) {
-			continue
-		}
-
-		e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", entry.Name())
-		ctx, cancel := context.WithTimeout(e.ctx, repairTornNodeModulesTimeout)
-		cmd := exec.CommandContext(ctx, "sh", "-c", "npm ci")
-		cmd.Dir = dir
-		_ = cmd.Run()
-		cancel()
+		e.repairTornNodeModulesInDir(taskID, dir, entry.Name())
 	}
+}
+
+func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return
+	}
+	nodeModules := filepath.Join(dir, "node_modules")
+	info, err := os.Stat(nodeModules)
+	if err != nil || !info.IsDir() {
+		return // no install yet — not this gate's problem
+	}
+	if !nodeModulesTorn(dir, nodeModules) {
+		return
+	}
+
+	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
+	ctx, cancel := context.WithTimeout(e.ctx, repairTornNodeModulesTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts")
+	cmd.Dir = dir
+	_ = cmd.Run()
 }
 
 // nodeModulesTorn reports whether nodeModules (an existing directory inside
