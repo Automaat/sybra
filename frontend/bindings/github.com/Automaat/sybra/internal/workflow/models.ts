@@ -740,6 +740,21 @@ export enum StepType {
      * matches the restored task status).
      */
     StepResumeWorkflow = "resume_workflow",
+
+    /**
+     * StepPushBranch deterministically pushes the task's worktree branch to
+     * its existing PR (git plumbing only — internal/project.PushSync). No
+     * LLM/agent involved; replaces the push-branch agent role.
+     */
+    StepPushBranch = "push_branch",
+
+    /**
+     * StepCreatePR deterministically pushes the task's worktree branch and
+     * opens a GitHub PR for it (git plumbing + `gh pr create`), drafting the
+     * title/body via a single cheap LLM job (internal/prcontent). No agent
+     * session involved; replaces the create-pr agent role.
+     */
+    StepCreatePR = "create_pr",
 };
 
 /**

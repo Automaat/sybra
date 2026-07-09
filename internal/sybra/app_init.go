@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
@@ -670,6 +671,10 @@ func (a *App) initWorkflowEngine() {
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
 	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
+	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
+	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
+	a.workflowEngine.SetPRFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
