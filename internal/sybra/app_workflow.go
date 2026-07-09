@@ -259,30 +259,8 @@ func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string)
 			return err
 		}
 	}
-	v, err := a.classifier.Classify(ctx, t, projects)
-	if err != nil {
-		return err
-	}
-	updated, err := triage.Apply(a.tasks, t, v, projects)
-	if err != nil {
-		return err
-	}
-	if a.audit != nil {
-		_ = a.audit.Log(audit.Event{
-			Type:   audit.EventTriageClassified,
-			TaskID: t.ID,
-			Data: map[string]any{
-				"title":      v.Title,
-				"tags":       v.Tags,
-				"size":       v.Size,
-				"type":       v.Type,
-				"mode":       v.Mode,
-				"project_id": updated.ProjectID,
-				"status":     string(updated.Status),
-			},
-		})
-	}
-	return nil
+	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
+	return err
 }
 
 func taskToInfo(t task.Task) workflow.TaskInfo {

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -25,12 +26,39 @@ func (e *Engine) execClassifyTask(taskID string, step *Step) (StepOutput, error)
 	ctx, cancel := context.WithTimeout(e.ctx, classifyTaskTimeout)
 	defer cancel()
 
-	if err := e.classifier.ClassifyTask(ctx, taskID); err != nil {
-		return e.humanRequiredClassify(taskID, step, "triage classify failed: "+err.Error())
+	// Restore the retry budget the replaced run_agent step carried
+	// (max_retries: 3). A transient rate limit or brief provider outage now
+	// retries with backoff instead of permanently parking the task on
+	// human-required on the first blip.
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = e.classifier.ClassifyTask(ctx, taskID); err == nil {
+			e.logger.Info("workflow.classify-task", "task_id", taskID, "step", step.ID)
+			return StepOutput{StepID: step.ID, Status: "completed"}, nil
+		}
+		// Engine shutdown (parent context canceled), not a classify failure —
+		// leave the task status untouched so the step re-runs on next boot
+		// instead of baking "context canceled" into a permanent human-required
+		// park. Mirrors engine_steps_verify.go's cancellation handling. The
+		// per-step deadline (classifyTaskTimeout) fires on the derived ctx, not
+		// e.ctx, so a genuinely hung classify still escalates below.
+		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+			e.logger.Warn("workflow.classify-task.canceled", "task_id", taskID, "step", step.ID, "err", err)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: context canceled"}, nil
+		}
+		if attempt >= len(classifyTaskRetryBackoffs) {
+			break
+		}
+		e.logger.Warn("workflow.classify-task.retry", "task_id", taskID, "step", step.ID,
+			"attempt", attempt+1, "max", len(classifyTaskRetryBackoffs), "err", err)
+		// Interruptible backoff: an engine shutdown (parent ctx) or the per-step
+		// deadline cancels ctx and wakes the wait immediately, so the retry loop
+		// never blocks teardown. The next iteration's e.ctx check then routes a
+		// shutdown to the resume-on-next-boot path above.
+		classifyTaskWait(ctx, classifyTaskRetryBackoffs[attempt])
 	}
 
-	e.logger.Info("workflow.classify-task", "task_id", taskID, "step", step.ID)
-	return StepOutput{StepID: step.ID, Status: "completed"}, nil
+	return e.humanRequiredClassify(taskID, step, "triage classify failed: "+err.Error())
 }
 
 // humanRequiredClassify flips the task to human-required with reason and
