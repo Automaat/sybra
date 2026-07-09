@@ -1,0 +1,21 @@
+id: test-recovery-target
+name: Test Recovery Target
+description: >-
+  Stand-in for branch-conflict-fix: a single mechanical step, dispatched by
+  a divergence-recovery callback replacing the workflow that detected the
+  divergence.
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: blocked
+steps:
+  - id: mark_recovering
+    name: Mark Recovering
+    type: set_status
+    config:
+      status: in-progress
+      status_reason: recovering from a branch conflict
+    next:
+      - goto: ""

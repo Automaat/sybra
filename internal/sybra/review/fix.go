@@ -39,6 +39,11 @@ type branchConflictResumeState struct {
 	prior        *workflow.Execution
 }
 
+type dispatchFixOptions struct {
+	replaceActiveWorkflow bool
+	cancelReason          string
+}
+
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
 	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
 	"- If you intentionally stopped because the PR needs a human, end with " +
@@ -398,8 +403,11 @@ func coalescedFixPrompt(issues []github.PRIssue, holdSuffix string) string {
 	return prompt
 }
 
-func (r *Handler) handlePRIssue(ctx context.Context, issue github.PRIssue) bool {
-	return r.dispatchFixIssues(ctx, issue.TaskID, []github.PRIssue{issue})
+func (r *Handler) handlePRIssueReplacingWorkflow(ctx context.Context, issue github.PRIssue, cancelReason string) bool {
+	return r.dispatchFixIssuesWithOptions(ctx, issue.TaskID, []github.PRIssue{issue}, dispatchFixOptions{
+		replaceActiveWorkflow: true,
+		cancelReason:          cancelReason,
+	})
 }
 
 // dispatchFixIssues spawns a single pr-fix agent that addresses every handled
@@ -409,6 +417,10 @@ func (r *Handler) handlePRIssue(ctx context.Context, issue github.PRIssue) bool 
 // double-dispatch where a CI failure and review comments from the same push each
 // spawned their own sequential agent.
 func (r *Handler) dispatchFixIssues(ctx context.Context, taskID string, handle []github.PRIssue) bool {
+	return r.dispatchFixIssuesWithOptions(ctx, taskID, handle, dispatchFixOptions{})
+}
+
+func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID string, handle []github.PRIssue, opts dispatchFixOptions) bool {
 	if len(handle) == 0 {
 		return false
 	}
@@ -430,8 +442,9 @@ func (r *Handler) dispatchFixIssues(ctx context.Context, taskID string, handle [
 	// (e.g. an in-flight pr-fix step) — never let the deterministic fast-path
 	// or a fresh worktree prep race it. handleTaskPRIssues already applies this
 	// gate for its own callers, but dispatchFixIssues is also reached via
-	// handlePRIssue/RecoverStaleBranchConflict, so it is repeated here.
-	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(t.ID) {
+	// handlePRIssueReplacingWorkflow/RecoverStaleBranchConflict, so it is
+	// repeated here.
+	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(t.ID) && !opts.replaceActiveWorkflow {
 		return false
 	}
 
@@ -440,18 +453,19 @@ func (r *Handler) dispatchFixIssues(ctx context.Context, taskID string, handle [
 		return false
 	}
 
-	if r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
+	if !opts.replaceActiveWorkflow &&
+		r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
 		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
 		r.autoResolveConflict(ctx, t, primary.PR, dir) {
 		return true
 	}
 
-	// dispatchPRIssue -> WorkflowEngine.DispatchEvent eventually reaches
-	// execShell, which derives its context from workflow.Engine's own e.ctx
-	// field (Engine.SetContext), not an explicit parameter threaded here.
+	// dispatchPRIssueWithOptions -> WorkflowEngine.DispatchEvent eventually
+	// reaches execShell, which derives its context from workflow.Engine's own
+	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssue(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir)
+	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
 }
 
 // autoResolveConflict attempts the deterministic clean-merge fast-path for a
@@ -578,12 +592,12 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 		"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead)
 }
 
-// dispatchPRIssue starts the pr-fix workflow for primary and, on success, marks
-// every coalesced issue in handle as handled so none re-fires next cycle. The
-// primary kind is authoritative for the workflow's pr_issue_kind var (cancel and
-// phase reconciliation key on it); handle carries the full set for the retry
-// tracker.
-func (r *Handler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string) bool {
+// dispatchPRIssueWithOptions starts the pr-fix workflow for primary and, on
+// success, marks every coalesced issue in handle as handled so none re-fires
+// next cycle. The primary kind is authoritative for the workflow's
+// pr_issue_kind var (cancel and phase reconciliation key on it); handle
+// carries the full set for the retry tracker.
+func (r *Handler) dispatchPRIssueWithOptions(t task.Task, primary github.PRIssue, handle []github.PRIssue, prompt, dir string, opts dispatchFixOptions) bool {
 	if r.WorkflowEngine == nil {
 		r.logger.Error("pr-monitor.no-workflow-engine", "task_id", t.ID)
 		return false
@@ -613,8 +627,16 @@ func (r *Handler) dispatchPRIssue(t task.Task, primary github.PRIssue, handle []
 	}) {
 		vars[workflow.ReviewHoldParkVar] = "true"
 	}
-	wfID, err := r.WorkflowEngine.DispatchEvent(t.ID, "pr.event",
-		map[string]string{"pr.issue_kind": string(primary.Kind)}, vars)
+	extraFields := map[string]string{"pr.issue_kind": string(primary.Kind)}
+	var (
+		wfID string
+		err  error
+	)
+	if opts.replaceActiveWorkflow {
+		wfID, err = r.WorkflowEngine.ReplaceWorkflowForEvent(t.ID, "pr.event", extraFields, vars, opts.cancelReason)
+	} else {
+		wfID, err = r.WorkflowEngine.DispatchEvent(t.ID, "pr.event", extraFields, vars)
+	}
 	if err != nil {
 		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 			r.logger.Info("pr-monitor.workflow-already-active",
@@ -678,8 +700,9 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 //
 // Returns false (caller escalates to human as before) when there is no linked
 // PR to fix, the PR is closed/unfetchable, or the conflict-fix retry budget is
-// already spent. handlePRIssue's conflict branch prepares via PrepareForFix (no
-// rebase), so this never re-enters the rebasing path that called it.
+// already spent. handlePRIssueReplacingWorkflow's conflict branch prepares via
+// PrepareForFix (no rebase), so this never re-enters the rebasing path that
+// called it.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
@@ -713,20 +736,12 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	}
 	r.logger.Info("pr-monitor.rebase-block.recover-as-conflict",
 		"task_id", taskID, "pr", t.PRNumber)
-	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
-		if priorStep, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "rebase conflict recovery"); cancelErr != nil {
-			r.logger.Error("pr-monitor.rebase-block.cancel-active-workflow",
-				"task_id", taskID, "err", cancelErr)
-			return false
-		} else {
-			r.logger.Info("pr-monitor.rebase-block.cancelled-active-workflow",
-				"task_id", taskID, "step", priorStep)
-		}
-	}
 	// context.Background() is a dead end here: RecoverStaleBranchConflict is
 	// wired as agentorch.Orchestrator.ConflictRecovery, a fixed func(taskID string)
 	// bool callback (see internal/sybra/agentorch) with no ctx parameter to thread from.
-	return r.handlePRIssue(context.Background(), github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr})
+	return r.handlePRIssueReplacingWorkflow(context.Background(),
+		github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr},
+		"rebase conflict recovery")
 }
 
 // recoverBranchConflictNoPR is the no-PR sibling of RecoverStaleBranchConflict:
@@ -806,18 +821,13 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		t = refetched
 	}
 	resume := r.captureBranchConflictResumeState(t)
-	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
-		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "branch conflict recovery"); cancelErr != nil {
-			r.logger.Error("pr-monitor.branch-conflict.cancel-active-workflow", "task_id", taskID, "err", cancelErr)
-			return false
-		}
-	}
+	hadActiveWorkflow := r.WorkflowEngine.HasActiveWorkflow(taskID)
 
 	headSHA, shaErr := project.CurrentCommit(ctx, dir)
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume)
+	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
 }
 
 func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
@@ -874,7 +884,18 @@ func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictRe
 	return state
 }
 
-func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState) bool {
+// dispatchBranchConflictRecovery starts the branch-conflict-fix workflow,
+// replacing the task's current workflow when hadActiveWorkflow is true.
+//
+// hadActiveWorkflow must NOT be re-derived here via HasActiveWorkflow: this
+// method runs synchronously inside the very step execution of the workflow
+// it may need to replace (create_pr or push_existing_pr's pushTaskBranch,
+// reached from within simple-task-pr's own start/dispatch call), and using
+// ReplaceWorkflow —
+// rather than a separate CancelWorkflow + StartWorkflowWithVars pair — is
+// what avoids a guaranteed reentrant "start in progress" failure there (see
+// workflow.Engine.ReplaceWorkflow's doc).
+func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool) bool {
 	vars := map[string]string{
 		"prompt":                branchConflictPrompt(t, base) + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
@@ -887,7 +908,13 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		vars["resume_workflow_vars"] = resume.workflowVars
 	}
 
-	if err := r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars); err != nil {
+	var err error
+	if hadActiveWorkflow {
+		err = r.WorkflowEngine.ReplaceWorkflow(taskID, "branch conflict recovery", branchConflictFixWorkflowID, vars)
+	} else {
+		err = r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars)
+	}
+	if err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
 		if resume.prior != nil {
 			if _, restoreErr := r.tasks.Update(taskID, task.Update{

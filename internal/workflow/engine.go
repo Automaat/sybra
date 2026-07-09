@@ -434,6 +434,13 @@ func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
 // behavior: any divergence flips straight to human-required.
 func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
 
+// SetDivergenceRecovery is a backward-compatible alias for SetConflictRecovery.
+// Older tests and callers still use the pre-rename name for the same
+// branch-divergence recovery hook.
+func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
+	e.SetConflictRecovery(fn)
+}
+
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {
 		return t
