@@ -44,10 +44,10 @@
   let historyOpen = $state(false)
   let timelineOpen = $state(true)
 
-  const approvals = $derived([...convoStore.pendingApprovals.values()])
+  const approvals = $derived(convoStore.approvalsFor(a.id))
 
   async function handleApproval(toolUseId: string, approved: boolean) {
-    await convoStore.respondApproval(toolUseId, approved)
+    await convoStore.respondApproval(a.id, toolUseId, approved)
   }
 </script>
 
