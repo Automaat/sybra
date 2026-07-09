@@ -602,6 +602,32 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 	}
 }
 
+func TestBuiltinPRReview_StaffPassUsesSonnet(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var pr *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-review" {
+			pr = &defs[i]
+			break
+		}
+	}
+	if pr == nil {
+		t.Fatal("pr-review builtin definition not found")
+	}
+	step := pr.StepByID("review_staff")
+	if step == nil {
+		t.Fatal("review_staff step not found in pr-review")
+	}
+	if step.Config.Model != "sonnet" {
+		t.Fatalf("review_staff model = %q, want %q (aligned to simple-task-review's staff pass)", step.Config.Model, "sonnet")
+	}
+}
+
 func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 	t.Parallel()
 
