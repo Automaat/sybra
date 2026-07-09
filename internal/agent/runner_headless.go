@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -285,6 +286,66 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	return false, nil
 }
 
+// startHeadlessSurviveProcess builds and starts the detached subprocess for a
+// survive-mode headless attempt: wires stdout to the shared log file, wires
+// stderr to a sibling ".stderr" file, attaches a steerable claude run's FIFO
+// stdin (see startHeadlessProcessSurviveStdin), and delivers the initial
+// prompt over that FIFO for a fresh (non-resumed) session. Split out of
+// runHeadlessAttemptSurvive to keep it under the package's function-length
+// lint budget.
+func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg RunConfig, outFile *os.File, name string, args, invokeEnv []string, command string) (*exec.Cmd, error) {
+	cmd := newProviderCmd(ctx, &cfg, true, name, args...)
+	if a.sessionCWD != "" {
+		cmd.Dir = a.sessionCWD
+	}
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
+		cmd.Env = append(os.Environ(), invokeEnv...)
+		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
+	}
+	a.Command = command
+	cmd.Stdout = outFile
+
+	// Steerable claude runs get a FIFO stdin, exactly like a detached
+	// conversational agent (startConvoProcessSurvive) — opened O_RDWR so it
+	// never sees EOF and survives the parent's exit; a reattach reopens it.
+	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
+	// codex/copilot keep the plain no-stdin invocation unchanged.
+	steerable := steerableHeadlessInvocation(cfg, name)
+	if steerable {
+		if err := m.startHeadlessProcessSurviveStdin(a, cmd); err != nil {
+			return nil, err
+		}
+	}
+
+	stderrPath := outFile.Name() + ".stderr"
+	if stderrF, ferr := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); ferr == nil {
+		cmd.Stderr = stderrF
+		defer func() { _ = stderrF.Close() }()
+	}
+
+	if startErr := cmd.Start(); startErr != nil {
+		if steerable {
+			a.convo.closeStdinPipe()
+		}
+		return nil, fmt.Errorf("start %s: %w", name, startErr)
+	}
+	a.SetCmd(cmd)
+	a.setDetached(true)
+	m.saveRegistry(ctx, a)
+	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
+
+	// The prompt is delivered as the first user message over the FIFO instead
+	// of a positional argument (see BuildHeadlessInvocation); a resumed run
+	// (session already set) must not resend it. Mirrors
+	// runConvoAttemptSurvive's initial-prompt handling.
+	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
+		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+		}
+	}
+	return cmd, nil
+}
+
 // runHeadlessAttemptSurvive spawns a detached headless subprocess whose
 // stdout is the NDJSON log file (not a pipe), so it survives the parent's
 // exit and a terminal Ctrl-C. The manager reads output by tailing that
@@ -302,64 +363,11 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 		*outFile = f
 	}
 	logPath := (*outFile).Name()
-
-	cmd := newProviderCmd(ctx, &cfg, true, name, args...)
-	if a.sessionCWD != "" {
-		cmd.Dir = a.sessionCWD
-	}
-	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
-		cmd.Env = append(os.Environ(), invokeEnv...)
-		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
-	}
-	a.Command = command
-	cmd.Stdout = *outFile
-
-	// Steerable claude runs get a FIFO stdin, exactly like a detached
-	// conversational agent (startConvoProcessSurvive) — opened O_RDWR so it
-	// never sees EOF and survives the parent's exit; a reattach reopens it.
-	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
-	// codex/copilot keep the plain no-stdin invocation unchanged.
-	steerable := steerableHeadlessInvocation(cfg, name)
-	if steerable {
-		fifoPath := agentFIFOPath(m.registryDir(), a.ID)
-		if err := makeFIFO(fifoPath); err != nil {
-			return false, fmt.Errorf("mkfifo: %w", err)
-		}
-		fifo, ferr := os.OpenFile(fifoPath, os.O_RDWR, 0)
-		if ferr != nil {
-			return false, fmt.Errorf("open fifo: %w", ferr)
-		}
-		cmd.Stdin = fifo
-		a.convo.replaceStdinPipe(fifo)
-		a.setStdinPath(fifoPath)
-		a.setFinalizing(false)
-	}
-
 	stderrPath := logPath + ".stderr"
-	if stderrF, ferr := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); ferr == nil {
-		cmd.Stderr = stderrF
-		defer func() { _ = stderrF.Close() }()
-	}
 
-	if startErr := cmd.Start(); startErr != nil {
-		if steerable {
-			a.convo.closeStdinPipe()
-		}
-		return false, fmt.Errorf("start %s: %w", name, startErr)
-	}
-	a.SetCmd(cmd)
-	a.setDetached(true)
-	m.saveRegistry(ctx, a)
-	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
-
-	// The prompt is delivered as the first user message over the FIFO instead
-	// of a positional argument (see BuildHeadlessInvocation); a resumed run
-	// (session already set) must not resend it. Mirrors
-	// runConvoAttemptSurvive's initial-prompt handling.
-	if steerable && cfg.Prompt != "" && a.GetSessionID() == "" {
-		if writeErr := m.writeUserMessage(a, cfg.Prompt); writeErr != nil {
-			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
-		}
+	cmd, startErr := m.startHeadlessSurviveProcess(ctx, a, cfg, *outFile, name, args, invokeEnv, command)
+	if startErr != nil {
+		return false, startErr
 	}
 
 	procDone := make(chan struct{})
@@ -776,61 +784,80 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 
 	if event.Type == "result" {
-		costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
-		a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
-		// Copilot's billing unit: premium requests (no USD on the result event).
-		if event.PremiumRequests > 0 {
-			a.AddPremiumRequests(event.PremiumRequests)
-		}
-		// Codex NDJSON never reports session_id/cost on the result event, so
-		// those alone read as an empty/crashed run (this misled diagnosis of
-		// the 2026-07-05 stalled-workflow incident, #1559). Omit the
-		// meaningless fields for codex and log only the token counts it does
-		// report, so a healthy codex completion is distinguishable from a
-		// real crash at a glance.
-		if a.Provider == "codex" {
-			m.logger.Info("agent.headless.result", "id", a.ID,
-				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
-		} else {
-			m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
-				"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
-		}
-		// Persist the captured session ID so a reattach or restart-stale
-		// recovery can pass --resume. No-op when survival is disabled.
-		if event.SessionID != "" {
-			m.saveRegistry(ctx, a)
-		}
-		m.mu.RLock()
-		maxCost := m.guardrails.MaxCostUSD
-		m.mu.RUnlock()
-		if maxCost > 0 && costNow > maxCost {
-			if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
-				return true
-			}
-		}
-
-		// Steerable headless runs keep the process alive at this turn
-		// boundary: flush a queued steer message so it lands back-to-back,
-		// or close stdin so the child sees EOF and exits exactly like an
-		// unsteered one-shot run. Gated on hasStdinPipe so a non-steerable
-		// (legacy one-shot) run is completely unaffected.
-		if a.convo.hasStdinPipe() {
-			if next, ok := a.PopPendingPrompt(); ok {
-				if writeErr := m.writeUserMessage(a, next); writeErr != nil {
-					m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
-					a.RestorePendingPrompt(next)
-					a.setFinalizing(true)
-					a.convo.closeStdinPipe()
-				} else {
-					m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
-				}
-			} else {
-				a.setFinalizing(true)
-				a.convo.closeStdinPipe()
-			}
+		if keepGoing := m.handleHeadlessResult(ctx, a, event); !keepGoing {
+			return true
 		}
 	}
 	return false
+}
+
+// handleHeadlessResult records a terminal result event's stats/session,
+// applies the cost guardrail, and — for a steerable headless run — drains or
+// closes the stdin transport at this turn boundary. Split out of
+// processHeadlessLine to keep it under the package's function-length lint
+// budget. Returns false when the caller should stop the stream (cost
+// guardrail breach).
+func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event StreamEvent) (keepGoing bool) {
+	costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+	a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
+	// Copilot's billing unit: premium requests (no USD on the result event).
+	if event.PremiumRequests > 0 {
+		a.AddPremiumRequests(event.PremiumRequests)
+	}
+	// Codex NDJSON never reports session_id/cost on the result event, so
+	// those alone read as an empty/crashed run (this misled diagnosis of
+	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
+	// meaningless fields for codex and log only the token counts it does
+	// report, so a healthy codex completion is distinguishable from a
+	// real crash at a glance.
+	if a.Provider == "codex" {
+		m.logger.Info("agent.headless.result", "id", a.ID,
+			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
+	} else {
+		m.logger.Info("agent.headless.result", "id", a.ID, "session_id", event.SessionID, "cost", costNow,
+			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
+	}
+	// Persist the captured session ID so a reattach or restart-stale
+	// recovery can pass --resume. No-op when survival is disabled.
+	if event.SessionID != "" {
+		m.saveRegistry(ctx, a)
+	}
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	m.mu.RUnlock()
+	if maxCost > 0 && costNow > maxCost {
+		if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
+			return false
+		}
+	}
+
+	m.drainOrCloseHeadlessSteer(a)
+	return true
+}
+
+// drainOrCloseHeadlessSteer is the steerable headless run's turn-boundary
+// chokepoint: it flushes one queued steer message so the process stays alive
+// and lands the next turn back-to-back, or closes stdin so the child sees
+// EOF and exits exactly like an unsteered one-shot run. Gated on
+// hasStdinPipe so a non-steerable (legacy one-shot) run is unaffected.
+func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
+	if !a.convo.hasStdinPipe() {
+		return
+	}
+	next, ok := a.PopPendingPrompt()
+	if !ok {
+		a.setFinalizing(true)
+		a.convo.closeStdinPipe()
+		return
+	}
+	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
+		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
+		a.RestorePendingPrompt(next)
+		a.setFinalizing(true)
+		a.convo.closeStdinPipe()
+		return
+	}
+	m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 }
 
 // sendHeadlessSteerMessage queues a follow-up message for a steerable

@@ -1344,3 +1344,80 @@ func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
 		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)
 	}
 }
+
+// TestSendMessage_HeadlessQueuesWhenRunning verifies that SendMessage on a
+// live, steerable headless agent (stdin pipe attached, Mode "headless")
+// always queues — a headless run has no idle state to write into directly,
+// unlike a conversational agent — and surfaces the message immediately in
+// StreamOutput via a synthetic user_input event.
+func TestSendMessage_HeadlessQueuesWhenRunning(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h1", TaskID: "task-1", Mode: "headless", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if err := m.SendMessage(a.ID, "steer text"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want 1", got)
+	}
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want %q (queued send must not flip state)", st, StateRunning)
+	}
+
+	var sawUserInput bool
+	for _, ev := range a.Output() {
+		if ev.Type == "user_input" && ev.Content == "steer text" {
+			sawUserInput = true
+		}
+	}
+	if !sawUserInput {
+		t.Errorf("expected a synthetic user_input StreamEvent in Output(); got %+v", a.Output())
+	}
+}
+
+// TestSendMessage_HeadlessRejectsWhenFinalizing verifies that a headless
+// run's stdin has been closed for good (no steer message pending at its last
+// result) rejects further SendMessage calls instead of silently queuing a
+// message that would never be delivered.
+func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h2", TaskID: "task-1", Mode: "headless", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	a.setFinalizing(true)
+
+	err := m.SendMessage(a.ID, "too late")
+	if err == nil {
+		t.Fatal("expected error sending to a finalizing headless agent")
+	}
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0 (message must not be queued)", got)
+	}
+}
+
+// TestSendMessage_RejectsNoTransport verifies that SendMessage rejects a
+// headless agent with no stdin pipe attached (e.g. a legacy one-shot run, or
+// agent.headless_steerable disabled) instead of silently accepting a message
+// that has nowhere to go.
+func TestSendMessage_RejectsNoTransport(t *testing.T) {
+	m, _ := newTestManager(t)
+	putAgent(t, m, &Agent{ID: "h3", TaskID: "task-1", Mode: "headless", State: StateRunning})
+
+	err := m.SendMessage("h3", "hello")
+
+	if err == nil {
+		t.Fatal("expected error when headless agent has no stdin pipe")
+	}
+}
