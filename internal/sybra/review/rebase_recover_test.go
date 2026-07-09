@@ -522,8 +522,27 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	for i := range wtFailureLimit - 1 {
+		if !r.RecoverStaleBranchConflict(tk.ID) {
+			t.Fatalf("call %d: want true (parked for retry) before the circuit trips", i+1)
+		}
+		got, err := r.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: escalated before the circuit limit", i+1)
+		}
+	}
 	if r.RecoverStaleBranchConflict(tk.ID) {
-		t.Fatal("RecoverStaleBranchConflict returned true for a missing branch")
+		t.Fatal("circuit-limit call: want false")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required after the circuit trips", got.Status)
 	}
 }
 
@@ -582,13 +601,13 @@ func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testi
 
 func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing.T) {
 	r, tk := setupBranchConflictNoPRHandler(t, task.StatusInProgress, nil)
-	if _, err := r.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("branch/does-not-exist")}); err != nil {
+	if _, err := r.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("main")}); err != nil {
 		t.Fatal(err)
 	}
 
 	for i := range wtFailureLimit - 1 {
-		if r.RecoverStaleBranchConflict(tk.ID) {
-			t.Fatalf("call %d: want false on worktree failure", i+1)
+		if !r.RecoverStaleBranchConflict(tk.ID) {
+			t.Fatalf("call %d: want true (parked for retry) on transient worktree failure", i+1)
 		}
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
