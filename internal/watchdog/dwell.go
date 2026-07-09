@@ -70,6 +70,13 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		if now.Sub(t.UpdatedAt) <= budget {
 			continue
 		}
+		// A long-running agent that hasn't touched the task file (no status/body
+		// update) is still making progress — the stall/budget watchdog tick
+		// already covers a genuinely hung run. Escalating here would flip a
+		// healthy in-flight agent to human-required mid-run.
+		if w.agents != nil && w.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
 		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)
 		w.logger.Info("watchdog.dwell.escalate",
 			"task_id", t.ID, "status", string(t.Status),
