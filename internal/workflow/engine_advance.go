@@ -675,6 +675,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.branch":                  t.Branch,
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 		"task.plan_critique":           t.PlanCritique,
+		"task.code_review":             t.CodeReview,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)
