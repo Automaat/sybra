@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"slices"
 	"sync"
@@ -170,6 +171,109 @@ type Agent struct {
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+// View is a point-in-time, concurrency-safe snapshot of an Agent's exported
+// state, mirroring Agent's JSON shape field-for-field. Every path that
+// serializes an *Agent for a consumer outside its own runner goroutine
+// (Wails bindings, SSE/broker emit, the HTTP API shim) must serialize a View,
+// never the live *Agent — reading Agent's fields directly races the runner,
+// watchdog, and approval-server goroutines that mutate them under a.mu.
+// MarshalJSON builds and encodes a View so every existing json.Marshal(agent)
+// call site gets this for free without having to be individually rewritten.
+type View struct {
+	ID                       string    `json:"id"`
+	TaskID                   string    `json:"taskId"`
+	Mode                     string    `json:"mode"`
+	State                    State     `json:"state"`
+	SessionID                string    `json:"sessionId"`
+	CostUSD                  float64   `json:"costUsd"`
+	InputTokens              int       `json:"inputTokens,omitempty"`
+	OutputTokens             int       `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
+	PremiumRequests          float64   `json:"premiumRequests,omitempty"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	ExperimentID             string    `json:"experimentId,omitempty"`
+	VariantID                string    `json:"variantId,omitempty"`
+	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
+	TurnCount                int       `json:"turnCount,omitempty"`
+	ToolCalls                int       `json:"toolCalls,omitempty"`
+	MaxTurns                 int       `json:"maxTurns,omitempty"`
+	PluginErrors             []string  `json:"pluginErrors,omitempty"`
+	EscalationReason         string    `json:"escalationReason,omitempty"`
+	ErrorKind                string    `json:"errorKind,omitempty"`
+	ErrorMsg                 string    `json:"errorMsg,omitempty"`
+	AwaitingApproval         bool      `json:"awaitingApproval,omitempty"`
+	Resumable                bool      `json:"resumable,omitempty"`
+}
+
+// View returns a snapshot of the agent's exported state, safe to read or
+// serialize without holding a.mu. Built under a single RLock so concurrent
+// writers (runner, watchdog, approval server) cannot produce a torn read.
+func (a *Agent) View() View {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return View{
+		ID:                       a.ID,
+		TaskID:                   a.TaskID,
+		Mode:                     a.Mode,
+		State:                    a.State,
+		SessionID:                a.SessionID,
+		CostUSD:                  a.CostUSD,
+		InputTokens:              a.InputTokens,
+		OutputTokens:             a.OutputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens,
+		ReasoningTokens:          a.ReasoningTokens,
+		PremiumRequests:          a.PremiumRequests,
+		StartedAt:                a.StartedAt,
+		LastEventAt:              a.LastEventAt,
+		LogPath:                  a.LogPath,
+		External:                 a.External,
+		PID:                      a.PID,
+		Command:                  a.Command,
+		Name:                     a.Name,
+		Project:                  a.Project,
+		Provider:                 a.Provider,
+		Model:                    a.Model,
+		ExperimentID:             a.ExperimentID,
+		VariantID:                a.VariantID,
+		AssignmentUnit:           a.AssignmentUnit,
+		AssignmentKey:            a.AssignmentKey,
+		ReasoningEffort:          a.ReasoningEffort,
+		Prompt:                   a.Prompt,
+		TurnCount:                a.TurnCount,
+		ToolCalls:                a.ToolCalls,
+		MaxTurns:                 a.MaxTurns,
+		PluginErrors:             slices.Clone(a.PluginErrors),
+		EscalationReason:         a.EscalationReason,
+		ErrorKind:                a.ErrorKind,
+		ErrorMsg:                 a.ErrorMsg,
+		AwaitingApproval:         a.AwaitingApproval,
+		Resumable:                a.Resumable,
+	}
+}
+
+// MarshalJSON encodes a point-in-time View instead of the live struct, so
+// every existing json.Marshal(agent)/json.Marshal([]*Agent) call site —
+// Wails bindings, the SSE broker, the HTTP API shim — becomes race-safe
+// without having to be rewritten to call View() explicitly.
+func (a *Agent) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.View())
 }
 
 // pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
