@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -29,6 +30,16 @@ const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 const branchRecreateKind = github.PRIssueBranchRecreate
 
 const wtFailureLimit = 5
+
+// branchConflictDispatchFailureLimit bounds retries for a transient
+// provider-unhealthy/rate-limit error starting the branch-conflict-fix
+// workflow itself (dispatchBranchConflictRecovery). Distinct from
+// wtFailureLimit (worktree-prep failures) and prTracker's
+// branchConflictRetryKind budget (workflow attempts that actually started):
+// this only guards the dispatch call itself, so a transient provider outage
+// doesn't fall straight through to a human-required escalation even though
+// the branch conflict itself was never actually attempted.
+const branchConflictDispatchFailureLimit = 5
 
 type branchConflictResumeState struct {
 	status       string
@@ -942,13 +953,54 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
 			}
 		}
+		if errors.Is(err, provider.ErrProviderUnhealthy) {
+			return r.parkOrEscalateBranchConflictDispatchFailure(taskID, err)
+		}
 		return false
 	}
 
+	delete(r.dispatchFailures, taskID)
 	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
+}
+
+// parkOrEscalateBranchConflictDispatchFailure handles a transient
+// provider-unhealthy/rate-limit error starting the branch-conflict-fix
+// workflow — distinct from a genuine unresolved rebase conflict, which the
+// workflow never got a chance to attempt. The caller has already restored
+// the task's prior status/workflow, so the next worktree-prep rebase failure
+// for this task naturally re-enters RecoverStaleBranchConflict and retries
+// the dispatch; this only needs to avoid escalating straight to
+// human-required on the first transient hit. Once the bounded retry count is
+// spent, escalate explicitly with a reason that distinguishes it from a
+// genuinely unresolved conflict — mirroring the markConflictRecoveryExhausted
+// convention MarkRebaseBlocked relies on to avoid overwriting a specific
+// reason with its generic one.
+func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dispatchErr error) bool {
+	if r.dispatchFailures == nil {
+		r.dispatchFailures = make(map[string]int)
+	}
+	r.dispatchFailures[taskID]++
+	attempts := r.dispatchFailures[taskID]
+	if attempts < branchConflictDispatchFailureLimit {
+		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-retry",
+			"task_id", taskID, "attempts", attempts, "limit", branchConflictDispatchFailureLimit, "err", dispatchErr)
+		return true
+	}
+	delete(r.dispatchFailures, taskID)
+	reason := fmt.Sprintf(
+		"branch-conflict-fix dispatch failed %d time(s), most recently: %s",
+		attempts, dispatchErr.Error())
+	if _, err := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted-status", "task_id", taskID, "err", err)
+	}
+	r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted", "task_id", taskID, "attempts", attempts)
+	return false
 }
 
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
