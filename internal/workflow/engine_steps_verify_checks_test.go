@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -376,6 +377,52 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	}
 	if got := string(out); got != wt+"\nci --ignore-scripts\n" {
 		t.Errorf("npm repair marker = %q, want root dir and safe args", got)
+	}
+}
+
+func TestRepairTornNodeModules_DisablesLifecycleScripts(t *testing.T) {
+	wt := t.TempDir()
+	frontend := filepath.Join(wt, "frontend")
+	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte(`{
+  "scripts": {
+    "preinstall": "touch lifecycle-ran"
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	lifecycleMarker := filepath.Join(frontend, "lifecycle-ran")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+pwd > ` + strconv.Quote(marker) + `
+printf '%s\n' "$*" >> ` + strconv.Quote(marker) + `
+case " $* " in
+  *" --ignore-scripts "*) exit 0 ;;
+  *) touch ` + strconv.Quote(lifecycleMarker) + `; exit 0 ;;
+esac
+`
+	npmPath := filepath.Join(binDir, "npm")
+	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.repairTornNodeModules("t1", wt)
+
+	if _, err := os.Stat(lifecycleMarker); !os.IsNotExist(err) {
+		t.Fatalf("repair ran package lifecycle script marker; err = %v", err)
+	}
+	out, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("expected npm repair marker: %v", err)
+	}
+	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
+		t.Errorf("npm repair marker = %q, want dir and safe args", got)
 	}
 }
 
