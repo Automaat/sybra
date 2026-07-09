@@ -253,13 +253,16 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 		a.snapshotter.EnsureRepo(ctx)
 	}
 	a.recovery = a.newRecovery()
-	a.recovery.RunStartupCleanup(ctx)
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
-	lm.StartManagers(ctx, emit)
-	lm.StartPollers(ctx, emit, issuesFetcher)
 	lm.StartWatchers(ctx)
+
+	a.wg.Go(func() {
+		a.recovery.RunStartupCleanup(ctx)
+		lm.StartManagers(ctx, emit)
+		lm.StartPollers(ctx, emit, issuesFetcher)
+	})
 }
 
 func (a *App) cleanupFailedStartup() {
