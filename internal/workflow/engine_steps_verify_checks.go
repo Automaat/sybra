@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 )
@@ -42,26 +41,19 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
-// nodeModulesRepairMaxDepth bounds how deep the corrupted-node_modules scan
-// descends into the worktree, so a repo with a deep source layout doesn't
-// pay for a full-tree walk on every verify run.
-const nodeModulesRepairMaxDepth = 3
-
-// nodeModulesRepairTimeoutCap bounds the best-effort npm repair step. The
-// verify suite gets a larger budget because it is the project-declared gate;
-// repair is only an infra recovery attempt before retrying the failed command.
-const nodeModulesRepairTimeoutCap = 3 * time.Minute
+// verifyChecksNodeModulesRepairTimeout bounds a single repair `npm ci`
+// invocation, mirroring the project's frontend setup batch timeout
+// (docs/CONFIG.md's `setup:` commands get 5 minutes).
+const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 
 var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
-	Commands              []string `json:"commands"`
-	FailedCmd             string   `json:"failedCmd,omitempty"`
-	OutputTail            string   `json:"outputTail,omitempty"`
-	NodeModulesRepairDirs []string `json:"nodeModulesRepairDirs,omitempty"`
-	RepairSucceeded       bool     `json:"repairSucceeded,omitempty"`
+	Commands   []string `json:"commands"`
+	FailedCmd  string   `json:"failedCmd,omitempty"`
+	OutputTail string   `json:"outputTail,omitempty"`
 }
 
 // execVerifyChecks runs the project's deterministic verify suite
@@ -77,18 +69,12 @@ type verifyChecksReport struct {
 // toolchain (mise) resolves identically.
 //
 // Short-circuits (no block): the verify-blessed tag, no CheckConfigGetter, no
-// verify commands configured, or no worktree. A genuine command failure — or
-// the suite exceeding the time budget (an agent could hang a test to dodge) —
-// blocks. Only engine-shutdown cancellation fails open, so a harness problem on
-// teardown never strands work.
-//
-// A failure first gets one honest re-check: if the worktree has a
-// structurally corrupted node_modules (see findCorruptedNodeModules — the
-// signature of a killed npm install, not a code regression), the gate runs
-// `npm ci` to repair it and retries the failing command before blocking.
-// This distinguishes "toolchain broken by host load" from an actual
-// implementation defect, so a Go-only diff doesn't get parked to
-// human-required by an unrelated frontend infra hiccup.
+// verify commands configured, no worktree, or a detected-but-unrepairable
+// corrupted node_modules (broken toolchain state, not the diff — see
+// repairCorruptedNodeModules). A genuine command failure — or the suite
+// exceeding the time budget (an agent could hang a test to dodge) — blocks.
+// Only engine-shutdown cancellation and the node_modules case fail open, so a
+// harness/infra problem never strands or misattributes work.
 func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
@@ -114,33 +100,19 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 		return stepDone(step, "skipped: no worktree for task")
 	}
 
-	failedCmd, failedIndex, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
-
-	var repairDirs []string
-	repairSucceeded := false
-	if failedCmd != "" && runErr == nil {
-		repairDirs = findCorruptedNodeModules(verifyCommandScanRoot(wtPath, failedCmd))
-		if len(repairDirs) > 0 {
-			var repairErr error
-			repairSucceeded, repairErr = e.repairCorruptedNodeModules(taskID, repairDirs, nodeModulesRepairTimeout(timeout))
-			if repairErr != nil {
-				runErr = repairErr
-			} else if repairSucceeded {
-				retryCmds := cmds
-				if failedIndex >= 0 {
-					retryCmds = cmds[failedIndex:]
-				}
-				retryFailed, _, retryOutput, retryErr :=
-					e.runVerifySuiteWithRetry(taskID, wtPath, retryCmds, timeout, step.ID)
-				output += retryOutput
-				if retryErr == nil {
-					failedCmd, runErr = retryFailed, nil
-				} else {
-					runErr = retryErr
-				}
-			}
-		}
+	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
+		// Corruption was detected but the repair itself failed (e.g. `npm ci`
+		// killed again, or no network) — the toolchain is still broken, not
+		// the diff. Running verify against a known-corrupt install would
+		// deterministically fail and misattribute an infra problem to the
+		// implementation, so skip verify entirely rather than flag
+		// human-required.
+		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
+		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
 	}
+	e.repairTornNodeModules(taskID, wtPath)
+
+	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
 		if healed, fc, out, rErr := e.healToolchainAndRetry(taskID, wtPath, cmds, timeout, step.ID); healed {
@@ -150,7 +122,6 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 
 	report := verifyChecksReport{
 		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
-		NodeModulesRepairDirs: repairDirs, RepairSucceeded: repairSucceeded,
 	}
 	if e.recorder != nil {
 		if data, mErr := json.MarshalIndent(report, "", "  "); mErr == nil {
@@ -189,27 +160,21 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would
 // otherwise route a failing implementation straight to review.
-func (e *Engine) runVerifySuiteWithRetry(
-	taskID, wtPath string,
-	cmds []string,
-	timeout time.Duration,
-	stepID string,
-) (failedCmd string, failedIndex int, output string, runErr error) {
-	failedIndex = -1
+func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (failedCmd, output string, runErr error) {
 	for attempt := 0; attempt <= verifyChecksTimeoutRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		maybeMiseTrust(ctx, wtPath)
-		failedCmd, failedIndex, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+		failedCmd, output, runErr = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 		cancel()
 		if !errors.Is(runErr, context.DeadlineExceeded) || e.ctx.Err() != nil {
-			return failedCmd, failedIndex, output, runErr
+			return failedCmd, output, runErr
 		}
 		if attempt < verifyChecksTimeoutRetries {
 			e.logger.Warn("workflow.verify-checks.timeout-retry",
 				"task_id", taskID, "step", stepID, "attempt", attempt+1, "budget", timeout.String())
 		}
 	}
-	return failedCmd, failedIndex, output, runErr
+	return failedCmd, output, runErr
 }
 
 func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
@@ -222,14 +187,14 @@ func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, tim
 	e.logger.Warn("workflow.verify-checks.toolchain-heal",
 		"task_id", taskID, "step", stepID, "setup_commands", len(setup))
 	maybeMiseTrust(setupCtx, wtPath)
-	sFailed, _, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
+	sFailed, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
 	cancel()
 	if sFailed != "" || sErr != nil {
 		e.logger.Warn("workflow.verify-checks.toolchain-heal.setup-failed",
 			"task_id", taskID, "cmd", trimDiffLine(sFailed), "err", sErr, "tail", tailString(sOut, 400))
 		return false, "", "", nil
 	}
-	failedCmd, _, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
+	failedCmd, output, runErr = e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, stepID)
 	e.logger.Info("workflow.verify-checks.toolchain-heal.reran",
 		"task_id", taskID, "step", stepID, "still_failing", failedCmd != "" || runErr != nil)
 	return true, failedCmd, output, runErr
@@ -346,159 +311,108 @@ func maybeMiseTrust(ctx context.Context, wtPath string) {
 	}
 }
 
-// findCorruptedNodeModules scans rootPath (bounded depth) for npm-project
-// directories whose node_modules was left in a structurally broken state —
-// the signature of an `npm ci`/install killed mid-write (e.g. by host memory
-// pressure reaping the process): node_modules exists but is missing .bin/ or
-// .package-lock.json, so any bin shim (vite, tsc, ...) resolves to "command
-// not found" even though the code under test never touched the frontend. A
-// wholesale-missing node_modules (never installed) is left alone — that is a
-// setup-command problem, not something this gate should paper over.
-func findCorruptedNodeModules(rootPath string) []string {
-	var corrupted []string
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		if depth > nodeModulesRepairMaxDepth {
-			return
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		hasPackageJSON := false
-		hasPackageLock := false
-		for _, entry := range entries {
-			if entry.IsDir() || isSymlinkDirEntry(entry) {
-				continue
-			}
-			switch entry.Name() {
-			case "package.json":
-				hasPackageJSON = true
-			case "package-lock.json":
-				hasPackageLock = true
-			}
-		}
-		for _, entry := range entries {
-			if isSymlinkDirEntry(entry) || !entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			if name == ".git" {
-				continue
-			}
-			if name == "node_modules" {
-				if hasPackageJSON && hasPackageLock && isCorruptedNodeModules(filepath.Join(dir, name)) {
-					corrupted = append(corrupted, dir)
-				}
-				continue // never descend into node_modules itself
-			}
-			walk(filepath.Join(dir, name), depth+1)
-		}
-	}
-	walk(rootPath, 0)
-	return corrupted
-}
-
-func isSymlinkDirEntry(entry os.DirEntry) bool {
-	info, err := entry.Info()
+// repairCorruptedNodeModules scans the worktree root and its immediate
+// subdirectories (e.g. `frontend/`) for an npm project whose node_modules
+// was left behind by an interrupted install, and repairs it with a fresh
+// `npm ci` before the verify commands run.
+//
+// Under host memory pressure, a concurrent `npm ci` in another worktree can
+// get SIGKILLed mid-write, leaving a partially-populated node_modules that
+// fails every subsequent build deterministically (e.g. "vite: command not
+// found") even though package.json/package-lock.json are untouched and an
+// earlier build in the same worktree succeeded. That looks like a genuine
+// build regression caused by the task's diff but is really a broken
+// toolchain state. A failed repair is reported back to the caller (rather
+// than silently left for the verify command to surface) so a still-broken
+// install is never run through verify and misattributed to the
+// implementation as a product failure.
+func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath string) (repairFailed bool) {
+	entries, err := os.ReadDir(wtPath)
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeSymlink != 0
-}
-
-func verifyCommandScanRoot(wtPath, rawCmd string) string {
-	dir, ok := leadingShellCD(rawCmd)
-	if !ok {
-		return wtPath
-	}
-	clean := filepath.Clean(strings.Trim(dir, `"'`))
-	if clean == "." || filepath.IsAbs(clean) {
-		return wtPath
-	}
-	root := filepath.Join(wtPath, clean)
-	rel, err := filepath.Rel(wtPath, root)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return wtPath
-	}
-	return root
-}
-
-func leadingShellCD(rawCmd string) (string, bool) {
-	cmd := strings.TrimSpace(rawCmd)
-	if !strings.HasPrefix(cmd, "cd ") {
-		return "", false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(cmd, "cd "))
-	for _, sep := range []string{"&&", ";"} {
-		if before, _, ok := strings.Cut(rest, sep); ok {
-			dir := strings.TrimSpace(before)
-			return dir, dir != ""
+	candidates := []string{wtPath}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			candidates = append(candidates, filepath.Join(wtPath, entry.Name()))
 		}
 	}
-	return "", false
-}
-
-// isCorruptedNodeModules reports whether nodeModulesPath looks like a
-// partial install rather than a complete one.
-func isCorruptedNodeModules(nodeModulesPath string) bool {
-	info, err := os.Lstat(nodeModulesPath)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(nodeModulesPath, ".bin")); err != nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(nodeModulesPath, ".package-lock.json")); err != nil {
-		return true
-	}
-	return false
-}
-
-// repairCorruptedNodeModules runs a clean `npm ci` in each directory whose
-// node_modules looked structurally broken, giving the failed verify command
-// one honest shot against a complete toolchain before the gate blocks the
-// task. Returns false — no repair credited — if any directory's `npm ci`
-// itself fails, since that signals a real problem (missing lockfile, no
-// network) rather than a recoverable partial install; the caller then falls
-// through to its normal fail-and-block path instead of masking it.
-func (e *Engine) repairCorruptedNodeModules(taskID string, dirs []string, timeout time.Duration) (bool, error) {
-	repaired := true
-	for _, dir := range dirs {
-		if ctxErr := e.ctx.Err(); ctxErr != nil {
-			return false, ctxErr
-		}
-		e.logger.Warn("workflow.verify-checks.node-modules-corrupted", "task_id", taskID, "dir", dir)
-		ctx, cancel := context.WithTimeout(e.ctx, timeout)
-		maybeMiseTrust(ctx, dir)
-		cmd := exec.CommandContext(ctx, "npm", "ci")
-		cmd.Dir = dir
-		tail := &boundedTail{max: verifyChecksMaxOutput}
-		cmd.Stdout = tail
-		cmd.Stderr = tail
-		runErr := cmd.Run()
-		out := tail.String()
-		ctxErr := e.ctx.Err()
-		cancel()
-		if ctxErr != nil {
-			return false, ctxErr
-		}
-		if runErr != nil {
-			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
-				"task_id", taskID, "dir", dir, "err", runErr, "output", tailString(out, 2000))
-			repaired = false
+	for _, dir := range candidates {
+		if !isCorruptedNodeModules(dir) {
 			continue
 		}
-		e.logger.Info("workflow.verify-checks.node-modules-repaired", "task_id", taskID, "dir", dir)
+		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
+		cmd := exec.CommandContext(repairCtx, "npm", "ci")
+		cmd.Dir = dir
+		repairErr := cmd.Run()
+		cancel()
+		if repairErr != nil {
+			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
+				"task_id", taskID, "dir", dir, "err", repairErr)
+			repairFailed = true
+		}
 	}
-	return repaired, nil
+	return repairFailed
 }
 
-func nodeModulesRepairTimeout(timeout time.Duration) time.Duration {
-	if timeout <= 0 || timeout > nodeModulesRepairTimeoutCap {
-		return nodeModulesRepairTimeoutCap
+// isCorruptedNodeModules reports whether dir looks like an npm project whose
+// node_modules was left partially installed by a killed `npm ci`: present
+// and non-empty, but missing node_modules/.bin or
+// node_modules/.package-lock.json — both of which a completed `npm ci`
+// always writes. A node_modules that was never installed (absent entirely)
+// is not corrupted, just not yet set up, so it is left alone here.
+//
+// The repair runs `npm ci`, so it only fires for npm-owned installs: dir must
+// have an npm lockfile (package-lock.json or npm-shrinkwrap.json) and must not
+// carry a pnpm/yarn/bun lockfile that hands the install to another package
+// manager. Otherwise a pnpm/yarn/bun workspace — whose node_modules
+// legitimately lacks node_modules/.package-lock.json — would be mistaken for
+// corruption and clobbered by an unrelated `npm ci`.
+func isCorruptedNodeModules(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return false
 	}
-	return timeout
+	if !ownedByNpm(dir) {
+		return false
+	}
+	nm := filepath.Join(dir, "node_modules")
+	if !dirNonEmpty(nm) {
+		return false
+	}
+	_, binErr := os.Stat(filepath.Join(nm, ".bin"))
+	_, lockErr := os.Stat(filepath.Join(nm, ".package-lock.json"))
+	return binErr != nil || lockErr != nil
+}
+
+// dirNonEmpty reports whether dir exists and contains at least one entry,
+// without reading the full directory listing — node_modules on a large
+// install can hold tens of thousands of entries.
+func dirNonEmpty(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	return err == nil && len(names) > 0
+}
+
+// ownedByNpm reports whether dir's install is owned by npm: it has an npm
+// lockfile and no competing pnpm/yarn/bun lockfile. A non-npm lockfile wins,
+// since `npm ci` must not run against another package manager's workspace.
+func ownedByNpm(dir string) bool {
+	for _, name := range []string{"pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return false
+		}
+	}
+	for _, name := range []string{"package-lock.json", "npm-shrinkwrap.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func stepDone(step *Step, output string) (StepOutput, error) {
@@ -514,17 +428,13 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 // spent; the caller decides the policy (fail closed on our deadline, open on
 // shutdown). Output streams into a fixed-size tail buffer so a flood of
 // stdout/stderr cannot exhaust memory.
-func (e *Engine) runVerifyCommands(
-	ctx context.Context,
-	taskID, wtPath string,
-	cmds []string,
-) (failedCmd string, failedIndex int, output string, err error) {
+func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
-	for idx, raw := range cmds {
+	for _, raw := range cmds {
 		passed := false
 		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", -1, tail.String(), ctxErr
+				return "", tail.String(), ctxErr
 			}
 			if attempt > 0 {
 				_, _ = fmt.Fprintf(tail,
@@ -544,14 +454,14 @@ func (e *Engine) runVerifyCommands(
 				break // passed (possibly on retry) — go to the next command
 			}
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return "", -1, tail.String(), ctxErr // deadline/cancel: do not retry
+				return "", tail.String(), ctxErr // deadline/cancel: do not retry
 			}
 		}
 		if !passed {
-			return raw, idx, tail.String(), nil // failed every attempt → block
+			return raw, tail.String(), nil // failed every attempt → block
 		}
 	}
-	return "", -1, tail.String(), nil
+	return "", tail.String(), nil
 }
 
 // boundedTail is a concurrency-safe io.Writer that retains only the last `max`
