@@ -506,6 +506,7 @@ func TestCompareByVariantMissingBaselineLeavesDeltasUnset(t *testing.T) {
 	rows := rowsByVariant(res.Rows)
 	if rows["treatment"] == nil {
 		t.Fatalf("rows = %+v", res.Rows)
+		return
 	}
 	if rows["treatment"].FailureEstimate.HasDelta || rows["treatment"].Baseline {
 		t.Fatalf("missing baseline should not set delta/baseline: %+v", *rows["treatment"])

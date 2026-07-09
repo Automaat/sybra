@@ -86,6 +86,7 @@ func TestSchedulerSyncRestartsOnConfigChange(t *testing.T) {
 	sched.mu.Unlock()
 	if rfBefore == nil {
 		t.Fatal("fetcher not started")
+		return
 	}
 
 	la.IntervalSec = 120
