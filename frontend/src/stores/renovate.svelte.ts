@@ -54,14 +54,11 @@ class RenovateStore {
 
 export const renovateStore = new RenovateStore()
 if (typeof window !== 'undefined') {
-  // Desktop mode needs window.runtime (Wails IPC); web mode uses SSE directly.
-  if (import.meta.env.VITE_MODE === 'web' || window.runtime) {
-    // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
-    // poisoning the lazy import chunk this module lives in.
-    try {
-      renovateStore.listen()
-    } catch (e) {
-      console.warn('renovateStore.listen() failed to attach:', e)
-    }
+  // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
+  // poisoning the lazy import chunk this module lives in.
+  try {
+    renovateStore.listen()
+  } catch (e) {
+    console.warn('renovateStore.listen() failed to attach:', e)
   }
 }
