@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -44,11 +45,12 @@ func (i *Instance) EnvVars() []string {
 
 // Manager holds all running sandbox instances keyed by task ID.
 type Manager struct {
-	mu        sync.Mutex
-	instances map[string]*Instance
-	starting  map[string]chan struct{} // taskID -> closed when its in-flight Start finishes
-	logger    *slog.Logger
-	dataDir   string // e.g. ~/.sybra/sandboxes
+	mu           sync.Mutex
+	instances    map[string]*Instance
+	starting     map[string]chan struct{} // taskID -> closed when its in-flight Start finishes
+	startSandbox func(context.Context, string, string, *project.SandboxConfig) (*Instance, error)
+	logger       *slog.Logger
+	dataDir      string // e.g. ~/.sybra/sandboxes
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.
@@ -73,12 +75,13 @@ func (m *Manager) Get(taskID string) *Instance {
 
 // Start ensures a sandbox is running for the given task. Idempotent: if one
 // is already running the existing instance is returned. Concurrent Start
-// calls for the same taskID single-flight through the starting map — only
+// calls for the same taskID single-flight through the starting map - only
 // the first launches the sandbox, the rest wait for it and reuse its
-// result — so two racing callers can never both pass the "does it exist
+// result - so two racing callers can never both pass the "does it exist
 // yet" check and boot a duplicate cluster (issue #1538). Returns an error
-// if cfg is nil.
-func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
+// if cfg is nil. Failed starts are not cached: waiters wake, re-check state,
+// and may make their own start attempt.
+func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (inst *Instance, err error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("nil sandbox config")
 	}
@@ -107,11 +110,11 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 		break
 	}
 
-	var (
-		inst *Instance
-		err  error
-	)
 	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("sandbox start panic: %v", recovered)
+			m.logger.Error("sandbox.start.panic", "task_id", taskID, "panic", recovered, "stack", string(debug.Stack()))
+		}
 		m.mu.Lock()
 		if m.starting[taskID] == startCh {
 			delete(m.starting, taskID)
@@ -123,11 +126,11 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 		close(startCh)
 	}()
 
-	if cfg.IsK8s() {
-		inst, err = m.startK8s(ctx, taskID, worktreePath, cfg)
-	} else {
-		inst, err = m.startDocker(ctx, taskID, worktreePath, cfg)
+	starter := m.startSandbox
+	if starter == nil {
+		starter = m.defaultStartSandbox
 	}
+	inst, err = starter(ctx, taskID, worktreePath, cfg)
 
 	if err != nil {
 		return nil, err
@@ -139,6 +142,13 @@ func (m *Manager) Start(ctx context.Context, taskID, worktreePath string, cfg *p
 
 	m.logger.Info("sandbox.started", "task_id", taskID, "url", inst.URL)
 	return inst, nil
+}
+
+func (m *Manager) defaultStartSandbox(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
+	if cfg.IsK8s() {
+		return m.startK8s(ctx, taskID, worktreePath, cfg)
+	}
+	return m.startDocker(ctx, taskID, worktreePath, cfg)
 }
 
 // Stop tears down the sandbox for a task. No-op if no sandbox is running.
