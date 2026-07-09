@@ -1382,6 +1382,19 @@ func TestTestFailureFingerprint_DistinguishesSharedBoilerplateFileCitation(t *te
 	}
 }
 
+func TestTestFailureFingerprint_IgnoresRepeatedEvidenceTokens(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42\nObserved again: curl /status still returns HTTP 500. internal/server.go:42"
+
+	if testFailureFingerprint(a) != testFailureFingerprint(b) {
+		t.Fatalf("fingerprints differ when the same evidence is repeated:\na=%q\nb=%q", a, b)
+	}
+}
+
 func TestTestFailureFingerprint_DistinguishesSharedStatusPairWithoutStrongTokens(t *testing.T) {
 	t.Parallel()
 

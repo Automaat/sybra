@@ -1777,11 +1777,12 @@ var fingerprintPathTokenRe = regexp.MustCompile(`/(?:[A-Za-z0-9][A-Za-z0-9._~-]*
 
 var fingerprintFilePathTokenRe = regexp.MustCompile(`(?i)\.(?:go|ts|tsx|js|jsx|svelte)$`)
 
-// fingerprintMinTokens is the minimum count of discriminating tokens
-// (quoted strings, file:line citations, numbers, enum-like identifiers)
-// required before the token-based fingerprint is trusted. Below this, the
-// report is too sparse to distinguish reliably, and testFailureFingerprint
-// falls back to the original whole-prose hash.
+// fingerprintMinTokens is the minimum count of unique discriminating tokens
+// required before the token-based fingerprint is trusted, alongside at least
+// one strong token (quoted strings, endpoint paths, or non-filepath enum-like
+// identifiers). Below this, the report is too sparse or too boilerplate-heavy
+// to distinguish reliably, and testFailureFingerprint falls back to the
+// original whole-prose hash.
 const fingerprintMinTokens = 2
 
 // testFailureFingerprint derives a stable identifier for a test-runner
@@ -1827,10 +1828,15 @@ func fingerprintNormalizedBasis(report string) string {
 	tokens = append(tokens, enums...)
 	strongTokens += len(quoted) + len(paths)
 
+	seen := make(map[string]struct{}, len(tokens))
 	normalized := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		tok = strings.ToLower(strings.TrimSpace(tok))
 		if tok != "" {
+			if _, ok := seen[tok]; ok {
+				continue
+			}
+			seen[tok] = struct{}{}
 			normalized = append(normalized, tok)
 		}
 	}
@@ -2247,8 +2253,11 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 // attempts that exhausted the cap, not only the just-finished attempt's
 // fingerprint.
 func recurringProductBugFingerprints(t TaskInfo) []string {
-	var fingerprints []string
-	var indices []int
+	type fingerprintOccurrence struct {
+		fingerprint string
+		runIndex    int
+	}
+	var occurrences []fingerprintOccurrence
 	for i := range t.AgentRuns {
 		run := t.AgentRuns[i]
 		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
@@ -2258,22 +2267,24 @@ func recurringProductBugFingerprints(t TaskInfo) []string {
 			run.TestOutcome != testOutcomeProductBug || run.TestFailureFingerprint == "" {
 			continue
 		}
-		fingerprints = append(fingerprints, run.TestFailureFingerprint)
-		indices = append(indices, i)
+		occurrences = append(occurrences, fingerprintOccurrence{
+			fingerprint: run.TestFailureFingerprint,
+			runIndex:    i,
+		})
 	}
 	seen := make(map[string]bool)
 	var recurring []string
-	for a := range fingerprints {
-		if seen[fingerprints[a]] {
+	for a := range occurrences {
+		if seen[occurrences[a].fingerprint] {
 			continue
 		}
-		for b := a + 1; b < len(fingerprints); b++ {
-			if fingerprints[b] != fingerprints[a] {
+		for b := a + 1; b < len(occurrences); b++ {
+			if occurrences[b].fingerprint != occurrences[a].fingerprint {
 				continue
 			}
-			if hasInterveningCodeAuthorRun(t.AgentRuns, indices[a], indices[b]) {
-				seen[fingerprints[a]] = true
-				recurring = append(recurring, fingerprints[a])
+			if hasInterveningCodeAuthorRun(t.AgentRuns, occurrences[a].runIndex, occurrences[b].runIndex) {
+				seen[occurrences[a].fingerprint] = true
+				recurring = append(recurring, occurrences[a].fingerprint)
 				break
 			}
 		}
