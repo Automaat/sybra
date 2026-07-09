@@ -42,7 +42,7 @@ const verifyChecksFlakeRetries = 1
 const verifyChecksTimeoutRetries = 1
 
 var verifyMissingToolchainRe = regexp.MustCompile(
-	`(?i)command not found|executable file not found|not found in \$?PATH`)
+	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -159,15 +159,16 @@ func (e *Engine) runVerifySuiteWithRetry(taskID, wtPath string, cmds []string, t
 }
 
 func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
-	setup := e.checks.SetupCommands(e.ctx, taskID)
+	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
+	setup := e.checks.SetupCommands(setupCtx, taskID)
 	if len(setup) == 0 {
+		cancel()
 		return false, "", "", nil
 	}
 	e.logger.Warn("workflow.verify-checks.toolchain-heal",
 		"task_id", taskID, "step", stepID, "setup_commands", len(setup))
-	ctx, cancel := context.WithTimeout(e.ctx, timeout)
-	maybeMiseTrust(ctx, wtPath)
-	sFailed, sOut, sErr := e.runVerifyCommands(ctx, taskID, wtPath, setup)
+	maybeMiseTrust(setupCtx, wtPath)
+	sFailed, sOut, sErr := e.runVerifyCommands(setupCtx, taskID, wtPath, setup)
 	cancel()
 	if sFailed != "" || sErr != nil {
 		e.logger.Warn("workflow.verify-checks.toolchain-heal.setup-failed",
