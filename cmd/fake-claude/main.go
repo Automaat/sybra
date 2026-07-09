@@ -53,6 +53,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -102,7 +103,7 @@ func main() {
 	if prompt == "" && scenarioNeedsPromptContext(scenario) {
 		prompt = readInitialPrompt(os.Stdin)
 	}
-	if !runScenario(scenario, promptTaskID(prompt), prompt) {
+	if !runScenario(scenario, promptTaskID(prompt)) {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
@@ -491,7 +492,7 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(extractPrompt(os.Args)) {
 		if strings.Contains(filepath.Base(path), "sybra-critique") {
 			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
 		}
