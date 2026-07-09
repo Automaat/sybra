@@ -97,6 +97,7 @@ func detectBoardWide(in DetectInput, counts Counts) []Anomaly {
 func detectPerTask(in DetectInput) []Anomaly {
 	var out []Anomaly
 	stuckBudget := time.Duration(in.Cfg.StuckHumanHours * float64(time.Hour))
+	tracked := openLostAgentInvestigations(in.Tasks)
 	for i := range in.Tasks {
 		t := &in.Tasks[i]
 		if t.TaskType == task.TaskTypeChat {
@@ -108,7 +109,7 @@ func detectPerTask(in DetectInput) []Anomaly {
 		if a := detectUntriaged(t, in.Now); a != nil {
 			out = append(out, *a)
 		}
-		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget); a != nil {
+		if a := detectStuckHumanBlocked(t, in.Now, stuckBudget, tracked); a != nil {
 			out = append(out, *a)
 		}
 		if a := detectPRGap(t, in.Now, time.Duration(in.Cfg.PRGapGraceMinutes)*time.Minute); a != nil {
@@ -116,6 +117,52 @@ func detectPerTask(in DetectInput) []Anomaly {
 		}
 	}
 	out = append(out, detectLostAgents(in)...)
+	return out
+}
+
+// monitorAutoRetriedTag marks a task the monitor has already auto-retried
+// once out of human-required because its stall correlated with a known,
+// already-tracked lost_agent investigation. Present so a second stall on the
+// same task falls back to the normal LLM re-investigation instead of
+// bouncing the task between in-progress and human-required forever.
+const monitorAutoRetriedTag = "monitor:auto-retried"
+
+// lostAgentInvestigationTag is the tag monitorRoutingSink stamps on a local
+// task it files for a KindLostAgent anomaly (see internal/sybra/monitor_sink.go).
+const lostAgentInvestigationTag = "monitor:" + string(KindLostAgent)
+
+// affectedTaskMarkerPrefix precedes the origin task id in a deterministic
+// issue body's "## Affected task" section (see DeterministicIssueBody). Used
+// to recover which task an investigation task was filed for.
+const affectedTaskMarkerPrefix = "## Affected task\n- `"
+
+// openLostAgentInvestigations returns the set of task IDs that already have
+// an open (non-terminal) local investigation task tracking a lost_agent
+// anomaly for them — i.e. monitorRoutingSink already filed (or re-detected
+// into) a task for this exact lost_agent fingerprint, so its root cause is
+// already known and tracked. Used to skip re-dispatching an LLM to
+// rediscover the same finding when the origin task later shows up stuck in
+// human-required.
+func openLostAgentInvestigations(tasks []task.Task) map[string]bool {
+	out := make(map[string]bool)
+	for i := range tasks {
+		t := &tasks[i]
+		if task.IsTerminalStatus(t.Status) {
+			continue
+		}
+		if !slices.Contains(t.Tags, lostAgentInvestigationTag) {
+			continue
+		}
+		idx := strings.Index(t.Body, affectedTaskMarkerPrefix)
+		if idx < 0 {
+			continue
+		}
+		rest := t.Body[idx+len(affectedTaskMarkerPrefix):]
+		originID, _, ok := strings.Cut(rest, "`")
+		if ok && originID != "" {
+			out[originID] = true
+		}
+	}
 	return out
 }
 
@@ -153,7 +200,7 @@ func detectUntriaged(t *task.Task, now time.Time) *Anomaly {
 	}
 }
 
-func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) *Anomaly {
+func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, trackedLostAgent map[string]bool) *Anomaly {
 	// plan-review is intentionally excluded: a plan awaits the human's approval
 	// indefinitely and must never be auto-escalated to human-required. Only tasks
 	// already in human-required are flagged when they exceed their dwell budget.
@@ -192,10 +239,22 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration) 
 			ev["human_review_verdict"] = dec
 		}
 	}
-	// Skip the LLM only when human-review already confirmed verdict=human;
+	// A task whose stall already has an open, monitor-filed lost_agent
+	// investigation is a known cause, not an ambiguous one — re-dispatching an
+	// LLM here would just rediscover the same finding the investigation task
+	// already recorded. Skip the LLM once and let the remediator auto-retry
+	// instead (remediateHumanRequiredStuck), guarded by monitorAutoRetriedTag
+	// so a second stall on the same task falls through to the normal path
+	// rather than bouncing forever.
+	knownLostAgentCause := trackedLostAgent[t.ID] && !slices.Contains(t.Tags, monitorAutoRetriedTag)
+	if knownLostAgentCause {
+		ev["known_lost_agent_investigation"] = true
+	}
+	// Skip the LLM when human-review already confirmed verdict=human, or when
+	// the stall correlates with a known, already-tracked lost_agent cause;
 	// otherwise an LLM investigates whether the block is a real human need or a
 	// Sybra misfire.
-	requiresLLM := ev["human_review_verdict"] != "human"
+	requiresLLM := ev["human_review_verdict"] != "human" && !knownLostAgentCause
 	return &Anomaly{
 		Kind:        KindStuckHumanBlocked,
 		TaskID:      t.ID,

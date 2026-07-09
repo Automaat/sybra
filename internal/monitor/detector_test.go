@@ -911,6 +911,95 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	})
 }
 
+// lostAgentInvestigationTask builds a local investigation task the way
+// monitorRoutingSink.Submit would file it for a KindLostAgent anomaly on
+// originID, using the same fingerprint/body shape DeterministicIssueBody
+// produces (see internal/monitor/prompts.go).
+func lostAgentInvestigationTask(id, originID string, status task.Status) task.Task {
+	fp := Fingerprint(KindLostAgent, originID, nil)
+	body := "## Detection\n- Kind: `lost_agent`\n- Fingerprint: `" + fp + "`\n\n" +
+		"## Affected task\n- `" + originID + "`\n\n"
+	return mkTask(id, status, func(t *task.Task) {
+		t.Tags = []string{lostAgentInvestigationTag}
+		t.Body = body
+	})
+}
+
+func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+
+	t.Run("RequiresLLM=false and evidence set when an open lost_agent investigation tracks this task", func(t *testing.T) {
+		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
+		report := Detect(in)
+
+		var got *Anomaly
+		for i := range report.Anomalies {
+			if report.Anomalies[i].Kind == KindStuckHumanBlocked {
+				got = &report.Anomalies[i]
+			}
+		}
+		if got == nil {
+			t.Fatal("want a stuck_human_blocked anomaly for the stalled task")
+		}
+		if got.RequiresLLM {
+			t.Error("RequiresLLM must be false when an open lost_agent investigation already tracks this task")
+		}
+		if known, _ := got.Evidence["known_lost_agent_investigation"].(bool); !known {
+			t.Error("evidence missing known_lost_agent_investigation=true")
+		}
+	})
+
+	t.Run("RequiresLLM=true when the investigation task is terminal", func(t *testing.T) {
+		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+		})
+		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusDone)
+		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
+		report := Detect(in)
+
+		var got *Anomaly
+		for i := range report.Anomalies {
+			if report.Anomalies[i].Kind == KindStuckHumanBlocked {
+				got = &report.Anomalies[i]
+			}
+		}
+		if got == nil {
+			t.Fatal("want a stuck_human_blocked anomaly for the stalled task")
+		}
+		if !got.RequiresLLM {
+			t.Error("a closed/done investigation task must not suppress the LLM re-investigation")
+		}
+	})
+
+	t.Run("RequiresLLM=true once the task already carries the auto-retried tag", func(t *testing.T) {
+		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.Tags = []string{"medium", monitorAutoRetriedTag}
+		})
+		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
+		report := Detect(in)
+
+		var got *Anomaly
+		for i := range report.Anomalies {
+			if report.Anomalies[i].Kind == KindStuckHumanBlocked {
+				got = &report.Anomalies[i]
+			}
+		}
+		if got == nil {
+			t.Fatal("want a stuck_human_blocked anomaly for the stalled task")
+		}
+		if !got.RequiresLLM {
+			t.Error("a task already auto-retried once must fall back to the normal LLM path on a second stall")
+		}
+	})
+}
+
 func TestCounts(t *testing.T) {
 	tasks := []task.Task{
 		mkTask("a", task.StatusTodo),

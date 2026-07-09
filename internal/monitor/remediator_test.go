@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -132,6 +133,60 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 	}
 	if u.u.StatusReason != nil {
 		t.Errorf("status_reason must not change, got %q", *u.u.StatusReason)
+	}
+}
+
+func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing.T) {
+	t.Parallel()
+	existing := mkTask("hr2", task.StatusHumanRequired, func(t *task.Task) {
+		t.StatusReason = "watchdog: stop"
+		t.Tags = []string{"medium"}
+	})
+	ft := &fakeTasks{tasks: []task.Task{existing}}
+	rem := newRemediator(ft)
+	a := Anomaly{
+		Kind:   KindStuckHumanBlocked,
+		TaskID: "hr2",
+		Evidence: map[string]any{
+			"status":                         "human-required",
+			"known_lost_agent_investigation": true,
+		},
+	}
+	label, err := rem.Apply(context.Background(), a)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if label == "" {
+		t.Fatal("expected non-empty label")
+	}
+	if len(ft.updates) != 1 {
+		t.Fatalf("want 1 update, got %d", len(ft.updates))
+	}
+	u := ft.updates[0]
+	if u.id != "hr2" {
+		t.Errorf("updated wrong task: %q", u.id)
+	}
+	if u.u.Status == nil || *u.u.Status != task.StatusInProgress {
+		t.Fatalf("status = %v, want in-progress", u.u.Status)
+	}
+	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
+		t.Error("status_reason should explain the auto-retry")
+	}
+	if u.u.Tags == nil {
+		t.Fatal("expected tags to be updated with the auto-retried marker")
+	}
+	found := false
+	for _, tag := range *u.u.Tags {
+		if tag == monitorAutoRetriedTag {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tags = %v, want to contain %q", *u.u.Tags, monitorAutoRetriedTag)
+	}
+	// Original tags must be preserved, not clobbered.
+	if !slices.Contains(*u.u.Tags, "medium") {
+		t.Errorf("tags = %v, want to still contain %q", *u.u.Tags, "medium")
 	}
 }
 
