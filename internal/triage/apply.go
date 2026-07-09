@@ -16,6 +16,10 @@ import (
 // (see escapeHatchTags) and the umbrella dependency gate marker.
 var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
 
+const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
+	"guard blocked dispatch to avoid a wasted implement run; " +
+	"set task_type=umbrella to expand it or fix the title if this isn't a tracker"
+
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.
 // All field changes happen in a single UpdateMap call so the write is
 // atomic per task (Manager holds a per-task mutex).
@@ -96,7 +100,8 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// pr-fix tasks (system-created to fix an existing PR) must never enter the
 	// planning phase — they go straight to implementation. Override any route
 	// that would park them in planning.
-	if t.RunRole == "pr-fix" || t.PRNumber > 0 {
+	isPRFix := isPRFixTask(t)
+	if isPRFix {
 		status = task.StatusTodo
 	}
 	updates["status"] = string(status)
@@ -112,15 +117,9 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// wastes a full run before the agent discovers there's no direct code
 	// surface. Catch it here — before dispatch — and park it for a human to
 	// either set task_type=umbrella or fix the title.
-	effectiveTitle := newTitle
-	if effectiveTitle == "" {
-		effectiveTitle = t.Title
-	}
-	if t.TaskType != task.TaskTypeUmbrella && umbrella.IsUmbrellaIssue(effectiveTitle, t.Tags) {
+	if !isPRFix && t.TaskType != task.TaskTypeUmbrella && umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
 		updates["status"] = string(task.StatusHumanRequired)
-		updates["status_reason"] = "☂️-titled task has task_type=normal, not umbrella — " +
-			"guard blocked dispatch to avoid a wasted implement run; " +
-			"set task_type=umbrella to expand it or fix the title if this isn't a tracker"
+		updates["status_reason"] = umbrellaNormalTypeStatusReason
 	}
 
 	updated, err := mgr.UpdateMap(t.ID, updates)
@@ -128,6 +127,10 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
 	return updated, nil
+}
+
+func isPRFixTask(t task.Task) bool {
+	return t.RunRole == "pr-fix" || t.PRNumber > 0
 }
 
 // projectTypeFor returns the registered project type for id and whether id

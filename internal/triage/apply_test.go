@@ -193,6 +193,60 @@ func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
 	}
 }
 
+func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.RunRole = "pr-fix"
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+}
+
+func TestApplyDoesNotGuardPRNumberWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.PRNumber = 42
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+}
+
 func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("bump dep on work repo", "https://github.com/example-org/example-repo/pull/9", task.AgentModeHeadless)
