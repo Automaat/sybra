@@ -405,6 +405,16 @@ export class Task {
     "workflow"?: workflow$0.Execution | null;
     "createdAt": string;
     "updatedAt": string;
+
+    /**
+     * StatusChangedAt marks the last time Status actually transitioned, as
+     * opposed to UpdatedAt which is bumped by any field write (tags, audit
+     * sidecars, status_reason, ...). Detectors that need to know "how long
+     * has this task been in its current status" (e.g. detectLostAgents'
+     * dispatch-latency grace window) must key off this field, not UpdatedAt —
+     * see internal/monitor/detector.go.
+     */
+    "statusChangedAt": string;
     "body": string;
     "plan"?: string;
     "planContract"?: string;
@@ -499,6 +509,9 @@ export class Task {
         if (!("updatedAt" in $$source)) {
             this["updatedAt"] = "0001-01-01T00:00:00.000Z";
         }
+        if (!("statusChangedAt" in $$source)) {
+            this["statusChangedAt"] = "0001-01-01T00:00:00.000Z";
+        }
         if (!("body" in $$source)) {
             this["body"] = "";
         }
@@ -521,7 +534,7 @@ export class Task {
         const $$createField18_0 = $$createType0;
         const $$createField37_0 = $$createType2;
         const $$createField38_0 = $$createType4;
-        const $$createField49_0 = $$createType5;
+        const $$createField50_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -539,7 +552,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField38_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField49_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField50_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
