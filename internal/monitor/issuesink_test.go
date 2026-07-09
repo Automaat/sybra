@@ -261,6 +261,36 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 	}
 }
 
+func TestSanitizeGHOutput_CaseInsensitiveHTML(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "uppercase doctype collapses to status line",
+			in:   "<!DOCTYPE HTML>\n<html><body>Unicorn</body></html>\ngh: HTTP 504",
+			want: "gh: HTTP 504",
+		},
+		{
+			name: "mixed-case html with no trailing gh line",
+			in:   "<!DoCtYpE hTmL><HtMl><body>Unicorn</body></HtMl>",
+			want: "GitHub returned an HTML error page",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeGHOutput([]byte(tt.in)); got != tt.want {
+				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // containsPair returns true if args contains key followed immediately by val.
 func containsPair(args []string, key, val string) bool {
 	for i := range len(args) - 1 {

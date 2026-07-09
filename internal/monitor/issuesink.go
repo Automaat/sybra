@@ -238,7 +238,8 @@ func classifyGHError(op string, out []byte, err error) error {
 
 func sanitizeGHOutput(out []byte) string {
 	s := strings.TrimSpace(string(out))
-	if !strings.Contains(s, "<!DOCTYPE html") && !strings.Contains(s, "<html") {
+	lower := strings.ToLower(s)
+	if !strings.Contains(lower, "<!doctype html") && !strings.Contains(lower, "<html") {
 		return s
 	}
 	for i := len(s) - 1; i >= 0; i-- {

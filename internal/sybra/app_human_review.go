@@ -633,11 +633,22 @@ func (h *humanReviewHandler) findExistingLocalBugTask(title string) (task.Task, 
 		return task.Task{}, false
 	}
 	for i := range all {
-		if all[i].Title == title && slices.Contains(all[i].Tags, "sybra-bug") {
+		if all[i].Title == title &&
+			slices.Contains(all[i].Tags, "sybra-bug") &&
+			hasAnyTag(all[i].Tags, "local", "scrubbed", "issue-filing-failed") {
 			return all[i], true
 		}
 	}
 	return task.Task{}, false
+}
+
+func hasAnyTag(tags []string, needles ...string) bool {
+	for _, needle := range needles {
+		if slices.Contains(tags, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // linkExistingLocalBug re-blocks taskID against an already-filed local

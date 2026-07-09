@@ -746,6 +746,64 @@ func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {
 	}
 }
 
+func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	sink.err = errors.New("rate limited")
+
+	if _, err := tasks.CreateFull("fix(workflow): stale branch race", "existing unrelated bug", task.AgentModeHeadless, task.Update{
+		Tags: task.Ptr([]string{"sybra-bug"}),
+	}); err != nil {
+		t.Fatalf("seed unrelated sybra-bug task: %v", err)
+	}
+
+	tk, err := tasks.Create("Whatever", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "```sybra-verdict\n" +
+			`{"decision":"sybra_bug","summary":"branch stale before agent start","issue_title":"fix(workflow): stale branch race","issue_body":"z"}` +
+			"\n```",
+	})
+	h.onComplete(ag)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	localFallbackCount := 0
+	for _, got := range all {
+		if got.ID == tk.ID {
+			continue
+		}
+		if slices.Contains(got.Tags, "issue-filing-failed") {
+			localFallbackCount++
+		}
+	}
+	if localFallbackCount != 1 {
+		t.Fatalf("want exactly 1 new local fallback task, got %d", localFallbackCount)
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if !strings.Contains(got.Body, "blocked by Sybra bug (local fallback)") {
+		t.Errorf("expected fresh local fallback note, got:\n%s", got.Body)
+	}
+	if strings.Contains(got.Body, "already filed") {
+		t.Errorf("must not dedupe against unrelated sybra-bug task; got:\n%s", got.Body)
+	}
+}
+
 func TestOnComplete_WorkProject_LocalTaskScrubbed(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
