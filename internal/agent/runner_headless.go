@@ -706,7 +706,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		maxCost := m.guardrails.MaxCostUSD
 		m.mu.RUnlock()
 		if maxCost > 0 && costNow > maxCost {
-			if keepGoing := m.checkCostGuardrail(ctx, a, costNow, maxCost); !keepGoing {
+			if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
 				return true
 			}
 		}
@@ -714,15 +714,15 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	return false
 }
 
-// checkCostGuardrail blocks the stream on a breach of MaxCostUSD until a
-// human responds via RespondEscalation. Unlike checkTurnsGuardrail there is
-// no auto-continue path: cost is the hard ceiling turns' auto-continue is
-// itself gated against, so a breach must always stop the run pending a human
-// decision rather than silently letting the process keep spending. Returns
-// false when the caller should stop the stream (subprocess is terminated by
-// the caller, mirroring checkTurnsGuardrail).
-func (m *Manager) checkCostGuardrail(ctx context.Context, a *Agent, costNow, maxCost float64) bool {
+// checkCostGuardrail hard-stops a headless run on a breach of MaxCostUSD.
+// Unlike checkTurnsGuardrail there is no auto-continue or human-continue path:
+// cost is the hard ceiling turns' auto-continue is itself gated against, so a
+// breach must terminate the subprocess immediately instead of leaving a
+// headless process alive while waiting for a response. Returns false so the
+// caller stops the stream and kills/cancels the subprocess.
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+	a.MarkStopped()
 	a.SetEscalationReason("cost")
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:  "cost",
@@ -730,17 +730,7 @@ func (m *Manager) checkCostGuardrail(ctx context.Context, a *Agent, costNow, max
 		Limit:   maxCost,
 	})
 	m.emit(events.AgentState(a.ID), a)
-	select {
-	case continueRun := <-a.escalationCh:
-		if !continueRun {
-			return false
-		}
-		a.SetEscalationReason("")
-		m.emit(events.AgentState(a.ID), a)
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return false
 }
 
 // reportScannerError surfaces bufio.Scanner errors at the end of the NDJSON
