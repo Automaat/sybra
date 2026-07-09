@@ -25,9 +25,18 @@ var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.Gate
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
-	projectID := strings.TrimSpace(v.ProjectID)
+	// t.ProjectID is sticky: once set (e.g. by the GitHub issue fetcher at
+	// task creation), the classifier's free-text guess must never override
+	// it with a lower-confidence, content-similarity match. Only fill it in
+	// when currently empty, and prefer the task's own Issue URL — the
+	// authoritative source-of-truth link — over the classifier's guess and
+	// generic title/body scanning.
+	projectID := strings.TrimSpace(t.ProjectID)
 	if projectID == "" {
-		projectID = strings.TrimSpace(t.ProjectID)
+		projectID = MatchProjectFromIssue(t.Issue, projects)
+	}
+	if projectID == "" {
+		projectID = strings.TrimSpace(v.ProjectID)
 	}
 	if projectID == "" {
 		projectID = MatchProject(t.Title, t.Body, projects)

@@ -30,3 +30,25 @@ func TestMatchProject(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchProjectFromIssue(t *testing.T) {
+	projects := []project.Project{
+		{ID: "Automaat/sybra", Owner: "Automaat", Repo: "sybra"},
+		{ID: "foo/bar", Owner: "foo", Repo: "bar"},
+	}
+	tests := []struct {
+		name, issue, want string
+	}{
+		{"no issue", "", ""},
+		{"issue url", "https://github.com/Automaat/sybra/issues/42", "Automaat/sybra"},
+		{"unregistered repo", "https://github.com/unknown/repo/issues/1", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := MatchProjectFromIssue(tc.issue, projects)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
