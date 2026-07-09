@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
-type fakeCheckGetter struct{ cmds []string }
+type fakeCheckGetter struct{ cmds, setup []string }
 
 func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
+
+func (f *fakeCheckGetter) SetupCommands(context.Context, string) []string { return f.setup }
 
 func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepVerifyChecks} }
 
@@ -145,6 +147,68 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged (retry passed, no human-required)", ti.Status)
+	}
+}
+
+func newVerifyChecksEngineWithSetup(t *testing.T, wt string, cmds, setup []string) (*Engine, *memTasks) {
+	t.Helper()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds, setup: setup})
+	return engine, engine.tasks.(*memTasks)
+}
+
+func TestExecVerifyChecks_ToolchainHealRepairs(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`test -f .healed || { echo "vite: command not found" >&2; exit 1; }`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean (setup re-run repaired the toolchain)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged (heal succeeded)", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_ToolchainHealSetupFailsEscalates(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`echo "vite: command not found" >&2; exit 1`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"false"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (setup could not repair)", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
+func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	cmds := []string{`test -f .healed || { echo "assertion failed: got 4 want 5" >&2; exit 1; }`}
+	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged (non-toolchain failure must not trigger setup heal)", out.Output)
 	}
 }
 

@@ -396,6 +396,26 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID string) []string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" {
+		return nil
+	}
+	wtPath := a.mgr.PathFor(t)
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		return nil
+	}
+	p, pErr := a.projects.Get(t.ProjectID)
+	if pErr != nil {
+		return nil
+	}
+	var repoSetup []string
+	if repoCfg, rErr := project.LoadRepoConfigAtDefaultBranch(ctx, p.ClonePath); rErr == nil && repoCfg != nil {
+		repoSetup = repoCfg.Setup
+	}
+	return project.MergeSetup(repoSetup, p.SetupCommands)
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
