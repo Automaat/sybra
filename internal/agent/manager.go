@@ -63,10 +63,14 @@ type Manager struct {
 	bashTimeoutMs int
 	retryWatchdog int
 	fallbackModel string
-	gate          provider.HealthGate
-	limitGate     LimitGate
-	limitPolicy   limits.Policy
-	limitSink     func(limits.Snapshot)
+	// headlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	headlessSteerable bool
+	gate              provider.HealthGate
+	limitGate         LimitGate
+	limitPolicy       limits.Policy
+	limitSink         func(limits.Snapshot)
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -80,6 +84,12 @@ type Manager struct {
 	// dispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
 	dispatchJitterMs int
+	// playwrightMCPEnabled mirrors config.PlaywrightMCPEnabled. Default-off:
+	// see Manager.preparePlaywrightMCP for the full attach decision.
+	playwrightMCPEnabled bool
+	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
+	// verbatim to the Playwright MCP launch command.
+	playwrightMCPExtraArgs []string
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
 	// lifetime.
@@ -187,6 +197,14 @@ type ManagerRuntimeConfig struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch. 0 disables jitter.
 	DispatchJitterMs int
+	// HeadlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	HeadlessSteerable bool
+	// PlaywrightMCPEnabled mirrors config.PlaywrightMCPEnabled(). Default-off.
+	PlaywrightMCPEnabled bool
+	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
+	PlaywrightMCPExtraArgs []string
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -216,9 +234,12 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		taskExists:             cfg.TaskExists,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
+		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
 		deadAgentRetention:     defaultDeadAgentRetention,
+		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
+		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
@@ -277,6 +298,9 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
+	m.headlessSteerable = cfg.HeadlessSteerable
+	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
+	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()
 	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil

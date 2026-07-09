@@ -526,6 +526,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	delete(e.dispatching, taskID)
 	e.mu.Unlock()
 	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
 	if rErr != nil {
 		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
@@ -714,8 +715,11 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		// Only resume async agent steps where no agent is running.
-		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN {
+		// Only resume async agent steps where no agent is running, plus
+		// classify_task: it's synchronous but can park in ExecWaiting on
+		// engine shutdown mid-classify (see engine_steps_classify.go), and
+		// nothing else re-drives a parked sync step.
+		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN && step.Type != StepClassifyTask {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
@@ -777,6 +781,7 @@ func (e *Engine) ResumeStalled() {
 		// marker is cleared, so the day a sync step becomes resumable its
 		// completion cascades correctly instead of being silently dropped.
 		e.fireComplete(comp)
+		e.drainPendingConflictRecovery(t.ID)
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 		if rErr != nil {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr, fresh.Workflow, step.ID)

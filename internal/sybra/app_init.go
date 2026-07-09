@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -316,6 +317,9 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -676,6 +680,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		projects:   a.projects,
+		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:      a.audit,
+	})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -698,8 +708,15 @@ func (a *App) initWorkflowEngine() {
 	if a.agentOrch != nil && a.reviewer != nil {
 		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
+	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
+	// (e.g. a reused worktree rebased out from under an earlier merge-based
+	// push) — otherwise it flips straight to human-required with no attempt
+	// at the autonomous fix other divergence sources already get.
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	}
 	// Workflow completion moves to wireServices so the callback closure binds
-	// to the AgentCompletionHandler constructed there.
+	// to the completion.Handler constructed there.
 }
 
 func (a *App) initAgentConfig() {

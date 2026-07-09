@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -19,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -27,6 +29,7 @@ import (
 // Compile-time interface checks.
 var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
@@ -230,6 +233,34 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
+	return err
+}
+
+// taskClassifierAdapter bridges internal/triage's deterministic classifier to
+// workflow.TaskClassifier for the `classify_task` step. It runs the same
+// classify+apply pipeline as `sybra-cli triage classify <id>` and the
+// poll-based auto-triage handler (internal/poll.TriageHandler), so the
+// workflow step no longer needs a full agent session to reach it.
+type taskClassifierAdapter struct {
+	tasks      *task.Manager
+	projects   *project.Store
+	classifier triage.Classifier
+	audit      *audit.Logger
+}
+
+func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	var projects []project.Project
+	if a.projects != nil {
+		projects, err = a.projects.List()
+		if err != nil {
+			return err
+		}
+	}
+	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
 	return err
 }
 
@@ -625,7 +656,12 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
-		OutputSchema:      outputSchema,
+		// fork_subagent is a task-level opt-in, but must never reach a
+		// verifier role (review/test-runner/eval) — a forked subagent's own
+		// token spend would multiply on every independent check, and a
+		// verifier has no need for the parallelism it buys an implementer.
+		ForkSubagent: t.ForkSubagent && r.AuthorsCode(),
+		OutputSchema: outputSchema,
 	}
 	a.withExperiencePrompt(&cfg, r, t)
 
@@ -657,14 +693,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	baselineRef = agentorch.CurrentWorktreeHead(cfg.Dir)
-
-	if a.sandboxes != nil {
-		if r == agent.RoleTestRunner {
-			cfg.ExtraEnv = a.agentOrch.SandboxEnv(taskID, cfg.Dir, t)
-		} else if inst := a.sandboxes.Get(taskID); inst != nil {
-			cfg.ExtraEnv = inst.EnvVars()
-		}
-	}
+	a.configureTestRunnerRun(&cfg, taskID, r, t)
 
 	ag, err := a.agents.Run(cfg)
 	if err != nil {
@@ -674,6 +703,25 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID string, role agent.Role, t task.Task) {
+	if a.sandboxes != nil {
+		if role == agent.RoleTestRunner {
+			cfg.ExtraEnv = a.agentOrch.SandboxEnv(taskID, cfg.Dir, t)
+		} else if inst := a.sandboxes.Get(taskID); inst != nil {
+			cfg.ExtraEnv = inst.EnvVars()
+		}
+	}
+	if role != agent.RoleTestRunner {
+		return
+	}
+	// Eligibility only — Manager.preparePlaywrightMCP decides whether to
+	// actually attach the MCP server, gated on config enablement and the
+	// FINAL resolved provider (not this raw role/provider check), so a
+	// test-runner that fails over to codex never gets a claude-only flag.
+	cfg.PlaywrightMCPEligible = true
+	cfg.PlaywrightMCPOutputDir = filepath.Join(cfg.Dir, worktree.EvidenceDirName)
 }
 
 // resolveWorktreeDir auto-assigns a project to t (if needed), optionally

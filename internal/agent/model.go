@@ -88,6 +88,15 @@ type Agent struct {
 	// --resume to continue the conversation.
 	Resumable bool `json:"resumable,omitempty"`
 
+	// CanSteer reports whether SendMessage will currently be accepted for this
+	// agent — i.e. it has a live stdin transport and is not finalizing. It is a
+	// backend-authoritative capability so the UI does not have to re-derive
+	// steerability from mode/provider/state heuristics (which are wrong for a
+	// rollback-disabled or legacy-reattached run that has no stdin transport).
+	// The stored value is ignored: MarshalJSON always overrides it with the
+	// live computation, so it is never stale on the wire.
+	CanSteer bool `json:"canSteer"`
+
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
 	convoBuffer     []ConvoEvent
@@ -133,6 +142,23 @@ type Agent struct {
 	// exited on its own. It tells the finalize path to derive completion
 	// status from the result event rather than the kill signal.
 	completedByResult bool
+
+	// finalizing marks a steerable headless run whose stdin was closed after
+	// its terminal result event because no further steer message was queued
+	// (see processHeadlessLine). Once set, SendMessage rejects rather than
+	// queuing a message that would never be delivered — the child is on its
+	// way out.
+	finalizing bool
+
+	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
+	// system event (REPLACE semantics: the full set of currently-live
+	// background bash tasks, e.g. a `run_in_background` Bash call). A CC
+	// process can legitimately emit its terminal result while a task like
+	// `npm ci` is still running in the background, producing no further
+	// NDJSON activity — the post-result-hang guards must not mistake that
+	// silence for a hung/orphaned process and kill it mid-write (task
+	// 3aeabb65: a killed `npm ci` left a corrupted, zero-byte node_modules).
+	backgroundTaskIDs []string
 
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
@@ -218,6 +244,7 @@ type View struct {
 	ErrorKind                string    `json:"errorKind,omitempty"`
 	ErrorMsg                 string    `json:"errorMsg,omitempty"`
 	AwaitingApproval         bool      `json:"awaitingApproval,omitempty"`
+	CanSteer                 bool      `json:"canSteer"`
 	Resumable                bool      `json:"resumable,omitempty"`
 }
 
@@ -264,6 +291,7 @@ func (a *Agent) View() View {
 		ErrorKind:                a.ErrorKind,
 		ErrorMsg:                 a.ErrorMsg,
 		AwaitingApproval:         a.AwaitingApproval,
+		CanSteer:                 a.computeCanSteer(),
 		Resumable:                a.Resumable,
 	}
 }
@@ -310,6 +338,7 @@ func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
 		ID:                 a.ID,
 		TaskID:             a.TaskID,
@@ -327,6 +356,7 @@ func (a *Agent) toRecord() Record {
 		CWD:                a.sessionCWD,
 		StartedAt:          a.StartedAt,
 		StdinPath:          a.convo.stdinPath,
+		PendingPrompts:     pendingPrompts,
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
@@ -358,7 +388,7 @@ func fromRecord(r Record) *Agent {
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
 		oneShot:            r.OneShot,
-		convo:              convoIO{stdinPath: r.StdinPath},
+		convo:              convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
 		requirePermissions: r.RequirePermissions,
 		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
@@ -371,6 +401,7 @@ func (a *Agent) SetState(s State) {
 	a.mu.Lock()
 	a.State = s
 	a.mu.Unlock()
+	a.refreshCanSteer()
 }
 
 // SetAwaitingApproval marks whether the agent is paused pending tool approval.
@@ -858,6 +889,51 @@ func (a *Agent) hasPromptChannel() bool {
 	return a.convo.promptCh != nil
 }
 
+// setFinalizing marks a steerable headless run as closing its stdin down for
+// good (no further steer message can be delivered).
+func (a *Agent) setFinalizing(v bool) {
+	a.mu.Lock()
+	a.finalizing = v
+	a.mu.Unlock()
+	a.refreshCanSteer()
+}
+
+// isFinalizing reports whether the agent's stdin has been closed for good.
+func (a *Agent) isFinalizing() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.finalizing
+}
+
+// computeCanSteer reports whether SendMessage would currently be accepted for
+// this agent: a live stdin transport, not finalizing, and a steerable
+// mode/provider (interactive, or headless claude). Mirrors the SendMessage
+// gate so the UI capability never disagrees with the backend.
+func (a *Agent) computeCanSteer() bool {
+	if !a.convo.hasStdinPipe() || a.isFinalizing() {
+		return false
+	}
+	switch a.Mode {
+	case "interactive":
+		return true
+	case "headless":
+		return a.GetProvider() == "claude"
+	default:
+		return false
+	}
+}
+
+// refreshCanSteer recomputes and stores the CanSteer capability. Called from
+// the state/finalizing/stdin-transport transitions that can change it, so the
+// value serialized on the next AgentState emit is current. Must be called
+// without a.mu held (computeCanSteer takes a.mu.RLock via isFinalizing).
+func (a *Agent) refreshCanSteer() {
+	v := a.computeCanSteer()
+	a.mu.Lock()
+	a.CanSteer = v
+	a.mu.Unlock()
+}
+
 // setDetached marks whether the agent's subprocess is detached for
 // restart survival.
 func (a *Agent) setDetached(v bool) {
@@ -936,6 +1012,51 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 		return false
 	}
 	return time.Since(a.LastEventAt) >= grace
+}
+
+// backgroundTaskGrace is the extra idle time granted to a post-result-hang
+// guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
+// while the agent has outstanding CLI background bash tasks. Bounded rather
+// than unlimited so a task that never reports completion (e.g. the CLI
+// process dies without emitting a final background_tasks_changed) can't hang
+// a run forever — the guard still fires, just later, once this is exhausted.
+const backgroundTaskGrace = 15 * time.Minute
+
+// SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
+// background bash tasks, mirroring the REPLACE semantics of the CLI's
+// "background_tasks_changed" system event.
+func (a *Agent) SetBackgroundTaskIDs(ids []string) {
+	// Defensive copy, mirroring SetPluginErrors, so a caller that later mutates
+	// or reuses the passed slice can't race the reader in HasBackgroundTasks.
+	// Preserve nil-ness: a nil "no event seen" snapshot must stay distinct from
+	// an empty non-nil "all tasks cleared" one (REPLACE semantics).
+	var cp []string
+	if ids != nil {
+		cp = make([]string, len(ids))
+		copy(cp, ids)
+	}
+	a.mu.Lock()
+	a.backgroundTaskIDs = cp
+	a.mu.Unlock()
+}
+
+// HasBackgroundTasks reports whether the CLI last reported any live
+// background bash tasks still running.
+func (a *Agent) HasBackgroundTasks() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.backgroundTaskIDs) > 0
+}
+
+// EffectiveHangGrace extends base by backgroundTaskGrace while the agent has
+// outstanding background bash tasks, so a post-result-hang guard idle-timing
+// out on silence doesn't kill a process that's still legitimately waiting on
+// a `run_in_background` command (e.g. npm ci) — see backgroundTaskIDs.
+func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
+	if a.HasBackgroundTasks() {
+		return base + backgroundTaskGrace
+	}
+	return base
 }
 
 func (a *Agent) setCompletedByResult(v bool) {
@@ -1089,6 +1210,13 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// HeadlessSteerable, when true, launches a claude headless run with the
+	// stdin/stream-json shape (mirroring the conversational invocation)
+	// instead of the legacy one-shot `-p <prompt>` invocation, so the running
+	// agent can accept mid-run steer messages over stdin. Resolved from
+	// agent.headless_steerable by Manager.prepareRunConfig; only Claude
+	// currently honors it (see claudeProvider.BuildHeadlessInvocation).
+	HeadlessSteerable bool
 	// HeadlessPermissionMode overrides the permission posture for this run.
 	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
 	// "bypass" (or empty) keeps --dangerously-skip-permissions.
@@ -1101,6 +1229,23 @@ type RunConfig struct {
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
 	SandboxMode string
+	// PlaywrightMCPEligible marks a run as a candidate for the headless
+	// Playwright MCP server (set by the workflow dispatcher for RoleTestRunner
+	// runs only; see agentAdapter.StartAgent). Actually attaching MCP
+	// additionally requires config.PlaywrightMCPEnabled, a headless run, and a
+	// final-resolved Claude provider — decided by
+	// Manager.preparePlaywrightMCP, never by the raw requested provider.
+	PlaywrightMCPEligible bool
+	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
+	// server writes screenshots/console logs to. Set by the workflow
+	// dispatcher alongside PlaywrightMCPEligible; empty falls back to
+	// <Dir>/.sybra-evidence.
+	PlaywrightMCPOutputDir string
+	// MCPConfigJSON is the Claude --mcp-config JSON payload for the headless
+	// Playwright MCP server. Set only by Manager.preparePlaywrightMCP after
+	// the final provider resolves to claude and the launcher preflight
+	// succeeds. Claude-only: every other provider ignores this field.
+	MCPConfigJSON string
 	// provider is the implementation selected once at run start after health
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.

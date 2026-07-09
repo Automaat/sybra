@@ -43,6 +43,7 @@ func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID s
 		err = nil
 	}
 	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
 	return err
 }
 
@@ -65,7 +66,14 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, var
 		delete(e.starting, taskID)
 		e.mu.Unlock()
 	}()
+	return e.startWorkflowCore(taskID, workflowID, startStepID, vars)
+}
 
+// startWorkflowCore is the marker-agnostic body of startWorkflowLocked: build
+// the Execution and run it. Split out so ReplaceWorkflow can perform a
+// cancel-then-start atomically without re-acquiring e.starting — see
+// ReplaceWorkflow's doc for why re-acquiring deadlocks.
+func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
 	// Guard against sequential duplicate starts: the starting map only prevents
 	// overlapping entries. If caller A has completed its Start* call (defer
 	// removed the marker) while caller B is queued behind the mutex, B would
@@ -172,7 +180,8 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 //
 // If the task already has a non-terminal workflow running, returns
 // ErrWorkflowAlreadyActive and does not dispatch. Callers that intentionally
-// want to replace an active workflow should use StartWorkflowWithVars.
+// want to replace an active workflow should use ReplaceWorkflow or
+// ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
 	// Serialize dispatch attempts per task to prevent concurrent callers from
 	// both observing "no active workflow" and double-starting.
@@ -188,7 +197,10 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	// cleared, or its cascade dispatch re-enters and is dropped. Register the
 	// fire defer *before* the marker-delete defer so LIFO runs it afterwards.
 	var completion *CompletionInfo
-	defer func() { e.fireComplete(completion) }()
+	defer func() {
+		e.fireComplete(completion)
+		e.drainPendingConflictRecovery(taskID)
+	}()
 	defer func() {
 		e.mu.Lock()
 		delete(e.dispatching, taskID)
@@ -217,6 +229,29 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 		return "", fmt.Errorf("start %s: %w", def.ID, sErr)
 	}
 	completion = comp
+	return def.ID, nil
+}
+
+// ReplaceWorkflowForEvent matches event exactly like DispatchEvent, then
+// replaces the task's active workflow with the matched definition.
+//
+// This is for reentrant recovery paths that are already executing inside the
+// workflow being replaced: they must keep trigger conditions authoritative, but
+// cannot call DispatchEvent because the outer workflow start still owns the
+// per-task starting marker. Callers from ordinary external event sources should
+// keep using DispatchEvent so the dispatching marker serializes them.
+func (e *Engine) ReplaceWorkflowForEvent(taskID, event string, extraFields, vars map[string]string, cancelReason string) (string, error) {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil {
+		return "", fmt.Errorf("get task: %w", err)
+	}
+	def := e.matchWorkflow(t, event, extraFields)
+	if def == nil {
+		return "", nil
+	}
+	if err := e.ReplaceWorkflow(taskID, cancelReason, def.ID, vars); err != nil {
+		return "", fmt.Errorf("replace with %s: %w", def.ID, err)
+	}
 	return def.ID, nil
 }
 
@@ -289,4 +324,32 @@ func (e *Engine) CancelWorkflow(taskID, reason string) (string, error) {
 		"task_id", taskID, "workflow", wfExec.WorkflowID,
 		"step", priorStep, "reason", reason)
 	return priorStep, nil
+}
+
+// ReplaceWorkflow atomically cancels the task's current active workflow
+// (recording cancelReason) and starts newWorkflowID with vars in its place.
+//
+// This exists because CancelWorkflow followed by a separate
+// StartWorkflowWithVars call deadlocks when both run inside the same call
+// stack that is already executing a step of the workflow being replaced —
+// e.g. divergence recovery invoked synchronously from create_pr's
+// pushTaskBranch. That stack already holds e.starting[taskID] (set by the
+// enclosing startWorkflowLocked/DispatchEvent call for the workflow currently
+// executing), so the nested StartWorkflowWithVars always observes the marker
+// busy and fails with ErrWorkflowAlreadyActive ("start in progress") — a
+// guaranteed reentrant failure every time, not a transient race.
+//
+// Safe to call from that nested position: the outer call already serializes
+// concurrent starts for taskID, so ReplaceWorkflow can perform the cancel+
+// start under that same guarantee instead of re-acquiring e.starting.
+func (e *Engine) ReplaceWorkflow(taskID, cancelReason, newWorkflowID string, vars map[string]string) error {
+	if _, err := e.CancelWorkflow(taskID, cancelReason); err != nil {
+		return fmt.Errorf("cancel prior workflow: %w", err)
+	}
+	comp, err := e.startWorkflowCore(taskID, newWorkflowID, "", vars)
+	if errors.Is(err, errBestOfNParked) {
+		err = nil
+	}
+	e.fireComplete(comp)
+	return err
 }

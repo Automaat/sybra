@@ -10,6 +10,7 @@
   import { isOwnPRTask as isOwnPRTaskFn, prPhaseMeta, type PRPhaseIcon } from '../lib/pr-phase.js'
   import { activeTaskNeedsUserAttention } from '../lib/task-attention.js'
   import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import { taskTotalCost, taskRunCount, formatCostShort } from '../lib/cost.js'
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import Pill from './Pill.svelte'
@@ -54,6 +55,13 @@
   // The strict own-PR phases (draft / approved) count too, so the card flags
   // "your move" while staying in the In Review column.
   const needsYou = $derived(activeTaskNeedsUserAttention(t))
+
+  // Cumulative cost across every agent run this task has ever dispatched.
+  // Derived off the task record alone (never the agent store's live output
+  // stream), so a stream event never re-sorts or re-renders every card.
+  const totalCost = $derived(taskTotalCost(t))
+  const runCount = $derived(taskRunCount(t))
+  const costIsHigh = $derived(totalCost >= 5 || runCount >= 5)
 
   // A granular sub-state folded into this column that ISN'T an attention state
   // (e.g. `new` in Todo, `ready-review` in In Review). The column shows the
@@ -292,6 +300,15 @@
       {#if visibleTags.length > 1}
         <span class="text-surface-400" title={visibleTags.join(', ')}>+{visibleTags.length - 1}</span>
       {/if}
+    {/if}
+
+    {#if runCount > 0}
+      <span
+        class="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 {costIsHigh ? 'bg-warning-200 text-warning-800 dark:bg-warning-700 dark:text-warning-200' : 'bg-surface-200 text-surface-500 dark:bg-surface-700 dark:text-surface-400'}"
+        title="{formatCostShort(totalCost)} across {runCount} agent {runCount === 1 ? 'run' : 'runs'}"
+      >
+        {formatCostShort(totalCost)}{#if runCount > 1} · {runCount} runs{/if}
+      </span>
     {/if}
 
     <span class="ml-auto text-[11px] text-surface-400/80">{timeAgo(t.updatedAt)}</span>

@@ -224,6 +224,16 @@ type PRContentGenerator interface {
 	GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error)
 }
 
+// TaskClassifier runs the deterministic Go triage classifier directly against
+// a task and applies its verdict. Used by the `classify_task` step, which
+// replaced a run_agent step that wrapped a full Sonnet agent (invoking the
+// /sybra-triage skill) around this same classifier — a second LLM call for
+// no benefit. Engine operates with a nil classifier — the step then flips
+// the task to human-required, since triage is mandatory to route the task.
+type TaskClassifier interface {
+	ClassifyTask(ctx context.Context, taskID string) error
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -267,6 +277,7 @@ type Engine struct {
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
+	classifier       TaskClassifier
 	recorder         ArtifactRecorder
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
@@ -281,12 +292,14 @@ type Engine struct {
 	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
 	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
 	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -309,6 +322,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agentSteps:       make(map[string]agentEntry),
 		dispatchingStep:  make(map[string]int),
 		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]struct{}),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
@@ -371,6 +385,11 @@ func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualT
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 
+// SetTaskClassifier wires the deterministic Go triage classifier used by the
+// `classify_task` step. Leaving it unset flips the task to human-required
+// when classify_task is reached, since a task cannot be routed without it.
+func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
+
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset
 // disables artifact recording — all calls are nil-guarded so engine unit
@@ -404,6 +423,23 @@ func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetConflictRecovery wires the autonomous branch-conflict recovery callback
+// (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
+// when a push diverges from remote. Same callback agentorch wires for
+// worktree-prep rebase failures — reused here so a self-inflicted divergence
+// discovered at push time (e.g. a reused worktree rebased out from under an
+// earlier merge-based push) gets the same autonomous fix instead of an
+// unconditional human escalation. Leaving it unset preserves the prior
+// behavior: any divergence flips straight to human-required.
+func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
+
+// SetDivergenceRecovery is a backward-compatible alias for SetConflictRecovery.
+// Older tests and callers still use the pre-rename name for the same
+// branch-divergence recovery hook.
+func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
+	e.SetConflictRecovery(fn)
+}
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

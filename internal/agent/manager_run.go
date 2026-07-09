@@ -105,6 +105,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
+	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return cfg, nil, gateErr
@@ -115,6 +116,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	if cfg.Mode == "headless" {
+		m.mu.RLock()
+		cfg.HeadlessSteerable = m.headlessSteerable
+		m.mu.RUnlock()
+	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
 	// approval hook to gate each tool call. If the approval server never
@@ -146,6 +152,8 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
+
+	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
