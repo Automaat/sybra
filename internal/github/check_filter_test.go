@@ -387,3 +387,59 @@ func TestConvertPRs_emptyContextsFallsBackToRollupState(t *testing.T) {
 		t.Fatalf("CIStatus = %q, want FAILURE (fallback)", prs[0].CIStatus)
 	}
 }
+
+func TestIsStabilityCheck(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"renovate/stability-days", true},
+		{"Renovate/Stability-Days", true},
+		{"renovate/minimum-release-age", true},
+		{"renovate/artifacts", false},
+		{"build", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isStabilityCheck(tt.name); got != tt.want {
+				t.Errorf("isStabilityCheck(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenovateWaitingForStability(t *testing.T) {
+	t.Parallel()
+	stabilityPending := gqlCheckContext{Typename: "StatusContext", Name: "renovate/stability-days", State: "PENDING"}
+	buildOK := gqlCheckContext{Typename: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "SUCCESS"}
+	buildPending := gqlCheckContext{Typename: "CheckRun", Name: "build", Status: "IN_PROGRESS"}
+	buildFail := gqlCheckContext{Typename: "CheckRun", Name: "build", Status: "COMPLETED", Conclusion: "FAILURE"}
+	codecovPending := gqlCheckContext{Typename: "StatusContext", Name: "codecov/patch", State: "PENDING"}
+	stabilitySuccess := gqlCheckContext{Typename: "StatusContext", Name: "renovate/stability-days", State: "SUCCESS"}
+
+	tests := []struct {
+		name     string
+		contexts []gqlCheckContext
+		want     bool
+	}{
+		{"stability sole blocker", []gqlCheckContext{stabilityPending, buildOK}, true},
+		{"stability only", []gqlCheckContext{stabilityPending}, true},
+		{"stability plus other pending", []gqlCheckContext{stabilityPending, buildPending}, false},
+		{"stability plus failure", []gqlCheckContext{stabilityPending, buildFail}, false},
+		{"non-gating pending ignored", []gqlCheckContext{stabilityPending, codecovPending, buildOK}, true},
+		{"stability already passed", []gqlCheckContext{stabilitySuccess, buildOK}, false},
+		{"no stability check", []gqlCheckContext{buildOK}, false},
+		{"empty", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := renovateWaitingForStability(tt.contexts); got != tt.want {
+				t.Errorf("renovateWaitingForStability() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

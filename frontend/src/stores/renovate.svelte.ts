@@ -17,7 +17,7 @@ class RenovateStore {
       (pr) =>
         !pr.isDraft &&
         pr.mergeable === 'MERGEABLE' &&
-        (pr.ciStatus === 'SUCCESS' || pr.ciStatus === ''),
+        (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability),
     )
   }
 

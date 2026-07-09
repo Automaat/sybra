@@ -85,7 +85,8 @@ type CheckRunInfo struct {
 // RenovatePR extends PullRequest with individual check run details.
 type RenovatePR struct {
 	PullRequest
-	CheckRuns []CheckRunInfo `json:"checkRuns"`
+	CheckRuns           []CheckRunInfo `json:"checkRuns"`
+	WaitingForStability bool           `json:"waitingForStability"`
 }
 
 // Issue represents a GitHub issue for display.
