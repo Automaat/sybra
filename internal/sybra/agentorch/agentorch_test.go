@@ -1,12 +1,14 @@
 package agentorch
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -290,4 +292,156 @@ func TestBuildTaskStartPrompt(t *testing.T) {
 	if !strings.Contains(got, "# Task: My task") {
 		t.Fatalf("BuildTaskStartPrompt(include=true, empty prompt) = %q, want task context", got)
 	}
+}
+
+// TestAutoAssignProject pins the fix for a project-less task never dispatching
+// on a machine with more than one registered project: without an explicit
+// agent.default_project_id, auto-assignment only fires for the sole-project
+// case (unchanged legacy behavior); with it configured and the ID present in
+// the registered set, it wins regardless of how many projects exist. An
+// unregistered/typo'd default_project_id must not force a bogus assignment.
+func TestAutoAssignProject(t *testing.T) {
+	t.Parallel()
+
+	newStores := func(t *testing.T) (*task.Manager, *project.Store) {
+		t.Helper()
+		ts, err := task.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("task.NewStore: %v", err)
+		}
+		ps, err := project.NewStore(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatalf("project.NewStore: %v", err)
+		}
+		return task.NewManager(ts, nil), ps
+	}
+
+	t.Run("no-op when project already set", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1", ProjectID: "owner/repo"})
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/repo" {
+			t.Fatalf("ProjectID = %q, want unchanged", got.ProjectID)
+		}
+	})
+
+	t.Run("sole project auto-assigns without config", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/solo" {
+			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/solo")
+		}
+	})
+
+	t.Run("multiple projects without default_project_id stays unassigned", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty (ambiguous, no default configured)", got.ProjectID)
+		}
+	})
+
+	t.Run("multiple projects with configured default_project_id wins", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/two"}})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "owner/two" {
+			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/two")
+		}
+	})
+
+	t.Run("unregistered default_project_id is a no-op", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/typo"}})
+		got, err := o.AutoAssignProject(created)
+		if err != nil {
+			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty (default_project_id not registered)", got.ProjectID)
+		}
+	})
+
+	t.Run("project list error is returned", func(t *testing.T) {
+		t.Parallel()
+		projectDir := t.TempDir()
+		tm, err := task.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("task.NewStore: %v", err)
+		}
+		ps, err := project.NewStore(projectDir, t.TempDir())
+		if err != nil {
+			t.Fatalf("project.NewStore: %v", err)
+		}
+		if err := os.RemoveAll(projectDir); err != nil {
+			t.Fatalf("RemoveAll(projectDir): %v", err)
+		}
+		if err := os.WriteFile(projectDir, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("WriteFile(projectDir): %v", err)
+		}
+		o := New(task.NewManager(tm, nil), ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(task.Task{ID: "t1"})
+		if err == nil {
+			t.Fatal("AutoAssignProject() err = nil, want project list error")
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
+		}
+	})
 }

@@ -30,6 +30,16 @@ var ErrDispatchInFlight = errors.New("agent dispatch already in flight for task"
 // so it must never flip the task to human-required or write a status_reason.
 var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
 
+// ErrNoProjectAssigned is returned by an agent-start path when a task needs
+// an isolated worktree but has no project_id, and auto-assignment could not
+// resolve one (no agent.default_project_id configured, and more than one
+// project is registered — see agentorch.Orchestrator.AutoAssignProject).
+// This is a permanent, structurally-guaranteed failure: nothing about
+// retrying the dispatch changes the outcome, so ClassifyAgentStartError
+// escalates it to human-required on the first attempt instead of burning
+// the circuit breaker's retry budget on identical failures.
+var ErrNoProjectAssigned = errors.New("no project_id: refusing to start agent without isolated worktree")
+
 // ClassifyAgentStartError translates an agent-start error into a UI-safe
 // status_reason and a "permanent" flag.
 //
@@ -60,6 +70,9 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
+	case errors.Is(err, ErrNoProjectAssigned):
+		permanent = true
+		reason = "agent start blocked: no project could be assigned — set agent.default_project_id in config or assign a project to this task manually to resume"
 	case errors.Is(err, worktreeerr.ErrRebaseFailed):
 		permanent = true
 		reason = worktreeerr.RebaseBlockedReason

@@ -1129,6 +1129,7 @@ func TestLoadReconcilePersistsBackupBeforeOverwrite(t *testing.T) {
 	}
 	if recovered == nil {
 		t.Fatal("backup does not contain the prior code-author-cheap experiment")
+		return
 	}
 	found := false
 	for _, v := range recovered.Variants {

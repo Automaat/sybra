@@ -107,6 +107,7 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	}
 	if tracker == nil {
 		t.Fatal("no umbrella tracker created")
+		return
 	}
 	if !slices.Contains(tracker.Tags, FallbackTag) {
 		t.Fatalf("tracker tags = %v, want %q", tracker.Tags, FallbackTag)
@@ -169,6 +170,7 @@ func TestMaterialize_DegradedFreshTrackerCarriesFallbackTag(t *testing.T) {
 	}
 	if tracker == nil {
 		t.Fatal("no tracker task created")
+		return
 	}
 	if !slices.Contains(tracker.Tags, FallbackTag) {
 		t.Errorf("fresh degraded tracker tags = %v, want to contain %q", tracker.Tags, FallbackTag)

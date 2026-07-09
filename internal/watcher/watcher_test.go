@@ -48,6 +48,7 @@ func TestNew(t *testing.T) {
 	w := New("/tmp/test", func(string, any) {}, discardLogger())
 	if w == nil {
 		t.Fatal("watcher is nil")
+		return
 	}
 	if w.dir != "/tmp/test" {
 		t.Errorf("dir = %q, want %q", w.dir, "/tmp/test")

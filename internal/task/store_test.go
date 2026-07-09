@@ -1721,19 +1721,23 @@ func TestCloneWorkflowDoesNotAliasParallelInflight(t *testing.T) {
 	cloneParent := clone.ParallelInflight["parent"]
 	if cloneParent == nil {
 		t.Fatal("clone: parent entry missing")
+		return
 	}
 	origParent := orig.ParallelInflight["parent"]
 	if origParent == nil {
 		t.Fatal("orig: parent entry missing")
+		return
 	}
 	cloneChildA := cloneParent.Children["a"]
 	if cloneChildA == nil {
 		t.Fatal("clone: child 'a' missing")
+		return
 	}
 	cloneChildA.Status = "completed"
 	origChildA := origParent.Children["a"]
 	if origChildA == nil {
 		t.Fatal("orig: child 'a' missing after clone mutation")
+		return
 	}
 	if origChildA.Status != "pending" {
 		t.Errorf("clone mutation of ChildStatus leaked to original: status=%q", origChildA.Status)
@@ -1820,10 +1824,12 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	firstParent := first[0].Workflow.ParallelInflight["parent"]
 	if firstParent == nil {
 		t.Fatal("first: parent entry missing")
+		return
 	}
 	firstChildA := firstParent.Children["a"]
 	if firstChildA == nil {
 		t.Fatal("first: child 'a' missing")
+		return
 	}
 	firstChildA.Status = "MUTATED-BY-CALLER"
 	firstParent.Children["b"] = &workflow.ChildStatus{Status: "MUTATED"}
@@ -1838,10 +1844,12 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	secondParent := second[0].Workflow.ParallelInflight["parent"]
 	if secondParent == nil {
 		t.Fatal("second: parent entry missing")
+		return
 	}
 	secondChildA := secondParent.Children["a"]
 	if secondChildA == nil {
 		t.Fatal("second: child 'a' missing")
+		return
 	}
 	if secondChildA.Status != "pending" {
 		t.Errorf("cache corrupted: ChildStatus.Status = %q, want %q", secondChildA.Status, "pending")

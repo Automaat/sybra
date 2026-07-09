@@ -75,4 +75,12 @@ type AgentDefaults struct {
 	// allowlist, failing the spawn closed if the wrapper is unavailable.
 	// Empty treated as "report".
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// DefaultProjectID pins the project a project-less task auto-assigns to
+	// when it needs an isolated worktree (e.g. a meta/self-referential task
+	// routed to the plan step). Without it, auto-assignment only fires when
+	// exactly one project is registered — on a machine with two or more
+	// projects, a project-less task can never dispatch and always ends up
+	// human-required. Empty means no default (falls back to the
+	// sole-project behavior).
+	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
 }

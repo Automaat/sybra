@@ -1117,6 +1117,7 @@ func TestFindRunningAgentForTask_FiltersByRoleAndTask(t *testing.T) {
 
 	if got == nil {
 		t.Fatal("expected to find a1")
+		return
 	}
 	if got.ID != "a1" {
 		t.Errorf("ID = %q, want a1", got.ID)

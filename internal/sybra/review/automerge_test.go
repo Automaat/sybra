@@ -594,6 +594,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	}
 	if merged == nil {
 		t.Fatalf("no %s audit event; events=%+v", audit.EventPRAutoMerged, events)
+		return
 	}
 	if merged.Data["sourced_via_rest"] != true {
 		t.Errorf("sourced_via_rest = %v, want true", merged.Data["sourced_via_rest"])
