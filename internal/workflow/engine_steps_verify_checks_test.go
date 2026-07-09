@@ -3,6 +3,9 @@ package workflow
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -184,6 +187,109 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	}
 	if failed != "" {
 		t.Errorf("failedCmd = %q, want empty (deadline is not a command failure)", failed)
+	}
+}
+
+func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Present but zero-byte — the exact corruption shape from the bug report
+	// (ls lists entries, du -sh reports 0 bytes).
+	writeTestFile(t, filepath.Join(binDir, "vite"), "")
+
+	fakeNPM(t, dir, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to have run and left a marker, got: %v", err)
+	}
+	if out := tail.String(); !strings.Contains(out, "corrupt") || !strings.Contains(out, "repair completed") {
+		t.Errorf("tail output = %q, want corrupt+repair-completed messages", out)
+	}
+}
+
+func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n")
+
+	fakeNPM(t, dir, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run — toolchain looked intact")
+	}
+}
+
+func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
+	root := t.TempDir()
+	frontend := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	binDir := filepath.Join(frontend, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "")
+
+	fakeNPM(t, frontend, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, "(cd frontend && mise exec -- npm run build:web)", tail)
+
+	if _, err := os.Stat(filepath.Join(frontend, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to run in the cd-resolved frontend/ dir, got: %v", err)
+	}
+}
+
+func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
+	dir := t.TempDir() // no package.json
+	fakeNPM(t, dir, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "go test ./...", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run for a non-Node directory")
+	}
+}
+
+// fakeNPM prepends a fake `npm` executable onto PATH for the duration of the
+// test, so ensureNodeToolchain's `sh -c "npm ci"` is observable without
+// depending on a real npm install. Running it drops a marker file named
+// markerName into its working directory.
+func fakeNPM(t *testing.T, cwdHint, markerName string) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\ntouch \"" + markerName + "\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

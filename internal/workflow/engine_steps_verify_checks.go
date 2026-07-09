@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sync"
 	"time"
@@ -39,6 +40,20 @@ const verifyBlessedTag = "verify-blessed"
 const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
+
+// npmReinstallTimeout bounds a single toolchain-repair `npm ci`, run only when
+// ensureNodeToolchain detects a corrupt node_modules right before a verify
+// command. Separate from the outer verify timeout so a repair attempt cannot
+// eat the whole suite budget.
+const npmReinstallTimeout = 3 * time.Minute
+
+// cdDirPattern extracts the directory of a leading `cd <dir> &&` (optionally
+// wrapped in parens/quotes) from a verify command string, e.g.
+// "(cd frontend && mise exec -- npm run build:web)" -> "frontend". Verify
+// commands are opaque shell strings (see resolveSetupCommands) with no
+// metadata marking which ones touch a Node toolchain, so this is the only
+// signal available for locating the package.json to integrity-check.
+var cdDirPattern = regexp.MustCompile(`cd\s+([^\s&|;)]+)`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -175,6 +190,67 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
 }
 
+// ensureNodeToolchain re-provisions a verify command's Node toolchain when it
+// has silently gone corrupt since worktree setup. Setup's own `npm ci`
+// (internal/worktree.runSetup) can succeed and then have its output emptied
+// later by unrelated disk/memory pressure from concurrent worktree
+// provisioning — the worktree ends up with node_modules entries present but
+// zero-byte, so a later verify command like `npm run build:web` fails with
+// e.g. "vite: command not found" on an implementation that never touched the
+// frontend. Best-effort: any error here is swallowed and left for the verify
+// command itself to surface, so a repair failure never masks or replaces the
+// original failure signal.
+func (e *Engine) ensureNodeToolchain(ctx context.Context, taskID, wtPath, rawCmd string, tail io.Writer) {
+	dir := wtPath
+	if m := cdDirPattern.FindStringSubmatch(rawCmd); m != nil {
+		dir = filepath.Join(wtPath, m[1])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return // not a Node project — nothing to check
+	}
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	entries, err := os.ReadDir(binDir)
+	if err != nil || len(entries) == 0 {
+		return // never installed (or setup's own npm ci is still the right owner) — leave it to the verify command
+	}
+	if nodeModulesBinNonEmpty(binDir, entries) {
+		return // toolchain looks intact
+	}
+
+	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
+	_, _ = fmt.Fprintf(tail,
+		"[verify] node_modules/.bin in %s looks corrupt (entries present but empty) — re-running npm ci\n", dir)
+
+	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(repairCtx, "sh", "-c", "npm ci")
+	cmd.Dir = dir
+	cmd.Stdout = tail
+	cmd.Stderr = tail
+	if repairErr := cmd.Run(); repairErr != nil {
+		e.logger.Warn("workflow.verify-checks.toolchain-repair-failed", "task_id", taskID, "dir", dir, "err", repairErr)
+		_, _ = fmt.Fprintf(tail, "[verify] npm ci repair failed: %v\n", repairErr)
+		return
+	}
+	e.logger.Info("workflow.verify-checks.toolchain-repaired", "task_id", taskID, "dir", dir)
+	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
+}
+
+// nodeModulesBinNonEmpty reports whether at least one entry under
+// node_modules/.bin resolves to a non-empty file. A truncated npm install
+// leaves the directory entries in place (ls still lists them) but their
+// content emptied (`du -sh` reports 0 bytes) — checking sizes, not just
+// presence, is what catches that failure mode.
+func nodeModulesBinNonEmpty(binDir string, entries []os.DirEntry) bool {
+	for _, ent := range entries {
+		info, err := os.Stat(filepath.Join(binDir, ent.Name())) // Stat follows symlinks (.bin entries are usually symlinks)
+		if err == nil && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // runVerifyCommands runs each command in order in the worktree via `sh -c`.
 // Returns the first command that exited non-zero on every attempt (a real
 // failure → caller blocks). A failing command is retried up to
@@ -187,6 +263,7 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	for _, raw := range cmds {
+		e.ensureNodeToolchain(ctx, taskID, wtPath, raw, tail)
 		passed := false
 		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {
