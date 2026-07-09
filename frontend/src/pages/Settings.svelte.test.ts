@@ -53,7 +53,7 @@ function baseSettings() {
   return {
     agent: { provider: 'claude', model: 'sonnet', mode: 'headless', maxConcurrent: 3 },
     notification: { desktop: false },
-    orchestrator: { autoTriage: false, autoPlan: false, dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
+    orchestrator: { dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
     logging: { level: 'info', maxSizeMB: 100, maxFiles: 10 },
     audit: { retentionDays: 30, enabled: true },
     todoist: { enabled: false, apiToken: '', projectId: '', pollSeconds: 300 },
@@ -528,16 +528,17 @@ describe('Settings', () => {
     expect(screen.queryByLabelText(/Browser notifications/)).toBeNull()
   })
 
-  it('toggles autoTriage', async () => {
+  it('edits orchestrator dispatch interval', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Orchestrator' }))
     await goTo('Orchestrator')
-    const checkbox = screen.getByLabelText('Auto-triage') as HTMLInputElement
-    expect(checkbox.checked).toBe(false)
-    await fireEvent.click(checkbox)
+    await fireEvent.click(screen.getByText('Loop cadence'))
+    const input = screen.getByLabelText('Dispatch interval (seconds)') as HTMLInputElement
+    expect(input.value).toBe('10')
+    await fireEvent.input(input, { target: { value: '20' } })
     await vi.waitFor(() => {
-      expect(checkbox.checked).toBe(true)
+      expect(input.value).toBe('20')
     })
   })
 
