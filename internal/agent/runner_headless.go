@@ -24,6 +24,15 @@ import (
 // running for the next instance to reattach.
 var errSurviveShutdown = errors.New("agent: detached, leaving process running for reattach")
 
+// errStoppedPendingReap is recorded as the agent's exit error when an
+// intentional stop (guardrail kill or StopAgent) signalled the subprocess but
+// it had not been reaped by cmd.Wait() within drainTimeout. Without this,
+// finalizeRun/OnComplete would see a nil ExitErr — the zero value carried
+// over from before the kill — and misreport the killed partial run as a
+// clean success in cost/audit metrics.
+var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
+var errCostGuardrailExceeded = errors.New("agent: cost guardrail exceeded")
+
 // headlessTailPoll is how often the detached/reattached tailer polls the
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
@@ -205,6 +214,11 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	stderrOut := stderrBuf.String()
+	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+		a.SetExitErr(errCostGuardrailExceeded)
+		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
+		return false, nil
+	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
 	}
@@ -301,6 +315,9 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	select {
 	case <-procDone:
 	default:
+		if a.WasStopped() {
+			a.SetExitErr(errStoppedPendingReap)
+		}
 		return false, nil
 	}
 
@@ -315,6 +332,11 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	var stderrOut string
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
+	}
+	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+		a.SetExitErr(errCostGuardrailExceeded)
+		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
+		return false, nil
 	}
 	if streamErr := resultStreamError(attemptEventsFrom(a.Output(), prevLen)); waitErr == nil && streamErr != nil {
 		waitErr = streamErr
@@ -404,8 +426,9 @@ func resultStreamError(streamEvents []StreamEvent) error {
 
 // drainTimeout bounds how long the tailer waits for a process it just
 // asked to stop (guardrail kill or StopAgent) to actually exit before it
-// gives up and finalizes anyway.
-const drainTimeout = stopSIGINTGrace + 2*time.Second
+// gives up and finalizes anyway. Var (not const) so tests can shrink it
+// instead of waiting out the real grace window.
+var drainTimeout = stopSIGINTGrace + 2*time.Second
 
 // tailHeadlessFile follows an NDJSON log file written by a detached or
 // reattached subprocess, feeding each complete line through
@@ -706,7 +729,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		maxCost := m.guardrails.MaxCostUSD
 		m.mu.RUnlock()
 		if maxCost > 0 && costNow > maxCost {
-			if keepGoing := m.checkCostGuardrail(ctx, a, costNow, maxCost); !keepGoing {
+			if keepGoing := m.checkCostGuardrail(a, costNow, maxCost); !keepGoing {
 				return true
 			}
 		}
@@ -714,15 +737,15 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	return false
 }
 
-// checkCostGuardrail blocks the stream on a breach of MaxCostUSD until a
-// human responds via RespondEscalation. Unlike checkTurnsGuardrail there is
-// no auto-continue path: cost is the hard ceiling turns' auto-continue is
-// itself gated against, so a breach must always stop the run pending a human
-// decision rather than silently letting the process keep spending. Returns
-// false when the caller should stop the stream (subprocess is terminated by
-// the caller, mirroring checkTurnsGuardrail).
-func (m *Manager) checkCostGuardrail(ctx context.Context, a *Agent, costNow, maxCost float64) bool {
+// checkCostGuardrail hard-stops a headless run on a breach of MaxCostUSD.
+// Unlike checkTurnsGuardrail there is no auto-continue or human-continue path:
+// cost is the hard ceiling turns' auto-continue is itself gated against, so a
+// breach must terminate the subprocess immediately instead of leaving a
+// headless process alive while waiting for a response. Returns false so the
+// caller stops the stream and kills/cancels the subprocess.
+func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
+	a.MarkStopped()
 	a.SetEscalationReason("cost")
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:  "cost",
@@ -730,17 +753,7 @@ func (m *Manager) checkCostGuardrail(ctx context.Context, a *Agent, costNow, max
 		Limit:   maxCost,
 	})
 	m.emit(events.AgentState(a.ID), a)
-	select {
-	case continueRun := <-a.escalationCh:
-		if !continueRun {
-			return false
-		}
-		a.SetEscalationReason("")
-		m.emit(events.AgentState(a.ID), a)
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return false
 }
 
 // reportScannerError surfaces bufio.Scanner errors at the end of the NDJSON

@@ -135,6 +135,7 @@ func writeArgsLog(logFile string, data []byte) error {
 
 var scenarioHandlers = map[string]func(string){
 	"success":                     func(string) { runSuccess() },
+	"high_cost":                   func(string) { runHighCost() },
 	"write_sidecar_success":       runWriteSidecarSuccess,
 	"revise_plan_sidecars":        runRevisePlanSidecars,
 	"fail_exit":                   func(string) { emitSystem(); os.Exit(1) },
@@ -502,6 +503,13 @@ func emitAssistant(text string) {
 
 func emitResult(result string) {
 	emit(resultEvent(result))
+}
+
+func runHighCost() {
+	emitSystem()
+	event := resultEvent("over budget")
+	event["total_cost_usd"] = 11.0
+	emit(event)
 }
 
 func systemEvent() map[string]any {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,19 @@ func TestParseClaudeLine(t *testing.T) {
 		{
 			name: "result event without cost",
 			line: `{"type":"result","result":"ok","session_id":"s1"}`,
+			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
+				if got.Result == nil {
+					t.Fatal("Result is nil")
+				}
+				if got.Result.CostUSD != 0 {
+					t.Errorf("CostUSD = %f, want 0", got.Result.CostUSD)
+				}
+			},
+		},
+		{
+			name: "result event with negative cost clamps to zero",
+			line: `{"type":"result","result":"ok","session_id":"s1","total_cost_usd":-1.25}`,
 			check: func(t *testing.T, got ClaudeEvent) {
 				t.Helper()
 				if got.Result == nil {
@@ -216,6 +230,30 @@ func TestParseClaudeLine(t *testing.T) {
 			}
 			if tt.check != nil {
 				tt.check(t, got)
+			}
+		})
+	}
+}
+
+func TestSanitizeCostUSD(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		cost float64
+		want float64
+	}{
+		{name: "positive", cost: 1.25, want: 1.25},
+		{name: "zero", cost: 0, want: 0},
+		{name: "negative", cost: -1, want: 0},
+		{name: "nan", cost: math.NaN(), want: 0},
+		{name: "inf", cost: math.Inf(1), want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeCostUSD(tc.cost)
+			if got != tc.want {
+				t.Errorf("sanitizeCostUSD(%v) = %v, want %v", tc.cost, got, tc.want)
 			}
 		})
 	}

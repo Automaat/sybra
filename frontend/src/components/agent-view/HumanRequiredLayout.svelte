@@ -48,6 +48,7 @@
 
   const isUrgent = $derived(urgency === 'required')
   const escalationReason = $derived(a.escalationReason)
+  const isCostEscalation = $derived(escalationReason === 'cost')
 
   async function handleSend(text: string) {
     await convoStore.sendMessage(a.id, text)
@@ -76,7 +77,7 @@
           </span>
           {#if escalationReason}
             <span class="text-sm text-surface-700 dark:text-surface-300">
-              {escalationReason === 'turns' ? 'Turn limit reached' : 'Cost limit reached'} — agent is paused
+              {escalationReason === 'turns' ? 'Turn limit reached — agent is paused' : 'Cost limit reached — agent was stopped'}
             </span>
           {:else}
             <span class="text-sm text-surface-700 dark:text-surface-300">Agent is waiting for your response</span>
@@ -89,10 +90,16 @@
         {/if}
       </div>
 
-      <ChatInput
-        placeholder={isUrgent ? 'What should the agent do next?' : 'Type a message...'}
-        onsend={handleSend}
-      />
+      {#if isCostEscalation}
+        <p class="text-sm text-surface-700 dark:text-surface-300">
+          Start a new run after raising or clearing the budget limit.
+        </p>
+      {:else}
+        <ChatInput
+          placeholder={isUrgent ? 'What should the agent do next?' : 'Type a message...'}
+          onsend={handleSend}
+        />
+      {/if}
     </div>
 
     <!-- Conversation history toggle -->
