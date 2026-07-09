@@ -340,9 +340,10 @@ func (c *Config) HumanReviewRepo() string {
 	return "Automaat/sybra"
 }
 
-// HumanReviewModel returns the configured model alias or
-// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog inspector
-// (applyWatchdogDefaults): classifying why a task stalled, not authoring a fix.
+// HumanReviewModel returns the configured model name or alias, defaulting to
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// inspector (applyWatchdogDefaults): classifying why a task stalled, not
+// authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
