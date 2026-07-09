@@ -291,7 +291,7 @@ func (s *Store) List() ([]Task, error) {
 				t.ClosedAt = &ts
 			}
 			backfillStatusChangedAt(&t, ts)
-			if data, merr := Marshal(t); merr == nil {
+			if data, merr := marshalTask(t, false); merr == nil {
 				_ = fsutil.AtomicWrite(p, data)
 			}
 		}

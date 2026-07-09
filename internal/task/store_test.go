@@ -786,6 +786,9 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	if !persisted.StatusChangedAt.Equal(legacyUpdatedAt) {
 		t.Fatalf("persisted StatusChangedAt = %s, want %s", persisted.StatusChangedAt, legacyUpdatedAt)
 	}
+	if !persisted.UpdatedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("persisted UpdatedAt = %s, want legacy UpdatedAt %s", persisted.UpdatedAt, legacyUpdatedAt)
+	}
 }
 
 func TestStoreUpdateRun(t *testing.T) {
