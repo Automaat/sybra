@@ -122,10 +122,12 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 // neither, so it stays escalatable — a human must log in.
 func isTransientCapacityError(err error) bool {
 	var ue *provider.UnhealthyError
-	if errors.As(err, &ue) {
-		return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+	if !errors.As(err, &ue) {
+		return false
 	}
-	return false
+	rateLimited := ue.RateLimited || ue.Reason == provider.RateLimitReason
+	hasCooldownDeadline := !ue.Until.IsZero()
+	return rateLimited || hasCooldownDeadline
 }
 
 func transientAgentStartError(err error) bool {
