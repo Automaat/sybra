@@ -596,7 +596,6 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 		t.Errorf("status = %q, want still human-required (cross-repo branch must not unpark)", got.Status)
 	}
 }
-
 func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	r, tasks := newOutboundTestHandler(t)
 	created := mkOwnPRTask(t, tasks, 42, nil)

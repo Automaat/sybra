@@ -180,7 +180,6 @@ const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
 func exhaustedFixReason(attempts int, kind github.PRIssueKind) string {
 	return fmt.Sprintf("%s%d attempts (%s) — needs a human", exhaustedFixReasonPrefix, attempts, kind)
 }
-
 func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	if !strings.HasPrefix(reason, exhaustedFixReasonPrefix) {
 		return "", false
