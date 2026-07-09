@@ -514,6 +514,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// scope for this pass.
 		d, wtErr := a.agentOrch.Worktrees().PrepareForTask(context.Background(), t, nil)
 		if wtErr != nil {
+			// Release our dispatch claim before classifying/recovering: a
+			// rebase-blocked wtErr routes through RecoverFromWorktreePrepFailure
+			// -> RecoverStaleBranchConflict, which synchronously starts the
+			// branch-conflict-fix workflow and dispatches ITS OWN "fix" agent for
+			// this same taskID. dispatchClaims is a non-reentrant per-task map
+			// (agent.Manager.ClaimTaskDispatch), so if we still held the claim
+			// here, that nested dispatch would collide with it and park on
+			// ErrDispatchInFlight without ever starting the conflict-resolution
+			// agent -- see task df8a91f4. We're bailing out of this dispatch
+			// attempt regardless (wtErr != nil means we never call a.agents.Run
+			// below), so releasing early is safe: it doesn't overlap with our own
+			// (never-attempted) agent start.
+			a.agents.ReleaseTaskDispatch(taskID)
 			return "", "", "", a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
 		}
 		cfg.Dir = d

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -245,6 +246,158 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
+	}
+}
+
+// TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery guards
+// against the nested-claim deadlock in task df8a91f4: a direct-dispatch
+// StartAgent call (e.g. the create_pr step) that hits a rebase-blocked
+// worktree-prep error synchronously invokes the conflict-recovery callback
+// (RecoverStaleBranchConflict -> recoverBranchConflictNoPR), which itself
+// dispatches a nested "fix" agent for the SAME task ID through the SAME
+// non-reentrant dispatchClaims map. If the outer StartAgent still held its
+// claim while the recovery callback ran, the nested dispatch would always
+// see ErrDispatchInFlight and the conflict-resolution agent would never
+// start. This asserts the claim is released before the callback fires.
+func TestAgentAdapterStartAgentReleasesDispatchClaimBeforeConflictRecovery(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	for _, args := range [][]string{
+		{"init", "-b", "main", src},
+		{"-C", src, "config", "user.email", "test@test.com"},
+		{"-C", src, "config", "user.name", "Test"},
+		{"-C", src, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "add", "."},
+		{"-C", src, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	bare := filepath.Join(tmp, "origin.git")
+	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+		t.Fatalf("git fetch: %v: %s", err, out)
+	}
+
+	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
+		"\nclone_path: " + bare + "\ntype: pet\n"
+	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+	tk, err := taskMgr.Create("conflict recovery claim release", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := "owner/repo"
+	tk, err = taskMgr.Update(tk.ID, task.Update{ProjectID: &projectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, filepath.Join(tmp, "logs"))
+	wm := worktree.New(worktree.Config{
+		WorktreesDir:     filepath.Join(tmp, "worktrees"),
+		Projects:         projects,
+		Tasks:            taskMgr,
+		Logger:           logger,
+		AgentChecker:     agents.HasRunningAgentForTask,
+		LiveAgentChecker: agents.HasLiveRegisteredAgentForTask,
+	})
+
+	// Prepare the worktree once so the task has a real branch, then make an
+	// unrelated edit on the branch and a conflicting edit upstream so the
+	// next PrepareForTask hits ErrRebaseFailed.
+	wtPath, err := wm.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "config", "user.email", "test@test.com"},
+		{"-C", wtPath, "config", "user.name", "Test"},
+		{"-C", wtPath, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "add", "."},
+		{"-C", wtPath, "commit", "-m", "branch edit"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "add", "."},
+		{"-C", src, "commit", "-m", "upstream edit"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	agentOrch := agentorch.New(taskMgr, projects, agents, nil, logger, wm, nil)
+
+	var claimAcquiredDuringRecovery, recoveryCalled bool
+	agentOrch.SetConflictRecovery(func(id string) bool {
+		recoveryCalled = true
+		if id != tk.ID {
+			t.Errorf("conflict recovery got task id %q, want %q", id, tk.ID)
+		}
+		// This is what the nested branch-conflict-fix workflow's own "fix"
+		// step dispatch effectively does: claim the SAME per-task dispatch
+		// slot the outer StartAgent call above was holding. If StartAgent
+		// hadn't released it first, this would fail exactly like the fix
+		// step did in task df8a91f4's repro.
+		claimAcquiredDuringRecovery = agents.ClaimTaskDispatch(id)
+		if claimAcquiredDuringRecovery {
+			agents.ReleaseTaskDispatch(id)
+		}
+		return false
+	})
+
+	aa := &agentAdapter{agents: agents, agentOrch: agentOrch, tasks: taskMgr, projects: projects}
+	_, _, _, err = aa.StartAgent(tk.ID, string(agent.RolePRFix), "headless", "sonnet", "claude", "prompt", "", nil, true, false, "", "", workflow.AgentAssignment{})
+	t.Logf("StartAgent err=%v recoveryCalled=%v claimAcquired=%v", err, recoveryCalled, claimAcquiredDuringRecovery)
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartAgent() err = %v, want ErrDispatchInFlight", err)
+	}
+	if !claimAcquiredDuringRecovery {
+		t.Fatal("conflict-recovery callback could not claim task dispatch — StartAgent still held it, reproducing the nested-claim deadlock")
 	}
 }
 
