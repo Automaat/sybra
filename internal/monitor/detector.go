@@ -275,6 +275,18 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if recentRunningRun(t.AgentRuns, in.Now, window) {
 			continue
 		}
+		// Skip if the task itself transitioned into in-progress within the
+		// window. Dispatch (worktree prep, agent process spawn) can take
+		// longer than one monitor cycle to reach the point where AddRun/the
+		// first agent.* audit event lands, so a task can have zero AgentRuns
+		// yet still be legitimately mid-dispatch. StatusChangedAt is stamped
+		// only on an actual status transition (internal/task Store), unlike
+		// UpdatedAt which any unrelated field write (tags, status_reason, an
+		// audit sidecar) bumps — keying this off UpdatedAt would mask a truly
+		// lost agent for as long as anything kept touching the task.
+		if !t.StatusChangedAt.IsZero() && in.Now.Sub(t.StatusChangedAt) < window {
+			continue
+		}
 		ev := map[string]any{
 			"task_id": t.ID,
 			"title":   t.Title,

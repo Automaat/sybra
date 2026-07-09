@@ -27,6 +27,7 @@ func setupStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv("SYBRA_TASKS_DIR", filepath.Join(dir, "tasks"))
 	return dir
 }
@@ -1511,18 +1512,11 @@ func TestHookCmd_ExactLimitAccepted(t *testing.T) {
 	}
 }
 
-// setupSnapshotHome behaves like setupStore but also neutralizes
-// SYBRA_CONTROL_HOME, which otherwise takes precedence over SYBRA_HOME in
-// run()'s home resolution and would point tasks-history's
-// config.TaskSnapshotGitDir() lookup at the real operator home instead of
-// this test's isolated dir (setupStore's other tests are unaffected by this
-// because they read/write through the SYBRA_TASKS_DIR override, which
-// tasks-history does not use).
+// setupSnapshotHome behaves like setupStore and exists to name tests that need
+// config.TaskSnapshotGitDir() lookups pointed at the isolated home.
 func setupSnapshotHome(t *testing.T) string {
 	t.Helper()
-	dir := setupStore(t)
-	t.Setenv("SYBRA_CONTROL_HOME", "")
-	return dir
+	return setupStore(t)
 }
 
 func TestTasksHistory_MissingRepo(t *testing.T) {
