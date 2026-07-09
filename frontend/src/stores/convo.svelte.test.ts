@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { SvelteMap } from 'svelte/reactivity'
 import { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { agentConvo, agentApproval } from '../lib/events.js'
 
@@ -94,30 +95,49 @@ describe('ConvoStore', () => {
 
   describe('respondApproval', () => {
     it('calls RespondApproval and removes from pendingApprovals', async () => {
-      convoStore.pendingApprovals.set('tool-1', {
+      convoStore.pendingApprovals.set('a1', new SvelteMap([['tool-1', {
         toolUseId: 'tool-1',
         toolName: 'Bash',
         input: {},
-      })
+      }]]))
       mockRespondApproval.mockResolvedValue(undefined)
 
-      await convoStore.respondApproval('tool-1', true)
+      await convoStore.respondApproval('a1', 'tool-1', true)
 
       expect(mockRespondApproval).toHaveBeenCalledWith('tool-1', true)
-      expect(convoStore.pendingApprovals.has('tool-1')).toBe(false)
+      expect(convoStore.pendingApprovals.get('a1')?.has('tool-1')).toBe(false)
     })
 
     it('calls RespondApproval with false for denial', async () => {
-      convoStore.pendingApprovals.set('tool-2', {
+      convoStore.pendingApprovals.set('a1', new SvelteMap([['tool-2', {
         toolUseId: 'tool-2',
         toolName: 'Write',
         input: {},
-      })
+      }]]))
       mockRespondApproval.mockResolvedValue(undefined)
 
-      await convoStore.respondApproval('tool-2', false)
+      await convoStore.respondApproval('a1', 'tool-2', false)
 
       expect(mockRespondApproval).toHaveBeenCalledWith('tool-2', false)
+    })
+  })
+
+  describe('approvalsFor', () => {
+    it('scopes approvals to the given agentId', () => {
+      convoStore.pendingApprovals.set('a1', new SvelteMap([['tool-1', {
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        input: {},
+      }]]))
+      convoStore.pendingApprovals.set('a2', new SvelteMap([['tool-2', {
+        toolUseId: 'tool-2',
+        toolName: 'Write',
+        input: {},
+      }]]))
+
+      expect(convoStore.approvalsFor('a1').map((r) => r.toolUseId)).toEqual(['tool-1'])
+      expect(convoStore.approvalsFor('a2').map((r) => r.toolUseId)).toEqual(['tool-2'])
+      expect(convoStore.approvalsFor('a3')).toEqual([])
     })
   })
 
@@ -147,14 +167,30 @@ describe('ConvoStore', () => {
       unsub()
     })
 
-    it('stores pending approval from approval stream', () => {
+    it('stores pending approval from approval stream, scoped to the agent', () => {
       const unsub = convoStore.subscribe('a1')
       const req = { toolUseId: 'tu-1', toolName: 'Bash', input: { cmd: 'ls' } }
 
       eventCallbacks[agentApproval('a1')](req)
 
-      expect(convoStore.pendingApprovals.get('tu-1')).toEqual(req)
+      expect(convoStore.pendingApprovals.get('a1')?.get('tu-1')).toEqual(req)
+      expect(convoStore.approvalsFor('a1')).toEqual([req])
       unsub()
+    })
+
+    it('keeps approvals from different agents isolated', () => {
+      const unsub1 = convoStore.subscribe('a1')
+      const unsub2 = convoStore.subscribe('a2')
+      const req1 = { toolUseId: 'tu-1', toolName: 'Bash', input: {} }
+      const req2 = { toolUseId: 'tu-2', toolName: 'Write', input: {} }
+
+      eventCallbacks[agentApproval('a1')](req1)
+      eventCallbacks[agentApproval('a2')](req2)
+
+      expect(convoStore.approvalsFor('a1')).toEqual([req1])
+      expect(convoStore.approvalsFor('a2')).toEqual([req2])
+      unsub1()
+      unsub2()
     })
 
     it('unsubscribes both listeners', () => {
