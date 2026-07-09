@@ -136,6 +136,152 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 }
 
+func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ refactor(orchestrator): converge implement→test loop under retry cap", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.TaskType != task.TaskTypeNormal {
+		t.Fatalf("precondition: want task_type=normal, got %s", created.TaskType)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "infra", "large", "refactor"},
+		Size:  "large",
+		Type:  "refactor",
+		Mode:  "interactive",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %s, want human-required", updated.Status)
+	}
+	if updated.StatusReason == "" {
+		t.Errorf("status_reason: want non-empty guard explanation")
+	}
+}
+
+func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ tracker for expanded work", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"task_type": string(task.TaskTypeUmbrella)}); err != nil {
+		t.Fatalf("UpdateMap task_type: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: task already umbrella-typed should not be guarded into human-required")
+	}
+}
+
+func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ deliberately-normal task with umbrella-shaped title", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"tags": []string{umbrellaGuardOptOutTag}}); err != nil {
+		t.Fatalf("UpdateMap tags: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: opt-out tag should exempt the task from the umbrella guard, got %s", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+	if !slices.Contains(updated.Tags, umbrellaGuardOptOutTag) {
+		t.Errorf("tags: opt-out tag %q must survive triage, got %v", umbrellaGuardOptOutTag, updated.Tags)
+	}
+}
+
+func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.RunRole = "pr-fix"
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+}
+
+func TestApplyDoesNotGuardPRNumberWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.PRNumber = 42
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+}
+
 func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("bump dep on work repo", "https://github.com/example-org/example-repo/pull/9", task.AgentModeHeadless)

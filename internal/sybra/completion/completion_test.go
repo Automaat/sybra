@@ -1,4 +1,4 @@
-package sybra
+package completion
 
 import (
 	"errors"
@@ -225,11 +225,11 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	}
 
 	artifactStore := artifact.New(t.TempDir())
-	h := &AgentCompletionHandler{
-		DomainHandler: DomainHandler{logger: discardLogger()},
-		tasks:         taskMgr,
-		worktrees:     worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: taskMgr}),
-		artifacts:     artifactStore,
+	h := &Handler{
+		logger:    discardLogger(),
+		tasks:     taskMgr,
+		worktrees: worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: taskMgr}),
+		artifacts: artifactStore,
 	}
 	ag := &agent.Agent{
 		ID:        "agent-1",

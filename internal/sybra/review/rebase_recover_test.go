@@ -68,7 +68,7 @@ func TestRecoverStaleBranchConflict_EscalatesWhenWorkflowAlreadyActive(t *testin
 	}
 }
 
-func TestRecoverStaleBranchConflict_CancelsActiveWorkflowBeforeDispatch(t *testing.T) {
+func TestRecoverStaleBranchConflict_ReplacesActiveWorkflowDuringDispatch(t *testing.T) {
 	r, tk := setupRebaseRecoveryHandler(t, true)
 	tk.Workflow = &workflow.Execution{
 		WorkflowID:  "review-workflow",
@@ -195,6 +195,21 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 		}); err != nil {
 			t.Fatal(err)
 		}
+		if err := wfStore.Save(workflow.Definition{
+			ID:   "existing-pr-push-test",
+			Name: "Existing PR push test",
+			Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+				Field: "task.status", Operator: "equals", Value: string(task.StatusReadyPR),
+			}}},
+			Steps: []workflow.Step{{
+				ID:   "push_existing_pr",
+				Name: "Push Existing PR",
+				Type: workflow.StepPushBranch,
+				Next: []workflow.Transition{{GoTo: ""}},
+			}},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	engine := workflow.NewEngine(wfStore,
@@ -243,6 +258,66 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 		t.Fatal(err)
 	}
 	return r, tk
+}
+
+type staticWorktreeGetter struct {
+	path string
+	ok   bool
+}
+
+func (g staticWorktreeGetter) GetWorktreePath(string) (string, bool) {
+	return g.path, g.ok
+}
+
+func commitRecoveryTestFile(t *testing.T, repo, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", name)
+	runGit(t, repo, "commit", "-m", "add "+name)
+}
+
+func makeExistingPRBranchDiverged(t *testing.T, repo string) {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, "", "init", "--bare", remote)
+	runGit(t, repo, "remote", "add", "origin", remote)
+
+	commitRecoveryTestFile(t, repo, "one.txt", "one\n")
+	commitRecoveryTestFile(t, repo, "two.txt", "two\n")
+	runGit(t, repo, "push", "-u", "origin", "feature/recover")
+	runGit(t, repo, "reset", "--hard", "HEAD~1")
+	commitRecoveryTestFile(t, repo, "two-prime.txt", "two-prime\n")
+}
+
+func TestRecoverStaleBranchConflict_ReplacesExistingPRWorkflowReentrantly(t *testing.T) {
+	r, tk := setupRebaseRecoveryHandler(t, true)
+	makeExistingPRBranchDiverged(t, tk.WorktreeDir)
+
+	r.WorkflowEngine.SetWorktreeGetter(staticWorktreeGetter{path: tk.WorktreeDir, ok: true})
+	r.WorkflowEngine.SetDivergenceRecovery(r.RecoverStaleBranchConflict)
+
+	if err := r.WorkflowEngine.StartWorkflowWithVars(tk.ID, "existing-pr-push-test", nil); err != nil {
+		t.Fatalf("StartWorkflowWithVars(existing-pr-push-test): %v", err)
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want reentrant recovery to take over existing PR workflow", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-conflict-fix-test" {
+		t.Fatalf("workflow = %+v, want pr-conflict-fix-test", got.Workflow)
+	}
+	if got.Workflow.CurrentStep != "wait" {
+		t.Fatalf("current step = %q, want wait", got.Workflow.CurrentStep)
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
+		t.Fatal("conflict issue was not marked handled after reentrant workflow replacement")
+	}
 }
 
 // mechanicalBranchConflictFixYAML is a stand-in for the real
@@ -728,7 +803,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 				return false
 			}
 		}
-		return r.dispatchBranchConflictRecovery(taskID, "/fake/dir", "main", fresh, "", resume)
+		return r.dispatchBranchConflictRecovery(taskID, "/fake/dir", "main", fresh, "", resume, false)
 	})
 
 	done := make(chan error, 1)
@@ -745,7 +820,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 		t.Fatal(err)
 	}
 	resume := r.captureBranchConflictResumeState(fresh)
-	if !r.dispatchBranchConflictRecovery(tk.ID, "/fake/dir", "main", fresh, "", resume) {
+	if !r.dispatchBranchConflictRecovery(tk.ID, "/fake/dir", "main", fresh, "", resume, false) {
 		t.Fatal("dispatchBranchConflictRecovery = false while marker held, want true (queued for retry)")
 	}
 

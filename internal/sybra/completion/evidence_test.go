@@ -1,4 +1,4 @@
-package sybra
+package completion
 
 import (
 	"fmt"
@@ -13,18 +13,15 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func newEvidenceTestHandler(t *testing.T) (*AgentCompletionHandler, *artifact.Store) {
+func newEvidenceTestHandler(t *testing.T) (*Handler, *artifact.Store) {
 	t.Helper()
 	store := artifact.New(t.TempDir())
-	return &AgentCompletionHandler{
-		DomainHandler: DomainHandler{logger: discardLogger()},
-		artifacts:     store,
+	return &Handler{
+		logger:    discardLogger(),
+		artifacts: store,
 	}, store
 }
 
-// listEvidenceMetas returns only the imported evidence artifacts (KindGeneric),
-// filtering out the progress-log entry that importTestRunnerEvidence appends
-// alongside them.
 func listEvidenceMetas(t *testing.T, store *artifact.Store, taskID string) []artifact.Meta {
 	t.Helper()
 	metas, err := store.List(taskID)
@@ -41,7 +38,7 @@ func listEvidenceMetas(t *testing.T, store *artifact.Store, taskID string) []art
 }
 
 func TestImportTestRunnerEvidence_NilArtifactStore(t *testing.T) {
-	h := &AgentCompletionHandler{DomainHandler: DomainHandler{logger: discardLogger()}}
+	h := &Handler{logger: discardLogger()}
 	wt := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wt, worktree.EvidenceDirName), 0o755); err != nil {
 		t.Fatal(err)
@@ -50,7 +47,6 @@ func TestImportTestRunnerEvidence_NilArtifactStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := &agent.Agent{ID: "a1", TaskID: "t1"}
-	// Must not panic with a nil artifact store.
 	h.importTestRunnerEvidence(ag, wt, "")
 }
 
@@ -218,19 +214,15 @@ func TestImportTestRunnerEvidence_SkipsFilesOlderThanRun(t *testing.T) {
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(evidenceDir, "stale.png")
-	fresh := filepath.Join(evidenceDir, "fresh.png")
-	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+	oldPath := filepath.Join(evidenceDir, "old.txt")
+	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	startedAt := time.Now().Add(2 * time.Second)
-	if err := os.Chtimes(stale, startedAt.Add(-time.Second), startedAt.Add(-time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fresh, []byte("fresh"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(fresh, startedAt.Add(time.Second), startedAt.Add(time.Second)); err != nil {
+	time.Sleep(20 * time.Millisecond)
+	startedAt := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	newPath := filepath.Join(evidenceDir, "new.txt")
+	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,34 +230,26 @@ func TestImportTestRunnerEvidence_SkipsFilesOlderThanRun(t *testing.T) {
 	h.importTestRunnerEvidence(ag, wt, "")
 
 	metas := listEvidenceMetas(t, store, ag.TaskID)
-	if len(metas) != 1 {
-		t.Fatalf("expected only fresh evidence imported, got %d: %+v", len(metas), metas)
-	}
-	if metas[0].SourcePath != fresh {
-		t.Fatalf("imported SourcePath = %q, want %q", metas[0].SourcePath, fresh)
+	if len(metas) != 1 || metas[0].SourcePath != newPath {
+		t.Fatalf("expected only new evidence to import, got %+v", metas)
 	}
 }
 
-// TestImportTestRunnerEvidence_ScrubsWorkTypedContent proves the fix for the
-// prior adversarial-testing defect: captured evidence for a work-typed task
-// must be redacted through scrub.Scrub before it lands in the local artifact
-// store, never persisted verbatim. See CLAUDE.md — Work-Data Confidentiality.
-func TestImportTestRunnerEvidence_ScrubsWorkTypedContent(t *testing.T) {
+func TestImportTestRunnerEvidence_ScrubsKnownTextFilesForWorkTasks(t *testing.T) {
 	h, store := newEvidenceTestHandler(t)
 	h.workScrub = func(projectID string) *WorkScrubContext {
 		if projectID != "owner/work-repo" {
 			return nil
 		}
-		return &WorkScrubContext{ProjectID: projectID, Blocklist: []string{"konghq/kong-mesh"}}
+		return &WorkScrubContext{Blocklist: []string{"konghq/kong-mesh"}}
 	}
-
 	wt := t.TempDir()
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	leaked := "console error at https://github.com/konghq/kong-mesh/pull/999"
-	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(leaked), 0o644); err != nil {
+	src := "failure in konghq/kong-mesh during test"
+	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -274,36 +258,34 @@ func TestImportTestRunnerEvidence_ScrubsWorkTypedContent(t *testing.T) {
 
 	metas := listEvidenceMetas(t, store, ag.TaskID)
 	if len(metas) != 1 {
-		t.Fatalf("expected 1 imported artifact, got %d: %+v", len(metas), metas)
+		t.Fatalf("expected 1 scrubbed artifact, got %+v", metas)
 	}
-	content, _, err := store.Read(ag.TaskID, metas[0].Name)
+	got, _, err := store.Read(ag.TaskID, metas[0].Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(content), "konghq/kong-mesh") {
-		t.Fatalf("work-repo identifier survived unscrubbed in imported evidence: %q", content)
+	if strings.Contains(string(got), "konghq/kong-mesh") {
+		t.Fatalf("scrubbed content still leaks work identifier: %q", string(got))
 	}
-	if !strings.Contains(string(content), "[redacted]") {
-		t.Fatalf("expected redaction placeholder in scrubbed content, got %q", content)
+	if !strings.Contains(string(got), "[redacted]") {
+		t.Fatalf("scrubbed content = %q, want redaction marker", string(got))
 	}
 }
 
-func TestImportTestRunnerEvidence_SkipsBinaryWorkTypedContent(t *testing.T) {
+func TestImportTestRunnerEvidence_SkipsBinaryFilesForWorkTasks(t *testing.T) {
 	h, store := newEvidenceTestHandler(t)
 	h.workScrub = func(projectID string) *WorkScrubContext {
 		if projectID != "owner/work-repo" {
 			return nil
 		}
-		return &WorkScrubContext{ProjectID: projectID, Blocklist: []string{"konghq/kong-mesh"}}
+		return &WorkScrubContext{Blocklist: []string{"konghq/kong-mesh"}}
 	}
-
 	wt := t.TempDir()
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pngHeader := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "shot.png"), pngHeader, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(evidenceDir, "screenshot.png"), []byte{0x89, 'P', 'N', 'G', 0x00}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -312,24 +294,20 @@ func TestImportTestRunnerEvidence_SkipsBinaryWorkTypedContent(t *testing.T) {
 
 	metas := listEvidenceMetas(t, store, ag.TaskID)
 	if len(metas) != 0 {
-		t.Fatalf("expected binary work-task evidence to be skipped, got %+v", metas)
+		t.Fatalf("expected binary work evidence to be skipped, got %+v", metas)
 	}
 }
 
-// TestImportTestRunnerEvidence_NonWorkTypedContentUnscrubbed confirms the
-// scrub path is only engaged for work-typed tasks — a nil WorkScrubContext
-// (the common case) must leave evidence byte-identical.
-func TestImportTestRunnerEvidence_NonWorkTypedContentUnscrubbed(t *testing.T) {
+func TestImportTestRunnerEvidence_NilScrubContextImportsAsIs(t *testing.T) {
 	h, store := newEvidenceTestHandler(t)
 	h.workScrub = func(string) *WorkScrubContext { return nil }
-
 	wt := t.TempDir()
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := "console error at https://github.com/example/public-repo/pull/1"
-	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(original), 0o644); err != nil {
+	src := "raw content with konghq/kong-mesh"
+	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,45 +316,35 @@ func TestImportTestRunnerEvidence_NonWorkTypedContentUnscrubbed(t *testing.T) {
 
 	metas := listEvidenceMetas(t, store, ag.TaskID)
 	if len(metas) != 1 {
-		t.Fatalf("expected 1 imported artifact, got %d: %+v", len(metas), metas)
+		t.Fatalf("expected raw artifact import, got %+v", metas)
 	}
-	content, _, err := store.Read(ag.TaskID, metas[0].Name)
+	got, _, err := store.Read(ag.TaskID, metas[0].Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != original {
-		t.Fatalf("expected unscrubbed content %q, got %q", original, content)
+	if string(got) != src {
+		t.Fatalf("content = %q, want %q", string(got), src)
 	}
 }
 
-// TestImportTestRunnerEvidence_SurfacesProgressEntry confirms imported
-// evidence is discoverable from the task's progress log, satisfying the
-// "surface it on the task" requirement.
-func TestImportTestRunnerEvidence_SurfacesProgressEntry(t *testing.T) {
+func TestSurfaceEvidenceImport_AppendsProgressEntry(t *testing.T) {
 	h, store := newEvidenceTestHandler(t)
-	wt := t.TempDir()
-	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "shot.png"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
-	h.importTestRunnerEvidence(ag, wt, "")
 
-	entries, err := store.ReadProgress(ag.TaskID)
+	h.surfaceEvidenceImport(ag, 3)
+
+	metas, err := store.List(ag.TaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 progress entry, got %d: %+v", len(entries), entries)
+	if len(metas) != 1 || metas[0].Kind != artifact.KindProgress {
+		t.Fatalf("expected one progress-log artifact, got %+v", metas)
 	}
-	if entries[0].Kind != artifact.ProgressKindProgress {
-		t.Errorf("kind = %q, want %q", entries[0].Kind, artifact.ProgressKindProgress)
+	got, _, err := store.Read(ag.TaskID, metas[0].Name)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(entries[0].Message, "1 test-runner evidence file") {
-		t.Errorf("message = %q, want it to mention the imported count", entries[0].Message)
+	if !strings.Contains(string(got), "imported 3 test-runner evidence file(s)") {
+		t.Fatalf("progress log = %q, want evidence import message", string(got))
 	}
 }
