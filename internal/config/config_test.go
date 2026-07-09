@@ -890,6 +890,65 @@ func TestPathsUnderHomeDir(t *testing.T) {
 	}
 }
 
+func TestLoadWritesRestrictivePermsOnFreshInstall(t *testing.T) {
+	dir := t.TempDir()
+	sybraHome := filepath.Join(dir, ".sybra")
+	t.Setenv("SYBRA_HOME", sybraHome)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	homeInfo, err := os.Stat(sybraHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("home dir perm = %o, want 0700", perm)
+	}
+
+	cfgInfo, err := os.Stat(filepath.Join(sybraHome, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.yaml perm = %o, want 0600", perm)
+	}
+}
+
+func TestLoadTightensPermsOnExistingInstall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	homeInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("home dir perm = %o, want 0700", perm)
+	}
+
+	cfgInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.yaml perm = %o, want 0600", perm)
+	}
+}
+
 func TestDefaultLogRetentionDays(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

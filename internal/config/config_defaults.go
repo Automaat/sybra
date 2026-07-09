@@ -479,7 +479,7 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
@@ -492,7 +492,7 @@ func WriteRawConfig(data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -562,6 +562,7 @@ func load(opts loadOptions) (*Config, error) {
 			return nil, writeErr
 		}
 	}
+	tightenConfigPerms(path, existingFile)
 
 	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
@@ -1133,10 +1134,25 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 }
 
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o600)
+}
+
+// tightenConfigPerms retrofits the config directory and file to 0o700/0o600
+// on installs created before those became the write-time default (config.yaml
+// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// not fatal — Load must still succeed on read-only or restricted filesystems.
+func tightenConfigPerms(path string, existingFile bool) {
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten home dir perms", "err", err)
+	}
+	if existingFile {
+		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+			slog.Warn("config: failed to tighten config file perms", "err", err)
+		}
+	}
 }
 
 func configPath() string {
