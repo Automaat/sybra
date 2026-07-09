@@ -274,6 +274,219 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	}
 }
 
+func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Present but zero-byte — the exact corruption shape from the bug report
+	// (ls lists entries, du -sh reports 0 bytes).
+	writeTestFile(t, filepath.Join(binDir, "vite"), "")
+
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to have run and left a marker, got: %v", err)
+	}
+	if out := tail.String(); !strings.Contains(out, "corrupt") || !strings.Contains(out, "repair completed") {
+		t.Errorf("tail output = %q, want corrupt+repair-completed messages", out)
+	}
+}
+
+func TestEnsureNodeToolchain_RepairsMissingBin(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin never created — a truncated install can wipe out the
+	// whole directory, not just leave zero-byte entries behind.
+
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to have run for a missing node_modules/.bin, got: %v", err)
+	}
+}
+
+func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n")
+
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run — toolchain looked intact")
+	}
+}
+
+func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
+	root := t.TempDir()
+	frontend := filepath.Join(root, "frontend")
+	if err := os.MkdirAll(frontend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
+	binDir := filepath.Join(frontend, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "")
+
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, "(cd frontend && mise exec -- npm run build:web)", tail)
+
+	if _, err := os.Stat(filepath.Join(frontend, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to run in the cd-resolved frontend/ dir, got: %v", err)
+	}
+}
+
+func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
+	// `test:cd` must not match the cd-prefix pattern and resolve a bogus
+	// `main` subdirectory — the worktree root is the only dir checked.
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), "{}")
+	binDir := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, "npm run test:cd main", tail)
+
+	if _, err := os.Stat(filepath.Join(root, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run — root toolchain is intact and `test:cd` is not a cd prefix")
+	}
+	if _, err := os.Stat(filepath.Join(root, "main")); err == nil {
+		t.Error("a bogus `main` dir must never be created")
+	}
+}
+
+func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
+	root := t.TempDir()
+	spaced := filepath.Join(root, "my dir")
+	binDir := filepath.Join(spaced, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(spaced, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, `cd "my dir" && npm run build`, tail)
+
+	if _, err := os.Stat(filepath.Join(spaced, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to run in the quoted spaced dir, got: %v", err)
+	}
+}
+
+func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
+	root := t.TempDir()
+	for _, leg := range []string{"frontend", "backend"} {
+		binDir := filepath.Join(root, leg, "node_modules", ".bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(root, leg, "package.json"), "{}")
+		writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt in both
+	}
+	// Shared fake npm on PATH; it drops the marker in whichever cwd it runs.
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root,
+		"(cd frontend && npm run build) && (cd backend && npm test)", tail)
+
+	for _, leg := range []string{"frontend", "backend"} {
+		if _, err := os.Stat(filepath.Join(root, leg, "marker-npm-ci-ran")); err != nil {
+			t.Errorf("expected npm ci to run in %s, got: %v", leg, err)
+		}
+	}
+}
+
+func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	binDir := filepath.Join(outside, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(outside, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	wt := filepath.Join(root, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", wt, "cd ../outside && npm run build", tail)
+
+	if _, err := os.Stat(filepath.Join(outside, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci must not run outside the worktree via a `..` traversal")
+	}
+}
+
+func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
+	dir := t.TempDir() // no package.json
+	fakeNPM(t, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", dir, "go test ./...", tail)
+
+	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run for a non-Node directory")
+	}
+}
+
+// fakeNPM prepends a fake `npm` executable onto PATH for the duration of the
+// test, so ensureNodeToolchain's `sh -c "npm ci"` is observable without
+// depending on a real npm install. Running it drops a marker file named
+// markerName into its working directory.
+func fakeNPM(t *testing.T, markerName string) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\ntouch \"" + markerName + "\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIsCorruptedNodeModules(t *testing.T) {
 	t.Parallel()
 
