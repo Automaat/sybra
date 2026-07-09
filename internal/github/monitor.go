@@ -12,6 +12,7 @@ const (
 	// matching and exists only to keep its retry budget separate from PR-backed
 	// conflicts.
 	PRIssueBranchConflictNoPR PRIssueKind = "branch_conflict_no_pr"
+	PRIssueBranchRecreate     PRIssueKind = "branch_recreate"
 	PRIssueCIFailure          PRIssueKind = "ci_failure"
 	PRIssueComments           PRIssueKind = "comments"
 	PRIssueReadyToMerge       PRIssueKind = "ready_to_merge"

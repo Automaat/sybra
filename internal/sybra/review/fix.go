@@ -26,6 +26,7 @@ import (
 // internal/workflow/builtin/branch-conflict-fix.yaml.
 const branchConflictFixWorkflowID = "branch-conflict-fix"
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
+const branchRecreateKind = github.PRIssueBranchRecreate
 
 const wtFailureLimit = 5
 
@@ -750,6 +751,9 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	taskID := t.ID
 	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
+		if r.recreateExhaustedNoPRBranch(t) {
+			return true
+		}
 		r.markConflictRecoveryExhausted(taskID, branchConflictRetryKind)
 		return false
 	}
@@ -814,6 +818,39 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
 	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume)
+}
+
+func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {
+	taskID := t.ID
+	if r.worktrees == nil || r.WorkflowEngine == nil {
+		return false
+	}
+	if r.prTracker.AtCap(taskID, branchRecreateKind) {
+		return false
+	}
+	if err := r.worktrees.RecreateFromBase(context.Background(), t); err != nil {
+		r.logger.Warn("pr-monitor.branch-recreate.failed", "task_id", taskID, "err", err)
+		return false
+	}
+	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
+		if _, cancelErr := r.WorkflowEngine.CancelWorkflow(taskID, "branch recreated from fresh base"); cancelErr != nil {
+			r.logger.Error("pr-monitor.branch-recreate.cancel", "task_id", taskID, "err", cancelErr)
+			return false
+		}
+	}
+	reason := "branch recreated from a fresh base after conflict recovery was exhausted; re-implementing (diverged commits saved under refs/sybra-backup)"
+	if _, err := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.branch-recreate.status", "task_id", taskID, "err", err)
+		return false
+	}
+	r.prTracker.MarkHandled(taskID, branchRecreateKind, "")
+	r.prTracker.Clear(taskID, branchConflictRetryKind)
+	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{"recreated": true})
+	r.logger.Info("pr-monitor.branch-recreate.done", "task_id", taskID)
+	return true
 }
 
 func (r *Handler) captureBranchConflictResumeState(t task.Task) branchConflictResumeState {
