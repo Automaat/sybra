@@ -246,14 +246,28 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 	}
 	h := spaHandler{fs: http.FileServer(http.FS(sub)), staticDir: staticDir}
 
-	req := httptest.NewRequest(http.MethodGet, "/tasks/123", http.NoBody)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	// Representative deep links across the frontend's URL-backed routes,
+	// including one encoded dynamic segment (a project id containing '/').
+	paths := []string{
+		"/tasks/123",
+		"/tasks",
+		"/projects/owner%2Frepo",
+		"/chats/agent-1",
+		"/agents/agent-1",
+		"/workflows/wf-1",
+		"/settings",
 	}
-	if body := rr.Body.String(); body != "index" {
-		t.Fatalf("body = %q, want %q", body, "index")
+
+	for _, path := range paths {
+		req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", path, rr.Code)
+		}
+		if body := rr.Body.String(); body != "index" {
+			t.Fatalf("%s: body = %q, want %q", path, body, "index")
+		}
 	}
 }
