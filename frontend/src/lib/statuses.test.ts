@@ -18,9 +18,9 @@ describe('CORE_STATUSES', () => {
     expect(CORE_STATUSES).toEqual([...BOARD_COLUMNS.map((c) => c.status), 'done', 'cancelled'])
   })
 
-  it('is a small set (<= 9) and excludes granular states', () => {
-    expect(CORE_STATUSES.length).toBeLessThanOrEqual(9)
-    for (const granular of ['new', 'plan-review', 'ready-pr', 'blocked']) {
+  it('is a small set (<= 10) and excludes granular states', () => {
+    expect(CORE_STATUSES.length).toBeLessThanOrEqual(10)
+    for (const granular of ['new', 'plan-review', 'ready-pr']) {
       expect(CORE_STATUSES).not.toContain(granular)
     }
   })
@@ -38,7 +38,7 @@ describe('coreStatus', () => {
     expect(coreStatus('plan-review')).toBe('planning')
     expect(coreStatus('ready-review')).toBe('ready-review')
     expect(coreStatus('ready-pr')).toBe('in-review')
-    expect(coreStatus('blocked')).toBe('human-required')
+    expect(coreStatus('blocked')).toBe('blocked')
   })
 
   it('maps a column status to itself', () => {

@@ -173,7 +173,8 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'ready-review', label: 'Agentic Review', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing'] },
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review', 'ready-pr'] },
-  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
+  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required'] },
+  { status: 'blocked', label: 'Failed', border: 'border-t-error-600 dark:border-t-error-500', includes: ['blocked'] },
 ]
 
 /**
@@ -217,7 +218,7 @@ export const BOARD_LANES: BoardColumn[] = [
 /**
  * Core user-facing status set: the active board columns plus the terminal
  * states (`done`, `cancelled`). Granular states (new, plan-review,
- * ready-pr, blocked) are internal/derived — set by automations, not
+ * ready-pr) are internal/derived — set by automations, not
  * picked by hand. Users choose from this small set so a task's status always
  * lines up with a board column.
  */
