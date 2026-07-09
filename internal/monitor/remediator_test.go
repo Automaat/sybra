@@ -263,7 +263,6 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry
 		t.Fatalf("tags must not change for tamper-flagged block, got %v", *u.u.Tags)
 	}
 }
-
 func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
 	t.Parallel()
 	ft := &fakeTasks{tasks: []task.Task{
