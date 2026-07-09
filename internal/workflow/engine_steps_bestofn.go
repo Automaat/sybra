@@ -573,7 +573,7 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 
 	canonicalDir, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
 	if promErr != nil {
-		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion refused: "+promErr.Error())
+		return e.humanRequiredStepOutput(taskID, step, promErr.Error())
 	}
 	// Downstream steps (e.g. a shell step pushing the now-canonical branch)
 	// resolve the worktree via the reserved WorkflowVarDir var, same as every

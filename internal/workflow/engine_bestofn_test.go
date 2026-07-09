@@ -581,7 +581,8 @@ func TestBestOfN_JudgeSuccess_PromotesWinnerAndCleansUpLosers(t *testing.T) {
 
 func TestBestOfN_PromotionRefused_FailsClosedWithDistinctReason(t *testing.T) {
 	engine, tasks, agents, attemptWt, _ := newBestOfNTestEngine(t, 2)
-	attemptWt.promoteErr = errors.New("best-of-n promotion refused: task already has a PR")
+	const reason = "best-of-n promotion refused: task already has a PR"
+	attemptWt.promoteErr = errors.New(reason)
 	setupTwoSuccessfulAttempts(t, engine, tasks)
 
 	judgeAgentID := agents.LastID()
@@ -589,7 +590,7 @@ func TestBestOfN_PromotionRefused_FailsClosedWithDistinctReason(t *testing.T) {
 	if err := engine.AdvanceStep("t1", StepOutput{StepID: "judge", Status: "completed", AgentID: judgeAgentID, Output: out}); err != nil {
 		t.Fatal(err)
 	}
-	assertHumanRequiredReason(t, tasks, "best-of-n promotion refused")
+	assertHumanRequiredReason(t, tasks, reason)
 }
 
 // --- resume-without-double-dispatch ---
