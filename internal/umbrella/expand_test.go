@@ -77,7 +77,7 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	defer restore()
 
 	tasks := newTestTaskManager(t)
-	run := func(context.Context, string) (string, error) {
+	run := func(context.Context, string, string) (string, error) {
 		return "", context.DeadlineExceeded
 	}
 
