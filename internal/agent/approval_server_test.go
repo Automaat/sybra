@@ -132,6 +132,140 @@ func TestApprovalServer_UnknownSession(t *testing.T) {
 	}
 }
 
+// TestFindAgentBySession_MatchesHeadlessAgent verifies the approval hook
+// resolves a headless-mode agent by session ID, not just interactive ones.
+// Headless runs only reach this hook when RequirePermissions is set (see
+// buildClaudeHookSettings), so restricting the match to Mode=="interactive"
+// left every headless approval request unresolved and fail-closed to deny —
+// forcing operators to disable permission requirements entirely.
+func TestFindAgentBySession_MatchesHeadlessAgent(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	fakeAgent := &Agent{
+		ID:        "fake-headless-1",
+		Mode:      "headless",
+		SessionID: "session-headless",
+		State:     StateRunning,
+	}
+	mgr.mu.Lock()
+	mgr.agents["fake-headless-1"] = fakeAgent
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("session-headless"); got != "fake-headless-1" {
+		t.Errorf("findAgentBySession(headless) = %q, want %q", got, "fake-headless-1")
+	}
+}
+
+// TestFindAgentBySession_PrefersLiveRetryOverStaleOriginal covers the
+// registry-never-pruned hazard: a rate-limited retry resumes the prior session
+// ID, so the stopped original and the live retry share a SessionID. The lookup
+// must resolve to the live retry, not the dead original nobody is watching.
+func TestFindAgentBySession_PrefersLiveRetryOverStaleOriginal(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	base := time.Now()
+	original := &Agent{
+		ID:        "orig",
+		Mode:      "headless",
+		SessionID: "shared-session",
+		State:     StateStopped,
+		StartedAt: base,
+	}
+	retry := &Agent{
+		ID:        "retry",
+		Mode:      "headless",
+		SessionID: "shared-session",
+		State:     StateRunning,
+		StartedAt: base.Add(time.Minute),
+	}
+	mgr.mu.Lock()
+	mgr.agents["orig"] = original
+	mgr.agents["retry"] = retry
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("shared-session"); got != "retry" {
+		t.Errorf("findAgentBySession = %q, want %q (live retry)", got, "retry")
+	}
+}
+
+// TestFindAgentBySession_MostRecentAmongSameLiveness verifies the tie-breaker
+// when two matching agents share liveness: the most-recently-started wins.
+func TestFindAgentBySession_MostRecentAmongSameLiveness(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	base := time.Now()
+	older := &Agent{
+		ID:        "older",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: base,
+	}
+	newer := &Agent{
+		ID:        "newer",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: base.Add(time.Second),
+	}
+	mgr.mu.Lock()
+	mgr.agents["older"] = older
+	mgr.agents["newer"] = newer
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("same-session"); got != "newer" {
+		t.Errorf("findAgentBySession = %q, want %q (most recent)", got, "newer")
+	}
+}
+
+func TestFindAgentBySession_DeterministicTieBreakOnAgentID(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	started := time.Now()
+	low := &Agent{
+		ID:        "agent-a",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: started,
+	}
+	high := &Agent{
+		ID:        "agent-b",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: started,
+	}
+	mgr.mu.Lock()
+	mgr.agents[low.ID] = low
+	mgr.agents[high.ID] = high
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("same-session"); got != "agent-b" {
+		t.Errorf("findAgentBySession = %q, want %q (deterministic agent ID tie-break)", got, "agent-b")
+	}
+}
+
+func TestFindAgentBySessionWithRetry_EmptySessionReturnsImmediately(t *testing.T) {
+	t.Parallel()
+
+	srv := &ApprovalServer{}
+	start := time.Now()
+	if got := srv.findAgentBySessionWithRetry(context.Background(), " \t "); got != "" {
+		t.Fatalf("findAgentBySessionWithRetry(empty) = %q, want empty", got)
+	}
+	if elapsed := time.Since(start); elapsed >= sessionLookupBackoff {
+		t.Fatalf("findAgentBySessionWithRetry(empty) took %v, want < %v", elapsed, sessionLookupBackoff)
+	}
+}
 func TestApprovalServer_CanceledContext(t *testing.T) {
 	t.Parallel()
 
