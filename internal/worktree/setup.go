@@ -149,7 +149,13 @@ func setProcessGroupKill(cmd *exec.Cmd) {
 		}
 		// Negative pid targets the whole process group (valid because
 		// Setpgid made this process its own group leader, so pgid == pid).
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+		return nil
 	}
 }
 
