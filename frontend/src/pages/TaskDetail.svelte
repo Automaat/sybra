@@ -14,6 +14,7 @@
   import LiveAgentPanel from '../components/task-detail/LiveAgentPanel.svelte'
   import AgentLauncher from '../components/task-detail/AgentLauncher.svelte'
   import AgentHistoryList from '../components/task-detail/AgentHistoryList.svelte'
+  import { needsPlanApproval } from '../lib/statuses.js'
 
   interface Props {
     taskId: string
@@ -37,7 +38,8 @@
   )
   // A plan-review task always needs a Plan tab to host the approve/reject
   // decision, even when its plan lives in the body rather than a sidecar.
-  const showPlanTab = $derived(hasPlan || t?.status === 'plan-review')
+  const pendingApproval = $derived(!!t && needsPlanApproval(t))
+  const showPlanTab = $derived(hasPlan || pendingApproval)
   const hasReview = $derived(
     !!(t && (t.codeReview || (t.agentRuns ?? []).some((r) => REVIEW_ROLES.has(r.role)))),
   )
@@ -45,7 +47,7 @@
 
   const tabs = $derived([
     { value: 'overview', label: 'Overview' },
-    ...(showPlanTab ? [{ value: 'plan', label: t?.status === 'plan-review' ? 'Plan ●' : 'Plan' }] : []),
+    ...(showPlanTab ? [{ value: 'plan', label: pendingApproval ? 'Plan ●' : 'Plan' }] : []),
     ...(hasReview ? [{ value: 'review', label: 'Review' }] : []),
     { value: 'runs', label: runsCount > 0 ? `Runs · ${runsCount}` : 'Runs' },
   ])
@@ -155,7 +157,7 @@
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
       <HumanRequiredPanel task={t} />
-      {#if t.status === 'plan-review' && activeTab !== 'plan'}
+      {#if pendingApproval && activeTab !== 'plan'}
         <!-- Default is Overview, so nudge the pending approve/reject to the fore. -->
         <button
           type="button"
@@ -189,7 +191,7 @@
 
           {#if showPlanTab}
             <section class={panelClass('plan', 'flex flex-col gap-4')}>
-              {#if t.status === 'plan-review'}
+              {#if pendingApproval}
                 <PlanReviewPanel task={t} {onreviewplan} />
               {:else}
                 <TaskPlanPanel task={t} />

@@ -23,6 +23,7 @@ vi.mock('./stores/tasks.svelte.js', () => ({
     error: '',
     list: [],
     byStatus: () => [],
+    tasksNeedingPlanApproval: () => [],
   },
 }))
 
