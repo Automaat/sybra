@@ -188,7 +188,6 @@ const repairTornNodeModulesTimeout = 3 * time.Minute
 // (an install that was interrupted before npm finished writing its stamp).
 func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
 	e.repairTornNodeModulesInDir(taskID, wtPath, ".")
-
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
 		return
