@@ -84,6 +84,11 @@ steps:
       mode: headless
       model: sonnet
       max_retries: 1
+      # The judge dispatches directly (pre-staged dir), bypassing the launcher's
+      # own budget enforcement — preflight the task cost budget here so an
+      # over-budget task fails closed to human-required before spending on the
+      # (most expensive) judge run rather than at promotion.
+      budget_preflight: true
       prompt: >-
         You are judging several independent implementation attempts for the
         same task so the best one can be promoted. The attempt manifest

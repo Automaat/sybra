@@ -253,6 +253,13 @@ type StepConfig struct {
 	// the judge scored. Required — resolves the attempt worktree/branch the
 	// winner_attempt_id names.
 	BestOfNStep string `yaml:"best_of_n_step,omitempty" json:"bestOfNStep,omitempty"`
+
+	// run_agent: enforce the cumulative task cost budget before dispatching.
+	// Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
+	// pre-staged dir and so bypasses StartAgentWithAssignment's own budget
+	// enforcement) so the run fails closed to human-required instead of
+	// spending on the step when the task is already over budget.
+	BudgetPreflight bool `yaml:"budget_preflight,omitempty" json:"budgetPreflight,omitempty"`
 }
 
 // ImportSidecar describes a sidecar file the engine should ingest after a

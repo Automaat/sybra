@@ -429,6 +429,9 @@ func (e *Engine) executeSteps(taskID string, def *Definition, step *Step, wfExec
 		// will call AdvanceStep later.
 		switch step.Type {
 		case StepRunAgent:
+			if comp, handled, bErr := e.preflightRunAgentBudget(taskID, def, step, wfExec); handled {
+				return comp, wrapDispatchErr(step.ID, bErr)
+			}
 			return nil, wrapDispatchErr(step.ID, e.execRunAgent(taskID, step, wfExec, ctx))
 		case StepParallel:
 			return e.execParallel(taskID, def, step, wfExec, ctx)

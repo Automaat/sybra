@@ -727,6 +727,20 @@ func SetBranchTo(ctx context.Context, barePath, branch, commit string) error {
 	})
 }
 
+// DeleteBranch force-removes a local branch ref from the bare repo. Used by
+// best-of-N attempt cleanup so a discarded attempt branch is not silently
+// reused as the base for a later attempt with the same ID. Force-delete (`-D`)
+// because a losing attempt branch is never merged into the canonical branch,
+// so `git branch -d` would refuse it. No-op-safe: deleting a missing branch
+// returns an error the caller logs but does not treat as fatal.
+func DeleteBranch(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-D", branch)
+		})
+	})
+}
+
 // ResolveBareRef resolves a git ref (e.g. "refs/heads/<branch>") to its SHA in
 // the bare repo. Returns ("", false) if the ref does not exist. Exported
 // wrapper around resolveRef for best-of-N promotion's divergence check.

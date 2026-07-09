@@ -73,6 +73,7 @@ func (f *fakeAttemptWorktrees) PrepareCallCount() int {
 type fakeCostBudget struct {
 	mu       sync.Mutex
 	err      error
+	failFrom int // when >0, return err starting from this 1-based call (else err applies to every call)
 	callsFor []string
 }
 
@@ -80,6 +81,12 @@ func (f *fakeCostBudget) CheckTaskCostBudget(taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.callsFor = append(f.callsFor, taskID)
+	if f.failFrom > 0 {
+		if len(f.callsFor) >= f.failFrom {
+			return f.err
+		}
+		return nil
+	}
 	return f.err
 }
 
@@ -110,9 +117,10 @@ func bestOfNTestDef(attempts int) Definition {
 				ID:   "judge",
 				Type: StepRunAgent,
 				Config: StepConfig{
-					Role:   "review",
-					Mode:   "headless",
-					Prompt: "judge",
+					Role:            "review",
+					Mode:            "headless",
+					Prompt:          "judge",
+					BudgetPreflight: true,
 				},
 				Next: []Transition{
 					{When: &Condition{Field: "task.status", Operator: "equals", Value: "human-required"}, GoTo: ""},
@@ -335,6 +343,44 @@ func TestBestOfN_CostPreflightFailsClosedBeforeDispatch(t *testing.T) {
 	}
 	if !strings.Contains(ti.StatusReason, "cost budget exceeded") {
 		t.Fatalf("reason = %q, want cost budget exceeded", ti.StatusReason)
+	}
+}
+
+// TestBestOfN_CostPreflightBlocksJudgeAfterAttempts proves the budget guard
+// also protects the (most expensive) judge run: the fan-out preflight passes,
+// both attempts complete, then the budget flips to exceeded before the judge
+// dispatches — the judge agent must never start and the task fails closed to
+// human-required, rather than spending on the judge and only failing at
+// promotion.
+func TestBestOfN_CostPreflightBlocksJudgeAfterAttempts(t *testing.T) {
+	engine, tasks, agents, _, costBudget := newBestOfNTestEngine(t, 2)
+	// Call 1 = fan-out preflight (passes); call 2 = judge preflight (fails).
+	costBudget.failFrom = 2
+	costBudget.err = ErrTaskCostExceeded
+
+	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	if got := agents.CallCount(); got != 2 {
+		t.Fatalf("after fan-out StartAgent calls = %d, want 2 (both attempts)", got)
+	}
+
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "attempts::attempt_1", Status: "completed", AgentID: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "attempts::attempt_2", Status: "completed", AgentID: "agent-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := agents.CallCount(); got != 2 {
+		t.Fatalf("StartAgent calls = %d, want 2 (judge must NOT dispatch when over budget)", got)
+	}
+	ti := mustTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "cost budget exceeded before judge dispatch") {
+		t.Fatalf("reason = %q, want judge-dispatch budget reason", ti.StatusReason)
 	}
 }
 

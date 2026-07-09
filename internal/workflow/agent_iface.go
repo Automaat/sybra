@@ -69,8 +69,9 @@ type PromptTransform struct {
 	Text string
 }
 
-// CostBudgetChecker is consulted by execBestOfN before fanning out attempts
-// and before dispatching the judge step: unlike StartAgentWithAssignment
+// CostBudgetChecker is consulted before fanning out best-of-N attempts
+// (execBestOfN) and before dispatching a budget-preflight run_agent step such
+// as the judge (preflightRunAgentBudget): unlike StartAgentWithAssignment
 // (implementation agents on the canonical worktree), the direct-dispatch
 // AgentLauncher.StartAgent branch — which best-of-N attempts and the judge
 // both use, since they pass a pre-staged `dir` — does not itself enforce the

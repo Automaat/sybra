@@ -230,14 +230,24 @@ func (m *Manager) CleanupAttempts(ctx context.Context, t task.Task, attemptIDs [
 	}
 	for _, attemptID := range attemptIDs {
 		wtPath := m.PathForAttempt(t, attemptID)
-		if _, statErr := os.Stat(wtPath); statErr != nil {
-			continue
+		wtBranch := attemptBranchName(t, t.Branch, attemptID)
+		if _, statErr := os.Stat(wtPath); statErr == nil {
+			if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
+				m.logger.Warn("worktree.attempt.cleanup", "task_id", t.ID, "attempt", attemptID, "path", wtPath, "err", err)
+				continue
+			}
+			m.logger.Info("worktree.attempt.cleaned-up", "task_id", t.ID, "attempt", attemptID, "path", wtPath)
 		}
-		if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
-			m.logger.Warn("worktree.attempt.cleanup", "task_id", t.ID, "attempt", attemptID, "path", wtPath, "err", err)
-			continue
+		// Delete the attempt's branch ref too: PrepareAttempt reuses an existing
+		// attempt branch verbatim, so a leftover ref would seed a later cycle's
+		// attempt from discarded (losing/already-judged) work instead of the
+		// intended base. The worktree above is removed first — a branch checked
+		// out in a live worktree cannot be deleted.
+		if project.BranchExists(ctx, proj.ClonePath, wtBranch) {
+			if err := project.DeleteBranch(ctx, proj.ClonePath, wtBranch); err != nil {
+				m.logger.Warn("worktree.attempt.cleanup.branch", "task_id", t.ID, "attempt", attemptID, "branch", wtBranch, "err", err)
+			}
 		}
-		m.logger.Info("worktree.attempt.cleaned-up", "task_id", t.ID, "attempt", attemptID, "path", wtPath)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -279,6 +280,42 @@ func TestCleanupAttempts_LeavesWinnerUntouched(t *testing.T) {
 	}
 	if _, statErr := os.Stat(winnerDir); statErr != nil {
 		t.Errorf("winner dir %q was removed by cleanup targeting only the loser: %v", winnerDir, statErr)
+	}
+}
+
+// TestCleanupAttempts_DeletesBranchRef proves cleanup removes the attempt's
+// local branch ref, not just its worktree dir — otherwise a later best-of-N
+// cycle for the same task/attempt ID would reuse the stale branch (via
+// PrepareAttempt's BranchExists path) and seed a new attempt from discarded
+// work instead of the intended base.
+func TestCleanupAttempts_DeletesBranchRef(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+	tk := mustCreateAttemptTask(t, h, "branch-ref cleanup task")
+
+	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
+	if err != nil {
+		t.Fatalf("PrepareAttempt: %v", err)
+	}
+	commitFile(t, dir, "discarded.txt", "discarded work\n", "discarded attempt commit")
+
+	if !project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("attempt branch %q should exist before cleanup", branch)
+	}
+
+	h.m.CleanupAttempts(context.Background(), tk, []string{"attempt_1"})
+
+	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("attempt branch %q still exists after CleanupAttempts — stale ref would be reused by a later cycle", branch)
+	}
+
+	// A later cycle's attempt must start fresh from the base, not inherit the
+	// discarded commit off the leaked branch.
+	dir2, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
+	if err != nil {
+		t.Fatalf("PrepareAttempt (second cycle): %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir2, "discarded.txt")); statErr == nil {
+		t.Errorf("re-prepared attempt inherited discarded.txt from stale branch — cleanup did not reset the ref")
 	}
 }
 

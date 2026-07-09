@@ -56,14 +56,14 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	if e.costBudget != nil {
 		if err := e.costBudget.CheckTaskCostBudget(taskID); err != nil {
 			if errors.Is(err, ErrTaskCostExceeded) {
-				return e.failBestOfNClosed(taskID, def, step, wfExec,
+				return e.failStepClosed(taskID, def, step, wfExec,
 					"best-of-n: cost budget exceeded before attempts started: "+err.Error())
 			}
 			return nil, err
 		}
 	}
 	if e.attemptWorktrees == nil {
-		return e.failBestOfNClosed(taskID, def, step, wfExec,
+		return e.failStepClosed(taskID, def, step, wfExec,
 			"best-of-n: no attempt worktree manager configured")
 	}
 
@@ -270,13 +270,13 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 	if len(successes) == 0 {
 		delete(wfExec.BestOfNInflight, parent.ID)
 		e.cleanupAllBestOfNAttempts(taskID, rec)
-		return e.failBestOfNClosed(taskID, def, parent, wfExec,
+		return e.failStepClosed(taskID, def, parent, wfExec,
 			"best-of-n: all attempts failed to start or complete")
 	}
 	if len(successes) == 1 {
 		delete(wfExec.BestOfNInflight, parent.ID)
 		e.cleanupAllBestOfNAttempts(taskID, rec)
-		return e.failBestOfNClosed(taskID, def, parent, wfExec,
+		return e.failStepClosed(taskID, def, parent, wfExec,
 			"best-of-n: fewer than 2 successful attempts, cannot judge")
 	}
 
@@ -336,12 +336,39 @@ func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) 
 	e.attemptWorktrees.CleanupAttempts(taskID, ids)
 }
 
-// failBestOfNClosed flips the task to human-required with reason and drives
-// the best_of_n step's own Next transitions (typically
+// preflightRunAgentBudget enforces the cumulative task cost budget BEFORE a
+// direct-dispatch run_agent step (e.g. the best-of-N judge) actually spawns.
+// The judge passes a pre-staged `dir`, so it routes through
+// agentAdapter.StartAgent, which — unlike StartAgentWithAssignment — never
+// checks the budget itself; without this preflight Sybra would spend on the
+// (most expensive) judge run and only fail closed later at promotion.
+//
+// Returns handled=false (dispatch proceeds normally) unless the step opts in
+// via BudgetPreflight AND the budget is already exceeded, in which case it
+// flips the task to human-required and ends the workflow via the same
+// declarative Next path as every other mechanical gate.
+func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *Step, wfExec *Execution) (comp *CompletionInfo, handled bool, err error) {
+	if !step.Config.BudgetPreflight || e.costBudget == nil {
+		return nil, false, nil
+	}
+	cErr := e.costBudget.CheckTaskCostBudget(taskID)
+	if cErr == nil {
+		return nil, false, nil
+	}
+	if !errors.Is(cErr, ErrTaskCostExceeded) {
+		return nil, true, cErr
+	}
+	comp, err = e.failStepClosed(taskID, def, step, wfExec,
+		"best-of-n: cost budget exceeded before judge dispatch: "+cErr.Error())
+	return comp, true, err
+}
+
+// failStepClosed flips the task to human-required with reason and drives
+// the step's own Next transitions (typically
 // `when task.status == human-required goto ""`) so the workflow ends via the
 // same declarative path as every other mechanical gate (verify_commits,
 // detect_tampering, ...), rather than force-ending the execution directly.
-func (e *Engine) failBestOfNClosed(taskID string, def *Definition, step *Step, wfExec *Execution, reason string) (*CompletionInfo, error) {
+func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfExec *Execution, reason string) (*CompletionInfo, error) {
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return nil, err
 	}
