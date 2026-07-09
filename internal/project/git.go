@@ -741,6 +741,18 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 	})
 }
 
+// BackupBranchRef points refs/sybra-backup/<branch> at the branch's current
+// tip so a subsequent DeleteBranch does not lose the commits — they stay
+// recoverable via the backup ref. Used before recreating a task's branch from
+// a fresh base when merge-based conflict recovery is exhausted.
+func BackupBranchRef(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "refs/sybra-backup/"+branch, "refs/heads/"+branch)
+		})
+	})
+}
+
 // ResolveBareRef resolves a git ref (e.g. "refs/heads/<branch>") to its SHA in
 // the bare repo. Returns ("", false) if the ref does not exist. Exported
 // wrapper around resolveRef for best-of-N promotion's divergence check.

@@ -471,7 +471,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
 		for i := range matched {
 			switch matched[i].Kind {
-			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
+			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
 			case github.PRIssueComments:
 				// REST exposes no thread-resolution data; comments stay

@@ -592,6 +592,39 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	return wtPath, nil
 }
 
+// RecreateFromBase discards a task's diverged branch and its worktree so the
+// next PrepareForTask rebuilds it fresh off the project's base ref. The branch
+// tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
+// discarded commits stay recoverable. Used as the last-resort recovery when
+// merge-based branch-conflict recovery is exhausted on a no-PR task: the branch
+// genuinely cannot be reconciled, so re-implementing from a clean base is the
+// only autonomous path left.
+func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+	branch := branchNameForTask(t)
+	wtPath := m.PathFor(t)
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if berr := project.BackupBranchRef(ctx, proj.ClonePath, branch); berr != nil {
+			m.logger.Warn("worktree.recreate.backup", "task_id", t.ID, "branch", branch, "err", berr)
+		}
+	}
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		if rerr := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); rerr != nil {
+			return fmt.Errorf("remove worktree: %w", rerr)
+		}
+	}
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if derr := project.DeleteBranch(ctx, proj.ClonePath, branch); derr != nil {
+			return fmt.Errorf("delete branch: %w", derr)
+		}
+	}
+	m.logger.Info("worktree.recreated-from-base", "task_id", t.ID, "branch", branch)
+	return nil
+}
+
 // PrepareForFix creates a worktree checking out the PR's head branch
 // so the agent can rebase and push. Setup command failures do not abort
 // worktree creation (see runSetupNonGating) — the fixer this worktree is for
