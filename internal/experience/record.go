@@ -115,6 +115,31 @@ func writePromptLine(b *strings.Builder, format string, args ...any) bool {
 	return false
 }
 
+// Eligible reports whether rec should be injected as advisory context for a
+// task carrying taskTags, evaluated at evalTime. Two gates replace the
+// previously always-on injection:
+//   - TTL: rec expires ttlDays after CreatedAt, so a record can't poison a
+//     prompt with advice that no longer matches the current codebase.
+//     ttlDays <= 0 disables expiry.
+//   - Keyword trigger: a tagged rec only fires when at least one of its
+//     tags overlaps taskTags. Untagged records (general wisdom, or legacy
+//     records predating this field) always match — they carry no keyword
+//     to trigger on.
+func Eligible(rec Record, taskTags []string, ttlDays int, evalTime time.Time) bool {
+	if ttlDays > 0 && !rec.CreatedAt.IsZero() && evalTime.Sub(rec.CreatedAt) > time.Duration(ttlDays)*24*time.Hour {
+		return false
+	}
+	if len(rec.Tags) == 0 {
+		return true
+	}
+	for _, tag := range taskTags {
+		if slices.Contains(rec.Tags, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 func recordCreatedAt(t task.Task) time.Time {
 	if t.ClosedAt != nil && !t.ClosedAt.IsZero() {
 		return t.ClosedAt.UTC()
