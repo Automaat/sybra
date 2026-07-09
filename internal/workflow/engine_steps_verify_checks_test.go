@@ -259,6 +259,99 @@ func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 	}
 }
 
+func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
+	// `test:cd` must not match the cd-prefix pattern and resolve a bogus
+	// `main` subdirectory — the worktree root is the only dir checked.
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), "{}")
+	binDir := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
+	fakeNPM(t, root, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, "npm run test:cd main", tail)
+
+	if _, err := os.Stat(filepath.Join(root, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci should not have run — root toolchain is intact and `test:cd` is not a cd prefix")
+	}
+	if _, err := os.Stat(filepath.Join(root, "main")); err == nil {
+		t.Error("a bogus `main` dir must never be created")
+	}
+}
+
+func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
+	root := t.TempDir()
+	spaced := filepath.Join(root, "my dir")
+	binDir := filepath.Join(spaced, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(spaced, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
+	fakeNPM(t, spaced, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root, `cd "my dir" && npm run build`, tail)
+
+	if _, err := os.Stat(filepath.Join(spaced, "marker-npm-ci-ran")); err != nil {
+		t.Errorf("expected npm ci to run in the quoted spaced dir, got: %v", err)
+	}
+}
+
+func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
+	root := t.TempDir()
+	for _, leg := range []string{"frontend", "backend"} {
+		binDir := filepath.Join(root, leg, "node_modules", ".bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(root, leg, "package.json"), "{}")
+		writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt in both
+	}
+	// Shared fake npm on PATH; it drops the marker in whichever cwd it runs.
+	fakeNPM(t, root, "marker-npm-ci-ran")
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", root,
+		"(cd frontend && npm run build) && (cd backend && npm test)", tail)
+
+	for _, leg := range []string{"frontend", "backend"} {
+		if _, err := os.Stat(filepath.Join(root, leg, "marker-npm-ci-ran")); err != nil {
+			t.Errorf("expected npm ci to run in %s, got: %v", leg, err)
+		}
+	}
+}
+
+func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	binDir := filepath.Join(outside, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(outside, "package.json"), "{}")
+	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
+	fakeNPM(t, outside, "marker-npm-ci-ran")
+
+	wt := filepath.Join(root, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tail := &boundedTail{max: 4096}
+	engine.ensureNodeToolchain(context.Background(), "t1", wt, "cd ../outside && npm run build", tail)
+
+	if _, err := os.Stat(filepath.Join(outside, "marker-npm-ci-ran")); err == nil {
+		t.Error("npm ci must not run outside the worktree via a `..` traversal")
+	}
+}
+
 func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
 	dir := t.TempDir() // no package.json
 	fakeNPM(t, dir, "marker-npm-ci-ran")

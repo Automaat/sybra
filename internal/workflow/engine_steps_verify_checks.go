@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,19 +42,27 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
-// npmReinstallTimeout bounds a single toolchain-repair `npm ci`, run only when
+// npmReinstallTimeout caps a single toolchain-repair `npm ci`, run only when
 // ensureNodeToolchain detects a corrupt node_modules right before a verify
-// command. Separate from the outer verify timeout so a repair attempt cannot
-// eat the whole suite budget.
+// command. repairCtx derives from the outer verify-suite ctx, so the repair is
+// bounded by the smaller of this and whatever remains of the suite budget: it
+// keeps a hung repair from running unbounded, but it does draw down the shared
+// suite budget rather than getting a separate allowance on top of it.
 const npmReinstallTimeout = 3 * time.Minute
 
-// cdDirPattern extracts the directory of a leading `cd <dir> &&` (optionally
-// wrapped in parens/quotes) from a verify command string, e.g.
+// cdDirPattern extracts the directory of every `cd <dir>` in a verify command
+// string (optionally quoted), e.g.
 // "(cd frontend && mise exec -- npm run build:web)" -> "frontend". Verify
 // commands are opaque shell strings (see resolveSetupCommands) with no
 // metadata marking which ones touch a Node toolchain, so this is the only
 // signal available for locating the package.json to integrity-check.
-var cdDirPattern = regexp.MustCompile(`cd\s+([^\s&|;)]+)`)
+//
+// The `(?:^|[\s(])` prefix requires `cd` to start the string or follow
+// whitespace/`(`, so a substring like `test:cd main` is not a false match. The
+// capture group accepts a single- or double-quoted path (so a directory with a
+// space survives) or an unquoted run of non-delimiter chars. FindAll is used to
+// resolve every leg of a chained command, not just the first.
+var cdDirPattern = regexp.MustCompile(`(?:^|[\s(])cd\s+("[^"]*"|'[^']*'|[^\s&|;)]+)`)
 
 // verifyChecksReport is the structured result, stored as a generic artifact.
 type verifyChecksReport struct {
@@ -199,12 +208,49 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 // e.g. "vite: command not found" on an implementation that never touched the
 // frontend. Best-effort: any error here is swallowed and left for the verify
 // command itself to surface, so a repair failure never masks or replaces the
-// original failure signal.
+// original failure signal. Every `cd`-scoped directory in the command is
+// checked (see nodeToolchainDirs), so a chained command that touches more than
+// one package repairs each.
 func (e *Engine) ensureNodeToolchain(ctx context.Context, taskID, wtPath, rawCmd string, tail io.Writer) {
-	dir := wtPath
-	if m := cdDirPattern.FindStringSubmatch(rawCmd); m != nil {
-		dir = filepath.Join(wtPath, m[1])
+	for _, dir := range nodeToolchainDirs(wtPath, rawCmd) {
+		e.repairCorruptToolchain(ctx, taskID, wtPath, dir, tail)
 	}
+}
+
+// nodeToolchainDirs returns the worktree directories whose Node toolchain a
+// verify command touches: every `cd <dir>` leg of the command (a chained
+// command like `(cd a && ...) && (cd b && ...)` touches both), or the worktree
+// root when the command has no `cd`. Captures that would escape the worktree
+// (absolute paths or `..` traversal) are dropped as a defense-in-depth guard —
+// rawCmd is project-config-controlled, so this stays inside the worktree.
+func nodeToolchainDirs(wtPath, rawCmd string) []string {
+	matches := cdDirPattern.FindAllStringSubmatch(rawCmd, -1)
+	if len(matches) == 0 {
+		return []string{wtPath}
+	}
+	var dirs []string
+	seen := map[string]bool{}
+	for _, m := range matches {
+		rel := strings.Trim(m[1], `"'`)
+		if rel == "" || filepath.IsAbs(rel) {
+			continue
+		}
+		joined := filepath.Join(wtPath, rel)
+		within, err := filepath.Rel(wtPath, joined)
+		if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+			continue // escapes the worktree — skip
+		}
+		if !seen[joined] {
+			seen[joined] = true
+			dirs = append(dirs, joined)
+		}
+	}
+	return dirs
+}
+
+// repairCorruptToolchain re-provisions a single directory's Node toolchain when
+// it has silently gone corrupt since worktree setup (see ensureNodeToolchain).
+func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir string, tail io.Writer) {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return // not a Node project — nothing to check
 	}
@@ -217,23 +263,38 @@ func (e *Engine) ensureNodeToolchain(ctx context.Context, taskID, wtPath, rawCmd
 		return // toolchain looks intact
 	}
 
+	reinstall := npmReinstallCommand(wtPath)
 	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
 	_, _ = fmt.Fprintf(tail,
-		"[verify] node_modules/.bin in %s looks corrupt (entries present but empty) — re-running npm ci\n", dir)
+		"[verify] node_modules/.bin in %s looks corrupt (entries present but empty) — re-running %q\n", dir, reinstall)
 
 	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(repairCtx, "sh", "-c", "npm ci")
+	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
 	cmd.Dir = dir
 	cmd.Stdout = tail
 	cmd.Stderr = tail
 	if repairErr := cmd.Run(); repairErr != nil {
 		e.logger.Warn("workflow.verify-checks.toolchain-repair-failed", "task_id", taskID, "dir", dir, "err", repairErr)
-		_, _ = fmt.Fprintf(tail, "[verify] npm ci repair failed: %v\n", repairErr)
+		_, _ = fmt.Fprintf(tail, "[verify] %s repair failed: %v\n", reinstall, repairErr)
 		return
 	}
 	e.logger.Info("workflow.verify-checks.toolchain-repaired", "task_id", taskID, "dir", dir)
 	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
+}
+
+// npmReinstallCommand routes the repair through `mise exec --` when the
+// worktree carries a mise config, mirroring the setup/verify convention: the
+// server container ships mise only, so bare `npm` is not guaranteed on PATH
+// outside a mise-wrapped invocation. Falls back to bare `npm ci` when there is
+// no mise config to resolve the toolchain from.
+func npmReinstallCommand(wtPath string) string {
+	for _, name := range []string{"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml"} {
+		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
+			return "mise exec -- npm ci"
+		}
+	}
+	return "npm ci"
 }
 
 // nodeModulesBinNonEmpty reports whether at least one entry under
