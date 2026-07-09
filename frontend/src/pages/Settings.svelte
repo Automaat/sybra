@@ -20,7 +20,7 @@
   import { focusModeStore } from '../lib/focus-mode.svelte.js'
   import { viewModeStore } from '../lib/view-mode.svelte.js'
   import { inAppBrowserStore } from '../lib/browser.svelte.js'
-  import { browserNotificationStore } from '../lib/web-notifications.js'
+  import { browserNotificationStore } from '../lib/web-notifications.svelte.js'
 
   const browserNotificationStatus = $derived.by(() => {
     if (!browserNotificationStore.supported) return 'Not supported in this browser'

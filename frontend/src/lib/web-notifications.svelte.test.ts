@@ -4,7 +4,7 @@ const {
   browserNotificationStore,
   showBrowserNotification,
   resetShownBrowserNotifications,
-} = await import('./web-notifications.js')
+} = await import('./web-notifications.svelte.js')
 
 // jsdom does not implement the Notification API, so each test installs its
 // own fake and cleans it up — this also lets us cover the "unsupported"
@@ -116,7 +116,7 @@ describe('browserNotificationStore', () => {
     await browserNotificationStore.requestEnable()
 
     vi.resetModules()
-    const fresh = await import('./web-notifications.js')
+    const fresh = await import('./web-notifications.svelte.js')
 
     expect(fresh.browserNotificationStore.enabled).toBe(true)
   })
@@ -129,7 +129,7 @@ describe('browserNotificationStore', () => {
     })
     try {
       vi.resetModules()
-      const fresh = await import('./web-notifications.js')
+      const fresh = await import('./web-notifications.svelte.js')
       expect(fresh.browserNotificationStore.enabled).toBe(false)
 
       installFakeNotification('granted')
