@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,11 +42,37 @@ const verifyChecksFlakeRetries = 1
 
 const verifyChecksTimeoutRetries = 1
 
+// npmReinstallTimeout caps a single toolchain-repair `npm ci`, run only when
+// ensureNodeToolchain detects a corrupt node_modules right before a verify
+// command. repairCtx derives from the outer verify-suite ctx, so the repair is
+// bounded by the smaller of this and whatever remains of the suite budget: it
+// keeps a hung repair from running unbounded, but it does draw down the shared
+// suite budget rather than getting a separate allowance on top of it.
+const npmReinstallTimeout = 3 * time.Minute
+
+// cdDirPattern extracts the directory of every `cd <dir>` in a verify command
+// string (optionally quoted), e.g.
+// "(cd frontend && mise exec -- npm run build:web)" -> "frontend". Verify
+// commands are opaque shell strings (see resolveSetupCommands) with no
+// metadata marking which ones touch a Node toolchain, so this is the only
+// signal available for locating the package.json to integrity-check.
+//
+// The `(?:^|[\s(])` prefix requires `cd` to start the string or follow
+// whitespace/`(`, so a substring like `test:cd main` is not a false match. The
+// capture group accepts a single- or double-quoted path (so a directory with a
+// space survives) or an unquoted run of non-delimiter chars. FindAll is used to
+// resolve every leg of a chained command, not just the first.
+var cdDirPattern = regexp.MustCompile(`(?:^|[\s(])cd\s+("[^"]*"|'[^']*'|[^\s&|;)]+)`)
+
 // verifyChecksNodeModulesRepairTimeout bounds a single repair `npm ci`
 // invocation, mirroring the project's frontend setup batch timeout
 // (docs/CONFIG.md's `setup:` commands get 5 minutes).
 const verifyChecksNodeModulesRepairTimeout = 5 * time.Minute
 
+// verifyMissingToolchainRe recognizes a verify command failing because a
+// toolchain executable is missing from PATH, as opposed to a genuine
+// implementation defect. A match after a run triggers healToolchainAndRetry
+// (re-running the project's setup commands) instead of blocking outright.
 var verifyMissingToolchainRe = regexp.MustCompile(
 	`(?i)command not found|executable file not found|not found in \$?PATH|[\w./-]+: not found`)
 
@@ -208,6 +235,29 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	return stepDone(step, "flagged")
 }
 
+// miseConfigNames are the mise config filenames that gate `mise exec` behind
+// "config not trusted", checked wherever this code needs to know whether a
+// directory carries mise config — kept as one list so npmReinstallCommand and
+// maybeMiseTrust can never drift out of sync on which names count (notably
+// .mise.local.toml, easy to miss since it's less common than mise.toml).
+var miseConfigNames = []string{"mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml"}
+
+// maybeMiseTrust trusts a mise config in dir before running verify commands or
+// a toolchain repair there, mirroring worktree setup. A task that adds or
+// edits mise config would otherwise hit "config not trusted" and fail verify
+// on honest work. Best-effort: errors are ignored (the verify command surfaces
+// any real issue).
+func maybeMiseTrust(ctx context.Context, dir string) {
+	for _, name := range miseConfigNames {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			cmd := exec.CommandContext(ctx, "sh", "-c", "mise trust --yes")
+			cmd.Dir = dir
+			_ = cmd.Run()
+			return
+		}
+	}
+}
+
 // repairTornNodeModulesTimeout bounds the best-effort `npm ci` repair below,
 // separate from the verify budget so a repair can never eat into the time
 // the actual verify commands get.
@@ -296,19 +346,126 @@ func nodeModulesTorn(dir, nodeModules string) bool {
 	return stampInfo.ModTime().Before(lockInfo.ModTime())
 }
 
-// maybeMiseTrust trusts a mise config in the worktree before running verify
-// commands, mirroring worktree setup. A task that adds or edits mise config
-// would otherwise hit "config not trusted" and fail verify on honest work.
-// Best-effort: errors are ignored (the verify command surfaces any real issue).
-func maybeMiseTrust(ctx context.Context, wtPath string) {
-	for _, name := range []string{"mise.toml", ".mise.toml", "mise.local.toml"} {
-		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
-			cmd := exec.CommandContext(ctx, "sh", "-c", "mise trust --yes")
-			cmd.Dir = wtPath
-			_ = cmd.Run()
-			return
+func stepDone(step *Step, output string) (StepOutput, error) {
+	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
+}
+
+// ensureNodeToolchain re-provisions a verify command's Node toolchain when it
+// has silently gone corrupt since worktree setup. Setup's own `npm ci`
+// (internal/worktree.runSetup) can succeed and then have its output emptied
+// later by unrelated disk/memory pressure from concurrent worktree
+// provisioning — the worktree ends up with node_modules entries present but
+// zero-byte, so a later verify command like `npm run build:web` fails with
+// e.g. "vite: command not found" on an implementation that never touched the
+// frontend. Best-effort: any error here is swallowed and left for the verify
+// command itself to surface, so a repair failure never masks or replaces the
+// original failure signal. Every `cd`-scoped directory in the command is
+// checked (see nodeToolchainDirs), so a chained command that touches more than
+// one package repairs each.
+func (e *Engine) ensureNodeToolchain(ctx context.Context, taskID, wtPath, rawCmd string, tail io.Writer) {
+	for _, dir := range nodeToolchainDirs(wtPath, rawCmd) {
+		e.repairCorruptToolchain(ctx, taskID, wtPath, dir, tail)
+	}
+}
+
+// nodeToolchainDirs returns the worktree directories whose Node toolchain a
+// verify command touches: every `cd <dir>` leg of the command (a chained
+// command like `(cd a && ...) && (cd b && ...)` touches both), or the worktree
+// root when the command has no `cd`. Captures that would escape the worktree
+// (absolute paths or `..` traversal) are dropped as a defense-in-depth guard —
+// rawCmd is project-config-controlled, so this stays inside the worktree.
+func nodeToolchainDirs(wtPath, rawCmd string) []string {
+	matches := cdDirPattern.FindAllStringSubmatch(rawCmd, -1)
+	if len(matches) == 0 {
+		return []string{wtPath}
+	}
+	var dirs []string
+	seen := map[string]bool{}
+	for _, m := range matches {
+		rel := strings.Trim(m[1], `"'`)
+		if rel == "" || filepath.IsAbs(rel) {
+			continue
+		}
+		joined := filepath.Join(wtPath, rel)
+		within, err := filepath.Rel(wtPath, joined)
+		if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+			continue // escapes the worktree — skip
+		}
+		if !seen[joined] {
+			seen[joined] = true
+			dirs = append(dirs, joined)
 		}
 	}
+	return dirs
+}
+
+// repairCorruptToolchain re-provisions a single directory's Node toolchain when
+// it looks missing or has silently gone corrupt since worktree setup (see
+// ensureNodeToolchain). A truncated install can leave node_modules/.bin
+// entirely absent (ReadDir error), present but empty, or present with
+// zero-byte entries — all three shapes are treated as "needs a repair",
+// matching the missing-or-corrupted contract from the PR description.
+func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir string, tail io.Writer) {
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		return // not a Node project — nothing to check
+	}
+	binDir := filepath.Join(dir, "node_modules", ".bin")
+	entries, err := os.ReadDir(binDir)
+	if err == nil && nodeModulesBinNonEmpty(binDir, entries) {
+		return // toolchain looks intact
+	}
+
+	reinstall := npmReinstallCommand(wtPath)
+	e.logger.Warn("workflow.verify-checks.toolchain-corrupt", "task_id", taskID, "dir", dir)
+	_, _ = fmt.Fprintf(tail,
+		"[verify] node_modules/.bin in %s looks missing or corrupt — re-running %q\n", dir, reinstall)
+
+	repairCtx, cancel := context.WithTimeout(ctx, npmReinstallTimeout)
+	defer cancel()
+	maybeMiseTrust(repairCtx, wtPath) // npmReinstallCommand resolves the mise config from wtPath, not dir
+	if dir != wtPath {
+		maybeMiseTrust(repairCtx, dir) // a subdirectory (e.g. frontend/) can carry its own mise config too
+	}
+	cmd := exec.CommandContext(repairCtx, "sh", "-c", reinstall)
+	cmd.Dir = dir
+	cmd.Stdout = tail
+	cmd.Stderr = tail
+	if repairErr := cmd.Run(); repairErr != nil {
+		e.logger.Warn("workflow.verify-checks.toolchain-repair-failed", "task_id", taskID, "dir", dir, "err", repairErr)
+		_, _ = fmt.Fprintf(tail, "[verify] %s repair failed: %v\n", reinstall, repairErr)
+		return
+	}
+	e.logger.Info("workflow.verify-checks.toolchain-repaired", "task_id", taskID, "dir", dir)
+	_, _ = io.WriteString(tail, "[verify] npm ci repair completed\n")
+}
+
+// npmReinstallCommand routes the repair through `mise exec --` when the
+// worktree carries a mise config, mirroring the setup/verify convention: the
+// server container ships mise only, so bare `npm` is not guaranteed on PATH
+// outside a mise-wrapped invocation. Falls back to bare `npm ci` when there is
+// no mise config to resolve the toolchain from.
+func npmReinstallCommand(wtPath string) string {
+	for _, name := range miseConfigNames {
+		if _, err := os.Stat(filepath.Join(wtPath, name)); err == nil {
+			return "mise exec -- npm ci"
+		}
+	}
+	return "npm ci"
+}
+
+// nodeModulesBinNonEmpty reports whether at least one entry under
+// node_modules/.bin resolves to a non-empty file. A truncated npm install
+// leaves the directory entries in place (ls still lists them) but their
+// content emptied (`du -sh` reports 0 bytes) — checking sizes, not just
+// presence, is what catches that failure mode.
+func nodeModulesBinNonEmpty(binDir string, entries []os.DirEntry) bool {
+	for _, ent := range entries {
+		info, err := os.Stat(filepath.Join(binDir, ent.Name())) // Stat follows symlinks (.bin entries are usually symlinks)
+		if err == nil && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // repairCorruptedNodeModules scans the worktree root and its immediate
@@ -415,10 +572,6 @@ func ownedByNpm(dir string) bool {
 	return false
 }
 
-func stepDone(step *Step, output string) (StepOutput, error) {
-	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
-}
-
 // runVerifyCommands runs each command in order in the worktree via `sh -c`.
 // Returns the first command that exited non-zero on every attempt (a real
 // failure → caller blocks). A failing command is retried up to
@@ -431,6 +584,7 @@ func stepDone(step *Step, output string) (StepOutput, error) {
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	for _, raw := range cmds {
+		e.ensureNodeToolchain(ctx, taskID, wtPath, raw, tail)
 		passed := false
 		for attempt := 0; attempt <= verifyChecksFlakeRetries; attempt++ {
 			if ctxErr := ctx.Err(); ctxErr != nil {

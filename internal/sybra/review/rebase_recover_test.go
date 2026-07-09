@@ -487,6 +487,7 @@ func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
 	r, tk := setupBranchConflictNoPRHandler(t, task.StatusInProgress, nil)
 	for range github.MaxRetries {
 		r.prTracker.MarkHandled(tk.ID, github.PRIssueBranchConflictNoPR, "somesha")
+		r.prTracker.MarkHandled(tk.ID, branchRecreateKind, "")
 	}
 
 	if r.RecoverStaleBranchConflict(tk.ID) {
@@ -630,6 +631,48 @@ func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing
 	}
 	if n := r.wtFailures[tk.ID]; n != 0 {
 		t.Fatalf("wtFailures[%s] = %d after circuit trip, want 0", tk.ID, n)
+	}
+}
+
+func TestRecoverBranchConflictNoPR_RecreatesWhenExhausted(t *testing.T) {
+	r, tk := setupBranchConflictNoPRHandler(t, task.StatusInProgress, nil)
+	for range github.MaxRetries {
+		r.prTracker.MarkHandled(tk.ID, branchConflictRetryKind, "")
+	}
+	if !r.prTracker.AtCap(tk.ID, branchConflictRetryKind) {
+		t.Fatal("precondition: conflict-recovery budget should be at cap")
+	}
+
+	if !r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("want true: exhausted conflict recovery should recreate the branch, not escalate")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (recreated, re-implementing)", got.Status)
+	}
+	if n := r.prTracker.Retries(tk.ID, branchConflictRetryKind); n != 0 {
+		t.Errorf("conflict-recovery budget = %d, want 0 (reset for the fresh branch)", n)
+	}
+	if n := r.prTracker.Retries(tk.ID, branchRecreateKind); n != 1 {
+		t.Errorf("recreate counter = %d, want 1", n)
+	}
+}
+
+func TestRecoverBranchConflictNoPR_RecreateBudgetExhaustedEscalates(t *testing.T) {
+	r, tk := setupBranchConflictNoPRHandler(t, task.StatusInProgress, nil)
+	for range github.MaxRetries {
+		r.prTracker.MarkHandled(tk.ID, branchConflictRetryKind, "")
+		r.prTracker.MarkHandled(tk.ID, branchRecreateKind, "")
+	}
+
+	if r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("want false: both conflict-recovery and recreate budgets exhausted must escalate")
+	}
+	if got, _ := r.tasks.Get(tk.ID); got.Status != task.StatusHumanRequired {
+		t.Errorf("status = %q, want human-required", got.Status)
 	}
 }
 
