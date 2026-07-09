@@ -45,7 +45,13 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
-	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
+	// Wire the same PreToolUse approval hook the conversational runner uses
+	// whenever this run requires permission gating. Without this, a headless
+	// agent under require_permissions:true has no path to approve a tool
+	// call (the CLI has no TTY to prompt), forcing operators to
+	// require_permissions:false — which collapses to
+	// --dangerously-skip-permissions (see claudePermissionArgs).
+	if hookSettings := buildClaudeHookSettings(cfg.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
