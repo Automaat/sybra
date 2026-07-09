@@ -101,7 +101,7 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // a critic nudge; any failure of that re-ask (parse, validate, or run error)
 // falls back to the original plan rather than failing the whole expansion.
 // If the first attempt exhausts plannerAttempts without ever producing a
-// valid plan, or the planner deadline expires, Generate falls back to a
+// valid plan, or the planner deadline expires, Generate falls back to an
 // independent-parallel plan (independentFallback) instead of aborting the
 // expansion; a fatal runner error (couldn't launch the model) is not
 // exhaustion and still aborts.

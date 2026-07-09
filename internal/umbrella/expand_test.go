@@ -112,6 +112,9 @@ func TestExpandPlannerDeadlineFallsBackToIndependentParallel(t *testing.T) {
 	if !slices.Contains(tracker.Tags, FallbackTag) {
 		t.Fatalf("tracker tags = %v, want %q", tracker.Tags, FallbackTag)
 	}
+	if got := ParseMaxParallel(tracker.Tags); got != 3 {
+		t.Fatalf("tracker max parallel = %d, want 3 after degraded fallback", got)
+	}
 	if got := ParseExpandFailCount(tracker.Tags); got != 0 {
 		t.Fatalf("expand fail count = %d, want 0 for degraded fallback success", got)
 	}
