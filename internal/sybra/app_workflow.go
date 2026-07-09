@@ -642,6 +642,13 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		StartedAt:       ag.StartedAt,
 		Prompt:          cfg.Prompt,
 	}, nextStatus); addErr != nil {
+		if errors.Is(addErr, os.ErrNotExist) {
+			// A stale workflow dispatcher can lose the task underneath it
+			// (delete/cleanup/terminal teardown) after StartAgent succeeded but
+			// before the AgentRun write. Treat that as a silent no-op: the
+			// workflow already no longer owns a task file to update.
+			return
+		}
 		slog.Error("agent-adapter.add-run", "task_id", taskID, "agent_id", ag.ID, "err", addErr)
 	}
 }
