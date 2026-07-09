@@ -320,7 +320,7 @@ describe('RunningLayout steer box', () => {
 
   function runningLayoutProps(overrides: Partial<Agent> = {}) {
     return {
-      a: makeAgent({ mode: 'headless', provider: 'claude', state: State.StateRunning, ...overrides }),
+      a: makeAgent({ mode: 'headless', provider: 'claude', state: State.StateRunning, canSteer: true, ...overrides }),
       planSteps: [],
       timelineEntries: [],
       selectedIndex: null,
@@ -341,12 +341,12 @@ describe('RunningLayout steer box', () => {
   })
 
   it('hides the steer box for a non-Claude headless agent', () => {
-    render(RunningLayout, { props: runningLayoutProps({ provider: 'codex' }) })
+    render(RunningLayout, { props: runningLayoutProps({ provider: 'codex', canSteer: false }) })
     expect(screen.queryByText('Steer agent')).toBeNull()
   })
 
   it('hides the steer box once the agent is no longer running', () => {
-    render(RunningLayout, { props: runningLayoutProps({ state: State.StatePaused }) })
+    render(RunningLayout, { props: runningLayoutProps({ state: State.StatePaused, canSteer: false }) })
     expect(screen.queryByText('Steer agent')).toBeNull()
   })
 

@@ -396,7 +396,6 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	if found, _ := a.lastHeadlessResult(); found {
 		m.drainOrCloseHeadlessSteer(a)
 	}
-
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 
