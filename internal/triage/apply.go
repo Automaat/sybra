@@ -18,7 +18,7 @@ var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.Gate
 
 const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
 	"guard blocked dispatch to avoid a wasted implement run; " +
-	"set task_type=umbrella to expand it, add the notumbrella tag to opt out, " +
+	"manually expand it from the issue URL, add the notumbrella tag to opt out, " +
 	"or fix the title if this isn't a tracker"
 
 // umbrellaGuardOptOutTag opts a task out of the ☂️-title umbrella guard for the
@@ -122,7 +122,7 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// strictly on TaskTypeUmbrella. Dispatching it as a flat implement task
 	// wastes a full run before the agent discovers there's no direct code
 	// surface. Catch it here — before dispatch — and park it for a human to
-	// either set task_type=umbrella or fix the title.
+	// either expand it from its issue URL, opt it out, or fix the title.
 	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
 		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
 		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {

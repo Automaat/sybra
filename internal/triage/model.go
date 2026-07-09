@@ -50,7 +50,8 @@ var (
 	// exemption); it never skips the tester. `notumbrella` opts a task out of
 	// the ☂️-title umbrella guard (see Apply) for the rare genuine case where a
 	// task legitimately keeps task_type=normal despite an umbrella-shaped title
-	// or "umbrella" tag; human/orchestrator-set only, never classifier-emitted.
+	// or "umbrella" tag. It is accepted/preserved when already present on the
+	// task, but the classifier prompt never emits it.
 	escapeHatchTags = []string{"noplan", "nocritic", "trivial", "notumbrella"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
