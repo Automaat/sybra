@@ -201,10 +201,10 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 // diverged push and reports whether the step must park.
 //
 // The callback (review.Handler.RecoverStaleBranchConflict) cancels this task's
-// active workflow and re-dispatches branch-conflict-fix — a re-entry into
+// active workflow and launches branch-conflict-fix — a re-entry into
 // StartWorkflow*/DispatchEvent. When push_branch/create_pr runs inside one of
-// those calls (DispatchEvent → startWorkflowLocked, or a resume re-dispatch),
-// the per-task starting/dispatching marker is still held, so invoking recovery
+// those calls (DispatchEvent → startWorkflowLocked), the per-task starting
+// marker is still held, so invoking recovery
 // now would hit ErrWorkflowAlreadyActive and silently no-op — the reentrancy
 // trap that made this whole path dead on arrival. Detect that case by the held
 // marker and queue the recovery instead; drainPendingConflictRecovery runs it
@@ -214,8 +214,7 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 func (e *Engine) tryConflictRecovery(taskID string) bool {
 	e.mu.Lock()
 	_, starting := e.starting[taskID]
-	_, dispatching := e.dispatching[taskID]
-	if starting || dispatching {
+	if starting {
 		if e.pendingRecovery == nil {
 			e.pendingRecovery = make(map[string]struct{})
 		}
@@ -249,8 +248,8 @@ func (e *Engine) TryConflictRecovery(taskID string) bool {
 }
 
 // QueueConflictRecoveryRetry defers a conflict-recovery retry until this
-// task's starting/dispatching marker next releases, for a caller whose own
-// re-dispatch of the recovery workflow (e.g. dispatchBranchConflictRecovery's
+// task's starting marker next releases, for a caller whose own launch of the
+// recovery workflow (e.g. dispatchBranchConflictRecovery's
 // StartWorkflowWithVars call) hit ErrWorkflowAlreadyActive despite
 // TryConflictRecovery's entry check having found no marker held. The marker
 // can be grabbed by a concurrent StartWorkflow call sometime during the
@@ -270,8 +269,8 @@ func (e *Engine) QueueConflictRecoveryRetry(taskID string) {
 // drainPendingConflictRecovery runs a branch-conflict recovery that
 // tryConflictRecovery deferred because a per-task marker was held when the
 // diverged push was detected. It MUST be called only after the caller has
-// released its starting/dispatching marker (alongside fireComplete), so the
-// callback's re-dispatch is not rejected as re-entrant. No-op when nothing was
+// released its starting marker (alongside fireComplete), so the callback's
+// launch is not rejected as re-entrant. No-op when nothing was
 // queued for the task. When recovery is unavailable or declines, the task is
 // escalated to human-required and its parked workflow terminated — the same
 // terminal outcome the inline divergence path produces.

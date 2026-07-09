@@ -270,8 +270,8 @@ func TestExecPushBranch_DivergedRecoveryDeclinesFallsBackToHumanRequired(t *test
 }
 
 // TestConflictRecovery_DeferredWhileMarkerHeld locks the reentrancy fix: when a
-// per-task starting/dispatching marker is held (push_branch/create_pr reached
-// via DispatchEvent/startWorkflowLocked or a resume re-dispatch), the recovery
+// per-task starting marker is held (push_branch/create_pr reached via
+// DispatchEvent/startWorkflowLocked), the recovery
 // callback must NOT run inline — doing so re-enters StartWorkflow*/DispatchEvent
 // against the held marker and is silently rejected. It must be queued and run
 // only once drainPendingConflictRecovery fires after the marker releases.
@@ -283,9 +283,9 @@ func TestConflictRecovery_DeferredWhileMarkerHeld(t *testing.T) {
 	var calls int
 	engine.SetConflictRecovery(func(string) bool { calls++; return true })
 
-	// Simulate running inside DispatchEvent: the dispatching marker is held.
+	// Simulate running inside DispatchEvent: the starting marker is held.
 	engine.mu.Lock()
-	engine.dispatching["t1"] = struct{}{}
+	engine.starting["t1"] = struct{}{}
 	engine.mu.Unlock()
 
 	if parked := engine.tryConflictRecovery("t1"); !parked {
@@ -300,7 +300,7 @@ func TestConflictRecovery_DeferredWhileMarkerHeld(t *testing.T) {
 	// have released it and does not re-check, so draining while still held
 	// would re-enter the very reentrancy trap this test guards against.
 	engine.mu.Lock()
-	delete(engine.dispatching, "t1")
+	delete(engine.starting, "t1")
 	engine.mu.Unlock()
 
 	engine.drainPendingConflictRecovery("t1")

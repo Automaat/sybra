@@ -51,8 +51,8 @@ type AgentLauncher interface {
 	// duration of any StartAgent call, including the worktree-prep window
 	// before an agent ID exists, by every dispatcher: this engine's own
 	// execRunAgent, recovery.RestartStaleInProgress, or a direct non-workflow
-	// dispatch. The engine's own dispatching/starting/agentSteps bookkeeping
-	// still serializes workflow-level entry points and tracks step
+	// dispatch. The engine's own starting marker and agentRoutes bookkeeping
+	// still serialize workflow-level entry points and track step
 	// attribution — a different concern (this task's next *workflow
 	// advance*, not its next *agent process*) — but ownership decisions that
 	// gate a redispatch (DispatchEvent, ResumeStalled,
@@ -84,7 +84,7 @@ type PromptTransform struct {
 }
 
 // CostBudgetChecker is consulted before fanning out best-of-N attempts
-// (execBestOfN) and before dispatching a budget-preflight run_agent step such
+// (execBestOfN) and before launching a budget-preflight run_agent step such
 // as the judge (preflightRunAgentBudget): unlike StartAgentWithAssignment
 // (implementation agents on the canonical worktree), the direct-dispatch
 // AgentLauncher.StartAgent branch — which best-of-N attempts and the judge

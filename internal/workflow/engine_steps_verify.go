@@ -17,7 +17,7 @@ import (
 // its own workflow in ExecWaiting (persisting the new CurrentStep/State itself).
 // executeSteps treats it as "stop, do not record/advance/complete" — completing
 // would fire the status-change cascade. Used by verify_commits to wait out a
-// still-running sibling agent without re-dispatching over it.
+// still-running sibling agent without launching over it.
 var errStepParked = errors.New("workflow step parked in ExecWaiting")
 
 // execEnsurePRClosesIssue verifies the task's PR closes its linked

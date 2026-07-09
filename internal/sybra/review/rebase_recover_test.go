@@ -704,6 +704,7 @@ func (b *blockingAgentLauncher) DefaultProvider() string          { return "clau
 func (b *blockingAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (b *blockingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (b *blockingAgentLauncher) ProviderHealthy(string) bool      { return true }
+func (b *blockingAgentLauncher) IsDispatching(string) bool        { return false }
 
 // TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHeld
 // locks the fix for dispatchBranchConflictRecovery's own re-dispatch call: a

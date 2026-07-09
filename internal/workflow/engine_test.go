@@ -1248,7 +1248,7 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 // aborted_streaming result followed by a provider-error exit); both used to
 // land on the run_test step and exhaust max_retries instantly.
 //
-// After the fix, dispatching the retry stops the original agent AND clears its
+// After the fix, launching the retry stops the original agent AND clears its
 // step mapping, so its second completion is untracked and dropped by the
 // phantom-completion guard rather than triggering a further retry.
 func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
@@ -1817,7 +1817,7 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 			Variables:   make(map[string]string),
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1877,7 +1877,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 					Variables:   vars,
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1943,7 +1943,7 @@ func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *t
 					Variables:   vars,
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1977,7 +1977,7 @@ func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) 
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	engine.RescheduleRateLimitedAgent("", "limited-agent")
 
@@ -2009,7 +2009,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	mu := engine.taskInflightMutex("t1")
 	mu.Lock()
@@ -2034,7 +2034,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 	}
 }
 
-func TestRescheduleRateLimitedAgent_SkippedDispatchingDoesNotConsumeWatchdogRetry(t *testing.T) {
+func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -2054,11 +2054,9 @@ func TestRescheduleRateLimitedAgent_SkippedDispatchingDoesNotConsumeWatchdogRetr
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
-	engine.mu.Lock()
-	engine.dispatching["t1"] = struct{}{}
-	engine.mu.Unlock()
+	agents.SetDispatchClaimed("t1", true)
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
 	if got := agents.CallCount(); got != 0 {
@@ -2105,7 +2103,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -2199,7 +2197,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 					},
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -2525,7 +2523,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRe
 					},
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 			tasks.SetGetTaskHook(func(id string, task *TaskInfo, count int) {
 				if id == "t1" && count == 2 {
 					task.Status = tc.status
@@ -3658,17 +3656,17 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-// TestHandleAgentComplete_DispatchingStepDropsStaleCompletion reproduces the
+// TestHandleAgentComplete_PendingStepStartDropsStaleCompletion reproduces the
 // core of the simple-task-pr cascade bug: a stale/untracked agent completion
 // (e.g. a reattached agent from a step that already advanced) arrives while
 // the CURRENT step's real agent is still being started — StartAgent hasn't
-// returned yet, so agentSteps has no entry for it. Before the
-// dispatchingStep guard, HandleAgentComplete's untracked fallback credited
+// returned yet, so agentRoutes has no entry for it. Before the
+// pendingStepStart guard, HandleAgentComplete's untracked fallback credited
 // this to the current step (nothing tracked yet → not a phantom) and
 // advanced the workflow without the real agent ever having run. The guard
-// closes that window: a step marked dispatching is treated as "claimed" even
+// closes that window: a step marked as starting is treated as "claimed" even
 // before its agent ID exists.
-func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
+func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -3685,18 +3683,18 @@ func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
 
 	// Workflow is now parked on "implement" with its real agent tracked. Drop
 	// the tracking entry to simulate the real agent's StartAgent call still
-	// being in flight (agentSteps not yet populated) — but mark the step as
-	// dispatching, as execRunAgent now does before calling StartAgent.
+	// being in flight (agentRoutes not yet populated) — but mark the step as
+	// starting, as execRunAgent now does before calling StartAgent.
 	ti, _ := tasks.GetTask("t1")
 	if ti.Workflow.CurrentStep != "implement" {
 		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
 	}
 	realAgentID := agents.LastID()
 	engine.clearAgentStep(realAgentID)
-	engine.markStepDispatching("t1", "implement")
+	engine.markStepStarting("t1", "implement")
 
 	// A stale, untracked completion (e.g. a reattached agent from an earlier
-	// step) lands mid-dispatch.
+	// step) lands while the replacement start is underway.
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
 	tiAfter, _ := tasks.GetTask("t1")
@@ -3709,19 +3707,19 @@ func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
 			tiAfter.Workflow.StepHistory)
 	}
 
-	// Once dispatching clears (StartAgent returned and registered the real
+	// Once the pending start clears (StartAgent returned and registered the real
 	// agent), a genuinely untracked completion for THIS step still falls back
 	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
 	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — untracked completion should advance once dispatching cleared")
+		t.Fatalf("CurrentStep still implement — untracked completion should advance once pending start cleared")
 	}
 }
 
-func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
+func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -3745,9 +3743,9 @@ func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
 
 	// Two concurrent dispatchers race for the same step: the eventual loser
 	// must not clear the winner's in-flight claim.
-	engine.markStepDispatching("t1", "implement")
-	engine.markStepDispatching("t1", "implement")
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.markStepStarting("t1", "implement")
+	engine.markStepStarting("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
@@ -3757,7 +3755,7 @@ func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
 			tiAfter.Workflow.CurrentStep)
 	}
 
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4820,7 +4818,7 @@ func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
 // "task X is not waiting for human action".
 //
 // The fix: HandleAgentComplete uses the step the agent was actually spawned
-// for (tracked in engine.agentSteps), and AdvanceStep drops completions whose
+// for (tracked in engine.agentRoutes), and AdvanceStep drops completions whose
 // StepID doesn't match the workflow's current step.
 func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	store := newTestStore(t)
@@ -4847,7 +4845,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 
 	// Inject a duplicate plan agent as if a ResumeStalled ticker fired
 	// during the interactive-spawn window and raced the first agent. The
-	// engine.agentSteps mapping records what execRunAgent would have set.
+	// engine.agentRoutes mapping records what execRunAgent would have set.
 	agents.mu.Lock()
 	agents.counter++
 	planAgent2 := fmt.Sprintf("agent-%d", agents.counter)
@@ -4856,7 +4854,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	agents.roles["t1/plan"] = planAgent2
 	agents.mu.Unlock()
 	engine.mu.Lock()
-	engine.agentSteps[planAgent2] = agentEntry{taskID: "t1", stepID: "plan"}
+	engine.agentRoutes[planAgent2] = agentRoute{taskID: "t1", stepID: "plan"}
 	engine.mu.Unlock()
 
 	// Agent 1 completes first → workflow advances to review_plan/wait_human.
@@ -4995,12 +4993,12 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 
 // TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher verifies ResumeStalled
 // consults the shared agent.Manager dispatch-claim coordinator (IsDispatching)
-// in addition to its own local dispatching/agentSteps bookkeeping. A claim
+// in addition to workflow completion-routing bookkeeping. A claim
 // held by a dispatcher the engine has no local visibility into — e.g.
-// recovery.RestartStaleInProgress dispatching via agentorch.Orchestrator
+// recovery.RestartStaleInProgress launching via agentorch.Orchestrator
 // outside the workflow engine entirely — must still block a concurrent
 // ResumeStalled redispatch, closing the exact split-ownership race the
-// engine-local maps alone cannot see.
+// engine-local route tracking alone cannot see.
 func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -5021,7 +5019,7 @@ func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 
 	// Simulate an out-of-band dispatcher (recovery.RestartStaleInProgress)
 	// holding the shared agent.Manager claim for t1 — invisible to the
-	// engine's own dispatching/agentSteps maps.
+	// engine's own completion-routing state.
 	agents.SetDispatchClaimed("t1", true)
 
 	before := agents.CallCount()
@@ -5042,7 +5040,7 @@ func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 
 // TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher verifies DispatchEvent
 // also treats a shared agent.Manager dispatch claim held for the task as busy,
-// even when the engine's own local `dispatching` marker is clear.
+// even when the workflow engine has no active local route for the task.
 func TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -5100,7 +5098,7 @@ func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
 }
 
 // TestExecRunAgent_TracksSpawnedStep verifies that execRunAgent populates
-// the engine.agentSteps map so HandleAgentComplete can route completions
+// the engine.agentRoutes map so HandleAgentComplete can route completions
 // back to the right step. Without this mapping, a delayed completion from
 // a duplicate agent would be credited to whatever CurrentStep happens to
 // be at the moment — the exact bug that corrupted review_plan.
@@ -5134,13 +5132,13 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 
 	agentID := agents.LastID()
 	engine.mu.Lock()
-	gotEntry, tracked := engine.agentSteps[agentID]
+	gotEntry, tracked := engine.agentRoutes[agentID]
 	engine.mu.Unlock()
 	if !tracked {
-		t.Fatalf("agentSteps missing entry for agent %s", agentID)
+		t.Fatalf("agentRoutes missing entry for agent %s", agentID)
 	}
 	if gotEntry.stepID != "plan" {
-		t.Errorf("agentSteps[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
+		t.Errorf("agentRoutes[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
 	}
 
 	// Completing the agent must clear its mapping so the map doesn't grow
@@ -5150,10 +5148,10 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentID, Result: "done", Success: true})
 
 	engine.mu.Lock()
-	_, stillThere := engine.agentSteps[agentID]
+	_, stillThere := engine.agentRoutes[agentID]
 	engine.mu.Unlock()
 	if stillThere {
-		t.Errorf("agentSteps still has %s after completion — mapping leaked", agentID)
+		t.Errorf("agentRoutes still has %s after completion — mapping leaked", agentID)
 	}
 }
 
@@ -5291,7 +5289,7 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 		return
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
-		t.Fatal("dispatching claim leaked after panic")
+		t.Fatal("pending step start leaked after panic")
 	}
 }
 
