@@ -23,10 +23,17 @@
   import { browserNotificationStore } from '../lib/web-notifications.svelte.js'
 
   const browserNotificationStatus = $derived.by(() => {
+    // Read `enabled` unconditionally so it's always a tracked dependency —
+    // requestEnable()/disable() only flip `enabled`, not `permission` or
+    // `supported` (both plain reads of window.Notification), so if `enabled`
+    // were only read inside the 'granted' branch below, a first render with
+    // permission 'default' would never register it as a dependency and this
+    // derived would go stale after the user grants permission.
+    const enabled = browserNotificationStore.enabled
     if (!browserNotificationStore.supported) return 'Not supported in this browser'
     switch (browserNotificationStore.permission) {
       case 'denied': return 'Blocked — allow notifications for this site in your browser settings'
-      case 'granted': return browserNotificationStore.enabled ? 'On — live Sybra notifications will show as browser notifications' : 'Off'
+      case 'granted': return enabled ? 'On — live Sybra notifications will show as browser notifications' : 'Off'
       default: return 'Off — enabling will ask your browser for permission'
     }
   })
