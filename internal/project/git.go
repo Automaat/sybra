@@ -95,13 +95,17 @@ func LoadRepoConfigAtDefaultBranch(ctx context.Context, barePath string) (*RepoC
 		return nil, fmt.Errorf("resolve default branch: %w", err)
 	}
 	data, found, err := showFileAtRef(ctx, barePath, "refs/remotes/origin/"+branch, ".sybra.yaml")
-	if err != nil {
-		// The remote-tracking ref may be absent (e.g. never fetched) — fall
-		// back to the local head, mirroring TrackedFilesAtDefaultBranch.
+	if errors.Is(err, errRefUnresolved) {
+		// The remote-tracking ref is genuinely absent (e.g. never fetched) — fall
+		// back to the local head, mirroring TrackedFilesAtDefaultBranch. Only a
+		// ref-resolution failure triggers this: a transient error (context
+		// cancellation, disk hiccup) must propagate rather than silently serve
+		// the frozen refs/heads/<branch>, which review/fix worktrees never
+		// advance and so may be stale.
 		data, found, err = showFileAtRef(ctx, barePath, "refs/heads/"+branch, ".sybra.yaml")
-		if err != nil {
-			return nil, fmt.Errorf("read .sybra.yaml at default branch %s: %w", branch, err)
-		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read .sybra.yaml at default branch %s: %w", branch, err)
 	}
 	if !found {
 		return &RepoConfig{}, nil
@@ -113,12 +117,20 @@ func LoadRepoConfigAtDefaultBranch(ctx context.Context, barePath string) (*RepoC
 	return &cfg, nil
 }
 
+// errRefUnresolved marks a showFileAtRef failure where ref itself does not
+// resolve (e.g. a remote-tracking ref that was never fetched). Callers use
+// errors.Is to distinguish this recoverable "try another ref" case from a
+// transient failure (context cancellation, disk error) that must propagate
+// instead of silently falling back to a possibly-stale ref.
+var errRefUnresolved = errors.New("ref does not resolve")
+
 // showFileAtRef returns the bytes of path as tracked at ref in the bare repo
 // via `git show`, without ever materializing a worktree checkout. found is
 // false with a nil error when ref resolves but path is not tracked there —
-// callers treat that the same as a missing file. Any other failure (most
-// commonly ref itself not resolving) is returned as an error so the caller
-// can try a fallback ref.
+// callers treat that the same as a missing file. A ref that does not resolve
+// is returned wrapped in errRefUnresolved so the caller can try a fallback
+// ref; any other failure (e.g. context cancellation) is returned as a plain
+// error so it propagates rather than triggering a fallback.
 func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte, found bool, err error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "safe.bareRepository=all", "show", ref+":"+path)
 	cmd.Dir = barePath
@@ -129,8 +141,14 @@ func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
 		stderr := string(exitErr.Stderr)
-		if strings.Contains(stderr, "does not exist in") || strings.Contains(stderr, "exists on disk, but not in") {
+		switch {
+		case strings.Contains(stderr, "does not exist in") || strings.Contains(stderr, "exists on disk, but not in"):
 			return nil, false, nil
+		case strings.Contains(stderr, "invalid object name") ||
+			strings.Contains(stderr, "unknown revision") ||
+			strings.Contains(stderr, "bad revision") ||
+			strings.Contains(stderr, "ambiguous argument"):
+			return nil, false, fmt.Errorf("git show %s:%s: %w: %w", ref, path, errRefUnresolved, runErr)
 		}
 	}
 	return nil, false, fmt.Errorf("git show %s:%s: %w", ref, path, runErr)
