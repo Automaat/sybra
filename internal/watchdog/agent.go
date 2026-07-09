@@ -295,19 +295,21 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 			return
 		}
 		// Set the task state before stopping so the completion callback sees the
-		// intended recovery path. A stall stop is a retryable hang; the workflow
-		// engine consumes the marker from ResumeStalled. A loop stop whose judge
-		// reason is "generic_stall" (a benign command-repetition flake, not
-		// reward-hacking) gets the same retryable treatment — see #1456. Budget
-		// stops and reward-hacking loops remain immediate human-required
-		// escalations.
+		// intended recovery path. rate_limit is already handled above regardless
+		// of trigger. Of what remains: a stall stop is a retryable hang; the
+		// workflow engine consumes the marker from ResumeStalled. A loop or
+		// budget stop whose judge reason is "generic_stall" (a benign
+		// command-repetition or long-running-verify-poll flake, not
+		// reward-hacking) gets the same retryable treatment — see #1456.
+		// Reward-hacking loops (and any other non-rate_limit reason_kind on a
+		// budget trigger) remain immediate human-required escalations.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
 				reason = "watchdog: " + verdict.Reason
 			}
 			status := task.StatusHumanRequired
-			if trigger == "stall" || (trigger == "loop" && verdict.ReasonKind == "generic_stall") {
+			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
 				reason = "watchdog hang"
 				if verdict.Reason != "" {
