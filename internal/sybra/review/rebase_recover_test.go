@@ -1,6 +1,7 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -919,6 +921,182 @@ func TestRecoverBranchConflictNoPR_RecreateBudgetExhaustedEscalates(t *testing.T
 	}
 	if got, _ := r.tasks.Get(tk.ID); got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want human-required", got.Status)
+	}
+}
+
+// failingAgentLauncher is a minimal workflow.AgentLauncher stand-in whose
+// StartAgent always fails with a configured error. Lets a test drive
+// dispatchBranchConflictRecovery's classification of a dispatch-time failure
+// (e.g. a provider-unhealthy/rate-limit error) without spinning up a real
+// agent.Manager.
+type failingAgentLauncher struct{ err error }
+
+func (f *failingAgentLauncher) StartAgent(taskID, role, mode, model, providerName, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	return "", "", "", f.err
+}
+func (f *failingAgentLauncher) HasRunningAgent(string) bool                     { return false }
+func (f *failingAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
+func (f *failingAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
+	return "", false
+}
+func (f *failingAgentLauncher) StopAgentsForTask(string, string) {}
+func (f *failingAgentLauncher) SendPrompt(string, string) error  { return nil }
+func (f *failingAgentLauncher) DefaultProvider() string          { return "claude" }
+func (f *failingAgentLauncher) ProviderRateLimited(string) bool  { return false }
+func (f *failingAgentLauncher) ProviderCanFailover(string) bool  { return false }
+func (f *failingAgentLauncher) ProviderHealthy(string) bool      { return false }
+
+// newDispatchFailureHandler builds a Handler wired to a real workflow.Engine
+// whose "branch-conflict-fix" definition has a genuine run_agent first step
+// (unlike setupBranchConflictNoPRHandler's wait_human stand-in), backed by a
+// failingAgentLauncher so StartWorkflowWithVars fails exactly like
+// dispatchBranchConflictRecovery's real StartAgent call does when the
+// configured provider is unhealthy.
+func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Task) {
+	t.Helper()
+	tasks, _, logger := newRebaseRecoveryDeps(t)
+	tmp := t.TempDir()
+
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wfStore.Save(workflow.Definition{
+		ID:   branchConflictFixTestWorkflowID,
+		Name: "Branch conflict fix (dispatch-failure test stand-in)",
+		Trigger: workflow.Trigger{On: "task.status_changed", Conditions: []workflow.Condition{{
+			Field: "task.tags", Operator: "contains", Value: "__never_dispatch_branch_conflict_fix_test__",
+		}}},
+		Steps: []workflow.Step{{
+			ID:   "fix",
+			Name: "Fix Branch Conflict",
+			Type: workflow.StepRunAgent,
+			Config: workflow.StepConfig{
+				Role:   "pr-fix",
+				Mode:   "headless",
+				Model:  "sonnet",
+				Prompt: `{{ getvar .Vars "prompt" }}`,
+			},
+			Next: []workflow.Transition{{GoTo: ""}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&failingAgentLauncher{err: launchErr},
+		logger,
+	)
+	r := &Handler{
+		logger:           slog.New(slog.DiscardHandler),
+		emit:             func(string, any) {},
+		tasks:            tasks,
+		prTracker:        github.NewIssueTracker(0),
+		WorkflowEngine:   engine,
+		wtFailures:       make(map[string]int),
+		dispatchFailures: make(map[string]int),
+	}
+
+	priorWorkflow := &workflow.Execution{
+		WorkflowID:  "resume-target-test",
+		CurrentStep: "mark_resumed",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{},
+	}
+	tk, err := tasks.Create("dispatch failure test", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("feature/dispatch-failure"),
+		Status:    task.Ptr(task.StatusTesting),
+		Workflow:  &priorWorkflow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, tk
+}
+
+// TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry
+// verifies that a provider-unhealthy/rate-limit failure starting the
+// branch-conflict-fix workflow itself is parked for a bounded number of
+// retries (restoring the task's prior status/workflow each time) instead of
+// escalating to human-required on the very first transient hit — the bug
+// this test guards against.
+func TestDispatchBranchConflictRecovery_TransientProviderUnhealthyParksForRetry(t *testing.T) {
+	launchErr := &provider.UnhealthyError{Provider: "codex", Reason: "rate limit reached"}
+	r, tk := newDispatchFailureHandler(t, launchErr)
+	resume := r.captureBranchConflictResumeState(tk)
+
+	// Each call mirrors recoverBranchConflictNoPR's real sequence: cancel the
+	// active workflow (dispatchBranchConflictRecovery restores it on failure,
+	// same as the production caller does) immediately before dispatching.
+	for i := range branchConflictDispatchFailureLimit - 1 {
+		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
+		}
+		if !r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+			t.Fatalf("attempt %d: want true (parked for retry) on transient provider-unhealthy dispatch failure", i+1)
+		}
+		got, err := r.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("attempt %d: escalated to human-required too early", i+1)
+		}
+		if got.Status != task.StatusTesting || got.Workflow == nil || got.Workflow.WorkflowID != resume.workflowID {
+			t.Fatalf("attempt %d: prior status/workflow not restored: status=%q workflow=%+v", i+1, got.Status, got.Workflow)
+		}
+	}
+
+	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+		t.Fatalf("cancel prior workflow before final attempt: %v", err)
+	}
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+		t.Fatal("budget-exhausted attempt: want false (escalate)")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q after dispatch-failure budget exhausted, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "branch-conflict-fix dispatch failed") {
+		t.Fatalf("status_reason = %q, want it to mention the exhausted dispatch retries", got.StatusReason)
+	}
+	if n := r.dispatchFailures[tk.ID]; n != 0 {
+		t.Fatalf("dispatchFailures[%s] = %d after escalation, want reset to 0", tk.ID, n)
+	}
+}
+
+// TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately
+// verifies a non-provider-unhealthy dispatch failure still escalates on the
+// first attempt, exactly like before this fix — only a transient
+// provider-unhealthy error gets the bounded retry treatment.
+func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *testing.T) {
+	r, tk := newDispatchFailureHandler(t, errors.New("boom: not a provider issue"))
+	resume := r.captureBranchConflictResumeState(tk)
+	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+		t.Fatalf("cancel prior workflow: %v", err)
+	}
+
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume) {
+		t.Fatal("want false: non-transient dispatch error must escalate immediately")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatal("dispatchBranchConflictRecovery itself must not set human-required for a non-transient error — that is MarkRebaseBlocked's job")
+	}
+	if n := r.dispatchFailures[tk.ID]; n != 0 {
+		t.Fatalf("dispatchFailures[%s] = %d, want 0 (never armed for a non-transient error)", tk.ID, n)
 	}
 }
 
