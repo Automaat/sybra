@@ -140,6 +140,92 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	}
 }
 
+func TestTaskService_ListTaskArtifactsIncludesContent(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:    artifact.KindPlan,
+		Name:    "plan.md",
+		Content: []byte("# Plan\n\ndo it"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Name != "plan.md" || got[0].Content != "# Plan\n\ndo it" {
+		t.Fatalf("artifact = %+v", got[0])
+	}
+}
+
+func TestTaskService_GetTaskSetupLog(t *testing.T) {
+	t.Parallel()
+	logDir := t.TempDir()
+	svc := &TaskService{cfg: &config.Config{}}
+	svc.cfg.Logging.Dir = logDir
+	taskID := "task-setup"
+	logPath := filepath.Join(logDir, "worktrees", taskID+"-setup.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("setup failed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTaskSetupLog(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Exists || got.Content != "setup failed\n" || got.Path != logPath {
+		t.Fatalf("setup log = %+v", got)
+	}
+}
+
+func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
+	t.Parallel()
+	logDir := t.TempDir()
+	svc := &TaskService{cfg: &config.Config{}}
+	svc.cfg.Logging.Dir = logDir
+	al, err := audit.NewLogger(svc.cfg.AuditDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	if err := al.Log(audit.Event{Type: audit.EventTaskCreated, TaskID: "task-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := al.Log(audit.Event{Type: audit.EventAgentStarted, TaskID: "task-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := al.Log(audit.Event{Type: audit.EventAgentCompleted, TaskID: "task-a", AgentID: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskAuditEvents("task-a", 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Type != audit.EventAgentCompleted || got[0].AgentID != "agent-1" {
+		t.Fatalf("newest event = %+v", got[0])
+	}
+	if got[1].Type != audit.EventTaskCreated {
+		t.Fatalf("oldest event = %+v", got[1])
+	}
+}
+
 func TestTaskService_GetTamperReport(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupTaskService(t)

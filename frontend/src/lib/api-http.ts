@@ -185,6 +185,9 @@ export function BlessTampering(arg1: string): Promise<Task> { return call('TaskS
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
+export function ListTaskArtifacts(arg1: string): Promise<Array<any>> { return call('TaskService', 'ListTaskArtifacts', arg1) }
+export function GetTaskSetupLog(arg1: string): Promise<any> { return call('TaskService', 'GetTaskSetupLog', arg1) }
+export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<any>> { return call('TaskService', 'ListTaskAuditEvents', arg1, arg2) }
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
