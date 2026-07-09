@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 	"sync"
@@ -127,7 +128,7 @@ func TestAgentMarshalJSON_MatchesView(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal View: %v", err)
 	}
-	if string(viaPointer) != string(viaView) {
+	if !bytes.Equal(viaPointer, viaView) {
 		t.Fatalf("json.Marshal(*Agent) != json.Marshal(View)\nagent: %s\nview:  %s", viaPointer, viaView)
 	}
 }
@@ -142,9 +143,7 @@ func TestAgentView_ConcurrentWithMutation(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
@@ -155,7 +154,7 @@ func TestAgentView_ConcurrentWithMutation(t *testing.T) {
 			a.AddResultStats("session", float64(i), i, i, i)
 			a.AppendOutput(StreamEvent{Type: "assistant"})
 		}
-	}()
+	})
 
 	for range 200 {
 		_ = a.View()
