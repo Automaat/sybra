@@ -116,6 +116,19 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	cfg.approvalAddr = m.approvalAddr
 
+	// require_permissions:true relies on the approval hook to gate each tool
+	// call. If the approval server never started (approvalAddr empty) the hook
+	// is silently omitted and the run falls back to CLI defaults — neither the
+	// gating the operator asked for nor an explicit bypass. Surface it loudly
+	// rather than degrading quietly. Skipped when an explicit tool allowlist or
+	// the auto permission-mode classifier already governs the run.
+	if cfg.RequirePermissions && cfg.approvalAddr == "" &&
+		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
+		m.logger.Warn("agent.approval.unavailable",
+			"task_id", cfg.TaskID,
+			"detail", "require_permissions is set but no approval server is running; tool calls are ungated")
+	}
+
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}

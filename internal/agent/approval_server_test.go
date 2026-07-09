@@ -158,6 +158,72 @@ func TestFindAgentBySession_MatchesHeadlessAgent(t *testing.T) {
 	}
 }
 
+// TestFindAgentBySession_PrefersLiveRetryOverStaleOriginal covers the
+// registry-never-pruned hazard: a rate-limited retry resumes the prior session
+// ID, so the stopped original and the live retry share a SessionID. The lookup
+// must resolve to the live retry, not the dead original nobody is watching.
+func TestFindAgentBySession_PrefersLiveRetryOverStaleOriginal(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	base := time.Now()
+	original := &Agent{
+		ID:        "orig",
+		Mode:      "headless",
+		SessionID: "shared-session",
+		State:     StateStopped,
+		StartedAt: base,
+	}
+	retry := &Agent{
+		ID:        "retry",
+		Mode:      "headless",
+		SessionID: "shared-session",
+		State:     StateRunning,
+		StartedAt: base.Add(time.Minute),
+	}
+	mgr.mu.Lock()
+	mgr.agents["orig"] = original
+	mgr.agents["retry"] = retry
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("shared-session"); got != "retry" {
+		t.Errorf("findAgentBySession = %q, want %q (live retry)", got, "retry")
+	}
+}
+
+// TestFindAgentBySession_MostRecentAmongSameLiveness verifies the tie-breaker
+// when two matching agents share liveness: the most-recently-started wins.
+func TestFindAgentBySession_MostRecentAmongSameLiveness(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	base := time.Now()
+	older := &Agent{
+		ID:        "older",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: base,
+	}
+	newer := &Agent{
+		ID:        "newer",
+		Mode:      "headless",
+		SessionID: "same-session",
+		State:     StateRunning,
+		StartedAt: base.Add(time.Second),
+	}
+	mgr.mu.Lock()
+	mgr.agents["older"] = older
+	mgr.agents["newer"] = newer
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("same-session"); got != "newer" {
+		t.Errorf("findAgentBySession = %q, want %q (most recent)", got, "newer")
+	}
+}
+
 func TestApprovalServer_CanceledContext(t *testing.T) {
 	t.Parallel()
 

@@ -134,8 +134,12 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Find the agent by session_id; deny if unknown.
-	agentID := s.findAgentBySession(input.SessionID)
+	// Find the agent by session_id; deny if unknown. The stdout parser sets
+	// SessionID from the init event on a separate goroutine, with no ordering
+	// guarantee against the CLI's first tool call reaching this hook. Retry
+	// briefly on a miss before denying so that race doesn't fail the first
+	// tool call of an otherwise healthy run.
+	agentID := s.findAgentBySessionWithRetry(r.Context(), input.SessionID)
 	if agentID == "" {
 		s.logger.Warn("approval-server.no-agent", "session_id", input.SessionID)
 		s.respondDeny(w, "Unknown session")
@@ -247,16 +251,70 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 // regardless of Mode: a headless run only reaches here when it was started
 // with RequirePermissions (see buildClaudeHookSettings), and must resolve to
 // its agent the same way an interactive session does.
+//
+// The registry is never pruned, so a rate-limited retry that resumes a prior
+// session ID (RescheduleRateLimitedAgent) leaves the stopped original agent
+// registered with the same SessionID as the new live one. First-match over a
+// map is nondeterministic and could resolve to the dead original, hanging the
+// live retry. Resolve deterministically instead: prefer a non-stopped agent,
+// and among ties prefer the most-recently-started, so a live retry always
+// wins over the stale entry it reused a session ID from.
 func (s *ApprovalServer) findAgentBySession(sessionID string) string {
 	if s.agents == nil {
 		return ""
 	}
+	var best *Agent
 	for _, a := range s.agents.ListAgents() {
-		if a.GetSessionID() == sessionID {
-			return a.ID
+		if a.GetSessionID() != sessionID {
+			continue
+		}
+		if best == nil || betterSessionMatch(a, best) {
+			best = a
 		}
 	}
-	return ""
+	if best == nil {
+		return ""
+	}
+	return best.ID
+}
+
+// sessionLookupRetries and sessionLookupBackoff bound the wait for the stdout
+// parser to record SessionID before a first tool call is denied as unknown.
+const (
+	sessionLookupRetries = 20
+	sessionLookupBackoff = 50 * time.Millisecond
+)
+
+// findAgentBySessionWithRetry resolves a session to an agent, retrying briefly
+// to absorb the race where the CLI issues its first tool call before the
+// stdout parser has recorded the session ID. Returns "" if still unresolved
+// after the bounded wait or if the request is canceled.
+func (s *ApprovalServer) findAgentBySessionWithRetry(ctx context.Context, sessionID string) string {
+	for attempt := 0; ; attempt++ {
+		if id := s.findAgentBySession(sessionID); id != "" {
+			return id
+		}
+		if attempt >= sessionLookupRetries {
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(sessionLookupBackoff):
+		}
+	}
+}
+
+// betterSessionMatch reports whether candidate should win over incumbent when
+// both share a session ID: a live (non-stopped) agent beats a stopped one, and
+// among agents of the same liveness the most-recently-started wins.
+func betterSessionMatch(candidate, incumbent *Agent) bool {
+	candStopped := candidate.GetState() == StateStopped
+	incStopped := incumbent.GetState() == StateStopped
+	if candStopped != incStopped {
+		return !candStopped
+	}
+	return candidate.StartedAt.After(incumbent.StartedAt)
 }
 
 func isSafeTool(name string) bool {
