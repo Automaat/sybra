@@ -445,7 +445,6 @@ func TestAutoAssignProject(t *testing.T) {
 			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
 		}
 	})
-
 	t.Run("persist failure returns error and leaves input task unchanged", func(t *testing.T) {
 		t.Parallel()
 		tm, ps := newStores(t)
