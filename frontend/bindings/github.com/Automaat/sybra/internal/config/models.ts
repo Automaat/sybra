@@ -142,6 +142,12 @@ export class AgentDefaults {
      */
     "defaultProjectId": string;
 
+    /**
+     * PlaywrightMCP configures the default-off headless Playwright MCP server
+     * attached to test-runner runs that resolve to the Claude provider.
+     */
+    "playwrightMcp": PlaywrightMCPConfig;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -210,6 +216,9 @@ export class AgentDefaults {
         if (!("defaultProjectId" in $$source)) {
             this["defaultProjectId"] = "";
         }
+        if (!("playwrightMcp" in $$source)) {
+            this["playwrightMcp"] = (new PlaywrightMCPConfig());
+        }
 
         Object.assign(this, $$source);
     }
@@ -218,7 +227,11 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
+        const $$createField22_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("playwrightMcp" in $$parsedSource) {
+            $$parsedSource["playwrightMcp"] = $$createField22_0($$parsedSource["playwrightMcp"]);
+        }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
 }
@@ -459,7 +472,7 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField9_0 = $$createType0;
+        const $$createField9_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
             $$parsedSource["app"] = $$createField9_0($$parsedSource["app"]);
@@ -561,7 +574,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType1;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -626,6 +639,49 @@ export class OrchestratorConfig {
     static createFrom($$source: any = {}): OrchestratorConfig {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
+    }
+}
+
+/**
+ * PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+ * server for visual/console verification. Default-off: Manager.prepareRunConfig
+ * only attaches it for headless test-runner runs that resolve to the Claude
+ * provider and pass a launcher preflight (see internal/agent/mcp.go).
+ */
+export class PlaywrightMCPConfig {
+    /**
+     * Enabled opts this machine into attaching the Playwright MCP server.
+     */
+    "enabled": boolean;
+
+    /**
+     * ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
+     * --headless --output-dir <dir>` launch command.
+     */
+    "extraArgs": string[];
+
+    /** Creates a new PlaywrightMCPConfig instance. */
+    constructor($$source: Partial<PlaywrightMCPConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("extraArgs" in $$source)) {
+            this["extraArgs"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PlaywrightMCPConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PlaywrightMCPConfig {
+        const $$createField1_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("extraArgs" in $$parsedSource) {
+            $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
+        }
+        return new PlaywrightMCPConfig($$parsedSource as Partial<PlaywrightMCPConfig>);
     }
 }
 
@@ -778,11 +834,11 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType2;
-        const $$createField1_0 = $$createType3;
-        const $$createField2_0 = $$createType3;
-        const $$createField3_0 = $$createType3;
-        const $$createField4_0 = $$createType4;
+        const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType5;
+        const $$createField2_0 = $$createType5;
+        const $$createField3_0 = $$createType5;
+        const $$createField4_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -905,7 +961,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1083,9 +1139,10 @@ export class UmbrellaConfig {
 }
 
 // Private type creation functions
-const $$createType0 = GitHubAppConfig.createFrom;
-const $$createType1 = $Create.Map($Create.Any, $Create.Any);
-const $$createType2 = ProviderHealthCheckConfig.createFrom;
-const $$createType3 = ProviderEntryConfig.createFrom;
-const $$createType4 = ProviderLimitsConfig.createFrom;
-const $$createType5 = $Create.Array($Create.Any);
+const $$createType0 = PlaywrightMCPConfig.createFrom;
+const $$createType1 = GitHubAppConfig.createFrom;
+const $$createType2 = $Create.Map($Create.Any, $Create.Any);
+const $$createType3 = $Create.Array($Create.Any);
+const $$createType4 = ProviderHealthCheckConfig.createFrom;
+const $$createType5 = ProviderEntryConfig.createFrom;
+const $$createType6 = ProviderLimitsConfig.createFrom;

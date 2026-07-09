@@ -449,6 +449,31 @@ func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
 	}
 }
 
+// TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace locks in the fix for
+// task 3aeabb65: a completed agent with a still-live CLI
+// `run_in_background` task (e.g. npm ci) must not be force-stopped at the
+// base completedHangGrace merely because it produced no further NDJSON
+// activity — killing it mid-write corrupted node_modules in the original
+// incident.
+func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now().Add(-10 * time.Minute))
+	ag.SetBackgroundTaskIDs([]string{"bpzdm25og"})
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped {
+		t.Fatal("stopCompletedAgent called while a background task is still live, want no-op")
+	}
+}
+
 // TestApplyVerdict_NudgeLiveTransportDeliversInPlace covers the live-transport
 // path: an agent with a working SendPromptToAgent (interactive/conversational)
 // is steered in place and left running — no stop, no persisted steer.
