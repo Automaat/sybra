@@ -723,8 +723,12 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 		// Flip to done immediately with the base outcome — the status transition
 		// must never wait on GitHub enrichment.
 		base := classifyLandingOutcome(c.State)
+		landedStatus := task.StatusDone
+		if c.State == "CLOSED" {
+			landedStatus = task.StatusCancelled
+		}
 		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(task.StatusDone),
+			Status:  task.Ptr(landedStatus),
 			Outcome: task.Ptr(base),
 		}); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
