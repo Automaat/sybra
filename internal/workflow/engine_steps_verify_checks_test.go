@@ -9,7 +9,7 @@ import (
 
 type fakeCheckGetter struct{ cmds []string }
 
-func (f *fakeCheckGetter) VerifyCommands(string) []string { return f.cmds }
+func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
 
 func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepVerifyChecks} }
 

@@ -70,7 +70,15 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	if e.checks == nil {
 		return stepDone(step, "skipped: no check config getter")
 	}
-	cmds := e.checks.VerifyCommands(taskID)
+
+	timeout := e.verifyTimeout
+	if timeout <= 0 {
+		timeout = verifyChecksDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, timeout)
+	defer cancel()
+
+	cmds := e.checks.VerifyCommands(ctx, taskID)
 	if len(cmds) == 0 {
 		return stepDone(step, "skipped: no verify commands configured")
 	}
@@ -81,13 +89,6 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
 	}
-
-	timeout := e.verifyTimeout
-	if timeout <= 0 {
-		timeout = verifyChecksDefaultTimeout
-	}
-	ctx, cancel := context.WithTimeout(e.ctx, timeout)
-	defer cancel()
 
 	maybeMiseTrust(ctx, wtPath)
 	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
