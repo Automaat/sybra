@@ -19,7 +19,7 @@
   )
 
   const reviewCount = $derived(
-    taskStore.byStatus('plan-review').length
+    taskStore.tasksNeedingPlanApproval().length
   )
 
   function tab(key: TabKey, action: () => void) {

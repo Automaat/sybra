@@ -343,7 +343,7 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	commit := exec.CommandContext(ctx, "git",
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
-		"commit", "--no-verify", "--no-gpg-sign", "-m", message)
+		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
 	commit.Dir = wtPath
 	return commit.Run() == nil
 }
@@ -963,7 +963,7 @@ func MergeOnto(ctx context.Context, worktreePath, ref string) error {
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", ref); err != nil {
+		"merge", "--no-edit", "--no-verify", "--signoff", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 		_ = executil.Run(abortCtx, worktreePath, "git", "merge", "--abort")
 		cancel()
@@ -1028,7 +1028,7 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", baseRef)
+		"merge", "--no-edit", "--no-verify", "--signoff", baseRef)
 	if mergeErr != nil {
 		conflict := false
 		var exitErr *exec.ExitError

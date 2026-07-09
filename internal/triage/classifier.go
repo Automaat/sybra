@@ -103,7 +103,7 @@ Rules:
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
 - mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
-- project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string.
+- project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string. If the "System metadata" section below already shows an existing_project_id or issue_url resolving to a registered project, leave project_id empty — the system already knows the answer and will not use your guess to override it. Only ever set this from a clear github.com URL, never from topical/vocabulary similarity to a project's name.
 
 Decision guide for mode:
 - PR review, simple fix, test writing, refactor → headless
@@ -151,8 +151,10 @@ Output schema (single JSON object):
 	}
 
 	// Expose system metadata so the classifier can recognise pr-fix tasks and
-	// emit "noplan" without depending solely on title/body heuristics.
-	if t.RunRole != "" || t.PRNumber > 0 {
+	// emit "noplan" without depending solely on title/body heuristics, and so
+	// it has an anchor for project_id instead of guessing from vocabulary
+	// overlap with a registered project's domain.
+	if t.RunRole != "" || t.PRNumber > 0 || t.ProjectID != "" || t.Issue != "" {
 		b.WriteString("System metadata (do not include in output):\n")
 		if t.RunRole != "" {
 			b.WriteString("- run_role: " + t.RunRole + "\n")
@@ -160,8 +162,22 @@ Output schema (single JSON object):
 		if t.PRNumber > 0 {
 			fmt.Fprintf(&b, "- pr_number: %d\n", t.PRNumber)
 		}
-		b.WriteString("IMPORTANT: when run_role=pr-fix or pr_number>0 this is a system task " +
-			"fixing an existing PR. Always emit \"noplan\" in tags.\n\n")
+		if t.ProjectID != "" {
+			b.WriteString("- existing_project_id: " + t.ProjectID + "\n")
+		}
+		if t.Issue != "" {
+			b.WriteString("- issue_url: " + t.Issue + "\n")
+		}
+		if t.RunRole != "" || t.PRNumber > 0 {
+			b.WriteString("IMPORTANT: when run_role=pr-fix or pr_number>0 this is a system task " +
+				"fixing an existing PR. Always emit \"noplan\" in tags.\n")
+		}
+		if t.ProjectID != "" || t.Issue != "" {
+			b.WriteString("IMPORTANT: existing_project_id and/or issue_url above are already " +
+				"authoritative for this task's project. Leave project_id empty in your output — " +
+				"the system resolves it from these fields, not your guess.\n")
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString("Task to classify:\n")
