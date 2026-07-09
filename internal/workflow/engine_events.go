@@ -3,11 +3,14 @@ package workflow
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 const (
@@ -978,6 +981,21 @@ func workflowRetryAfter(wf *Execution) (time.Time, bool) {
 // tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
 // don't have them handy — the breaker simply stays inactive for that call.
 func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+	// A pre-agent-start rebase failure is the same "task branch conflicts
+	// with base" condition push_branch/create_pr hit further down the
+	// pipeline (see pushTaskBranch's project.ErrDivergedNeedsResolve branch) —
+	// try the same autonomous branch-conflict-fix recovery before parking the
+	// task on a human. currentStatus != "human-required" mirrors the sticky
+	// guard below: don't re-trigger recovery for a task a concurrent handler
+	// already parked.
+	if currentStatus != "human-required" && e.conflictRecovery != nil && errors.Is(err, worktreeerr.ErrRebaseFailed) {
+		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
+		if e.tryConflictRecovery(taskID) {
+			return
+		}
+		// Recovery declined (e.g. no linked PR, retry budget exhausted) — fall
+		// through to the normal classification/escalation below.
+	}
 	reason, permanent := ClassifyAgentStartError(err)
 	if reason == "" {
 		return
