@@ -525,9 +525,10 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	if len(gates) > 0 {
 		gate = gates[0]
 	}
-	return func(ctx context.Context, prompt string) (string, error) {
+	return func(ctx context.Context, prompt, schema string) (string, error) {
 		spec := plannerJobSpec
 		spec.AttemptTimeout = plannerAttemptTimeout(len(prompt))
+		spec.Schema = schema
 		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
