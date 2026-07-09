@@ -570,7 +570,7 @@ func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.reconcile(known, nil)
+	w.reconcile(known, nil, true)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -669,7 +669,7 @@ func TestReconcileSkipsFailedScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.reconcile(known, nil)
+	w.reconcile(known, nil, true)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -678,5 +678,47 @@ func TestReconcileSkipsFailedScan(t *testing.T) {
 	}
 	if len(known) != 3 {
 		t.Errorf("reconcile mutated known on a failed scan: %v", known)
+	}
+}
+
+// TestReconcileEstablishesBaselineAfterInitialScanFailure guards the startup
+// case where the watcher's initial snapshot failed before Ready() closed. The
+// first later successful reconcile must seed known without emitting create
+// events for every file that merely already existed on disk.
+func TestReconcileEstablishesBaselineAfterInitialScanFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	emit := func(event string, data any) {
+		name, _ := data.(string)
+		mu.Lock()
+		seen = append(seen, event+":"+filepath.Base(name))
+		mu.Unlock()
+	}
+
+	for _, name := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("v1"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := New(dir, emit, discardLogger())
+	known := make(map[string]time.Time)
+
+	ready := w.reconcile(known, nil, false)
+	if !ready {
+		t.Fatal("reconcile() did not mark the baseline ready after a successful scan")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 0 {
+		t.Fatalf("reconcile emitted spurious startup events: %v", seen)
+	}
+	if len(known) != 2 {
+		t.Fatalf("known = %v, want 2 seeded files", known)
 	}
 }

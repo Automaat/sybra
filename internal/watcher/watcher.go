@@ -78,10 +78,10 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 	}
 	// known seeds from the directory's current state before Ready() closes so
 	// the first reconcile tick only reports genuine drift, not the initial
-	// population of pre-existing files. A failed initial scan yields an empty
-	// map; the first successful reconcile then repopulates it (no spurious
-	// deletes, since reconcile skips a failed scan entirely).
-	known, _ := w.snapshot()
+	// population of pre-existing files. If that initial scan fails, the first
+	// later successful scan establishes the baseline without emitting creates
+	// for every already-existing file.
+	known, baselineReady := w.snapshot()
 	if known == nil {
 		known = make(map[string]time.Time)
 	}
@@ -137,7 +137,9 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 				w.emitFor(name, op)
 			}
 			timerCh = resetDebounceTimer(timer, deadlines)
-			w.refreshSnapshot(known)
+			if w.refreshSnapshot(known) {
+				baselineReady = true
+			}
 
 		case err, ok := <-fw.Errors:
 			if !ok {
@@ -147,7 +149,7 @@ func (w *Watcher) loop(ctx context.Context, fw *fsnotify.Watcher) {
 			w.logger.Error("watcher.error", "err", err)
 
 		case <-reconcile.C:
-			w.reconcile(known, pending)
+			baselineReady = w.reconcile(known, pending, baselineReady)
 		}
 	}
 }
@@ -185,15 +187,16 @@ func (w *Watcher) snapshot() (map[string]time.Time, bool) {
 // refreshSnapshot brings known up to date with whatever the debounce loop
 // just emitted, so a legitimately-delivered fsnotify event doesn't also get
 // re-reported as drift on the next reconcile tick.
-func (w *Watcher) refreshSnapshot(known map[string]time.Time) {
+func (w *Watcher) refreshSnapshot(known map[string]time.Time) bool {
 	fresh, ok := w.snapshot()
 	if !ok {
 		// Scan failed; leave known untouched. Clearing it here would make the
 		// next reconcile tick re-fire TaskCreated for every file.
-		return
+		return false
 	}
 	clear(known)
 	maps.Copy(known, fresh)
+	return true
 }
 
 // reconcile is the self-healing backstop for lost per-file OS watches (see
@@ -204,12 +207,17 @@ func (w *Watcher) refreshSnapshot(known map[string]time.Time) {
 // rename-over-write (e.g. an out-of-band `sed -i` or any tmp+rename atomic
 // write) — fsnotify's own directory watch does not re-arm a per-file fd on
 // its own for further in-place updates to a file it already lost track of.
-func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnotify.Op) {
+func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnotify.Op, baselineReady bool) bool {
 	current, ok := w.snapshot()
 	if !ok {
 		// Scan failed — do not diff against a partial/empty view. Treating an
 		// unreadable directory as "empty" would delete-storm every known file.
-		return
+		return baselineReady
+	}
+	if !baselineReady {
+		clear(known)
+		maps.Copy(known, current)
+		return true
 	}
 
 	for name, mtime := range current {
@@ -245,6 +253,7 @@ func (w *Watcher) reconcile(known map[string]time.Time, pending map[string]fsnot
 			delete(known, name)
 		}
 	}
+	return true
 }
 
 func resetDebounceTimer(timer *time.Timer, deadlines map[string]time.Time) <-chan time.Time {
