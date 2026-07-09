@@ -141,3 +141,65 @@ func TestWorkRecordIDIsOpaqueAndStable(t *testing.T) {
 		t.Fatal("different task IDs produced the same WorkRecordID")
 	}
 }
+
+func TestEligible(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		rec      Record
+		taskTags []string
+		ttlDays  int
+		want     bool
+	}{
+		{
+			name: "untagged record always matches regardless of task tags",
+			rec:  Record{CreatedAt: now},
+			want: true,
+		},
+		{
+			name:     "tagged record matches on tag overlap",
+			rec:      Record{CreatedAt: now, Tags: []string{"backend", "auth"}},
+			taskTags: []string{"frontend", "auth"},
+			want:     true,
+		},
+		{
+			name:     "tagged record with no overlap is filtered out",
+			rec:      Record{CreatedAt: now, Tags: []string{"backend"}},
+			taskTags: []string{"frontend"},
+			want:     false,
+		},
+		{
+			name:    "ttl disabled (0) never expires",
+			rec:     Record{CreatedAt: now.AddDate(-1, 0, 0)},
+			ttlDays: 0,
+			want:    true,
+		},
+		{
+			name:    "record within ttl window matches",
+			rec:     Record{CreatedAt: now.AddDate(0, 0, -10)},
+			ttlDays: 28,
+			want:    true,
+		},
+		{
+			name:    "record past ttl window is filtered out",
+			rec:     Record{CreatedAt: now.AddDate(0, 0, -29)},
+			ttlDays: 28,
+			want:    false,
+		},
+		{
+			name:    "zero CreatedAt (legacy record) is not expired even with ttl set",
+			rec:     Record{},
+			ttlDays: 28,
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Eligible(tt.rec, tt.taskTags, tt.ttlDays, now); got != tt.want {
+				t.Errorf("Eligible() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
