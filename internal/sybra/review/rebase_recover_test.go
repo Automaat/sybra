@@ -522,16 +522,27 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var escalated bool
-	for range wtFailureLimit {
-		r.RecoverStaleBranchConflict(tk.ID)
-		if got, _ := r.tasks.Get(tk.ID); got.Status == task.StatusHumanRequired {
-			escalated = true
-			break
+	for i := range wtFailureLimit - 1 {
+		if !r.RecoverStaleBranchConflict(tk.ID) {
+			t.Fatalf("call %d: want true (parked for retry) before the circuit trips", i+1)
+		}
+		got, err := r.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: escalated before the circuit limit", i+1)
 		}
 	}
-	if !escalated {
-		t.Fatal("an unpreparable branch must escalate to human-required after the retry circuit trips")
+	if r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("circuit-limit call: want false")
+	}
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required after the circuit trips", got.Status)
 	}
 }
 

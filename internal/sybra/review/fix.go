@@ -870,6 +870,8 @@ func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) boo
 	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
 		return false
 	}
+	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
+		"task_id", taskID, "attempts", r.wtFailures[taskID], "limit", wtFailureLimit)
 	return true
 }
 
