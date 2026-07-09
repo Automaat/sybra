@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -221,19 +220,15 @@ func TestDispatchFromHumanRequired_RejectsRunningAgent(t *testing.T) {
 	svc, a := setupDispatchTestService(t, launcher)
 	tk := newHumanRequiredTask(t, a, 0)
 
-	// agent.Manager.Run registers the agent in its live registry synchronously
-	// before spawning the (async, here doomed-to-fail) headless subprocess, so
-	// HasRunningAgentForTask observes it as running immediately.
-	if _, err := a.agents.Run(agent.RunConfig{
-		TaskID:   tk.ID,
-		Mode:     "headless",
-		Prompt:   "test",
-		Dir:      t.TempDir(),
-		Provider: "claude",
-		Model:    "sonnet",
-	}); err != nil {
-		t.Fatal(err)
+	// Simulate an in-flight dispatch via the manager's claim map instead of
+	// starting a real headless agent: spawning a real provider subprocess and
+	// racing its (near-instant, doomed-to-fail) exit against this assertion
+	// is flaky under CI load. HasRunningAgentForTask treats a held dispatch
+	// claim as "running" for exactly this reason.
+	if !a.agents.ClaimTaskDispatch(tk.ID) {
+		t.Fatal("expected to acquire dispatch claim")
 	}
+	defer a.agents.ReleaseTaskDispatch(tk.ID)
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
 		t.Fatal("expected error dispatching while an agent is running")
