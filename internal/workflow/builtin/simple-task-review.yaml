@@ -97,6 +97,12 @@ steps:
           2. Run /pr-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be a verdict
+        marker: `Review Verdict: CLEAN` if there are zero actionable
+        (critical/high/medium severity) findings, or
+        `Review Verdict: NEEDS_FIXES` otherwise. This line gates whether a
+        fix-review agent runs next — get it right.
+
         Do NOT submit anything to GitHub. Sybra will ingest
         .sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
@@ -132,6 +138,12 @@ steps:
           2. Run /staff-code-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be a verdict
+        marker: `Review Verdict: CLEAN` if there are zero actionable
+        (critical/high/medium severity) findings, or
+        `Review Verdict: NEEDS_FIXES` otherwise. This line gates whether a
+        fix-review agent runs next — get it right.
+
         Do NOT submit anything to GitHub. Sybra will ingest
         .sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
@@ -159,6 +171,27 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: route_review_verdict
+
+  # Mirrors route_critique_verdict in simple-task-plan: a clean review (zero
+  # actionable findings) skips the fix_review agent entirely — the exact
+  # analog of #1490, which gated address_critique on the plan-critique
+  # verdict but left review ungated (#1524). Saves ~1 wasted agent run per
+  # clean-review task, which is nearly every landing.
+  - id: route_review_verdict
+    name: Route on Review Verdict
+    type: condition
+    config:
+      check:
+        field: task.code_review
+        operator: contains
+        value: 'Review Verdict: CLEAN'
+    next:
+      - when:
+          field: task.code_review
+          operator: contains
+          value: 'Review Verdict: CLEAN'
+        goto: done_review
       - goto: fix_review
 
   - id: fix_review
