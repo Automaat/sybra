@@ -2,6 +2,7 @@ package agentorch
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -442,6 +443,40 @@ func TestAutoAssignProject(t *testing.T) {
 		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
+		}
+	})
+	t.Run("persist failure returns error and leaves input task unchanged", func(t *testing.T) {
+		t.Parallel()
+		tm, ps := newStores(t)
+		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
+			t.Fatalf("CreateMeta: %v", err)
+		}
+		created, err := tm.Create("t", "b", "headless")
+		if err != nil {
+			t.Fatalf("task Create: %v", err)
+		}
+		taskDir := filepath.Dir(created.FilePath)
+		if err := os.Chmod(taskDir, 0o500); err != nil {
+			t.Fatalf("Chmod(taskDir): %v", err)
+		}
+		defer func() {
+			_ = os.Chmod(taskDir, 0o700)
+		}()
+
+		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
+		got, err := o.AutoAssignProject(created)
+		if err == nil {
+			t.Fatal("AutoAssignProject() err = nil, want persist error")
+		}
+		if got.ProjectID != "" {
+			t.Fatalf("ProjectID = %q, want unchanged input task after persist failure", got.ProjectID)
+		}
+		stored, getErr := tm.Get(created.ID)
+		if getErr != nil {
+			t.Fatalf("Get(created.ID): %v", getErr)
+		}
+		if stored.ProjectID != "" {
+			t.Fatalf("stored ProjectID = %q, want empty after persist failure", stored.ProjectID)
 		}
 	})
 }
