@@ -8,7 +8,7 @@ vi.mock('$lib/api', () => ({
 
 const PRDetailView = (await import('./PRDetailView.svelte')).default
 
-function makePR(overrides: Partial<PullRequest> = {}): PullRequest {
+function makePR(overrides: Partial<PullRequest & { waitingForStability?: boolean }> = {}): PullRequest & { waitingForStability?: boolean } {
   return PullRequest.createFrom({
     number: 42,
     title: 'Fix auth bug',
@@ -23,7 +23,7 @@ function makePR(overrides: Partial<PullRequest> = {}): PullRequest {
     createdAt: '2026-01-01T10:00:00Z',
     updatedAt: '2026-01-01T11:00:00Z',
     ...overrides,
-  })
+  }) as PullRequest & { waitingForStability?: boolean }
 }
 
 describe('PRDetailView', () => {
@@ -92,6 +92,13 @@ describe('PRDetailView', () => {
   it('does not show Merge when CI is failing', () => {
     render(PRDetailView, {
       props: { pr: makePR({ ciStatus: 'FAILURE' }), onback: vi.fn(), onmerge: vi.fn() },
+    })
+    expect(screen.queryByRole('button', { name: 'Merge' })).toBeNull()
+  })
+
+  it('does not show Merge while waiting for stability', () => {
+    render(PRDetailView, {
+      props: { pr: makePR({ waitingForStability: true }), onback: vi.fn(), onmerge: vi.fn() },
     })
     expect(screen.queryByRole('button', { name: 'Merge' })).toBeNull()
   })

@@ -119,6 +119,16 @@ describe('RenovatePRCard', () => {
     expect(screen.queryByRole('button', { name: 'Merge' })).toBeNull()
   })
 
+  it('does not show Merge while waiting for stability', () => {
+    render(RenovatePRCard, {
+      props: { pr: makePR({ waitingForStability: true }), onselect: vi.fn() },
+    })
+    expect(screen.queryByRole('button', { name: 'Merge' })).toBeNull()
+    expect(screen.getByText('Stability days').getAttribute('title')).toBe(
+      'Waiting for Renovate stability days (minimum release age) before this PR can be merged',
+    )
+  })
+
   it('shows Rerun and Fix buttons when CI failed', () => {
     render(RenovatePRCard, {
       props: { pr: makePR({ ciStatus: 'FAILURE' }), onselect: vi.fn() },

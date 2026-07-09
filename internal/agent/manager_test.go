@@ -722,6 +722,40 @@ func TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim(t *testing.T) {
 	}
 }
 
+func TestHasLiveHeadlessAgentForTask_OnlyCountsRegisteredHeadless(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should succeed")
+	}
+	defer m.ReleaseTaskDispatch("t1")
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("dispatch claim without a registered agent must not count as live headless")
+	}
+
+	interactive := &Agent{ID: "interactive", TaskID: "t1", Mode: "interactive", State: StateRunning, done: make(chan struct{})}
+	m.mu.Lock()
+	m.agents[interactive.ID] = interactive
+	m.mu.Unlock()
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("interactive agent must not suppress dwell escalation")
+	}
+
+	headlessDone := make(chan struct{})
+	headless := &Agent{ID: "headless", TaskID: "t1", Mode: "headless", State: StateRunning, done: headlessDone}
+	m.mu.Lock()
+	m.agents[headless.ID] = headless
+	m.mu.Unlock()
+	if !m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("live registered headless agent should count")
+	}
+
+	close(headlessDone)
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("exited headless agent must not count")
+	}
+}
+
 func TestHasOtherRunningAgentForTask(t *testing.T) {
 	m, _ := newTestManager(t)
 

@@ -86,6 +86,42 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	}
 }
 
+// TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates covers the
+// stall this fix closes: a human-review flip of one child to `blocked`
+// (without the umbrella-gated tag) must not freeze the whole sub-DAG at
+// in-progress forever — it should surface the umbrella tracker as
+// human-required, and a dependent gated child waiting on the blocked one
+// must stay held (never released) rather than silently proceeding.
+func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+
+	// Blocked by human-review, not by the umbrella gate — no gated tag.
+	blocked, err := m.CreateFull("blocked child", "", task.AgentModeHeadless, task.Update{
+		Issue:         task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue: task.Ptr(umb),
+		Status:        task.Ptr(task.StatusBlocked),
+	})
+	if err != nil {
+		t.Fatalf("create blocked child: %v", err)
+	}
+	dependent := mkChild(t, m, "dependent", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
+
+	app.releaseUnblockedChildren()
+
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
+		t.Fatalf("tracker = %q, want human-required on non-gated blocked child", got)
+	}
+	if got := mustStatus(t, m, blocked.ID); got != task.StatusBlocked {
+		t.Fatalf("blocked child = %q, want to stay blocked (gate does not own it)", got)
+	}
+	if got := mustStatus(t, m, dependent.ID); got != task.StatusBlocked {
+		t.Fatalf("dependent child = %q, want to stay held (dep never reached done)", got)
+	}
+}
+
 func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
@@ -207,6 +243,7 @@ func TestTrackerRollup(t *testing.T) {
 	}{
 		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
 		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
+		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusHumanRequired, false},
 		{"cancelled child", umbrellaState{total: 2, anyCancelled: true}, false, true, task.StatusHumanRequired, false},
 		{"all done", umbrellaState{total: 2, doneCount: 2}, false, true, task.StatusDone, true},
 		{"in progress", umbrellaState{total: 2, doneCount: 1}, false, true, task.StatusInProgress, false},
