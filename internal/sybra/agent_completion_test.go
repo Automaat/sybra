@@ -248,9 +248,15 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	if updated.Status != task.StatusTesting {
 		t.Fatalf("task status = %q, want non-terminal %q", updated.Status, task.StatusTesting)
 	}
-	metas, err := artifactStore.List(tk.ID)
+	allMetas, err := artifactStore.List(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var metas []artifact.Meta
+	for _, m := range allMetas {
+		if m.Kind == artifact.KindGeneric {
+			metas = append(metas, m)
+		}
 	}
 	if len(metas) != 1 {
 		t.Fatalf("expected test-runner evidence to import before terminal status, got %d: %+v", len(metas), metas)

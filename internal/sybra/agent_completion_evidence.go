@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -39,7 +40,7 @@ func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
 	}
 	if wtPath := h.worktrees.PathFor(t); wtPath != "" {
 		if _, statErr := os.Stat(wtPath); statErr == nil {
-			h.importTestRunnerEvidence(ag, wtPath)
+			h.importTestRunnerEvidence(ag, wtPath, t.ProjectID)
 		}
 	}
 }
@@ -50,11 +51,17 @@ func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
 // the task's local artifact store. Called synchronously from OnComplete
 // before the async worktree cleanup so the directory still exists.
 //
+// projectID resolves a WorkScrubContext via h.workScrub: for work-typed
+// tasks, evidence content is redacted through scrub.Scrub before it is
+// persisted, so a captured screenshot/console log can never carry a raw
+// work-repo identifier into the local artifact store. See CLAUDE.md —
+// Work-Data Confidentiality.
+//
 // Best-effort throughout: a missing/empty/unreadable evidence dir, a nil
 // artifact store, or a per-file failure are all no-ops or logged warnings —
 // evidence capture must never block workflow advancement past a completed
 // test-runner run.
-func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPath string) {
+func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPath, projectID string) {
 	if h.artifacts == nil || wtPath == "" {
 		return
 	}
@@ -65,6 +72,11 @@ func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPat
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
+	var scrubCtx *WorkScrubContext
+	if h.workScrub != nil {
+		scrubCtx = h.workScrub(projectID)
+	}
+
 	imported := 0
 	for _, e := range entries {
 		if imported >= maxEvidenceFiles {
@@ -72,7 +84,7 @@ func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPat
 				"task_id", ag.TaskID, "agent_id", ag.ID, "max", maxEvidenceFiles, "found", len(entries))
 			break
 		}
-		ok, err := h.importEvidenceEntry(ag, dir, e, imported)
+		ok, err := h.importEvidenceEntry(ag, dir, e, imported, scrubCtx)
 		if err != nil {
 			h.logger.Warn("agent.evidence.import.failed",
 				"task_id", ag.TaskID, "agent_id", ag.ID, "file", e.Name(), "err", err)
@@ -82,12 +94,37 @@ func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPat
 			imported++
 		}
 	}
+	if imported > 0 {
+		h.surfaceEvidenceImport(ag, imported)
+	}
+}
+
+// surfaceEvidenceImport appends a progress-log entry so imported evidence is
+// discoverable from the task's Progress tab (`sybra-cli --json progress list
+// <id>`), satisfying the "surface it on the task" requirement without a
+// dedicated GUI artifact viewer. Best-effort: a nil store or append failure
+// is logged, never fatal to the completion path.
+func (h *AgentCompletionHandler) surfaceEvidenceImport(ag *agent.Agent, imported int) {
+	if h.artifacts == nil {
+		return
+	}
+	msg := fmt.Sprintf("imported %d test-runner evidence file(s) into the artifact store", imported)
+	if err := h.artifacts.AppendProgress(ag.TaskID, artifact.ProgressEntry{
+		Kind:    artifact.ProgressKindProgress,
+		Role:    string(agent.RoleTestRunner),
+		Message: msg,
+	}); err != nil {
+		h.logger.Warn("agent.evidence.import.progress-log-failed",
+			"task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
 }
 
 // importEvidenceEntry imports a single evidence-dir entry. ok reports whether
 // a file was actually imported (false for a silently-skipped directory or
-// symlink); err is non-nil only for a genuine failure worth logging.
-func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string, e os.DirEntry, index int) (ok bool, err error) {
+// symlink); err is non-nil only for a genuine failure worth logging. scrubCtx
+// is non-nil only for work-typed tasks — when set, content is redacted
+// through scrub.Scrub before it is written to the artifact store.
+func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string, e os.DirEntry, index int, scrubCtx *WorkScrubContext) (ok bool, err error) {
 	info, err := e.Info()
 	if err != nil {
 		return false, err
@@ -105,6 +142,10 @@ func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string
 	content, err := os.ReadFile(srcPath)
 	if err != nil {
 		return false, err
+	}
+	if scrubCtx != nil {
+		scrubbed, _ := scrub.Scrub(string(content), scrubCtx.Blocklist)
+		content = []byte(scrubbed)
 	}
 	_, err = h.artifacts.Put(ag.TaskID, artifact.Artifact{
 		Kind:         artifact.KindGeneric,

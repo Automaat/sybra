@@ -54,6 +54,7 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletion
 		prTracker:      a.prTracker,
 		cfg:            a.cfg,
 		artifacts:      a.artifacts,
+		workScrub:      a.workScrubContextForTask,
 		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
 		// own guard), same pattern as agentOrch.SetConflictRecovery.
 		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
@@ -87,6 +88,11 @@ type AgentCompletionHandler struct {
 	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
 	// no-ops when unset (degraded init / tests).
 	artifacts *artifact.Store
+	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
+	// Used by importTestRunnerEvidence to redact work-repo identifiers from
+	// captured evidence before it lands in the local artifact store. Nil-safe:
+	// a nil func or nil-returning lookup means "not work-typed — import as-is".
+	workScrub func(projectID string) *WorkScrubContext
 
 	// conflictRecovery dispatches the autonomous conflict-fix agent for a
 	// task (review.Handler.RecoverStaleBranchConflict) — reused here so a
