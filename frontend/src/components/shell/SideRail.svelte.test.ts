@@ -11,7 +11,7 @@ vi.mock('../../lib/navigation.svelte.js', () => ({
 
 vi.mock('../../stores/tasks.svelte.js', () => ({
   taskStore: {
-    byStatus: vi.fn(() => []),
+    tasksNeedingPlanApproval: vi.fn(() => []),
   },
 }))
 

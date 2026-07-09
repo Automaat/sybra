@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 
-const mockByStatus = vi.fn()
+const mockTasksNeedingPlanApproval = vi.fn()
 const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
@@ -14,7 +14,7 @@ const taskItemsMap = new Map<string, any>()
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get items() { return taskItemsMap },
-    byStatus: (...args: unknown[]) => mockByStatus(...args),
+    tasksNeedingPlanApproval: (...args: unknown[]) => mockTasksNeedingPlanApproval(...args),
     approvePlan: (...args: unknown[]) => mockApprovePlan(...args),
     rejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
     sendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
@@ -57,14 +57,14 @@ function makeTask(overrides: Record<string, unknown> = {}) {
 
 describe('Reviews', () => {
   beforeEach(() => {
-    mockByStatus.mockReset()
+    mockTasksNeedingPlanApproval.mockReset()
     mockApprovePlan.mockReset()
     mockRejectPlan.mockReset()
     mockSendPlanMessage.mockReset()
     mockHasLivePlanAgent.mockResolvedValue(false)
     mockCommentLoad.mockResolvedValue(undefined)
     mockUnresolvedCount.mockReturnValue(0)
-    mockByStatus.mockReturnValue([])
+    mockTasksNeedingPlanApproval.mockReturnValue([])
     taskItemsMap.clear()
   })
 
@@ -85,10 +85,7 @@ describe('Reviews', () => {
 
   it('renders review task titles in sidebar', () => {
     const task = makeTask({ id: 't1', title: 'Feature planning task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     render(Reviews)
     expect(screen.getByText('Feature planning task')).toBeDefined()
@@ -96,20 +93,14 @@ describe('Reviews', () => {
 
   it('shows count badge when review tasks exist', () => {
     const task = makeTask({ id: 't1' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     render(Reviews)
     expect(screen.getByText('1')).toBeDefined()
   })
 
   it('shows Plan badge for plan-review tasks', () => {
     const task = makeTask({ id: 't1', status: 'plan-review' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     render(Reviews)
     expect(screen.getByText('Plan')).toBeDefined()
   })
@@ -122,10 +113,7 @@ describe('Reviews', () => {
 
   it('shows task title in panel after selecting a task', async () => {
     const task = makeTask({ id: 't1', title: 'Auth refactor plan' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     render(Reviews)
     await fireEvent.click(screen.getByText('Auth refactor plan'))
@@ -136,10 +124,7 @@ describe('Reviews', () => {
 
   it('shows Approve and Reject buttons after selecting a task', async () => {
     const task = makeTask({ id: 't1', title: 'Plan task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     render(Reviews)
     await fireEvent.click(screen.getByText('Plan task'))
@@ -151,10 +136,7 @@ describe('Reviews', () => {
 
   it('calls approvePlan and clears selection on Approve', async () => {
     const task = makeTask({ id: 't1', title: 'Approve me' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockApprovePlan.mockResolvedValue({ ...task, status: 'todo' })
     render(Reviews)
@@ -170,10 +152,7 @@ describe('Reviews', () => {
 
   it('calls rejectPlan on Reject', async () => {
     const task = makeTask({ id: 't1', title: 'Reject me' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockRejectPlan.mockResolvedValue({ ...task, status: 'planning' })
     render(Reviews)
@@ -189,10 +168,7 @@ describe('Reviews', () => {
 
   it('shows error message when approve fails', async () => {
     const task = makeTask({ id: 't1', title: 'Failing task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockApprovePlan.mockRejectedValue(new Error('server error'))
     render(Reviews)
@@ -208,10 +184,7 @@ describe('Reviews', () => {
 
   it('shows task tags in sidebar', () => {
     const task = makeTask({ id: 't1', title: 'Tagged task', tags: ['backend', 'api'] })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     render(Reviews)
     expect(screen.getByText('backend')).toBeDefined()
     expect(screen.getByText('api')).toBeDefined()
@@ -219,10 +192,7 @@ describe('Reviews', () => {
 
   it('shows unresolved comment count badge', () => {
     const task = makeTask({ id: 't1', title: 'Commented task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     mockUnresolvedCount.mockReturnValue(3)
     render(Reviews)
     expect(screen.getByText('3')).toBeDefined()
@@ -230,20 +200,14 @@ describe('Reviews', () => {
 
   it('shows projectId in sidebar when set', () => {
     const task = makeTask({ id: 't1', title: 'Scoped task', projectId: 'owner/repo' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     render(Reviews)
     expect(screen.getByText('owner/repo')).toBeDefined()
   })
 
   it('shows View Task button when onviewtask is passed', async () => {
     const task = makeTask({ id: 't1', title: 'Linkable task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     const onviewtask = vi.fn()
     render(Reviews, { props: { onviewtask } })
@@ -257,10 +221,7 @@ describe('Reviews', () => {
 
   it('renders Send Message button (disabled until feedback and live agent)', async () => {
     const task = makeTask({ id: 't1', title: 'Send target' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockHasLivePlanAgent.mockResolvedValue(false)
     render(Reviews)
@@ -272,10 +233,7 @@ describe('Reviews', () => {
 
   it('calls sendPlanMessage when Send Message clicked with live agent and feedback', async () => {
     const task = makeTask({ id: 't1', title: 'Live agent task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockHasLivePlanAgent.mockResolvedValue(true)
     mockSendPlanMessage.mockResolvedValue(undefined)
@@ -293,10 +251,7 @@ describe('Reviews', () => {
   it('ignores stale live-agent availability results after switching tasks', async () => {
     const first = makeTask({ id: 't1', title: 'First task' })
     const second = makeTask({ id: 't2', title: 'Second task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [first, second]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([first, second])
     taskItemsMap.set('t1', first)
     taskItemsMap.set('t2', second)
 
@@ -335,10 +290,7 @@ describe('Reviews', () => {
       title: 'Critiqued task',
       planCritique: 'Plan needs more detail on auth',
     })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     render(Reviews)
     await fireEvent.click(screen.getByText('Critiqued task'))
@@ -349,10 +301,7 @@ describe('Reviews', () => {
 
   it('shows error message when reject fails', async () => {
     const task = makeTask({ id: 't1', title: 'Reject fails' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockRejectPlan.mockRejectedValue(new Error('reject error'))
     render(Reviews)
@@ -366,10 +315,7 @@ describe('Reviews', () => {
 
   it('shows unresolved comments banner in detail panel when count > 0', async () => {
     const task = makeTask({ id: 't1', title: 'Commented' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockUnresolvedCount.mockReturnValue(2)
     render(Reviews)
@@ -381,10 +327,7 @@ describe('Reviews', () => {
 
   it('uses singular comment label when only one unresolved', async () => {
     const task = makeTask({ id: 't1', title: 'One comment' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockUnresolvedCount.mockReturnValue(1)
     render(Reviews)
@@ -396,10 +339,7 @@ describe('Reviews', () => {
 
   it('approve "a" keypress triggers plan approval', async () => {
     const task = makeTask({ id: 't1', title: 'Keyboard task' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockApprovePlan.mockResolvedValue(undefined)
     render(Reviews)
@@ -413,10 +353,7 @@ describe('Reviews', () => {
 
   it('reject "r" keypress triggers plan rejection', async () => {
     const task = makeTask({ id: 't1', title: 'Reject keyboard' })
-    mockByStatus.mockImplementation((status: string) => {
-      if (status === 'plan-review') return [task]
-      return []
-    })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
     taskItemsMap.set('t1', task)
     mockRejectPlan.mockResolvedValue(undefined)
     render(Reviews)

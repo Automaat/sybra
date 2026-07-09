@@ -6,7 +6,7 @@ vi.mock('../../lib/navigation.svelte.js', () => ({
   navStore: { reset: (...a: unknown[]) => mockReset(...a), get activeTab() { return 'board' } },
 }))
 vi.mock('../../stores/tasks.svelte.js', () => ({
-  taskStore: { byStatus: () => [] },
+  taskStore: { tasksNeedingPlanApproval: () => [] },
 }))
 vi.mock('../../stores/agents.svelte.js', () => ({
   agentStore: { get list() { return [] } },

@@ -125,6 +125,28 @@ export function awaitsHuman(status: string): boolean {
 }
 
 /**
+ * True when a task has a plan sitting at the review_plan workflow step,
+ * waiting on a human approve/reject decision.
+ *
+ * Checks the workflow engine's own currentStep/state first, falling back to
+ * the top-level status only when no workflow is attached. This is what keeps
+ * the plan-approval affordance visible even if a manual `sybra-cli update
+ * --status` desyncs the task's outer status from its active workflow (see
+ * issue #1642) — the workflow, not the possibly-stale status string, is the
+ * source of truth for whether a human decision is actually pending.
+ */
+export function needsPlanApproval(task: {
+  status?: string
+  workflow?: { currentStep?: string; state?: string } | null
+}): boolean {
+  const wf = task.workflow
+  if (wf?.currentStep || wf?.state) {
+    return wf.currentStep === 'review_plan' && wf.state === 'waiting'
+  }
+  return task.status === 'plan-review'
+}
+
+/**
  * Canonical, human-facing label for a status — the label every status surface
  * (board pill, list cell, move popover) should resolve through so one state
  * reads the same wherever it appears. Unknown values pass through verbatim so
