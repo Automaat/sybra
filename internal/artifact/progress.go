@@ -69,7 +69,7 @@ func (s *Store) ReadProgress(taskID string) ([]ProgressEntry, error) {
 		}
 		var e ProgressEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			slog.Warn("artifact: skipping malformed progress line", "taskId", taskID, "err", err)
+			slog.Warn("artifact.progress.parse-err", "task_id", taskID, "err", err)
 			continue
 		}
 		entries = append(entries, e)

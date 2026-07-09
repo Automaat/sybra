@@ -94,7 +94,9 @@
       const entries = (await ListTaskProgress(taskID)) ?? []
       if (seq === progressLoadSeq) progressCount = entries.length
     } catch {
-      if (seq === progressLoadSeq) progressCount = 0
+      // Keep the last known count so a transient progress API failure does not
+      // hide the tab for tasks that already have progress.
+      if (seq !== progressLoadSeq) return
     }
   }
 

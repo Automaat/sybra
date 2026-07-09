@@ -16,6 +16,7 @@
   let entries = $state<ProgressEntry[]>([])
   let loading = $state(false)
   let loadInFlight = false
+  let queuedLoadTaskID: string | null = null
   let error = $state('')
 
   const kindMeta: Record<string, { label: string; icon: typeof CircleDot; classes: string }> = {
@@ -30,14 +31,26 @@
   }
 
   async function load(taskID: string) {
-    if (!taskID || loadInFlight) return
+    if (!taskID) return
+    if (loadInFlight) {
+      queuedLoadTaskID = taskID
+      return
+    }
     loadInFlight = true
     loading = true
     try {
-      entries = (await ListTaskProgress(taskID)) ?? []
-      error = ''
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      let nextTaskID: string | null = taskID
+      while (nextTaskID) {
+        const currentTaskID = nextTaskID
+        queuedLoadTaskID = null
+        try {
+          entries = (await ListTaskProgress(currentTaskID)) ?? []
+          error = ''
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e)
+        }
+        nextTaskID = queuedLoadTaskID
+      }
     } finally {
       loadInFlight = false
       loading = false

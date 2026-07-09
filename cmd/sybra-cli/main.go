@@ -2064,7 +2064,7 @@ func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.S
 		return fatal(jsonOut, "progress add: %v", err)
 	}
 	if _, tErr := s.Touch(taskID); tErr != nil {
-		return fatal(jsonOut, "progress add: progress appended but task touch failed: %v", tErr)
+		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
 	}
 
 	if jsonOut {
