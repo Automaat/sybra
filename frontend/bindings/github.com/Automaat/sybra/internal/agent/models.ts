@@ -76,6 +76,17 @@ export class Agent {
      */
     "resumable"?: boolean;
 
+    /**
+     * CanSteer reports whether SendMessage will currently be accepted for this
+     * agent — i.e. it has a live stdin transport and is not finalizing. It is a
+     * backend-authoritative capability so the UI does not have to re-derive
+     * steerability from mode/provider/state heuristics (which are wrong for a
+     * rollback-disabled or legacy-reattached run that has no stdin transport).
+     * The stored value is ignored: MarshalJSON always overrides it with the
+     * live computation, so it is never stale on the wire.
+     */
+    "canSteer": boolean;
+
     /** Creates a new Agent instance. */
     constructor($$source: Partial<Agent> = {}) {
         if (!("id" in $$source)) {
@@ -104,6 +115,9 @@ export class Agent {
         }
         if (!("external" in $$source)) {
             this["external"] = false;
+        }
+        if (!("canSteer" in $$source)) {
+            this["canSteer"] = false;
         }
 
         Object.assign(this, $$source);

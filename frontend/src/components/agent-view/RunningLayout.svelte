@@ -42,12 +42,12 @@
 
   let timelineOpen = $state(true)
 
-  // Only Claude headless runs currently accept mid-run steer messages (see
-  // agent.headless_steerable / claudeProvider.BuildHeadlessInvocation) —
-  // codex/copilot headless runs keep the Stop-only running view.
-  const isSteerableHeadless = $derived(
-    a.mode === 'headless' && a.provider === 'claude' && a.state === 'running',
-  )
+  // The backend reports whether this run actually has a live stdin transport
+  // (Agent.CanSteer), gated on the same transport SendMessage requires.
+  // Deriving steerability from mode/provider/state would wrongly show controls
+  // for a rollback-disabled (headless_steerable=false) or legacy-reattached
+  // headless run that has no stdin transport, then fail every send.
+  const isSteerableHeadless = $derived(a.canSteer)
   let pauseError = $state<string | null>(null)
 
   async function handleSend(text: string) {

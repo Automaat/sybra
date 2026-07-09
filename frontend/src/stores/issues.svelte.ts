@@ -44,6 +44,9 @@ class IssueStore {
 }
 
 export const issueStore = new IssueStore()
-if (typeof window !== 'undefined' && window.runtime) {
-  issueStore.listen()
+if (typeof window !== 'undefined') {
+  // Desktop mode needs window.runtime (Wails IPC); web mode uses SSE directly.
+  if (import.meta.env.VITE_MODE === 'web' || window.runtime) {
+    issueStore.listen()
+  }
 }

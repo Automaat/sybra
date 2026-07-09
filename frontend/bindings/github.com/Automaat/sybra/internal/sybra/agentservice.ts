@@ -115,7 +115,9 @@ export function RespondEscalation(agentID: string, continueRun: boolean): $Cance
 }
 
 /**
- * SendMessage sends a follow-up message to a conversational agent.
+ * SendMessage sends a follow-up message to any live agent with a stdin
+ * transport: a conversational (interactive) agent, or a steerable headless
+ * claude run.
  */
 export function SendMessage(agentID: string, text: string): $CancellablePromise<void> {
     return $Call.ByID(1968798251, agentID, text);

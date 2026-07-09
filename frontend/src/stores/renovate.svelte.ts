@@ -57,6 +57,9 @@ class RenovateStore {
 }
 
 export const renovateStore = new RenovateStore()
-if (typeof window !== 'undefined' && window.runtime) {
-  renovateStore.listen()
+if (typeof window !== 'undefined') {
+  // Desktop mode needs window.runtime (Wails IPC); web mode uses SSE directly.
+  if (import.meta.env.VITE_MODE === 'web' || window.runtime) {
+    renovateStore.listen()
+  }
 }

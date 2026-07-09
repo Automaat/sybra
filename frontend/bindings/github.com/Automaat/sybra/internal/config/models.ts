@@ -132,6 +132,15 @@ export class AgentDefaults {
     "sandboxMode": string;
 
     /**
+     * HeadlessSteerable controls whether headless claude runs launch with the
+     * stdin/stream-json shape that accepts mid-run steer messages (instead of
+     * the legacy one-shot `-p <prompt>` invocation). nil means not configured
+     * (defaults to true). Set false to restore the legacy launch shape with
+     * no stdin transport — a config-only rollback with no code revert.
+     */
+    "headlessSteerable": boolean | null;
+
+    /**
      * DefaultProjectID pins the project a project-less task auto-assigns to
      * when it needs an isolated worktree (e.g. a meta/self-referential task
      * routed to the plan step). Without it, auto-assignment only fires when
@@ -206,6 +215,9 @@ export class AgentDefaults {
         }
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
+        }
+        if (!("headlessSteerable" in $$source)) {
+            this["headlessSteerable"] = null;
         }
         if (!("defaultProjectId" in $$source)) {
             this["defaultProjectId"] = "";

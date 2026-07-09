@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1379,6 +1380,59 @@ func TestSendMessage_HeadlessQueuesWhenRunning(t *testing.T) {
 	}
 	if !sawUserInput {
 		t.Errorf("expected a synthetic user_input StreamEvent in Output(); got %+v", a.Output())
+	}
+}
+
+func TestSendMessage_HeadlessPersistsPendingPrompt(t *testing.T) {
+	regDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{SurviveRestartDir: regDir})
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-persist", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a.setStdinPath(filepath.Join(regDir, "h-persist.stdin"))
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if err := m.SendMessage(a.ID, "survive restart"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	recs, err := m.registry().List()
+	if err != nil {
+		t.Fatalf("registry List: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("registry records = %d, want 1", len(recs))
+	}
+	if got := recs[0].PendingPrompts; len(got) != 1 || got[0] != "survive restart" {
+		t.Fatalf("PendingPrompts = %#v, want queued steer", got)
+	}
+	if got := fromRecord(recs[0]).PendingPromptCount(); got != 1 {
+		t.Fatalf("fromRecord PendingPromptCount = %d, want 1", got)
+	}
+}
+
+func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-overflow", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	for range maxPendingHeadlessSteerPrompts {
+		a.EnqueuePrompt("queued")
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	err := m.SendMessage(a.ID, "one too many")
+	if err == nil {
+		t.Fatal("expected queue overflow error")
+	}
+	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
 	}
 }
 

@@ -66,6 +66,12 @@ var headlessRetryBackoffs = []time.Duration{30 * time.Second, 60 * time.Second, 
 // stream_tooLong log lines.
 const headlessScannerBuffer = 4 * 1024 * 1024
 
+// maxPendingHeadlessSteerPrompts bounds queued operator guidance while a
+// headless turn is still running. The queue is replayed into the survival
+// registry, so keep it finite rather than allowing a stuck turn to grow memory
+// and restart-replay state without limit.
+const maxPendingHeadlessSteerPrompts = 20
+
 type preparedHeadlessAttempt struct {
 	cfg     RunConfig
 	inv     headlessInvocation
@@ -189,6 +195,9 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		}
 		a.convo.replaceStdinPipe(stdinPipe)
 		a.setFinalizing(false)
+		// setFinalizing refreshed CanSteer; emit so the UI shows steer controls
+		// as soon as the stdin transport is live, not only on a later event.
+		m.emit(events.AgentState(a.ID), a)
 	}
 
 	var stderrBuf bytes.Buffer
@@ -311,10 +320,13 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)
+	var childStdin *os.File
 	if steerable {
-		if err := m.startHeadlessProcessSurviveStdin(a, cmd); err != nil {
+		cs, err := m.startHeadlessProcessSurviveStdin(a, cmd)
+		if err != nil {
 			return nil, err
 		}
+		childStdin = cs
 	}
 
 	stderrPath := outFile.Name() + ".stderr"
@@ -325,13 +337,27 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 
 	if startErr := cmd.Start(); startErr != nil {
 		if steerable {
+			if childStdin != nil {
+				_ = childStdin.Close()
+			}
 			a.convo.closeStdinPipe()
 		}
 		return nil, fmt.Errorf("start %s: %w", name, startErr)
 	}
+	// The child holds its own dup of the read end; drop the parent's copy so
+	// closing the parent's writer (closeStdinPipe) is enough to EOF the child.
+	if childStdin != nil {
+		_ = childStdin.Close()
+	}
 	a.SetCmd(cmd)
 	a.setDetached(true)
 	m.saveRegistry(ctx, a)
+	if steerable {
+		// setFinalizing(false) in startHeadlessProcessSurviveStdin refreshed
+		// CanSteer; emit so the UI shows steer controls as soon as the FIFO
+		// transport is live, not only on a later event.
+		m.emit(events.AgentState(a.ID), a)
+	}
 	m.logger.Info("agent.headless.start", "id", a.ID, "pid", cmd.Process.Pid, "dir", cmd.Dir, "detached", true)
 
 	// The prompt is delivered as the first user message over the FIFO instead
@@ -850,13 +876,32 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 		a.convo.closeStdinPipe()
 		return
 	}
+	// Re-gate provider health at this turn boundary, mirroring the persistent
+	// Claude path (advanceClaudeTurn): a provider that capped while the current
+	// turn ran must not receive the queued steer on its stranded stdin. A
+	// headless run has no hot-swap handoff — it recovers by re-dispatch — so an
+	// unhealthy provider parks the steer (restore it, close stdin) and marks the
+	// run rate-limited so the completion path's reschedule picks it back up
+	// instead of writing to a doomed session.
+	if !m.providerHealthyForSteer(a) {
+		a.RestorePendingPrompt(next)
+		m.saveRegistry(m.ctx, a)
+		a.SetError("rate_limit", "provider unhealthy at steer boundary")
+		a.setFinalizing(true)
+		a.convo.closeStdinPipe()
+		m.logger.Warn("agent.headless.steer.parked", "id", a.ID, "provider", a.GetProvider(),
+			"remaining", a.PendingPromptCount())
+		return
+	}
 	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
 		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
 		a.RestorePendingPrompt(next)
+		m.saveRegistry(m.ctx, a)
 		a.setFinalizing(true)
 		a.convo.closeStdinPipe()
 		return
 	}
+	m.saveRegistry(m.ctx, a)
 	m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 }
 
@@ -871,7 +916,11 @@ func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
 	if a.isFinalizing() {
 		return fmt.Errorf("agent %s is finalizing and can no longer accept messages", a.ID)
 	}
+	if a.PendingPromptCount() >= maxPendingHeadlessSteerPrompts {
+		return fmt.Errorf("agent %s has too many pending steer messages (%d max)", a.ID, maxPendingHeadlessSteerPrompts)
+	}
 	a.EnqueuePrompt(text)
+	m.saveRegistry(m.ctx, a)
 	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", a.PendingPromptCount())
 
 	// Surface the sent message immediately in StreamOutput — the CLI only

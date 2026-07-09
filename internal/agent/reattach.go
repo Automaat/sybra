@@ -376,10 +376,25 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 			if installErr := a.convo.installStdinPipe(fifo); installErr != nil {
 				_ = fifo.Close()
 				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", installErr)
+			} else {
+				// Steer transport restored — surface the capability to the UI.
+				a.refreshCanSteer()
 			}
 		} else {
 			m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
 		}
+	}
+
+	// If the run already emitted its terminal result while the app was down, it
+	// is parked at a steer turn boundary that no live tailer ever processed —
+	// rehydrateFromLog replays the result's stats but not the drain/close
+	// boundary that handleHeadlessResult runs live. Replicate that boundary now,
+	// before tailing: with nothing queued at reattach, drainOrCloseHeadlessSteer
+	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
+	// instead of hanging (or accepting a post-reattach steer that would queue
+	// forever with no further result to flush it).
+	if found, _ := a.lastHeadlessResult(); found {
+		m.drainOrCloseHeadlessSteer(a)
 	}
 
 	procDone := make(chan struct{})
