@@ -1002,6 +1002,14 @@ type RunConfig struct {
 	// computed once by injectProcessSandbox and consumed by wrapInvocation
 	// at each provider spawn site. Never set by callers.
 	sandbox sandboxSpec
+	// approvalAddr is the manager's HTTP approval-server address
+	// ("127.0.0.1:port"), set by prepareRunConfig for every run. Consumed by
+	// claudeProvider.BuildHeadlessInvocation to wire the PreToolUse approval
+	// hook when RequirePermissions is true — without it, a headless run under
+	// require_permissions:true has no path to grant a tool call and
+	// operators are forced to require_permissions:false, which collapses to
+	// --dangerously-skip-permissions. Never set by callers.
+	approvalAddr string
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

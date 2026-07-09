@@ -132,6 +132,32 @@ func TestApprovalServer_UnknownSession(t *testing.T) {
 	}
 }
 
+// TestFindAgentBySession_MatchesHeadlessAgent verifies the approval hook
+// resolves a headless-mode agent by session ID, not just interactive ones.
+// Headless runs only reach this hook when RequirePermissions is set (see
+// buildClaudeHookSettings), so restricting the match to Mode=="interactive"
+// left every headless approval request unresolved and fail-closed to deny —
+// forcing operators to disable permission requirements entirely.
+func TestFindAgentBySession_MatchesHeadlessAgent(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t)
+	fakeAgent := &Agent{
+		ID:        "fake-headless-1",
+		Mode:      "headless",
+		SessionID: "session-headless",
+		State:     StateRunning,
+	}
+	mgr.mu.Lock()
+	mgr.agents["fake-headless-1"] = fakeAgent
+	mgr.mu.Unlock()
+
+	srv := &ApprovalServer{agents: mgr}
+	if got := srv.findAgentBySession("session-headless"); got != "fake-headless-1" {
+		t.Errorf("findAgentBySession(headless) = %q, want %q", got, "fake-headless-1")
+	}
+}
+
 func TestApprovalServer_CanceledContext(t *testing.T) {
 	t.Parallel()
 

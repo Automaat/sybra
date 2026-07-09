@@ -242,12 +242,17 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 	}
 }
 
+// findAgentBySession resolves the agent a PreToolUse hook request came from.
+// Session IDs are provider-issued and unique per run, so this matches
+// regardless of Mode: a headless run only reaches here when it was started
+// with RequirePermissions (see buildClaudeHookSettings), and must resolve to
+// its agent the same way an interactive session does.
 func (s *ApprovalServer) findAgentBySession(sessionID string) string {
 	if s.agents == nil {
 		return ""
 	}
 	for _, a := range s.agents.ListAgents() {
-		if a.GetSessionID() == sessionID && a.Mode == "interactive" {
+		if a.GetSessionID() == sessionID {
 			return a.ID
 		}
 	}

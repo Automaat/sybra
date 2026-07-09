@@ -1935,6 +1935,56 @@ func TestBuildHeadlessInvocation_ClaudeKlaudiushHookPresent(t *testing.T) {
 	t.Fatalf("Claude headless args missing klaudiush --settings hook: %v", args)
 }
 
+// TestBuildHeadlessInvocation_ClaudeApprovalHookWiredWhenRequired verifies
+// that a headless claude run with RequirePermissions=true wires the same
+// PreToolUse HTTP approval hook the conversational runner uses, pointed at
+// the manager's approval-server address. Without this, require_permissions
+// has no path to grant a headless tool call and operators are forced to
+// require_permissions:false, which collapses to --dangerously-skip-permissions.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookWiredWhenRequired(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: true,
+		approvalAddr:       "127.0.0.1:54321",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--dangerously-skip-permissions" {
+			t.Fatalf("RequirePermissions=true must not bypass permissions: %v", args)
+		}
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "http://127.0.0.1:54321/hooks/pre-tool-use") {
+			return
+		}
+	}
+	t.Fatalf("Claude headless args missing approval-server --settings hook: %v", args)
+}
+
+// TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms
+// verifies the approval hook is only wired when the run actually needs
+// permission gating — an unattended bypass/auto run must not block on a
+// hook nobody is watching.
+func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude", TaskID: "task-abc123"}
+	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
+		Prompt:             "do stuff",
+		RequirePermissions: false,
+		approvalAddr:       "127.0.0.1:54321",
+	})
+	if err != nil {
+		t.Fatalf("buildHeadlessInvocation: %v", err)
+	}
+	for i, arg := range args {
+		if arg == "--settings" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "pre-tool-use") {
+			t.Fatalf("approval hook must not be wired without RequirePermissions: %v", args)
+		}
+	}
+}
+
 // TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs verifies that Claude and
 // Copilot invocations never receive codex hook args regardless of TaskID.
 func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {
