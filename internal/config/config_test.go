@@ -1007,7 +1007,6 @@ func TestLoadDoesNotChmodSymlinkedConfigTarget(t *testing.T) {
 		t.Errorf("symlink target perm = %o, want unchanged 0644", perm)
 	}
 }
-
 func TestDefaultLogRetentionDays(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
