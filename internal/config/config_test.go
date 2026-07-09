@@ -381,6 +381,60 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 	}
 }
 
+func TestHumanReviewModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.HumanReviewModel(); got != tc.want {
+				t.Fatalf("HumanReviewModel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMonitorModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Monitor.Model; got != tc.want {
+				t.Fatalf("Monitor.Model = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReviewHoldDefaults(t *testing.T) {
 	cases := []struct {
 		name        string
