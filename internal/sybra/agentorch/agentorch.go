@@ -528,7 +528,6 @@ func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
 	return fmt.Errorf("%w: $%.2f spent across %d run(s), limit $%.2f",
 		workflow.ErrTaskCostExceeded, spent, len(t.AgentRuns), o.cfg.Agent.MaxTaskCostUSD)
 }
-
 func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		return

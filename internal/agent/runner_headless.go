@@ -31,7 +31,6 @@ var errSurviveShutdown = errors.New("agent: detached, leaving process running fo
 // over from before the kill — and misreport the killed partial run as a
 // clean success in cost/audit metrics.
 var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
-
 var errCostGuardrailExceeded = errors.New("agent: cost guardrail exceeded")
 
 // headlessTailPoll is how often the detached/reattached tailer polls the
