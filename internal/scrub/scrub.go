@@ -29,22 +29,27 @@ const Placeholder = "[redacted]"
 
 // staticPatterns are content-shaped redactions applied regardless of the
 // blocklist. They aim for high precision over recall:
-//   - Jira-shaped keys (2+ uppercase letters, dash, digits) tend to be
-//     project-specific identifiers; matching short tokens like "A-1" would
-//     be noisy, so the lower bound is two letters.
-//   - github.com URLs are redacted in their entirety because the path
-//     usually reveals owner/repo/branch/SHA. The host word survives so the
-//     scrub is visible.
+//   - Jira-shaped keys (2+ letters, dash, digits) tend to be project-specific
+//     identifiers; matching short tokens like "A-1" would be noisy, so the
+//     lower bound is two letters. Matched case-insensitively since Jira keys
+//     are conventionally uppercase but nothing stops a paste/lowercase quote.
+//   - GitHub URLs are redacted in their entirety because the path usually
+//     reveals owner/repo/branch/SHA. Matched case-insensitively, with an
+//     optional "www." prefix and any hostname containing "github" so GitHub
+//     Enterprise hosts (e.g. github.mycorp.com) are covered too, not just
+//     github.com. A second pattern catches the same shape when
+//     percent-encoded (e.g. inside a query string or forwarded proxy log).
 //   - Email addresses are redacted to avoid leaking author identity from
 //     commit-author lines or @mentions.
 var staticPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\b[A-Z]{2,}-\d+\b`),
-	regexp.MustCompile(`https?://github\.com/[^\s)\]]+`),
+	regexp.MustCompile(`(?i)\b[A-Z]{2,}-\d+\b`),
+	regexp.MustCompile(`(?i)https?://(?:www\.)?[a-z0-9.-]*github[a-z0-9.-]*/[^\s)\]]+`),
+	regexp.MustCompile(`(?i)https?%3a%2f%2f(?:www\.)?[a-z0-9.\-%]*github[a-z0-9.\-%]*%2f[^\s)\]]+`),
 	regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`),
 }
 
 // Scrub redacts every match of staticPatterns and every occurrence of any
-// blocklist literal (case-sensitive) from text. Empty or whitespace-only
+// blocklist literal (case-insensitive) from text. Empty or whitespace-only
 // entries in blocklist are ignored. Returns the redacted text and the total
 // number of substitutions performed.
 //
@@ -74,12 +79,13 @@ func Scrub(text string, blocklist []string) (scrubbed string, redactions int) {
 		return len(cleaned[i]) > len(cleaned[j])
 	})
 	for _, term := range cleaned {
-		count := strings.Count(out, term)
-		if count == 0 {
+		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(term))
+		matches := re.FindAllStringIndex(out, -1)
+		if len(matches) == 0 {
 			continue
 		}
-		out = strings.ReplaceAll(out, term, Placeholder)
-		total += count
+		out = re.ReplaceAllString(out, Placeholder)
+		total += len(matches)
 	}
 	return out, total
 }
