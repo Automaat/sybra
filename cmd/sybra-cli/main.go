@@ -2358,6 +2358,8 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
 
+	addConfigPermFindings(add)
+
 	dirs := cfg.Directories()
 	names := make([]string, 0, len(dirs))
 	for name := range dirs {
@@ -2440,4 +2442,28 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func addConfigPermFindings(add func(severity, format string, a ...any)) {
+	home := config.HomeDir()
+	addPathPermFinding(add, "config home", home, 0o700)
+	addPathPermFinding(add, "config file", filepath.Join(home, "config.yaml"), 0o600)
+}
+
+func addPathPermFinding(add func(severity, format string, a ...any), label, path string, target os.FileMode) {
+	info, err := os.Lstat(path)
+	switch {
+	case os.IsNotExist(err):
+		add("warning", "%s does not exist yet: %s", label, path)
+		return
+	case err != nil:
+		add("error", "%s: inspect permissions: %v", label, err)
+		return
+	case info.Mode()&os.ModeSymlink != 0:
+		add("warning", "%s is a symlink; Sybra will not chmod symlink targets: %s", label, path)
+		return
+	}
+	if perm := info.Mode().Perm(); perm&^target != 0 {
+		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
+	}
 }
