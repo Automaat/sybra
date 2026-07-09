@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { Agent, State } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 
 // jsdom doesn't implement Web Animations API used by svelte/transition
@@ -51,7 +51,7 @@ const ReviewingLayout = (await import('./ReviewingLayout.svelte')).default
 const RunningLayout = (await import('./RunningLayout.svelte')).default
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
-  return Agent.createFrom({
+  return {
     id: 'agent-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -62,7 +62,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     lastEventAt: '2026-01-01T10:05:00Z',
     external: false,
     ...overrides,
-  })
+  }
 }
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -320,7 +320,7 @@ describe('RunningLayout steer box', () => {
 
   function runningLayoutProps(overrides: Partial<Agent> = {}) {
     return {
-      a: makeAgent({ mode: 'headless', provider: 'claude', state: State.StateRunning, canSteer: true, ...overrides }),
+      a: makeAgent({ mode: 'headless', provider: 'claude', state: 'running', canSteer: true, ...overrides }),
       planSteps: [],
       timelineEntries: [],
       selectedIndex: null,
@@ -346,7 +346,7 @@ describe('RunningLayout steer box', () => {
   })
 
   it('hides the steer box once the agent is no longer running', () => {
-    render(RunningLayout, { props: runningLayoutProps({ state: State.StatePaused, canSteer: false }) })
+    render(RunningLayout, { props: runningLayoutProps({ state: 'paused', canSteer: false }) })
     expect(screen.queryByText('Steer agent')).toBeNull()
   })
 

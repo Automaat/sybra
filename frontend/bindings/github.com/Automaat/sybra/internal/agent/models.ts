@@ -12,129 +12,7 @@ import * as json$0 from "../../../../../encoding/json/models.js";
 // @ts-ignore: Unused imports
 import * as limits$0 from "../limits/models.js";
 
-export class Agent {
-    "id": string;
-    "taskId": string;
-    "mode": string;
-    "state": State;
-    "sessionId": string;
-    "costUsd": number;
-    "inputTokens"?: number;
-    "outputTokens"?: number;
-    "cacheCreationInputTokens"?: number;
-    "cacheReadInputTokens"?: number;
-    "reasoningTokens"?: number;
-
-    /**
-     * PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
-     * raw count alongside the estimated USD equivalent persisted on task runs.
-     */
-    "premiumRequests"?: number;
-    "startedAt": string;
-    "lastEventAt": string;
-    "logPath"?: string;
-    "external": boolean;
-    "pid"?: number;
-    "command"?: string;
-    "name"?: string;
-    "project"?: string;
-    "provider"?: string;
-    "model"?: string;
-    "experimentId"?: string;
-    "variantId"?: string;
-    "assignmentUnit"?: string;
-    "assignmentKey"?: string;
-    "reasoningEffort"?: string;
-    "prompt"?: string;
-    "turnCount"?: number;
-
-    /**
-     * ToolCalls counts tool_use blocks observed across the run. Persisted to
-     * stats.RunRecord at completion so efficiency (tools per turn, tools per
-     * landed PR) can be measured. Tracked in-memory during the run.
-     */
-    "toolCalls"?: number;
-
-    /**
-     * MaxTurns is the per-agent turn limit override; zero means use global guardrail.
-     */
-    "maxTurns"?: number;
-
-    /**
-     * PluginErrors holds plugin load failures from the most recent init event.
-     */
-    "pluginErrors"?: string[];
-    "escalationReason"?: string;
-    "errorKind"?: string;
-    "errorMsg"?: string;
-    "awaitingApproval"?: boolean;
-
-    /**
-     * Resumable is set when the agent was stopped intentionally via StopAgent
-     * and CC exited with a valid session_id, meaning the next run can pass
-     * --resume to continue the conversation.
-     */
-    "resumable"?: boolean;
-
-    /**
-     * CanSteer reports whether SendMessage will currently be accepted for this
-     * agent — i.e. it has a live stdin transport and is not finalizing. It is a
-     * backend-authoritative capability so the UI does not have to re-derive
-     * steerability from mode/provider/state heuristics (which are wrong for a
-     * rollback-disabled or legacy-reattached run that has no stdin transport).
-     * The stored value is ignored: MarshalJSON always overrides it with the
-     * live computation, so it is never stale on the wire.
-     */
-    "canSteer": boolean;
-
-    /** Creates a new Agent instance. */
-    constructor($$source: Partial<Agent> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("taskId" in $$source)) {
-            this["taskId"] = "";
-        }
-        if (!("mode" in $$source)) {
-            this["mode"] = "";
-        }
-        if (!("state" in $$source)) {
-            this["state"] = State.$zero;
-        }
-        if (!("sessionId" in $$source)) {
-            this["sessionId"] = "";
-        }
-        if (!("costUsd" in $$source)) {
-            this["costUsd"] = 0;
-        }
-        if (!("startedAt" in $$source)) {
-            this["startedAt"] = "0001-01-01T00:00:00.000Z";
-        }
-        if (!("lastEventAt" in $$source)) {
-            this["lastEventAt"] = "0001-01-01T00:00:00.000Z";
-        }
-        if (!("external" in $$source)) {
-            this["external"] = false;
-        }
-        if (!("canSteer" in $$source)) {
-            this["canSteer"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Agent instance from a string or object.
-     */
-    static createFrom($$source: any = {}): Agent {
-        const $$createField31_0 = $$createType0;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("pluginErrors" in $$parsedSource) {
-            $$parsedSource["pluginErrors"] = $$createField31_0($$parsedSource["pluginErrors"]);
-        }
-        return new Agent($$parsedSource as Partial<Agent>);
-    }
-}
+export type Agent = any;
 
 /**
  * ConvoEvent is a rich event for conversational mode, preserving full tool
@@ -182,9 +60,9 @@ export class ConvoEvent {
      * Creates a new ConvoEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): ConvoEvent {
-        const $$createField4_0 = $$createType2;
-        const $$createField5_0 = $$createType4;
-        const $$createField13_0 = $$createType6;
+        const $$createField4_0 = $$createType1;
+        const $$createField5_0 = $$createType3;
+        const $$createField13_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("toolUses" in $$parsedSource) {
             $$parsedSource["toolUses"] = $$createField4_0($$parsedSource["toolUses"]);
@@ -230,18 +108,6 @@ export class PlanStep {
         return new PlanStep($$parsedSource as Partial<PlanStep>);
     }
 }
-
-export enum State {
-    /**
-     * The Go zero value for the underlying type of the enum.
-     */
-    $zero = "",
-
-    StateIdle = "idle",
-    StateRunning = "running",
-    StatePaused = "paused",
-    StateStopped = "stopped",
-};
 
 export class StreamEvent {
     "type": string;
@@ -310,9 +176,9 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField14_0 = $$createType8;
-        const $$createField15_0 = $$createType0;
-        const $$createField17_0 = $$createType6;
+        const $$createField14_0 = $$createType7;
+        const $$createField15_0 = $$createType8;
+        const $$createField17_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
             $$parsedSource["plan_steps"] = $$createField14_0($$parsedSource["plan_steps"]);
@@ -393,13 +259,13 @@ export class ToolUseBlock {
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = ToolUseBlock.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = ToolResultBlock.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = limits$0.Snapshot.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = PlanStep.createFrom;
-const $$createType8 = $Create.Array($$createType7);
+const $$createType0 = ToolUseBlock.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = ToolResultBlock.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = limits$0.Snapshot.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = PlanStep.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = $Create.Array($Create.Any);
 const $$createType9 = $Create.Map($Create.Any, $Create.Any);

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1504,11 +1505,11 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 // internal/httpapi.ClientError.
 func assertConflictClientError(t *testing.T, err error) {
 	t.Helper()
-	ce, ok := err.(interface {
+	var ce interface {
 		error
 		HTTPStatus() int
-	})
-	if !ok {
+	}
+	if !errors.As(err, &ce) {
 		t.Fatalf("error %v does not implement ClientError (HTTPStatus() int)", err)
 	}
 	if got := ce.HTTPStatus(); got != http.StatusConflict {
