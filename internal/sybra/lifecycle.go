@@ -416,6 +416,12 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 			return a.workScrubContextForTask(t.ProjectID) != nil
 		},
+		RecoverLostAgent: func(ctx context.Context) {
+			if a.recovery == nil {
+				return
+			}
+			a.recovery.RestartStaleInProgress(ctx)
+		},
 	})
 	a.monitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
