@@ -56,7 +56,7 @@ func TestTodoistImport_SetsDefaultProjectID(t *testing.T) {
 
 	h := poll.NewTodoistHandler(
 		a.tasks,
-		taskSvc.CreateTask,
+		taskSvc.CreateTaskWithInit,
 		client,
 		nil,
 		a.logger,
@@ -114,7 +114,7 @@ func TestTodoistImport_EmptyDefaultProjectIDLeavesUnset(t *testing.T) {
 
 	h := poll.NewTodoistHandler(
 		a.tasks,
-		taskSvc.CreateTask,
+		taskSvc.CreateTaskWithInit,
 		client,
 		nil,
 		a.logger,

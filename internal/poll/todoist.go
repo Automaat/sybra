@@ -15,8 +15,10 @@ import (
 	"github.com/Automaat/sybra/internal/todoist"
 )
 
-// TaskCreator creates a new task. Matches TaskService.CreateTask signature.
-type TaskCreator func(title, body, mode string) (task.Task, error)
+// TaskCreator creates a new task with optional initial field overrides applied
+// atomically in the same first write as creation. Matches
+// TaskService.CreateTaskWithInit's signature.
+type TaskCreator func(title, body, mode string, init task.Update) (task.Task, error)
 
 // TodoistHandler syncs tasks between Todoist and Sybra.
 type TodoistHandler struct {
@@ -112,20 +114,20 @@ func (h *TodoistHandler) ImportNewTasks(ctx context.Context) (int, error) {
 			body += "Source: " + rt.URL
 		}
 
-		t, createErr := h.createTask(rt.Content, body, "headless")
+		todoID := rt.ID
+		init := task.Update{TodoistID: &todoID}
+		if h.cfg.DefaultProjectID != "" {
+			projectID := h.cfg.DefaultProjectID
+			init.ProjectID = &projectID
+		}
+		// The dedupe key (TodoistID) is written atomically in the same op as
+		// task creation — a crash between create and a second update would
+		// otherwise leave the task without its dedupe key, and the next poll
+		// would re-import the same Todoist item as a duplicate.
+		t, createErr := h.createTask(rt.Content, body, "headless", init)
 		if createErr != nil {
 			h.logger.Error("todoist.create-task", "todoist_id", rt.ID, "err", createErr)
 			continue
-		}
-
-		todoID := rt.ID
-		update := task.Update{TodoistID: &todoID}
-		if h.cfg.DefaultProjectID != "" {
-			projectID := h.cfg.DefaultProjectID
-			update.ProjectID = &projectID
-		}
-		if _, updateErr := h.tasks.Update(t.ID, update); updateErr != nil {
-			h.logger.Error("todoist.update-task", "task_id", t.ID, "err", updateErr)
 		}
 
 		h.logAudit(audit.EventTodoistImported, t.ID, "", map[string]any{

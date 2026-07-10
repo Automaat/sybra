@@ -961,6 +961,50 @@ func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
 	}
 }
 
+func TestTaskService_CreateTaskWithInit_IssueURLStubPreservesCallerTags(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	releaseFetch := make(chan struct{})
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		<-releaseFetch
+		return github.Issue{
+			Number:     13,
+			Title:      "plain issue",
+			URL:        "https://github.com/owner/repo/issues/13",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	svc.viewerLogin = func() string { return "me" }
+
+	initTags := []string{"backend", "todoist"}
+	created, err := svc.CreateTaskWithInit(
+		"https://github.com/owner/repo/issues/13",
+		"",
+		"headless",
+		task.Update{Tags: task.Ptr(initTags)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
+	}
+	for _, tag := range initTags {
+		if !slices.Contains(got.Tags, tag) {
+			t.Fatalf("Tags = %v, want caller tag %q preserved on create", got.Tags, tag)
+		}
+	}
+
+	close(releaseFetch)
+	svc.wg.Wait()
+}
+
 func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.fetchIssue = func(string, int) (github.Issue, error) {
@@ -1042,6 +1086,147 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesOrphanedStub(t *testing.T
 	}
 }
 
+// TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker is a
+// regression test for the case where the issue fetch itself succeeds (title,
+// body, and Issue URL are persisted) but the secondary, warn-only linked-PRs
+// fetch fails. Previously the enrich-pending marker was cleared regardless,
+// leaving the task in todo with no marker, no workflow dispatch, and no way
+// for ReconcilePendingEnrichment to find and retry it — inert forever.
+func TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+			Labels:     []string{"bug"},
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return nil, errors.New("gh api: linked PRs lookup failed")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker retained after a linked-PRs fetch failure", got.Tags)
+	}
+	if got.Title != "flaky linked-prs issue" {
+		t.Fatalf("Title = %q, want the real issue title even though the marker was kept", got.Title)
+	}
+	if got.Issue != "https://github.com/owner/repo/issues/42" {
+		t.Fatalf("Issue = %q, want the issue URL persisted for reconcile fallback", got.Issue)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("Workflow = %+v, want none while the stub is still enrich-pending", got.Workflow)
+	}
+}
+
+// TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure
+// covers the recovery half of the above: once the title has already been
+// rewritten to the real issue title (so it no longer parses as a GitHub
+// URL), the reconcile pass must fall back to the persisted Issue URL to
+// re-derive the repo/number and retry.
+func TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	var succeed atomic.Bool
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		if !succeed.Load() {
+			return nil, errors.New("gh api: linked PRs lookup failed")
+		}
+		return nil, nil
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before reconcile", got.Tags)
+	}
+
+	succeed.Store(true)
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+
+	got = waitForWorkflow(t, svc, created.ID)
+	if slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should clear once the linked-PRs fetch succeeds", got.Tags)
+	}
+}
+
+func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "permanently flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	var linkedPRCalls atomic.Int32
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		linkedPRCalls.Add(1)
+		return nil, errors.New("gh api: linked PRs lookup failed")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	if got := linkedPRCalls.Load(); got != 1 {
+		t.Fatalf("linked PR calls after initial enrichment = %d, want 1", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after first reconcile = %d, want 2", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after cooldown-gated reconcile = %d, want still 2", got)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should remain while linked-PRs fetch keeps failing", got.Tags)
+	}
+}
 func TestTaskService_ReconcilePendingEnrichment_SkipsTerminalStatus(t *testing.T) {
 	svc, _ := setupTaskService(t)
 
