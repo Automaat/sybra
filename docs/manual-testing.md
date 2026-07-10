@@ -47,8 +47,6 @@ agent:
   max_turns: 50
   require_permissions: false
 orchestrator:
-  auto_triage: false
-  auto_plan: false
   dispatch_interval_seconds: 3600
   maintenance_interval_seconds: 3600
 providers:

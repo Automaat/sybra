@@ -36,12 +36,6 @@ const (
 	EventAutoMergeEnabled         = "pr_monitor.auto_merge_enabled"
 	EventPROrphanAdopted          = "pr_monitor.orphan_adopted"
 	EventPRCopilotThreadsResolved = "pr_monitor.copilot_threads_resolved"
-	// EventPRHumanRequiredReconciled records a human-required task parked on
-	// an exhausted CI-failure fix (see review.humanRequiredBlockerReconcileEligible)
-	// being reconciled back to in-review after a live re-probe found the PR
-	// free of every fixable issue kind — the original blocker (e.g. a DCO
-	// check) cleared externally.
-	EventPRHumanRequiredReconciled = "pr_monitor.human_required_reconciled"
 	// EventPRConflictAutoResolved records that a conflict-recovery agent was
 	// skipped because a deterministic git merge of the base branch succeeded
 	// cleanly and was pushed. Data carries only pr and issue kind — never PR
@@ -53,22 +47,30 @@ const (
 	// carries only the task ID (via the audit envelope) — never branch
 	// names, commit SHAs, or agent output.
 	EventBranchConflictAutoResolved = "pr_monitor.branch_conflict_auto_resolved"
-	EventReviewStarted              = "review.agent_started"
-	EventFixReviewStarted           = "fix_review.agent_started"
-	EventReviewPublished            = "review.published"
-	EventTodoistImported            = "todoist.imported"
-	EventTodoistCompleted           = "todoist.completed"
-	EventRenovateCIFix              = "renovate.ci_fix_started"
-	EventHealthReport               = "health.report"
-	EventAgentStartFailed           = "agent.start_failed"
-	EventProviderGateBlocked        = "provider.gate_blocked"
-	EventHumanReviewSpawned         = "human_review.spawned"
-	EventHumanReviewVerdict         = "human_review.verdict"
-	EventHumanReviewIssue           = "human_review.issue_filed"
-	EventHumanReviewSkipped         = "human_review.skipped"
-	EventExperienceRecorded         = "experience.recorded"
-	EventExperienceSkipped          = "experience.skipped"
-	EventExperienceInjected         = "experience.injected"
+	// EventPRBlockerReconciled records that a human-required task parked by
+	// the pr-monitor auto-fix-exhausted escalation (ci_failure or conflict)
+	// was moved back to in-review because a fresh probe found its linked PR
+	// open, mergeable, and green — the failure that stranded it had since
+	// resolved itself (e.g. a flaky CI re-run, or a human pushing a fix
+	// outside Sybra). Data carries the prior status_reason and the probe
+	// result, never PR titles or agent output.
+	EventPRBlockerReconciled = "pr_monitor.blocker_reconciled"
+	EventReviewStarted       = "review.agent_started"
+	EventFixReviewStarted    = "fix_review.agent_started"
+	EventReviewPublished     = "review.published"
+	EventTodoistImported     = "todoist.imported"
+	EventTodoistCompleted    = "todoist.completed"
+	EventRenovateCIFix       = "renovate.ci_fix_started"
+	EventHealthReport        = "health.report"
+	EventAgentStartFailed    = "agent.start_failed"
+	EventProviderGateBlocked = "provider.gate_blocked"
+	EventHumanReviewSpawned  = "human_review.spawned"
+	EventHumanReviewVerdict  = "human_review.verdict"
+	EventHumanReviewIssue    = "human_review.issue_filed"
+	EventHumanReviewSkipped  = "human_review.skipped"
+	EventExperienceRecorded  = "experience.recorded"
+	EventExperienceSkipped   = "experience.skipped"
+	EventExperienceInjected  = "experience.injected"
 
 	// EventTaskLanded records a task's terminal outcome (merged/closed) with
 	// queue-inclusive and work-based timing for the evaluation scorecard.

@@ -67,13 +67,8 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 		hot = append(hot, "agent.other")
 	}
 
-	// Orchestrator AutoTriage/AutoPlan are live-effective via pointer read; the
-	// dispatch/maintenance intervals are sampled once at loop start (NewTicker),
-	// so changing them needs a restart to take effect.
-	if old.Orchestrator.AutoTriage != next.Orchestrator.AutoTriage ||
-		old.Orchestrator.AutoPlan != next.Orchestrator.AutoPlan {
-		hot = append(hot, "orchestrator")
-	}
+	// Orchestrator dispatch/maintenance intervals are sampled once at loop
+	// start (NewTicker), so changing them needs a restart to take effect.
 	if old.Orchestrator.DispatchIntervalSeconds != next.Orchestrator.DispatchIntervalSeconds ||
 		old.Orchestrator.MaintenanceIntervalSeconds != next.Orchestrator.MaintenanceIntervalSeconds {
 		restart = append(restart, "orchestrator.intervals")

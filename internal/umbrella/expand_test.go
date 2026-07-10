@@ -68,7 +68,7 @@ func newTestTaskManager(t *testing.T) *task.Manager {
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 }
 
-func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
+func TestExpandPlannerDeadlineFallsBackToIndependentParallel(t *testing.T) {
 	restore := githubFetchUmbrellaForTest(t, github.Issue{
 		Title:      "umbrella",
 		URL:        "https://github.com/o/r/issues/100",
@@ -94,8 +94,8 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	if res.ChildCount != 3 {
 		t.Fatalf("ChildCount = %d, want 3", res.ChildCount)
 	}
-	if res.MaxParallel != 1 {
-		t.Fatalf("MaxParallel = %d, want 1 (linear chain fallback pins max-parallel to 1)", res.MaxParallel)
+	if res.MaxParallel != 3 {
+		t.Fatalf("MaxParallel = %d, want 3 (independent-parallel fallback uses the degraded cap)", res.MaxParallel)
 	}
 
 	all, err := tasks.List()
@@ -118,14 +118,20 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	if !slices.Contains(tracker.Tags, FallbackTag) {
 		t.Fatalf("tracker tags = %v, want %q", tracker.Tags, FallbackTag)
 	}
+	if got := ParseMaxParallel(tracker.Tags); got != 3 {
+		t.Fatalf("tracker max parallel = %d, want 3 after degraded fallback", got)
+	}
 	if got := ParseExpandFailCount(tracker.Tags); got != 0 {
 		t.Fatalf("expand fail count = %d, want 0 for degraded fallback success", got)
 	}
-	if got := children["o/r#2"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/1" {
-		t.Fatalf("child #2 deps = %v, want issue #1", got)
+	if got := children["o/r#1"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #1 deps = %v, want none (independent-parallel fallback)", got)
 	}
-	if got := children["o/r#3"].DependsOn; len(got) != 1 || got[0] != "https://github.com/o/r/issues/2" {
-		t.Fatalf("child #3 deps = %v, want issue #2", got)
+	if got := children["o/r#2"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #2 deps = %v, want none (independent-parallel fallback)", got)
+	}
+	if got := children["o/r#3"].DependsOn; len(got) != 0 {
+		t.Fatalf("child #3 deps = %v, want none (independent-parallel fallback)", got)
 	}
 }
 

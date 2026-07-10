@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -68,6 +69,7 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 	if hasMiseConfig(wtPath) {
 		trustCmd := exec.CommandContext(ctx, m.misePath, "trust", "--yes")
 		trustCmd.Dir = wtPath
+		setProcessGroupKill(trustCmd)
 		if logFile != nil {
 			trustCmd.Stdout = logFile
 			trustCmd.Stderr = logFile
@@ -96,6 +98,7 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 
 		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
 		cmd.Dir = wtPath
+		setProcessGroupKill(cmd)
 		if logFile != nil {
 			cmd.Stdout = logFile
 			cmd.Stderr = logFile
@@ -127,6 +130,33 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 	m.logger.Info("worktree.setup-complete",
 		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
 	return nil
+}
+
+// setProcessGroupKill puts cmd in its own process group and wires its
+// context-cancel to kill the whole group, not just the direct child. Setup
+// commands run via `sh -c` and frequently fork further children (npm
+// install, mise-managed toolchain daemons); the default exec.CommandContext
+// cancel behavior SIGKILLs only the shell, leaking grandchildren once the
+// batch timeout fires (issue #1538).
+func setProcessGroupKill(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative pid targets the whole process group (valid because
+		// Setpgid made this process its own group leader, so pgid == pid).
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
 }
 
 // runSetupNonGating runs a worktree's setup commands like runSetup, but never

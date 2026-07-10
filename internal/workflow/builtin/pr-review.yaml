@@ -72,7 +72,10 @@ steps:
     config:
       role: review
       mode: headless
-      model: opus
+      # Aligned to simple-task-review's staff pass (which leaves model unset
+      # and inherits the sonnet default) — opus x an 11-subagent staff review
+      # was the priciest shape in the fleet (review = 34% of spend).
+      model: sonnet
       provider: cross
       prompt: >-
         Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}

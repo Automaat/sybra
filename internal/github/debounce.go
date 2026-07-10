@@ -145,27 +145,23 @@ func (t *IssueTracker) AtCap(taskID string, kind PRIssueKind) bool {
 	return t.retries[issueKey(taskID, kind)] >= maxRetries
 }
 
-// Cleanup removes entries older than 2x cooldown. Entries that have hit the
-// retry cap are kept so the escalation path in the caller survives long gaps
-// between flaky CI runs — without this, Cleanup would reset the counter and
-// the cap would never fire.
+// Cleanup drops the time-based cooldown record for entries older than 2x
+// cooldown, letting a subsequent poll dispatch immediately once a genuinely
+// new commit or feedback signature shows up — but it never touches
+// retries/lastSHA/sigs. Those three are the durable per-commit memory: an
+// unchanged head SHA must keep skipping dispatch (and an at-cap signature
+// must keep escalating) no matter how long the PR sits idle between polls.
+// A prior version wiped retries/lastSHA/sigs here once retries were below
+// the cap, which meant a long-lived PR whose head never changed would forget
+// it had already been handled and re-dispatch a fresh pr-fix agent forever
+// (#1528 — 42 runs against one static head SHA over 10 days).
 func (t *IssueTracker) Cleanup() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	cutoff := t.now().Add(-2 * t.cooldown)
 	for k, v := range t.handled {
-		if !v.Before(cutoff) {
-			continue
-		}
-		if t.retries[k] >= maxRetries {
-			// At cap: keep retries/lastSHA so the caller can escalate;
-			// only drop the time-based handled entry (no more cooldown).
+		if v.Before(cutoff) {
 			delete(t.handled, k)
-			continue
 		}
-		delete(t.handled, k)
-		delete(t.retries, k)
-		delete(t.lastSHA, k)
-		delete(t.sigs, k)
 	}
 }
