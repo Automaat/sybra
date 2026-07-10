@@ -362,7 +362,10 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if lr == nil {
 		return false
 	}
-	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) || lr.Outcome == "" {
+	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) {
+		return false
+	}
+	if lr.Outcome != task.RunOutcomeSuccess && lr.Outcome != task.RunOutcomeFailure {
 		return false
 	}
 	if r.WorkflowEngine == nil || t.Workflow == nil {

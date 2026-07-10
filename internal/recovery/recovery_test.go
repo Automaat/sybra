@@ -977,8 +977,8 @@ func newReviewTaskWithHeadlessRun(t *testing.T, tasks *task.Manager, run task.Ag
 		StartedAt:   time.Now(),
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status: &status,
-		Tags:   &tags,
+		Status:   &status,
+		Tags:     &tags,
 		Workflow: &wf,
 	}); err != nil {
 		t.Fatal(err)
@@ -1020,6 +1020,12 @@ func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
 		{
 			name:        "missing outcome (legacy run) is not recovered here",
 			outcome:     "",
+			result:      "review posted",
+			wantHandled: false,
+		},
+		{
+			name:        "unknown outcome falls through instead of forcing failure",
+			outcome:     "garbage",
 			result:      "review posted",
 			wantHandled: false,
 		},

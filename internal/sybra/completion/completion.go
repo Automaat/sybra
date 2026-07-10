@@ -349,11 +349,11 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if h.workflowEngine == nil {
 		return true
 	}
-	stalled, rateLimited := classifyStall(ag, exitErr)
+	stalled, rateLimited, stopStalled := classifyStall(ag, exitErr)
 	if stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "rate_limited", rateLimited)
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited)
 		if rateLimited {
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		} else {
@@ -376,15 +376,15 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 // so the persisted AgentRun.Outcome and the workflow's Success signal can
 // never diverge: a stalled run is retried, so it must be neither a persisted
 // success nor a persisted failure.
-func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited bool) {
+func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopStalled bool) {
 	rateLimited = isRateLimitedRun(ag, exitErr)
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
-	stopStalled := ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
+	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
 	stalled = isSignalKill(exitErr) || stopStalled || rateLimited
-	return stalled, rateLimited
+	return stalled, rateLimited, stopStalled
 }
 
 // runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
@@ -392,7 +392,7 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited bool) {
 // otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
 // uses for AgentCompletion.Success.
 func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
-	if stalled, _ := classifyStall(ag, exitErr); stalled {
+	if stalled, _, _ := classifyStall(ag, exitErr); stalled {
 		return ""
 	}
 	if exitErr == nil {

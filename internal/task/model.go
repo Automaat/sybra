@@ -212,12 +212,12 @@ type AgentRun struct {
 	Model    string `json:"model,omitempty"`
 	// ExperimentID/VariantID capture deterministic A/B assignment selected
 	// before the run started.
-	ExperimentID    string    `json:"experimentId,omitempty"`
-	VariantID       string    `json:"variantId,omitempty"`
-	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey   string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
-	State           string    `json:"state"`
+	ExperimentID    string `json:"experimentId,omitempty"`
+	VariantID       string `json:"variantId,omitempty"`
+	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
+	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	State           string `json:"state"`
 	// Outcome records the terminal result the completion handler actually
 	// observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
 	// ("stopped" covers both a clean finish and a failed one) and independent
