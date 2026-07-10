@@ -2362,6 +2362,64 @@ func TestRescheduleCheckpointedAgent_ParksAtCap(t *testing.T) {
 	}
 }
 
+func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "todo",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "triage",
+			State:       ExecWaiting,
+		},
+	})
+	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "triage"}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID:          "checkpoint-agent",
+		Provider:         "claude",
+		Success:          false,
+		EscalationReason: "checkpoint_failed",
+	})
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created" {
+		t.Fatalf("status reason = %q", got.StatusReason)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil")
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed", got.Workflow.State)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow current step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CountStep("triage") != 1 {
+		t.Fatalf("step count = %d, want 1", got.Workflow.CountStep("triage"))
+	}
+	if len(got.Workflow.StepHistory) != 1 || got.Workflow.StepHistory[0].Status != "failed" {
+		t.Fatalf("step history = %+v, want one failed triage record", got.Workflow.StepHistory)
+	}
+	if _, tracked := engine.lookupAgentStep("checkpoint-agent"); tracked {
+		t.Fatal("checkpoint_failed agent step mapping was not cleared")
+	}
+}
+
 func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()

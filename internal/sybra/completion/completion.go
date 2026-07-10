@@ -383,10 +383,11 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 		return false
 	}
 	h.workflowEngine.HandleAgentComplete(ag.TaskID, workflow.AgentCompletion{
-		AgentID:  ag.ID,
-		Result:   resultContent,
-		Provider: ag.Provider,
-		Success:  exitErr == nil,
+		AgentID:          ag.ID,
+		Result:           resultContent,
+		Provider:         ag.Provider,
+		Success:          exitErr == nil,
+		EscalationReason: ag.GetEscalationReason(),
 	})
 	return true
 }

@@ -10,6 +10,12 @@ type AgentCompletion struct {
 	// Success reports whether the agent exited cleanly. false triggers the
 	// step failure/retry path in AdvanceStep.
 	Success bool
+	// EscalationReason carries the in-memory agent escalation reason when the
+	// run terminated under a guardrail or stop condition. Workflow uses this to
+	// distinguish retryable stalls (`checkpoint`, handled upstream in
+	// completion.Handler) from terminal failures like `checkpoint_failed`,
+	// which must not burn run_agent max_retries.
+	EscalationReason string
 }
 
 // CompletionWorkflow is the subset of Engine used by completion.Handler.

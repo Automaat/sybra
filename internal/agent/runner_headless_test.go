@@ -1071,15 +1071,14 @@ func TestGuardrails_TurnsCheckpointFailureMarksDiagnosticReason(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	hooksDir := filepath.Join(repo, ".git", "hooks-fail")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+
+	// Checkpoint commits intentionally pass --no-verify, so a failing pre-commit
+	// hook is not a real checkpoint failure. Exercise the strict
+	// checkpoint_failed path with an actual git failure that add/commit cannot
+	// bypass.
+	lock := filepath.Join(repo, ".git", "index.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
-		t.Fatalf("git config core.hooksPath: %v: %s", err, out)
 	}
 
 	a := &Agent{

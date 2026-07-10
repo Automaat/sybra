@@ -308,13 +308,19 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
-	if err := e.AdvanceStep(taskID, StepOutput{
+	out := StepOutput{
 		StepID:   spawnedStep,
 		Status:   status,
 		Output:   c.Result,
 		AgentID:  c.AgentID,
 		Provider: c.Provider,
-	}); err != nil {
+	}
+	if !c.Success && c.EscalationReason == "checkpoint_failed" {
+		out.TerminalStatus = "human-required"
+		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
+	}
+
+	if err := e.AdvanceStep(taskID, out); err != nil {
 		e.logger.Error("workflow.agent-complete.advance", "task_id", taskID, "err", err)
 		// Same surfacing as ResumeStalled: AdvanceStep often fails because
 		// the *next* step couldn't spawn its agent (e.g. project missing).
