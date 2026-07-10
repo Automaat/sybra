@@ -13,7 +13,7 @@ import (
 // rejectedNoFeedbackReason is recorded as StatusReason when a reviewer
 // rejects a prompt-lab proposal without typing feedback, so the reject is
 // still auditable from the task's status alone.
-const rejectedNoFeedbackReason = "rejected via GUI (no feedback provided)"
+const rejectedNoFeedbackReason = "rejected (no feedback provided)"
 
 // PromptLabService exposes Prompt Lab proposal approve/reject operations as
 // Wails-bound methods. Proposals are plain tasks (tagged
