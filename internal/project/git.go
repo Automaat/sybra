@@ -239,6 +239,11 @@ func InstallSignoffHook(ctx context.Context, worktreePath string) error {
 	if err := os.WriteFile(path, []byte(signoffHook), 0o755); err != nil {
 		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
 	}
+	pin := exec.CommandContext(ctx, "git", "config", "core.hooksPath", hooksDir)
+	pin.Dir = worktreePath
+	if err := pin.Run(); err != nil {
+		return fmt.Errorf("pin core.hooksPath: %w", err)
+	}
 	return nil
 }
 

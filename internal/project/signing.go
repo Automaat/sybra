@@ -13,7 +13,7 @@ import (
 // emit only -s there. DCO sign-off (-s) is guaranteed independently by the
 // prepare-commit-msg hook (see InstallSignoffHook).
 func GPGSigningAvailable(ctx context.Context) bool {
-	out, err := exec.CommandContext(ctx, "git", "config", "--get", "user.signingkey").Output()
+	out, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", "user.signingkey").Output()
 	if err != nil {
 		return false
 	}

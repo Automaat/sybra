@@ -2664,6 +2664,42 @@ func TestInstallSignoffHook(t *testing.T) {
 	}
 }
 
+func TestInstallSignoffHook_OverridesHooksPath(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	gitDir := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	stray := filepath.Join(t.TempDir(), "stray-hooks")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("config", "core.hooksPath", stray)
+
+	if err := InstallSignoffHook(context.Background(), dir); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("add", ".")
+	gitDir("commit", "-m", "feat: x")
+
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "Signed-off-by: Test <test@test.com>") {
+		t.Errorf("hook did not run despite a stray core.hooksPath override, got:\n%s", out)
+	}
+}
+
 func TestCloneBare_InstallsSignoffHook(t *testing.T) {
 	t.Parallel()
 
