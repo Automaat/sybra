@@ -683,13 +683,14 @@ func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
 		!strings.Contains(got.Body, "GitHub issue filing failed: rate limited") {
 		t.Errorf("expected local fallback note in body; got:\n%s", got.Body)
 	}
+	if !strings.Contains(got.StatusReason, "issue filing failed") {
+		t.Errorf("status reason = %q, want issue filing failed context", got.StatusReason)
+	}
+	if !strings.Contains(got.StatusReason, "local task ") {
+		t.Errorf("status reason = %q, want local task pointer", got.StatusReason)
+	}
 }
 
-// TestOnComplete_SinkError_DedupesExistingLocalFallback pins that a second
-// human-review run diagnosing the same root cause (same issue_title) does not
-// spawn a second local fallback task — it links back to the one already
-// filed. Mirrors task 2379fece's repro, where task 3e61e464 accumulated a GH
-// issue link and a separate local fallback task for one underlying failure.
 func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
@@ -757,7 +758,6 @@ func TestOnComplete_SinkError_DoesNotDedupAgainstUnrelatedSybraBug(t *testing.T)
 	}); err != nil {
 		t.Fatalf("seed unrelated sybra-bug task: %v", err)
 	}
-
 	tk, err := tasks.Create("Whatever", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)

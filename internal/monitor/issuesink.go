@@ -238,17 +238,25 @@ func classifyGHError(op string, out []byte, err error) error {
 
 func sanitizeGHOutput(out []byte) string {
 	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
 	lower := strings.ToLower(s)
-	if !strings.Contains(lower, "<!doctype html") && !strings.Contains(lower, "<html") {
-		return s
-	}
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] != '\n' {
-			continue
+	if strings.Contains(lower, "<!doctype html") || strings.Contains(lower, "<html") {
+		for i := len(s) - 1; i >= 0; i-- {
+			if s[i] != '\n' {
+				continue
+			}
+			if line := strings.TrimSpace(s[i+1:]); strings.HasPrefix(line, "gh:") {
+				return line
+			}
 		}
-		if line := strings.TrimSpace(s[i+1:]); strings.HasPrefix(line, "gh:") {
-			return line
-		}
+		return "GitHub returned an HTML error page"
 	}
-	return "GitHub returned an HTML error page"
+	lines := strings.Split(s, "\n")
+	const maxLines = 5
+	if len(lines) > maxLines {
+		lines = append(lines[:maxLines], "...")
+	}
+	return strings.Join(lines, "\n")
 }

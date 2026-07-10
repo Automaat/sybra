@@ -181,10 +181,25 @@ func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	}
 }
 
-func TestGHIssueSink_CreateErrorIncludesOutput(t *testing.T) {
+func TestGHIssueSink_ClassifiesRateLimitFromOutput(t *testing.T) {
 	fe := &fakeExecer{
 		listResp:   []byte(`[]`),
-		createResp: []byte("GraphQL: Resource not accessible by integration"),
+		createResp: []byte("GraphQL: API rate limit exceeded\n"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if !errors.Is(err, ErrGHRateLimit) {
+		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_CreateErrorIncludesSanitizedOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("first line\nsecond line\nthird line\nfourth line\nfifth line\nsixth line"),
 		createErr:  errors.New("exit status 1"),
 	}
 	s := newTestSink(fe)
@@ -195,8 +210,8 @@ func TestGHIssueSink_CreateErrorIncludesOutput(t *testing.T) {
 		t.Fatal("expected create error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "gh issue create") || !strings.Contains(msg, "Resource not accessible") {
-		t.Fatalf("error did not include operation and gh output: %v", err)
+	if !strings.Contains(msg, "gh issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
+		t.Fatalf("error did not include sanitized output: %q", msg)
 	}
 }
 
