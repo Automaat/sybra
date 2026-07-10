@@ -36,6 +36,7 @@ var templateFuncs = template.FuncMap{
 	"recoveredorprev":     recoveredOrPrev,
 	"plancontractjson":    PlanContractPromptJSON,
 	"currenttestfailures": currentTestFailures,
+	"acceptanceledger":    acceptanceLedger,
 }
 
 // currentTestFailures returns the current "## Test Failures" section from a
@@ -47,6 +48,50 @@ var templateFuncs = template.FuncMap{
 // unambiguously current.
 func currentTestFailures(body string) string {
 	return strings.TrimSpace(testFailSectionOf(body))
+}
+
+func acceptanceLedger(body string) string {
+	start, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(body[start:end])
+}
+
+func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
+	lines := strings.SplitAfter(body, "\n")
+	offsets := make([]int, len(lines)+1)
+	for i := range lines {
+		offsets[i+1] = offsets[i] + len(lines[i])
+	}
+
+	inFence := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || !strings.EqualFold(trimmed, heading) {
+			continue
+		}
+
+		sectionInFence := false
+		end = len(body)
+		for j := i + 1; j < len(lines); j++ {
+			jTrimmed := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(jTrimmed, "```") || strings.HasPrefix(jTrimmed, "~~~") {
+				sectionInFence = !sectionInFence
+				continue
+			}
+			if !sectionInFence && strings.HasPrefix(jTrimmed, "## ") {
+				end = offsets[j]
+				break
+			}
+		}
+		return offsets[i], end, true
+	}
+	return 0, 0, false
 }
 
 // getVar safely retrieves a variable from a map, returning "" if absent.

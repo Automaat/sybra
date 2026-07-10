@@ -183,3 +183,95 @@ func TestGetVar(t *testing.T) {
 		})
 	}
 }
+
+func TestAcceptanceLedger(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"## Problem",
+		"Keep the workflow converged.",
+		"",
+		acceptanceLedgerHeading,
+		"",
+		"### Ledger entry fp-1",
+		"",
+		ledgerEntryMarker("fp-1"),
+		"",
+		"> first repro snapshot",
+		">",
+		"### Ledger entry fp-2",
+		"",
+		ledgerEntryMarker("fp-2"),
+		"",
+		"> second repro snapshot",
+		">",
+		"```text",
+		"## Not a heading inside fence",
+		"```",
+		"",
+		"## Notes",
+		"Done.",
+	}, "\n")
+	got := acceptanceLedger(body)
+	if !strings.Contains(got, acceptanceLedgerHeading) {
+		t.Fatalf("acceptanceLedger = %q, want section heading", got)
+	}
+	if !strings.Contains(got, "### Ledger entry fp-1") || !strings.Contains(got, "### Ledger entry fp-2") {
+		t.Fatalf("acceptanceLedger = %q, want both ledger entries", got)
+	}
+	if strings.Contains(got, "## Notes") {
+		t.Fatalf("acceptanceLedger = %q, must stop before the next top-level heading", got)
+	}
+}
+
+func TestAcceptanceLedgerPromptRendering(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"## Problem",
+		"Retain all distinct product-bug fixes together.",
+		"",
+		testFailuresHeading,
+		"",
+		"current failure snapshot",
+		"",
+		acceptanceLedgerHeading,
+		"",
+		"### Ledger entry fp-1",
+		"",
+		ledgerEntryMarker("fp-1"),
+		"",
+		"first repro",
+		"",
+		"### Ledger entry fp-2",
+		"",
+		ledgerEntryMarker("fp-2"),
+		"",
+		"second repro",
+	}, "\n")
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "task-ledger", Body: body},
+	}
+
+	implementPrompt, err := RenderTemplate(mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement").Config.Prompt, ctx)
+	if err != nil {
+		t.Fatalf("render implement prompt: %v", err)
+	}
+	if !strings.Contains(implementPrompt, "## Acceptance Ledger — all must hold simultaneously") {
+		t.Fatalf("implement prompt missing ledger framing:\n%s", implementPrompt)
+	}
+	if !strings.Contains(implementPrompt, "### Ledger entry fp-1") || !strings.Contains(implementPrompt, "### Ledger entry fp-2") {
+		t.Fatalf("implement prompt missing ledger entries:\n%s", implementPrompt)
+	}
+
+	testPrompt, err := RenderTemplate(mustBuiltinDefinition(t, "testing-task").StepByID("run_test").Config.Prompt, ctx)
+	if err != nil {
+		t.Fatalf("render testing prompt: %v", err)
+	}
+	if !strings.Contains(testPrompt, "Reproduce and re-verify EVERY ledger entry against the") {
+		t.Fatalf("testing prompt missing re-verify framing:\n%s", testPrompt)
+	}
+	if !strings.Contains(testPrompt, "### Ledger entry fp-1") || !strings.Contains(testPrompt, "### Ledger entry fp-2") {
+		t.Fatalf("testing prompt missing ledger entries:\n%s", testPrompt)
+	}
+}
