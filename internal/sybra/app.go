@@ -384,6 +384,12 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
+	// Bound how often FetchOrigin does a real network fetch per bare clone —
+	// fix/review/pr-fix prepares call it unconditionally on every dispatch, so
+	// without a TTL a tight cluster of dispatches against one repo (hundreds
+	// of pr-fix runs/month, see issue #1527) pays for a full-branch fetch on
+	// every single one.
+	project.FetchTTL = 60 * time.Second
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
 		WorktreesDir:     a.worktreesDir,
