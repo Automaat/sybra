@@ -130,6 +130,29 @@ describe('umbrella progress', () => {
       expect(result.displayTotal).toBe(3)
     })
 
+    it('resolves a tracker-declared dependsOn ref to a local child by issue', () => {
+      const umbrella = task({
+        id: 'manual-umbrella',
+        taskType: TaskType.TaskTypeUmbrella,
+        issue: 'https://github.com/Automaat/sybra/issues/100',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/101'],
+      })
+      const localChild = task({
+        id: 'manual-child',
+        title: 'Manual child by dependsOn only',
+        taskType: TaskType.TaskTypeNormal,
+        issue: 'https://github.com/Automaat/sybra/issues/101',
+        umbrellaIssue: '',
+        outcome: 'merged',
+      })
+
+      const result = childrenForUmbrella(umbrella, [localChild])
+
+      expect(result.children.map((t) => t.id)).toEqual(['manual-child'])
+      expect(result.unresolved).toEqual([])
+      expect(result.displayTotal).toBe(1)
+    })
+
     it('excludes unresolved refs from the children list and dedupes repeats', () => {
       const umbrella = task({
         id: 'u1',

@@ -34,13 +34,10 @@ export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgre
 //
 // Two shapes feed this panel:
 //  - An umbrella tracker (taskType === 'umbrella'): children are materialized
-//    tasks linked via umbrellaIssue. The tracker itself never carries its own
-//    dependsOn (internal/umbrella/expand.go's materialize() only sets
-//    DependsOn on the per-child CreateFull call, never on the tracker's), so
-//    declared refs — used both for ordering and for surfacing declared-but
-//    -unmaterialized children — are aggregated from the materialized
-//    children's own dependsOn instead. The union also includes the tracker's
-//    dependsOn (harmless, and covers callers that do populate it directly).
+//    tasks linked via umbrellaIssue, plus local tasks resolved from the
+//    tracker's own declared dependsOn refs. Some fixtures and migrations
+//    carry child refs on the tracker itself while others only have
+//    umbrellaIssue on children, so both link shapes are accepted.
 //  - Any other task with a non-empty dependsOn (its own prerequisites):
 //    children are that task's declared refs resolved against the local task
 //    list by issue, in declared order.
@@ -57,14 +54,15 @@ export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren
   }
 
   const taskKey = normalizeIssueRef(task.issue ?? '')
-  const materialized = isUmbrella && taskKey
+  const linkedChildren = isUmbrella && taskKey
     ? tasks.filter((t) => normalizeIssueRef(t.umbrellaIssue ?? '') === taskKey)
     : []
+  const trackerDeclaredRefs = normalizedRefs(task.dependsOn ?? [])
 
   const declaredRefs: string[] = []
   const seenDeclared = new Set<string>()
   const rawRefLists = isUmbrella
-    ? [...materialized.map((t) => t.dependsOn ?? []), task.dependsOn ?? []]
+    ? [...linkedChildren.map((t) => t.dependsOn ?? []), task.dependsOn ?? []]
     : [task.dependsOn ?? []]
   for (const list of rawRefLists) {
     for (const ref of list) {
@@ -82,6 +80,21 @@ export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren
 
   let children: Task[]
   if (isUmbrella) {
+    const materialized: Task[] = []
+    const seenChildren = new Set<string>()
+    const addChild = (t: Task) => {
+      const key = normalizeIssueRef(t.issue ?? '') || t.id
+      if (!key || seenChildren.has(key)) return
+      seenChildren.add(key)
+      materialized.push(t)
+    }
+
+    for (const t of linkedChildren) addChild(t)
+    for (const ref of trackerDeclaredRefs) {
+      const t = byIssue.get(ref)
+      if (t) addChild(t)
+    }
+
     const materializedByIssue = new Map<string, Task>()
     for (const t of materialized) {
       const key = normalizeIssueRef(t.issue ?? '')
@@ -134,4 +147,16 @@ export function normalizeIssueRef(ref: string): string {
     return `${github[1].toLowerCase()}/${github[2].toLowerCase()}#${github[3]}`
   }
   return trimmed.toLowerCase()
+}
+
+function normalizedRefs(refs: string[]): string[] {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const ref of refs) {
+    const key = normalizeIssueRef(ref)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    normalized.push(key)
+  }
+  return normalized
 }

@@ -70,6 +70,20 @@ describe('TaskChildrenPanel', () => {
     expect(screen.getByText('Not yet tracked')).toBeDefined()
   })
 
+  it('renders a tracker-declared local child that lacks umbrellaIssue', () => {
+    mockList = [
+      child({
+        id: 'c10',
+        title: 'Declared local child',
+        issue: 'https://github.com/Automaat/sybra/issues/10',
+        umbrellaIssue: '',
+      }),
+    ]
+    render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask: vi.fn() } })
+    expect(screen.getByText('Declared local child')).toBeDefined()
+    expect(screen.getByText('automaat/sybra#99')).toBeDefined()
+  })
+
   it('does not count a local-done child with no merged outcome as shipped', () => {
     mockList = [child({ id: 'c10', title: 'Ten', status: 'done', outcome: '' })]
     render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask: vi.fn() } })
