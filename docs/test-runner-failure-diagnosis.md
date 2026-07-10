@@ -70,7 +70,7 @@ reproduction command, verbatim test output, and an empty
 `unable_to_run_reason` — yet is still recorded `outcome: failed` in
 `stats.json`.
 
-`runOutcome` (`internal/sybra/agent_completion.go`) is explicitly designed
+`runOutcome` (`internal/sybra/completion/completion.go`) is explicitly designed
 to rescue exactly this case for test-runner, but the rescue isn't landing
 for this run. Filed as
 [#1665](https://github.com/Automaat/sybra/issues/1665).
