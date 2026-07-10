@@ -69,6 +69,102 @@ func TestPrepareForBranchFix_ExistingBranch(t *testing.T) {
 	}
 }
 
+// TestPrepareForBranchFix_ReusesHealthyWorktree mirrors
+// TestPrepareForFix_ReusesHealthyWorktree: a second dispatch against a
+// healthy worktree already on the task's branch must reuse it (no setup
+// re-run), while still fast-forwarding to any commit pushed in the meantime.
+func TestPrepareForBranchFix_ReusesHealthyWorktree(t *testing.T) {
+	h := prepareHarness(t, []string{"sh -c 'echo run >> setup-count.txt'"}, 0)
+
+	const branch = "fix/branch-reuse-me"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	// setup-count.txt is a byproduct of the setup command, not agent work —
+	// gitignore it so SanitizeWorktree's auto-commit-uncommitted-work step
+	// doesn't turn it into a local-only commit that diverges from the next
+	// remote push and defeats reuse.
+	if err := os.WriteFile(filepath.Join(h.src, ".gitignore"), []byte("setup-count.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "gitignore setup byproduct")
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial branch commit")
+	srcGit("checkout", "main")
+
+	tk, err := h.tasks.Create("reuse branch fix worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": h.proj.ID,
+		"branch":     branch,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForBranchFix(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchFix (initial): %v", err)
+	}
+	setupCountPath := filepath.Join(wtPath, "setup-count.txt")
+	countAfterFirst, err := os.ReadFile(setupCountPath)
+	if err != nil {
+		t.Fatalf("read setup-count.txt: %v", err)
+	}
+	if got := strings.Count(string(countAfterFirst), "run"); got != 1 {
+		t.Fatalf("setup ran %d times on initial prepare, want 1", got)
+	}
+	hookPath := signoffHookPath(t, wtPath)
+	if err := os.Remove(hookPath); err != nil {
+		t.Fatalf("remove signoff hook: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
+		t.Fatalf("unset core.hooksPath: %v: %s", err, out)
+	}
+
+	srcGit("checkout", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature2.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "second branch commit")
+	srcGit("checkout", "main")
+
+	got, err := h.m.PrepareForBranchFix(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("PrepareForBranchFix (reuse): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("reused path = %q, want the same worktree %q", got, wtPath)
+	}
+
+	countAfterSecond, err := os.ReadFile(setupCountPath)
+	if err != nil {
+		t.Fatalf("read setup-count.txt after reuse: %v", err)
+	}
+	if got := strings.Count(string(countAfterSecond), "run"); got != 1 {
+		t.Fatalf("setup ran %d times across both prepares, want 1 (setup must be skipped on reuse)", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(got, "feature2.txt")); err != nil {
+		t.Errorf("reused worktree missing feature2.txt from the second remote commit: %v", err)
+	}
+	if _, err := os.Stat(hookPath); err != nil {
+		t.Errorf("signoff hook was not restored on reuse: %v", err)
+	}
+}
+
 // TestPrepareForBranchFix_SetupFailureDoesNotBlock is the regression test for
 // issue #1454: a project whose setup: command fails (e.g. a broken build)
 // must not prevent PrepareForBranchFix from creating the fix worktree — that
