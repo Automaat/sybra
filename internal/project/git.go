@@ -313,14 +313,26 @@ func TrackedFilesAtDefaultBranch(ctx context.Context, barePath string) ([]string
 
 // FetchOrigin fetches origin's heads into barePath's refs/remotes/origin/*
 // under the bare-repo lock, retrying transient git-fetch lock contention.
+// Skips the actual network fetch when a prior call already refreshed this
+// bare clone within FetchTTL (see git_lock.go) — checked under the same lock
+// that serializes concurrent callers, so a burst of prepares against one repo
+// pays for exactly one fetch.
 func FetchOrigin(ctx context.Context, barePath string) error {
 	return withBareRepoLock(barePath, func() error {
-		return withLockRetry(func() error {
+		if fetchIsFresh(barePath) {
+			return nil
+		}
+		err := withLockRetry(func() error {
 			// Explicit refspec heals bare repos cloned before remote.origin.fetch
 			// was configured, where `git fetch origin` silently skipped updating
 			// refs/remotes/origin/*.
 			return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 		})
+		if err != nil {
+			return err
+		}
+		markFetched(barePath)
+		return nil
 	})
 }
 
