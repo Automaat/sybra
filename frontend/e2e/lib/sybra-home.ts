@@ -1,6 +1,21 @@
 import { homedir } from 'node:os'
+import { realpathSync } from 'node:fs'
 import { access, readdir, unlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+
+/**
+ * Resolve symlinks so a home that merely *points at* the real operator home
+ * (rather than being it verbatim) is still caught. Falls back to a plain
+ * `resolve` when the path doesn't exist yet (e.g. an e2e home not yet
+ * bootstrapped) — nothing to dereference, so there's no symlink to hide behind.
+ */
+function realish(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
 
 /**
  * Marker file the e2e bootstrap writes into a disposable SYBRA_HOME. Its
@@ -27,7 +42,7 @@ export function isolatedSybraHome(): string {
         '(CI uses /tmp/sybra-e2e).',
     )
   }
-  if (resolve(env) === resolve(join(homedir(), '.sybra'))) {
+  if (realish(env) === realish(join(homedir(), '.sybra'))) {
     throw new Error(
       `SYBRA_HOME=${env} is the real operator home — refusing to run the e2e suite ` +
         'against it. Use a disposable dir (CI uses /tmp/sybra-e2e).',
