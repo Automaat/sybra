@@ -82,6 +82,7 @@ func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool,
 // succeeded.
 func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extraLabels []string) (created bool, url string, err error) {
 	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
+	s.ensureExtraLabels(ctx, extraLabels)
 
 	num, foundURL, err := s.findOpenIssue(ctx, title)
 	if err != nil {
@@ -142,6 +143,25 @@ func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 	// label-related problems if any.
 	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", s.label, "--color", "BFD4F2", "--description", "Opened by sybra monitor")...)
 	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")...)
+}
+
+// ensureExtraLabels best-effort creates caller-supplied labels (e.g. an
+// issue_labels array from a human-review LLM verdict) that ensureLabels
+// doesn't already cover. Without this, gh issue create hard-fails outright
+// when a caller names a label that doesn't exist on the repo yet, discarding
+// an otherwise-valid issue and forcing a local fallback task instead (see
+// task baecc515: "could not add label: 'duplicate-candidate' not found").
+// Same best-effort discipline as ensureLabels: an already-exists error is
+// fine, and any other error is swallowed so the create call below still
+// surfaces label problems if the label genuinely can't be used.
+func (s *GHIssueSink) ensureExtraLabels(ctx context.Context, extraLabels []string) {
+	for _, extra := range extraLabels {
+		extra = strings.TrimSpace(extra)
+		if extra == "" || extra == s.label || extra == "bug" {
+			continue
+		}
+		_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", extra)...)
+	}
 }
 
 func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number int, url string, err error) {

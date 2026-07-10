@@ -166,6 +166,41 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 	}
 }
 
+func TestGHIssueSink_EnsuresExtraLabelsBeforeCreate(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate", "bug", "  ", "monitor"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	// monitor + bug (ensureLabels, once) + duplicate-candidate (ensureExtraLabels).
+	// "bug" and "monitor" from extraLabels are skipped since ensureLabels
+	// already covers them.
+	if len(labelCreates) != 3 {
+		t.Fatalf("want 3 label create calls, got %d: %v", len(labelCreates), labelCreates)
+	}
+	found := false
+	for _, c := range labelCreates {
+		if len(c) >= 3 && c[2] == "duplicate-candidate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a label create call for duplicate-candidate, got %v", labelCreates)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsPair(creates[0], "--label", "monitor,duplicate-candidate,bug") {
+		t.Errorf("wrong label list: %v", creates[0])
+	}
+}
+
 func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	fe := &fakeExecer{
 		listResp:   []byte(`[]`),
