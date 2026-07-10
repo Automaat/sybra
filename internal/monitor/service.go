@@ -57,6 +57,11 @@ type Deps struct {
 	// LLM-generated issue content that is hard to scrub. See CLAUDE.md —
 	// Work-Data Confidentiality.
 	DowngradeLLMForTask func(taskID string) bool
+	// RecoverLostAgent is called after a lost_agent remediation marks stale
+	// run state stopped. Production wires this to recovery.RestartStaleInProgress
+	// so the monitor detection immediately hands the in-progress task back to
+	// the existing workflow/agent recovery path.
+	RecoverLostAgent func(context.Context)
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -107,7 +112,7 @@ func NewService(d Deps) *Service {
 		allowsProject:       d.AllowsProject,
 		downgradeLLMForTask: d.DowngradeLLMForTask,
 		state:               newRunState(),
-		rem:                 newRemediator(d.Tasks),
+		rem:                 newRemediator(d.Tasks, d.RecoverLostAgent),
 	}
 }
 
