@@ -584,6 +584,120 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	}
 }
 
+func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("zero-run stale", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("dispatch count = %d, want 1", stub.startCalls)
+	}
+	if stub.lastMode != "interactive" {
+		t.Fatalf("mode = %q, want interactive", stub.lastMode)
+	}
+	if stub.lastOneShot {
+		t.Fatal("zero-run stale restart must not force oneShot")
+	}
+}
+
+func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("zero-run stale missing project", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 0 {
+		t.Fatalf("dispatch count = %d, want 0", stub.startCalls)
+	}
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %s, want %s", updated.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(updated.StatusReason, "no project could be assigned") {
+		t.Fatalf("status reason = %q, want no-project assignment guidance", updated.StatusReason)
+	}
+}
+
 // TestRestartStalePRFixRebaseFailedFlipsToHumanRequired covers the actual
 // path that had the infinite-retry bug this PR fixes: run_role=="pr-fix"
 // skips markRebaseBlocked (unlike the other three agent-start call sites) and

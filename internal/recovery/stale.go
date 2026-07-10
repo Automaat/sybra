@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -102,15 +103,20 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		oneShot := false
 		if t.AgentMode != "headless" {
 			lr := lastAgentRun(&t)
-			if lr == nil || !lr.OneShot {
+			if lr == nil {
+				r.Logger.Info("recover-stale.no-run-fallthrough", "task_id", t.ID)
+			} else if !lr.OneShot {
 				r.recoverStaleInteractive(&t)
 				continue
+			} else {
+				oneShot = true
+				r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 			}
-			oneShot = true
-			r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 		}
 		if t.ProjectID == "" {
+			err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
+			r.surfaceStartFailure(t.ID, t.Status, err)
 			continue
 		}
 		r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
