@@ -484,6 +484,10 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		return
 	}
 	e.clearAgentStep(agentID)
+	e.rescheduleRateLimitedRunAgent(taskID, agentID, step, t, &def)
+}
+
+func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition) {
 	if e.shouldSkipResumeForRateLimitedProvider(&t, step) {
 		// Provider is still inside its rate-limit cooldown and no healthy peer is
 		// available to fail over to. Park the task without consuming a watchdog
@@ -504,20 +508,10 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	mu.Unlock()
 
-	e.mu.Lock()
-	if _, dispatching := e.dispatching[taskID]; dispatching {
-		e.mu.Unlock()
-		e.logger.Debug("workflow.rate-limit-reschedule.skip",
-			"task_id", taskID, "reason", "dispatching", "step", step.ID)
+	if !e.tryMarkRateLimitRescheduleDispatching(taskID, step) {
 		return
 	}
-	e.dispatching[taskID] = struct{}{}
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.dispatching, taskID)
-		e.mu.Unlock()
-	}()
+	defer e.clearResumeDispatching(taskID)
 
 	claim, ok := e.agents.TryClaimDispatch(taskID)
 	if !ok {
@@ -531,15 +525,34 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 
 	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
-	comp, rErr := e.executeSteps(taskID, &def, step, t.Workflow)
+	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
 	e.fireComplete(comp)
 	e.drainPendingConflictRecovery(taskID)
 	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
 	if rErr != nil {
 		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
-	} else {
-		e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+		return
 	}
+	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+}
+
+func (e *Engine) tryMarkRateLimitRescheduleDispatching(taskID string, step *Step) bool {
+	e.mu.Lock()
+	if _, dispatching := e.dispatching[taskID]; dispatching {
+		e.mu.Unlock()
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "dispatching", "step", step.ID)
+		return false
+	}
+	e.dispatching[taskID] = struct{}{}
+	e.mu.Unlock()
+	return true
+}
+
+func (e *Engine) clearResumeDispatching(taskID string) {
+	e.mu.Lock()
+	delete(e.dispatching, taskID)
+	e.mu.Unlock()
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
