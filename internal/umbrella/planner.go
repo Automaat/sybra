@@ -355,9 +355,9 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 
 // buildPlanSchema returns a JSON Schema for Plan that constrains
 // children[].issue and children[].dependsOn to the exact canonical sub-issue
-// refs, and pins the children array to exactly len(subs) entries — narrowing
-// the coverage-mismatch failure mode (an unknown, missing, or miscounted ref)
-// at the model layer instead of relying solely on post-hoc validate+retry.
+// refs, and makes children a fixed tuple with one slot per sub-issue ref. This
+// eliminates the duplicate/omitted coverage-mismatch failure mode at the model
+// layer instead of relying solely on post-hoc validate+retry.
 // Delivered via llmexec.Options.Schema by a Runner (see FallbackPlannerRunner):
 // codex receives it natively (--output-schema), claude/copilot get it appended
 // as prose. additionalProperties:false and every property listed in
@@ -371,29 +371,38 @@ func buildPlanSchema(subs []SubIssue) string {
 	refEnum := map[string]any{"type": "string", "enum": refs}
 	stringArray := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
 
-	child := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"issue":                 refEnum,
-			"dependsOn":             map[string]any{"type": "array", "items": refEnum},
-			"track":                 map[string]any{"type": "string"},
-			"touches":               stringArray,
-			"produces":              stringArray,
-			"requires":              stringArray,
-			"parallelJustification": map[string]any{"type": "object"},
-		},
-		"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
-		"additionalProperties": false,
+	childForIssue := func(ref string) map[string]any {
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"issue":                 map[string]any{"type": "string", "enum": []string{ref}},
+				"dependsOn":             map[string]any{"type": "array", "items": refEnum},
+				"track":                 map[string]any{"type": "string"},
+				"touches":               stringArray,
+				"produces":              stringArray,
+				"requires":              stringArray,
+				"parallelJustification": map[string]any{"type": "object"},
+			},
+			"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+			"additionalProperties": false,
+		}
+	}
+
+	childItems := make([]any, len(refs))
+	for i, ref := range refs {
+		childItems[i] = childForIssue(ref)
 	}
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"children": map[string]any{
-				"type":     "array",
-				"minItems": len(subs),
-				"maxItems": len(subs),
-				"items":    child,
+				"type":            "array",
+				"minItems":        len(subs),
+				"maxItems":        len(subs),
+				"uniqueItems":     true,
+				"items":           childItems,
+				"additionalItems": false,
 			},
 			"maxParallel": map[string]any{"type": "integer"},
 		},

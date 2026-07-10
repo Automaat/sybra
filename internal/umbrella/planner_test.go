@@ -57,25 +57,81 @@ func TestBuildPlanSchema(t *testing.T) {
 		t.Errorf("children.maxItems = %v, want 3", got)
 	}
 
-	item, ok := children["items"].(map[string]any)
-	if !ok {
-		t.Fatalf("schema missing children.items: %s", schema)
+	if got := children["uniqueItems"]; got != true {
+		t.Errorf("children.uniqueItems = %v, want true", got)
 	}
-	issueEnum, ok := item["properties"].(map[string]any)["issue"].(map[string]any)["enum"].([]any)
-	if !ok {
-		t.Fatalf("schema missing children.items.properties.issue.enum: %s", schema)
-	}
-	gotRefs := make([]string, len(issueEnum))
-	for i, r := range issueEnum {
-		gotRefs[i] = r.(string)
-	}
-	wantRefs := []string{"o/r#1", "o/r#2", "o/r#3"}
-	if !slices.Equal(gotRefs, wantRefs) {
-		t.Errorf("issue enum = %v, want %v", gotRefs, wantRefs)
+	if got := children["additionalItems"]; got != false {
+		t.Errorf("children.additionalItems = %v, want false", got)
 	}
 
-	if item["additionalProperties"] != false {
-		t.Errorf("children.items.additionalProperties = %v, want false", item["additionalProperties"])
+	items, ok := children["items"].([]any)
+	if !ok {
+		t.Fatalf("schema missing tuple children.items: %s", schema)
+	}
+	wantRefs := []string{"o/r#1", "o/r#2", "o/r#3"}
+	if len(items) != len(wantRefs) {
+		t.Fatalf("len(children.items) = %d, want %d: %s", len(items), len(wantRefs), schema)
+	}
+	for i, item := range items {
+		item, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("children.items[%d] is %T, want object schema", i, item)
+		}
+		issueEnum, ok := item["properties"].(map[string]any)["issue"].(map[string]any)["enum"].([]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].properties.issue.enum: %s", i, schema)
+		}
+		gotRefs := make([]string, len(issueEnum))
+		for j, r := range issueEnum {
+			gotRefs[j] = r.(string)
+		}
+		if !slices.Equal(gotRefs, []string{wantRefs[i]}) {
+			t.Errorf("children.items[%d].issue.enum = %v, want [%s]", i, gotRefs, wantRefs[i])
+		}
+		if item["additionalProperties"] != false {
+			t.Errorf("children.items[%d].additionalProperties = %v, want false", i, item["additionalProperties"])
+		}
+	}
+}
+
+func TestAdversarialSchemaRejectsDuplicateCoverage(t *testing.T) {
+	t.Parallel()
+	schema := buildPlanSchema(subs("o/r#1", "o/r#2", "o/r#3"))
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(schema), &decoded); err != nil {
+		t.Fatalf("schema is not valid JSON: %v\n%s", err, schema)
+	}
+	children, ok := decoded["properties"].(map[string]any)["children"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing properties.children: %s", schema)
+	}
+	if got := children["uniqueItems"]; got != true {
+		t.Fatalf("children has no uniqueItems: %#v", children)
+	}
+	if got := children["additionalItems"]; got != false {
+		t.Fatalf("children allows tuple overflow: %#v", children)
+	}
+	items, ok := children["items"].([]any)
+	if !ok {
+		t.Fatalf("children.items is not a tuple schema: %#v", children["items"])
+	}
+	wantRefs := []string{"o/r#1", "o/r#2", "o/r#3"}
+	if len(items) != len(wantRefs) {
+		t.Fatalf("children tuple length = %d, want %d", len(items), len(wantRefs))
+	}
+	for i, item := range items {
+		item, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("children.items[%d] is %T, want object schema", i, item)
+		}
+		issueEnum, ok := item["properties"].(map[string]any)["issue"].(map[string]any)["enum"].([]any)
+		if !ok {
+			t.Fatalf("children.items[%d] does not constrain issue: %#v", i, item)
+		}
+		if got := len(issueEnum); got != 1 || issueEnum[0] != wantRefs[i] {
+			t.Fatalf("children.items[%d].issue.enum = %#v, want exactly [%s]", i, issueEnum, wantRefs[i])
+		}
 	}
 }
 
