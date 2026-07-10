@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -101,16 +102,22 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		// onAgentComplete.
 		oneShot := false
 		if t.AgentMode != "headless" {
-			lr := lastAgentRun(&t)
-			if lr == nil || !lr.OneShot {
-				r.recoverStaleInteractive(&t)
+			var handled bool
+			oneShot, handled = r.resolveInteractiveStaleRestart(&t)
+			if handled {
 				continue
 			}
-			oneShot = true
-			r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 		}
 		if t.ProjectID == "" {
+			err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
+			// Surface off the scan loop, matching the other two
+			// surfaceStartFailure call sites in this function, so a
+			// file-backed Tasks.Update never blocks the fleet-wide sweep.
+			taskID, currentStatus := t.ID, t.Status
+			r.WG.Go(func() {
+				r.surfaceStartFailure(taskID, currentStatus, err)
+			})
 			continue
 		}
 		r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
@@ -240,6 +247,40 @@ func (r *Recovery) surfaceStartFailure(taskID string, currentStatus task.Status,
 		StatusReason: task.Ptr(reason),
 	}); uErr != nil {
 		r.Logger.Error("restart-stale.surface", "task_id", taskID, "err", uErr)
+	}
+}
+
+// resolveInteractiveStaleRestart decides how a stale interactive task's
+// last agent run should be handled: recovered in place via
+// recoverStaleInteractive (handled=true, caller should skip re-dispatch), or
+// fallen through to the normal restart/escalation path below with the
+// resolved oneShot flag.
+func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handled bool) {
+	lr := lastAgentRun(t)
+	switch {
+	case lr == nil:
+		// No recorded run: recoverStaleInteractive would no-op on
+		// lr == nil, silently skipping this task forever. Fall
+		// through to the normal dispatch path below so a stale
+		// interactive task with zero runs actually gets restarted.
+		r.Logger.Info("restart-stale.no-run-fallthrough", "task_id", t.ID)
+		return false, false
+	case lr.Mode != "interactive":
+		// Last run's mode doesn't match the task's current
+		// interactive AgentMode (e.g. flipped by selfmonitor's
+		// flipAgentMode after a headless run). recoverStaleInteractive
+		// would no-op on the mode mismatch, silently leaving the task
+		// stuck in-progress forever. Fall through to the normal
+		// restart path instead.
+		r.Logger.Info("restart-stale.mode-mismatch-fallthrough",
+			"task_id", t.ID, "last_run_mode", lr.Mode)
+		return false, false
+	case !lr.OneShot:
+		r.recoverStaleInteractive(t)
+		return false, true
+	default:
+		r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
+		return true, false
 	}
 }
 
