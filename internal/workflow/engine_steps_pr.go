@@ -319,6 +319,16 @@ func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 // classification helpers/vars execEvaluate uses for its PR-creation retry
 // path (engine_steps_link.go), since push_branch/create_pr now own this
 // failure handling directly instead of falling through to evaluate.
+//
+// An error that matches none of the GitHub-shaped patterns above (notably: a
+// project's own pre-push hook, e.g. `go test ./...`, rejecting the push) gets
+// one bounded retry too, rather than escalating on the first attempt. Hook
+// output is arbitrary project-defined shell text, not reliably classifiable
+// by regex the way GitHub errors are, but under concurrent agent pushes to
+// the same bare clone, host CPU contention alone can flake a race-sensitive
+// test that has nothing to do with the pushed diff — a single retry absorbs
+// that without masking a genuine regression, which still fails on retry and
+// escalates exactly as before.
 func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution, t TaskInfo, err error, phase string) (StepOutput, error) {
 	msg := err.Error()
 	switch {
@@ -334,7 +344,12 @@ func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution
 		}
 		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failing due to invalid or expired GitHub credentials after %d retries: %s", phase, attempts, msg))
 	default:
-		return e.humanRequiredPR(taskID, step, phase+" failed: "+msg)
+		attempts := parseWorkflowInt(wfExec.Variables[prPushAttemptsVar])
+		if attempts < maxPRPushRetries {
+			wfExec.SetVar(prPushAttemptsVar, strconv.Itoa(attempts+1))
+			return e.parkStepForRetry(taskID, wfExec, t, step.ID, prPushRetryStatusReason, "workflow.pr-tail.push-retry", "phase", phase, "attempt", attempts+1, "max", maxPRPushRetries)
+		}
+		return e.humanRequiredPR(taskID, step, fmt.Sprintf("%s failed after %d retries: %s", phase, attempts, msg))
 	}
 }
 
