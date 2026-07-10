@@ -6,6 +6,7 @@
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
   import TaskStatusBanner from '../components/task-detail/TaskStatusBanner.svelte'
   import HumanRequiredPanel from '../components/task-detail/HumanRequiredPanel.svelte'
+  import PromptLabProposalPanel from '../components/task-detail/PromptLabProposalPanel.svelte'
   import TaskMetadataRow from '../components/task-detail/TaskMetadataRow.svelte'
   import TaskPullRequestsPanel from '../components/task-detail/TaskPullRequestsPanel.svelte'
   import TaskDescriptionEditor from '../components/task-detail/TaskDescriptionEditor.svelte'
@@ -189,6 +190,7 @@
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
       <HumanRequiredPanel task={t} />
+      <PromptLabProposalPanel task={t} />
       {#if pendingApproval && activeTab !== 'plan'}
         <!-- Default is Overview, so nudge the pending approve/reject to the fore. -->
         <button
