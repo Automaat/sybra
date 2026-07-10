@@ -773,7 +773,10 @@ func ConfigureGitHubAuth(ctx context.Context, worktreePath string) error {
 }
 
 func stripRemoteURLCredentials(ctx context.Context, worktreePath, remote string) error {
-	raw, _ := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote."+remote+".url")
+	raw, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return fmt.Errorf("read %s remote url: %w", remote, err)
+	}
 	cleaned, changed := stripHTTPSUserinfo(strings.TrimSpace(raw))
 	if !changed {
 		return nil
