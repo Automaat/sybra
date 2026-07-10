@@ -50,9 +50,8 @@ func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID s
 // startWorkflowLocked is the marker-holding body shared by StartWorkflowWithVars
 // and DispatchEvent. It returns a non-nil *CompletionInfo when the workflow
 // finished synchronously within this call; the caller must hand it to
-// fireComplete only AFTER releasing its own per-task marker (starting via this
-// function's defer, plus dispatching for DispatchEvent) so the completion's
-// cascade dispatch is not rejected as re-entrant.
+// fireComplete only AFTER this function returns so the starting marker has
+// been released before any completion cascade re-enters the workflow engine.
 func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
 	e.mu.Lock()
 	if _, busy := e.starting[taskID]; busy {
@@ -183,8 +182,13 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
-	// Serialize dispatch attempts per task to prevent concurrent callers from
-	// both observing "no active workflow" and double-starting.
+	// Serialize event-driven workflow dispatch attempts per task. The shared
+	// agent.Manager claim only appears once a run_agent step reaches StartAgent;
+	// DispatchEvent needs its own earlier reservation so two callers cannot both
+	// observe "no active workflow" and double-start before any agent claim
+	// exists. Still consult the shared claim too: an out-of-band dispatcher may
+	// already own the task's next agent launch even when the engine has no local
+	// marker yet.
 	e.mu.Lock()
 	if _, busy := e.dispatching[taskID]; busy {
 		e.mu.Unlock()
@@ -192,10 +196,15 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 	}
 	e.dispatching[taskID] = struct{}{}
 	e.mu.Unlock()
+	if e.agents.IsDispatching(taskID) {
+		e.mu.Lock()
+		delete(e.dispatching, taskID)
+		e.mu.Unlock()
+		return "", fmt.Errorf("%w: dispatch in progress", ErrWorkflowAlreadyActive)
+	}
 	// If the matched workflow finishes synchronously (a mechanical workflow with
-	// no async step), its completion must be fired only after `dispatching` is
-	// cleared, or its cascade dispatch re-enters and is dropped. Register the
-	// fire defer *before* the marker-delete defer so LIFO runs it afterwards.
+	// no async step), fire its completion after startWorkflowLocked returns so
+	// its starting marker is clear before a cascade dispatch re-enters.
 	var completion *CompletionInfo
 	defer func() {
 		e.fireComplete(completion)
@@ -239,7 +248,7 @@ func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[strin
 // workflow being replaced: they must keep trigger conditions authoritative, but
 // cannot call DispatchEvent because the outer workflow start still owns the
 // per-task starting marker. Callers from ordinary external event sources should
-// keep using DispatchEvent so the dispatching marker serializes them.
+// keep using DispatchEvent so active-workflow checks serialize them.
 func (e *Engine) ReplaceWorkflowForEvent(taskID, event string, extraFields, vars map[string]string, cancelReason string) (string, error) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
@@ -281,7 +290,7 @@ func (e *Engine) HasActiveWorkflow(taskID string) bool {
 // CancelWorkflow terminates a task's active workflow without running any
 // remaining steps. Stops in-flight agents for the task, marks the workflow
 // ExecCompleted with the cancellation reason recorded in variables, and
-// clears CurrentStep so ResumeStalled stops re-dispatching.
+// clears CurrentStep so ResumeStalled stops launching another run.
 //
 // No-op when the task has no workflow or its workflow already terminated.
 // Returns the prior current step ID for the caller's log line; empty when

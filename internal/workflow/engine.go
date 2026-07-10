@@ -255,8 +255,8 @@ type CompletionInfo struct {
 	Variables  map[string]string
 }
 
-// agentEntry records which task and step an agent was spawned for.
-type agentEntry struct {
+// agentRoute records which task and step an agent completion belongs to.
+type agentRoute struct {
 	taskID string
 	stepID string
 }
@@ -290,11 +290,11 @@ type Engine struct {
 	ctx              context.Context
 	mu               sync.Mutex
 	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}        // taskID → dispatch in progress
+	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
 	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
 	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
-	agentSteps       map[string]agentEntry      // agentID → {taskID, stepID}
-	dispatchingStep  map[string]int             // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
+	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
+	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
 	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
 	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
@@ -323,8 +323,8 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		dispatching:      make(map[string]struct{}),
 		starting:         make(map[string]struct{}),
 		humanAction:      make(map[string]struct{}),
-		agentSteps:       make(map[string]agentEntry),
-		dispatchingStep:  make(map[string]int),
+		agentRoutes:      make(map[string]agentRoute),
+		pendingStepStart: make(map[string]int),
 		cascadeDepth:     make(map[string]int),
 		pendingRecovery:  make(map[string]pendingRecovery),
 		resumeError:      logging.NewErrorThrottle(),

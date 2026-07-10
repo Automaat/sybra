@@ -693,6 +693,9 @@ func (b *blockingAgentLauncher) StartAgent(string, string, string, string, strin
 	<-b.releaseCh
 	return "", "", "", workflow.ErrDispatchInFlight
 }
+func (b *blockingAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 func (b *blockingAgentLauncher) HasRunningAgent(string) bool                     { return false }
 func (b *blockingAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (b *blockingAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
@@ -704,6 +707,7 @@ func (b *blockingAgentLauncher) DefaultProvider() string          { return "clau
 func (b *blockingAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (b *blockingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (b *blockingAgentLauncher) ProviderHealthy(string) bool      { return true }
+func (b *blockingAgentLauncher) IsDispatching(string) bool        { return false }
 
 // TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHeld
 // locks the fix for dispatchBranchConflictRecovery's own re-dispatch call: a

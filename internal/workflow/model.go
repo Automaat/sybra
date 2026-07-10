@@ -268,7 +268,7 @@ type StepConfig struct {
 	// winner_attempt_id names.
 	BestOfNStep string `yaml:"best_of_n_step,omitempty" json:"bestOfNStep,omitempty"`
 
-	// run_agent: enforce the cumulative task cost budget before dispatching.
+	// run_agent: enforce the cumulative task cost budget before launch.
 	// Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
 	// pre-staged dir and so bypasses StartAgentWithAssignment's own budget
 	// enforcement) so the run fails closed to human-required instead of
@@ -326,7 +326,7 @@ func (d *Definition) Validate() error {
 
 // validateParallelStep enforces that a `parallel` step has at least two
 // run_agent children, no nested parallels, and globally-unique child IDs.
-// The constraints exist because the engine's step bookkeeping (agentSteps
+// The constraints exist because the engine's step bookkeeping (agentRoutes
 // map, ImportSidecar lookup, retry counter) is keyed by step ID — duplicates
 // would cause cross-step state to clobber each other.
 func validateParallelStep(s *Step, seenIDs map[string]bool) error {

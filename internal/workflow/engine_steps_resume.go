@@ -61,7 +61,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 
 	// StartWorkflowWithVars refuses to start a new workflow while the task's
 	// current workflow (this one) is non-terminal, so finalize THIS execution
-	// first and persist it before dispatching the resume target. Returning
+	// first and persist it before launching the resume target. Returning
 	// errStepParked afterward tells executeSteps to stop without its own
 	// record/resolveNext/SetWorkflow pass — which would otherwise re-persist
 	// this now-stale (but already-completed) Execution over the freshly
