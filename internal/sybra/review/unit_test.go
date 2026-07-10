@@ -162,6 +162,28 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
+
+	// Fence markers must be balanced and never nested — the push snippet must
+	// join an already-open fence rather than opening its own, or the agent is
+	// told to run a literal ```sh line (see review finding on prFixPushPrompt).
+	var open bool
+	var fences int
+	for line := range strings.SplitSeq(prompt, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		fences++
+		// A CommonMark closing fence may only be the bare backticks; an info
+		// string here (e.g. ```sh) means the helper opened a nested fence.
+		if open && trimmed != "```" {
+			t.Fatalf("closing fence has an info string (nested fence?) %q:\n%s", line, prompt)
+		}
+		open = !open
+	}
+	if open {
+		t.Fatalf("prompt has an unclosed code fence (%d markers):\n%s", fences, prompt)
+	}
 }
 
 func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {

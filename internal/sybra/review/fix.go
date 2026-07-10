@@ -301,21 +301,29 @@ func ciFailurePrompt(pr github.PullRequest) string {
 			"gate — fix the underlying code. Tampering is detected and blocks "+
 			"the task.\n\n"+
 			"%s",
-		pr.HeadRefName, pr.Number, prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:"),
+		pr.HeadRefName, pr.Number, prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
 	)
 }
 
-func prFixPushPrompt(branch, intro string) string {
+// prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
+// agent. When fenced is true it emits a standalone ```sh block (optionally
+// preceded by intro); when false it emits only the three command lines so the
+// caller can splice them into an already-open code fence without nesting.
+func prFixPushPrompt(branch, intro string, fenced bool) string {
 	var b strings.Builder
-	if intro != "" {
+	if fenced && intro != "" {
 		b.WriteString(intro)
 		b.WriteByte('\n')
 	}
-	b.WriteString("```sh\n")
+	if fenced {
+		b.WriteString("```sh\n")
+	}
 	b.WriteString("PUSH_REMOTE=origin\n")
 	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
-	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s\n", branch)
-	b.WriteString("```")
+	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
+	if fenced {
+		b.WriteString("\n```")
+	}
 	return b.String()
 }
 
@@ -1187,7 +1195,8 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
-			"%s\n\n"+
+			"%s\n"+
+			"```\n\n"+
 			"Rules:\n"+
 			"- Use `refs/remotes/origin/%s` (not `origin/%s`) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the branch was opened from the fork\n"+
@@ -1196,7 +1205,7 @@ func branchConflictPrompt(t task.Task, base string) string {
 			"- Do not stop just because the conflict count is high — split by file and resolve all conflicts autonomously\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, prFixPushPrompt(branch, ""), base, base,
+		branch, base, prFixPushPrompt(branch, "", false), base, base,
 	)
 }
 
@@ -1267,7 +1276,7 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:"),
+		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
 	)
 }
 
@@ -1306,7 +1315,8 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"# If the merge already completed on its own (clean/fast-forward, no\n"+
 			"# conflicts), it is already committed — do not run git commit again, it\n"+
 			"# will fail with \"nothing to commit\". Still run targeted tests before pushing.\n"+
-			"%s\n\n"+
+			"%s\n"+
+			"```\n\n"+
 			"Rules:\n"+
 			"- Use `%s` (the PR's base branch, a full ref not a bare name) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
@@ -1316,6 +1326,6 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, ""), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, prFixPushPrompt(pr.HeadRefName, "", false), baseRef, filesCtx,
 	)
 }
