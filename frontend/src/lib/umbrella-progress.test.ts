@@ -31,21 +31,22 @@ describe('umbrella progress', () => {
     expect(normalizeIssueRef('Automaat/sybra#1213')).toBe('automaat/sybra#1213')
   })
 
-  it('counts done and total materialized children per umbrella', () => {
+  it('counts only genuinely-landed done children, not false completions', () => {
     const byUmbrella = buildUmbrellaProgress([
-      task({ id: 'c1', outcome: 'merged', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
+      task({ id: 'c1', status: Status.StatusDone, outcome: 'merged', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
       task({ id: 'c2', status: Status.StatusInProgress, umbrellaIssue: 'Automaat/sybra#1213' }),
-      task({ id: 'c3', outcome: 'merged', umbrellaIssue: 'Automaat/sybra#999' }),
-      task({ id: 'standalone', status: Status.StatusDone }),
+      task({ id: 'c4', status: Status.StatusDone, outcome: '', umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c3', status: Status.StatusDone, outcome: 'merged_with_edits', umbrellaIssue: 'Automaat/sybra#999' }),
+      task({ id: 'standalone', status: Status.StatusDone, outcome: 'merged' }),
     ])
 
-    expect(byUmbrella.get('automaat/sybra#1213')).toEqual({ done: 1, total: 2 })
+    expect(byUmbrella.get('automaat/sybra#1213')).toEqual({ done: 1, total: 3 })
     expect(byUmbrella.get('automaat/sybra#999')).toEqual({ done: 1, total: 1 })
   })
 
   it('resolves tracker progress from its issue ref', () => {
     const byUmbrella = buildUmbrellaProgress([
-      task({ id: 'c1', outcome: 'merged', umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c1', status: Status.StatusDone, outcome: 'merged', umbrellaIssue: 'Automaat/sybra#1213' }),
       task({ id: 'c2', status: Status.StatusTodo, umbrellaIssue: 'Automaat/sybra#1213' }),
     ])
 
@@ -58,8 +59,8 @@ describe('umbrella progress', () => {
 
   describe('isChildComplete', () => {
     it('counts merged and merged_with_edits outcomes as complete', () => {
-      expect(isChildComplete(task({ outcome: 'merged' }))).toBe(true)
-      expect(isChildComplete(task({ outcome: 'merged_with_edits' }))).toBe(true)
+      expect(isChildComplete(task({ status: Status.StatusDone, outcome: 'merged' }))).toBe(true)
+      expect(isChildComplete(task({ status: Status.StatusDone, outcome: 'merged_with_edits' }))).toBe(true)
     })
 
     it('does not count closed, reverted, empty, or bare local done', () => {

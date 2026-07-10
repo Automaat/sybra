@@ -11,12 +11,12 @@ export interface UmbrellaChildren {
   displayTotal: number
 }
 
-// isChildComplete is a local merged-outcome proxy for "shipped", not exact
-// GitHub closed-subissue reconciliation: the task model has no local
-// subissue-closed field, and outcome "closed" means a PR closed unmerged
-// (not completed work), so it must not count here.
-export function isChildComplete(t: Task): boolean {
-  return (t.outcome ?? '').startsWith('merged')
+const LANDED_OUTCOMES = new Set(['merged', 'merged_with_edits'])
+
+// "Shipped" in the UI means the child is locally done and its outcome records
+// a landed merge shape, not merely that some PR existed or the issue closed.
+export function isChildComplete(task: Task): boolean {
+  return task.status === 'done' && LANDED_OUTCOMES.has(task.outcome ?? '')
 }
 
 export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgress> {
