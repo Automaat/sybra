@@ -137,6 +137,7 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 	out := make([]TaskArtifactDTO, 0, len(metas))
 	for i := range metas {
 		meta := metas[i]
+		meta.SourcePath = ""
 		dto := TaskArtifactDTO{Meta: meta}
 		data, _, readErr := s.artifacts.Read(taskID, meta.Name)
 		if readErr != nil {
@@ -145,7 +146,11 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 			continue
 		}
 		if len(data) > taskDiagnosticReadLimit {
-			data = data[:taskDiagnosticReadLimit]
+			if meta.Stream {
+				data = data[len(data)-taskDiagnosticReadLimit:]
+			} else {
+				data = data[:taskDiagnosticReadLimit]
+			}
 			dto.Error = fmt.Sprintf("truncated to %d bytes", taskDiagnosticReadLimit)
 		}
 		dto.Content = string(data)

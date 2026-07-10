@@ -168,6 +168,68 @@ func TestTaskService_ListTaskArtifactsIncludesContent(t *testing.T) {
 	}
 }
 
+func TestTaskService_ListTaskArtifactsStripsSourcePath(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:       artifact.KindPlan,
+		Name:       "plan.md",
+		SourcePath: "/Users/operator/.sybra/worktrees/t1/agent-out.log",
+		Content:    []byte("# Plan"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].SourcePath != "" {
+		t.Fatalf("SourcePath = %q, want stripped", got[0].SourcePath)
+	}
+}
+
+func TestTaskService_ListTaskArtifactsTruncatesStreamFromTail(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := strings.Repeat("a", 1024)
+	for range taskDiagnosticReadLimit/1024 + 2 {
+		if err := svc.artifacts.Append(created.ID, artifact.KindTrace, map[string]string{"pad": padding}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.artifacts.Append(created.ID, artifact.KindTrace, map[string]string{"marker": "TAIL_MARKER"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if !got[0].Stream {
+		t.Fatalf("expected trace.jsonl to be a stream artifact")
+	}
+	if !strings.Contains(got[0].Content, "TAIL_MARKER") {
+		t.Fatalf("expected truncated content to keep the tail, got suffix %q", got[0].Content[len(got[0].Content)-40:])
+	}
+}
+
 func TestTaskService_GetTaskSetupLog(t *testing.T) {
 	t.Parallel()
 	logDir := t.TempDir()
