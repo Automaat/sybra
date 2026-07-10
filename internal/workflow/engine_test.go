@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1778,6 +1779,65 @@ func TestNoWorkflowField(t *testing.T) {
 
 	// Should not panic or error fatally.
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Result: "result", Success: true})
+}
+
+func TestDispatchPriorityRank(t *testing.T) {
+	cases := []struct {
+		status string
+		want   int
+	}{
+		{"in-review", 0},
+		{"ready-pr", 0},
+		{"ready-review", 1},
+		{"testing", 1},
+		{"in-progress", 2},
+		{"planning", 3},
+		{"plan-review", 3},
+		{"todo", 4},
+		{"new", 4},
+		{"blocked", 4},
+		{"", 4},
+	}
+	for _, tc := range cases {
+		if got := dispatchPriorityRank(tc.status); got != tc.want {
+			t.Errorf("dispatchPriorityRank(%q) = %d, want %d", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	parked := func(id, status string) TaskInfo {
+		return TaskInfo{
+			ID:        id,
+			Status:    status,
+			AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				Variables:   make(map[string]string),
+			},
+		}
+	}
+	tasks.Put(parked("t-new", "todo"))
+	tasks.Put(parked("t-mid", "in-progress"))
+	tasks.Put(parked("t-review", "in-review"))
+
+	engine.ResumeStalled()
+
+	var order []string
+	for _, c := range agents.calls {
+		order = append(order, c.TaskID)
+	}
+	want := []string{"t-review", "t-mid", "t-new"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("dispatch order = %v, want %v", order, want)
+	}
 }
 
 func TestResumeStalled_RunAgent(t *testing.T) {
