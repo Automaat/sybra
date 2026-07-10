@@ -126,6 +126,8 @@ type Result struct {
 	Created     int  // child tasks created this run
 	Skipped     int  // sub-issues already materialized or done
 	Degraded    bool // true when the DAG came from independentFallback, not the model
+	ChildCount  int  // total sub-issues in the umbrella (Created + Skipped)
+	MaxParallel int  // effective expansion cap the plan materialized with; 0 on the all-materialized short-circuit, where no plan runs
 }
 
 // Expand fetches a GitHub umbrella issue's native sub-issues, runs the planner
@@ -187,7 +189,7 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		if err := clearExpandFailure(tasks, tracker.id); err != nil {
 			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
 		}
-		return Result{UmbrellaURL: umb.URL, Skipped: len(subs)}, nil
+		return Result{UmbrellaURL: umb.URL, Skipped: len(subs), ChildCount: len(subs)}, nil
 	}
 	// A tracker parked human-required after ExpandFailThreshold consecutive
 	// planner failures stops calling the planner entirely — the incident this
@@ -225,7 +227,14 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
 		}
 	}
-	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created, Degraded: plan.Fallback}, nil
+	return Result{
+		UmbrellaURL: umb.URL,
+		Created:     created,
+		Skipped:     len(subs) - created,
+		Degraded:    plan.Fallback,
+		ChildCount:  len(subs),
+		MaxParallel: plan.MaxParallel,
+	}, nil
 }
 
 func lockExpandIssue(tasks *task.Manager, issueURL string) (func() error, error) {
