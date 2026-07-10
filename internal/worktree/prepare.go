@@ -611,6 +611,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	}
 	if reused {
 		m.ensureBranch(t, branch)
+		if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+			m.logger.Warn("branch-fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+		}
 		m.logger.Info("branch-fix.worktree.reused", "task_id", t.ID, "path", wtPath, "branch", branch)
 		if t.RunRole != "pr-fix" {
 			if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
@@ -737,6 +740,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 	if reused {
 		m.ensureBranch(t, branch)
+		if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+			m.logger.Warn("fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+		}
 		m.logger.Info("fix.worktree.reused", "task_id", t.ID, "path", wtPath, "branch", branch)
 		if t.RunRole != "pr-fix" {
 			if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {

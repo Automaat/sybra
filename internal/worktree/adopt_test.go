@@ -13,6 +13,19 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func signoffHookPath(t *testing.T, wtPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-common-dir").CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git common dir: %v: %s", err, out)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	return filepath.Join(gitDir, "hooks", "prepare-commit-msg")
+}
+
 // TestPrepareForTask_AdoptsExternalWorktree verifies that a task carrying an
 // explicit WorktreeDir is run in that directory verbatim: PrepareForTask
 // returns the external path, records its branch, drops the identity beacon,
@@ -266,6 +279,13 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	if got := strings.Count(string(countAfterFirst), "run"); got != 1 {
 		t.Fatalf("setup ran %d times on initial prepare, want 1", got)
 	}
+	hookPath := signoffHookPath(t, wtPath)
+	if err := os.Remove(hookPath); err != nil {
+		t.Fatalf("remove signoff hook: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
+		t.Fatalf("unset core.hooksPath: %v: %s", err, out)
+	}
 
 	// A second commit lands on the fix branch (e.g. pushed from another
 	// clone) before the next dispatch.
@@ -297,6 +317,9 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	// The worktree must be fast-forwarded to the new remote commit.
 	if _, err := os.Stat(filepath.Join(got, "feature2.txt")); err != nil {
 		t.Errorf("reused worktree missing feature2.txt from the second remote commit: %v", err)
+	}
+	if _, err := os.Stat(hookPath); err != nil {
+		t.Errorf("signoff hook was not restored on reuse: %v", err)
 	}
 }
 

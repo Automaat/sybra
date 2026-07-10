@@ -280,12 +280,12 @@ func (m *Manager) resolveTrustedSetupCommands(ctx context.Context, proj project.
 	return merged
 }
 
-// desktopBuildSetupMarker matches the desktop production build step
-// (`npm run build:desktop`) that .sybra.yaml setup blocks use so `go build`
-// has something to //go:embed. A code-authoring role needs it; a read-only
-// PR review worktree never builds anything, so running it there is pure
-// waste (issue #1527).
-const desktopBuildSetupMarker = "build:desktop"
+// desktopBuildSetupMarker matches the actual desktop production build
+// invocation (`npm run build:desktop`) that .sybra.yaml setup blocks use so
+// `go build` has something to //go:embed. A code-authoring role needs it; a
+// read-only PR review worktree never builds anything, so running it there is
+// pure waste (issue #1527).
+const desktopBuildSetupMarker = "npm run build:desktop"
 
 // filterNonAuthoringSetup drops setup commands that exist only to prepare a
 // worktree for building/embedding, for roles that never build — currently

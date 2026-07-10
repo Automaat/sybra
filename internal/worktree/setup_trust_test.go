@@ -210,3 +210,28 @@ func TestPrepareForReview_SkipsDesktopBuildSetup(t *testing.T) {
 		t.Errorf("build:desktop-marked setup command did not run on a fix worktree: %v", err)
 	}
 }
+
+func TestFilterNonAuthoringSetup_OnlySkipsActualDesktopBuildInvocation(t *testing.T) {
+	commands := []string{
+		"npm ci",
+		"npm run build:desktop",
+		"sh -c 'npm run build:desktop >/dev/null 2>&1 || true; touch build-desktop-marker'",
+		"printf 'build:desktop is mentioned but not executed\\n'",
+		"make build:desktop-assets",
+	}
+
+	filtered := filterNonAuthoringSetup(commands)
+
+	if len(filtered) != 3 {
+		t.Fatalf("filtered command count = %d, want 3; filtered=%q", len(filtered), filtered)
+	}
+	if filtered[0] != "npm ci" {
+		t.Fatalf("filtered[0] = %q, want npm ci", filtered[0])
+	}
+	if filtered[1] != "printf 'build:desktop is mentioned but not executed\\n'" {
+		t.Fatalf("filtered[1] = %q, want the non-executing build:desktop mention to remain", filtered[1])
+	}
+	if filtered[2] != "make build:desktop-assets" {
+		t.Fatalf("filtered[2] = %q, want the unrelated build target to remain", filtered[2])
+	}
+}
