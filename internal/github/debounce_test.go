@@ -165,17 +165,25 @@ func TestIssueTracker(t *testing.T) {
 		}
 	})
 
-	t.Run("cleanup removes old entries", func(t *testing.T) {
+	t.Run("cleanup drops cooldown but never forgets the last SHA", func(t *testing.T) {
+		// Regression for #1528: a long-lived PR whose head never changes must
+		// keep skipping dispatch even once the time-based cooldown record ages
+		// out of Cleanup — otherwise the tracker "forgets" it already handled
+		// this exact commit and re-dispatches a fresh pr-fix agent forever.
 		tracker.MarkHandled("t3", PRIssueConflict, "sha-old")
 		now = now.Add(61 * time.Minute) // past 2x cooldown
 		tracker.Cleanup()
 
-		// t3 should be cleaned up — new SHA allowed
-		if !tracker.ShouldHandle("t3", PRIssueConflict, "sha-old") {
-			t.Fatal("expected ShouldHandle=true after cleanup")
+		// Same SHA still blocks — Cleanup must not erase the SHA memory.
+		if tracker.ShouldHandle("t3", PRIssueConflict, "sha-old") {
+			t.Fatal("expected ShouldHandle=false: same SHA still blocks after cleanup")
 		}
-		if tracker.Retries("t3", PRIssueConflict) != 0 {
-			t.Fatal("expected retries cleaned up")
+		if tracker.Retries("t3", PRIssueConflict) != 1 {
+			t.Fatalf("expected retries preserved at 1 after cleanup, got %d", tracker.Retries("t3", PRIssueConflict))
+		}
+		// A genuinely new commit is still handled promptly.
+		if !tracker.ShouldHandle("t3", PRIssueConflict, "sha-new") {
+			t.Fatal("expected ShouldHandle=true: new SHA allowed after cleanup")
 		}
 	})
 

@@ -144,12 +144,14 @@ describe('NavStore', () => {
       [{ kind: 'agents' }, 'Agents'],
       [{ kind: 'agent-detail', agentId: 'a1' }, 'Agent Detail'],
       [{ kind: 'github' }, 'GitHub'],
+      [{ kind: 'fleet' }, 'Fleet'],
       [{ kind: 'stats' }, 'Stats'],
       [{ kind: 'reviews' }, 'Reviews'],
       [{ kind: 'settings' }, 'Settings'],
       [{ kind: 'workflows' }, 'Workflows'],
       [{ kind: 'workflow-detail', workflowId: 'wf1' }, 'Workflow Editor'],
       [{ kind: 'logbook' }, 'Logbook'],
+      [{ kind: 'notifications' }, 'Notifications'],
     ] as const)('pageTitle for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.pageTitle).toBe(expected)
@@ -167,6 +169,7 @@ describe('NavStore', () => {
       [{ kind: 'reviews' }, 'reviews'],
       [{ kind: 'settings' }, 'more'],
       [{ kind: 'stats' }, 'more'],
+      [{ kind: 'notifications' }, 'more'],
     ] as const)('activeTab for %o is %s', (page: any, expected) => {
       navStore.reset(page)
       expect(navStore.activeTab).toBe(expected)
@@ -187,6 +190,7 @@ describe('pageToPath', () => {
     [{ kind: 'agents', tab: 'loop' }, '/agents?tab=loop'],
     [{ kind: 'agent-detail', agentId: 'a1' }, '/agents/a1'],
     [{ kind: 'github' }, '/github'],
+    [{ kind: 'fleet' }, '/fleet'],
     [{ kind: 'stats' }, '/stats'],
     [{ kind: 'evaluation' }, '/evaluation'],
     [{ kind: 'reviews' }, '/reviews'],
@@ -194,6 +198,7 @@ describe('pageToPath', () => {
     [{ kind: 'workflows' }, '/workflows'],
     [{ kind: 'workflow-detail', workflowId: 'wf1' }, '/workflows/wf1'],
     [{ kind: 'logbook' }, '/logbook'],
+    [{ kind: 'notifications' }, '/notifications'],
   ] as const)('serializes %o to %s', (page: any, expected) => {
     expect(pageToPath(page)).toBe(expected)
   })
@@ -213,6 +218,7 @@ describe('pageFromLocation', () => {
     ['/agents', '?tab=loop', { kind: 'agents', tab: 'loop' }],
     ['/agents/a1', '', { kind: 'agent-detail', agentId: 'a1' }],
     ['/github', '', { kind: 'github' }],
+    ['/fleet', '', { kind: 'fleet' }],
     ['/stats', '', { kind: 'stats' }],
     ['/evaluation', '', { kind: 'evaluation' }],
     ['/reviews', '', { kind: 'reviews' }],
@@ -220,6 +226,7 @@ describe('pageFromLocation', () => {
     ['/workflows', '', { kind: 'workflows' }],
     ['/workflows/wf1', '', { kind: 'workflow-detail', workflowId: 'wf1' }],
     ['/logbook', '', { kind: 'logbook' }],
+    ['/notifications', '', { kind: 'notifications' }],
     // trailing / duplicate slashes collapse the same as the bare route
     ['/tasks/', '', { kind: 'task-list' }],
     ['//tasks//t1//', '', { kind: 'task-detail', taskId: 't1' }],

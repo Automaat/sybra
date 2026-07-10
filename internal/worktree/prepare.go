@@ -220,6 +220,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			// again since that earlier fetch.
 			callPhase(onPhase, "Syncing upstream…")
 			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
+				return "", err
+			}
 			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 		}
 		// Worktree was wiped — fall through to create paths below.
@@ -242,9 +245,8 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		callPhase(onPhase, "Syncing upstream…")
 		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-		callPhase(onPhase, "Running setup…")
-		if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-			return "", fmt.Errorf("setup on reused branch: %w", err)
+		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
+			return "", err
 		}
 		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 	}
@@ -254,9 +256,8 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
-	callPhase(onPhase, "Running setup…")
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-		return "", fmt.Errorf("setup on new worktree: %w", err)
+	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "new worktree", onPhase); err != nil {
+		return "", err
 	}
 	m.installChecks(ctx, wtPath, proj)
 
@@ -268,6 +269,14 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+func (m *Manager) runPrepareSetup(ctx context.Context, taskID, wtPath string, proj project.Project, label string, onPhase func(string)) error {
+	callPhase(onPhase, "Running setup…")
+	if err := m.runSetup(ctx, taskID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return fmt.Errorf("setup on %s: %w", label, err)
+	}
+	return nil
 }
 
 // reconcileAndRebase prepares a reused worktree branch for another agent run.
@@ -506,6 +515,9 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("review.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
@@ -573,6 +585,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.ensureBranch(t, branch)
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	// Read setup from the trusted default branch, never the checked-out worktree:
 	// this branch already carries commits an implementation agent pushed in an
@@ -590,6 +605,37 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 		}
 	}
 	return wtPath, nil
+}
+
+// RecreateFromBase discards a task's diverged branch and its worktree so the
+// next PrepareForTask rebuilds it fresh off the project's base ref. The branch
+// tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
+// discarded commits stay recoverable. Used as the last-resort recovery when
+// merge-based branch-conflict recovery is exhausted on a no-PR task: the branch
+// genuinely cannot be reconciled, so re-implementing from a clean base is the
+// only autonomous path left.
+func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+	branch := branchNameForTask(t)
+	wtPath := m.PathFor(t)
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if berr := project.BackupBranchRef(ctx, proj.ClonePath, branch); berr != nil {
+			m.logger.Warn("worktree.recreate.backup", "task_id", t.ID, "branch", branch, "err", berr)
+		}
+	}
+	if rerr := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); rerr != nil {
+		return fmt.Errorf("remove worktree: %w", rerr)
+	}
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if derr := project.DeleteBranch(ctx, proj.ClonePath, branch); derr != nil {
+			return fmt.Errorf("delete branch: %w", derr)
+		}
+	}
+	m.logger.Info("worktree.recreated-from-base", "task_id", t.ID, "branch", branch)
+	return nil
 }
 
 // PrepareForFix creates a worktree checking out the PR's head branch
@@ -663,6 +709,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.ensureBranch(t, branch)
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)

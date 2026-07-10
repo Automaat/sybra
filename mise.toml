@@ -106,6 +106,9 @@ env = { SYBRA_PORT = "8080" }
 run = [
   "mkdir -p /tmp/sybra-e2e/tasks",
   "cp frontend/e2e/fixtures/*.md /tmp/sybra-e2e/tasks/",
+  # Marker proving this is a disposable e2e home; the suite refuses destructive
+  # task cleanup without it (#1576).
+  "touch /tmp/sybra-e2e/.sybra-e2e-home",
   "cd frontend && npx playwright test",
 ]
 description = "Run e2e tests (run 'mise run dev:server' in another terminal first)"

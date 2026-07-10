@@ -64,7 +64,13 @@ func ParseBytes(data []byte) (Task, error) {
 }
 
 func Marshal(t Task) ([]byte, error) {
-	t.UpdatedAt = time.Now().UTC()
+	return marshalTask(t, true)
+}
+
+func marshalTask(t Task, touchUpdatedAt bool) ([]byte, error) {
+	if touchUpdatedAt {
+		t.UpdatedAt = time.Now().UTC()
+	}
 
 	// Strip leading whitespace/newlines from agent run results and prompts
 	// so yaml.v3 doesn't emit |N- block scalars that it fails to parse back

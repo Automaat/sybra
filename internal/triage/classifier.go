@@ -2,10 +2,8 @@ package triage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/llmexec"
@@ -15,17 +13,10 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// Classifier wraps the claude -p invocation. Exposed as an interface so
-// tests can inject a canned verdict without shelling out.
+// Classifier produces a triage verdict for a task. Exposed as an interface so
+// tests can inject a canned verdict without a live provider call.
 type Classifier interface {
 	Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error)
-}
-
-// ClaudeClassifier is the production implementation. It spawns `claude -p`
-// with a strict JSON schema prompt and parses the envelope.
-type ClaudeClassifier struct {
-	Model  string       // default: "sonnet"
-	Logger *slog.Logger // required
 }
 
 // FallbackClassifier runs triage through the shared provider-fallback executor.
@@ -35,42 +26,13 @@ type FallbackClassifier struct {
 	Gate   provider.HealthGate
 }
 
-// Classify shells out to claude -p and returns a validated verdict.
-func (c *ClaudeClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
-	model := c.Model
-	if model == "" {
-		model = "sonnet"
-	}
-
-	prompt := buildPrompt(t, projects)
-
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return Verdict{}, fmt.Errorf("claude -p: %w", err)
-	}
-
-	v, err := parseVerdict(out)
-	if err != nil {
-		return Verdict{}, fmt.Errorf("parse verdict: %w", err)
-	}
-	if err := ValidateVerdict(&v); err != nil {
-		return Verdict{}, fmt.Errorf("validate verdict: %w", err)
-	}
-	return v, nil
-}
-
 // Classify shells out to the first available provider and falls back when it is
 // rate-limited/logged-out/unavailable.
 func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
 	v, _, err := llmjob.Run(ctx, buildPrompt(t, projects), llmjob.Spec[Verdict]{
 		Name:     "triage",
 		Tier:     llmjob.Cheap,
+		Schema:   Schema,
 		Validate: ValidateVerdict,
 	}, llmexec.Options{
 		Logger: c.Logger,
@@ -191,83 +153,4 @@ Output schema (single JSON object):
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// parseVerdict extracts the verdict from `claude -p --output-format json` stdout.
-// The top-level response has a `result` string field containing the model's
-// final message, from which we extract the last JSON object.
-func parseVerdict(raw []byte) (Verdict, error) {
-	text := string(raw)
-	var envelope struct {
-		Result *string `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
-		if *envelope.Result == "" {
-			return Verdict{}, fmt.Errorf("empty result field")
-		}
-		text = *envelope.Result
-	}
-	jsonStr := extractLastJSONObject(text)
-	if jsonStr == "" {
-		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
-	}
-	var v Verdict
-	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
-		return Verdict{}, fmt.Errorf("unmarshal verdict: %w", err)
-	}
-	return v, nil
-}
-
-// extractLastJSONObject returns the last balanced {...} substring in s, or "".
-// Mirrors internal/agent/inspector.go's helper. Tracks string-literal state
-// so braces inside string values don't count toward depth.
-func extractLastJSONObject(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }

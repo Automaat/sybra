@@ -364,7 +364,7 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, releaseClaim func()) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
 	}
@@ -405,7 +405,7 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 		// result — or that nested dispatch always observes the claim as still
 		// held and bails with ErrDispatchInFlight without ever starting an
 		// agent (the branch-conflict-fix workflow never actually dispatches).
-		releaseClaim()
+		claim.Release()
 		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 			return t, "", workflow.ErrDispatchInFlight
 		}
@@ -422,21 +422,14 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	// a manual start) cannot observe "no running agent" and launch a duplicate
 	// on the same worktree. workflow.ErrDispatchInFlight is benign: the holder
 	// will produce the task's agent.
-	if !o.agents.ClaimTaskDispatch(taskID) {
+	claim, ok := o.agents.TryClaimDispatch(taskID)
+	if !ok {
 		return nil, "", workflow.ErrDispatchInFlight
 	}
-	// releaseClaim is idempotent so resolveDispatchDir can release it early
+	// claim.Release is idempotent so resolveDispatchDir can release it early
 	// (before triggering a nested same-task dispatch, e.g. branch-conflict
 	// recovery) without this defer double-releasing on return.
-	released := false
-	releaseClaim := func() {
-		if released {
-			return
-		}
-		released = true
-		o.agents.ReleaseTaskDispatch(taskID)
-	}
-	defer releaseClaim()
+	defer claim.Release()
 
 	// Consume a pending watchdog headless-nudge steer (no-op when none). Held
 	// within the dispatch claim so the read-then-clear is serialized per task.
@@ -465,7 +458,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
-	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, releaseClaim)
+	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, claim)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
@@ -511,9 +504,13 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		ResumeSessionID:         resumeSessionID,
 		ExtraEnv:                extraEnv,
 		MaxTurns:                t.MaxTurns,
-		ForkSubagent:            t.ForkSubagent,
-		SandboxMode:             ResolveSandboxMode(t, o.cfg),
-		ReasoningEffort:         FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		// Always an implementation run (a code-author role, Role.AuthorsCode),
+		// so the task-level opt-in applies unconditionally here — see
+		// agentAdapter.StartAgent for the role-gated equivalent used by
+		// every other role (verifier roles must never fork).
+		ForkSubagent:    t.ForkSubagent,
+		SandboxMode:     ResolveSandboxMode(t, o.cfg),
+		ReasoningEffort: FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
@@ -535,6 +532,20 @@ func taskCumulativeCostUSD(runs []task.AgentRun) float64 {
 		total += runs[i].CostUSD
 	}
 	return total
+}
+
+// CheckTaskCostBudget re-exports the cumulative task cost-budget check
+// (agent.max_task_cost_usd) for dispatch paths that bypass
+// StartAgentWithAssignment — e.g. workflow.execBestOfN, whose attempts and
+// judge step dispatch through the direct-dispatch StartAgent branch, which
+// does not itself enforce the budget. Returns workflow.ErrTaskCostExceeded
+// (wrapped) when the task has already spent its budget.
+func (o *Orchestrator) CheckTaskCostBudget(taskID string) error {
+	t, err := o.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	return o.enforceTaskCostBudget(t)
 }
 
 func (o *Orchestrator) enforceTaskCostBudget(t task.Task) error {
@@ -605,7 +616,7 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	}
 	if recoverConflict != nil {
 		if recoverConflict(taskID) {
-			logger.Info("worktree.rebase-block.recovered-as-conflict", "task_id", taskID)
+			logger.Info("worktree.rebase-block.handled", "task_id", taskID)
 			return true
 		}
 	}
@@ -861,10 +872,11 @@ func (o *Orchestrator) defaultProjectID() string {
 func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	// Same per-task dispatch serialization as StartAgent — a pr-fix dispatch
 	// must not race a concurrent implementation/recovery dispatch.
-	if !o.agents.ClaimTaskDispatch(taskID) {
+	claim, ok := o.agents.TryClaimDispatch(taskID)
+	if !ok {
 		return workflow.ErrDispatchInFlight
 	}
-	defer o.agents.ReleaseTaskDispatch(taskID)
+	defer claim.Release()
 
 	t, err := o.tasks.Get(taskID)
 	if err != nil {
@@ -1037,10 +1049,31 @@ func CurrentWorktreeHead(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// FirstNonEmpty returns a if non-empty, else b.
-func FirstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+// FirstNonEmpty returns the first non-empty string among vals, or "" if all
+// are empty.
+func FirstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return b
+	return ""
+}
+
+// ResolveRoleEffort returns the reasoning-effort level to fall back to for
+// role when neither an experiment assignment nor the task itself pins a
+// level. It checks the operator-configured Agent.RoleEffort override first
+// (validated against task.AllReasoningEfforts), then falls back to the
+// role's built-in default (agent.Role.DefaultReasoningEffort). Returns ""
+// when nothing applies, letting the manager's global DefaultReasoningEffort
+// take over.
+func ResolveRoleEffort(role agent.Role, cfg *config.Config) string {
+	if cfg != nil {
+		if override, ok := cfg.Agent.RoleEffort[string(role)]; ok {
+			if _, err := task.ValidateReasoningEffort(override); err == nil {
+				return override
+			}
+		}
+	}
+	return role.DefaultReasoningEffort()
 }

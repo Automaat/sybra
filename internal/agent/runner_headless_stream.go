@@ -46,6 +46,9 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 	switch e.Type {
 	case "system", "init":
 		ev.PluginErrors = e.PluginErrors
+		if e.Subtype == "background_tasks_changed" {
+			ev.BackgroundTaskIDs = e.BackgroundTaskIDs
+		}
 	case "assistant":
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)

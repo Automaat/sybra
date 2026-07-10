@@ -91,7 +91,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 // when recovery began), execResumeWorkflow only restores status and
 // completes normally so the recovery workflow ends via the ordinary
 // resolveNext path — leaving the status-driven cascade
-// (AgentCompletionHandler.OnWorkflowComplete in package sybra) to pick up
+// (completion.Handler.OnWorkflowComplete in package sybra) to pick up
 // whatever workflow matches the restored status.
 func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	t.Parallel()

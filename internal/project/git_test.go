@@ -1297,6 +1297,33 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 	}
 }
 
+func TestHeadArg_NoFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if got != "my-branch" {
+		t.Errorf("HeadArg without fork = %q, want %q", got, "my-branch")
+	}
+}
+
+func TestHeadArg_WithFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/widgets.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if want := "someuser:my-branch"; got != want {
+		t.Errorf("HeadArg with fork = %q, want %q", got, want)
+	}
+}
+
 // TestPushUpstream_RoutesToFork verifies that PushUpstream targets the fork
 // remote when one is configured — this is the core kuma-PR-from-fork fix.
 // Without this routing, sybra's initial branch push lands on the upstream
@@ -2574,4 +2601,165 @@ func TestTryCleanMerge(t *testing.T) {
 			t.Fatalf("worktree not clean after fatal merge failure: %s", statusOut)
 		}
 	})
+}
+
+func TestInstallSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	body := func() string {
+		t.Helper()
+		out, gerr := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+		if gerr != nil {
+			t.Fatalf("git log: %v", gerr)
+		}
+		return string(out)
+	}
+
+	wantSOB := "Signed-off-by: Agent <agent@example.com>"
+
+	if err := os.WriteFile(filepath.Join(wtPath, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add a")
+	if got := body(); !strings.Contains(got, wantSOB) {
+		t.Errorf("plain commit missing DCO trailer, got:\n%s", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-s", "-m", "feat: add b")
+	if got := body(); strings.Count(got, wantSOB) != 1 {
+		t.Errorf("commit -s should not duplicate the trailer, got %d in:\n%s",
+			strings.Count(got, wantSOB), got)
+	}
+}
+
+func TestInstallSignoffHook_OverridesHooksPath(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	gitDir := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	stray := filepath.Join(t.TempDir(), "stray-hooks")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("config", "core.hooksPath", stray)
+
+	if err := InstallSignoffHook(context.Background(), dir); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("add", ".")
+	gitDir("commit", "-m", "feat: x")
+
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "Signed-off-by: Test <test@test.com>") {
+		t.Errorf("hook did not run despite a stray core.hooksPath override, got:\n%s", out)
+	}
+}
+
+func TestCloneBare_InstallsSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add c")
+
+	out, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if want := "Signed-off-by: Agent <agent@example.com>"; !strings.Contains(string(out), want) {
+		t.Errorf("CloneBare worktree commit missing DCO trailer, got:\n%s", out)
+	}
+}
+
+func TestStripHTTPSUserinfo(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		changed bool
+	}{
+		{"token userinfo", "https://ghp_abc123@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"user colon token", "https://user:ghp_x@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"clean https", "https://github.com/o/r.git", "https://github.com/o/r.git", false},
+		{"ssh untouched", "git@github.com:o/r.git", "git@github.com:o/r.git", false},
+		{"at in path only", "https://github.com/o/r@v2.git", "https://github.com/o/r@v2.git", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := stripHTTPSUserinfo(tc.in)
+			if got != tc.want || changed != tc.changed {
+				t.Errorf("stripHTTPSUserinfo(%q) = (%q,%v), want (%q,%v)", tc.in, got, changed, tc.want, tc.changed)
+			}
+		})
+	}
 }

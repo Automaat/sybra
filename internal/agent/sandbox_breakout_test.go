@@ -50,11 +50,16 @@ func newEnforceSandboxCfg(t *testing.T, worktree, sandboxHome, tmp string) *RunC
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(tmp): %v", err)
 	}
+	shared, err := canonicalizeRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalizeRoot(sharedCache): %v", err)
+	}
 	return &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
 		worktree:    wt,
 		sandboxHome: home,
 		tmp:         tp,
+		sharedCache: shared,
 		profilePath: profile,
 	}}
 }
@@ -220,5 +225,58 @@ func TestSandboxBreakout_PreservesPIDAndSignal(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("process did not exit within 5s of SIGINT — sandbox-exec may not be forwarding signals to the exec'd child")
+	}
+}
+
+// TestSurviveHeadlessEnforceSandboxNoDenial proves the steerable headless
+// survive path's FIFO does not need a new sandbox write root: the FIFO is
+// created and opened O_RDWR by the parent (Sybra itself, unsandboxed)
+// entirely outside the enforce-mode profile's allowed write roots
+// (worktree/sandboxHome/tmp), and only the already-open fd is handed to the
+// sandboxed child as stdin. Reads are unrestricted by the seatbelt profile
+// (it denies file-write* only), so the child must be able to read a steer
+// message off that fd without any denial, even though the FIFO's directory
+// is nowhere in the allowlist.
+func TestSurviveHeadlessEnforceSandboxNoDenial(t *testing.T) {
+	worktree := t.TempDir()
+	home := t.TempDir()
+	tmp := t.TempDir()
+	cfg := newEnforceSandboxCfg(t, worktree, home, tmp)
+
+	// The FIFO lives in its own directory, deliberately disjoint from every
+	// allowed write root.
+	fifoDir := t.TempDir()
+	fifoPath := filepath.Join(fifoDir, "steer.stdin")
+	if err := makeFIFO(fifoPath); err != nil {
+		t.Fatalf("makeFIFO: %v", err)
+	}
+	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open fifo: %v", err)
+	}
+	defer func() { _ = fifo.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	outPath := filepath.Join(worktree, "out.txt")
+	cmd := newProviderCmd(ctx, cfg, false, "bash", "-c", "read line; echo \"got:$line\" > "+shellQuote(outPath))
+	cmd.Stdin = fifo
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := fifo.WriteString("steer message\n"); err != nil {
+		t.Fatalf("write fifo: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("sandboxed child exited non-zero reading its FIFO stdin: %v", err)
+	}
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "got:steer message" {
+		t.Fatalf("output = %q, want %q", got, "got:steer message")
 	}
 }

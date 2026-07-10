@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +58,7 @@ func TestAgentJSONKeySet(t *testing.T) {
 		"awaitingApproval",
 		"cacheCreationInputTokens",
 		"cacheReadInputTokens",
+		"canSteer",
 		"command",
 		"costUsd",
 		"errorKind",
@@ -93,6 +96,7 @@ func TestAgentJSONKeySet(t *testing.T) {
 
 func TestAgentJSONZeroValueKeySet(t *testing.T) {
 	assertJSONKeys(t, Agent{}, []string{
+		"canSteer",
 		"costUsd",
 		"external",
 		"id",
@@ -103,6 +107,102 @@ func TestAgentJSONZeroValueKeySet(t *testing.T) {
 		"state",
 		"taskId",
 	})
+}
+
+// TestAgentMarshalJSON_MatchesView locks in that json.Marshal(*Agent) (the
+// shape every Wails binding / SSE broker emit / HTTP shim caller produces)
+// goes through the mu-guarded View() snapshot rather than reading the live
+// struct's fields directly, and that the two serializations agree.
+func TestAgentMarshalJSON_MatchesView(t *testing.T) {
+	a := &Agent{
+		ID:           "agent-1",
+		TaskID:       "task-1",
+		State:        StateRunning,
+		CostUSD:      1.25,
+		PluginErrors: []string{"boom"},
+	}
+
+	viaPointer, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal *Agent: %v", err)
+	}
+	viaView, err := json.Marshal(a.View())
+	if err != nil {
+		t.Fatalf("marshal View: %v", err)
+	}
+	if !bytes.Equal(viaPointer, viaView) {
+		t.Fatalf("json.Marshal(*Agent) != json.Marshal(View)\nagent: %s\nview:  %s", viaPointer, viaView)
+	}
+}
+
+// TestAgentView_ConcurrentWithMutation exercises View() under -race
+// alongside concurrent SetState/AddResultStats/AppendOutput calls — the
+// exact shape of the read/write race that motivated the DTO (the runner,
+// watchdog, and approval-server goroutines each write while broker.Emit and
+// Wails/HTTP handlers read for serialization).
+func TestAgentView_ConcurrentWithMutation(t *testing.T) {
+	a := &Agent{ID: "agent-1", State: StateRunning}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Go(func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			a.SetState(StateRunning)
+			a.AddResultStats("session", float64(i), i, i, i)
+			a.AppendOutput(StreamEvent{Type: "assistant"})
+		}
+	})
+
+	for range 200 {
+		_ = a.View()
+		_, _ = json.Marshal(a)
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestAgentViewLocked_DoesNotRelockAgentWithQueuedWriter(t *testing.T) {
+	a := &Agent{
+		ID:       "agent-1",
+		Mode:     "headless",
+		State:    StateRunning,
+		Provider: "claude",
+	}
+
+	a.mu.RLock()
+	writerStarted := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		close(writerStarted)
+		a.mu.Lock()
+		a.State = StateStopped
+		a.mu.Unlock()
+		close(writerDone)
+	}()
+	<-writerStarted
+	time.Sleep(20 * time.Millisecond)
+
+	viewDone := make(chan View, 1)
+	go func() {
+		viewDone <- a.viewLocked(true)
+	}()
+
+	select {
+	case view := <-viewDone:
+		if !view.CanSteer {
+			t.Fatal("expected steerable snapshot while stdin pipe is live")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("viewLocked blocked while a writer was queued; snapshot code must not re-enter Agent.mu")
+	}
+
+	a.mu.RUnlock()
+	<-writerDone
 }
 
 func TestStreamEventJSONKeySet(t *testing.T) {

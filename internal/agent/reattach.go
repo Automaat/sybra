@@ -5,10 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -367,8 +364,35 @@ func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistr
 // reattachHeadless tails a reattached subprocess's log file from
 // startOffset until the process exits (or the app shuts down), then
 // finalizes the agent through the same completion path as a freshly run
-// one.
+// one. A steerable headless run's stdin FIFO (see runHeadlessAttemptSurvive)
+// is reopened first so a steer message sent after this reattach still
+// reaches the child, mirroring reattachConvo.
 func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset int64, procStart string) {
+	if sp := a.GetStdinPath(); sp != "" {
+		if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
+			if installErr := a.convo.installStdinPipe(fifo); installErr != nil {
+				_ = fifo.Close()
+				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", installErr)
+			} else {
+				// Steer transport restored — surface the capability to the UI.
+				a.refreshCanSteer()
+			}
+		} else {
+			m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
+		}
+	}
+
+	// If the run already emitted its terminal result while the app was down, it
+	// is parked at a steer turn boundary that no live tailer ever processed —
+	// rehydrateFromLog replays the result's stats but not the drain/close
+	// boundary that handleHeadlessResult runs live. Replicate that boundary now,
+	// before tailing: with nothing queued at reattach, drainOrCloseHeadlessSteer
+	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
+	// instead of hanging (or accepting a post-reattach steer that would queue
+	// forever with no further result to flush it).
+	if found, _ := a.lastHeadlessResult(); found {
+		m.drainOrCloseHeadlessSteer(a)
+	}
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 
@@ -526,18 +550,4 @@ func reattachAlive(r Record) bool {
 		}
 	}
 	return true
-}
-
-// processStartString returns the OS-reported start time of a process as an
-// opaque string, used only for equality comparison to detect PID reuse.
-// Best-effort: an empty result disables the guard for that record.
-func processStartString(ctx context.Context, pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
