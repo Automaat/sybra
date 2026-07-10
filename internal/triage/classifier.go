@@ -32,6 +32,7 @@ func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects
 	v, _, err := llmjob.Run(ctx, buildPrompt(t, projects), llmjob.Spec[Verdict]{
 		Name:     "triage",
 		Tier:     llmjob.Cheap,
+		Schema:   Schema,
 		Validate: ValidateVerdict,
 	}, llmexec.Options{
 		Logger: c.Logger,

@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
@@ -648,7 +650,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
-		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		ReasoningEffort:         agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
@@ -870,6 +872,16 @@ func (a *agentAdapter) withExperiencePrompt(cfg *agent.RunConfig, role agent.Rol
 	projectKey := experience.ProjectKey(proj)
 	records, err := a.experience.Query(projectKey, a.agentOrch.Cfg().Experience.MaxRecords)
 	if err != nil || len(records) == 0 {
+		return
+	}
+	// Gate each candidate on TTL + tag-overlap trigger instead of injecting
+	// every retained record unconditionally — see experience.Eligible.
+	ttlDays := a.agentOrch.Cfg().Experience.TTLDays
+	now := time.Now()
+	records = slices.DeleteFunc(records, func(rec experience.Record) bool {
+		return !experience.Eligible(rec, t.Tags, ttlDays, now)
+	})
+	if len(records) == 0 {
 		return
 	}
 	appendix := experience.FormatForPrompt(records)
