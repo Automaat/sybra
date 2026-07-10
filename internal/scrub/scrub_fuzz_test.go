@@ -1,8 +1,10 @@
 package scrub
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzScrub asserts the security-critical invariant of the redactor: any
@@ -42,13 +44,25 @@ func FuzzScrub(f *testing.F) {
 		//   - literal contains the placeholder (would chase its tail)
 		//   - placeholder contains the literal as a substring, e.g. block
 		//     "a" appears inside "[redacted]" — that's the redaction
-		//     marker, not a leak.
+		//     marker, not a leak. Checked case-insensitively since Scrub
+		//     matches blocklist literals case-insensitively.
 		trimmed := strings.TrimSpace(block)
-		if trimmed == "" || strings.Contains(trimmed, Placeholder) || strings.Contains(Placeholder, trimmed) {
+		if trimmed == "" || containsFold(trimmed, Placeholder) || containsFold(Placeholder, trimmed) {
 			return
 		}
-		if strings.Contains(text, trimmed) && strings.Contains(out, trimmed) {
+		if containsFold(text, trimmed) && containsFold(out, trimmed) {
 			t.Fatalf("scrub leaked blocklist literal %q\n  input:  %q\n  output: %q", trimmed, text, out)
 		}
 	})
+}
+
+// containsFold reports whether s contains substr, matching case-insensitively
+// when substr is valid UTF-8 (mirroring Scrub's own case-fold matching) and
+// falling back to an exact byte match otherwise (mirroring Scrub's
+// invalid-UTF-8 fallback).
+func containsFold(s, substr string) bool {
+	if !utf8.ValidString(substr) {
+		return strings.Contains(s, substr)
+	}
+	return regexp.MustCompile(`(?i)` + regexp.QuoteMeta(substr)).MatchString(s)
 }
