@@ -86,6 +86,16 @@ func cmdTriageClassify(
 		if getErr != nil {
 			return fatal(jsonOut, "get %s: %v", id, getErr)
 		}
+		// Mirror the --all path (restricted to status=new above) and the
+		// poll-based auto-triage handler (internal/poll/triage.go), which both
+		// only ever classify fresh tasks. Without this guard, classifying an
+		// arbitrary id can reclassify a task another subsystem owns outside the
+		// triage pipeline — e.g. a human-required Prompt Lab proposal, whose
+		// gating tags/status Apply must not touch (see internal/triage/apply.go).
+		if t.Status != task.StatusNew {
+			return fatal(jsonOut, "task %s has status %q, not %q — triage classify only reclassifies fresh tasks",
+				id, t.Status, task.StatusNew)
+		}
 		targets = append(targets, t)
 	default:
 		return fatal(jsonOut, "usage: triage classify <id> | triage classify --all")
