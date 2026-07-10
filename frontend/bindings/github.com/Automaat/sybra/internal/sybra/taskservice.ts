@@ -100,13 +100,31 @@ export function GetTask(id: string): $CancellablePromise<task$0.Task> {
     });
 }
 
+export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.TaskSetupLogDTO> {
+    return $Call.ByID(3273454814, taskID).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
+    return $Call.ByID(1612534482, taskID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
+    return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
 /**
  * ListTaskProgress returns the agent-authored progress entries for a task.
  * Empty (not an error) when the task has no progress log yet.
  */
 export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
     return $Call.ByID(821819796, taskID).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType8($result);
     });
 }
 
@@ -116,7 +134,7 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType9($result);
     });
 }
 
@@ -159,6 +177,11 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $models.TamperReportDTO.createFrom;
-const $$createType2 = artifact$0.ProgressEntry.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = $Create.Array($$createType0);
+const $$createType2 = $models.TaskSetupLogDTO.createFrom;
+const $$createType3 = $models.TaskArtifactDTO.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $models.TaskAuditEventDTO.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Array($$createType0);

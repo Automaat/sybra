@@ -5,6 +5,32 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+/**
+ * Kind classifies an artifact's role in the workflow.
+ */
+export enum Kind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    /**
+     * KindPlan holds a raw markdown plan snapshot.
+     */
+    KindPlan = "plan",
+
+    /**
+     * KindTrace holds an append-only NDJSON stream of step-completion events.
+     */
+    KindTrace = "trace",
+    KindProgress = "progress",
+
+    /**
+     * KindGeneric is a catch-all for helper blobs that don't fit the above.
+     */
+    KindGeneric = "generic",
+};
+
 export class ProgressEntry {
     "ts": string;
     "kind": string;
