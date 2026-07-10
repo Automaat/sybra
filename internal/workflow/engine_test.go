@@ -1837,6 +1837,51 @@ func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_ParksRateLimitedProviderWithoutBurningWatchdogRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecRunning,
+			Variables: map[string]string{
+				watchdogRateLimitRetryKey("implement"): strconv.Itoa(maxWatchdogRateLimitRetries),
+			},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("expected provider cooldown to park workflow without dispatch, got %d starts", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.StatusReason != "watchdog: rate limit: org-level quota exhausted" {
+		t.Fatalf("status_reason = %q, want original rate-limit reason", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != strconv.Itoa(maxWatchdogRateLimitRetries) {
+		t.Fatalf("rate-limit retry budget changed while parked: %v", got.Workflow.Variables)
+	}
+	if _, recorded := got.Workflow.Variables[circuitBreakerFailureKey("implement")]; recorded {
+		t.Fatalf("circuit breaker recorded provider cooldown as a dispatch failure: %v", got.Workflow.Variables)
+	}
+}
+
 func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
