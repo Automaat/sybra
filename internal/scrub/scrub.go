@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Placeholder is the substitution used for every redacted match.
@@ -88,7 +89,16 @@ func Scrub(text string, blocklist []string) (scrubbed string, redactions int) {
 	return out, total
 }
 
+// replaceLiteralOutsidePlaceholders redacts every occurrence of term in text,
+// skipping over already-placed Placeholder markers. term is matched
+// case-insensitively when it is valid UTF-8 (regexp requires a valid-UTF-8
+// pattern to compile); a term containing invalid UTF-8 — which can reach
+// here from an untrusted blocklist entry — falls back to an exact byte
+// match instead of panicking regexp.MustCompile.
 func replaceLiteralOutsidePlaceholders(text, term string) (scrubbed string, redactions int) {
+	if !utf8.ValidString(term) {
+		return replaceLiteralBytesOutsidePlaceholders(text, term)
+	}
 	re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(term))
 	var b strings.Builder
 	matches := 0
@@ -110,6 +120,36 @@ func replaceLiteralOutsidePlaceholders(text, term string) (scrubbed string, reda
 		} else {
 			b.WriteString(re.ReplaceAllString(segment, Placeholder))
 			matches += len(locs)
+		}
+		text = text[nextPlaceholder:]
+	}
+	return b.String(), matches
+}
+
+// replaceLiteralBytesOutsidePlaceholders is the invalid-UTF-8 fallback for
+// replaceLiteralOutsidePlaceholders: an exact (case-sensitive) byte search,
+// since Unicode case folding is undefined for a non-UTF-8 term.
+func replaceLiteralBytesOutsidePlaceholders(text, term string) (scrubbed string, redactions int) {
+	var b strings.Builder
+	matches := 0
+	for len(text) > 0 {
+		if strings.HasPrefix(text, Placeholder) {
+			b.WriteString(Placeholder)
+			text = text[len(Placeholder):]
+			continue
+		}
+
+		nextPlaceholder := strings.Index(text, Placeholder)
+		if nextPlaceholder < 0 {
+			nextPlaceholder = len(text)
+		}
+		segment := text[:nextPlaceholder]
+		n := strings.Count(segment, term)
+		if n == 0 {
+			b.WriteString(segment)
+		} else {
+			b.WriteString(strings.ReplaceAll(segment, term, Placeholder))
+			matches += n
 		}
 		text = text[nextPlaceholder:]
 	}
