@@ -961,6 +961,50 @@ func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
 	}
 }
 
+func TestTaskService_CreateTaskWithInit_IssueURLStubPreservesCallerTags(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	releaseFetch := make(chan struct{})
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		<-releaseFetch
+		return github.Issue{
+			Number:     13,
+			Title:      "plain issue",
+			URL:        "https://github.com/owner/repo/issues/13",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	svc.viewerLogin = func() string { return "me" }
+
+	initTags := []string{"backend", "todoist"}
+	created, err := svc.CreateTaskWithInit(
+		"https://github.com/owner/repo/issues/13",
+		"",
+		"headless",
+		task.Update{Tags: task.Ptr(initTags)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
+	}
+	for _, tag := range initTags {
+		if !slices.Contains(got.Tags, tag) {
+			t.Fatalf("Tags = %v, want caller tag %q preserved on create", got.Tags, tag)
+		}
+	}
+
+	close(releaseFetch)
+	svc.wg.Wait()
+}
+
 func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.fetchIssue = func(string, int) (github.Issue, error) {

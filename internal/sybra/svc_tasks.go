@@ -495,7 +495,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	if isURLStub {
 		tags := []string{enrichPendingTag}
 		if init.Tags != nil {
-			tags = append(tags, *init.Tags...)
+			tags = append(tags, (*init.Tags)...)
 		}
 		createInit.Tags = task.Ptr(tags)
 	}
