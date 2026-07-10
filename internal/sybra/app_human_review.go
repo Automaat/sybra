@@ -185,16 +185,17 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 
 	prompt := h.buildPrompt(t, wctx)
 	ag, err := h.agents.Run(agent.RunConfig{
-		TaskID:             taskID,
-		Name:               agent.RoleHumanReview.AgentName(t.Title),
-		Mode:               "headless",
-		Provider:           "claude",
-		Model:              h.cfg.HumanReviewModel(),
-		Prompt:             prompt,
-		Dir:                h.cfg.HumanReview.SybraRepoDir,
-		RequirePermissions: false,
-		OneShot:            true,
-		OutputSchema:       verdict.Schema,
+		TaskID:                 taskID,
+		Name:                   agent.RoleHumanReview.AgentName(t.Title),
+		Mode:                   "headless",
+		Provider:               "claude",
+		Model:                  h.cfg.HumanReviewModel(),
+		Prompt:                 prompt,
+		Dir:                    h.cfg.HumanReview.SybraRepoDir,
+		RequirePermissions:     false,
+		OneShot:                true,
+		OutputSchema:           verdict.Schema,
+		IgnoreConcurrencyLimit: true,
 	})
 	if err != nil {
 		h.mu.Lock()
