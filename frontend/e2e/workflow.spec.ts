@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test'
-import { readdir, unlink, readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { isolatedSybraHome } from './lib/sybra-home'
+import { cleanupStrayTasks, isolatedSybraHome } from './lib/sybra-home'
 
 const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
@@ -14,23 +14,8 @@ const FIXTURE_FILES = new Set([
   'plan0001.md',
 ])
 
-// A fixtures-only home accumulates at most a handful of test-created files
-// between cleanups; hundreds of strays means a real board (#1576) — refuse
-// rather than delete.
-const MAX_CLEANUP_STRAYS = 25
-
 async function cleanupCreatedTasks() {
-  const files = await readdir(TASKS_DIR)
-  const strays = files.filter((f) => !FIXTURE_FILES.has(f) && f.endsWith('.md'))
-  if (strays.length > MAX_CLEANUP_STRAYS) {
-    throw new Error(
-      `cleanupCreatedTasks: ${strays.length} non-fixture task files in ${TASKS_DIR} — ` +
-        'not a disposable e2e home, refusing to delete',
-    )
-  }
-  for (const f of strays) {
-    await unlink(join(TASKS_DIR, f))
-  }
+  await cleanupStrayTasks(SYBRA_HOME, TASKS_DIR, FIXTURE_FILES)
 }
 
 async function ensurePlanFixture() {
