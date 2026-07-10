@@ -950,6 +950,10 @@ func (f *failingAgentLauncher) DefaultProvider() string          { return "claud
 func (f *failingAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (f *failingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *failingAgentLauncher) ProviderHealthy(string) bool      { return false }
+func (f *failingAgentLauncher) IsDispatching(string) bool        { return false }
+func (f *failingAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 
 // newDispatchFailureHandler builds a Handler wired to a real workflow.Engine
 // whose "branch-conflict-fix" definition has a genuine run_agent first step
