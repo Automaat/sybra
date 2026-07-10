@@ -19,6 +19,9 @@ const mockListTaskProgress = vi.fn()
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     tasks: mockTasksMap,
+    get list() {
+      return [...mockTasksMap.values()]
+    },
     get: async (id: string) => {
       const result = await mockGet(id)
       mockTasksMap.set(id, result)
@@ -348,6 +351,47 @@ describe('TaskDetail', () => {
       await vi.waitFor(() => {
         expect(screen.getByText('Approve Plan')).toBeDefined()
         expect(screen.getByText('Reject Plan')).toBeDefined()
+      })
+    })
+
+    it('shows no Children panel for a task with no umbrella/dependsOn relationships', async () => {
+      mockGet.mockResolvedValue(mockTask)
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Test Task')).toBeDefined()
+      })
+      expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
+    })
+
+    it('renders the Children panel with materialized children plus unresolved refs for an umbrella', async () => {
+      mockGet.mockResolvedValue({
+        ...mockTask,
+        taskType: 'umbrella',
+        issue: 'https://github.com/Automaat/sybra/issues/1213',
+        dependsOn: [
+          'https://github.com/Automaat/sybra/issues/10',
+          'https://github.com/Automaat/sybra/issues/99',
+        ],
+      })
+      mockTasksMap.set('child-1', {
+        id: 'child-1',
+        title: 'Child task',
+        status: 'todo',
+        agentMode: 'headless',
+        tags: [],
+        issue: 'https://github.com/Automaat/sybra/issues/10',
+        umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213',
+        createdAt: '2026-04-01T00:00:00Z',
+        updatedAt: '2026-04-01T00:00:00Z',
+      })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Child task')).toBeDefined()
+        expect(screen.getByText('automaat/sybra#99')).toBeDefined()
       })
     })
 
