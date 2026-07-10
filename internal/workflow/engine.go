@@ -261,6 +261,10 @@ type agentEntry struct {
 	stepID string
 }
 
+type pendingRecovery struct {
+	onDecline func()
+}
+
 // Engine executes workflow definitions against tasks.
 type Engine struct {
 	store            *Store
@@ -285,14 +289,14 @@ type Engine struct {
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}    // taskID → dispatch in progress
-	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
-	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
+	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}        // taskID → dispatch in progress
+	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
+	agentSteps       map[string]agentEntry      // agentID → {taskID, stepID}
+	dispatchingStep  map[string]int             // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
@@ -322,7 +326,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agentSteps:       make(map[string]agentEntry),
 		dispatchingStep:  make(map[string]int),
 		cascadeDepth:     make(map[string]int),
-		pendingRecovery:  make(map[string]struct{}),
+		pendingRecovery:  make(map[string]pendingRecovery),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}

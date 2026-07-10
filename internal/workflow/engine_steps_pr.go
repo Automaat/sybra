@@ -212,14 +212,20 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 // marker is held (the AdvanceStep tail, or a direct call), recovery is safe to
 // run inline and its own verdict is returned.
 func (e *Engine) tryConflictRecovery(taskID string) bool {
+	return e.tryConflictRecoveryWithFallback(taskID, func() {
+		e.escalatePendingConflictRecovery(taskID)
+	})
+}
+
+func (e *Engine) tryConflictRecoveryWithFallback(taskID string, onDecline func()) bool {
 	e.mu.Lock()
 	_, starting := e.starting[taskID]
 	_, dispatching := e.dispatching[taskID]
 	if starting || dispatching {
 		if e.pendingRecovery == nil {
-			e.pendingRecovery = make(map[string]struct{})
+			e.pendingRecovery = make(map[string]pendingRecovery)
 		}
-		e.pendingRecovery[taskID] = struct{}{}
+		e.pendingRecovery[taskID] = pendingRecovery{onDecline: onDecline}
 		e.mu.Unlock()
 		return true
 	}
@@ -261,9 +267,11 @@ func (e *Engine) TryConflictRecovery(taskID string) bool {
 func (e *Engine) QueueConflictRecoveryRetry(taskID string) {
 	e.mu.Lock()
 	if e.pendingRecovery == nil {
-		e.pendingRecovery = make(map[string]struct{})
+		e.pendingRecovery = make(map[string]pendingRecovery)
 	}
-	e.pendingRecovery[taskID] = struct{}{}
+	e.pendingRecovery[taskID] = pendingRecovery{onDecline: func() {
+		e.escalatePendingConflictRecovery(taskID)
+	}}
 	e.mu.Unlock()
 }
 
@@ -277,17 +285,25 @@ func (e *Engine) QueueConflictRecoveryRetry(taskID string) {
 // terminal outcome the inline divergence path produces.
 func (e *Engine) drainPendingConflictRecovery(taskID string) {
 	e.mu.Lock()
-	_, pending := e.pendingRecovery[taskID]
-	if pending {
+	pending, ok := e.pendingRecovery[taskID]
+	if ok {
 		delete(e.pendingRecovery, taskID)
 	}
 	e.mu.Unlock()
-	if !pending {
+	if !ok {
 		return
 	}
 	if e.conflictRecovery != nil && e.conflictRecovery(taskID) {
 		return // recovery cancelled this workflow and dispatched branch-conflict-fix
 	}
+	if pending.onDecline != nil {
+		pending.onDecline()
+		return
+	}
+	e.escalatePendingConflictRecovery(taskID)
+}
+
+func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)
