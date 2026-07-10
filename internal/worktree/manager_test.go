@@ -634,12 +634,29 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if syscallKillErr := syscall.Kill(pid, 0); syscallKillErr != nil {
-			return // grandchild is gone — process group was killed
+		if processGoneOrZombie(pid) {
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("grandchild pid %d still alive after setup timeout", pid)
+}
+
+func processGoneOrZombie(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return true
+	}
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	stat := string(data)
+	afterComm := strings.LastIndexByte(stat, ')')
+	if afterComm < 0 || afterComm+2 >= len(stat) {
+		return false
+	}
+	fields := strings.Fields(stat[afterComm+2:])
+	return len(fields) > 0 && fields[0] == "Z"
 }
 
 // TestRunSetup_NoLogsDir — when no LogsDir is configured the hook still

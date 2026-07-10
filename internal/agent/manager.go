@@ -126,6 +126,8 @@ type Manager struct {
 	// real operator store even though SYBRA_HOME points at the task's sandbox.
 	controlHome string
 
+	ghAppToken func() string
+
 	// deadAgentRetention bounds how long a completed agent stays in agents
 	// after markAgentDone before being evicted. <= 0 evicts synchronously
 	// (used by tests that need deterministic immediate eviction).
@@ -478,6 +480,12 @@ func (m *Manager) signalKill(a *Agent) {
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghAppToken = fn
 	m.mu.Unlock()
 }
 

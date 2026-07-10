@@ -153,6 +153,8 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	m.injectGitHubToken(&cfg)
+
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -221,6 +223,21 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	}
 	cfg.resolvedSandboxHome = dir
 	return nil
+}
+
+func (m *Manager) injectGitHubToken(cfg *RunConfig) {
+	m.mu.RLock()
+	tokenFn := m.ghAppToken
+	m.mu.RUnlock()
+	if tokenFn == nil {
+		return
+	}
+	token := tokenFn()
+	if token == "" {
+		return
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {

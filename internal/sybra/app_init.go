@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -293,6 +294,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
+	a.agents.SetGHAppToken(github.CurrentAppToken)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
