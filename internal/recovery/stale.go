@@ -39,6 +39,9 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		if r.Agents.HasRunningAgentForTask(t.ID) {
 			continue
 		}
+		if r.Agents.IsDispatching(t.ID) {
+			continue
+		}
 		// Don't re-dispatch to the same provider while it is rate-limited; do
 		// continue when failover can route this run to a healthy peer. (A
 		// rate-limited run is stalled in-progress by the completion handler, not
