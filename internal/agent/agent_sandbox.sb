@@ -2,7 +2,7 @@
 ;; Sybra agent OS-level process sandbox (darwin, sandbox-exec).
 ;;
 ;; Reads and everything else stay unrestricted: only file-write* operations
-;; are denied by default and re-allowed for the three roots supplied via -D
+;; are denied by default and re-allowed for the four roots supplied via -D
 ;; at spawn time (see procsandbox_darwin.go). This is enforce-mode only —
 ;; report mode validates and logs the same roots without ever passing this
 ;; profile to sandbox-exec, so a bug here cannot regress a default-posture
@@ -13,4 +13,5 @@
 (allow file-write*
   (subpath (param "WORKTREE"))
   (subpath (param "SANDBOX_HOME"))
-  (subpath (param "TMP")))
+  (subpath (param "TMP"))
+  (subpath (param "SHARED_CACHE")))

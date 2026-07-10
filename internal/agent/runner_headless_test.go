@@ -1277,6 +1277,63 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 	}
 }
 
+// TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure verifies the fix for
+// task 6ee7ee8d: a cost-guardrail breach detected on the terminal "result"
+// event (the only place checkCostGuardrail ever fires) means the agent's own
+// turn already finished cleanly — there is nothing left for the subprocess to
+// do but exit. Unlike TestGuardrails_CostKillRaceSetsExitErr (where the
+// process is stuck and the reap races the drain timeout), here the fake
+// process exits immediately after its result line, so the attempt-exit path
+// must derive completion from that result event and leave ExitErr nil rather
+// than stamping errCostGuardrailExceeded — otherwise a legitimately completed
+// review (and any sidecar it already wrote) gets discarded as a hard failure
+// purely because the kill happened to land after the cost ceiling.
+func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
+	binDir := t.TempDir()
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"sess-clean\",\"total_cost_usd\":11.0,\"total_input_tokens\":1,\"total_output_tokens\":1}'\n"
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime:           ManagerRuntimeConfig{DefaultProvider: "claude"},
+		SurviveRestartDir: t.TempDir(),
+	})
+	m.SetGuardrails(Guardrails{MaxCostUSD: 10.0})
+
+	ag, err := m.Run(RunConfig{
+		TaskID:             "task-clean-cost-stop",
+		Name:               "implementation: clean cost stop",
+		Mode:               "headless",
+		Prompt:             "trigger guardrail on an already-completed turn",
+		Dir:                t.TempDir(),
+		RequirePermissions: false,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd := ag.GetCmd(); cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	waitForAgentDone(t, ag, 3*time.Second)
+
+	if !ag.WasStopped() {
+		t.Fatal("expected WasStopped=true after guardrail kill")
+	}
+	if !ag.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false; cost guardrail always fires on the terminal result event so completion must be derived from it")
+	}
+	if got := ag.GetExitErr(); got != nil {
+		t.Fatalf("ExitErr = %v, want nil — the turn completed cleanly before the cost ceiling stopped the now-idle subprocess", got)
+	}
+}
+
 // TestRespondEscalation_DoubleSendRejected verifies the escalation channel
 // is buffered size 1 and a second RespondEscalation call before the agent
 // drains the first returns a clear error instead of blocking the caller.

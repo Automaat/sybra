@@ -199,15 +199,114 @@ type Agent struct {
 	mu sync.RWMutex
 }
 
-// MarshalJSON snapshots Agent with a fresh backend-derived capability bit.
-// CanSteer changes when stdin/finalizing state changes, so recompute it at
-// serialization time in addition to transition-time refreshes.
-func (a *Agent) MarshalJSON() ([]byte, error) {
-	a.refreshCanSteer()
-	type alias Agent
+// View is a point-in-time, concurrency-safe snapshot of an Agent's exported
+// state, mirroring Agent's JSON shape field-for-field. Every path that
+// serializes an *Agent for a consumer outside its own runner goroutine
+// (Wails bindings, SSE/broker emit, the HTTP API shim) must serialize a View,
+// never the live *Agent — reading Agent's fields directly races the runner,
+// watchdog, and approval-server goroutines that mutate them under a.mu.
+// MarshalJSON builds and encodes a View so every existing json.Marshal(agent)
+// call site gets this for free without having to be individually rewritten.
+type View struct {
+	ID                       string    `json:"id"`
+	TaskID                   string    `json:"taskId"`
+	Mode                     string    `json:"mode"`
+	State                    State     `json:"state"`
+	SessionID                string    `json:"sessionId"`
+	CostUSD                  float64   `json:"costUsd"`
+	InputTokens              int       `json:"inputTokens,omitempty"`
+	OutputTokens             int       `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
+	PremiumRequests          float64   `json:"premiumRequests,omitempty"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	ExperimentID             string    `json:"experimentId,omitempty"`
+	VariantID                string    `json:"variantId,omitempty"`
+	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
+	TurnCount                int       `json:"turnCount,omitempty"`
+	ToolCalls                int       `json:"toolCalls,omitempty"`
+	MaxTurns                 int       `json:"maxTurns,omitempty"`
+	PluginErrors             []string  `json:"pluginErrors,omitempty"`
+	EscalationReason         string    `json:"escalationReason,omitempty"`
+	ErrorKind                string    `json:"errorKind,omitempty"`
+	ErrorMsg                 string    `json:"errorMsg,omitempty"`
+	AwaitingApproval         bool      `json:"awaitingApproval,omitempty"`
+	CanSteer                 bool      `json:"canSteer"`
+	Resumable                bool      `json:"resumable,omitempty"`
+}
+
+// View returns a snapshot of the agent's exported state, safe to read or
+// serialize without holding a.mu. Built under a single RLock so concurrent
+// writers (runner, watchdog, approval server) cannot produce a torn read.
+func (a *Agent) View() View {
+	hasStdinPipe := a.convo.hasStdinPipe()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return json.Marshal((*alias)(a))
+	return a.viewLocked(hasStdinPipe)
+}
+
+func (a *Agent) viewLocked(hasStdinPipe bool) View {
+	return View{
+		ID:                       a.ID,
+		TaskID:                   a.TaskID,
+		Mode:                     a.Mode,
+		State:                    a.State,
+		SessionID:                a.SessionID,
+		CostUSD:                  a.CostUSD,
+		InputTokens:              a.InputTokens,
+		OutputTokens:             a.OutputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens,
+		ReasoningTokens:          a.ReasoningTokens,
+		PremiumRequests:          a.PremiumRequests,
+		StartedAt:                a.StartedAt,
+		LastEventAt:              a.LastEventAt,
+		LogPath:                  a.LogPath,
+		External:                 a.External,
+		PID:                      a.PID,
+		Command:                  a.Command,
+		Name:                     a.Name,
+		Project:                  a.Project,
+		Provider:                 a.Provider,
+		Model:                    a.Model,
+		ExperimentID:             a.ExperimentID,
+		VariantID:                a.VariantID,
+		AssignmentUnit:           a.AssignmentUnit,
+		AssignmentKey:            a.AssignmentKey,
+		ReasoningEffort:          a.ReasoningEffort,
+		Prompt:                   a.Prompt,
+		TurnCount:                a.TurnCount,
+		ToolCalls:                a.ToolCalls,
+		MaxTurns:                 a.MaxTurns,
+		PluginErrors:             slices.Clone(a.PluginErrors),
+		EscalationReason:         a.EscalationReason,
+		ErrorKind:                a.ErrorKind,
+		ErrorMsg:                 a.ErrorMsg,
+		AwaitingApproval:         a.AwaitingApproval,
+		CanSteer:                 a.computeCanSteerLocked(hasStdinPipe),
+		Resumable:                a.Resumable,
+	}
+}
+
+// MarshalJSON encodes a point-in-time View instead of the live struct, so
+// every existing json.Marshal(agent)/json.Marshal([]*Agent) call site —
+// Wails bindings, the SSE broker, the HTTP API shim — becomes race-safe
+// without having to be rewritten to call View() explicitly.
+func (a *Agent) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.View())
 }
 
 // pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
@@ -816,14 +915,21 @@ func (a *Agent) isFinalizing() bool {
 // mode/provider (interactive, or headless claude). Mirrors the SendMessage
 // gate so the UI capability never disagrees with the backend.
 func (a *Agent) computeCanSteer() bool {
-	if !a.convo.hasStdinPipe() || a.isFinalizing() {
+	hasStdinPipe := a.convo.hasStdinPipe()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.computeCanSteerLocked(hasStdinPipe)
+}
+
+func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
+	if !hasStdinPipe || a.finalizing {
 		return false
 	}
 	switch a.Mode {
 	case "interactive":
 		return true
 	case "headless":
-		return a.GetProvider() == "claude"
+		return a.Provider == "claude"
 	default:
 		return false
 	}
@@ -832,7 +938,7 @@ func (a *Agent) computeCanSteer() bool {
 // refreshCanSteer recomputes and stores the CanSteer capability. Called from
 // the state/finalizing/stdin-transport transitions that can change it, so the
 // value serialized on the next AgentState emit is current. Must be called
-// without a.mu held (computeCanSteer takes a.mu.RLock via isFinalizing).
+// without a.mu held (computeCanSteer takes a.mu.RLock).
 func (a *Agent) refreshCanSteer() {
 	v := a.computeCanSteer()
 	a.mu.Lock()

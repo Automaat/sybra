@@ -506,6 +506,9 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("review.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
@@ -573,6 +576,9 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 		m.logger.Warn("branch-fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.ensureBranch(t, branch)
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("branch-fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	// Read setup from the trusted default branch, never the checked-out worktree:
 	// this branch already carries commits an implementation agent pushed in an
@@ -694,6 +700,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		m.logger.Warn("fix.worktree.sanitize", "task_id", t.ID, "err", err)
 	}
 	m.ensureBranch(t, branch)
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("fix.worktree.signoff-hook", "task_id", t.ID, "err", err)
+	}
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
 	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)

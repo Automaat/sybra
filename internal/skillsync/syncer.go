@@ -44,12 +44,15 @@ type Options struct {
 	// and ~/.codex/skills as additional destinations. Empty disables
 	// user-home destinations.
 	UserHomeDir string
+
+	DowngradeCommitFlags bool
 }
 
 // Syncer copies skill files into one or more destination directories.
 // Zero-value Logger is safe (logs are dropped).
 type Syncer struct {
-	Logger *slog.Logger
+	Logger    *slog.Logger
+	downgrade bool
 }
 
 // Run executes the full skill-sync flow described in Options: choose
@@ -57,6 +60,10 @@ type Syncer struct {
 // user-home directories, and (in disk mode) copy orchestrator CLAUDE.md
 // alongside.
 func (s *Syncer) Run(opts Options) {
+	s.downgrade = opts.DowngradeCommitFlags
+	if s.downgrade {
+		s.info("skills.sync.commit_flags_downgraded", "reason", "no gpg signing key")
+	}
 	repoDir := opts.RepoDir
 	if repoDir == "" {
 		cwd, err := os.Getwd()
@@ -144,7 +151,7 @@ func (s *Syncer) SyncFile(src, dst string) {
 		s.error("sync.mkdir", "dst", dst, "err", err)
 		return
 	}
-	if err := os.WriteFile(dst, data, fs.FileMode(0o644)); err != nil {
+	if err := os.WriteFile(dst, s.transform(data), fs.FileMode(0o644)); err != nil {
 		s.error("sync.write", "dst", dst, "err", err)
 		return
 	}
@@ -217,7 +224,7 @@ func (s *Syncer) syncDir(src, dst string, prune bool) map[string]struct{} {
 			s.error("sync.skill.mkdir.skill", "dir", skillDir, "err", err)
 			continue
 		}
-		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+		if err := os.WriteFile(dstPath, s.transform(data), 0o644); err != nil {
 			s.error("sync.skill.write", "dst", dstPath, "err", err)
 			continue
 		}
@@ -278,7 +285,7 @@ func (s *Syncer) syncFS(fsys fs.FS, srcDir, dst string, prune bool) map[string]s
 			s.error("sync.skill.mkdir.skill", "dir", skillDir, "err", err)
 			continue
 		}
-		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+		if err := os.WriteFile(dstPath, s.transform(data), 0o644); err != nil {
 			s.error("sync.skill.write", "dst", dstPath, "err", err)
 			continue
 		}

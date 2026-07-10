@@ -1079,9 +1079,11 @@ func TestShutdown(t *testing.T) {
 
 	m.Shutdown()
 
-	// All agents should still be in the map (shutdown doesn't remove them)
-	if len(m.ListAgents()) != 3 {
-		t.Errorf("got %d agents, want 3", len(m.ListAgents()))
+	// Shutdown cancels each agent and waits for its runner goroutine to
+	// close done, which finalizes through markAgentDone and evicts it from
+	// the live registry.
+	if len(m.ListAgents()) != 0 {
+		t.Errorf("got %d agents, want 0 (evicted on completion)", len(m.ListAgents()))
 	}
 }
 
