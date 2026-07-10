@@ -352,7 +352,10 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
 	}
-	_ = os.MkdirAll(sharedCache, 0o755)
+	if err := os.MkdirAll(sharedCache, 0o755); err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: create sandbox shared-cache root: %w", err)
+	}
 	canonSharedCache, err := canonicalizeRoot(sharedCache)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)

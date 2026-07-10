@@ -13,6 +13,7 @@ import (
 // wins over anything already in cfg.ExtraEnv, plus SYBRA_CONTROL_HOME when a
 // control home is configured.
 func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(taskID string) (string, error) { return sandboxDir, nil },
@@ -146,6 +147,7 @@ func TestPrepareRunConfig_SandboxHome_NonDirectoryFailsClosed(t *testing.T) {
 // alongside the trusted values — it must be removed, not merely shadowed, so
 // duplicate-key resolution order in the target process can't leak it through.
 func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
@@ -189,6 +191,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 // unconfigured ControlHome is simply omitted rather than injected as an empty
 // SYBRA_CONTROL_HOME=.
 func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
@@ -252,6 +255,7 @@ func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T)
 }
 
 func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
