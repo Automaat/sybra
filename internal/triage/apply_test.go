@@ -136,6 +136,46 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// PromptLabService.fileScrubbedProposals sets these before any triage
+	// pass runs — no project_id, no workflow, status human-required.
+	humanRequired := task.StatusHumanRequired
+	tags := []string{"prompt-lab-proposal", "role:review", "requires-human"}
+	created, err = mgr.Update(created.ID, task.Update{Status: &humanRequired, Tags: &tags})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// A reclassify pass (e.g. an ungated `sybra-cli triage classify <id>`)
+	// returns a verdict from the classifier's controlled vocabulary, which
+	// knows nothing about the prompt-lab gating tags.
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "docs", "medium", "chore"},
+		Size:  "medium",
+		Type:  "chore",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Equal(updated.Tags, created.Tags) {
+		t.Errorf("tags: got %v, want unchanged %v", updated.Tags, created.Tags)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %s, want unchanged human-required", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty (untouched)", updated.StatusReason)
+	}
+}
+
 func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("☂️ refactor(orchestrator): converge implement→test loop under retry cap", "", task.AgentModeHeadless)
