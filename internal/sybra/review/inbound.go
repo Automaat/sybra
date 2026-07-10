@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -107,8 +108,8 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		"Run /fix-review https://github.com/%s/pull/%d --auto\n\n"+
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
-			"Sign the commit with `git commit -s -S`. Push the branch when done.",
-		t.ProjectID, t.PRNumber,
+			"Sign the commit with `git commit %s`. Push the branch when done.",
+		t.ProjectID, t.PRNumber, project.CommitSignFlags(context.Background()),
 	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
