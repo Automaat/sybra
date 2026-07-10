@@ -758,6 +758,43 @@ func EnforceForkOnlyPush(ctx context.Context, worktreePath string) error {
 	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", "--push", "origin", forkOnlyDisabledPushURL)
 }
 
+// ConfigureGitHubAuth removes any credentials embedded in the origin remote
+// URL and points github.com at the gh credential helper, so pushes and fetches
+// authenticate via whatever token gh sees (the injected GitHub App
+// installation token) instead of a stale PAT baked into the URL. Idempotent
+// and safe to re-run on every worktree prepare; writes land in the shared bare
+// clone config, so existing tokenized clones self-heal.
+func ConfigureGitHubAuth(ctx context.Context, worktreePath string) error {
+	if err := stripRemoteURLCredentials(ctx, worktreePath, "origin"); err != nil {
+		return err
+	}
+	return executil.Run(ctx, worktreePath, "git", "config",
+		"credential.https://github.com.helper", "!gh auth git-credential")
+}
+
+func stripRemoteURLCredentials(ctx context.Context, worktreePath, remote string) error {
+	raw, _ := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote."+remote+".url")
+	cleaned, changed := stripHTTPSUserinfo(strings.TrimSpace(raw))
+	if !changed {
+		return nil
+	}
+	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", remote, cleaned)
+}
+
+func stripHTTPSUserinfo(rawURL string) (string, bool) {
+	const scheme = "https://"
+	rest, ok := strings.CutPrefix(rawURL, scheme)
+	if !ok {
+		return rawURL, false
+	}
+	at := strings.IndexByte(rest, '@')
+	slash := strings.IndexByte(rest, '/')
+	if at < 0 || (slash >= 0 && at > slash) {
+		return rawURL, false
+	}
+	return scheme + rest[at+1:], true
+}
+
 // PushUpstream pushes branch to the fork remote if present, else origin,
 // with -u to set remote tracking.
 func PushUpstream(ctx context.Context, worktreePath, branch string) error {
