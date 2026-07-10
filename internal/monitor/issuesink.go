@@ -82,7 +82,6 @@ func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool,
 // succeeded.
 func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extraLabels []string) (created bool, url string, err error) {
 	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
-	s.ensureExtraLabels(ctx, extraLabels)
 
 	num, foundURL, err := s.findOpenIssue(ctx, title)
 	if err != nil {
@@ -95,6 +94,7 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		}
 		return false, foundURL, nil
 	}
+	s.ensureExtraLabels(ctx, extraLabels)
 	var lb strings.Builder
 	lb.WriteString(s.label)
 	for _, extra := range extraLabels {
@@ -154,13 +154,23 @@ func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 // Same best-effort discipline as ensureLabels: an already-exists error is
 // fine, and any other error is swallowed so the create call below still
 // surfaces label problems if the label genuinely can't be used.
+//
+// Only called on the create path (num == 0 in SubmitIssue) since labels are
+// only attached there, not on the comment path — this also avoids spending a
+// gh call per extra label on the far more common dedup-hit path.
+//
+// The "--" before extra stops gh from parsing a caller-supplied label that
+// happens to start with "-" (e.g. LLM output like "-1-of-3") as a flag; without
+// it gh fails with "unknown shorthand flag", the create is silently swallowed,
+// and the later issue-create call reproduces the same "label not found"
+// failure this fix targets, just for a dash-prefixed label.
 func (s *GHIssueSink) ensureExtraLabels(ctx context.Context, extraLabels []string) {
 	for _, extra := range extraLabels {
 		extra = strings.TrimSpace(extra)
 		if extra == "" || extra == s.label || extra == "bug" {
 			continue
 		}
-		_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", extra)...)
+		_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "--", extra)...)
 	}
 }
 
