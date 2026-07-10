@@ -43,7 +43,7 @@ func TestCoalescedFixPrompt(t *testing.T) {
 	t.Parallel()
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 
-	single := coalescedFixPrompt([]github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
+	single := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
 	if strings.Contains(single, "multiple open issues") {
 		t.Errorf("single-issue prompt must not carry the coalesced header:\n%s", single)
 	}
@@ -51,7 +51,7 @@ func TestCoalescedFixPrompt(t *testing.T) {
 		t.Errorf("single comments prompt missing its body:\n%s", single)
 	}
 
-	multi := coalescedFixPrompt([]github.PRIssue{
+	multi := coalescedFixPrompt(context.Background(), []github.PRIssue{
 		{Kind: github.PRIssueCIFailure, PR: pr},
 		{Kind: github.PRIssueComments, PR: pr},
 	}, "")
@@ -144,18 +144,18 @@ func TestCoalescedFixPrompt_ReviewHold(t *testing.T) {
 	pr := github.PullRequest{Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7"}
 	const suffix = "\n\n---\nREVIEW HOLD sentinel"
 
-	withComments := coalescedFixPrompt([]github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix)
+	withComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, suffix)
 	if !strings.HasSuffix(withComments, suffix) {
 		t.Errorf("comments prompt must end with the hold suffix:\n%s", withComments)
 	}
 
-	noComments := coalescedFixPrompt([]github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix)
+	noComments := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, suffix)
 	if strings.Contains(noComments, "REVIEW HOLD") {
 		t.Errorf("a non-comments fix posts no replies, so it must not carry the hold suffix:\n%s", noComments)
 	}
 
 	// Disabled hold (empty suffix) leaves a comments prompt byte-for-byte as-is.
-	plain := coalescedFixPrompt([]github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
+	plain := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueComments, PR: pr}}, "")
 	if strings.Contains(plain, "REVIEW HOLD") {
 		t.Errorf("empty suffix must not alter the prompt:\n%s", plain)
 	}
