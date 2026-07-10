@@ -43,10 +43,32 @@ type PlanDraftStore struct {
 	have    map[string]struct{}
 	indexed bool
 	gen     uint64
+
+	// locker serializes per-task write paths (Write/Delete/DeleteAll)
+	// against each other, both in-process and cross-process, so a re-plan's
+	// DeleteAll never interleaves with another provider's still-in-flight
+	// Write for the same task.
+	locker *fsutil.KeyedLocker
 }
 
 func NewPlanDraftStore(dir string) *PlanDraftStore {
-	return &PlanDraftStore{dir: dir}
+	return &PlanDraftStore{dir: dir, locker: fsutil.NewKeyedLocker()}
+}
+
+// lockPath returns the synthetic path used as the cross-process flock target
+// for taskID's plan drafts. Drafts are stored one file per name, so there is
+// no single backing file to lock on — this path need not exist; LockFile
+// only ever opens/creates its ".lock" sibling.
+func (s *PlanDraftStore) lockPath(taskID string) string {
+	return filepath.Join(s.dir, taskID+".plan-drafts")
+}
+
+func (s *PlanDraftStore) lock(taskID string) (func(), error) {
+	unlock, err := s.locker.Lock(taskID, s.lockPath(taskID))
+	if err != nil {
+		return nil, fmt.Errorf("lock plan drafts %s: %w", taskID, err)
+	}
+	return unlock, nil
 }
 
 // invalidateIndex drops the cached have-set. Called after every local
@@ -117,6 +139,11 @@ func (s *PlanDraftStore) Write(taskID, name, content string) error {
 	if content == "" {
 		return s.Delete(taskID, name)
 	}
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := fsutil.AtomicWrite(s.sidecarPath(taskID, name), []byte(content)); err != nil {
 		return fmt.Errorf("write plan draft %q: %w", name, err)
 	}
@@ -129,6 +156,11 @@ func (s *PlanDraftStore) Delete(taskID, name string) error {
 	if err := s.validate(name); err != nil {
 		return err
 	}
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := os.Remove(s.sidecarPath(taskID, name)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete plan draft %q: %w", name, err)
 	}
@@ -200,6 +232,12 @@ func (s *PlanDraftStore) adoptIndex(startGen uint64, fresh map[string]struct{}) 
 // DeleteAll removes every draft for the task. Used by callers that need
 // to reset the dual-planning state (e.g. before a re-plan iteration).
 func (s *PlanDraftStore) DeleteAll(taskID string) error {
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	prefix := taskID + PlanDraftSidecarPrefix
 	entries, err := os.ReadDir(s.dir)
 	if os.IsNotExist(err) {

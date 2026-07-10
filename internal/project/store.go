@@ -23,9 +23,16 @@ var ErrProjectNotRegistered = errors.New("project not registered locally")
 // Store is the YAML-backed CRUD layer for Project metadata under dir
 // (~/.sybra/projects/), plus the bare-clone root (clonesDir,
 // ~/.sybra/clones/) that Create/CreateMeta clone new projects into.
+//
+// Every mutation is a Get (read) → modify → writeFile sequence, so locker
+// guards the whole critical section per project ID — both in-process (async
+// clone completion racing a UI edit in the same process) and cross-process
+// (GUI server vs. sybra-cli against the same projects dir), the same
+// discipline task.Store's lockTask applies to task files.
 type Store struct {
 	dir       string
 	clonesDir string
+	locker    *fsutil.KeyedLocker
 }
 
 // NewStore creates dir and clonesDir if they do not exist and returns a
@@ -36,7 +43,17 @@ func NewStore(dir, clonesDir string) (*Store, error) {
 			return nil, fmt.Errorf("create dir %s: %w", d, err)
 		}
 	}
-	return &Store{dir: dir, clonesDir: clonesDir}, nil
+	return &Store{dir: dir, clonesDir: clonesDir, locker: fsutil.NewKeyedLocker()}, nil
+}
+
+// lock acquires the per-project write lock for id's Get-modify-writeFile
+// critical section.
+func (s *Store) lock(id string) (func(), error) {
+	unlock, err := s.locker.Lock(id, s.filePath(id))
+	if err != nil {
+		return nil, fmt.Errorf("lock project %s: %w", id, err)
+	}
+	return unlock, nil
 }
 
 // List returns every registered project. A file that fails to parse is
@@ -84,6 +101,12 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	}
 
 	id := owner + "/" + repo
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	if _, err := s.Get(id); err == nil {
 		return Project{}, fmt.Errorf("project %s already exists", id)
 	}
@@ -130,6 +153,12 @@ func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
 	}
 	id := owner + "/" + repo
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	if _, err := s.Get(id); err == nil {
 		return Project{}, fmt.Errorf("project %s already exists", id)
 	}
@@ -155,6 +184,12 @@ func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 
 // MarkReady transitions a project from cloning to ready after a successful clone.
 func (s *Store) MarkReady(id string) error {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return err
@@ -166,6 +201,12 @@ func (s *Store) MarkReady(id string) error {
 
 // MarkError transitions a project to the error state when cloning fails.
 func (s *Store) MarkError(id string) error {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return err
@@ -182,6 +223,12 @@ func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
 		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
 	}
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return p, err
@@ -193,6 +240,12 @@ func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 
 // SetSandboxConfig replaces the sandbox configuration for a project.
 func (s *Store) SetSandboxConfig(id string, cfg *SandboxConfig) (Project, error) {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return p, err
@@ -204,6 +257,12 @@ func (s *Store) SetSandboxConfig(id string, cfg *SandboxConfig) (Project, error)
 
 // SetSetupCommands replaces the setup commands for a project.
 func (s *Store) SetSetupCommands(id string, cmds []string) (Project, error) {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return p, err
@@ -219,6 +278,12 @@ func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
 	if ref != WorktreeBaseRefFresh && ref != WorktreeBaseRefHead {
 		return Project{}, fmt.Errorf("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
 	}
+	unlock, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return p, err
@@ -232,6 +297,12 @@ func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
 // metadata file. It does not touch any per-task worktrees already checked
 // out from that clone.
 func (s *Store) Delete(id string) error {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	p, err := s.Get(id)
 	if err != nil {
 		return err
