@@ -385,6 +385,70 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	}
 }
 
+func TestRestartStaleSkipsWhileDispatchInFlight(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("dispatching", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-1",
+		Mode:      "headless",
+		Provider:  "claude",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	claim, ok := agents.TryClaimDispatch(created.ID)
+	if !ok {
+		t.Fatal("expected to acquire dispatch claim")
+	}
+	defer claim.Release()
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 0 {
+		t.Errorf("orchestrator was called %d times; want 0 (dispatch in flight)", stub.startCalls)
+	}
+}
+
 // TestRestartStaleSteerBypassesRecentRunDebounce verifies the recovery half of
 // a watchdog headless nudge: a pending SupervisorSteer makes a just-stopped task
 // re-dispatch immediately instead of waiting out the recent-run debounce. The
