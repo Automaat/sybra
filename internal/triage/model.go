@@ -21,6 +21,16 @@ type Verdict struct {
 	OriginalTitle string   `json:"original_title,omitempty"`
 }
 
+// Schema is the JSON Schema passed as llmjob.Spec.Schema for FallbackClassifier
+// runs — embedded in the prompt for claude/copilot, delivered via codex's
+// --output-schema temp file for codex (see llmexec.RunJSON) — mirroring
+// internal/verdict.Schema's pattern. Optional fields (description,
+// project_id, original_title) are modeled as nullable and listed as required
+// so Codex's strict additionalProperties:false rule is satisfied — the model
+// emits null for them when unset, which json.Unmarshal decodes into the zero
+// value, matching the `omitempty` prose-parsing path's behavior.
+const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless","interactive"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
+
 var (
 	validSizes = []string{"small", "medium", "large"}
 	validTypes = []string{"bug", "feature", "refactor", "review", "chore", "docs"}

@@ -87,6 +87,11 @@ func TestComputeReviewPhase(t *testing.T) {
 			sig:  reviewSignals{ReRequested: true, HeadSHA: "sha1"},
 			want: reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired},
 		},
+		{
+			name: "cost-stopped review run without draft → manual with explicit guardrail reason",
+			sig:  reviewSignals{CostGuardrailStopped: true, ReRequested: true, HeadSHA: "sha1"},
+			want: reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired, Reason: "Review agent hit the cost guardrail before posting a draft — inspect the agent log"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -124,6 +129,48 @@ func TestStickyConflictPhase(t *testing.T) {
 			}
 			if decided && res.Phase != tt.wantPhase {
 				t.Errorf("phase = %q, want %q", res.Phase, tt.wantPhase)
+			}
+		})
+	}
+}
+
+func TestLatestReviewRunStoppedByCostGuardrail(t *testing.T) {
+	tests := []struct {
+		name string
+		runs []task.AgentRun
+		want bool
+	}{
+		{
+			name: "latest review run cost-stopped",
+			runs: []task.AgentRun{
+				{Role: "review", EscalationReason: ""},
+				{Role: "test-runner", EscalationReason: "cost"},
+				{Role: "review", EscalationReason: "cost"},
+			},
+			want: true,
+		},
+		{
+			name: "later review run clears prior cost-stop",
+			runs: []task.AgentRun{
+				{Role: "review", EscalationReason: "cost"},
+				{Role: "review", EscalationReason: ""},
+			},
+			want: false,
+		},
+		{
+			name: "non-review cost-stop ignored",
+			runs: []task.AgentRun{
+				{Role: "implementation", EscalationReason: "cost"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := latestReviewRunStoppedByCostGuardrail(&task.Task{AgentRuns: tt.runs})
+			if got != tt.want {
+				t.Errorf("latestReviewRunStoppedByCostGuardrail = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -33,6 +33,7 @@ const (
 // from the review summary plus the per-PR reviews endpoint.
 type reviewSignals struct {
 	AgentRunning              bool   // a review agent is running for this task
+	CostGuardrailStopped      bool   // a review agent was cost-stopped before producing a draft/submission
 	HasDraft                  bool   // viewer has a PENDING (unsubmitted) review
 	ViewerApproved            bool   // viewer's latest submitted review is an approval
 	Submitted                 bool   // viewer has a submitted (non-draft) review
@@ -141,6 +142,18 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 			Phase:  ReviewPhaseAwaitingAuthor,
 			Status: task.StatusInReview,
 			Reason: "Awaiting author response",
+		}
+	}
+
+	// No draft and no submitted review after a cost-stopped review run means an
+	// agent attempted the review but was killed before it could checkpoint its
+	// findings. Keep the manual phase, but surface the distinct reason instead
+	// of making it look like a small-PR punt.
+	if s.CostGuardrailStopped {
+		return reviewPhaseResult{
+			Phase:  ReviewPhaseManual,
+			Status: task.StatusHumanRequired,
+			Reason: "Review agent hit the cost guardrail before posting a draft — inspect the agent log",
 		}
 	}
 

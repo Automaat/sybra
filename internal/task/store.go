@@ -1620,15 +1620,17 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
-// HeadSHA, Outcome, and string verdict/test/session values ignore empty
-// strings, and VerdictRendered is a latch that only ever flips true.
+// HeadSHA, Outcome, EscalationReason, and string verdict/test/session values
+// ignore empty strings, and VerdictRendered is a latch that only ever flips
+// true.
 type RunPatch struct {
 	// Lifecycle
-	State   *string
-	Outcome *string
-	Result  *string
-	LogFile *string
-	HeadSHA *string
+	State            *string
+	Outcome          *string
+	EscalationReason *string
+	Result           *string
+	LogFile          *string
+	HeadSHA          *string
 
 	// Cost/tokens
 	CostUSD         *float64
@@ -1660,6 +1662,9 @@ func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	}
 	if p.Outcome != nil && *p.Outcome != "" {
 		run.Outcome = *p.Outcome
+	}
+	if p.EscalationReason != nil && *p.EscalationReason != "" {
+		run.EscalationReason = *p.EscalationReason
 	}
 	if p.Result != nil {
 		run.Result = *p.Result

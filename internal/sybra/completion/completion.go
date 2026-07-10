@@ -32,11 +32,18 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// maxResultLen bounds how much of the agent's last result message we
-// persist into the task file. Larger values bloat task files (and the
-// cross-process diff stream); smaller values truncate enough context
-// that humans can't read past failures from the UI.
-const maxResultLen = 2000
+const (
+	// maxResultLen bounds how much of the agent's last result message we
+	// persist into the task file. Larger values bloat task files (and the
+	// cross-process diff stream); smaller values truncate enough context
+	// that humans can't read past failures from the UI.
+	maxResultLen = 2000
+
+	// interruptedReviewMaxLen bounds the salvaged assistant transcript written
+	// to a task review sidecar when a review run is stopped by the cost
+	// guardrail before it can post a draft.
+	interruptedReviewMaxLen = 12000
+)
 
 // Config carries every dependency Handler needs. Only Logger and Tasks are
 // load-bearing; every other field is nil-safe so tests and degraded init
@@ -202,6 +209,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+	h.salvageInterruptedReview(ag)
 	h.markCompletedReview(ag, exitErr)
 
 	// Human-review agents are out-of-band diagnostics — they must not
@@ -310,6 +318,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	if outcome := runTerminalOutcome(ag, exitErr); outcome != "" {
 		runUpdates.Outcome = task.Ptr(outcome)
 	}
+	if reason := ag.GetEscalationReason(); reason != "" {
+		runUpdates.EscalationReason = task.Ptr(reason)
+	}
 	addRunMetadata(&runUpdates, ag)
 	// For human-review agents, parse the verdict from the live (untruncated)
 	// output and persist it in its own field so detector.go can read it even
@@ -409,6 +420,67 @@ func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 	if _, err := h.tasks.Update(ag.TaskID, task.Update{Reviewed: &reviewed}); err != nil {
 		h.logger.Warn("task.mark-reviewed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+}
+
+func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
+	if h.tasks == nil || agent.RoleFromName(ag.Name) != agent.RoleReview || ag.GetEscalationReason() != "cost" {
+		return
+	}
+	current, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		h.logger.Warn("review.interrupted.get-task", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		return
+	}
+	if strings.TrimSpace(current.CodeReview) != "" {
+		return
+	}
+	transcript := interruptedReviewAssistantTranscript(ag)
+	if transcript == "" {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("# Interrupted Code Review\n\n")
+	b.WriteString("The review agent hit the cost guardrail before it posted a draft review. Salvaged assistant output follows.\n\n")
+	if logPath := ag.GetLogPath(); logPath != "" {
+		b.WriteString("Agent log: `")
+		b.WriteString(logPath)
+		b.WriteString("`\n\n")
+	}
+	b.WriteString(transcript)
+	content := b.String()
+	if _, err := h.tasks.Update(ag.TaskID, task.Update{CodeReview: &content}); err != nil {
+		h.logger.Warn("review.interrupted.write", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+	}
+}
+
+func interruptedReviewAssistantTranscript(ag *agent.Agent) string {
+	var b strings.Builder
+	events := ag.Output()
+	for i := range events {
+		ev := &events[i]
+		if ev.Type != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(ev.Content)
+		if content == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n---\n\n")
+		}
+		b.WriteString(content)
+		if b.Len() > interruptedReviewMaxLen {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	transcript := b.String()
+	if len(transcript) > interruptedReviewMaxLen {
+		transcript = transcript[:interruptedReviewMaxLen] + "\n\n... (truncated)"
+	}
+	return transcript
 }
 
 // handleFixReviewCompletion routes a finished manual fix-review agent. Without

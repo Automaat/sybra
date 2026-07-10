@@ -892,6 +892,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	patch := RunPatch{
 		State:                  Ptr("done"),
 		Outcome:                Ptr(RunOutcomeSuccess),
+		EscalationReason:       Ptr("cost"),
 		CostUSD:                Ptr(1.23),
 		PremiumRequests:        Ptr(2.5),
 		Result:                 Ptr("completed with result"),
@@ -942,6 +943,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		ReasoningEffort:        "high",
 		State:                  "done",
 		Outcome:                RunOutcomeSuccess,
+		EscalationReason:       "cost",
 		CostUSD:                1.23,
 		PremiumRequests:        2.5,
 		Result:                 "completed with result",
@@ -1002,6 +1004,12 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.State != want.State {
 		t.Errorf("State = %q, want %q", got.State, want.State)
+	}
+	if got.Outcome != want.Outcome {
+		t.Errorf("Outcome = %q, want %q", got.Outcome, want.Outcome)
+	}
+	if got.EscalationReason != want.EscalationReason {
+		t.Errorf("EscalationReason = %q, want %q", got.EscalationReason, want.EscalationReason)
 	}
 	if got.CostUSD != want.CostUSD {
 		t.Errorf("CostUSD = %f, want %f", got.CostUSD, want.CostUSD)

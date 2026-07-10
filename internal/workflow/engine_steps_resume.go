@@ -3,6 +3,8 @@ package workflow
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // resumeWorkflowIDVar/resumeWorkflowVarsVar/resumeStatusVar are the vars a
@@ -11,7 +13,7 @@ import (
 // resumeStatusVar is always set (to the task's status at the moment recovery
 // began) so a task that had no active workflow still gets its visible status
 // restored before the normal status-driven cascade (see
-// completion.Handler.OnWorkflowComplete) picks up wherever it left off.
+// AgentCompletionHandler.OnWorkflowComplete) picks up wherever it left off.
 const (
 	resumeWorkflowIDVar   = "resume_workflow_id"
 	resumeWorkflowStepVar = "resume_workflow_step"
@@ -29,7 +31,7 @@ const (
 // When no workflow was captured (the task had no active workflow at the
 // time recovery began), this is a no-op beyond restoring status: the step
 // completes normally, the recovery workflow ends, and
-// completion.Handler.OnWorkflowComplete's existing status-driven cascade
+// AgentCompletionHandler.OnWorkflowComplete's existing status-driven cascade
 // dispatches whatever workflow matches the now-restored task.status — the
 // same mechanism every other builtin workflow chain (plan → implement →
 // review → ...) already relies on.
@@ -40,8 +42,25 @@ const (
 // workflow's own single pass. No separate re-dispatch path exists for a
 // resume_workflow step, so no additional claim/lock is needed here.
 func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
-	if status := wfExec.Variables[resumeStatusVar]; status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, status, wfExec.Variables[resumeStatusReasonVar]); err != nil {
+	status := wfExec.Variables[resumeStatusVar]
+	reason := wfExec.Variables[resumeStatusReasonVar]
+	// A captured status of human-required carrying the exact rebase-blocked
+	// reason means the human-required flip IS what this recovery workflow was
+	// dispatched to fix (e.g. a resume-stalled dispatch raced the branch-conflict
+	// recovery and parked the task on the very rebase error being resolved here)
+	// rather than some pre-existing, unrelated human-required park (e.g. a cost
+	// cap) that merely happened to be in effect when an unrelated conflict
+	// interrupted the task. Reaching this step at all means route_result /
+	// verify_commits / detect_tampering all passed without re-escalating, so
+	// recovery is confirmed successful — restoring this specific reason here
+	// would immediately re-park a task recovery just fixed (see #47dcecdd).
+	// Any OTHER human-required reason predates this conflict and must still be
+	// restored verbatim.
+	if status == "human-required" && reason == worktreeerr.RebaseBlockedReason {
+		status = ""
+	}
+	if status != "" {
+		if err := e.tasks.UpdateTaskStatus(taskID, status, reason); err != nil {
 			e.logger.Warn("workflow.resume.restore-status", "task_id", taskID, "status", status, "err", err)
 		}
 	}
@@ -61,7 +80,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 
 	// StartWorkflowWithVars refuses to start a new workflow while the task's
 	// current workflow (this one) is non-terminal, so finalize THIS execution
-	// first and persist it before launching the resume target. Returning
+	// first and persist it before dispatching the resume target. Returning
 	// errStepParked afterward tells executeSteps to stop without its own
 	// record/resolveNext/SetWorkflow pass — which would otherwise re-persist
 	// this now-stale (but already-completed) Execution over the freshly

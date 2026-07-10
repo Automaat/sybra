@@ -5,9 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +92,11 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 			} else {
 				m.logger.Warn("agent.reattach.bridge-retry", "id", r.ID, "task", r.TaskID)
 			}
+			continue
+		}
+
+		if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
+			m.reapStaleSurvivor(r, reg, reason)
 			continue
 		}
 
@@ -555,16 +558,39 @@ func reattachAlive(r Record) bool {
 	return true
 }
 
-// processStartString returns the OS-reported start time of a process as an
-// opaque string, used only for equality comparison to detect PID reuse.
-// Best-effort: an empty result disables the guard for that record.
-func processStartString(ctx context.Context, pid int) string {
-	if pid <= 0 {
-		return ""
+const reattachMaxAge = 6 * time.Hour
+
+func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
+	if strings.TrimSpace(r.TaskID) == "" {
+		return "no_task"
 	}
-	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return ""
+	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {
+		return "task_gone"
 	}
-	return strings.TrimSpace(string(out))
+	if !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
+		return "deadline"
+	}
+	if statusFn := m.taskStatusFn(); statusFn != nil {
+		if status, ok := statusFn(r.TaskID); ok && staleForLiveAgent(status) {
+			return "task_status_" + status
+		}
+	}
+	return ""
+}
+
+func staleForLiveAgent(status string) bool {
+	switch status {
+	case "todo", "new":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) reapStaleSurvivor(r Record, reg survivalRegistry, reason string) {
+	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
+	signalPID(r.PID, stopSIGINTGrace)
+	if err := reg.Delete(r.ID); err != nil {
+		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
+	}
 }

@@ -120,6 +120,7 @@ couldn't catch).
 | `agent.sandbox_mode` | `string` |  | SandboxMode sets the default OS-level process-sandbox posture for agent subprocesses (darwin: sandbox-exec seatbelt). "off" spawns unwrapped with no validation. "report" (default) validates and logs the resolved write allowlist (worktree/sandbox-home/tmp) without ever wrapping the spawn, so a profile/wrapper defect can only affect an explicit "enforce" posture, never the default rollout posture. "enforce" actually wraps the spawn and blocks writes outside that allowlist, failing the spawn closed if the wrapper is unavailable. Empty treated as "report". |
 | `agent.headless_steerable` | `*bool` | _(nil)_ | HeadlessSteerable controls whether headless claude runs launch with the stdin/stream-json shape that accepts mid-run steer messages (instead of the legacy one-shot `-p <prompt>` invocation). nil means not configured (defaults to true). Set false to restore the legacy launch shape with no stdin transport — a config-only rollback with no code revert. |
 | `agent.default_project_id` | `string` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
+| `agent.role_effort` | `map[string]string` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
 | `agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
 
 ## PlaywrightMCPConfig (`agent.playwright_mcp`)
@@ -423,6 +424,7 @@ must not start filing tasks before an operator opts in.
 |---|---|---|---|
 | `experience.enabled` | `bool` |  |  |
 | `experience.max_records` | `int` |  |  |
+| `experience.ttl_days` | `int` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
 
 ## ProvidersConfig (`providers`)
 

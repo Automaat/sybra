@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -263,6 +264,88 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	}
 	if metas[0].SourcePath != shotPath {
 		t.Fatalf("SourcePath = %q, want %q", metas[0].SourcePath, shotPath)
+	}
+}
+
+func TestOnComplete_SalvagesCostStoppedReviewAssistantTranscript(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "review-agent",
+		Role:      string(agent.RoleReview),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now().Add(-time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{
+		ID:        "review-agent",
+		TaskID:    tk.ID,
+		Name:      agent.RoleReview.AgentName(tk.Title),
+		Mode:      "headless",
+		LogPath:   "/tmp/sybra/agents/review-agent.ndjson",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "confirmed finding: nil map write"})
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "waiting for verifier"})
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "verifier still running"})
+
+	h.OnComplete(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# Interrupted Code Review",
+		"confirmed finding: nil map write",
+		"waiting for verifier",
+		"/tmp/sybra/agents/review-agent.ndjson",
+	} {
+		if !strings.Contains(got.CodeReview, want) {
+			t.Fatalf("CodeReview missing %q:\n%s", want, got.CodeReview)
+		}
+	}
+	if got.AgentRuns[0].EscalationReason != "cost" {
+		t.Fatalf("run EscalationReason = %q, want cost", got.AgentRuns[0].EscalationReason)
+	}
+}
+
+func TestSalvageInterruptedReviewKeepsExistingReview(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("review task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := "# Existing review\n\nDo not overwrite."
+	if _, err := taskMgr.Update(tk.ID, task.Update{CodeReview: &existing}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{logger: discardLogger(), tasks: taskMgr}
+	ag := &agent.Agent{
+		ID:     "review-agent",
+		TaskID: tk.ID,
+		Name:   agent.RoleReview.AgentName(tk.Title),
+	}
+	ag.SetEscalationReason("cost")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "new interrupted text"})
+
+	h.salvageInterruptedReview(ag)
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CodeReview != existing {
+		t.Fatalf("CodeReview overwritten:\n got %q\nwant %q", got.CodeReview, existing)
 	}
 }
 

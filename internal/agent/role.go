@@ -79,3 +79,21 @@ func RoleFromName(name string) Role {
 	r, _ := ParseRoleFromName(name)
 	return r
 }
+
+// DefaultReasoningEffort returns the built-in per-role reasoning-effort
+// baseline used when neither an experiment assignment nor the task itself
+// pins a level (see RunConfig.ReasoningEffort). System/verifier roles that
+// mostly classify or check pre-existing work default to "low"; the
+// code-authoring roles that most benefit from deeper reasoning default to
+// "high". Everything else falls back to DefaultReasoningEffort ("medium")
+// via the empty return.
+func (r Role) DefaultReasoningEffort() string {
+	switch r {
+	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview:
+		return "low"
+	case RoleImplementation, RoleFixReview, RolePRFix:
+		return "high"
+	default:
+		return ""
+	}
+}

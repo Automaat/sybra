@@ -90,6 +90,7 @@ type Handler struct {
 	// run from independent agent-completion goroutines, so even unrelated task
 	// IDs must not write these maps concurrently.
 	failureMu sync.Mutex
+	wtDropped map[string]struct{}
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
