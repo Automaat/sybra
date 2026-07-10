@@ -29,7 +29,7 @@ func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
 		"SAME files", "merge one at a time", "false overlap",
 		"touches", "produces", "requires", "derived automatically",
 		"almost always share code", "dependency exists between any two",
-		"safe, zero-cost default", "parallelJustification",
+		"safe, zero-cost default", "parallelJustification", "SAME ORDER",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing metadata guidance %q:\n%s", want, prompt)
@@ -90,6 +90,17 @@ func TestBuildPlanSchema(t *testing.T) {
 		}
 		if item["additionalProperties"] != false {
 			t.Errorf("children.items[%d].additionalProperties = %v, want false", i, item["additionalProperties"])
+		}
+		parallelJustification, ok := item["properties"].(map[string]any)["parallelJustification"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].properties.parallelJustification: %s", i, schema)
+		}
+		valueSchema, ok := parallelJustification["additionalProperties"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].parallelJustification.additionalProperties: %s", i, schema)
+		}
+		if valueSchema["type"] != "string" {
+			t.Errorf("children.items[%d].parallelJustification.additionalProperties.type = %v, want string", i, valueSchema["type"])
 		}
 	}
 }
@@ -1176,11 +1187,19 @@ func depsMap(specs []ChildSpec) map[string][]string {
 // reachableFrom walks deps transitively from `from`, reporting whether
 // `target` is reachable.
 func reachableFrom(deps map[string][]string, from, target string) bool {
+	return reachableFromSeen(deps, from, target, make(map[string]bool))
+}
+
+func reachableFromSeen(deps map[string][]string, from, target string, seen map[string]bool) bool {
 	if from == target {
 		return true
 	}
+	if seen[from] {
+		return false
+	}
+	seen[from] = true
 	for _, d := range deps[from] {
-		if reachableFrom(deps, d, target) {
+		if reachableFromSeen(deps, d, target, seen) {
 			return true
 		}
 	}

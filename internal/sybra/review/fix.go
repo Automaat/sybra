@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -776,6 +777,9 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 // immediately.
 func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	taskID := t.ID
+	if r.worktreeSkip(taskID) {
+		return false
+	}
 	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
 		if r.recreateExhaustedNoPRBranch(t) {
 			return true
@@ -1008,6 +1012,9 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 }
 
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
+	if r.dropTerminalWorktreeFailure(taskID, wtErr) {
+		return false
+	}
 	attempts := r.recordWorktreeFailure(taskID, wtErr)
 	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
 		return false
@@ -1015,6 +1022,68 @@ func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) boo
 	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
 		"task_id", taskID, "attempts", attempts, "limit", wtFailureLimit)
 	return true
+}
+
+func worktreeFailureTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, worktree.ErrTaskBranchMissing) {
+		return true
+	}
+	return strings.Contains(err.Error(), "invalid reference")
+}
+
+func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
+	if r.tasks == nil {
+		if worktreeFailureTerminal(wtErr) {
+			r.dropWorktreeEntry(taskID)
+			return true
+		}
+		return false
+	}
+	got, err := r.tasks.Get(taskID)
+	if errors.Is(err, os.ErrNotExist) {
+		r.dropWorktreeEntry(taskID)
+		r.logger.Warn("pr-monitor.worktree.task-gone", "task_id", taskID, "err", wtErr)
+		return true
+	}
+	if err != nil {
+		r.logger.Warn("pr-monitor.worktree.task-get", "task_id", taskID, "err", err)
+		return false
+	}
+	if !worktreeFailureTerminal(wtErr) {
+		return false
+	}
+	r.clearWorktreeFailure(taskID)
+	if got.Status != task.StatusHumanRequired {
+		reason := fmt.Sprintf("branch deleted: fix worktree cannot be created (%s)", wtErr)
+		if _, uerr := r.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); uerr != nil {
+			r.logger.Error("pr-monitor.worktree.terminal-escalate", "task_id", taskID, "err", uerr)
+		}
+	}
+	r.logger.Warn("pr-monitor.worktree.branch-deleted", "task_id", taskID, "err", wtErr)
+	return true
+}
+
+func (r *Handler) dropWorktreeEntry(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	if r.wtDropped == nil {
+		r.wtDropped = make(map[string]struct{})
+	}
+	r.wtDropped[taskID] = struct{}{}
+	delete(r.wtFailures, taskID)
+}
+
+func (r *Handler) worktreeSkip(taskID string) bool {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	_, dropped := r.wtDropped[taskID]
+	return dropped
 }
 
 func (r *Handler) recordDispatchFailure(taskID string) int {
@@ -1134,6 +1203,9 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 	if t.ProjectID == "" {
 		return "", true
 	}
+	if r.worktreeSkip(t.ID) {
+		return "", false
+	}
 	var (
 		d     string
 		wtErr error
@@ -1159,6 +1231,9 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 			recoverFn = r.RecoverStaleBranchConflict
 		}
 		if agentorch.MarkRebaseBlocked(r.tasks, t.ID, wtErr, r.logger, recoverFn) {
+			return "", false
+		}
+		if r.dropTerminalWorktreeFailure(t.ID, wtErr) {
 			return "", false
 		}
 		r.recordWorktreeFailure(t.ID, wtErr)

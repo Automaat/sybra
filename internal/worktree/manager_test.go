@@ -597,7 +597,7 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 		WorktreesDir: wtDir,
 		LogsDir:      logsDir,
 		Logger:       discardLogger(),
-		SetupTimeout: 800 * time.Millisecond,
+		SetupTimeout: 5 * time.Second,
 	})
 
 	pidFile := filepath.Join(wtDir, "child.pid")
@@ -634,12 +634,29 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if syscallKillErr := syscall.Kill(pid, 0); syscallKillErr != nil {
-			return // grandchild is gone — process group was killed
+		if processGoneOrZombie(pid) {
+			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("grandchild pid %d still alive after setup timeout", pid)
+}
+
+func processGoneOrZombie(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return true
+	}
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	stat := string(data)
+	afterComm := strings.LastIndexByte(stat, ')')
+	if afterComm < 0 || afterComm+2 >= len(stat) {
+		return false
+	}
+	fields := strings.Fields(stat[afterComm+2:])
+	return len(fields) > 0 && fields[0] == "Z"
 }
 
 // TestRunSetup_NoLogsDir — when no LogsDir is configured the hook still
@@ -823,6 +840,43 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "bootstrap-marker") {
 		t.Errorf("setup log missing command: %s", data)
+	}
+}
+
+func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "setup-count")
+	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	secondPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("reused PrepareForTask: %v", err)
+	}
+	if secondPath != firstPath {
+		t.Fatalf("reused PrepareForTask path = %q, want %q", secondPath, firstPath)
+	}
+
+	count, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got, want := string(count), "xx"; got != want {
+		t.Fatalf("setup command ran %d times, want 2 (counter %q)", len(got), got)
 	}
 }
 

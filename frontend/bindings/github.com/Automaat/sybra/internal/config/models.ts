@@ -152,6 +152,17 @@ export class AgentDefaults {
     "defaultProjectId": string;
 
     /**
+     * RoleEffort overrides the built-in per-role reasoning-effort baseline
+     * (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g.
+     * "triage", "implementation"). Still loses to an experiment assignment's
+     * or the task's own ReasoningEffort — this only replaces the role
+     * fallback, not an explicit per-task/per-run override. Unknown role keys
+     * or invalid effort values are ignored (falls back to the built-in
+     * default for that role).
+     */
+    "roleEffort": { [_ in string]?: string };
+
+    /**
      * PlaywrightMCP configures the default-off headless Playwright MCP server
      * attached to test-runner runs that resolve to the Claude provider.
      */
@@ -228,6 +239,9 @@ export class AgentDefaults {
         if (!("defaultProjectId" in $$source)) {
             this["defaultProjectId"] = "";
         }
+        if (!("roleEffort" in $$source)) {
+            this["roleEffort"] = {};
+        }
         if (!("playwrightMcp" in $$source)) {
             this["playwrightMcp"] = (new PlaywrightMCPConfig());
         }
@@ -240,9 +254,13 @@ export class AgentDefaults {
      */
     static createFrom($$source: any = {}): AgentDefaults {
         const $$createField23_0 = $$createType0;
+        const $$createField24_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("roleEffort" in $$parsedSource) {
+            $$parsedSource["roleEffort"] = $$createField23_0($$parsedSource["roleEffort"]);
+        }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField23_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField24_0($$parsedSource["playwrightMcp"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -309,6 +327,14 @@ export class ExperienceConfig {
     "enabled": boolean;
     "maxRecords": number;
 
+    /**
+     * TTLDays expires records older than this many days out of injection —
+     * a stale record can otherwise poison a prompt with advice that no
+     * longer matches the current codebase. 0 (default) disables expiry, so
+     * existing deployments are unaffected until an operator opts in.
+     */
+    "ttlDays": number;
+
     /** Creates a new ExperienceConfig instance. */
     constructor($$source: Partial<ExperienceConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -316,6 +342,9 @@ export class ExperienceConfig {
         }
         if (!("maxRecords" in $$source)) {
             this["maxRecords"] = 0;
+        }
+        if (!("ttlDays" in $$source)) {
+            this["ttlDays"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -484,7 +513,7 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField9_0 = $$createType1;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
             $$parsedSource["app"] = $$createField9_0($$parsedSource["app"]);
@@ -586,7 +615,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType2;
+        const $$createField9_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -688,7 +717,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType3;
+        const $$createField1_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -846,11 +875,11 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType4;
-        const $$createField1_0 = $$createType5;
-        const $$createField2_0 = $$createType5;
-        const $$createField3_0 = $$createType5;
-        const $$createField4_0 = $$createType6;
+        const $$createField0_0 = $$createType5;
+        const $$createField1_0 = $$createType6;
+        const $$createField2_0 = $$createType6;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -973,7 +1002,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType3;
+        const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1151,10 +1180,11 @@ export class UmbrellaConfig {
 }
 
 // Private type creation functions
-const $$createType0 = PlaywrightMCPConfig.createFrom;
-const $$createType1 = GitHubAppConfig.createFrom;
-const $$createType2 = $Create.Map($Create.Any, $Create.Any);
-const $$createType3 = $Create.Array($Create.Any);
-const $$createType4 = ProviderHealthCheckConfig.createFrom;
-const $$createType5 = ProviderEntryConfig.createFrom;
-const $$createType6 = ProviderLimitsConfig.createFrom;
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);
+const $$createType1 = PlaywrightMCPConfig.createFrom;
+const $$createType2 = GitHubAppConfig.createFrom;
+const $$createType3 = $Create.Map($Create.Any, $Create.Any);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = ProviderHealthCheckConfig.createFrom;
+const $$createType6 = ProviderEntryConfig.createFrom;
+const $$createType7 = ProviderLimitsConfig.createFrom;

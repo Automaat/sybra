@@ -37,6 +37,17 @@ export class AgentRun {
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
     "state": string;
+
+    /**
+     * Outcome records the terminal result the completion handler actually
+     * observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
+     * ("stopped" covers both a clean finish and a failed one) and independent
+     * of Result (truncated to maxResultLen, so its presence/absence cannot
+     * tell success from failure either). Empty means the run never reached a
+     * definitive terminal outcome (still running, or stalled/rate-limited and
+     * due for retry) — callers must not infer success from Outcome == "".
+     */
+    "outcome"?: string;
     "startedAt": string;
     "costUsd": number;
     "premiumRequests"?: number;

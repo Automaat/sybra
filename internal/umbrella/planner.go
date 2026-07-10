@@ -348,16 +348,19 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString("Output ONLY a JSON object, no prose, no code fence:\n")
 	b.WriteString(`{"children":[{"issue":"<ref>","touches":["<path>"],"produces":["<symbol>"],"requires":["<symbol>"],"dependsOn":["<ref>"],"parallelJustification":{"<ref>":"<why disjoint>"},"track":"<label>"}],"maxParallel":<int>}` + "\n")
 	b.WriteString("Rules: include EVERY sub-issue exactly once (including done ones); dependsOn and")
-	b.WriteString(" parallelJustification keys must reference only the sub-issues above; never create a")
-	b.WriteString(" cycle; maxParallel is the max children to run at once (default 5).\n")
+	b.WriteString(" parallelJustification keys must reference only the sub-issues above; emit children")
+	b.WriteString(" in the SAME ORDER as the sub-issues above; never create a cycle; maxParallel is the")
+	b.WriteString(" max children to run at once (default 5).\n")
 	return b.String()
 }
 
 // buildPlanSchema returns a JSON Schema for Plan that constrains
 // children[].issue and children[].dependsOn to the exact canonical sub-issue
-// refs, and makes children a fixed tuple with one slot per sub-issue ref. This
-// eliminates the duplicate/omitted coverage-mismatch failure mode at the model
-// layer instead of relying solely on post-hoc validate+retry.
+// refs, requires string-valued parallelJustification entries to match
+// PlannedChild, and makes children a fixed tuple with one slot per sub-issue
+// ref in prompt order. This eliminates the duplicate/omitted
+// coverage-mismatch failure mode at the model layer instead of relying solely
+// on post-hoc validate+retry.
 // Delivered via llmexec.Options.Schema by a Runner (see FallbackPlannerRunner):
 // codex receives it natively (--output-schema), claude/copilot get it appended
 // as prose. additionalProperties:false and every property listed in
@@ -375,13 +378,16 @@ func buildPlanSchema(subs []SubIssue) string {
 		return map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"issue":                 map[string]any{"type": "string", "enum": []string{ref}},
-				"dependsOn":             map[string]any{"type": "array", "items": refEnum},
-				"track":                 map[string]any{"type": "string"},
-				"touches":               stringArray,
-				"produces":              stringArray,
-				"requires":              stringArray,
-				"parallelJustification": map[string]any{"type": "object"},
+				"issue":     map[string]any{"type": "string", "enum": []string{ref}},
+				"dependsOn": map[string]any{"type": "array", "items": refEnum},
+				"track":     map[string]any{"type": "string"},
+				"touches":   stringArray,
+				"produces":  stringArray,
+				"requires":  stringArray,
+				"parallelJustification": map[string]any{
+					"type":                 "object",
+					"additionalProperties": map[string]any{"type": "string"},
+				},
 			},
 			"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
 			"additionalProperties": false,
