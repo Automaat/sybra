@@ -846,10 +846,11 @@ func (a *App) syncSkillsBundle() {
 		userHome = ""
 	}
 	(&skillsync.Syncer{Logger: a.logger}).Run(skillsync.Options{
-		RepoDir:      a.repoDir,
-		SkillsFS:     a.skillsFS,
-		PrimaryDst:   a.skillsDir,
-		SybraHomeDir: config.HomeDir(),
-		UserHomeDir:  userHome,
+		RepoDir:              a.repoDir,
+		SkillsFS:             a.skillsFS,
+		PrimaryDst:           a.skillsDir,
+		SybraHomeDir:         config.HomeDir(),
+		UserHomeDir:          userHome,
+		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
 }

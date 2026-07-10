@@ -314,14 +314,14 @@ func ciFailurePrompt(pr github.PullRequest) string {
 // prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
 // false for kinds with no agent prompt (ready_to_merge), which never reach the
 // dispatch path.
-func prIssueBody(issue github.PRIssue) (string, bool) {
+func prIssueBody(ctx context.Context, issue github.PRIssue) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
 		return conflictPrompt(issue.PR), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
-		return commentsPrompt(issue.PR), true
+		return commentsPrompt(ctx, issue.PR), true
 	default:
 		return "", false
 	}
@@ -388,17 +388,17 @@ func (r *Handler) logPRIssueDetected(taskID string, issue github.PRIssue) {
 // review-hold setting is on AND the set includes a review-comments issue — the
 // only kind that posts thread replies. It overrides the "reply live and push"
 // instructions above, so it must land after them.
-func coalescedFixPrompt(issues []github.PRIssue, holdSuffix string) string {
+func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string) string {
 	var prompt string
 	if len(issues) == 1 {
-		prompt, _ = prIssueBody(issues[0])
+		prompt, _ = prIssueBody(ctx, issues[0])
 	} else {
 		var b strings.Builder
 		b.WriteString("This PR has multiple open issues from the same push. Address " +
 			"ALL of them in one pass, then push once at the end (the per-section push " +
 			"commands are equivalent — run it a single time).\n\n")
 		for i := range issues {
-			body, ok := prIssueBody(issues[i])
+			body, ok := prIssueBody(ctx, issues[i])
 			if !ok {
 				continue
 			}
@@ -476,7 +476,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
 }
 
 // autoResolveConflict attempts the deterministic clean-merge fast-path for a
@@ -1173,7 +1173,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 // commentsPrompt instructs the fix agent to address unresolved review comments
 // on the user's own PR via the /fix-review skill (which replies on every
 // thread), then push and re-request review.
-func commentsPrompt(pr github.PullRequest) string {
+func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 	return fmt.Sprintf(
 		"Run /fix-review %s --auto\n\n"+
 			"This is your own PR (#%d) — reviewers left comments or unresolved "+
@@ -1186,7 +1186,7 @@ func commentsPrompt(pr github.PullRequest) string {
 			"task.\n\n"+
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by "+
-			"repo hooks). Sign the commit with `git commit -s -S`.\n\n"+
+			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"Push to the same remote the PR was opened from — never to `origin` "+
 			"when a `fork` remote exists:\n"+
 			"```sh\n"+
@@ -1194,7 +1194,7 @@ func commentsPrompt(pr github.PullRequest) string {
 			"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n"+
 			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```",
-		pr.URL, pr.Number, pr.HeadRefName,
+		pr.URL, pr.Number, project.CommitSignFlags(ctx), pr.HeadRefName,
 	)
 }
 

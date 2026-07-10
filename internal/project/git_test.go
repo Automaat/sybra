@@ -2602,3 +2602,105 @@ func TestTryCleanMerge(t *testing.T) {
 		}
 	})
 }
+
+func TestInstallSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	body := func() string {
+		t.Helper()
+		out, gerr := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+		if gerr != nil {
+			t.Fatalf("git log: %v", gerr)
+		}
+		return string(out)
+	}
+
+	wantSOB := "Signed-off-by: Agent <agent@example.com>"
+
+	if err := os.WriteFile(filepath.Join(wtPath, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add a")
+	if got := body(); !strings.Contains(got, wantSOB) {
+		t.Errorf("plain commit missing DCO trailer, got:\n%s", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-s", "-m", "feat: add b")
+	if got := body(); strings.Count(got, wantSOB) != 1 {
+		t.Errorf("commit -s should not duplicate the trailer, got %d in:\n%s",
+			strings.Count(got, wantSOB), got)
+	}
+}
+
+func TestCloneBare_InstallsSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add c")
+
+	out, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if want := "Signed-off-by: Agent <agent@example.com>"; !strings.Contains(string(out), want) {
+		t.Errorf("CloneBare worktree commit missing DCO trailer, got:\n%s", out)
+	}
+}
