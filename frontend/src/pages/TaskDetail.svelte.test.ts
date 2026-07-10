@@ -83,6 +83,9 @@ vi.mock('$lib/api', () => ({
   StartReview: vi.fn(),
   GetAgentRunLog: vi.fn(),
   GetAgentRunConvoLog: vi.fn(),
+  ListTaskArtifacts: vi.fn(async () => []),
+  GetTaskSetupLog: vi.fn(async () => ({ taskId: 'task-1', exists: false })),
+  ListTaskAuditEvents: vi.fn(async () => []),
   ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
 }))
 
@@ -131,6 +134,7 @@ describe('TaskDetail', () => {
     mockUpdateAgent.mockReset()
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
     mockListTaskProgress.mockReset()
     mockListTaskProgress.mockResolvedValue([])
   })

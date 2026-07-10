@@ -224,6 +224,7 @@
   }
 
   async function deleteTask() {
+    if (!window.confirm(`Delete task "${task.title}"? This cannot be undone.`)) return
     deleting = true
     try {
       await taskStore.remove(task.id)
