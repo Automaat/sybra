@@ -369,7 +369,7 @@ describe('TaskDetail', () => {
       expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
     })
 
-    it('does not show Children for a normal task that has prerequisites', async () => {
+    it('shows Children with its own prerequisite rows for a normal task with dependsOn', async () => {
       mockGet.mockResolvedValue({
         ...mockTask,
         taskType: 'normal',
@@ -389,22 +389,20 @@ describe('TaskDetail', () => {
         props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
       })
       await vi.waitFor(() => {
-        expect(screen.getByText('Test Task')).toBeDefined()
+        expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).toContain('Children · 1')
+        expect(screen.getByText('Prerequisite task')).toBeDefined()
       })
-      expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).not.toContain('Children')
-      expect(screen.queryByText('Prerequisite task')).toBeNull()
-      expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
     })
 
     it('renders the Children panel with materialized children plus unresolved refs for an umbrella', async () => {
+      // Production shape: the umbrella tracker itself never carries
+      // dependsOn (internal/umbrella/expand.go's materialize() only sets it
+      // on per-child CreateFull calls) -- the declared-but-unmaterialized ref
+      // (#99) is declared on the materialized sibling child instead.
       mockGet.mockResolvedValue({
         ...mockTask,
         taskType: 'umbrella',
         issue: 'https://github.com/Automaat/sybra/issues/1213',
-        dependsOn: [
-          'https://github.com/Automaat/sybra/issues/10',
-          'https://github.com/Automaat/sybra/issues/99',
-        ],
       })
       mockTasksMap.set('child-1', {
         id: 'child-1',
@@ -414,6 +412,7 @@ describe('TaskDetail', () => {
         tags: [],
         issue: 'https://github.com/Automaat/sybra/issues/10',
         umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/99'],
         createdAt: '2026-04-01T00:00:00Z',
         updatedAt: '2026-04-01T00:00:00Z',
       })

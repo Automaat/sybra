@@ -30,59 +30,86 @@ export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgre
   return byUmbrella
 }
 
-// childrenForUmbrella resolves the display rows for a task's Children panel:
-// materialized child tasks (linked via umbrellaIssue) ordered by the umbrella's
-// declared dependsOn, plus unresolved dependsOn refs with no matching local task.
-export function childrenForUmbrella(umbrella: Task, tasks: Task[]): UmbrellaChildren {
-  if (umbrella.taskType !== 'umbrella') return { children: [], unresolved: [], displayTotal: 0 }
-
-  const umbrellaKey = normalizeIssueRef(umbrella.issue ?? '')
-
-  const byIssue = new Map<string, Task>()
-  for (const task of tasks) {
-    const key = normalizeIssueRef(task.issue ?? '')
-    if (key) byIssue.set(key, task)
+// childrenForUmbrella resolves the display rows for a task's Children panel.
+//
+// Two shapes feed this panel:
+//  - An umbrella tracker (taskType === 'umbrella'): children are materialized
+//    tasks linked via umbrellaIssue. The tracker itself never carries its own
+//    dependsOn (internal/umbrella/expand.go's materialize() only sets
+//    DependsOn on the per-child CreateFull call, never on the tracker's), so
+//    declared refs — used both for ordering and for surfacing declared-but
+//    -unmaterialized children — are aggregated from the materialized
+//    children's own dependsOn instead. The union also includes the tracker's
+//    dependsOn (harmless, and covers callers that do populate it directly).
+//  - Any other task with a non-empty dependsOn (its own prerequisites):
+//    children are that task's declared refs resolved against the local task
+//    list by issue, in declared order.
+export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren {
+  const isUmbrella = task.taskType === 'umbrella'
+  if (!isUmbrella && (task.dependsOn ?? []).length === 0) {
+    return { children: [], unresolved: [], displayTotal: 0 }
   }
 
-  const materialized = umbrellaKey
-    ? tasks.filter((task) => normalizeIssueRef(task.umbrellaIssue ?? '') === umbrellaKey)
+  const byIssue = new Map<string, Task>()
+  for (const t of tasks) {
+    const key = normalizeIssueRef(t.issue ?? '')
+    if (key) byIssue.set(key, t)
+  }
+
+  const taskKey = normalizeIssueRef(task.issue ?? '')
+  const materialized = isUmbrella && taskKey
+    ? tasks.filter((t) => normalizeIssueRef(t.umbrellaIssue ?? '') === taskKey)
     : []
 
-  const declaredRefs = (umbrella.dependsOn ?? [])
-    .map((ref) => normalizeIssueRef(ref))
-    .filter((ref) => ref !== '')
+  const declaredRefs: string[] = []
+  const seenDeclared = new Set<string>()
+  const rawRefLists = isUmbrella
+    ? [...materialized.map((t) => t.dependsOn ?? []), task.dependsOn ?? []]
+    : [task.dependsOn ?? []]
+  for (const list of rawRefLists) {
+    for (const ref of list) {
+      const key = normalizeIssueRef(ref)
+      if (!key || seenDeclared.has(key)) continue
+      seenDeclared.add(key)
+      declaredRefs.push(key)
+    }
+  }
 
   const orderIndex = new Map<string, number>()
   declaredRefs.forEach((ref, i) => {
     if (!orderIndex.has(ref)) orderIndex.set(ref, i)
   })
 
-  const materializedByIssue = new Map<string, Task>()
-  for (const task of materialized) {
-    const key = normalizeIssueRef(task.issue ?? '')
-    if (key) materializedByIssue.set(key, task)
+  let children: Task[]
+  if (isUmbrella) {
+    const materializedByIssue = new Map<string, Task>()
+    for (const t of materialized) {
+      const key = normalizeIssueRef(t.issue ?? '')
+      if (key) materializedByIssue.set(key, t)
+    }
+
+    const ordered: Task[] = []
+    const unordered: Task[] = []
+    for (const t of materialized) {
+      const key = normalizeIssueRef(t.issue ?? '')
+      if (key && orderIndex.has(key)) continue
+      unordered.push(t)
+    }
+    const sortedRefs = [...orderIndex.entries()].sort((a, b) => a[1] - b[1])
+    for (const [ref] of sortedRefs) {
+      const t = materializedByIssue.get(ref)
+      if (t) ordered.push(t)
+    }
+    children = [...ordered, ...unordered]
+  } else {
+    children = declaredRefs
+      .map((ref) => byIssue.get(ref))
+      .filter((t): t is Task => !!t)
   }
 
-  const ordered: Task[] = []
-  const unordered: Task[] = []
-  for (const task of materialized) {
-    const key = normalizeIssueRef(task.issue ?? '')
-    if (key && orderIndex.has(key)) continue
-    unordered.push(task)
-  }
-  const sortedRefs = [...orderIndex.entries()].sort((a, b) => a[1] - b[1])
-  for (const [ref] of sortedRefs) {
-    const task = materializedByIssue.get(ref)
-    if (task) ordered.push(task)
-  }
-  const children = [...ordered, ...unordered]
-
-  const unresolvedSet = new Set<string>()
   const unresolved: string[] = []
   for (const ref of declaredRefs) {
     if (byIssue.has(ref)) continue
-    if (unresolvedSet.has(ref)) continue
-    unresolvedSet.add(ref)
     unresolved.push(ref)
   }
 

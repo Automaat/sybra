@@ -79,14 +79,23 @@ describe('umbrella progress', () => {
         id: 'u1',
         taskType: TaskType.TaskTypeUmbrella,
         issue: 'https://github.com/Automaat/sybra/issues/1213',
-        dependsOn: [
-          'https://github.com/Automaat/sybra/issues/10',
-          'https://github.com/Automaat/sybra/issues/11',
-          'https://github.com/Automaat/sybra/issues/99',
-        ],
       })
-      const c11 = task({ id: 'c11', issue: 'Automaat/sybra#11', umbrellaIssue: 'Automaat/sybra#1213' })
-      const c10 = task({ id: 'c10', issue: 'Automaat/sybra#10', umbrellaIssue: 'Automaat/sybra#1213' })
+      // Real umbrella trackers never carry their own dependsOn (see
+      // internal/umbrella/expand.go's materialize()) -- declared order and
+      // unresolved refs must come from the materialized children's own
+      // dependsOn instead.
+      const c11 = task({
+        id: 'c11',
+        issue: 'Automaat/sybra#11',
+        umbrellaIssue: 'Automaat/sybra#1213',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/10'],
+      })
+      const c10 = task({
+        id: 'c10',
+        issue: 'Automaat/sybra#10',
+        umbrellaIssue: 'Automaat/sybra#1213',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/99'],
+      })
       const unordered = task({ id: 'cX', issue: 'Automaat/sybra#77', umbrellaIssue: 'Automaat/sybra#1213' })
       // Materialized list is intentionally out of dependsOn order to prove the resolver re-sorts.
       const tasks = [c11, c10, unordered]
@@ -98,22 +107,50 @@ describe('umbrella progress', () => {
       expect(result.displayTotal).toBe(4)
     })
 
+    it('surfaces a declared-but-unmaterialized child dropped from a real umbrella DAG', () => {
+      // Regression for the production shape: the umbrella tracker itself
+      // never has dependsOn populated. A sibling child (c2) declares a
+      // dependency on an issue (#102) that was planned but never
+      // materialized as a local task -- e.g. dropped by a race between the
+      // planner and materialize(). That must surface as unresolved, not be
+      // silently swallowed because it was never read off the umbrella task.
+      const umbrella = task({
+        id: 'u1',
+        taskType: TaskType.TaskTypeUmbrella,
+        issue: 'o/r#100',
+        dependsOn: [],
+      })
+      const c1 = task({ id: 'c1', issue: 'o/r#101', umbrellaIssue: 'o/r#100', dependsOn: [] })
+      const c2 = task({ id: 'c2', issue: 'o/r#103', umbrellaIssue: 'o/r#100', dependsOn: ['o/r#102'] })
+
+      const result = childrenForUmbrella(umbrella, [c1, c2])
+
+      expect(result.children.map((t) => t.id)).toEqual(['c1', 'c2'])
+      expect(result.unresolved).toEqual(['o/r#102'])
+      expect(result.displayTotal).toBe(3)
+    })
+
     it('excludes unresolved refs from the children list and dedupes repeats', () => {
       const umbrella = task({
         id: 'u1',
         taskType: TaskType.TaskTypeUmbrella,
         issue: 'Automaat/sybra#1',
+      })
+      const child = task({
+        id: 'c1',
+        issue: 'Automaat/sybra#3',
+        umbrellaIssue: 'Automaat/sybra#1',
         dependsOn: ['Automaat/sybra#2', 'Automaat/sybra#2', 'https://github.com/Automaat/sybra/issues/2'],
       })
 
-      const result = childrenForUmbrella(umbrella, [])
+      const result = childrenForUmbrella(umbrella, [child])
 
-      expect(result.children).toEqual([])
+      expect(result.children.map((t) => t.id)).toEqual(['c1'])
       expect(result.unresolved).toEqual(['automaat/sybra#2'])
-      expect(result.displayTotal).toBe(1)
+      expect(result.displayTotal).toBe(2)
     })
 
-    it('does not treat normal task prerequisites as umbrella children', () => {
+    it('renders a normal task with dependsOn as a Children panel of its own prerequisites', () => {
       const childTask = task({
         id: 'child',
         taskType: TaskType.TaskTypeNormal,
@@ -122,12 +159,12 @@ describe('umbrella progress', () => {
       })
 
       const result = childrenForUmbrella(childTask, [
-        task({ id: 'prereq', issue: 'Automaat/sybra#1' }),
+        task({ id: 'prereq1', issue: 'Automaat/sybra#1' }),
       ])
 
-      expect(result.children).toEqual([])
-      expect(result.unresolved).toEqual([])
-      expect(result.displayTotal).toBe(0)
+      expect(result.children.map((t) => t.id)).toEqual(['prereq1'])
+      expect(result.unresolved).toEqual(['automaat/sybra#2'])
+      expect(result.displayTotal).toBe(2)
     })
 
     it('returns no rows for a task with neither umbrella children nor dependsOn', () => {

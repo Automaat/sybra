@@ -55,8 +55,10 @@
   let progressLoadSeq = 0
   const hasProgress = $derived(progressCount > 0)
 
-  const childData = $derived(t?.taskType === 'umbrella' ? childrenForUmbrella(t, taskStore.list) : { children: [], unresolved: [], displayTotal: 0 })
-  const hasChildren = $derived(!!t && t.taskType === 'umbrella')
+  const childData = $derived(t ? childrenForUmbrella(t, taskStore.list) : { children: [], unresolved: [], displayTotal: 0 })
+  const hasChildren = $derived(
+    !!t && (t.taskType === 'umbrella' || (t.dependsOn?.length ?? 0) > 0 || childData.displayTotal > 0),
+  )
 
   const tabs = $derived([
     { value: 'overview', label: 'Overview' },
