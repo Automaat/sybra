@@ -2432,7 +2432,6 @@ func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
 		t.Fatal("checkpoint_failed agent step mapping was not cleared")
 	}
 }
-
 func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
