@@ -343,12 +343,6 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		return
 	}
 
-	t, err := f.tasks.Create(issue.Title, issue.Body, "headless")
-	if err != nil {
-		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
-		return
-	}
-
 	u := task.Update{
 		Issue:     task.Ptr(issue.URL),
 		Status:    task.Ptr(task.StatusTodo),
@@ -359,8 +353,14 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		labels := issue.Labels
 		u.Tags = &labels
 	}
-	if _, err := f.tasks.Update(t.ID, u); err != nil {
-		f.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
+	// The dedupe key (Issue URL) is written atomically in the same op as task
+	// creation — a crash between create and a second update would otherwise
+	// leave the task without its dedupe key, and the next poll would
+	// re-import the same GitHub issue as a duplicate.
+	t, err := f.tasks.CreateFull(issue.Title, issue.Body, "headless", u)
+	if err != nil {
+		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
+		return
 	}
 	f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
 }
