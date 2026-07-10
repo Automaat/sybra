@@ -171,6 +171,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdLinkPR(store, rest, jsonOut)
 	case "delete":
 		return cmdDelete(store, rest, jsonOut)
+	case "reopen":
+		return cmdReopen(store, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "audit":
@@ -1139,6 +1141,48 @@ func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
 		return printJSON(map[string]string{"deleted": args[0]})
 	}
 	fmt.Printf("Deleted task %s\n", args[0])
+	return 0
+}
+
+func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
+	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
+	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	ids := fs.Args()
+	if len(ids) == 0 {
+		return fatal(jsonOut, "usage: reopen [--force] [--project owner/repo] <id>...")
+	}
+	reopened := make([]string, 0, len(ids))
+	for _, id := range ids {
+		t, err := s.Get(id)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		if !*force && (t.Outcome == "merged" || t.Outcome == "merged_with_edits") {
+			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
+		}
+		u := task.Update{
+			Status:       task.Ptr(task.StatusTodo),
+			Workflow:     task.Ptr[*workflow.Execution](nil),
+			WorktreeDir:  task.Ptr(""),
+			StatusReason: task.Ptr(""),
+			Outcome:      task.Ptr(""),
+		}
+		if *projectID != "" {
+			u.ProjectID = task.Ptr(*projectID)
+		}
+		if _, err := s.Update(id, u); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		reopened = append(reopened, id)
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"reopened": reopened})
+	}
+	fmt.Printf("Reopened %d task(s): %s\n", len(reopened), strings.Join(reopened, ", "))
 	return 0
 }
 
