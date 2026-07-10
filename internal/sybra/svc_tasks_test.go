@@ -1183,7 +1183,6 @@ func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *tes
 		t.Fatalf("Tags = %v, marker should remain while linked-PRs fetch keeps failing", got.Tags)
 	}
 }
-
 func TestTaskService_ReconcilePendingEnrichment_SkipsTerminalStatus(t *testing.T) {
 	svc, _ := setupTaskService(t)
 
