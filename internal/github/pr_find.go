@@ -36,3 +36,47 @@ func FindPRForBranch(ctx context.Context, repo, head string) (number int, found 
 	}
 	return prs[0].Number, true, nil
 }
+
+// FindPRForBranchAnyState resolves the PR for a branch across every state so a
+// task that lost its pr_number can be reconciled. A MERGED PR wins (the task
+// has landed and must advance to done); otherwise a single OPEN PR is returned
+// to backfill the number. state is "MERGED" or "OPEN". found is false (nil err)
+// when no unambiguous PR matches — several open PRs, or only closed-unmerged
+// ones, leave the caller to make no change.
+func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
+	out, runErr := findPRRunner(ctx, "pr", "list",
+		"--repo", repo, "--head", head, "--state", "all",
+		"--json", "number,state", "--limit", "20")
+	if runErr != nil {
+		return 0, "", false, fmt.Errorf("gh pr list --head %s --state all: %s: %w", head, sanitizeGHOutput(out), runErr)
+	}
+	var prs []struct {
+		Number int    `json:"number"`
+		State  string `json:"state"`
+	}
+	if jsonErr := json.Unmarshal(out, &prs); jsonErr != nil {
+		return 0, "", false, fmt.Errorf("parse pr list: %w", jsonErr)
+	}
+	var mergedNum, openNum, openCount int
+	for _, pr := range prs {
+		if pr.Number <= 0 {
+			continue
+		}
+		switch pr.State {
+		case "MERGED":
+			if mergedNum == 0 {
+				mergedNum = pr.Number
+			}
+		case "OPEN":
+			openCount++
+			openNum = pr.Number
+		}
+	}
+	if mergedNum > 0 {
+		return mergedNum, "MERGED", true, nil
+	}
+	if openCount == 1 {
+		return openNum, "OPEN", true, nil
+	}
+	return 0, "", false, nil
+}
