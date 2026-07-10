@@ -20,6 +20,11 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: renovate-fix
+    # Prompt Lab proposals are advanced by PromptLabService approval/rejection,
+    # not by the ordinary task.created triage/planning pipeline.
+    - field: task.tags
+      operator: not_contains
+      value: prompt-lab-proposal
 steps:
   # Deterministic classification: calls the Go triage classifier
   # (internal/triage) directly, no agent session involved. Previously this

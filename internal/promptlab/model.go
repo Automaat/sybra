@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// ProposalTag marks local Sybra tasks filed from Prompt Lab proposals. These
+// tasks are reviewed and advanced by PromptLabService, not by normal triage or
+// task.created workflow dispatch.
+const ProposalTag = "prompt-lab-proposal"
+
 // Subject identifies a role/workflow-step slice of the fleet whose
 // prompt/skill may be underperforming.
 type Subject struct {

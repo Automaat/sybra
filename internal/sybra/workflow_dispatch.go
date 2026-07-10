@@ -3,6 +3,7 @@ package sybra
 import (
 	"slices"
 
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -46,6 +47,12 @@ func skipTaskCreatedWorkflow(t task.Task) bool {
 	// A stub awaiting async enrichment is dispatched by the enrich step, not
 	// the emit path — skip until the real title/labels land.
 	if slices.Contains(t.Tags, enrichPendingTag) {
+		return true
+	}
+	// Prompt Lab proposal tasks are reviewed and advanced by
+	// PromptLabService. A todo-status proposal is still not a normal
+	// task.created workflow candidate.
+	if slices.Contains(t.Tags, promptlab.ProposalTag) {
 		return true
 	}
 	// An umbrella-gated child must be held for releaseUnblockedChildren, not
