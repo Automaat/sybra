@@ -58,6 +58,11 @@ type ClaudeEvent struct {
 	// when the event belongs to a forked subagent's turn (CLAUDE_CODE_FORK_SUBAGENT)
 	// rather than the top-level conversation.
 	ParentToolUseID string
+	// BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+	// a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+	// of every CLI background bash task (e.g. a `run_in_background` Bash call)
+	// still live after the change.
+	BackgroundTaskIDs []string
 }
 
 // CodexEvent is the shared envelope for all Codex stream-json events.
@@ -105,6 +110,19 @@ type claudeEnvelope struct {
 	Usage             *claudeUsage `json:"usage"`
 	TotalInputTokens  int          `json:"total_input_tokens"`
 	TotalOutputTokens int          `json:"total_output_tokens"`
+	// Tasks is populated on a "system"/"background_tasks_changed" event: the
+	// full set of currently-live background bash tasks (REPLACE semantics).
+	Tasks []claudeBackgroundTaskRef `json:"tasks,omitempty"`
+}
+
+// claudeBackgroundTaskRef is one entry of a "background_tasks_changed"
+// event's `tasks` array — a live CLI background bash task (e.g. a
+// `run_in_background` Bash call). Only TaskID is consumed today;
+// TaskType/Description are kept for future diagnostics.
+type claudeBackgroundTaskRef struct {
+	TaskID      string `json:"task_id"`
+	TaskType    string `json:"task_type"`
+	Description string `json:"description"`
 }
 
 type claudeUsage struct {
@@ -385,6 +403,13 @@ func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
 	case "system", "init":
 		event.SessionID = raw.SessionID
 		event.PluginErrors = raw.PluginErrors
+		if raw.Subtype == "background_tasks_changed" {
+			ids := make([]string, len(raw.Tasks))
+			for i, t := range raw.Tasks {
+				ids[i] = t.TaskID
+			}
+			event.BackgroundTaskIDs = ids
+		}
 
 	case "assistant":
 		if raw.Message != nil {

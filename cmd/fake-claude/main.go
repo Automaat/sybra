@@ -52,6 +52,9 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -96,7 +99,11 @@ func main() {
 	}
 
 	scenario := popScenario()
-	if !runScenario(scenario, extractTaskID(os.Args)) {
+	prompt := promptArg(os.Args)
+	if prompt == "" && scenarioNeedsPromptContext(scenario) {
+		prompt = readInitialPrompt(os.Stdin)
+	}
+	if !runScenario(scenario, promptTaskID(prompt)) {
 		fmt.Fprintf(os.Stderr, "unknown scenario: %s\n", scenario)
 		os.Exit(2)
 	}
@@ -171,6 +178,103 @@ var scenarioHandlers = map[string]func(string){
 	"perf_burst":            func(string) { runPerfBurst() },
 	"perf_long":             func(string) { runPerfLong() },
 	"sybra_home_sentinel":   runSybraHomeSentinel,
+	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
+	"best_of_n_judge":       func(string) { runBestOfNJudge() },
+}
+
+func scenarioNeedsPromptContext(scenario string) bool {
+	switch scenario {
+	case "triage",
+		"triage_to_planning",
+		"triage_to_planning_nocritic",
+		"triage_to_planning_noplan",
+		"triage_to_done",
+		"triage_to_in_review",
+		"triage_to_human_required",
+		"evaluate",
+		"write_sidecar_success",
+		"revise_plan_sidecars",
+		"plan_critic_success":
+		return true
+	default:
+		return false
+	}
+}
+
+func readInitialPrompt(r io.Reader) string {
+	br := bufio.NewReader(r)
+	line, err := br.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return ""
+	}
+	return parseUserPromptLine(line)
+}
+
+func parseUserPromptLine(line []byte) string {
+	var msg struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(line), &msg); err != nil {
+		return ""
+	}
+	if msg.Type != "user" {
+		return ""
+	}
+	return strings.TrimSpace(msg.Message.Content)
+}
+
+// runBestOfNAttempt simulates one best-of-N implementation attempt: it
+// derives a unique filename from its own cwd (the attempt's isolated
+// worktree dir, e.g. ".../task-attempt_2") and commits it there. Using cwd
+// rather than an env var means every attempt agent can share this single
+// scenario name — dispatch order between concurrently-running attempts
+// never matters, unlike a scenario-file sequence keyed by invocation order.
+// Never pushes, matching the best-of-n attempt contract (PromoteAttempt
+// moves the canonical branch locally once a winner is judged).
+func runBestOfNAttempt() {
+	emitSystem()
+	cwd, err := os.Getwd()
+	if err != nil {
+		emitResult("best_of_n_attempt: getwd failed: " + err.Error())
+		os.Exit(1)
+	}
+	name := filepath.Base(cwd)
+	fname := "attempt-" + name + ".txt"
+	if err := os.WriteFile(filepath.Join(cwd, fname), []byte("attempt work from "+name+"\n"), 0o644); err != nil {
+		emitResult("best_of_n_attempt: write failed: " + err.Error())
+		os.Exit(1)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "fake-claude@test.local"},
+		{"config", "user.name", "Fake Claude"},
+		{"add", fname},
+		{"commit", "-m", "best-of-n attempt work: " + name},
+	} {
+		runGitIn(cwd, args...)
+	}
+	emitAssistant("Implemented attempt in " + name)
+	emitResult("Implementation done for " + name + ". Committed, did not push.")
+}
+
+// runBestOfNJudge simulates the automated judge: it always names attempt_2
+// the winner, giving e2e tests a deterministic, mechanically-parseable
+// verdict without needing the fake binary to actually read/diff attempts.
+func runBestOfNJudge() {
+	emitSystem()
+	emitAssistant("Judging attempts...")
+	emitResult(`{"winner_attempt_id": "attempt_2", "scores": [{"attempt_id":"attempt_1","score":5},{"attempt_id":"attempt_2","score":9}], "rationale": "attempt_2 is more complete"}`)
+}
+
+func runGitIn(dir string, args ...string) {
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		emitResult("best_of_n_attempt: git " + strings.Join(args, " ") + " failed: " + err.Error() + ": " + string(out))
+		os.Exit(1)
+	}
 }
 
 func runScenario(scenario, taskID string) bool {
@@ -334,7 +438,7 @@ func runMalformedPROutput() {
 func runWriteSidecarSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Writing fake sidecar...")
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude")), 0o644)
 	}
 	emitResult("Sidecar written.")
@@ -344,7 +448,7 @@ func runRevisePlanSidecars(taskID string) {
 	emitSystem()
 	emitAssistant("Revising fake plan sidecars...")
 	paths := map[string]string{}
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		_ = os.WriteFile(path, []byte(fakeSidecarContent(path, taskID, "fake-claude-revision")), 0o644)
 		base := filepath.Base(path)
 		switch {
@@ -388,7 +492,7 @@ func runRevisePlanSidecars(taskID string) {
 func runPlanCriticSuccess(taskID string) {
 	emitSystem()
 	emitAssistant("Critiquing plan...")
-	for _, path := range extractSidecarPaths(os.Args) {
+	for _, path := range extractSidecarPaths(promptArg(os.Args)) {
 		if strings.Contains(filepath.Base(path), "sybra-critique") {
 			_ = os.WriteFile(path, []byte("# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n"), 0o644)
 		}
@@ -559,13 +663,22 @@ func emitRaw(event map[string]any) {
 // Task IDs look like 8-char hex strings (e.g., "a1b2c3d4").
 var taskIDRe = regexp.MustCompile(`\b([a-f0-9]{8})\b`)
 
-func extractTaskID(args []string) string {
+func promptArg(args []string) string {
 	for i, arg := range args {
 		if arg == "-p" && i+1 < len(args) {
-			if matches := taskIDRe.FindStringSubmatch(args[i+1]); len(matches) > 1 {
-				return matches[1]
-			}
+			return args[i+1]
 		}
+	}
+	return ""
+}
+
+func extractPrompt(args []string) string {
+	return promptTaskID(promptArg(args))
+}
+
+func promptTaskID(prompt string) string {
+	if matches := taskIDRe.FindStringSubmatch(prompt); len(matches) > 1 {
+		return matches[1]
 	}
 	return ""
 }
@@ -576,19 +689,15 @@ func extractTaskID(args []string) string {
 // without needing per-kind variants.
 var sidecarPathRe = regexp.MustCompile(`(?:/tmp/sybra-|\.sybra-)[A-Za-z0-9_./-]+\.(?:md|json)`)
 
-func extractSidecarPaths(args []string) []string {
+func extractSidecarPaths(prompt string) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for i, arg := range args {
-		if arg == "-p" && i+1 < len(args) {
-			for _, m := range sidecarPathRe.FindAllString(args[i+1], -1) {
-				if _, ok := seen[m]; ok {
-					continue
-				}
-				seen[m] = struct{}{}
-				out = append(out, m)
-			}
+	for _, m := range sidecarPathRe.FindAllString(prompt, -1) {
+		if _, ok := seen[m]; ok {
+			continue
 		}
+		seen[m] = struct{}{}
+		out = append(out, m)
 	}
 	return out
 }

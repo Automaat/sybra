@@ -83,6 +83,12 @@ type AgentDefaults struct {
 	// allowlist, failing the spawn closed if the wrapper is unavailable.
 	// Empty treated as "report".
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// HeadlessSteerable controls whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages (instead of
+	// the legacy one-shot `-p <prompt>` invocation). nil means not configured
+	// (defaults to true). Set false to restore the legacy launch shape with
+	// no stdin transport — a config-only rollback with no code revert.
+	HeadlessSteerable *bool `yaml:"headless_steerable" json:"headlessSteerable"`
 	// DefaultProjectID pins the project a project-less task auto-assigns to
 	// when it needs an isolated worktree (e.g. a meta/self-referential task
 	// routed to the plan step). Without it, auto-assignment only fires when
@@ -91,4 +97,19 @@ type AgentDefaults struct {
 	// human-required. Empty means no default (falls back to the
 	// sole-project behavior).
 	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
+	// PlaywrightMCP configures the default-off headless Playwright MCP server
+	// attached to test-runner runs that resolve to the Claude provider.
+	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+}
+
+// PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+// server for visual/console verification. Default-off: Manager.prepareRunConfig
+// only attaches it for headless test-runner runs that resolve to the Claude
+// provider and pass a launcher preflight (see internal/agent/mcp.go).
+type PlaywrightMCPConfig struct {
+	// Enabled opts this machine into attaching the Playwright MCP server.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
+	// --headless --output-dir <dir>` launch command.
+	ExtraArgs []string `yaml:"extra_args" json:"extraArgs"`
 }

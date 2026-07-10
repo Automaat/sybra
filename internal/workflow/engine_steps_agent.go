@@ -190,16 +190,16 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
 
-	// Mark the step as dispatching before the (potentially multi-second,
+	// Mark the step as starting before the (potentially multi-second,
 	// worktree-prep-bound) StartAgent call so a stale/untracked agent
-	// completion arriving mid-dispatch (e.g. a reattached agent from a prior
+	// completion arriving mid-start (e.g. a reattached agent from a prior
 	// step) sees this step as claimed instead of falling through to the
 	// "nothing tracked yet, credit the current step" fallback in
 	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
-	// returns, at which point either agentSteps (success) or the parked/failed
+	// returns, at which point either agentRoutes (success) or the parked/failed
 	// step state takes over.
-	e.markStepDispatching(taskID, step.ID)
-	defer e.unmarkStepDispatching(taskID, step.ID)
+	e.markStepStarting(taskID, step.ID)
+	defer e.unmarkStepStarting(taskID, step.ID)
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		// Another dispatcher already holds the per-task dispatch claim (e.g. the
@@ -220,6 +220,12 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 			e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", step.ID)
 			return e.tasks.SetWorkflow(taskID, wfExec)
 		}
+
+		if errors.Is(err, ErrAgentPoolBusy) {
+			wfExec.State = ExecWaiting
+			e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", step.ID)
+			return e.tasks.SetWorkflow(taskID, wfExec)
+		}
 		return fmt.Errorf("start agent: %w", err)
 	}
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
@@ -236,7 +242,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// can detect stale completions (e.g. duplicate agent from a ResumeStalled
 	// race) rather than blindly crediting the current step.
 	e.mu.Lock()
-	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: step.ID}
+	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: step.ID}
 	e.mu.Unlock()
 
 	wfExec.State = ExecWaiting
@@ -591,7 +597,17 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 
 	cmd := exec.CommandContext(shellCtx, "bash", "-c", command)
 	if step.Config.Dir != "" {
-		cmd.Dir = step.Config.Dir
+		// Rendered the same as Command: lets a shell step target a
+		// dynamically-resolved dir (e.g. best-of-n's canonical worktree,
+		// only known after promote_best_of_n) via {{getvar .Vars "_dir"}}.
+		dir, dErr := RenderTemplate(step.Config.Dir, ctx)
+		if dErr != nil {
+			return StepOutput{}, fmt.Errorf("render dir: %w", dErr)
+		}
+		if strings.TrimSpace(dir) == "" {
+			return StepOutput{}, errors.New("render dir: resolved to empty path")
+		}
+		cmd.Dir = dir
 	}
 
 	// Expose task fields as env vars to avoid shell injection via template interpolation.

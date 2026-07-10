@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -80,6 +81,15 @@ type Handler struct {
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
+	// dispatchFailures tracks consecutive transient (provider-unhealthy /
+	// rate-limit) failures starting the branch-conflict-fix workflow itself,
+	// keyed by task ID. Once a task hits branchConflictDispatchFailureLimit,
+	// it is escalated to human-required.
+	dispatchFailures map[string]int
+	// failureMu guards wtFailures and dispatchFailures. Recovery callbacks can
+	// run from independent agent-completion goroutines, so even unrelated task
+	// IDs must not write these maps concurrently.
+	failureMu sync.Mutex
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
@@ -202,6 +212,7 @@ func New(
 		worktrees:           worktrees,
 		renovatePRsFn:       renovatePRsFn,
 		wtFailures:          make(map[string]int),
+		dispatchFailures:    make(map[string]int),
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		enableAutoMergeFn:   github.EnableAutoMerge,
@@ -377,6 +388,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	// normal pr-fix/auto-merge path resumes. Runs before matcher assembly so an
 	// adopted task is monitored in this same poll.
 	r.adoptOrphanPRs(ctx, tasks, monitoredPRs)
+	r.adoptTasklessPRs(tasks, monitoredPRs)
 
 	var (
 		matchers       []github.TaskMatcher
@@ -471,7 +483,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
 		for i := range matched {
 			switch matched[i].Kind {
-			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
+			case github.PRIssueConflict, github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueCIFailure, github.PRIssueReadyToMerge:
 				handled = append(handled, matched[i])
 			case github.PRIssueComments:
 				// REST exposes no thread-resolution data; comments stay
@@ -721,8 +733,12 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 		// Flip to done immediately with the base outcome — the status transition
 		// must never wait on GitHub enrichment.
 		base := classifyLandingOutcome(c.State)
+		landedStatus := task.StatusDone
+		if c.State == "CLOSED" {
+			landedStatus = task.StatusCancelled
+		}
 		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(task.StatusDone),
+			Status:  task.Ptr(landedStatus),
 			Outcome: task.Ptr(base),
 		}); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)
@@ -1354,6 +1370,46 @@ func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []g
 		// No open PR found. Check for a recently merged PR: handles the race
 		// where the PR was opened and merged between poll cycles.
 		r.adoptOrphanMergedPR(ctx, t)
+	}
+}
+
+var sybraTaskBranchRe = regexp.MustCompile(`-[0-9a-f]{8}$`)
+
+func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) {
+	tracked := make(map[string]struct{}, len(tasks)*2)
+	for i := range tasks {
+		if tasks[i].PRNumber != 0 {
+			tracked[fmt.Sprintf("%s#%d", tasks[i].ProjectID, tasks[i].PRNumber)] = struct{}{}
+		}
+		if tasks[i].Branch != "" {
+			tracked[tasks[i].ProjectID+"|"+tasks[i].Branch] = struct{}{}
+		}
+	}
+	for i := range prs {
+		pr := &prs[i]
+		if pr.IsDraft || !sybraTaskBranchRe.MatchString(pr.HeadRefName) {
+			continue
+		}
+		if _, ok := tracked[fmt.Sprintf("%s#%d", pr.Repository, pr.Number)]; ok {
+			continue
+		}
+		if _, ok := tracked[pr.Repository+"|"+pr.HeadRefName]; ok {
+			continue
+		}
+		tags := []string{"review"}
+		t, err := r.tasks.CreateFull(pr.Title, pr.URL+"\n\nAdopted orphaned Sybra PR (its tracking task was lost).", "headless", task.Update{
+			Tags:      &tags,
+			ProjectID: task.Ptr(pr.Repository),
+			PRNumber:  task.Ptr(pr.Number),
+			Branch:    task.Ptr(pr.HeadRefName),
+			Status:    task.Ptr(task.StatusInReview),
+		})
+		if err != nil {
+			r.logger.Error("pr-monitor.taskless-adopt", "pr", pr.Number, "err", err)
+			continue
+		}
+		r.logAudit(audit.EventPROrphanAdopted, t.ID, "", map[string]any{"pr": pr.Number, "repo": pr.Repository, "resurrected": true})
+		r.logger.Info("pr-monitor.taskless-adopted", "task_id", t.ID, "pr", pr.Number, "branch", pr.HeadRefName)
 	}
 }
 

@@ -22,6 +22,7 @@ type AgentCompletion struct {
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
 	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error)
+	TryClaimDispatch(taskID string) (DispatchClaim, bool)
 	HasRunningAgent(taskID string) bool
 	// HasOtherRunningAgentForTask reports whether an agent other than
 	// exceptAgentID is still running for the task. verify_commits uses it to
@@ -46,6 +47,28 @@ type AgentLauncher interface {
 	// config-disabled provider is never picked as an eligible weighted
 	// variant. Empty name = default provider.
 	ProviderHealthy(provider string) bool
+	// IsDispatching reports whether the shared agent.Manager dispatch-claim
+	// coordinator currently holds a claim for taskID — set for the full
+	// duration of any StartAgent call, including the worktree-prep window
+	// before an agent ID exists, by every dispatcher: this engine's own
+	// execRunAgent, recovery.RestartStaleInProgress, or a direct non-workflow
+	// dispatch. The engine's own starting marker and agentRoutes bookkeeping
+	// still serialize workflow-level entry points and track step
+	// attribution — a different concern (this task's next *workflow
+	// advance*, not its next *agent process*) — but ownership decisions that
+	// gate a redispatch (DispatchEvent, ResumeStalled,
+	// RescheduleRateLimitedAgent) additionally consult this so a claim held
+	// by a dispatcher outside the engine's own visibility (e.g. recovery) is
+	// never missed.
+	IsDispatching(taskID string) bool
+}
+
+// DispatchClaim is the workflow-visible handle for a held per-task dispatch
+// claim. Agent launcher implementations typically back this with
+// agent.Manager's dispatch claim, but the workflow only needs idempotent
+// release semantics.
+type DispatchClaim interface {
+	Release()
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
@@ -67,6 +90,39 @@ type AgentAssignment struct {
 type PromptTransform struct {
 	Op   string
 	Text string
+}
+
+// CostBudgetChecker is consulted before fanning out best-of-N attempts
+// (execBestOfN) and before launching a budget-preflight run_agent step such
+// as the judge (preflightRunAgentBudget): unlike StartAgentWithAssignment
+// (implementation agents on the canonical worktree), the direct-dispatch
+// AgentLauncher.StartAgent branch — which best-of-N attempts and the judge
+// both use, since they pass a pre-staged `dir` — does not itself enforce the
+// cumulative task cost budget. Engine operates with a nil checker: the
+// preflight is then skipped rather than panicking, so existing engine unit
+// tests that never wire one keep compiling unchanged.
+type CostBudgetChecker interface {
+	// CheckTaskCostBudget returns workflow.ErrTaskCostExceeded (wrapped) when
+	// the task has already spent its configured budget.
+	CheckTaskCostBudget(taskID string) error
+}
+
+// AttemptWorktreeManager creates, promotes, and cleans up the isolated
+// per-attempt worktrees a `best_of_n` step's attempts run in — distinct from
+// the task's shared canonical worktree that `parallel` children use. Engine
+// operates with a nil manager: a best_of_n/promote_best_of_n step then fails
+// closed to human-required with a distinct reason instead of panicking.
+type AttemptWorktreeManager interface {
+	// PrepareAttempt creates (or resumes) an isolated worktree+branch for one
+	// attempt and returns its dir and branch name.
+	PrepareAttempt(taskID, attemptID string) (dir, branch string, err error)
+	// PromoteAttempt fast-forwards the canonical task branch/worktree onto the
+	// winning attempt's HEAD and returns the canonical worktree dir.
+	PromoteAttempt(taskID, winnerDir, winnerBranch string) (canonicalDir string, err error)
+	// CleanupAttempts best-effort removes the given attempts' worktree dirs.
+	// Never returns an error — a leftover directory is disk waste, not a
+	// correctness problem, and must never block workflow advancement.
+	CleanupAttempts(taskID string, attemptIDs []string)
 }
 
 // WorkflowVarDir is the reserved variable name used to pass a pre-prepared

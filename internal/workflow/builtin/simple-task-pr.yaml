@@ -20,8 +20,8 @@ steps:
     next:
       - goto: maybe_create_pr
 
-  # Guard: when the task already has a PR number (retries), skip the create_pr
-  # agent entirely and just push. Prevents duplicate PRs.
+  # Guard: when the task already has a PR number (retries), skip create_pr
+  # entirely and just push. Prevents duplicate PRs.
   - id: maybe_create_pr
     name: Maybe Create PR
     type: condition
@@ -33,102 +33,38 @@ steps:
       - goto: create_pr
 
   # Push commits to the existing PR branch. Reached only when the task already
-  # has a pr_number. create_pr handles push for new PRs.
+  # has a pr_number. create_pr handles push for new PRs. Deterministic Go
+  # (internal/project.PushSync) — no agent/LLM involved. Never force-pushes;
+  # a genuine divergence or missing local branch flips straight to
+  # human-required instead of continuing to link_pr_and_review, so the
+  # specific push failure reason isn't overwritten by a generic one.
   - id: push_existing_pr
     name: Push to Existing PR
-    type: run_agent
-    config:
-      role: push-branch
-      mode: headless
-      model: sonnet
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Push any unpushed commits on the current branch to the existing PR (task
-        already has pr_number {{.Task.PRNumber}}).
-
-        Steps:
-          1. Determine the push remote by matching the PR's actual head repository:
-             BRANCH="$(git branch --show-current)"
-             PUSH_REMOTE="origin"
-             PR_HEAD="$(gh pr view {{.Task.PRNumber}} --json headRepository --jq '.headRepository.nameWithOwner')"
-             FORK_URL="$(git config --get remote.fork.url 2>/dev/null || true)"
-             if [ -n "$FORK_URL" ] && echo "$FORK_URL" | grep -qF "$PR_HEAD"; then PUSH_REMOTE="fork"; fi
-          2. Push: git push "$PUSH_REMOTE" HEAD:"$BRANCH"
-             Never force-push. If rejected due to divergence, resolve it
-             properly instead:
-             git fetch "$PUSH_REMOTE" "$BRANCH"
-             git rebase "$PUSH_REMOTE/$BRANCH"
-             If the rebase reports conflicts, run `git rebase --abort` and stop
-             — report the task as human-required for manual conflict
-             resolution. Do not force-push under any circumstances.
-             Otherwise, after a clean rebase, push again:
-             git push "$PUSH_REMOTE" HEAD:"$BRANCH"
-          3. Verify the remote PR head matches local HEAD:
-             LOCAL_SHA="$(git rev-parse HEAD)"
-             PR_SHA="$(gh pr view {{.Task.PRNumber}} --json headRefOid --jq .headRefOid)"
-             test "$LOCAL_SHA" = "$PR_SHA"
-
-        No new commits — only push what is already committed locally.
+    type: push_branch
     next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: link_pr_and_review
 
   # Create the GitHub PR. The branch already passed code review AND manual
-  # testing, so this is the ship step. Check for an existing PR first to stay
-  # idempotent on retries.
+  # testing, so this is the ship step. Deterministic Go: pushes the branch
+  # (internal/project.PushSync), checks for an existing PR first to stay
+  # idempotent on retries, then opens one via `gh pr create`, drafting the
+  # title/body with a single cheap LLM job (internal/prcontent). Closing-issue
+  # linking and the attribution footer are handled by the mechanical steps
+  # further down the chain, not here.
   - id: create_pr
     name: Create PR
-    type: run_agent
-    config:
-      role: create-pr
-      mode: headless
-      model: sonnet
-      needs_worktree: true
-      max_retries: 2
-      prompt: >-
-        Create a GitHub PR for the current branch if one does not exist yet.
-
-        Steps:
-          1. Set branch/remote variables:
-             BRANCH="$(git branch --show-current)"
-             PUSH_REMOTE="origin"
-             if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE="fork"; fi
-             REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"
-             HEAD_OWNER="$(gh repo view "$REMOTE_URL" --json owner --jq .owner.login)"
-             HEAD_ARG="$BRANCH"
-             if [ "$PUSH_REMOTE" = "fork" ]; then HEAD_ARG="$HEAD_OWNER:$BRANCH"; fi
-          2. Check: gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number'
-             If a PR number is returned, skip creation — the PR already exists.
-          3. If no PR exists, push the branch and create one:
-             git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"
-             Never force-push. If the push is rejected because the remote has
-             diverged, resolve it properly instead:
-             git fetch "$PUSH_REMOTE" "$BRANCH"
-             git rebase "$PUSH_REMOTE/$BRANCH"
-             If the rebase reports conflicts, run `git rebase --abort` and stop
-             — report the task as human-required for manual conflict
-             resolution. Do not force-push under any circumstances.
-             Otherwise, after a clean rebase, push again:
-             git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"
-             gh pr create{{if ne .Task.ProjectType "pet"}} --draft{{end}} \
-               --head "$HEAD_ARG" \
-               --title "<conventional-commit title>" \
-               --body "<PR body with ## Motivation and ## Implementation information>"
-             {{- if .Task.Issue}}
-             Include "Closes {{.Task.Issue}}" in the PR body.
-             {{- end}}
-          4. Verify the created PR head matches local HEAD:
-             PR="$(gh pr list --head "$HEAD_ARG" --json number --jq '.[0].number')"
-             LOCAL_SHA="$(git rev-parse HEAD)"
-             PR_SHA="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
-             test "$LOCAL_SHA" = "$PR_SHA"
-
-        PR title must follow conventional commits format matching the task work.
-        PR body must have ## Motivation and ## Implementation information sections.
-        End the PR body with a blank line then the harness attribution footer,
-        exactly: `_Generated by Sybra harness_`.
-        Never ask for confirmation — this is a feature branch owned by this task.
+    type: create_pr
     next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: link_pr_and_review
 
   # Non-LLM step: recover PR number from task, agent result history, or

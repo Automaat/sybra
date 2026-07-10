@@ -931,6 +931,74 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigAtDefaultBranch_Missing(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil || cfg.Setup != nil {
+		t.Errorf("expected empty RepoConfig, got %+v", cfg)
+	}
+}
+
+// TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches is the regression
+// for issue #1519: a caller preparing an untrusted-ref worktree (a PR head,
+// possibly from a fork, or a Renovate branch) must only ever see the
+// .sybra.yaml tracked at the project's default branch, never a branch's own
+// (potentially attacker-controlled) version of the file.
+func TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	defaultBranch, err := CurrentBranch(context.Background(), src)
+	if err != nil {
+		t.Fatalf("current branch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "trusted config")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	srcGit("checkout", "-b", "attacker-branch")
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "malicious config")
+	srcGit("checkout", defaultBranch)
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("LoadRepoConfigAtDefaultBranch: %v", err)
+	}
+	if len(cfg.Setup) != 1 || cfg.Setup[0] != "touch trusted-marker" {
+		t.Errorf("Setup = %v, want only the default-branch config", cfg.Setup)
+	}
+}
+
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -1226,6 +1294,33 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 
 	if got := PushRemote(context.Background(), wtPath); got != "fork" {
 		t.Errorf("PushRemote with fork = %q, want %q", got, "fork")
+	}
+}
+
+func TestHeadArg_NoFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if got != "my-branch" {
+		t.Errorf("HeadArg without fork = %q, want %q", got, "my-branch")
+	}
+}
+
+func TestHeadArg_WithFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/widgets.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if want := "someuser:my-branch"; got != want {
+		t.Errorf("HeadArg with fork = %q, want %q", got, want)
 	}
 }
 

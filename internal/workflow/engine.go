@@ -138,7 +138,8 @@ type BranchSyncer interface {
 // suite configured — the verify_checks step then becomes a no-op. Engine
 // operates with a nil getter (step skips), so unit tests need not wire one.
 type CheckConfigGetter interface {
-	VerifyCommands(taskID string) []string
+	VerifyCommands(ctx context.Context, taskID string) []string
+	SetupCommands(ctx context.Context, taskID string) []string
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.
@@ -176,6 +177,63 @@ type PRStateFetcher interface {
 	FetchPRState(repo string, number int) (github.PRState, error)
 }
 
+// PRHeadFetcher looks up a PR's live head commit SHA. Used by `push_branch`
+// to verify a push landed before continuing. Engine operates with a nil
+// fetcher — the step then skips verification and trusts the push exit code.
+type PRHeadFetcher interface {
+	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
+}
+
+// PRCreator opens a new GitHub pull request for an already-pushed branch via
+// `gh pr create`, run inside the task's worktree so gh resolves the same
+// repo/fork context an interactive invocation would. Used by the `create_pr`
+// step — the deterministic replacement for the create-pr agent. Engine
+// operates with a nil PRCreator — the step then flips the task to
+// human-required, since PR creation is mandatory to progress.
+type PRCreator interface {
+	CreatePR(ctx context.Context, dir string, req PRCreateRequest) (number int, headSHA string, err error)
+}
+
+// PRFinder looks up an open PR by its head branch, backing the create_pr
+// idempotency guard (a prior run may have created the PR but crashed before
+// persisting pr_number). Engine operates with a nil finder — the guard is
+// then skipped and create_pr always attempts a fresh push/create.
+type PRFinder interface {
+	FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error)
+}
+
+// PRCreateRequest describes a new pull request to open for an
+// already-pushed branch.
+type PRCreateRequest struct {
+	// Repo is the base repo the PR is opened against, "owner/name".
+	Repo string
+	// Head is the `gh pr create --head` value: a bare branch name, or
+	// "fork-owner:branch" when the branch lives on a fork.
+	Head  string
+	Draft bool
+	Title string
+	Body  string
+}
+
+// PRContentGenerator drafts the PR title/body for the `create_pr` step via a
+// single cheap LLM job — the only LLM involvement left in the create_pr
+// tail now that push/create are deterministic Go. Engine operates with a nil
+// generator — the step then falls back to a templated title/body derived
+// from the task itself, so tests and misconfigured deployments still work.
+type PRContentGenerator interface {
+	GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error)
+}
+
+// TaskClassifier runs the deterministic Go triage classifier directly against
+// a task and applies its verdict. Used by the `classify_task` step, which
+// replaced a run_agent step that wrapped a full Sonnet agent (invoking the
+// /sybra-triage skill) around this same classifier — a second LLM call for
+// no benefit. Engine operates with a nil classifier — the step then flips
+// the task to human-required, since triage is mandatory to route the task.
+type TaskClassifier interface {
+	ClassifyTask(ctx context.Context, taskID string) error
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -197,10 +255,14 @@ type CompletionInfo struct {
 	Variables  map[string]string
 }
 
-// agentEntry records which task and step an agent was spawned for.
-type agentEntry struct {
+// agentRoute records which task and step an agent completion belongs to.
+type agentRoute struct {
 	taskID string
 	stepID string
+}
+
+type pendingRecovery struct {
+	onDecline func()
 }
 
 // Engine executes workflow definitions against tasks.
@@ -211,28 +273,37 @@ type Engine struct {
 	prLinker         PRLinker
 	prReviewers      PRReviewRequester
 	prStates         PRStateFetcher
+	prHeads          PRHeadFetcher
+	prCreator        PRCreator
+	prFinder         PRFinder
+	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
+	classifier       TaskClassifier
 	recorder         ArtifactRecorder
+	costBudget       CostBudgetChecker
+	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}    // taskID → dispatch in progress
-	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
+	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
+	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
+	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery func(taskID string) bool
 }
 
 // defaultTestAttempts caps the testing → in-progress re-implementation loop
@@ -252,9 +323,10 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		dispatching:      make(map[string]struct{}),
 		starting:         make(map[string]struct{}),
 		humanAction:      make(map[string]struct{}),
-		agentSteps:       make(map[string]agentEntry),
-		dispatchingStep:  make(map[string]int),
+		agentRoutes:      make(map[string]agentRoute),
+		pendingStepStart: make(map[string]int),
 		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]pendingRecovery),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
@@ -280,6 +352,23 @@ func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 // the re-probe and trusts the agent's sentinel as-is.
 func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
 
+// SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
+// push landed. Leaving it unset skips the verification.
+func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
+
+// SetPRCreator wires an implementation of `gh pr create` used by the
+// `create_pr` step. Leaving it unset flips the task to human-required when
+// create_pr is reached, since a PR cannot be opened without it.
+func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
+
+// SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
+// idempotency guard. Leaving it unset skips the guard.
+func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
+
+// SetPRContentGenerator wires the LLM-backed title/body drafter used by the
+// `create_pr` step. Leaving it unset falls back to a templated title/body.
+func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
+
 // SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
 // Leaving it unset makes the step a no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
@@ -300,11 +389,27 @@ func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualT
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 
+// SetTaskClassifier wires the deterministic Go triage classifier used by the
+// `classify_task` step. Leaving it unset flips the task to human-required
+// when classify_task is reached, since a task cannot be routed without it.
+func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
+
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset
 // disables artifact recording — all calls are nil-guarded so engine unit
 // tests remain unchanged.
 func (e *Engine) SetArtifactRecorder(r ArtifactRecorder) { e.recorder = r }
+
+// SetCostBudgetChecker wires the cumulative task cost-budget preflight used
+// by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it
+// unset skips the preflight — see CostBudgetChecker's doc comment.
+func (e *Engine) SetCostBudgetChecker(c CostBudgetChecker) { e.costBudget = c }
+
+// SetAttemptWorktreeManager wires the isolated per-attempt worktree
+// lifecycle used by `best_of_n`/`promote_best_of_n`. Leaving it unset fails
+// those steps closed to human-required — see AttemptWorktreeManager's doc
+// comment.
+func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) { e.attemptWorktrees = m }
 
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.
@@ -322,6 +427,23 @@ func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }
 // online A/B enrollment for digested variants. Leaving it unset (nil)
 // preserves prior behavior: no offline-eval gating.
 func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
+
+// SetConflictRecovery wires the autonomous branch-conflict recovery callback
+// (review.Handler.RecoverStaleBranchConflict) used by push_branch/create_pr
+// when a push diverges from remote. Same callback agentorch wires for
+// worktree-prep rebase failures — reused here so a self-inflicted divergence
+// discovered at push time (e.g. a reused worktree rebased out from under an
+// earlier merge-based push) gets the same autonomous fix instead of an
+// unconditional human escalation. Leaving it unset preserves the prior
+// behavior: any divergence flips straight to human-required.
+func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
+
+// SetDivergenceRecovery is a backward-compatible alias for SetConflictRecovery.
+// Older tests and callers still use the pre-rename name for the same
+// branch-divergence recovery hook.
+func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
+	e.SetConflictRecovery(fn)
+}
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

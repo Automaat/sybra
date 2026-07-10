@@ -1,10 +1,15 @@
 package sybra
 
 import (
+	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -24,6 +29,9 @@ func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _
 	}
 	return "fake-agent-id", "", "", nil
 }
+func (f *fakeAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 func (f *fakeAgentLauncher) HasRunningAgent(string) bool                     { return false }
 func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (f *fakeAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
@@ -35,6 +43,7 @@ func (f *fakeAgentLauncher) DefaultProvider() string          { return "" }
 func (f *fakeAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderHealthy(string) bool      { return true }
+func (f *fakeAgentLauncher) IsDispatching(string) bool        { return false }
 
 // setupDispatchTestService builds a TaskService whose workflow engine is
 // wired to a fakeAgentLauncher instead of the real agent.Manager-backed
@@ -77,8 +86,105 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	return updated
 }
 
+// fixedWorktreeGetter, fixedPRCreator, and fixedPRLinker are minimal
+// scripted workflow.PR* interfaces used only by the "ready-pr" case below.
+// ready-pr's tail (push_branch/create_pr) is fully mechanized Go now — no
+// run_agent step — so unlike in-progress/testing it needs real PR-tail
+// plumbing wired to reach a genuine terminal status instead of escalating to
+// human-required for lack of a project/worktree.
+type fixedWorktreeGetter struct{ path string }
+
+func (f fixedWorktreeGetter) GetWorktreePath(string) (string, bool) { return f.path, true }
+
+type fixedPRCreator struct {
+	number  int
+	headSHA string
+}
+
+func (f fixedPRCreator) CreatePR(context.Context, string, workflow.PRCreateRequest) (number int, headSHA string, err error) {
+	return f.number, f.headSHA, nil
+}
+
+type fixedPRLinker struct{}
+
+func (fixedPRLinker) GetClosingIssues(string, int) (issues []int, body string, err error) {
+	return nil, "", nil
+}
+func (fixedPRLinker) EditBody(string, int, string) error { return nil }
+
+// newDispatchTestWorktree creates a bare "origin" clone plus a worktree
+// checked out on branch with one commit ahead of it, so push_branch/create_pr
+// has real git plumbing to operate on.
+func newDispatchTestWorktree(t *testing.T, branch string) string {
+	t.Helper()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	src := t.TempDir()
+	run(src, "init", "-b", "main")
+	run(src, "config", "user.email", "test@test.com")
+	run(src, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(src, "add", "README.md")
+	run(src, "commit", "-m", "init")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := project.CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := project.CreateWorktree(context.Background(), bare, wtPath, branch, "main"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	run(wtPath, "config", "user.email", "test@test.com")
+	run(wtPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(wtPath, "add", "change.txt")
+	run(wtPath, "commit", "-m", "feat: task work")
+	return wtPath
+}
+
+// newReadyPRHumanRequiredTask wires the shared engine with a full succeeding
+// PR-tail and returns a human-required task carrying the project/branch that
+// tail expects.
+func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) task.Task {
+	t.Helper()
+	const branch = "feat/existing-pr"
+	wtPath := newDispatchTestWorktree(t, branch)
+	engine.SetWorktreeGetter(fixedWorktreeGetter{path: wtPath})
+	engine.SetPRLinker(fixedPRLinker{})
+	sha, err := project.CurrentCommit(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("CurrentCommit: %v", err)
+	}
+	engine.SetPRCreator(fixedPRCreator{number: 99, headSHA: sha})
+
+	tk, err := a.tasks.Create("fix the thing", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := a.tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("acme/widgets"),
+		Branch:    task.Ptr(branch),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
+}
+
 func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
-	for _, target := range []string{"in-progress", "testing", "ready-pr"} {
+	for _, target := range []string{"in-progress", "testing"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)
@@ -102,6 +208,30 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			}
 		})
 	}
+
+	// ready-pr's tail (push_branch/create_pr/link_pr_and_review/...) is fully
+	// mechanized Go — no run_agent step — so unlike the targets above it runs
+	// synchronously to a terminal disposition (in-review) instead of pausing
+	// at an agent dispatch, and starts zero agents.
+	t.Run("ready-pr", func(t *testing.T) {
+		launcher := &fakeAgentLauncher{}
+		svc, a := setupDispatchTestService(t, launcher)
+		tk := newReadyPRHumanRequiredTask(t, a, svc.workflowEngine)
+
+		got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "looks fine, retry")
+		if err != nil {
+			t.Fatalf("DispatchFromHumanRequired: %v", err)
+		}
+		if got.Status != task.StatusInReview {
+			t.Fatalf("status = %q, want %q (mechanized PR tail should complete synchronously)", got.Status, task.StatusInReview)
+		}
+		if got.Workflow == nil {
+			t.Fatal("expected a workflow to be attached")
+		}
+		if launcher.startCalls != 0 {
+			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
+		}
+	})
 }
 
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
@@ -113,7 +243,7 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 // keeps running orphaned. Here the dispatch must succeed and leave the task in
 // the target status.
 func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
-	for _, target := range []string{"testing", "ready-pr", "in-progress"} {
+	for _, target := range []string{"testing", "in-progress"} {
 		t.Run(target, func(t *testing.T) {
 			launcher := &fakeAgentLauncher{}
 			svc, a := setupDispatchTestService(t, launcher)
@@ -145,6 +275,33 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 			}
 		})
 	}
+
+	// ready-pr's mechanized tail completes synchronously (see
+	// TestDispatchFromHumanRequired_HappyPathDispatchingTargets) — the hook
+	// and DispatchFromHumanRequired race to run it, but there is no agent
+	// dispatch for either side to double up on.
+	t.Run("ready-pr", func(t *testing.T) {
+		launcher := &fakeAgentLauncher{}
+		svc, a := setupDispatchTestService(t, launcher)
+		a.workflowEngine = svc.workflowEngine
+		a.initStatusHook()
+
+		tk := newReadyPRHumanRequiredTask(t, a, svc.workflowEngine)
+
+		got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "looks fine, retry")
+		if err != nil {
+			t.Fatalf("DispatchFromHumanRequired: %v", err)
+		}
+		if got.Status != task.StatusInReview {
+			t.Fatalf("status = %q, want %q (must not revert to human-required)", got.Status, task.StatusInReview)
+		}
+		if got.Workflow == nil {
+			t.Fatal("expected a workflow to be attached")
+		}
+		if launcher.startCalls != 0 {
+			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
+		}
+	})
 }
 
 func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {

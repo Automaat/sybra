@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
@@ -196,6 +197,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
 		return cmdArtifact(rest, jsonOut)
+	case "progress":
+		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
 	case "trash":
@@ -2007,6 +2010,96 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
+func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "progress: subcommand required (add|list)")
+	}
+	sub, rest := args[0], args[1:]
+	store := artifact.New(config.ArtifactsDir())
+	switch sub {
+	case "add":
+		return cmdProgressAdd(s, projStore, store, rest, jsonOut)
+	case "list":
+		return cmdProgressList(store, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
+	}
+}
+
+func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "progress add: task-id required")
+	}
+	taskID := args[0]
+	fs := flag.NewFlagSet("progress add", flag.ContinueOnError)
+	kind := fs.String("kind", artifact.ProgressKindProgress, "entry kind: "+strings.Join(artifact.ProgressKinds(), "|"))
+	message := fs.String("message", "", "progress message (required)")
+	role := fs.String("role", "", "authoring agent role (optional)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if strings.TrimSpace(*message) == "" {
+		return fatal(jsonOut, "progress add: --message is required")
+	}
+	if !artifact.ValidProgressKind(*kind) {
+		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
+	}
+
+	t, err := s.Get(taskID)
+	if err != nil {
+		return fatal(jsonOut, "progress add: %v", err)
+	}
+
+	msg := *message
+	if t.ProjectID != "" && projStore != nil {
+		if p, pErr := projStore.Get(t.ProjectID); pErr == nil {
+			if bl := p.WorkBlocklist(); bl != nil {
+				msg, _ = scrub.Scrub(msg, bl)
+			}
+		}
+	}
+
+	entry := artifact.ProgressEntry{Ts: time.Now().UTC(), Kind: *kind, Role: *role, Message: msg}
+	if err := store.AppendProgress(taskID, entry); err != nil {
+		return fatal(jsonOut, "progress add: %v", err)
+	}
+	if _, tErr := s.Touch(taskID); tErr != nil {
+		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
+	}
+
+	if jsonOut {
+		return printJSON(entry)
+	}
+	fmt.Printf("Recorded %s on task %s\n", *kind, taskID)
+	return 0
+}
+
+func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "progress list: task-id required")
+	}
+	taskID := args[0]
+	entries, err := store.ReadProgress(taskID)
+	if err != nil {
+		return fatal(jsonOut, "progress list: %v", err)
+	}
+	if jsonOut {
+		return printJSON(entries)
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no progress entries)")
+		return 0
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tKIND\tROLE\tMESSAGE")
+	for i := range entries {
+		e := &entries[i]
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Ts.Format(time.RFC3339), e.Kind, e.Role, e.Message)
+	}
+	_ = w.Flush()
+	return 0
+}
+
 // cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —
 // recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
 // internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
@@ -2265,6 +2358,8 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
 
+	addConfigPermFindings(add)
+
 	dirs := cfg.Directories()
 	names := make([]string, 0, len(dirs))
 	for name := range dirs {
@@ -2347,4 +2442,28 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func addConfigPermFindings(add func(severity, format string, a ...any)) {
+	home := config.HomeDir()
+	addPathPermFinding(add, "config home", home, 0o700)
+	addPathPermFinding(add, "config file", filepath.Join(home, "config.yaml"), 0o600)
+}
+
+func addPathPermFinding(add func(severity, format string, a ...any), label, path string, target os.FileMode) {
+	info, err := os.Lstat(path)
+	switch {
+	case os.IsNotExist(err):
+		add("warning", "%s does not exist yet: %s", label, path)
+		return
+	case err != nil:
+		add("error", "%s: inspect permissions: %v", label, err)
+		return
+	case info.Mode()&os.ModeSymlink != 0:
+		add("warning", "%s is a symlink; Sybra will not chmod symlink targets: %s", label, path)
+		return
+	}
+	if perm := info.Mode().Perm(); perm&^target != 0 {
+		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
+	}
 }

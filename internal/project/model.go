@@ -206,6 +206,17 @@ func (p Project) IsSybraProject() bool {
 	return strings.EqualFold(p.Owner, "Automaat") && strings.EqualFold(p.Repo, "sybra")
 }
 
+func (p Project) WorkBlocklist() []string {
+	if p.Type != ProjectTypeWork {
+		return nil
+	}
+	bl := []string{p.ID, p.Owner, p.Repo}
+	if p.URL != "" {
+		bl = append(bl, p.URL)
+	}
+	return bl
+}
+
 // Worktree describes one `git worktree` checkout of a Project's bare clone,
 // as reported by ListWorktrees.
 type Worktree struct {

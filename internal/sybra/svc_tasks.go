@@ -127,6 +127,22 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 	return report, nil
 }
 
+// ListTaskProgress returns the agent-authored progress entries for a task.
+// Empty (not an error) when the task has no progress log yet.
+func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry, error) {
+	if s.artifacts == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	entries, err := s.artifacts.ReadProgress(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	return entries, nil
+}
+
 func emptyTamperReport(taskID string) TamperReportDTO {
 	return TamperReportDTO{
 		TaskID:          taskID,

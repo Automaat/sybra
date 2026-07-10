@@ -43,6 +43,7 @@ import (
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
@@ -107,7 +108,7 @@ type App struct {
 	dispatchNudge   chan struct{}
 	recovery        *recovery.Recovery
 	snapshotter     *tasksnapshot.Snapshotter
-	agentCompletion *AgentCompletionHandler
+	agentCompletion *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -253,13 +254,16 @@ func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
 		a.snapshotter.EnsureRepo(ctx)
 	}
 	a.recovery = a.newRecovery()
-	a.recovery.RunStartupCleanup(ctx)
 	a.RegisterSpotlightHotkey() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see Startup's contextcheck note
 
 	lm := newLifecycleManager(a)
-	lm.StartManagers(ctx, emit)
-	lm.StartPollers(ctx, emit, issuesFetcher)
 	lm.StartWatchers(ctx)
+
+	a.wg.Go(func() {
+		a.recovery.RunStartupCleanup(ctx)
+		lm.StartManagers(ctx, emit)
+		lm.StartPollers(ctx, emit, issuesFetcher)
+	})
 }
 
 func (a *App) cleanupFailedStartup() {

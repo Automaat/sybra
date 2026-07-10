@@ -507,7 +507,7 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 		return "", fmt.Errorf("create review worktree: %w", err)
 	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
 	}
 	return wtPath, nil
@@ -574,7 +574,12 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("branch-fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	// Read setup from the trusted default branch, never the checked-out worktree:
+	// this branch already carries commits an implementation agent pushed in an
+	// earlier run, so its own .sybra.yaml is not Sybra-authored and a compromised
+	// agent could plant a malicious setup: block that runs via unsandboxed
+	// `sh -c` (same class as issue #1519 — see resolveTrustedSetupCommands).
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("branch-fix setup: %w", err)
 	}
 	// pr-fix-role recovery runs must push straight to origin (the task's own
@@ -585,6 +590,37 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 		}
 	}
 	return wtPath, nil
+}
+
+// RecreateFromBase discards a task's diverged branch and its worktree so the
+// next PrepareForTask rebuilds it fresh off the project's base ref. The branch
+// tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
+// discarded commits stay recoverable. Used as the last-resort recovery when
+// merge-based branch-conflict recovery is exhausted on a no-PR task: the branch
+// genuinely cannot be reconciled, so re-implementing from a clean base is the
+// only autonomous path left.
+func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return fmt.Errorf("get project: %w", err)
+	}
+	branch := branchNameForTask(t)
+	wtPath := m.PathFor(t)
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if berr := project.BackupBranchRef(ctx, proj.ClonePath, branch); berr != nil {
+			m.logger.Warn("worktree.recreate.backup", "task_id", t.ID, "branch", branch, "err", berr)
+		}
+	}
+	if rerr := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); rerr != nil {
+		return fmt.Errorf("remove worktree: %w", rerr)
+	}
+	if project.BranchExists(ctx, proj.ClonePath, branch) {
+		if derr := project.DeleteBranch(ctx, proj.ClonePath, branch); derr != nil {
+			return fmt.Errorf("delete branch: %w", derr)
+		}
+	}
+	m.logger.Info("worktree.recreated-from-base", "task_id", t.ID, "branch", branch)
+	return nil
 }
 
 // PrepareForFix creates a worktree checking out the PR's head branch
@@ -659,7 +695,7 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 	}
 	m.ensureBranch(t, branch)
 	m.logger.Info("fix.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+	if err := m.runSetupNonGating(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
 		return "", fmt.Errorf("fix setup: %w", err)
 	}
 	// pr-fix tasks must push to the existing PR's head branch on origin — not

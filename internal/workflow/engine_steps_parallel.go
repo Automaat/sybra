@@ -12,7 +12,7 @@ import (
 // (validated at definition load time); planning is read-only so contention
 // on the worktree is benign. The parent step advances to its `next` only
 // after every child has terminated; per-child completions are routed
-// through AdvanceStep via the existing agentSteps mapping.
+// through AdvanceStep via the existing agentRoutes mapping.
 //
 // Returns a non-nil *CompletionInfo when every child terminates at spawn time
 // and the parent's `next` ends the workflow synchronously — threaded up to the
@@ -142,9 +142,9 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	oneShot := false
 
 	// Hold e.mu across StartAgent so HandleAgentComplete (which acquires
-	// e.mu via lookupAgentStep) cannot race past the agentSteps registration.
+	// e.mu via lookupAgentStep) cannot race past the agentRoutes registration.
 	// Fast-exiting agents (e.g. fail_exit in tests) can otherwise complete
-	// before agentSteps is populated, causing the wrong step to advance.
+	// before agentRoutes is populated, causing the wrong step to advance.
 	e.mu.Lock()
 	agentID, _, baselineRef, err := e.agents.StartAgent(taskID, child.Config.Role, mode, model, provider, prompt, dir, child.Config.AllowedTools, child.Config.NeedsWorktree, oneShot, child.Config.OutputSchema, "", assignment)
 	if err != nil {
@@ -154,10 +154,10 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(child.ID), baselineRef)
 	}
-	// agentSteps key uses the *child* step ID. StepByID recurses into
+	// agentRoutes key uses the *child* step ID. StepByID recurses into
 	// Parallel children so the lookup in lookupAgentStep / AdvanceStep
 	// returns the right step config.
-	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: child.ID}
+	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: child.ID}
 	e.mu.Unlock()
 
 	status.AgentID = agentID

@@ -14,6 +14,15 @@ import (
 
 const exactSnapshotMaxAge = 30 * time.Minute
 
+// eventMaxAge bounds how long a UsageEvent survives in limits.json.
+// Summary never looks back further than the weekly window (7d, see
+// fallbackWindows) and BackfillLocalSessionFiles defaults to a 14d cutoff
+// (ProviderLimitsConfig.BackfillDays) — 21d leaves a safety margin over both
+// so a slow reload or clock skew can't prune data a consumer still needs.
+// Without this, limits.json grows unbounded (56MB / ~189k events observed in
+// production) since every RecordUsage/Import call only ever appends.
+const eventMaxAge = 21 * 24 * time.Hour
+
 type persisted struct {
 	Snapshots map[string]Snapshot `json:"snapshots"`
 	Events    []UsageEvent        `json:"events"`
@@ -148,9 +157,13 @@ func (s *Store) reloadLocked() error {
 	}
 	s.events = nil
 	s.seen = map[string]struct{}{}
+	cutoff := s.now().UTC().Add(-eventMaxAge)
 	for i := range p.Events {
 		e := p.Events[i]
 		if e.ID == "" {
+			continue
+		}
+		if e.Timestamp.Before(cutoff) {
 			continue
 		}
 		if _, ok := s.seen[e.ID]; ok {
@@ -360,6 +373,42 @@ func (s *Store) ChooseProvider(requested string, candidates []string, healthy fu
 	return available[0].Provider, "lower quota pressure"
 }
 
+// ChooseSoftLimitedPeer finds a peer that is only soft-threshold limited
+// (session/weekly near threshold, not a hard rate-limit-reached block or a
+// disabled provider) to use as a last-resort failover target when the
+// requested provider is itself hard-blocked and ChooseProvider found no
+// fully available peer. This mirrors the leniency softLimitLastResort
+// already grants a provider's own soft-threshold state, extended to peers:
+// a peer that still safely dispatches its own direct runs under a soft
+// threshold is an acceptable failover target too, rather than failing the
+// dispatch closed system-wide.
+func (s *Store) ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, policy Policy) (provider, reason string) {
+	if !policy.Enabled {
+		return "", ""
+	}
+	summary := s.Summary(policy)
+	byProvider := map[string]*ProviderSummary{}
+	for i := range summary.Providers {
+		p := &summary.Providers[i]
+		byProvider[p.Provider] = p
+	}
+	for _, p := range candidates {
+		if p == requested || !providerEnabled(policy, p) || !healthy(p) {
+			continue
+		}
+		ps := byProvider[p]
+		if ps == nil || !ps.QuotaLimited {
+			// Fully available peers are already handled by ChooseProvider;
+			// reaching here means none existed.
+			continue
+		}
+		if IsSoftThresholdReason(ps.QuotaReason) {
+			return p, ps.QuotaReason
+		}
+	}
+	return "", ""
+}
+
 func (s *Store) flushLocked() error {
 	data, err := json.Marshal(persisted{Snapshots: s.snapshots, Events: s.events})
 	if err != nil {
@@ -440,6 +489,15 @@ const (
 // false so they keep gating.
 func IsSoftThresholdReason(reason string) bool {
 	return reason == quotaReasonSessionThreshold || reason == quotaReasonWeeklyThreshold
+}
+
+// IsRateLimitReachedReason reports whether a ProviderAvailable "unavailable"
+// reason is a hard rate-limit-reached block. Unlike provider-disabled (a config
+// kill-switch that stays until a human re-enables it), a reached rate limit is
+// transient and self-heals when the quota window rolls over, so callers mark it
+// on the gate error to keep it off the dispatch circuit breaker.
+func IsRateLimitReachedReason(reason string) bool {
+	return reason == quotaReasonRateLimitReached
 }
 
 func quotaLimited(ps ProviderSummary, snap Snapshot, policy Policy) (limited bool, reason string) {

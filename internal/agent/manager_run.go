@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -104,6 +105,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
+	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return cfg, nil, gateErr
@@ -114,14 +116,44 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	if cfg.Mode == "headless" {
+		m.mu.RLock()
+		cfg.HeadlessSteerable = m.headlessSteerable
+		m.mu.RUnlock()
+	}
+	cfg.approvalAddr = m.approvalAddr
+	// Headless Claude runs with require_permissions:true rely on Sybra's
+	// approval hook to gate each tool call. If the approval server never
+	// started (approvalAddr empty) the hook is silently omitted and the run
+	// falls back to CLI defaults — neither the gating the operator asked for
+	// nor an explicit bypass. Fail closed rather than degrading quietly.
+	//
+	// Scope this to the exact vulnerable shape:
+	// - claude provider
+	// - headless mode
+	// - no explicit AllowedTools allowlist
+	// - not using Claude's own auto classifier
+	//
+	// Other providers do not depend on this hook for headless execution.
+	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+		cfg.RequirePermissions && cfg.approvalAddr == "" &&
+		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
+		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
+	}
 
 	if err := m.injectSandboxHome(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
+	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
+
+	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
@@ -184,6 +216,19 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 	}
 	cfg.resolvedSandboxHome = dir
+	return nil
+}
+
+func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "golangci-lint-cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("agent.Run: create golangci-lint cache for task %q: %w", cfg.TaskID, err)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE="+dir)
 	return nil
 }
 
@@ -370,7 +415,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
-		return fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
 	}
 	m.agents[a.ID] = a
 	if a.done != nil {
@@ -555,10 +600,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -583,10 +625,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
@@ -626,6 +665,22 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 			})
 			return alt, gateEvents, nil
 		}
+		// No fully available peer exists. Before failing closed, check
+		// whether a peer is only soft-threshold limited (e.g. near its
+		// session cap but still dispatching, the same leniency
+		// softLimitLastResort grants the resolved provider itself) — that
+		// peer is only a safe last-resort failover target when resolved is
+		// hard-blocked (e.g. rate limit actually reached). If resolved is
+		// itself only soft-threshold limited, keep it so the remaining
+		// budget is not stranded behind another soft-limited peer.
+		if !limits.IsSoftThresholdReason(reason) {
+			if alt, altReason := lg.ChooseSoftLimitedPeer(resolved, candidateProviders, healthy, lp); alt != "" {
+				gateEvents = append(gateEvents, providerGateEvent{
+					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
+				})
+				return alt, gateEvents, nil
+			}
+		}
 		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
 	} else {
 		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
@@ -640,9 +695,14 @@ func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []prov
 		return resolved, gateEvents, nil
 	}
 	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-	return "", gateEvents, &provider.UnhealthyError{
-		Provider: resolved,
-		Reason:   reason,
+	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+}
+
+func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
+	return &provider.UnhealthyError{
+		Provider:    prov,
+		Reason:      reason,
+		RateLimited: reason == provider.RateLimitReason || limits.IsRateLimitReachedReason(reason),
 	}
 }
 

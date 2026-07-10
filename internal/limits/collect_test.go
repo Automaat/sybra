@@ -257,6 +257,66 @@ func TestChooseProvider_NoDataDoesNotStealRequested(t *testing.T) {
 	}
 }
 
+// TestChooseSoftLimitedPeer_PicksPeerOnlySoftLimited verifies the last-resort
+// failover for task c61f327a: a peer whose only issue is its own soft
+// session/weekly threshold is still eligible when the requested provider is
+// hard rate-limited and every other candidate is either disabled or unhealthy.
+func TestChooseSoftLimitedPeer_PicksPeerOnlySoftLimited(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceStream,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 90, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	alt, reason := s.ChooseSoftLimitedPeer(ProviderCodex, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+		return true
+	}, DefaultPolicy())
+	if alt != ProviderClaude {
+		t.Fatalf("alt = %q, want claude (only soft-limited peer)", alt)
+	}
+	if !IsSoftThresholdReason(reason) {
+		t.Fatalf("reason = %q, want a soft threshold reason", reason)
+	}
+}
+
+// TestChooseSoftLimitedPeer_SkipsHardBlockedPeer verifies a peer that is
+// itself hard blocked (rate limit reached / disabled) is never picked — only
+// soft-threshold peers qualify for this last-resort path.
+func TestChooseSoftLimitedPeer_SkipsHardBlockedPeer(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:             ProviderClaude,
+		Source:               SourceStream,
+		Confidence:           ConfidenceExact,
+		CapturedAt:           now,
+		RateLimitReachedType: "rate_limit_reached",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	alt, _ := s.ChooseSoftLimitedPeer(ProviderCodex, []string{ProviderClaude, ProviderCodex, ProviderCopilot}, func(string) bool {
+		return true
+	}, DefaultPolicy())
+	if alt != "" {
+		t.Fatalf("alt = %q, want none (claude is hard blocked, not soft-limited)", alt)
+	}
+}
+
 func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
@@ -466,6 +526,25 @@ func TestIsSoftThresholdReason(t *testing.T) {
 	for _, c := range cases {
 		if got := IsSoftThresholdReason(c.reason); got != c.want {
 			t.Errorf("IsSoftThresholdReason(%q) = %v, want %v", c.reason, got, c.want)
+		}
+	}
+}
+
+func TestIsRateLimitReachedReason(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{quotaReasonRateLimitReached, true},
+		{quotaReasonProviderDisabled, false},
+		{quotaReasonWeeklyThreshold, false},
+		{quotaReasonSessionThreshold, false},
+		{"rate_limited", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsRateLimitReachedReason(c.reason); got != c.want {
+			t.Errorf("IsRateLimitReachedReason(%q) = %v, want %v", c.reason, got, c.want)
 		}
 	}
 }

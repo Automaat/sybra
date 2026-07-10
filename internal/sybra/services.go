@@ -90,6 +90,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"UpdateTask",
 			"DeleteTask",
 			"DispatchFromHumanRequired",
+			"ListTaskProgress",
 		),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",

@@ -1,13 +1,18 @@
-package sybra
+package completion
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 func TestRunOutcome(t *testing.T) {
@@ -192,6 +197,72 @@ func TestIsSignalKill(t *testing.T) {
 				t.Errorf("isSignalKill(%v) = %v, want %v", err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	wt := t.TempDir()
+	tk, err := taskMgr.Create("visual test", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusTesting
+	tk, err = taskMgr.Update(tk.ID, task.Update{
+		Status:      &status,
+		WorktreeDir: &wt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shotPath := filepath.Join(evidenceDir, "shot.png")
+	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	artifactStore := artifact.New(t.TempDir())
+	h := &Handler{
+		logger:    discardLogger(),
+		tasks:     taskMgr,
+		worktrees: worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: taskMgr}),
+		artifacts: artifactStore,
+	}
+	ag := &agent.Agent{
+		ID:        "agent-1",
+		TaskID:    tk.ID,
+		Name:      agent.RoleTestRunner.AgentName(tk.Title),
+		Mode:      "headless",
+		StartedAt: time.Now().Add(-time.Second),
+	}
+
+	h.OnComplete(ag)
+
+	updated, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusTesting {
+		t.Fatalf("task status = %q, want non-terminal %q", updated.Status, task.StatusTesting)
+	}
+	allMetas, err := artifactStore.List(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metas []artifact.Meta
+	for _, m := range allMetas {
+		if m.Kind == artifact.KindGeneric {
+			metas = append(metas, m)
+		}
+	}
+	if len(metas) != 1 {
+		t.Fatalf("expected test-runner evidence to import before terminal status, got %d: %+v", len(metas), metas)
+	}
+	if metas[0].SourcePath != shotPath {
+		t.Fatalf("SourcePath = %q, want %q", metas[0].SourcePath, shotPath)
 	}
 }
 
