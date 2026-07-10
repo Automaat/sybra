@@ -881,11 +881,12 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 	(&skillsync.Syncer{Logger: logger}).Run(skillsync.Options{
-		RepoDir:      repoDir,
-		SkillsFS:     skills.FS,
-		PrimaryDst:   cfg.SkillsDir,
-		SybraHomeDir: config.HomeDir(),
-		UserHomeDir:  home,
+		RepoDir:              repoDir,
+		SkillsFS:             skills.FS,
+		PrimaryDst:           cfg.SkillsDir,
+		SybraHomeDir:         config.HomeDir(),
+		UserHomeDir:          home,
+		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
 
 	dsts := []string{

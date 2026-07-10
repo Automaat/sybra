@@ -292,6 +292,9 @@ func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project
 	if err := project.InstallHooks(ctx, wtPath, checks); err != nil {
 		m.logger.Warn("worktree.hooks", "path", wtPath, "err", err)
 	}
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.signoff-hook", "path", wtPath, "err", err)
+	}
 	if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
 		m.logger.Warn("worktree.fork-only-push", "path", wtPath, "err", err)
 	}

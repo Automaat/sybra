@@ -200,6 +200,53 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 	return write("pre-push", checks.PrePush)
 }
 
+const signoffHook = `#!/bin/sh
+# Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
+# commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
+msg_file="$1"
+sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+[ -z "$sob" ] && exit 0
+git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
+`
+
+// InstallSignoffHook writes a prepare-commit-msg hook that guarantees a DCO
+// Signed-off-by trailer on every commit made in the worktree. Agents commit
+// via a plain git commit and don't reliably pass -s, so relying on the prompt
+// instruction leaves unsigned commits that fail the kumahq/kuma DCO check.
+// prepare-commit-msg is the only hook that fires on every commit — including
+// merges and --no-verify, which bypass only pre-commit and commit-msg — so it
+// is the single place sign-off can be enforced no matter how the commit is
+// produced. Unlike InstallHooks it is unconditional and manages its own hooks
+// dir, so it also covers projects with no pre-commit/pre-push checks. The hook
+// lives in the git-common-dir and so covers every worktree of the clone; the
+// write is idempotent.
+func InstallSignoffHook(ctx context.Context, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return fmt.Errorf("create hooks dir: %w", err)
+	}
+	path := filepath.Join(hooksDir, "prepare-commit-msg")
+	if err := os.WriteFile(path, []byte(signoffHook), 0o755); err != nil {
+		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
+	}
+	pin := exec.CommandContext(ctx, "git", "config", "core.hooksPath", hooksDir)
+	pin.Dir = worktreePath
+	if err := pin.Run(); err != nil {
+		return fmt.Errorf("pin core.hooksPath: %w", err)
+	}
+	return nil
+}
+
 // ParseGitHubURL extracts owner and repo from a GitHub URL in SSH form
 // (git@github.com:owner/repo[.git]) or HTTPS form
 // (https://github.com/owner/repo[.git]). Returns an error for any other
@@ -251,6 +298,9 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := executil.Run(ctx, "", "git", "clone", "--bare", repoURL, destPath); err != nil {
 		return err
+	}
+	if err := InstallSignoffHook(ctx, destPath); err != nil {
+		return fmt.Errorf("install signoff hook: %w", err)
 	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the

@@ -97,12 +97,13 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
 	}
-	wrapped := make([]string, 0, len(args)+9)
+	wrapped := make([]string, 0, len(args)+11)
 	wrapped = append(wrapped,
 		"-f", cfg.sandbox.profilePath,
 		"-D", "WORKTREE="+cfg.sandbox.worktree,
 		"-D", "SANDBOX_HOME="+cfg.sandbox.sandboxHome,
 		"-D", "TMP="+cfg.sandbox.tmp,
+		"-D", "SHARED_CACHE="+cfg.sandbox.sharedCache,
 		name,
 	)
 	wrapped = append(wrapped, args...)
