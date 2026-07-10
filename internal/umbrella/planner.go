@@ -17,12 +17,16 @@ const DefaultMaxParallel = 5
 
 // plannerAttempts is how many times Generate re-asks the model when its output
 // fails to parse or validate. The planner is stochastic, so a fresh sample
-// often fixes a malformed or incomplete DAG.
-const plannerAttempts = 3
+// often fixes a malformed or incomplete DAG. Each retry is now corrective (see
+// correctivePrompt) rather than a blind re-roll of the same prompt, so a
+// higher ceiling buys more chances to actually converge instead of more
+// chances at the same dice roll — raised from 3 at large N (~33 sub-issues),
+// where the coverage check was the dominant failure mode.
+const plannerAttempts = 5
 
 // errPlannerExhausted marks attemptPlan's exhaustion return (plannerAttempts
 // samples, none parsed/resolved/validated) so Generate can distinguish it from
-// a fatal runner error via errors.Is and fall back to an independent-parallel plan instead
+// a fatal runner error via errors.Is and fall back to a linear chain instead
 // of aborting the whole expansion.
 var errPlannerExhausted = errors.New("planner exhausted retries")
 
@@ -58,14 +62,18 @@ type PlannedChild struct {
 type Plan struct {
 	Children    []PlannedChild `json:"children"`
 	MaxParallel int            `json:"maxParallel"`
-	// Fallback marks a plan built by independentFallback instead of the model,
+	// Fallback marks a plan built by linearChainFallback instead of the model,
 	// so callers can surface degradation loudly. Never persisted on the wire.
 	Fallback bool `json:"-"`
 }
 
 // Runner executes one planner prompt and returns the model's raw stdout.
-// Injected so the planner logic is unit-testable without spawning a CLI.
-type Runner func(ctx context.Context, prompt string) (string, error)
+// schema is an optional JSON Schema (see buildPlanSchema) describing the
+// expected Plan shape; a Runner that talks to llmexec should pass it through
+// as llmexec.Options.Schema so the provider constrains its output instead of
+// treating it as more prose. Injected so the planner logic is unit-testable
+// without spawning a CLI.
+type Runner func(ctx context.Context, prompt, schema string) (string, error)
 
 // generateConfig holds the optional settings GenerateOption values apply.
 type generateConfig struct {
@@ -101,8 +109,8 @@ const criticSuffix = "You produced a fully-parallel plan — re-examine `touches
 // a critic nudge; any failure of that re-ask (parse, validate, or run error)
 // falls back to the original plan rather than failing the whole expansion.
 // If the first attempt exhausts plannerAttempts without ever producing a
-// valid plan, or the planner deadline expires, Generate falls back to an
-// independent-parallel plan (independentFallback) instead of aborting the
+// valid plan, or the planner deadline expires, Generate falls back to a
+// fully-serial linear chain (linearChainFallback) instead of aborting the
 // expansion; a fatal runner error (couldn't launch the model) is not
 // exhaustion and still aborts.
 func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string, subs []SubIssue, opts ...GenerateOption) (Plan, error) {
@@ -115,16 +123,17 @@ func Generate(ctx context.Context, run Runner, umbrellaRef, umbrellaBody string,
 	}
 	idx := buildRefIndex(subs)
 	prompt := BuildPrompt(umbrellaRef, umbrellaBody, subs)
+	schema := buildPlanSchema(subs)
 
-	plan, err := attemptPlan(ctx, run, idx, prompt, subs, cfg)
+	plan, err := attemptPlan(ctx, run, idx, prompt, schema, subs, cfg)
 	if err != nil {
 		if plannerExhausted(err) {
-			return independentFallback(subs)
+			return linearChainFallback(subs)
 		}
 		return Plan{}, err
 	}
 	if flatPlanSuspicious(plan, subs) {
-		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, subs, cfg)
+		reasked, err := attemptPlan(ctx, run, idx, prompt+"\n\n"+criticSuffix, schema, subs, cfg)
 		if err == nil {
 			return reasked, nil
 		}
@@ -137,24 +146,28 @@ func plannerExhausted(err error) bool {
 }
 
 // attemptPlan runs up to plannerAttempts model invocations with the given
-// prompt, returning the first plan that parses, resolves, and validates
-// against subs, with MaxParallel defaulted. A runner error is fatal and
-// returned immediately; a parse or validate failure retries with the same
-// prompt.
-func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, subs []SubIssue, cfg generateConfig) (Plan, error) {
+// prompt and schema, returning the first plan that parses, resolves, and
+// validates against subs, with MaxParallel defaulted. A runner error is fatal
+// and returned immediately; a parse/resolve/validate failure retries with a
+// corrective prompt (see correctivePrompt) that names what went wrong, so a
+// retry is a targeted fix instead of a blind re-roll of the original prompt.
+func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt, schema string, subs []SubIssue, cfg generateConfig) (Plan, error) {
 	var lastErr error
+	attemptPrompt := prompt
 	for range plannerAttempts {
-		raw, err := run(ctx, prompt)
+		raw, err := run(ctx, attemptPrompt, schema)
 		if err != nil {
 			return Plan{}, fmt.Errorf("run planner: %w", err)
 		}
 		plan, err := ParsePlan(raw)
 		if err != nil {
 			lastErr = err
+			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
 		if err := plan.resolve(idx); err != nil {
 			lastErr = err
+			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
 		if cfg.lister != nil {
@@ -163,6 +176,7 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 		plan.deriveEdges(subs)
 		if err := plan.validate(subs); err != nil {
 			lastErr = err
+			attemptPrompt = correctivePrompt(prompt, err)
 			continue
 		}
 		if plan.MaxParallel <= 0 {
@@ -173,21 +187,30 @@ func attemptPlan(ctx context.Context, run Runner, idx refIndex, prompt string, s
 	return Plan{}, fmt.Errorf("planner produced no valid plan in %d attempts: %w: %w", plannerAttempts, errPlannerExhausted, lastErr)
 }
 
-// independentFallback builds an independent-parallel fallback plan for when
-// the planner exhausts its retries without producing a valid DAG: since the
-// planner produced no ordering information at all, assuming total order is
-// the most expensive possible wrong guess (it multiplies wall-clock by N),
-// while assuming no order is cheap and self-healing — every child runs in
-// its own worktree and opens its own PR, so real conflicts surface at
-// merge/review (handled by pr-fix), not at run time. Sub-issues are ordered
-// by numeric issue number (ties and non-numeric refs keep fetch order, via a
-// stable sort) purely for deterministic child ordering; no DependsOn edges
-// are emitted between children. MaxParallel is set to a modest degraded cap
-// and Fallback is set so callers can surface the degradation. The
-// constructed plan still runs through validate as a real guard: a validation
-// failure is returned rather than silently committing a malformed plan.
-func independentFallback(subs []SubIssue) (Plan, error) {
-	const fallbackMaxParallel = 3
+// correctivePrompt appends the previous attempt's parse/resolve/validate
+// failure (already carrying the specific offending refs — see validate) to
+// the ORIGINAL prompt, not the previous attemptPrompt, so corrective notes
+// from an earlier failed attempt never compound across retries. Re-emitted
+// each retry so the model sees exactly what it got wrong last time instead of
+// re-sampling the same prompt and hoping for a different roll.
+func correctivePrompt(prompt string, err error) string {
+	return prompt + "\n\nYour previous output was invalid: " + err.Error() +
+		". Re-emit ONLY the corrected JSON object: cover every sub-issue listed above exactly once, with no duplicates and no dependency cycles."
+}
+
+// linearChainFallback builds a fully-serial fallback plan for when the
+// planner exhausts its retries without producing a valid DAG: sub-issues are
+// ordered by numeric issue number (ties and non-numeric refs keep fetch
+// order, via a stable sort), and each open child depends on the previous open
+// child. A closed sub-issue carries no edges — ChildSpecs already drops any
+// dependency on a closed sub-issue as satisfied — so a closed sub-issue in
+// the middle of the chain cannot split the remaining open children into
+// parallel islands; the open child that follows it still chains to the last
+// open child before it. MaxParallel is pinned to 1 and Fallback is set so
+// callers can surface the degradation. The constructed plan still runs
+// through validate as a real guard: a validation failure is returned rather
+// than silently committing a malformed chain.
+func linearChainFallback(subs []SubIssue) (Plan, error) {
 	type numberedSub struct {
 		sub    SubIssue
 		num    int
@@ -222,13 +245,21 @@ func independentFallback(subs []SubIssue) (Plan, error) {
 		keyed[idx] = numbered[i]
 	}
 
-	p := Plan{MaxParallel: fallbackMaxParallel, Fallback: true}
+	p := Plan{MaxParallel: 1, Fallback: true}
+	prevOpen := ""
 	for _, ks := range keyed {
 		canon := NormalizeIssueRef(ks.sub.Ref)
-		p.Children = append(p.Children, PlannedChild{Ref: canon})
+		child := PlannedChild{Ref: canon}
+		if !ks.sub.Closed {
+			if prevOpen != "" {
+				child.DependsOn = []string{prevOpen}
+			}
+			prevOpen = canon
+		}
+		p.Children = append(p.Children, child)
 	}
 	if err := p.validate(subs); err != nil {
-		return Plan{}, fmt.Errorf("independent fallback failed validation: %w", err)
+		return Plan{}, fmt.Errorf("linear-chain fallback failed validation: %w", err)
 	}
 	return p, nil
 }
@@ -320,6 +351,62 @@ func BuildPrompt(umbrellaRef, umbrellaBody string, subs []SubIssue) string {
 	b.WriteString(" parallelJustification keys must reference only the sub-issues above; never create a")
 	b.WriteString(" cycle; maxParallel is the max children to run at once (default 5).\n")
 	return b.String()
+}
+
+// buildPlanSchema returns a JSON Schema for Plan that constrains
+// children[].issue and children[].dependsOn to the exact canonical sub-issue
+// refs, and pins the children array to exactly len(subs) entries — narrowing
+// the coverage-mismatch failure mode (an unknown, missing, or miscounted ref)
+// at the model layer instead of relying solely on post-hoc validate+retry.
+// Delivered via llmexec.Options.Schema by a Runner (see FallbackPlannerRunner):
+// codex receives it natively (--output-schema), claude/copilot get it appended
+// as prose. additionalProperties:false and every property listed in
+// "required" (even the optional ones) follow codex's strict-mode requirement
+// — see inspectorVerdictSchema for the same convention.
+func buildPlanSchema(subs []SubIssue) string {
+	refs := make([]string, len(subs))
+	for i, s := range subs {
+		refs[i] = NormalizeIssueRef(s.Ref)
+	}
+	refEnum := map[string]any{"type": "string", "enum": refs}
+	stringArray := map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+
+	child := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"issue":                 refEnum,
+			"dependsOn":             map[string]any{"type": "array", "items": refEnum},
+			"track":                 map[string]any{"type": "string"},
+			"touches":               stringArray,
+			"produces":              stringArray,
+			"requires":              stringArray,
+			"parallelJustification": map[string]any{"type": "object"},
+		},
+		"required":             []string{"issue", "dependsOn", "track", "touches", "produces", "requires", "parallelJustification"},
+		"additionalProperties": false,
+	}
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"children": map[string]any{
+				"type":     "array",
+				"minItems": len(subs),
+				"maxItems": len(subs),
+				"items":    child,
+			},
+			"maxParallel": map[string]any{"type": "integer"},
+		},
+		"required":             []string{"children", "maxParallel"},
+		"additionalProperties": false,
+	}
+
+	out, err := json.Marshal(schema)
+	if err != nil {
+		// schema is a static map of primitives/strings; Marshal cannot fail.
+		panic("buildPlanSchema: marshal static schema: " + err.Error())
+	}
+	return string(out)
 }
 
 // ParsePlan extracts a Plan from a model's raw stdout. It tolerates the claude
@@ -648,22 +735,48 @@ func touchesOverlap(a, b []string) bool {
 // acyclic. resolve must run first so all refs are canonical.
 func (p *Plan) validate(subs []SubIssue) error {
 	if len(p.Children) != len(subs) {
-		return fmt.Errorf("planner covered %d of %d sub-issues", len(p.Children), len(subs))
+		msg := fmt.Sprintf("planner covered %d of %d sub-issues", len(p.Children), len(subs))
+		if missing := missingRefs(subs, p.Children); len(missing) > 0 {
+			msg += fmt.Sprintf(" (missing: %s)", strings.Join(missing, ", "))
+		}
+		return errors.New(msg)
 	}
 	seen := make(map[string]bool, len(p.Children))
+	var dups []string
 	nodes := make([]Node, 0, len(p.Children))
 	for i := range p.Children {
 		c := &p.Children[i]
 		if seen[c.Ref] {
-			return fmt.Errorf("planner listed %s more than once", c.Ref)
+			dups = append(dups, c.Ref)
+			continue
 		}
 		seen[c.Ref] = true
 		nodes = append(nodes, Node{ID: c.Ref, Issue: c.Ref, DependsOn: c.DependsOn})
+	}
+	if len(dups) > 0 {
+		return fmt.Errorf("planner listed %s more than once", strings.Join(dups, ", "))
 	}
 	if Build(nodes).HasCycle() {
 		return fmt.Errorf("planner produced a dependency cycle")
 	}
 	return nil
+}
+
+// missingRefs returns the canonical subs refs absent from children, in subs
+// order, so a coverage-mismatch retry (see correctivePrompt) can name exactly
+// which sub-issues the model dropped instead of just a count.
+func missingRefs(subs []SubIssue, children []PlannedChild) []string {
+	present := make(map[string]bool, len(children))
+	for i := range children {
+		present[children[i].Ref] = true
+	}
+	var missing []string
+	for _, s := range subs {
+		if ref := NormalizeIssueRef(s.Ref); !present[ref] {
+			missing = append(missing, ref)
+		}
+	}
+	return missing
 }
 
 // refIndex resolves an issue ref in any form (URL, owner/repo#n, or bare #n/n)
