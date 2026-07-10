@@ -88,6 +88,10 @@ const (
 	// audit log can see which tasks are running with unrestricted file-write
 	// access instead of only discovering it after an incident.
 	EventAgentSandboxDisabled = "agent.sandbox_disabled"
+	// EventAgentCheckpoint records a turn-ceiling checkpoint handoff attempt.
+	// Data.reason distinguishes a committed handoff ("checkpoint") from a
+	// failed commit ("checkpoint_failed").
+	EventAgentCheckpoint = "agent.checkpoint"
 
 	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
 	// when codex fires its session/subagent lifecycle hooks. Distinct from the

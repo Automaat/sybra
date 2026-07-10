@@ -12,6 +12,15 @@ type AgentCompletion struct {
 	Success bool
 }
 
+// CompletionWorkflow is the subset of Engine used by completion.Handler.
+type CompletionWorkflow interface {
+	HandleAgentComplete(taskID string, c AgentCompletion)
+	ClearAgentStep(agentID string)
+	RescheduleRateLimitedAgent(taskID, agentID string)
+	RescheduleCheckpointedAgent(taskID, agentID string)
+	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)
+}
+
 // AgentLauncher starts agents and queries running state.
 // `dir` overrides worktree preparation — when non-empty the caller has
 // already staged a directory (e.g. PrepareForFix) and the adapter must reuse

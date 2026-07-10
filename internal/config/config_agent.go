@@ -8,6 +8,16 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// MaxCheckpoints bounds how many times a single workflow step may
+	// checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
+	// use DefaultMaxCheckpoints (3).
+	MaxCheckpoints int `yaml:"max_checkpoints" json:"maxCheckpoints"`
+	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
+	// a checkpoint-and-handoff to a fresh run when an eligible code-author
+	// headless run hits its per-run turn ceiling. nil means not configured
+	// (defaults to true). Set false to restore the legacy in-process
+	// auto-continue behavior with no code revert.
+	CheckpointOnTurnCeiling *bool `yaml:"checkpoint_on_turn_ceiling" json:"checkpointOnTurnCeiling"`
 	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
 	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
 	// where each retry stays under the per-run cap but the task's total spend

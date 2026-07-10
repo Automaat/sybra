@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -39,6 +40,32 @@ func lastResult(a *Agent) *StreamEvent {
 		}
 	}
 	return nil
+}
+
+func initCheckpointRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", dir},
+		{"git", "-C", dir, "config", "user.email", "test@test.com"},
+		{"git", "-C", dir, "config", "user.name", "Test"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "."},
+		{"git", "-C", dir, "commit", "-m", "init"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	return dir
 }
 
 func TestParseCodexStreamEvent_AgentMessage(t *testing.T) {
@@ -983,6 +1010,134 @@ func TestGuardrails_TurnsAutoContinue_CostBelowCap(t *testing.T) {
 	}
 	if got := len(a.Output()); got != 5 {
 		t.Errorf("got %d events, want 5 — stream stopped early", got)
+	}
+}
+
+func TestGuardrails_TurnsCheckpointEligibleAuthor(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{
+		MaxCostUSD:              10.0,
+		MaxTurns:                3,
+		CheckpointOnTurnCeiling: true,
+	})
+
+	repo := initCheckpointRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{
+		ID:         "t",
+		Name:       RoleImplementation.AgentName("Task"),
+		Provider:   "claude",
+		sessionCWD: repo,
+		TurnCount:  2,
+	}
+
+	if keepGoing := m.checkTurnsGuardrail(context.Background(), a); keepGoing {
+		t.Fatal("checkpoint-eligible turn ceiling kept streaming")
+	}
+	if got := a.GetEscalationReason(); got != "checkpoint" {
+		t.Fatalf("EscalationReason = %q, want checkpoint", got)
+	}
+	if !a.WasStopped() {
+		t.Fatal("checkpoint path did not mark the agent stopped")
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("checkpoint path did not preserve completed-by-result semantics")
+	}
+	if a.MaxTurns != 0 {
+		t.Fatalf("SetMaxTurns override = %d, want untouched 0", a.MaxTurns)
+	}
+	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, "chore(checkpoint):") {
+		t.Fatalf("last checkpoint subject = %q", got)
+	}
+}
+
+func TestGuardrails_TurnsCheckpointFailureMarksDiagnosticReason(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{
+		MaxCostUSD:              10.0,
+		MaxTurns:                3,
+		CheckpointOnTurnCeiling: true,
+	})
+
+	repo := initCheckpointRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hooksDir := filepath.Join(repo, ".git", "hooks-fail")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
+		t.Fatalf("git config core.hooksPath: %v: %s", err, out)
+	}
+
+	a := &Agent{
+		ID:         "t",
+		Name:       RoleImplementation.AgentName("Task"),
+		Provider:   "claude",
+		sessionCWD: repo,
+		TurnCount:  2,
+	}
+	if keepGoing := m.checkTurnsGuardrail(context.Background(), a); keepGoing {
+		t.Fatal("checkpoint-failure path kept streaming")
+	}
+	if got := a.GetEscalationReason(); got != "checkpoint_failed" {
+		t.Fatalf("EscalationReason = %q, want checkpoint_failed", got)
+	}
+	if !a.WasStopped() || !a.WasCompletedByResult() {
+		t.Fatal("checkpoint_failed must stop while preserving completed-by-result semantics")
+	}
+	if a.MaxTurns != 0 {
+		t.Fatalf("SetMaxTurns override = %d, want untouched 0", a.MaxTurns)
+	}
+}
+
+func TestGuardrails_TurnsVerifierStillEscalates(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	m := mustNewManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	m.SetGuardrails(Guardrails{
+		MaxCostUSD:              10.0,
+		MaxTurns:                3,
+		CheckpointOnTurnCeiling: true,
+	})
+
+	repo := initCheckpointRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{
+		ID:           "t",
+		Name:         RoleReview.AgentName("Task"),
+		Provider:     "claude",
+		sessionCWD:   repo,
+		TurnCount:    2,
+		escalationCh: make(chan bool, 1),
+	}
+	a.escalationCh <- false
+
+	if keepGoing := m.checkTurnsGuardrail(context.Background(), a); keepGoing {
+		t.Fatal("verifier turns path kept streaming after rejection")
+	}
+	if got := a.GetEscalationReason(); got != "turns" {
+		t.Fatalf("EscalationReason = %q, want turns", got)
+	}
+	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "init" {
+		t.Fatalf("verifier unexpectedly checkpointed: last subject %q", got)
 	}
 }
 

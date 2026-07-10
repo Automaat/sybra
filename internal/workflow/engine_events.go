@@ -499,52 +499,16 @@ func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Ste
 		// it once clearExpiredRateLimits reopens a provider.
 		return
 	}
-	if e.agents.HasOtherRunningAgentForTask(taskID, agentID) {
-		e.logger.Debug("workflow.rate-limit-reschedule.skip",
-			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
-		return
-	}
-	mu := e.taskInflightMutex(taskID)
-	if !mu.TryLock() {
-		e.logger.Debug("workflow.rate-limit-reschedule.skip",
-			"task_id", taskID, "reason", "inflight", "step", step.ID)
-		return
-	}
-	mu.Unlock()
-
-	if !e.tryMarkRateLimitRescheduleDispatching(taskID, step) {
-		return
-	}
-	defer e.clearResumeDispatching(taskID)
-
-	claim, ok := e.agents.TryClaimDispatch(taskID)
-	if !ok {
-		e.logger.Debug("workflow.rate-limit-reschedule.skip",
-			"task_id", taskID, "reason", "claim-held", "step", step.ID)
-		return
-	}
-	defer claim.Release()
-	if e.handleWatchdogRateLimitRetry(&t, step) {
-		return
-	}
-
-	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
-	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
-	e.fireComplete(comp)
-	e.drainPendingConflictRecovery(taskID)
-	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
-	if rErr != nil {
-		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
-		return
-	}
-	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+	e.rescheduleRunAgent(taskID, agentID, step, t, def, "workflow.rate-limit-reschedule", func(t *TaskInfo, step *Step) bool {
+		return e.handleWatchdogRateLimitRetry(t, step)
+	})
 }
 
-func (e *Engine) tryMarkRateLimitRescheduleDispatching(taskID string, step *Step) bool {
+func (e *Engine) tryMarkRescheduleDispatching(taskID string, step *Step, logPrefix string) bool {
 	e.mu.Lock()
 	if _, dispatching := e.dispatching[taskID]; dispatching {
 		e.mu.Unlock()
-		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+		e.logger.Debug(logPrefix+".skip",
 			"task_id", taskID, "reason", "dispatching", "step", step.ID)
 		return false
 	}
@@ -557,6 +521,136 @@ func (e *Engine) clearResumeDispatching(taskID string) {
 	e.mu.Lock()
 	delete(e.dispatching, taskID)
 	e.mu.Unlock()
+}
+
+// RescheduleCheckpointedAgent immediately re-drives the current run_agent step
+// after a durable turn-ceiling checkpoint handoff, bounded by a persisted
+// per-step checkpoint counter.
+func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
+	if taskID == "" {
+		e.clearAgentStep(agentID)
+		e.logger.Warn("workflow.checkpoint-reschedule.untracked", "agent_id", agentID)
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		e.clearAgentStep(agentID)
+		return
+	}
+	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
+		e.clearAgentStep(agentID)
+		return
+	}
+
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		e.clearAgentStep(agentID)
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil || step.Type != StepRunAgent {
+		e.clearAgentStep(agentID)
+		return
+	}
+	if spawnedStep, tracked := e.lookupAgentStep(agentID); tracked && spawnedStep != step.ID {
+		e.clearAgentStep(agentID)
+		return
+	}
+
+	e.clearAgentStep(agentID)
+	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.checkpoint-reschedule", func(t *TaskInfo, step *Step) bool {
+		return e.handleCheckpointReschedule(taskID, t, step)
+	})
+}
+
+func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition, logPrefix string, beforeDispatch func(*TaskInfo, *Step) bool) {
+	if e.agents.HasOtherRunningAgentForTask(taskID, agentID) {
+		e.logger.Debug(logPrefix+".skip",
+			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
+		return
+	}
+	mu := e.taskInflightMutex(taskID)
+	if !mu.TryLock() {
+		e.logger.Debug(logPrefix+".skip",
+			"task_id", taskID, "reason", "inflight", "step", step.ID)
+		return
+	}
+	mu.Unlock()
+
+	if !e.tryMarkRescheduleDispatching(taskID, step, logPrefix) {
+		return
+	}
+	defer e.clearResumeDispatching(taskID)
+
+	if e.agents.IsDispatching(taskID) {
+		e.logger.Debug(logPrefix+".skip",
+			"task_id", taskID, "reason", "claim-held", "step", step.ID)
+		return
+	}
+
+	if beforeDispatch != nil && beforeDispatch(&t, step) {
+		return
+	}
+
+	e.logger.Info(logPrefix, "task_id", taskID, "step", step.ID)
+	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
+	if rErr == nil && e.shouldRetryGhostPark(taskID, step.ID) {
+		e.logger.Info(logPrefix+".retry", "task_id", taskID, "step", step.ID)
+		comp, rErr = e.executeSteps(taskID, def, step, t.Workflow)
+	}
+	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
+	e.resumeError.Log(e.logger, logPrefix+".exec", taskID, rErr, "task_id", taskID)
+	if rErr != nil {
+		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
+		return
+	}
+	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+}
+
+func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
+	if e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) || e.hasTrackedAgentForTaskStep(taskID, stepID) {
+		return false
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil {
+		return false
+	}
+	return t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep == stepID
+}
+
+func (e *Engine) checkpointRescheduleKey(stepID string) string {
+	return "step." + stepID + ".checkpoint_count"
+}
+
+func (e *Engine) effectiveMaxCheckpoints() int {
+	if e.maxCheckpoints > 0 {
+		return e.maxCheckpoints
+	}
+	return defaultMaxCheckpoints
+}
+
+func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *Step) bool {
+	if t.Workflow == nil {
+		return true
+	}
+	key := e.checkpointRescheduleKey(step.ID)
+	count := parseWorkflowInt(t.Workflow.Variables[key])
+	maxCheckpoints := e.effectiveMaxCheckpoints()
+	if count >= maxCheckpoints {
+		reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", maxCheckpoints)
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
+		}
+		return true
+	}
+	t.Workflow.SetVar(key, strconv.Itoa(count+1))
+	if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+		e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.persist", taskID, err, "task_id", taskID)
+		e.surfaceStartFailure(taskID, t.Status, err, t.Workflow, step.ID)
+		return true
+	}
+	return false
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {

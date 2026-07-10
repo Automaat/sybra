@@ -1598,3 +1598,33 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 		t.Errorf("configured TestingMaxAttempts() = %d, want 5", got)
 	}
 }
+
+func TestCheckpointDefaults(t *testing.T) {
+	t.Parallel()
+
+	var cfg *Config
+	if got := cfg.MaxCheckpoints(); got != DefaultMaxCheckpoints {
+		t.Errorf("nil config MaxCheckpoints() = %d, want %d", got, DefaultMaxCheckpoints)
+	}
+	if !cfg.CheckpointOnTurnCeilingEnabled() {
+		t.Error("nil config CheckpointOnTurnCeilingEnabled() = false, want true")
+	}
+
+	cfg = &Config{}
+	if got := cfg.MaxCheckpoints(); got != DefaultMaxCheckpoints {
+		t.Errorf("zero-value MaxCheckpoints() = %d, want %d", got, DefaultMaxCheckpoints)
+	}
+	if !cfg.CheckpointOnTurnCeilingEnabled() {
+		t.Error("zero-value CheckpointOnTurnCeilingEnabled() = false, want true")
+	}
+
+	disabled := false
+	cfg.Agent.MaxCheckpoints = 7
+	cfg.Agent.CheckpointOnTurnCeiling = &disabled
+	if got := cfg.MaxCheckpoints(); got != 7 {
+		t.Errorf("configured MaxCheckpoints() = %d, want 7", got)
+	}
+	if cfg.CheckpointOnTurnCeilingEnabled() {
+		t.Error("configured CheckpointOnTurnCeilingEnabled() = true, want false")
+	}
+}
