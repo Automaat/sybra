@@ -121,14 +121,14 @@ func run(o options) error {
 	}
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	srv, err := startServer(o, home, fakeDir, port)
 	if err != nil {
 		return fmt.Errorf("start server: %w", err)
 	}
 	defer srv.stop()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	if err := waitHealthy(ctx, baseURL, 30*time.Second); err != nil {
 		return fmt.Errorf("server never became healthy: %w", err)
