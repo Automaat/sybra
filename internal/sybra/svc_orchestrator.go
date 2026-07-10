@@ -22,9 +22,8 @@ const orchestratorAgentName = "orchestrator"
 // the agent is parked in StatePaused, idle on stdin, and never bootstraps its
 // monitor loop or dispatches work (it just sits silent forever).
 const orchestratorKickoffPrompt = "Start your orchestrator session now. Follow your " +
-	"operating instructions in CLAUDE.md: first ensure your recurring monitor loop is " +
-	"scheduled via CronCreate(schedule=\"*/5 * * * *\", prompt=\"/sybra-monitor\") if it is " +
-	"not already, then run one /sybra-monitor cycle to triage and dispatch ready work."
+	"operating instructions in CLAUDE.md: check current board health with " +
+	"`sybra-cli --json board`, then triage and dispatch ready work."
 
 // orchestratorReplaceable reports whether an existing orchestrator agent should
 // be reaped and replaced rather than treated as "already running". A crashed
@@ -131,9 +130,10 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 
 // StartOrchestrator launches the orchestrator as an in-app conversational
 // Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
-// The orchestrator bootstraps its own monitor loop via CronCreate on first
-// turn, as instructed by orchestrator/CLAUDE.md, so this run stays pinned to
-// Claude even when generic task agents can fail over to another provider.
+// The detector/dispatch loop runs in-process in the Go backend (see
+// LifecycleManager.startMonitorService); this session handles the
+// judgment-driven work on top of it, so it stays pinned to Claude even when
+// generic task agents can fail over to another provider.
 func (s *OrchestratorService) StartOrchestrator() error {
 	return s.StartOrchestratorContext(context.Background())
 }

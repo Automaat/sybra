@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 // TestRegisterMarkAgentDone_ProviderAccountingInvariant locks in that
@@ -53,6 +56,102 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 	assertAccountingInvariant(t, m)
 	if got := m.InFlightByProvider(); len(got) != 0 {
 		t.Fatalf("expected empty in-flight map, got %+v", got)
+	}
+}
+
+// TestMarkAgentDone_EvictsFromRegistry locks in that a finished agent is
+// eventually removed from m.agents once its terminal path runs, so a
+// long-lived server does not accumulate output buffers and prompts forever
+// for every agent that ever ran (#1532). Eviction uses deadAgentRetention set
+// to 0 here for deterministic, synchronous eviction; see
+// TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod for the real
+// (delayed) production behavior callers rely on to read final state.
+func TestMarkAgentDone_EvictsFromRegistry(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+
+	a := &Agent{ID: "evict-me", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if _, err := m.GetAgent(a.ID); err != nil {
+		t.Fatalf("agent should be registered before completion: %v", err)
+	}
+
+	m.markAgentDone(a)
+
+	if _, err := m.GetAgent(a.ID); err == nil {
+		t.Fatal("expected evicted agent to be absent from the registry")
+	}
+	for _, la := range m.ListAgents() {
+		if la.ID == a.ID {
+			t.Fatal("evicted agent still present in ListAgents()")
+		}
+	}
+
+	// Idempotent: a repeated terminal call must not panic or misbehave once
+	// the entry is already gone.
+	m.markAgentDone(a)
+}
+
+// TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod locks in that a
+// completed agent stays readable via GetAgent/ListAgents for
+// deadAgentRetention after markAgentDone, then is evicted once the grace
+// period elapses. Production callers (StopAgent's caller polling GetAgent for
+// StateStopped, GetConvoOutput readers) routinely read final state in the
+// seconds right after a terminal transition, so eviction must not race that
+// window (#1532).
+func TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 20 * time.Millisecond
+
+	a := &Agent{ID: "evict-me-later", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+
+	m.markAgentDone(a)
+
+	if _, err := m.GetAgent(a.ID); err != nil {
+		t.Fatalf("agent should still be readable inside the grace period: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := m.GetAgent(a.ID); err != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("expected agent to be evicted once deadAgentRetention elapsed")
+}
+
+// TestMarkAgentDone_DoesNotEvictReplacementAgent guards against evicting a
+// still-live agent that reused the same ID as one whose terminal path is
+// racing behind it (e.g. a fresh dispatch landing while a stale finalize for
+// the same task/agent id is still unwinding).
+func TestMarkAgentDone_DoesNotEvictReplacementAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+
+	stale := &Agent{ID: "reused-id", done: make(chan struct{})}
+	if err := m.registerRunningAgent(stale, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(stale): %v", err)
+	}
+
+	fresh := &Agent{ID: "reused-id", done: make(chan struct{})}
+	if err := m.registerRunningAgent(fresh, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(fresh): %v", err)
+	}
+
+	m.markAgentDone(stale)
+
+	got, err := m.GetAgent(fresh.ID)
+	if err != nil {
+		t.Fatalf("fresh registration should survive stale markAgentDone: %v", err)
+	}
+	if got != fresh {
+		t.Fatal("registry entry was replaced unexpectedly")
 	}
 }
 
@@ -171,5 +270,52 @@ func TestRun_JitterSkippedForInteractiveMode(t *testing.T) {
 	t.Cleanup(func() { _ = m.StopAgent(a.ID) })
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("interactive Run must skip jitter, took %s", elapsed)
+	}
+}
+
+func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{provider.RateLimitReason, true},
+		{"provider reports rate limit reached", true},
+		{"provider disabled", false},
+		{"logged out", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		ue := newProviderUnhealthy("codex", c.reason)
+		if ue.RateLimited != c.want {
+			t.Errorf("newProviderUnhealthy(%q).RateLimited = %v, want %v", c.reason, ue.RateLimited, c.want)
+		}
+		if ue.Provider != "codex" || ue.Reason != c.reason {
+			t.Errorf("newProviderUnhealthy dropped fields: %+v", ue)
+		}
+	}
+}
+
+func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.maxConcurrent = 2
+
+	for i := range m.maxConcurrent {
+		a := &Agent{ID: fmt.Sprintf("live%d", i), Provider: "claude", done: make(chan struct{})}
+		if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+			t.Fatalf("registerRunningAgent(live%d): %v", i, err)
+		}
+	}
+
+	normal := &Agent{ID: "normal", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(normal, RunConfig{}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("normal spawn at cap: err = %v, want ErrMaxConcurrentReached", err)
+	}
+
+	control := &Agent{ID: "control-plane", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); err != nil {
+		t.Fatalf("IgnoreConcurrencyLimit spawn at cap must succeed, got err = %v", err)
+	}
+	if _, err := m.GetAgent(control.ID); err != nil {
+		t.Fatalf("control-plane agent should be registered: %v", err)
 	}
 }

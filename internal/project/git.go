@@ -79,6 +79,81 @@ func LoadRepoConfig(worktreePath string) (*RepoConfig, error) {
 	return &cfg, nil
 }
 
+// LoadRepoConfigAtDefaultBranch reads .sybra.yaml as tracked at the project's
+// default branch in the bare clone, never from a checked-out worktree.
+// Callers preparing a worktree for an untrusted ref (a PR head, possibly from
+// a fork, or a Renovate branch) must use this instead of LoadRepoConfig: that
+// checked-out ref's own .sybra.yaml is attacker-controlled, and its
+// setup:/checks: commands run via `sh -c` outside the agent permission model
+// (see LoadRepoConfig's callers in internal/worktree for the trusted case,
+// where the checked-out branch is one Sybra created off this same default
+// branch). Returns an empty RepoConfig (not an error) if the file is not
+// tracked at that ref.
+func LoadRepoConfigAtDefaultBranch(ctx context.Context, barePath string) (*RepoConfig, error) {
+	branch, err := DefaultBranch(ctx, barePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve default branch: %w", err)
+	}
+	data, found, err := showFileAtRef(ctx, barePath, "refs/remotes/origin/"+branch, ".sybra.yaml")
+	if errors.Is(err, errRefUnresolved) {
+		// The remote-tracking ref is genuinely absent (e.g. never fetched) — fall
+		// back to the local head, mirroring TrackedFilesAtDefaultBranch. Only a
+		// ref-resolution failure triggers this: a transient error (context
+		// cancellation, disk hiccup) must propagate rather than silently serve
+		// the frozen refs/heads/<branch>, which review/fix worktrees never
+		// advance and so may be stale.
+		data, found, err = showFileAtRef(ctx, barePath, "refs/heads/"+branch, ".sybra.yaml")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read .sybra.yaml at default branch %s: %w", branch, err)
+	}
+	if !found {
+		return &RepoConfig{}, nil
+	}
+	var cfg RepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse .sybra.yaml: %w", err)
+	}
+	return &cfg, nil
+}
+
+// errRefUnresolved marks a showFileAtRef failure where ref itself does not
+// resolve (e.g. a remote-tracking ref that was never fetched). Callers use
+// errors.Is to distinguish this recoverable "try another ref" case from a
+// transient failure (context cancellation, disk error) that must propagate
+// instead of silently falling back to a possibly-stale ref.
+var errRefUnresolved = errors.New("ref does not resolve")
+
+// showFileAtRef returns the bytes of path as tracked at ref in the bare repo
+// via `git show`, without ever materializing a worktree checkout. found is
+// false with a nil error when ref resolves but path is not tracked there —
+// callers treat that the same as a missing file. A ref that does not resolve
+// is returned wrapped in errRefUnresolved so the caller can try a fallback
+// ref; any other failure (e.g. context cancellation) is returned as a plain
+// error so it propagates rather than triggering a fallback.
+func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte, found bool, err error) {
+	cmd := exec.CommandContext(ctx, "git", "-c", "safe.bareRepository=all", "show", ref+":"+path)
+	cmd.Dir = barePath
+	out, runErr := cmd.Output()
+	if runErr == nil {
+		return out, true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		stderr := string(exitErr.Stderr)
+		switch {
+		case strings.Contains(stderr, "does not exist in") || strings.Contains(stderr, "exists on disk, but not in"):
+			return nil, false, nil
+		case strings.Contains(stderr, "invalid object name") ||
+			strings.Contains(stderr, "unknown revision") ||
+			strings.Contains(stderr, "bad revision") ||
+			strings.Contains(stderr, "ambiguous argument"):
+			return nil, false, fmt.Errorf("git show %s:%s: %w: %w", ref, path, errRefUnresolved, runErr)
+		}
+	}
+	return nil, false, fmt.Errorf("git show %s:%s: %w", ref, path, runErr)
+}
+
 // InstallHooks writes pre-commit and pre-push git hooks into the worktree's
 // hooks directory. Existing hooks are overwritten. No-op if checks is nil or
 // both slices are empty.
@@ -123,6 +198,53 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 		return err
 	}
 	return write("pre-push", checks.PrePush)
+}
+
+const signoffHook = `#!/bin/sh
+# Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
+# commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
+msg_file="$1"
+sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+[ -z "$sob" ] && exit 0
+git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
+`
+
+// InstallSignoffHook writes a prepare-commit-msg hook that guarantees a DCO
+// Signed-off-by trailer on every commit made in the worktree. Agents commit
+// via a plain git commit and don't reliably pass -s, so relying on the prompt
+// instruction leaves unsigned commits that fail the kumahq/kuma DCO check.
+// prepare-commit-msg is the only hook that fires on every commit — including
+// merges and --no-verify, which bypass only pre-commit and commit-msg — so it
+// is the single place sign-off can be enforced no matter how the commit is
+// produced. Unlike InstallHooks it is unconditional and manages its own hooks
+// dir, so it also covers projects with no pre-commit/pre-push checks. The hook
+// lives in the git-common-dir and so covers every worktree of the clone; the
+// write is idempotent.
+func InstallSignoffHook(ctx context.Context, worktreePath string) error {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return fmt.Errorf("create hooks dir: %w", err)
+	}
+	path := filepath.Join(hooksDir, "prepare-commit-msg")
+	if err := os.WriteFile(path, []byte(signoffHook), 0o755); err != nil {
+		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
+	}
+	pin := exec.CommandContext(ctx, "git", "config", "core.hooksPath", hooksDir)
+	pin.Dir = worktreePath
+	if err := pin.Run(); err != nil {
+		return fmt.Errorf("pin core.hooksPath: %w", err)
+	}
+	return nil
 }
 
 // ParseGitHubURL extracts owner and repo from a GitHub URL in SSH form
@@ -176,6 +298,9 @@ func splitOwnerRepo(path string) (owner, repo string, err error) {
 func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := executil.Run(ctx, "", "git", "clone", "--bare", repoURL, destPath); err != nil {
 		return err
+	}
+	if err := InstallSignoffHook(ctx, destPath); err != nil {
+		return fmt.Errorf("install signoff hook: %w", err)
 	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
@@ -343,7 +468,7 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	commit := exec.CommandContext(ctx, "git",
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
-		"commit", "--no-verify", "--no-gpg-sign", "-m", message)
+		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
 	commit.Dir = wtPath
 	return commit.Run() == nil
 }
@@ -633,10 +758,138 @@ func EnforceForkOnlyPush(ctx context.Context, worktreePath string) error {
 	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", "--push", "origin", forkOnlyDisabledPushURL)
 }
 
+// ConfigureGitHubAuth removes any credentials embedded in the origin remote
+// URL and points github.com at the gh credential helper, so pushes and fetches
+// authenticate via whatever token gh sees (the injected GitHub App
+// installation token) instead of a stale PAT baked into the URL. Idempotent
+// and safe to re-run on every worktree prepare; writes land in the shared bare
+// clone config, so existing tokenized clones self-heal.
+func ConfigureGitHubAuth(ctx context.Context, worktreePath string) error {
+	if err := stripRemoteURLCredentials(ctx, worktreePath, "origin"); err != nil {
+		return err
+	}
+	return executil.Run(ctx, worktreePath, "git", "config",
+		"credential.https://github.com.helper", "!gh auth git-credential")
+}
+
+func stripRemoteURLCredentials(ctx context.Context, worktreePath, remote string) error {
+	raw, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return fmt.Errorf("read %s remote url: %w", remote, err)
+	}
+	cleaned, changed := stripHTTPSUserinfo(strings.TrimSpace(raw))
+	if !changed {
+		return nil
+	}
+	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", remote, cleaned)
+}
+
+func stripHTTPSUserinfo(rawURL string) (string, bool) {
+	const scheme = "https://"
+	rest, ok := strings.CutPrefix(rawURL, scheme)
+	if !ok {
+		return rawURL, false
+	}
+	at := strings.IndexByte(rest, '@')
+	slash := strings.IndexByte(rest, '/')
+	if at < 0 || (slash >= 0 && at > slash) {
+		return rawURL, false
+	}
+	return scheme + rest[at+1:], true
+}
+
 // PushUpstream pushes branch to the fork remote if present, else origin,
 // with -u to set remote tracking.
 func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 	return executil.Run(ctx, worktreePath, "git", "push", "-u", PushRemote(ctx, worktreePath), branch)
+}
+
+// SetBranchTo force-sets a branch ref in the bare clone to point at commit,
+// creating the branch if it does not already exist. Used by best-of-N
+// promotion to fast-forward the canonical task branch onto the winning
+// attempt's HEAD — a `git branch -f` against the shared bare repo, never a
+// push, so it can never rewrite already-published remote history.
+func SetBranchTo(ctx context.Context, barePath, branch, commit string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-f", branch, commit)
+		})
+	})
+}
+
+// DeleteBranch force-removes a local branch ref from the bare repo. Used by
+// best-of-N attempt cleanup so a discarded attempt branch is not silently
+// reused as the base for a later attempt with the same ID. Force-delete (`-D`)
+// because a losing attempt branch is never merged into the canonical branch,
+// so `git branch -d` would refuse it. No-op-safe: deleting a missing branch
+// returns an error the caller logs but does not treat as fatal.
+func DeleteBranch(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-D", branch)
+		})
+	})
+}
+
+// BackupBranchRef points refs/sybra-backup/<branch> at the branch's current
+// tip so a subsequent DeleteBranch does not lose the commits — they stay
+// recoverable via the backup ref. Used before recreating a task's branch from
+// a fresh base when merge-based conflict recovery is exhausted.
+func BackupBranchRef(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "refs/sybra-backup/"+branch, "refs/heads/"+branch)
+		})
+	})
+}
+
+// ResolveBareRef resolves a git ref (e.g. "refs/heads/<branch>") to its SHA in
+// the bare repo. Returns ("", false) if the ref does not exist. Exported
+// wrapper around resolveRef for best-of-N promotion's divergence check.
+func ResolveBareRef(ctx context.Context, barePath, ref string) (string, bool) {
+	return resolveRef(ctx, barePath, ref)
+}
+
+// IsAncestorInBare reports whether ancestor is reachable from descendant in
+// the bare repo's history. Returns false when either commit is unknown.
+// Exported for best-of-N promotion's divergence check (isAncestor requires a
+// worktree checkout; promotion only has the bare clone at this point).
+func IsAncestorInBare(ctx context.Context, barePath, ancestor, descendant string) bool {
+	return runBare(ctx, barePath, "merge-base", "--is-ancestor", ancestor, descendant) == nil
+}
+
+// IsWorktreeDirty reports whether a worktree has uncommitted changes
+// (tracked or untracked). Exported for best-of-N promotion's fail-closed
+// dirty-worktree check.
+func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
+	return worktreeDirty(ctx, worktreePath)
+}
+
+// HardResetWorktree resets a worktree's index and working tree to ref (a
+// branch name or commit SHA) via `git reset --hard`. Used by best-of-N
+// promotion to materialize the canonical worktree at the winning attempt's
+// HEAD after SetBranchTo has already moved the shared branch ref.
+func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
+	return executil.Run(ctx, worktreePath, "git", "reset", "--hard", ref)
+}
+
+// HeadArg returns the `gh pr create --head` value for branch: a bare branch
+// name when pushing to origin, or "fork-owner:branch" when a fork remote is
+// configured — matching PushRemote's routing decision so the PR always
+// points at the branch that was actually pushed.
+func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
+	if PushRemote(ctx, worktreePath) != "fork" {
+		return branch, nil
+	}
+	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	if err != nil {
+		return "", fmt.Errorf("resolve fork remote url: %w", err)
+	}
+	owner, _, err := ParseGitHubURL(strings.TrimSpace(forkURL))
+	if err != nil {
+		return "", fmt.Errorf("parse fork remote url: %w", err)
+	}
+	return owner + ":" + branch, nil
 }
 
 // CurrentBranch returns the checked-out branch name for a worktree.
@@ -963,7 +1216,7 @@ func MergeOnto(ctx context.Context, worktreePath, ref string) error {
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", ref); err != nil {
+		"merge", "--no-edit", "--no-verify", "--signoff", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 		_ = executil.Run(abortCtx, worktreePath, "git", "merge", "--abort")
 		cancel()
@@ -1028,7 +1281,7 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
-		"merge", "--no-edit", "--no-verify", baseRef)
+		"merge", "--no-edit", "--no-verify", "--signoff", baseRef)
 	if mergeErr != nil {
 		conflict := false
 		var exitErr *exec.ExitError

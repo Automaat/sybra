@@ -88,4 +88,30 @@ describe('AgentLauncher', () => {
     })
     expect(screen.queryByText('Start agent')).toBeNull()
   })
+
+  it('collapses the form when workflow awaits plan approval despite a desynced status', () => {
+    render(AgentLauncher, {
+      props: {
+        task: {
+          ...baseTask,
+          status: 'planning',
+          workflow: { currentStep: 'review_plan', state: 'waiting' },
+        } as never,
+      },
+    })
+    expect(screen.queryByText('Start agent')).toBeNull()
+  })
+
+  it('shows the form when the workflow has advanced past plan review despite a stale plan-review status', () => {
+    render(AgentLauncher, {
+      props: {
+        task: {
+          ...baseTask,
+          status: 'plan-review',
+          workflow: { currentStep: 'implement', state: 'running' },
+        } as never,
+      },
+    })
+    expect(screen.getByText('Start agent')).toBeDefined()
+  })
 })

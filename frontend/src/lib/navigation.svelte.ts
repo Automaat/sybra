@@ -11,6 +11,7 @@ export type Page =
   | { kind: 'agents'; tab?: string }
   | { kind: 'agent-detail'; agentId: string }
   | { kind: 'github' }
+  | { kind: 'fleet' }
   | { kind: 'stats' }
   | { kind: 'evaluation' }
   | { kind: 'reviews' }
@@ -18,6 +19,7 @@ export type Page =
   | { kind: 'workflows' }
   | { kind: 'workflow-detail'; workflowId: string }
   | { kind: 'logbook' }
+  | { kind: 'notifications' }
 
 export type TabKey = 'board' | 'chats' | 'agents' | 'reviews' | 'more'
 
@@ -30,17 +32,32 @@ class NavStore {
   page = $state<Page>({ kind: 'task-list' })
   stack = $state<Page[]>([])
 
+  // Set by startUrlRouting() in web mode; gates history writes and the
+  // back()/browser-history fallback. Desktop and unit tests that never call
+  // startUrlRouting keep the plain in-memory stack behavior.
+  private urlRoutingActive = false
+  // True while handling a popstate event, so a reactive navigate()/replace()
+  // triggered as a side effect of the resulting page change doesn't write a
+  // redundant/looping history entry.
+  private handlingPopstate = false
+
   navigate(p: Page) {
     if (samePage(this.page, p)) return
     this.stack = [...this.stack, this.page]
     this.page = p
+    this.pushHistory(p)
   }
 
   replace(p: Page) {
     this.page = p
+    this.replaceHistory(p)
   }
 
   back() {
+    if (this.urlRoutingActive) {
+      window.history.back()
+      return
+    }
     const prev = this.stack[this.stack.length - 1]
     if (!prev) return
     this.stack = this.stack.slice(0, -1)
@@ -50,6 +67,69 @@ class NavStore {
   reset(p: Page) {
     this.stack = []
     this.page = p
+    this.pushHistory(p)
+  }
+
+  private pushHistory(p: Page) {
+    if (!this.urlRoutingActive || this.handlingPopstate) return
+    // Safari (and some embedded webviews) rate-limits history writes (~100 /
+    // 30s) and throws past the limit. Swallow it: the in-memory page is
+    // authoritative, and a missed URL sync is preferable to an unhandled throw.
+    try {
+      window.history.pushState(null, '', pageToPath(p))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
+  }
+
+  private replaceHistory(p: Page) {
+    if (!this.urlRoutingActive || this.handlingPopstate) return
+    try {
+      window.history.replaceState(null, '', pageToPath(p))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
+  }
+
+  /**
+   * Wires browser back/forward + deep links into this store. Only meant to be
+   * called in web mode (guarded by the caller); returns a teardown function.
+   */
+  startUrlRouting(): () => void {
+    if (typeof window === 'undefined') return () => {}
+
+    this.urlRoutingActive = true
+    const initial = pageFromLocation(window.location)
+    this.page = initial
+    this.stack = []
+    // Normalize the URL (e.g. drop an unknown path) without creating a
+    // history entry for the page the user already landed on.
+    try {
+      window.history.replaceState(null, '', pageToPath(initial))
+    } catch { /* history rate-limited; URL stays stale, page state is source of truth */ }
+
+    const onPopState = () => {
+      const prevPage = this.page
+      const nextPage = pageFromLocation(window.location)
+      const lastStackPage = this.stack[this.stack.length - 1]
+      this.handlingPopstate = true
+      try {
+        this.page = nextPage
+        if (lastStackPage && samePage(lastStackPage, nextPage)) {
+          // Browser back reached the same page as our last in-app entry, so
+          // pop the mirror stack in lockstep.
+          this.stack = this.stack.slice(0, -1)
+        } else if (!samePage(prevPage, nextPage)) {
+          // Browser forward moved to a later in-app page. Mirror navigate() by
+          // restoring the current page as the new "back" target.
+          this.stack = [...this.stack, prevPage]
+        }
+      } finally {
+        this.handlingPopstate = false
+      }
+    }
+    window.addEventListener('popstate', onPopState)
+
+    return () => {
+      window.removeEventListener('popstate', onPopState)
+      this.urlRoutingActive = false
+    }
   }
 
   get canGoBack(): boolean {
@@ -71,6 +151,7 @@ class NavStore {
       case 'agents': return 'Agents'
       case 'agent-detail': return 'Agent Detail'
       case 'github': return 'GitHub'
+      case 'fleet': return 'Fleet'
       case 'stats': return 'Stats'
       case 'evaluation': return 'Evaluation'
       case 'reviews': return 'Reviews'
@@ -78,6 +159,7 @@ class NavStore {
       case 'workflows': return 'Workflows'
       case 'workflow-detail': return 'Workflow Editor'
       case 'logbook': return 'Logbook'
+      case 'notifications': return 'Notifications'
     }
   }
 
@@ -98,6 +180,115 @@ class NavStore {
       default:
         return 'more'
     }
+  }
+}
+
+function safeDecode(segment: string): string | null {
+  try {
+    const decoded = decodeURIComponent(segment)
+    return decoded === '' ? null : decoded
+  } catch {
+    return null
+  }
+}
+
+/** Serializes a Page to a stable, bookmarkable URL path (+ query when needed). */
+export function pageToPath(p: Page): string {
+  switch (p.kind) {
+    case 'task-list':
+      return p.filter ? `/tasks?filter=${encodeURIComponent(p.filter)}` : '/tasks'
+    case 'task-detail':
+      return `/tasks/${encodeURIComponent(p.taskId)}`
+    case 'project-list':
+      return '/projects'
+    case 'project-detail':
+      return `/projects/${encodeURIComponent(p.projectId)}`
+    case 'chats':
+      return '/chats'
+    case 'chat-detail':
+      return `/chats/${encodeURIComponent(p.agentId)}`
+    case 'agents':
+      return p.tab ? `/agents?tab=${encodeURIComponent(p.tab)}` : '/agents'
+    case 'agent-detail':
+      return `/agents/${encodeURIComponent(p.agentId)}`
+    case 'github':
+      return '/github'
+    case 'fleet':
+      return '/fleet'
+    case 'stats':
+      return '/stats'
+    case 'evaluation':
+      return '/evaluation'
+    case 'reviews':
+      return '/reviews'
+    case 'settings':
+      return '/settings'
+    case 'workflows':
+      return '/workflows'
+    case 'workflow-detail':
+      return `/workflows/${encodeURIComponent(p.workflowId)}`
+    case 'logbook':
+      return '/logbook'
+    case 'notifications':
+      return '/notifications'
+  }
+}
+
+/**
+ * Parses a browser location into a Page. Defensive by design: any unknown
+ * root, malformed percent-encoding, or empty dynamic segment falls back to
+ * the board rather than throwing or producing an invalid Page.
+ */
+export function pageFromLocation(location: { pathname: string; search: string }): Page {
+  const segments = location.pathname.split('/').filter(Boolean)
+  const params = new URLSearchParams(location.search)
+  const board: Page = { kind: 'task-list' }
+  if (segments.length === 0) return board
+
+  const [root, rawId] = segments
+
+  switch (root) {
+    case 'tasks': {
+      if (segments.length === 1) {
+        const filter = params.get('filter')
+        return filter === 'in-progress' ? { kind: 'task-list', filter } : board
+      }
+      const taskId = safeDecode(rawId)
+      return taskId ? { kind: 'task-detail', taskId } : board
+    }
+    case 'projects': {
+      if (segments.length === 1) return { kind: 'project-list' }
+      const projectId = safeDecode(rawId)
+      return projectId ? { kind: 'project-detail', projectId } : { kind: 'project-list' }
+    }
+    case 'chats': {
+      if (segments.length === 1) return { kind: 'chats' }
+      const agentId = safeDecode(rawId)
+      return agentId ? { kind: 'chat-detail', agentId } : { kind: 'chats' }
+    }
+    case 'agents': {
+      if (segments.length === 1) {
+        const tab = params.get('tab')
+        return tab ? { kind: 'agents', tab } : { kind: 'agents' }
+      }
+      const agentId = safeDecode(rawId)
+      return agentId ? { kind: 'agent-detail', agentId } : { kind: 'agents' }
+    }
+    case 'workflows': {
+      if (segments.length === 1) return { kind: 'workflows' }
+      const workflowId = safeDecode(rawId)
+      return workflowId ? { kind: 'workflow-detail', workflowId } : { kind: 'workflows' }
+    }
+    case 'github': return { kind: 'github' }
+    case 'fleet': return { kind: 'fleet' }
+    case 'stats': return { kind: 'stats' }
+    case 'evaluation': return { kind: 'evaluation' }
+    case 'reviews': return { kind: 'reviews' }
+    case 'settings': return { kind: 'settings' }
+    case 'logbook': return { kind: 'logbook' }
+    case 'notifications': return { kind: 'notifications' }
+    default:
+      return board
   }
 }
 

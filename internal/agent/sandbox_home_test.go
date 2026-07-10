@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ import (
 // wins over anything already in cfg.ExtraEnv, plus SYBRA_CONTROL_HOME when a
 // control home is configured.
 func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(taskID string) (string, error) { return sandboxDir, nil },
@@ -26,8 +28,16 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
-	want := []string{"SYBRA_HOME=" + sandboxDir, "SYBRA_CONTROL_HOME=/real/home"}
-	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] {
+	base := sharedBuildCacheDir()
+	want := []string{
+		"SYBRA_HOME=" + sandboxDir,
+		"SYBRA_CONTROL_HOME=/real/home",
+		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
+	}
+	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] || cfg.ExtraEnv[2] != want[2] {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
 	}
 }
@@ -137,6 +147,7 @@ func TestPrepareRunConfig_SandboxHome_NonDirectoryFailsClosed(t *testing.T) {
 // alongside the trusted values — it must be removed, not merely shadowed, so
 // duplicate-key resolution order in the target process can't leak it through.
 func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
@@ -156,7 +167,16 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
-	want := []string{"OTHER=keep-me", "SYBRA_HOME=" + sandboxDir, "SYBRA_CONTROL_HOME=/real/home"}
+	base := sharedBuildCacheDir()
+	want := []string{
+		"OTHER=keep-me",
+		"SYBRA_HOME=" + sandboxDir,
+		"SYBRA_CONTROL_HOME=/real/home",
+		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
+	}
 	if len(cfg.ExtraEnv) != len(want) {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
 	}
@@ -171,6 +191,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 // unconfigured ControlHome is simply omitted rather than injected as an empty
 // SYBRA_CONTROL_HOME=.
 func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	sandboxDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
@@ -184,7 +205,113 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
-	if len(cfg.ExtraEnv) != 1 || cfg.ExtraEnv[0] != "SYBRA_HOME="+sandboxDir {
-		t.Fatalf("ExtraEnv = %v, want only SYBRA_HOME", cfg.ExtraEnv)
+	base := sharedBuildCacheDir()
+	want := []string{
+		"SYBRA_HOME=" + sandboxDir,
+		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
+	}
+	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] {
+		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
+	}
+}
+
+func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T) {
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"GOLANGCI_LINT_CACHE=/attacker/shared-cache"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	wantCache := filepath.Join(sandboxDir, "golangci-lint-cache")
+	var got string
+	hits := 0
+	for _, kv := range cfg.ExtraEnv {
+		if v, ok := strings.CutPrefix(kv, "GOLANGCI_LINT_CACHE="); ok {
+			got = v
+			hits++
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("want exactly one GOLANGCI_LINT_CACHE entry, got %d in %v", hits, cfg.ExtraEnv)
+	}
+	if got != wantCache {
+		t.Fatalf("GOLANGCI_LINT_CACHE = %q, want per-worktree %q", got, wantCache)
+	}
+	if info, statErr := os.Stat(wantCache); statErr != nil || !info.IsDir() {
+		t.Fatalf("cache dir %q not created: %v", wantCache, statErr)
+	}
+}
+
+func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"GOCACHE=/attacker/cache", "GOMODCACHE=/attacker/mod"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	base := sharedBuildCacheDir()
+	for key, want := range map[string]string{
+		"GOCACHE=":          filepath.Join(base, "go-build"),
+		"GOMODCACHE=":       filepath.Join(base, "go-mod"),
+		"npm_config_cache=": filepath.Join(base, "npm"),
+	} {
+		var got string
+		hits := 0
+		for _, kv := range cfg.ExtraEnv {
+			if v, ok := strings.CutPrefix(kv, key); ok {
+				got = v
+				hits++
+			}
+		}
+		if hits != 1 {
+			t.Fatalf("want exactly one %s entry, got %d in %v", key, hits, cfg.ExtraEnv)
+		}
+		if got != want {
+			t.Fatalf("%s%q, want shared %q", key, got, want)
+		}
+		if info, statErr := os.Stat(want); statErr != nil || !info.IsDir() {
+			t.Fatalf("shared cache dir %q not created: %v", want, statErr)
+		}
+	}
+}
+
+func TestPrepareRunConfig_GolangciCache_SystemRunSkips(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) {
+			t.Fatal("resolver must not be called for a system run")
+			return "", nil
+		},
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{Mode: "headless", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	for _, kv := range cfg.ExtraEnv {
+		if strings.HasPrefix(kv, "GOLANGCI_LINT_CACHE=") {
+			t.Fatalf("system run must not inject GOLANGCI_LINT_CACHE, got %v", cfg.ExtraEnv)
+		}
 	}
 }

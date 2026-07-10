@@ -339,6 +339,14 @@ func TestAutoCommitUncommitted(t *testing.T) {
 		t.Errorf("commit message = %q, want %q", got, "wip: recovered work")
 	}
 
+	bodyOut, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(bodyOut), "Signed-off-by: Sybra <sybra@localhost>") {
+		t.Errorf("commit body missing DCO trailer, got %q", string(bodyOut))
+	}
+
 	// Idempotent: nothing left to commit on the now-clean tree.
 	if got := AutoCommitUncommitted(context.Background(), dir, "wip: should not commit"); got {
 		t.Fatal("expected no commit on an already-clean tree")
@@ -923,6 +931,74 @@ func TestLoadRepoConfig_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoadRepoConfigAtDefaultBranch_Missing(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil || cfg.Setup != nil {
+		t.Errorf("expected empty RepoConfig, got %+v", cfg)
+	}
+}
+
+// TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches is the regression
+// for issue #1519: a caller preparing an untrusted-ref worktree (a PR head,
+// possibly from a fork, or a Renovate branch) must only ever see the
+// .sybra.yaml tracked at the project's default branch, never a branch's own
+// (potentially attacker-controlled) version of the file.
+func TestLoadRepoConfigAtDefaultBranch_IgnoresOtherBranches(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	defaultBranch, err := CurrentBranch(context.Background(), src)
+	if err != nil {
+		t.Fatalf("current branch: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "trusted config")
+
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	srcGit("checkout", "-b", "attacker-branch")
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "malicious config")
+	srcGit("checkout", defaultBranch)
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	cfg, err := LoadRepoConfigAtDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("LoadRepoConfigAtDefaultBranch: %v", err)
+	}
+	if len(cfg.Setup) != 1 || cfg.Setup[0] != "touch trusted-marker" {
+		t.Errorf("Setup = %v, want only the default-branch config", cfg.Setup)
+	}
+}
+
 func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -1218,6 +1294,33 @@ func TestPushRemote_DetectsFork(t *testing.T) {
 
 	if got := PushRemote(context.Background(), wtPath); got != "fork" {
 		t.Errorf("PushRemote with fork = %q, want %q", got, "fork")
+	}
+}
+
+func TestHeadArg_NoFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if got != "my-branch" {
+		t.Errorf("HeadArg without fork = %q, want %q", got, "my-branch")
+	}
+}
+
+func TestHeadArg_WithFork(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/widgets.git").CombinedOutput(); err != nil {
+		t.Fatalf("add fork remote: %v: %s", err, out)
+	}
+	got, err := HeadArg(context.Background(), wtPath, "my-branch")
+	if err != nil {
+		t.Fatalf("HeadArg: %v", err)
+	}
+	if want := "someuser:my-branch"; got != want {
+		t.Errorf("HeadArg with fork = %q, want %q", got, want)
 	}
 }
 
@@ -2498,4 +2601,165 @@ func TestTryCleanMerge(t *testing.T) {
 			t.Fatalf("worktree not clean after fatal merge failure: %s", statusOut)
 		}
 	})
+}
+
+func TestInstallSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	body := func() string {
+		t.Helper()
+		out, gerr := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+		if gerr != nil {
+			t.Fatalf("git log: %v", gerr)
+		}
+		return string(out)
+	}
+
+	wantSOB := "Signed-off-by: Agent <agent@example.com>"
+
+	if err := os.WriteFile(filepath.Join(wtPath, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add a")
+	if got := body(); !strings.Contains(got, wantSOB) {
+		t.Errorf("plain commit missing DCO trailer, got:\n%s", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-s", "-m", "feat: add b")
+	if got := body(); strings.Count(got, wantSOB) != 1 {
+		t.Errorf("commit -s should not duplicate the trailer, got %d in:\n%s",
+			strings.Count(got, wantSOB), got)
+	}
+}
+
+func TestInstallSignoffHook_OverridesHooksPath(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	gitDir := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	stray := filepath.Join(t.TempDir(), "stray-hooks")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("config", "core.hooksPath", stray)
+
+	if err := InstallSignoffHook(context.Background(), dir); err != nil {
+		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDir("add", ".")
+	gitDir("commit", "-m", "feat: x")
+
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(out), "Signed-off-by: Test <test@test.com>") {
+		t.Errorf("hook did not run despite a stray core.hooksPath override, got:\n%s", out)
+	}
+}
+
+func TestCloneBare_InstallsSignoffHook(t *testing.T) {
+	t.Parallel()
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	gitWt := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", wtPath}, args...)
+		if out, gerr := exec.Command("git", full...).CombinedOutput(); gerr != nil {
+			t.Fatalf("git %v: %v: %s", args, gerr, out)
+		}
+	}
+	gitWt("config", "user.email", "agent@example.com")
+	gitWt("config", "user.name", "Agent")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitWt("add", ".")
+	gitWt("commit", "-m", "feat: add c")
+
+	out, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if want := "Signed-off-by: Agent <agent@example.com>"; !strings.Contains(string(out), want) {
+		t.Errorf("CloneBare worktree commit missing DCO trailer, got:\n%s", out)
+	}
+}
+
+func TestStripHTTPSUserinfo(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		changed bool
+	}{
+		{"token userinfo", "https://ghp_abc123@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"user colon token", "https://user:ghp_x@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"clean https", "https://github.com/o/r.git", "https://github.com/o/r.git", false},
+		{"ssh untouched", "git@github.com:o/r.git", "git@github.com:o/r.git", false},
+		{"at in path only", "https://github.com/o/r@v2.git", "https://github.com/o/r@v2.git", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := stripHTTPSUserinfo(tc.in)
+			if got != tc.want || changed != tc.changed {
+				t.Errorf("stripHTTPSUserinfo(%q) = (%q,%v), want (%q,%v)", tc.in, got, changed, tc.want, tc.changed)
+			}
+		})
+	}
 }

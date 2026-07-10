@@ -16,6 +16,16 @@ import (
 // (see escapeHatchTags) and the umbrella dependency gate marker.
 var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
 
+const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
+	"guard blocked dispatch to avoid a wasted implement run; " +
+	"manually expand it from the issue URL, add the notumbrella tag to opt out, " +
+	"or fix the title if this isn't a tracker"
+
+// umbrellaGuardOptOutTag opts a task out of the ☂️-title umbrella guard for the
+// genuine case where a task keeps task_type=normal despite an umbrella-shaped
+// title or tag (see escapeHatchTags).
+const umbrellaGuardOptOutTag = "notumbrella"
+
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.
 // All field changes happen in a single UpdateMap call so the write is
 // atomic per task (Manager holds a per-task mutex).
@@ -25,22 +35,34 @@ var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.Gate
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
+	// t.ProjectID is sticky: once set (e.g. by the GitHub issue fetcher at
+	// task creation), the classifier's free-text guess must never override
+	// it with a lower-confidence, content-similarity match. But a sticky ID
+	// is only authoritative while it still resolves to a registered project —
+	// a renamed/deleted project leaves a stale ID that would otherwise lock
+	// the task to an empty project type, silently skipping the work-typed
+	// forced-interactive/forced-planning routing. So keep it only when it
+	// resolves; otherwise re-resolve, preferring the task's own Issue URL —
+	// the authoritative source-of-truth link — over the classifier's guess
+	// and generic title/body scanning.
 	projectID := strings.TrimSpace(t.ProjectID)
-	if projectID == "" {
-		projectID = strings.TrimSpace(v.ProjectID)
-	}
-	if projectID == "" {
-		projectID = MatchProject(t.Title, t.Body, projects)
-	}
-
-	projectType := ""
-	if projectID != "" {
-		for i := range projects {
-			if projects[i].ID == projectID {
-				projectType = string(projects[i].Type)
-				break
+	projectType, resolved := projectTypeFor(projectID, projects)
+	// A non-empty t.ProjectID that fails to resolve is stale (renamed/deleted
+	// project) and must be explicitly cleared below if re-resolution also
+	// comes up empty — otherwise the task stays stuck on an unresolvable id.
+	stale := projectID != "" && !resolved
+	if !resolved {
+		projectID = MatchProjectFromIssue(t.Issue, projects)
+		if projectID == "" {
+			guess := strings.TrimSpace(v.ProjectID)
+			if _, ok := projectTypeFor(guess, projects); ok {
+				projectID = guess
 			}
 		}
+		if projectID == "" {
+			projectID = MatchProject(t.Title, t.Body, projects)
+		}
+		projectType, _ = projectTypeFor(projectID, projects)
 	}
 
 	newTitle := strings.TrimSpace(v.Title)
@@ -76,7 +98,7 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	mode := RouteMode(v.Mode, v.Type, projectType)
 	updates["agent_mode"] = mode
 
-	if projectID != "" {
+	if projectID != "" || stale {
 		updates["project_id"] = projectID
 	}
 
@@ -84,7 +106,8 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// pr-fix tasks (system-created to fix an existing PR) must never enter the
 	// planning phase — they go straight to implementation. Override any route
 	// that would park them in planning.
-	if t.RunRole == "pr-fix" || t.PRNumber > 0 {
+	isPRFix := isPRFixTask(t)
+	if isPRFix {
 		status = task.StatusTodo
 	}
 	updates["status"] = string(status)
@@ -93,11 +116,43 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// as a warning. Setting "status" without a reason makes the store clear any
 	// stale reason (e.g. "monitor: awaiting triage").
 
+	// A ☂️-titled task that never went through the GitHub issue fetcher (e.g.
+	// manual sybra-cli create) keeps task_type=normal and is invisible to the
+	// umbrella gate (internal/sybra/app_umbrella_gate.go), which filters
+	// strictly on TaskTypeUmbrella. Dispatching it as a flat implement task
+	// wastes a full run before the agent discovers there's no direct code
+	// surface. Catch it here — before dispatch — and park it for a human to
+	// either expand it from its issue URL, opt it out, or fix the title.
+	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
+		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
+		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
+		updates["status"] = string(task.StatusHumanRequired)
+		updates["status_reason"] = umbrellaNormalTypeStatusReason
+	}
+
 	updated, err := mgr.UpdateMap(t.ID, updates)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
 	return updated, nil
+}
+
+func isPRFixTask(t task.Task) bool {
+	return t.RunRole == "pr-fix" || t.PRNumber > 0
+}
+
+// projectTypeFor returns the registered project type for id and whether id
+// resolves to a registered project. An empty id never resolves.
+func projectTypeFor(id string, projects []project.Project) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	for i := range projects {
+		if projects[i].ID == id {
+			return string(projects[i].Type), true
+		}
+	}
+	return "", false
 }
 
 // prependOriginalTitle adds a line preserving the original verbose title

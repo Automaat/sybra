@@ -30,6 +30,9 @@ jobs:
           mkdir -p "$SYBRA_HOME/tasks" "$SYBRA_HOME/workflows"
           cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
           cp frontend/e2e/fixtures/wf-editor-e2e.yaml "$SYBRA_HOME/workflows/"
+          # Marker proving this is a disposable e2e home; the suite refuses
+          # destructive task cleanup without it (#1576).
+          touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           server:
             auth_token: e2e-test-token

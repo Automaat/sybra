@@ -107,8 +107,7 @@ func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
-	needsApproval := cfg.RequirePermissions || cfg.PermissionMode != ""
-	if hookSettings := buildClaudeHookSettings(m.approvalAddr, needsApproval); hookSettings != "" {
+	if hookSettings := buildClaudeHookSettings(m.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	return args
@@ -583,20 +582,27 @@ func (m *Manager) advanceClaudeTurn(ctx context.Context, a *Agent, prompt string
 	return nil
 }
 
-// SendMessage sends a follow-up user message to a conversational agent.
-// When the agent is mid-turn (StateRunning), the message is appended to a
-// pending queue and flushed on the next "result" event, so users can pile
-// up follow-ups without waiting for each turn to settle.
+// SendMessage sends a follow-up user message to a live agent with a stdin
+// transport: a conversational (interactive) agent, or a steerable headless
+// claude run (see RunConfig.HeadlessSteerable). When the agent is mid-turn
+// (StateRunning), the message is appended to a pending queue and flushed on
+// the next "result" event, so users can pile up follow-ups without waiting
+// for each turn to settle. A headless run that has begun finalizing (no
+// steer message was pending at its last result, so stdin was already closed)
+// rejects rather than queuing a message that would never be delivered.
 func (m *Manager) SendMessage(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
 	if err != nil {
 		return err
 	}
-	if a.Mode != "interactive" {
-		return fmt.Errorf("agent %s is not in interactive/conversational mode", agentID)
-	}
 	if !a.convo.hasStdinPipe() {
-		return fmt.Errorf("agent %s has no stdin pipe (not conversational)", agentID)
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
+	}
+	if a.Mode == "headless" {
+		return m.sendHeadlessSteerMessage(a, text)
+	}
+	if a.Mode != "interactive" {
+		return conflictError(fmt.Sprintf("agent %s is not in interactive/conversational mode", agentID))
 	}
 
 	queued := a.GetState() == StateRunning

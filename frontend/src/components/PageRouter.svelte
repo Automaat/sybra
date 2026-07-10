@@ -16,6 +16,7 @@
   const loadProjectList = lazyComponent(() => import('../pages/ProjectList.svelte'))
   const loadProjectDetail = lazyComponent(() => import('../pages/ProjectDetail.svelte'))
   const loadGitHub = lazyComponent(() => import('../pages/GitHub.svelte'))
+  const loadFleet = lazyComponent(() => import('../pages/Fleet.svelte'))
   const loadStats = lazyComponent(() => import('../pages/Stats.svelte'))
   const loadEvaluation = lazyComponent(() => import('../pages/Evaluation.svelte'))
   const loadReviews = lazyComponent(() => import('../pages/Reviews.svelte'))
@@ -25,6 +26,7 @@
   const loadWorkflowList = lazyComponent(() => import('../pages/WorkflowList.svelte'))
   const loadWorkflowDetail = lazyComponent(() => import('../pages/WorkflowDetail.svelte'))
   const loadLogbook = lazyComponent(() => import('../pages/Logbook.svelte'))
+  const loadNotifications = lazyComponent(() => import('../pages/Notifications.svelte'))
 
   interface Props {
     sidebarTaskId: string | null
@@ -80,6 +82,7 @@
       onviewagent={navAgentDetail}
       ondelete={() => navStore.back()}
       onreviewplan={() => navStore.reset({ kind: 'reviews' })}
+      onselecttask={navTaskDetail}
     />
   {:else if navStore.page.kind === 'project-list'}
     {#await loadProjectList() then ProjectList}
@@ -128,6 +131,10 @@
     {#await loadGitHub() then GitHub}
       <GitHub />
     {/await}
+  {:else if navStore.page.kind === 'fleet'}
+    {#await loadFleet() then Fleet}
+      <Fleet />
+    {/await}
   {:else if navStore.page.kind === 'reviews'}
     {#await loadReviews() then Reviews}
       <Reviews onviewtask={navTaskDetail} />
@@ -154,6 +161,10 @@
   {:else if navStore.page.kind === 'logbook'}
     {#await loadLogbook() then Logbook}
       <Logbook onviewtask={navTaskDetail} />
+    {/await}
+  {:else if navStore.page.kind === 'notifications'}
+    {#await loadNotifications() then Notifications}
+      <Notifications onviewtask={navTaskDetail} onviewagent={navAgentDetail} />
     {/await}
   {:else if navStore.page.kind === 'settings'}
     {#await loadSettings() then Settings}

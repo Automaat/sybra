@@ -1,6 +1,7 @@
 package task
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -46,6 +47,37 @@ func TestCommentStore_AddAndList(t *testing.T) {
 	}
 	if comments[0].ID != c.ID {
 		t.Errorf("ID mismatch: got %q, want %q", comments[0].ID, c.ID)
+	}
+}
+
+// TestCommentStore_ConcurrentAddsDontDropWrites exercises the List→append→
+// write race directly: without a per-task lock around the whole critical
+// section, two goroutines can both List the same (empty) baseline and each
+// write back a single-comment slice, so the loser's Add is silently
+// discarded. With the lock, every Add lands.
+func TestCommentStore_ConcurrentAddsDontDropWrites(t *testing.T) {
+	t.Parallel()
+	s := NewCommentStore(t.TempDir())
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Add("task-race", i, "comment"); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	comments, err := s.List("task-race")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(comments) != n {
+		t.Errorf("got %d comments, want %d (a racing Add dropped an update)", len(comments), n)
 	}
 }
 

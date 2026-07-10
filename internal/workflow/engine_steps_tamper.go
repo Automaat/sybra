@@ -14,7 +14,7 @@ import (
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
 // flagged diff and accepted it adds this tag, then moves the task back into the
-// flow. Without it, re-dispatching a flagged task would re-scan the same
+// flow. Without it, relaunching a flagged task would re-scan the same
 // committed diff and re-flag forever (livelock).
 const TamperBlessedTag = "tamper-blessed"
 
@@ -159,6 +159,10 @@ var (
 			`\b(it|describe|test|context)\.skip\s*\(|\bx(it|describe|test)\s*\(|` + // jest/mocha/vitest
 			`\b(test|it)\.todo\s*\(|@(Ignore|Disabled)\b`) // todo / JUnit
 	// tamperAddedExitRe matches an added forced success exit.
+	tamperCapabilityGuardRe = regexp.MustCompile(
+		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
+			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
+			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
@@ -327,7 +331,10 @@ type tamperScan struct {
 	delDecl     int
 	addRun      int
 	delRun      int
+	guardWindow int
 }
+
+const tamperGuardWindowLines = 3
 
 func (s *tamperScan) add(rule, detail string) {
 	if s.seen[rule] {
@@ -349,7 +356,14 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	if tamperAddedSkipRe.MatchString(content) && !isEstablishedSkipIdiom(content, s.baseContent) {
+	isGuard := tamperCapabilityGuardRe.MatchString(content)
+	guarded := isGuard || s.guardWindow > 0
+	if isGuard {
+		s.guardWindow = tamperGuardWindowLines
+	} else if s.guardWindow > 0 {
+		s.guardWindow--
+	}
+	if tamperAddedSkipRe.MatchString(content) && !guarded && !isEstablishedSkipIdiom(content, s.baseContent) {
 		s.add("added-skip", trimDiffLine(content))
 	}
 	if tamperAddedExitRe.MatchString(content) {

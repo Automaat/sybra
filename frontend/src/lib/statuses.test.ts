@@ -7,6 +7,7 @@ import {
   awaitsHuman,
   awaitsHumanLabel,
   coreStatus,
+  needsPlanApproval,
   statusLabel,
   statusOptionsFor,
   BOARD_COLUMNS,
@@ -112,5 +113,60 @@ describe('awaitsHumanLabel — canonical, never a divergent name', () => {
       if (AWAITS_HUMAN.has(meta.value)) continue
       expect(awaitsHumanLabel(meta.value)).toBe('')
     }
+  })
+})
+
+describe('needsPlanApproval — keyed off workflow, not stale status (issue #1642)', () => {
+  it('is true when status is plan-review and no workflow is attached', () => {
+    expect(needsPlanApproval({ status: 'plan-review' })).toBe(true)
+  })
+
+  it('is false when status is anything else and no workflow is attached', () => {
+    expect(needsPlanApproval({ status: 'planning' })).toBe(false)
+  })
+
+  it('is true when the workflow is waiting on review_plan, even if status desynced away from plan-review', () => {
+    expect(
+      needsPlanApproval({
+        status: 'planning',
+        workflow: { currentStep: 'review_plan', state: 'waiting' },
+      }),
+    ).toBe(true)
+  })
+
+  it('is false when the workflow has moved past review_plan, even if status is stale plan-review', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'implement', state: 'running' },
+      }),
+    ).toBe(false)
+  })
+
+  it('is false when review_plan is reached but not yet waiting (still running)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'review_plan', state: 'running' },
+      }),
+    ).toBe(false)
+  })
+
+  it('falls back to status when only currentStep is populated (state missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'review_plan' },
+      }),
+    ).toBe(true)
+  })
+
+  it('falls back to status when only state is populated (currentStep missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { state: 'waiting' },
+      }),
+    ).toBe(true)
   })
 })

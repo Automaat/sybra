@@ -107,7 +107,34 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 	if v.Summary == "" {
 		return Decision{}, "", errors.New("verdict: empty summary")
 	}
+	if isPlaceholder(v.Summary) {
+		return Decision{}, "", fmt.Errorf("verdict: placeholder summary %q", v.Summary)
+	}
+	if v.Decision == "sybra_bug" && (isPlaceholder(v.IssueTitle) || isPlaceholder(v.IssueBody)) {
+		return Decision{}, "", fmt.Errorf("verdict: placeholder issue payload (title=%q body=%q)", v.IssueTitle, v.IssueBody)
+	}
 	return v, src, nil
+}
+
+// placeholderValues are exact (case-insensitive, trimmed) strings a model
+// sometimes emits when it echoes the schema/example instead of producing a
+// real diagnosis (observed: decision=sybra_bug with summary="test",
+// issue_title="test title", issue_body="test body", which got filed as a
+// real GitHub issue and a duplicate local fallback task). Checked as an
+// exact match rather than a substring so a genuine diagnosis that merely
+// mentions "test" (e.g. "the test suite is flaky") is never rejected.
+var placeholderValues = map[string]bool{
+	"test":        true,
+	"test title":  true,
+	"test body":   true,
+	"placeholder": true,
+	"todo":        true,
+	"tbd":         true,
+	"n/a":         true,
+}
+
+func isPlaceholder(s string) bool {
+	return placeholderValues[strings.ToLower(strings.TrimSpace(s))]
 }
 
 // normalizeLabels trims each label and drops any that are blank, so

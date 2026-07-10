@@ -439,6 +439,7 @@ export class RenovatePR {
      */
     "restCiFetched": boolean;
     "checkRuns": CheckRunInfo[];
+    "waitingForStability": boolean;
 
     /** Creates a new RenovatePR instance. */
     constructor($$source: Partial<RenovatePR> = {}) {
@@ -525,6 +526,9 @@ export class RenovatePR {
         }
         if (!("checkRuns" in $$source)) {
             this["checkRuns"] = [];
+        }
+        if (!("waitingForStability" in $$source)) {
+            this["waitingForStability"] = false;
         }
 
         Object.assign(this, $$source);

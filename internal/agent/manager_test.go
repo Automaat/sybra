@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -687,6 +690,78 @@ func TestClaimTaskDispatch(t *testing.T) {
 	m.ReleaseTaskDispatch("never-claimed")
 }
 
+// TestIsDispatching verifies the read-only peek other coordinators (e.g.
+// internal/workflow.Engine's DispatchEvent/ResumeStalled) consult as the
+// single ground truth for "does some dispatcher already own this task's next
+// run" — without itself acquiring or releasing a claim.
+func TestIsDispatching(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if m.IsDispatching("t1") {
+		t.Error("unclaimed task should not report dispatching")
+	}
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should succeed")
+	}
+	if !m.IsDispatching("t1") {
+		t.Error("claimed task should report dispatching")
+	}
+	if m.IsDispatching("t2") {
+		t.Error("a different, unclaimed task must not be affected")
+	}
+
+	m.ReleaseTaskDispatch("t1")
+	if m.IsDispatching("t1") {
+		t.Error("released claim should no longer report dispatching")
+	}
+}
+
+// TestTryClaimDispatch verifies the DispatchClaim wrapper matches
+// ClaimTaskDispatch/ReleaseTaskDispatch semantics (single holder per task,
+// independent tasks unaffected) and that Release is idempotent — a second
+// Release call, or a Release on a nil claim, must not panic or re-delete a
+// claim a different holder has since acquired.
+func TestTryClaimDispatch(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	claim, ok := m.TryClaimDispatch("t1")
+	if !ok || claim == nil {
+		t.Fatal("first claim should succeed")
+	}
+	if _, ok := m.TryClaimDispatch("t1"); ok {
+		t.Error("second claim while held must fail (serializes dispatch)")
+	}
+	if other, ok := m.TryClaimDispatch("t2"); !ok || other == nil {
+		t.Error("claim for a different task must succeed")
+	} else {
+		other.Release()
+	}
+
+	claim.Release()
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should have been released")
+	}
+	m.ReleaseTaskDispatch("t1")
+
+	// Idempotent: a second Release, after another holder has since claimed the
+	// same taskID, must not clobber that foreign claim.
+	claim.Release()
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("setup: expected to reclaim t1")
+	}
+	claim.Release()
+	if m.ClaimTaskDispatch("t1") {
+		t.Error("stale claim's second Release must not clobber a foreign claim taken after the first Release")
+	} else {
+		m.ReleaseTaskDispatch("t1")
+	}
+
+	// Release on a nil claim must not panic.
+	var nilClaim *DispatchClaim
+	nilClaim.Release()
+}
+
 // TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim guards against
 // the sybra#1495 self-deadlock: a dispatcher that holds its own dispatch
 // claim while preparing a worktree (StartAgentWithAssignment holds the claim
@@ -718,6 +793,40 @@ func TestHasLiveRegisteredAgentForTask_IgnoresOwnDispatchClaim(t *testing.T) {
 
 	if !m.HasLiveRegisteredAgentForTask("t1") {
 		t.Error("HasLiveRegisteredAgentForTask must report true once a real agent is registered")
+	}
+}
+
+func TestHasLiveHeadlessAgentForTask_OnlyCountsRegisteredHeadless(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if !m.ClaimTaskDispatch("t1") {
+		t.Fatal("claim should succeed")
+	}
+	defer m.ReleaseTaskDispatch("t1")
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("dispatch claim without a registered agent must not count as live headless")
+	}
+
+	interactive := &Agent{ID: "interactive", TaskID: "t1", Mode: "interactive", State: StateRunning, done: make(chan struct{})}
+	m.mu.Lock()
+	m.agents[interactive.ID] = interactive
+	m.mu.Unlock()
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("interactive agent must not suppress dwell escalation")
+	}
+
+	headlessDone := make(chan struct{})
+	headless := &Agent{ID: "headless", TaskID: "t1", Mode: "headless", State: StateRunning, done: headlessDone}
+	m.mu.Lock()
+	m.agents[headless.ID] = headless
+	m.mu.Unlock()
+	if !m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("live registered headless agent should count")
+	}
+
+	close(headlessDone)
+	if m.HasLiveHeadlessAgentForTask("t1") {
+		t.Fatal("exited headless agent must not count")
 	}
 }
 
@@ -970,9 +1079,11 @@ func TestShutdown(t *testing.T) {
 
 	m.Shutdown()
 
-	// All agents should still be in the map (shutdown doesn't remove them)
-	if len(m.ListAgents()) != 3 {
-		t.Errorf("got %d agents, want 3", len(m.ListAgents()))
+	// Shutdown cancels each agent and waits for its runner goroutine to
+	// close done, which finalizes through markAgentDone and evicts it from
+	// the live registry.
+	if len(m.ListAgents()) != 0 {
+		t.Errorf("got %d agents, want 0 (evicted on completion)", len(m.ListAgents()))
 	}
 }
 
@@ -999,13 +1110,16 @@ func TestShutdownWithGrace_WaitsForDoneChannels(t *testing.T) {
 	m.mu.Unlock()
 
 	// Close done after a short delay — models a well-behaved subprocess
-	// noticing SIGTERM and flushing its result before exiting.
+	// noticing SIGTERM and flushing its result before exiting. start is
+	// sampled before launching the goroutine: sampling it after left a
+	// window where a delayed scheduler could run the sleep first, making
+	// elapsed (measured from start) read under 30ms despite a real wait.
+	start := time.Now()
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		close(done)
 	}()
 
-	start := time.Now()
 	m.ShutdownWithGrace(500 * time.Millisecond)
 	elapsed := time.Since(start)
 	if elapsed > 300*time.Millisecond {
@@ -1340,4 +1454,155 @@ func TestStreamConvoOutput_PausesWhenQueueEmpty(t *testing.T) {
 	if st := a.GetState(); st != StatePaused {
 		t.Errorf("State = %q, want %q after result with empty queue", st, StatePaused)
 	}
+}
+
+// TestSendMessage_HeadlessQueuesWhenRunning verifies that SendMessage on a
+// live, steerable headless agent (stdin pipe attached, Mode "headless")
+// always queues — a headless run has no idle state to write into directly,
+// unlike a conversational agent — and surfaces the message immediately in
+// StreamOutput via a synthetic user_input event.
+func TestSendMessage_HeadlessQueuesWhenRunning(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h1", TaskID: "task-1", Mode: "headless", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if err := m.SendMessage(a.ID, "steer text"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want 1", got)
+	}
+	if st := a.GetState(); st != StateRunning {
+		t.Errorf("State = %q, want %q (queued send must not flip state)", st, StateRunning)
+	}
+
+	var sawUserInput bool
+	for _, ev := range a.Output() {
+		if ev.Type == "user_input" && ev.Content == "steer text" {
+			sawUserInput = true
+		}
+	}
+	if !sawUserInput {
+		t.Errorf("expected a synthetic user_input StreamEvent in Output(); got %+v", a.Output())
+	}
+}
+
+func TestSendMessage_HeadlessPersistsPendingPrompt(t *testing.T) {
+	regDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{SurviveRestartDir: regDir})
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-persist", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a.setStdinPath(filepath.Join(regDir, "h-persist.stdin"))
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if err := m.SendMessage(a.ID, "survive restart"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	recs, err := m.registry().List()
+	if err != nil {
+		t.Fatalf("registry List: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("registry records = %d, want 1", len(recs))
+	}
+	if got := recs[0].PendingPrompts; len(got) != 1 || got[0] != "survive restart" {
+		t.Fatalf("PendingPrompts = %#v, want queued steer", got)
+	}
+	if got := fromRecord(recs[0]).PendingPromptCount(); got != 1 {
+		t.Fatalf("fromRecord PendingPromptCount = %d, want 1", got)
+	}
+}
+
+func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-overflow", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	for range maxPendingHeadlessSteerPrompts {
+		a.EnqueuePrompt("queued")
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	err := m.SendMessage(a.ID, "one too many")
+	if err == nil {
+		t.Fatal("expected queue overflow error")
+	}
+	assertConflictClientError(t, err)
+	if got := a.PendingPromptCount(); got != maxPendingHeadlessSteerPrompts {
+		t.Fatalf("PendingPromptCount = %d, want %d", got, maxPendingHeadlessSteerPrompts)
+	}
+}
+
+// TestSendMessage_HeadlessRejectsWhenFinalizing verifies that a headless
+// run's stdin has been closed for good (no steer message pending at its last
+// result) rejects further SendMessage calls instead of silently queuing a
+// message that would never be delivered.
+func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h2", TaskID: "task-1", Mode: "headless", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	a.setFinalizing(true)
+
+	err := m.SendMessage(a.ID, "too late")
+	if err == nil {
+		t.Fatal("expected error sending to a finalizing headless agent")
+	}
+	assertConflictClientError(t, err)
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0 (message must not be queued)", got)
+	}
+}
+
+// assertConflictClientError verifies err implements httpapi.ClientError
+// (structurally: error + HTTPStatus() int) with a 409 status, so the HTTP
+// API surfaces it as a clear rejection instead of a generic 500 — see
+// internal/httpapi.ClientError.
+func assertConflictClientError(t *testing.T, err error) {
+	t.Helper()
+	var ce interface {
+		error
+		HTTPStatus() int
+	}
+	if !errors.As(err, &ce) {
+		t.Fatalf("error %v does not implement ClientError (HTTPStatus() int)", err)
+	}
+	if got := ce.HTTPStatus(); got != http.StatusConflict {
+		t.Errorf("HTTPStatus() = %d, want %d", got, http.StatusConflict)
+	}
+}
+
+// TestSendMessage_RejectsNoTransport verifies that SendMessage rejects a
+// headless agent with no stdin pipe attached (e.g. a legacy one-shot run, or
+// agent.headless_steerable disabled) instead of silently accepting a message
+// that has nowhere to go.
+func TestSendMessage_RejectsNoTransport(t *testing.T) {
+	m, _ := newTestManager(t)
+	putAgent(t, m, &Agent{ID: "h3", TaskID: "task-1", Mode: "headless", State: StateRunning})
+
+	err := m.SendMessage("h3", "hello")
+
+	if err == nil {
+		t.Fatal("expected error when headless agent has no stdin pipe")
+	}
+	assertConflictClientError(t, err)
 }
