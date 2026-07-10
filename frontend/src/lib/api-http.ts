@@ -153,6 +153,10 @@ export function RejectPlan(arg1: string, arg2: string): Promise<Task> { return c
 export function SendPlanMessage(arg1: string, arg2: string): Promise<void> { return call('PlanningService', 'SendPlanMessage', arg1, arg2) }
 export function TriageTask(arg1: string): Promise<void> { return call('PlanningService', 'TriageTask', arg1) }
 
+// PromptLabService
+export function ApproveProposal(arg1: string): Promise<Task> { return call('PromptLabService', 'ApproveProposal', arg1) }
+export function RejectProposal(arg1: string, arg2: string): Promise<Task> { return call('PromptLabService', 'RejectProposal', arg1, arg2) }
+
 // ProjectService
 export function CreateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'CreateProject', arg1, arg2) }
 export function DeleteProject(arg1: string): Promise<void> { return call('ProjectService', 'DeleteProject', arg1) }

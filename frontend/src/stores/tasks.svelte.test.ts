@@ -10,6 +10,8 @@ const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
+const mockApproveProposal = vi.fn()
+const mockRejectProposal = vi.fn()
 
 vi.mock('$lib/api', () => ({
   ListTasks: (...args: unknown[]) => mockListTasks(...args),
@@ -21,6 +23,8 @@ vi.mock('$lib/api', () => ({
   RejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
   SendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
   HasLivePlanAgent: (...args: unknown[]) => mockHasLivePlanAgent(...args),
+  ApproveProposal: (...args: unknown[]) => mockApproveProposal(...args),
+  RejectProposal: (...args: unknown[]) => mockRejectProposal(...args),
 }))
 
 const { taskStore } = await import('./tasks.svelte.js')
@@ -256,6 +260,36 @@ describe('TaskStore', () => {
       expect(mockRejectPlan).toHaveBeenCalledWith('t1', 'needs work')
       expect(result.id).toBe('t1')
       expect(taskStore.tasks.get('t1')).toBeDefined()
+    })
+  })
+
+  describe('approveProposal', () => {
+    it('calls ApproveProposal and updates task in map', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required' }))
+      const approved = makeTask({ id: 't1', status: 'todo' })
+      mockApproveProposal.mockResolvedValue(approved)
+
+      const result = await taskStore.approveProposal('t1')
+
+      expect(mockApproveProposal).toHaveBeenCalledWith('t1')
+      expect(result.status).toBe('todo')
+      expect(taskStore.tasks.get('t1')!.status).toBe('todo')
+    })
+  })
+
+  describe('rejectProposal', () => {
+    it('calls RejectProposal with feedback and writes the returned bumped-updatedAt task back', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required', updatedAt: '2026-04-01T00:00:00Z' }))
+      const rejected = makeTask({ id: 't1', status: 'cancelled', updatedAt: '2026-04-01T00:05:00Z' })
+      mockRejectProposal.mockResolvedValue(rejected)
+
+      const result = await taskStore.rejectProposal('t1', 'not worth it')
+
+      expect(mockRejectProposal).toHaveBeenCalledWith('t1', 'not worth it')
+      expect(result.status).toBe('cancelled')
+      expect(result.updatedAt).toBe('2026-04-01T00:05:00Z')
+      expect(taskStore.tasks.get('t1')!.status).toBe('cancelled')
+      expect(taskStore.tasks.get('t1')!.updatedAt).toBe('2026-04-01T00:05:00Z')
     })
   })
 

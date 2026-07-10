@@ -134,6 +134,7 @@ type App struct {
 	infoSvc      *InfoService
 	browserSvc   *BrowserService
 	learningSvc  *LearningService
+	promptLabSvc *PromptLabService
 }
 
 // Option configures App behaviour at construction time.
@@ -203,6 +204,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.infoSvc = &InfoService{}
 	a.browserSvc = &BrowserService{}
 	a.learningSvc = &LearningService{}
+	a.promptLabSvc = &PromptLabService{}
 	for _, o := range opts {
 		o(a)
 	}

@@ -12,6 +12,7 @@ import * as LoopAgentService from "./loopagentservice.js";
 import * as OrchestratorService from "./orchestratorservice.js";
 import * as PlanningService from "./planningservice.js";
 import * as ProjectService from "./projectservice.js";
+import * as PromptLabService from "./promptlabservice.js";
 import * as ReviewService from "./reviewservice.js";
 import * as StatsService from "./statsservice.js";
 import * as TaskService from "./taskservice.js";
@@ -28,6 +29,7 @@ export {
     OrchestratorService,
     PlanningService,
     ProjectService,
+    PromptLabService,
     ReviewService,
     StatsService,
     TaskService,
