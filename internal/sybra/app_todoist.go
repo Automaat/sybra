@@ -61,7 +61,7 @@ func (c *todoistCoordinator) initLocked() {
 		return
 	}
 	tc := todoist.NewClient(c.cfg.Todoist.APIToken)
-	c.handler = poll.NewTodoistHandler(c.tasks, c.svc.CreateTask, tc, c.auditLog, c.logger, c.emit, c.cfg.Todoist)
+	c.handler = poll.NewTodoistHandler(c.tasks, c.svc.CreateTaskWithInit, tc, c.auditLog, c.logger, c.emit, c.cfg.Todoist)
 	c.logger.Info("todoist.enabled", "project_id", c.cfg.Todoist.ProjectID)
 }
 
