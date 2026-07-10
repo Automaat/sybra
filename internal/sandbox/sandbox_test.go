@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -325,6 +326,66 @@ func TestManager_StartNilConfig(t *testing.T) {
 	}
 }
 
+func TestManager_StartPanicCleansStartingAndWakesWaiters(t *testing.T) {
+	m := newTestManager(t)
+	cfg := &project.SandboxConfig{Image: "nginx", Port: 80}
+
+	leaderEntered := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	var calls atomic.Int32
+	m.startSandbox = func(context.Context, string, string, *project.SandboxConfig) (*Instance, error) {
+		if calls.Add(1) == 1 {
+			close(leaderEntered)
+			<-releaseLeader
+		}
+		panic("boom")
+	}
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := m.Start(context.Background(), "task-panic", "/worktree", cfg)
+		leaderDone <- err
+	}()
+
+	select {
+	case <-leaderEntered:
+	case <-time.After(time.Second):
+		t.Fatal("leader did not enter sandbox starter")
+	}
+
+	waiterCtx, cancelWaiter := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelWaiter()
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := m.Start(waiterCtx, "task-panic", "/worktree", cfg)
+		waiterDone <- err
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	close(releaseLeader)
+
+	leaderErr := mustReceiveStartErr(t, leaderDone)
+	if leaderErr == nil || !strings.Contains(leaderErr.Error(), "sandbox start panic: boom") {
+		t.Fatalf("leader error = %v, want panic error", leaderErr)
+	}
+
+	waiterErr := mustReceiveStartErr(t, waiterDone)
+	if waiterErr == nil || !strings.Contains(waiterErr.Error(), "sandbox start panic: boom") {
+		t.Fatalf("waiter error = %v, want panic error", waiterErr)
+	}
+
+	m.mu.Lock()
+	_, stillStarting := m.starting["task-panic"]
+	inst := m.instances["task-panic"]
+	m.mu.Unlock()
+	if stillStarting {
+		t.Fatal("panic left task in starting map")
+	}
+	if inst != nil {
+		t.Fatalf("panic registered an instance: %+v", inst)
+	}
+}
+
 func TestManager_SybraHomeDir(t *testing.T) {
 	t.Parallel()
 	m := newTestManager(t)
@@ -388,6 +449,17 @@ func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	dir := t.TempDir()
 	return NewManager(dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+}
+
+func mustReceiveStartErr(t *testing.T, ch <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return")
+		return nil
+	}
 }
 
 func writeTempEnvFile(t *testing.T, content string) string {

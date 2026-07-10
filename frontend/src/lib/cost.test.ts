@@ -1,5 +1,65 @@
 import { describe, it, expect } from 'vitest'
-import { formatCost, formatCostShort } from './cost.js'
+import { formatCost, formatCostShort, taskTotalCost, taskRunCount } from './cost.js'
+
+function runs(costs: (number | null | undefined)[]) {
+  return { agentRuns: costs.map((c) => ({ costUsd: c })) } as any
+}
+
+describe('taskTotalCost', () => {
+  it('sums 0 runs to 0', () => {
+    expect(taskTotalCost(runs([]))).toBe(0)
+  })
+
+  it('sums a single run', () => {
+    expect(taskTotalCost(runs([1.5]))).toBe(1.5)
+  })
+
+  it('sums mixed valid costs', () => {
+    expect(taskTotalCost(runs([1, 2.5, 0.25]))).toBe(3.75)
+  })
+
+  it('drops null costUsd from the total', () => {
+    expect(taskTotalCost(runs([1, null]))).toBe(1)
+  })
+
+  it('drops undefined costUsd from the total', () => {
+    expect(taskTotalCost(runs([1, undefined]))).toBe(1)
+  })
+
+  it('drops NaN costUsd from the total', () => {
+    expect(taskTotalCost(runs([1, Number.NaN]))).toBe(1)
+  })
+
+  it('drops negative costUsd from the total', () => {
+    expect(taskTotalCost(runs([1, -5]))).toBe(1)
+  })
+
+  it('drops ±Infinity costUsd from the total', () => {
+    expect(taskTotalCost(runs([1, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]))).toBe(1)
+  })
+
+  it('handles missing agentRuns entirely', () => {
+    expect(taskTotalCost({} as any)).toBe(0)
+  })
+})
+
+describe('taskRunCount', () => {
+  it('counts 0 runs', () => {
+    expect(taskRunCount(runs([]))).toBe(0)
+  })
+
+  it('counts 1 run', () => {
+    expect(taskRunCount(runs([1]))).toBe(1)
+  })
+
+  it('counts every run regardless of cost validity', () => {
+    expect(taskRunCount(runs([1, null, undefined, Number.NaN, -5]))).toBe(5)
+  })
+
+  it('handles missing agentRuns entirely', () => {
+    expect(taskRunCount({} as any)).toBe(0)
+  })
+})
 
 describe('formatCost', () => {
   it('uses a uniform 4-decimal precision', () => {

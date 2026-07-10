@@ -205,6 +205,47 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadTriageModelDefaultsEmpty locks in that Triage.Model is left empty
+// by default rather than defaulted to "sonnet". An empty model lets
+// triage.FallbackClassifier fall through to its llmjob.Cheap tier (haiku);
+// a "sonnet" default here would silently override that cheap tier on every
+// install (see internal/triage/classifier.go's claudeModelOverride).
+func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "" {
+		t.Fatalf("triage.model = %q, want empty (cheap tier)", cfg.Triage.Model)
+	}
+	if cfg.Triage.PollSeconds != 60 {
+		t.Fatalf("triage.poll_seconds = %d, want 60", cfg.Triage.PollSeconds)
+	}
+}
+
+// TestLoadTriageModelPreservesExplicitOverride ensures an operator-set
+// model still wins over the cheap-tier default.
+func TestLoadTriageModelPreservesExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("triage:\n  model: sonnet\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Triage.Model != "sonnet" {
+		t.Fatalf("triage.model = %q, want sonnet", cfg.Triage.Model)
+	}
+}
+
 func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
@@ -376,6 +417,60 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 			}
 			if got := cfg.HumanReviewSybraBugAction(); got != tc.want {
 				t.Fatalf("HumanReviewSybraBugAction() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHumanReviewModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "human_review:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "human_review:\n  model: opus\n", want: "opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.HumanReviewModel(); got != tc.want {
+				t.Fatalf("HumanReviewModel() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMonitorModelDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "empty defaults to haiku", yaml: "monitor:\n  enabled: true\n", want: "claude-haiku-4-5-20251001"},
+		{name: "explicit override preserved", yaml: "monitor:\n  model: sonnet\n", want: "sonnet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Monitor.Model; got != tc.want {
+				t.Fatalf("Monitor.Model = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -812,6 +907,73 @@ func TestDefaultRequirePermissions(t *testing.T) {
 	}
 }
 
+func TestPlaywrightMCPEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"zero value", &Config{}, false},
+		{"explicit true", &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{Enabled: true}}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{Enabled: false}}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.PlaywrightMCPEnabled(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaywrightMCPExtraArgs(t *testing.T) {
+	t.Parallel()
+	if got := (*Config)(nil).PlaywrightMCPExtraArgs(); got != nil {
+		t.Errorf("nil config: got %v, want nil", got)
+	}
+	if got := (&Config{}).PlaywrightMCPExtraArgs(); got != nil {
+		t.Errorf("zero value: got %v, want nil", got)
+	}
+	cfg := &Config{Agent: AgentDefaults{PlaywrightMCP: PlaywrightMCPConfig{ExtraArgs: []string{"--browser", "firefox"}}}}
+	got := cfg.PlaywrightMCPExtraArgs()
+	want := []string{"--browser", "firefox"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDefaultHeadlessSteerable(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(true)}}, true},
+		{"explicit false", &Config{Agent: AgentDefaults{HeadlessSteerable: boolPtr(false)}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.DefaultHeadlessSteerable(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
@@ -890,6 +1052,123 @@ func TestPathsUnderHomeDir(t *testing.T) {
 	}
 }
 
+func TestLoadWritesRestrictivePermsOnFreshInstall(t *testing.T) {
+	dir := t.TempDir()
+	sybraHome := filepath.Join(dir, ".sybra")
+	t.Setenv("SYBRA_HOME", sybraHome)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	homeInfo, err := os.Stat(sybraHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("home dir perm = %o, want 0700", perm)
+	}
+
+	cfgInfo, err := os.Stat(filepath.Join(sybraHome, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.yaml perm = %o, want 0600", perm)
+	}
+}
+
+func TestLoadTightensPermsOnExistingInstall(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	homeInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("home dir perm = %o, want 0700", perm)
+	}
+
+	cfgInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.yaml perm = %o, want 0600", perm)
+	}
+}
+
+func TestLoadDoesNotBroadenStricterConfigPerms(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	homeInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o500 {
+		t.Errorf("home dir perm = %o, want preserved 0500", perm)
+	}
+
+	cfgInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o400 {
+		t.Errorf("config.yaml perm = %o, want preserved 0400", perm)
+	}
+}
+
+func TestLoadDoesNotChmodSymlinkedConfigTarget(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	target := filepath.Join(dir, "target-config.yaml")
+	if err := os.WriteFile(target, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("symlink target perm = %o, want unchanged 0644", perm)
+	}
+}
 func TestDefaultLogRetentionDays(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1215,6 +1494,9 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	writeOldShapeConfig(t, dir)
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
@@ -1238,6 +1520,20 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.ab_testing.backup.v0.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("LoadNoPersist should not write backup, stat err = %v", err)
+	}
+	homeInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := homeInfo.Mode().Perm(); perm != 0o755 {
+		t.Errorf("LoadNoPersist home dir perm = %o, want untouched 0755", perm)
+	}
+	cfgInfo, err := os.Stat(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := cfgInfo.Mode().Perm(); perm != 0o644 {
+		t.Errorf("LoadNoPersist config.yaml perm = %o, want untouched 0644", perm)
 	}
 }
 

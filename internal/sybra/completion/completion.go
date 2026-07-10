@@ -1,15 +1,23 @@
-package sybra
+// Package completion reacts to agent.Manager and workflow.Engine
+// terminal-state callbacks: persists the result, records stats, advances
+// workflow, triggers worktree/sandbox cleanup, and routes fix-review/human-
+// review completions. Extracted from internal/sybra (agent_completion.go)
+// per the "Extracting a Concern" convention in CLAUDE.md.
+package completion
 
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
@@ -30,45 +38,52 @@ import (
 // that humans can't read past failures from the UI.
 const maxResultLen = 2000
 
-// newAgentCompletionHandler constructs the handler with every dependency
-// the App holds. Called from wireServices once all subsystems are
-// initialized — by then loopSched, humanReview, workflowEngine, and stats
-// are either populated or intentionally nil (degraded init), and the
-// handler's nil-checks at call time handle the latter.
-func (a *App) newAgentCompletionHandler(emit func(string, any)) *AgentCompletionHandler {
-	return &AgentCompletionHandler{
-		DomainHandler: DomainHandler{
-			logger: a.logger,
-			audit:  a.audit,
-			emit:   emit,
-		},
-		tasks:          a.tasks,
-		worktrees:      a.worktrees,
-		sandboxes:      a.sandboxes,
-		workflowEngine: a.workflowEngine,
-		stats:          a.stats,
-		limits:         a.limits,
-		loopSched:      a.loopSched,
-		humanReview:    a.humanReview,
-		prTracker:      a.prTracker,
-		cfg:            a.cfg,
-		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
-		// own guard), same pattern as agentOrch.SetConflictRecovery.
-		conflictRecovery: a.reviewer.RecoverStaleBranchConflict,
-	}
+// Config carries every dependency Handler needs. Only Logger and Tasks are
+// load-bearing; every other field is nil-safe so tests and degraded init
+// (a subsystem that failed to start) can leave it unset.
+type Config struct {
+	Logger *slog.Logger
+	Audit  *audit.Logger
+	Emit   func(string, any)
+
+	Tasks          *task.Manager
+	Worktrees      *worktree.Manager
+	Sandboxes      *sandbox.Manager
+	WorkflowEngine *workflow.Engine
+	Stats          *stats.Store
+	Limits         *limits.Store
+	LoopSched      *loopagent.Scheduler
+	PRTracker      *github.IssueTracker
+	Cfg            *config.Config
+	Artifacts      *artifact.Store
+	WorkScrub      func(projectID string) *WorkScrubContext
+
+	// HumanReviewComplete routes a completed human-review agent's verdict
+	// back into task state. The caller (internal/sybra) wires this to its
+	// own humanReviewHandler.onComplete method value — passing the concrete
+	// type here would create an import cycle, since internal/sybra
+	// constructs this Handler. Nil-safe: Handler checks before calling.
+	HumanReviewComplete func(*agent.Agent)
+
+	// ConflictRecovery dispatches the autonomous conflict-fix agent for a
+	// diverged fix-review push instead of Sybra's own process force-pushing.
+	// May be nil (degraded init / tests): treated as "no recovery available".
+	ConflictRecovery func(taskID string) bool
 }
 
-// AgentCompletionHandler reacts to agent.Manager and workflow.Engine
-// terminal-state callbacks: persists the result, records stats, advances
-// workflow, triggers worktree/sandbox cleanup. Mirrors the previous
-// (a *App) onAgentComplete + recordAgentRunStats + onWorkflowComplete
-// trio that lived inline in app.go.
-//
-// All optional dependencies (workflowEngine, stats, loopSched, humanReview,
-// sandboxes) are nil-safe — the test harness wires only the deps the
-// scenario exercises.
-type AgentCompletionHandler struct {
-	DomainHandler // logger + audit + emit
+// WorkScrubContext carries the subset of work-task scrub state the completion
+// package needs when importing local evidence artifacts.
+type WorkScrubContext struct {
+	Blocklist []string
+}
+
+// Handler reacts to agent.Manager and workflow.Engine terminal-state
+// callbacks. All optional dependencies are nil-safe — the test harness
+// wires only the deps the scenario exercises.
+type Handler struct {
+	logger *slog.Logger
+	audit  *audit.Logger
+	emit   func(string, any)
 
 	tasks          *task.Manager
 	worktrees      *worktree.Manager
@@ -77,17 +92,47 @@ type AgentCompletionHandler struct {
 	stats          *stats.Store
 	limits         *limits.Store
 	loopSched      *loopagent.Scheduler
-	humanReview    *humanReviewHandler
 	prTracker      *github.IssueTracker
 	cfg            *config.Config
+	// artifacts is the local per-task artifact store. Used to import a
+	// completed test-runner's Playwright MCP evidence (screenshots/console
+	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
+	// no-ops when unset (degraded init / tests).
+	artifacts *artifact.Store
+	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
+	// Used by importTestRunnerEvidence to redact work-repo identifiers from
+	// captured evidence before it lands in the local artifact store. Nil-safe:
+	// a nil func or nil-returning lookup means "not work-typed — import as-is".
+	workScrub func(projectID string) *WorkScrubContext
 
-	// conflictRecovery dispatches the autonomous conflict-fix agent for a
-	// task (review.Handler.RecoverStaleBranchConflict) — reused here so a
-	// fix-review push that hits project.ErrDivergedNeedsResolve resolves via
-	// an agent-driven merge+push (a real tool call, interceptable by hooks)
-	// rather than Sybra's own process force-pushing. May be nil (degraded
-	// init / tests): callers must treat that like "no recovery available".
-	conflictRecovery func(taskID string) bool
+	humanReviewComplete func(*agent.Agent)
+	conflictRecovery    func(taskID string) bool
+}
+
+// New constructs a Handler from cfg.
+func New(cfg Config) *Handler {
+	return &Handler{
+		logger:              cfg.Logger,
+		audit:               cfg.Audit,
+		emit:                cfg.Emit,
+		tasks:               cfg.Tasks,
+		worktrees:           cfg.Worktrees,
+		sandboxes:           cfg.Sandboxes,
+		workflowEngine:      cfg.WorkflowEngine,
+		stats:               cfg.Stats,
+		limits:              cfg.Limits,
+		loopSched:           cfg.LoopSched,
+		prTracker:           cfg.PRTracker,
+		cfg:                 cfg.Cfg,
+		artifacts:           cfg.Artifacts,
+		workScrub:           cfg.WorkScrub,
+		humanReviewComplete: cfg.HumanReviewComplete,
+		conflictRecovery:    cfg.ConflictRecovery,
+	}
+}
+
+func (h *Handler) logAudit(eventType, taskID, agentID string, data map[string]any) {
+	audit.LogEvent(h.audit, h.logger, eventType, taskID, agentID, data)
 }
 
 // OnComplete is called by the manager's construction-time completion callback.
@@ -101,7 +146,7 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
 }
 
-func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
+func (h *Handler) OnComplete(ag *agent.Agent) {
 	resultContent := terminalResultContent(ag)
 
 	// Snapshot mutable fields once under the agent's lock so both the
@@ -164,8 +209,8 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 	// originally caused the human-required transition based on the
 	// diagnostic verdict).
 	if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
-		if h.humanReview != nil {
-			h.humanReview.onComplete(ag)
+		if h.humanReviewComplete != nil {
+			h.humanReviewComplete(ag)
 		}
 		return
 	}
@@ -176,6 +221,10 @@ func (h *AgentCompletionHandler) OnComplete(ag *agent.Agent) {
 
 	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
 		return
+	}
+
+	if agent.RoleFromName(ag.Name) == agent.RoleTestRunner {
+		h.importEvidenceForAgent(ag)
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine
@@ -216,7 +265,7 @@ func terminalResultContent(ag *agent.Agent) string {
 // auto-mode denial recorded during the run. Batched at completion time so the
 // audit log is not spammed mid-run; a killed run may drop its denial events —
 // the permission_posture on agent.started is the durable observability signal.
-func (h *AgentCompletionHandler) emitPermissionDenialAudits(ag *agent.Agent) {
+func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 	posture := ag.GetHeadlessPermissionMode()
 	for _, d := range ag.GetPermissionDenials() {
 		toolID := d.ToolUseID
@@ -243,7 +292,7 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	}
 }
 
-func (h *AgentCompletionHandler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
+func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
@@ -296,7 +345,7 @@ func (h *AgentCompletionHandler) buildRunPatch(ag *agent.Agent, state agent.Stat
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *AgentCompletionHandler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
@@ -352,7 +401,7 @@ func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
 	return task.RunOutcomeFailure
 }
 
-func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr error) {
+func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 	if agent.RoleFromName(ag.Name) != agent.RoleReview || exitErr != nil {
 		return
 	}
@@ -370,7 +419,7 @@ func (h *AgentCompletionHandler) markCompletedReview(ag *agent.Agent, exitErr er
 // conditional/none and owned by the agent per its prompt (a blind backstop would
 // push a non-nit diff or break the "hold everything" contract), so Sybra parks
 // without forcing one.
-func (h *AgentCompletionHandler) handleFixReviewCompletion(ag *agent.Agent) {
+func (h *Handler) handleFixReviewCompletion(ag *agent.Agent) {
 	if !h.cfg.ReviewHoldEnabled() {
 		h.pushFixReviewBranch(ag)
 		return
@@ -387,7 +436,7 @@ func (h *AgentCompletionHandler) handleFixReviewCompletion(ag *agent.Agent) {
 // and any local diff, then submits on GitHub. Logs the mode and branch so a
 // stranded fix is diagnosable — whether a push was expected (push vs hold) and
 // which branch may hold unpushed commits.
-func (h *AgentCompletionHandler) holdFixReviewForHuman(ag *agent.Agent) {
+func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 	if h.tasks == nil {
 		return
 	}
@@ -405,7 +454,7 @@ func (h *AgentCompletionHandler) holdFixReviewForHuman(ag *agent.Agent) {
 		"mode", h.cfg.ReviewHoldMode(), "branch", t.Branch)
 }
 
-func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
+func (h *Handler) pushFixReviewBranch(ag *agent.Agent) {
 	if h.worktrees == nil || h.tasks == nil {
 		return
 	}
@@ -459,7 +508,7 @@ func (h *AgentCompletionHandler) pushFixReviewBranch(ag *agent.Agent) {
 // is interceptable by hooks. Escalates to human-required when no recovery
 // callback is wired or it declines (e.g. retry budget spent), so the fix is
 // never silently stranded on local disk.
-func (h *AgentCompletionHandler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, pushErr error) {
+func (h *Handler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, pushErr error) {
 	if h.conflictRecovery != nil && h.conflictRecovery(ag.TaskID) {
 		h.logger.Info("fix-review.push-diverged.recovered", "task_id", ag.TaskID, "agent_id", ag.ID, "branch", branch)
 		return
@@ -477,7 +526,7 @@ func (h *AgentCompletionHandler) recoverDivergedFixReviewPush(ag *agent.Agent, b
 // captureHeadSHA returns the worktree HEAD commit for the task, or "" when the
 // task has no live worktree or git fails. Best-effort; called before the async
 // worktree cleanup so the directory still exists.
-func (h *AgentCompletionHandler) captureHeadSHA(taskID string) string {
+func (h *Handler) captureHeadSHA(taskID string) string {
 	if h.worktrees == nil || h.tasks == nil {
 		return ""
 	}
@@ -513,7 +562,7 @@ func runOutcome(role agent.Role, exitErr error, resultContent string) string {
 	return "failed"
 }
 
-func (h *AgentCompletionHandler) roleForAgentName(name string) agent.Role {
+func (h *Handler) roleForAgentName(name string) agent.Role {
 	role, ok := agent.ParseRoleFromName(name)
 	if ok || !strings.Contains(name, ":") {
 		return role
@@ -526,7 +575,7 @@ func (h *AgentCompletionHandler) roleForAgentName(name string) agent.Role {
 // No-op when the stats store failed to initialize at startup. resultContent
 // is the agent's final message text, forwarded to runOutcome for test-runner
 // verdict recovery.
-func (h *AgentCompletionHandler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duration float64, exitErr error, resultContent string) {
+func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duration float64, exitErr error, resultContent string) {
 	if h.stats == nil {
 		return
 	}
@@ -628,7 +677,7 @@ func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
 //     claude/codex, which install their own signal handlers).
 //   - Exit codes 130/143/137 (128+SIGINT/SIGTERM/SIGKILL): claude/codex catch the
 //     signal, clean up, then exit with this conventional code. Go reports these as
-//     Exited()==true/Signaled()==false, so ws.Signaled() misses them.
+//     Exited()==true/Signaled()==false, so ws.Signaled() misses these.
 func isSignalKill(err error) bool {
 	if err == nil {
 		return false
@@ -651,6 +700,55 @@ func isSignalKill(err error) bool {
 	return false
 }
 
+// finalAssistantText walks the assistant turns backward and returns the
+// first one that actually decodes via verdict.Parse — this avoids selecting
+// an earlier turn that merely echoes the schema or discusses "the decision"
+// in prose that happens to parse as JSON. If no turn parses (e.g. the run
+// produced no valid verdict at all), it falls back to the last turn that at
+// least looks verdict-shaped, then the last result turn, purely so callers
+// have raw text to surface for diagnostics.
+//
+// Duplicated from internal/sybra's copy (app_human_review.go) rather than
+// shared, to avoid completion importing sybra (import cycle, since sybra
+// constructs completion.Handler) or sybra importing completion just for a
+// text-extraction helper unrelated to the completion pipeline.
+func finalAssistantText(ag *agent.Agent) string {
+	out := ag.Output()
+	for i := range slices.Backward(out) {
+		if out[i].Type != "assistant" {
+			continue
+		}
+		if _, _, err := verdict.Parse(out[i].Content); err == nil {
+			return out[i].Content
+		}
+	}
+	for i := range slices.Backward(out) {
+		if out[i].Type == "assistant" && (strings.Contains(out[i].Content, "sybra-verdict") || strings.Contains(out[i].Content, "\"decision\"")) {
+			return out[i].Content
+		}
+	}
+	for i := range slices.Backward(out) {
+		if out[i].Type == "result" {
+			return out[i].Content
+		}
+	}
+	return ""
+}
+
+// lastAssistantText returns the content of the last assistant-typed stream event.
+// Unlike finalAssistantText it applies no sybra-verdict gating — it is the
+// general "what did the model say last" accessor used to fill c.Result for
+// providers (codex) whose terminal turn.completed event carries no text.
+func lastAssistantText(ag *agent.Agent) string {
+	out := ag.Output()
+	for i := range slices.Backward(out) {
+		if out[i].Type == "assistant" {
+			return out[i].Content
+		}
+	}
+	return ""
+}
+
 // OnWorkflowComplete is the callback installed via
 // workflowEngine.SetOnComplete. Two responsibilities:
 //
@@ -665,7 +763,7 @@ func isSignalKill(err error) bool {
 //     chain pick up where this one left off. Idempotent: terminal statuses
 //     (done/cancelled/in-review/human-required/blocked) match no triggers,
 //     so DispatchEvent returns "" without starting anything.
-func (h *AgentCompletionHandler) OnWorkflowComplete(info workflow.CompletionInfo) {
+func (h *Handler) OnWorkflowComplete(info workflow.CompletionInfo) {
 	if h.workflowEngine == nil {
 		return
 	}

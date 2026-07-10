@@ -666,6 +666,131 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateBackfillsLegacyStatusChangedAt(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Legacy", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 30, 0, 0, time.UTC)
+	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
+
+	tags := []string{"medium", "touched"}
+	got, prev, err := store.UpdateWithPrev(created.ID, Update{Tags: &tags})
+	if err != nil {
+		t.Fatalf("UpdateWithPrev: %v", err)
+	}
+	if prev != StatusInProgress {
+		t.Fatalf("prev status = %q, want %q", prev, StatusInProgress)
+	}
+	if !got.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("StatusChangedAt = %s, want legacy UpdatedAt %s", got.StatusChangedAt, legacyUpdatedAt)
+	}
+	if !got.UpdatedAt.After(legacyUpdatedAt) {
+		t.Fatalf("UpdatedAt = %s, want refreshed after %s", got.UpdatedAt, legacyUpdatedAt)
+	}
+}
+
+func TestStoreAddRunBackfillsLegacyStatusChangedAt(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Legacy run", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 45, 0, 0, time.UTC)
+	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
+
+	if err := store.AddRun(created.ID, AgentRun{
+		AgentID: "agent-legacy",
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("StatusChangedAt = %s, want legacy UpdatedAt %s", got.StatusChangedAt, legacyUpdatedAt)
+	}
+	if len(got.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+}
+
+// TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus guards
+// against the false-positive lost_agent regression: a legacy in-progress
+// task with no StatusChangedAt and no intervening Update/AddRun call is
+// only ever observed through List() (the read path monitor scan uses), so
+// List must backfill it there rather than leaving it permanently zero.
+func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Legacy in-progress", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 45, 0, 0, time.UTC)
+	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var got *Task
+	for i := range tasks {
+		if tasks[i].ID == created.ID {
+			got = &tasks[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("task %s not found in List() result", created.ID)
+	}
+	if got.StatusChangedAt.IsZero() {
+		t.Fatal("StatusChangedAt is still zero after List(), want backfilled from legacy UpdatedAt")
+	}
+	if !got.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("StatusChangedAt = %s, want legacy UpdatedAt %s", got.StatusChangedAt, legacyUpdatedAt)
+	}
+	if got.ClosedAt != nil {
+		t.Fatalf("ClosedAt = %v, want nil for non-terminal status", got.ClosedAt)
+	}
+
+	// Re-read from a fresh store (cache bypassed) to confirm the backfill
+	// was persisted to disk, not just returned in-memory.
+	reopened, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.StatusChangedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("persisted StatusChangedAt = %s, want %s", persisted.StatusChangedAt, legacyUpdatedAt)
+	}
+	if !persisted.UpdatedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("persisted UpdatedAt = %s, want legacy UpdatedAt %s", persisted.UpdatedAt, legacyUpdatedAt)
+	}
+}
+
 func TestStoreUpdateRun(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())
@@ -724,6 +849,25 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 	if r.TestFailureFingerprint != "abc123" {
 		t.Errorf("TestFailureFingerprint = %q, want abc123", r.TestFailureFingerprint)
+	}
+}
+
+func writeLegacyTaskWithoutStatusChangedAt(t *testing.T, path, id string, status Status, updatedAt time.Time) {
+	t.Helper()
+	createdAt := updatedAt.Add(-1 * time.Hour)
+	body := fmt.Sprintf(`---
+id: %s
+title: Legacy task
+status: %s
+agent_mode: headless
+tags: [medium]
+created_at: %s
+updated_at: %s
+---
+legacy body
+`, id, status, createdAt.Format(time.RFC3339), updatedAt.Format(time.RFC3339))
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write legacy task: %v", err)
 	}
 }
 

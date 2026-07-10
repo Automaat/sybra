@@ -1,0 +1,19 @@
+id: test-push-first
+name: Test Push First
+description: >-
+  push_branch as the very first (and only) step, so StartWorkflowWithVars
+  runs it synchronously inside startWorkflowLocked, still holding
+  e.starting[taskID] — reproduces the reentrancy window divergence recovery
+  must survive (see engine_dispatch_test.go).
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-pr
+steps:
+  - id: push
+    name: Push
+    type: push_branch
+    next:
+      - goto: ""

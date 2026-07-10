@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -92,7 +93,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 
 			logger := e2eLogger()
 			done := make(chan struct{})
-			var h *AgentCompletionHandler
+			var h *completion.Handler
 			agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
 				Runtime: agent.ManagerRuntimeConfig{DefaultProvider: tc.provider},
 				OnComplete: func(ag *agent.Agent) {
@@ -108,12 +109,12 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 				Logger:       logger,
 				AgentChecker: agentMgr.HasRunningAgentForTask,
 			})
-			h = &AgentCompletionHandler{
-				DomainHandler: DomainHandler{logger: logger},
-				tasks:         taskMgr,
-				worktrees:     wm,
-				stats:         statsStore,
-			}
+			h = completion.New(completion.Config{
+				Logger:    logger,
+				Tasks:     taskMgr,
+				Worktrees: wm,
+				Stats:     statsStore,
+			})
 
 			tk, err := taskMgr.Create("stats e2e", "", "headless")
 			if err != nil {

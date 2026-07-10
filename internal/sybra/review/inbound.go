@@ -144,11 +144,12 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		}
 	}
 	if r.agents != nil {
-		if !r.agents.ClaimTaskDispatch(current.ID) {
+		claim, ok := r.agents.TryClaimDispatch(current.ID)
+		if !ok {
 			r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "dispatch_in_progress")
 			return nil
 		}
-		defer r.agents.ReleaseTaskDispatch(current.ID)
+		defer claim.Release()
 	}
 	if !force && r.tasks != nil {
 		if latest, err := r.tasks.Get(current.ID); err == nil {

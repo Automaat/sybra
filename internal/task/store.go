@@ -278,11 +278,20 @@ func (s *Store) List() ([]Task, error) {
 			t.PlanDrafts = map[string]string{}
 		}
 		// One-time migration: stamp ClosedAt for legacy terminal tasks that
-		// predate the ClosedAt field. UpdatedAt is the best approximation.
-		if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+		// predate the ClosedAt field, and backfill StatusChangedAt for any
+		// legacy task (terminal or not) that predates that field. Detectors
+		// like the lost-agent grace window key off StatusChangedAt and must
+		// never see a permanent zero value on a read-only path — List is the
+		// only path that observes a task between writes, so it must perform
+		// this backfill itself rather than waiting on the next Update/AddRun.
+		needsMigration := t.StatusChangedAt.IsZero() || (IsTerminalStatus(t.Status) && t.ClosedAt == nil)
+		if needsMigration {
 			ts := t.UpdatedAt
-			t.ClosedAt = &ts
-			if data, merr := Marshal(t); merr == nil {
+			if IsTerminalStatus(t.Status) && t.ClosedAt == nil {
+				t.ClosedAt = &ts
+			}
+			backfillStatusChangedAt(&t, ts)
+			if data, merr := marshalTask(t, false); merr == nil {
 				_ = fsutil.AtomicWrite(p, data)
 			}
 		}
@@ -1326,9 +1335,12 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 		u.TestingCycleStartedAt == nil {
 		t.TestingCycleStartedAt = &now
 	}
+	statusChangedBackfill := statusChangedAtBackfill(t, now)
 	t.UpdatedAt = now
 	if t.Status != prevStatus {
 		t.StatusChangedAt = now
+	} else if t.StatusChangedAt.IsZero() {
+		t.StatusChangedAt = statusChangedBackfill
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
 	if err := s.writeSidecars(id, u, &t); err != nil {
@@ -1528,6 +1540,32 @@ func cloneWorkflow(wf workflow.Execution) workflow.Execution {
 			clone.ParallelInflight[k] = &pcClone
 		}
 	}
+	// Deep-copy BestOfNInflight for the same reason as ParallelInflight above:
+	// each attempt's *AttemptStatus must be independent across List()/Get()
+	// clones, or a caller mutating a returned clone's attempt slots (e.g. while
+	// dispatching the next attempt) would silently corrupt the cached copy.
+	if wf.BestOfNInflight != nil {
+		clone.BestOfNInflight = make(map[string]*workflow.BestOfNInflight, len(wf.BestOfNInflight))
+		for k, v := range wf.BestOfNInflight {
+			if v == nil {
+				clone.BestOfNInflight[k] = nil
+				continue
+			}
+			bnClone := *v
+			if v.Attempts != nil {
+				bnClone.Attempts = make(map[string]*workflow.AttemptStatus, len(v.Attempts))
+				for ak, av := range v.Attempts {
+					if av == nil {
+						bnClone.Attempts[ak] = nil
+						continue
+					}
+					asClone := *av
+					bnClone.Attempts[ak] = &asClone
+				}
+			}
+			clone.BestOfNInflight[k] = &bnClone
+		}
+	}
 	return clone
 }
 
@@ -1570,6 +1608,8 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		now := time.Now().UTC()
 		if oldStatus != t.Status {
 			t.StatusChangedAt = now
+		} else {
+			backfillStatusChangedAt(&t, now)
 		}
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1578,6 +1618,8 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 		} else if wasTerminal && !isTerminal {
 			t.ClosedAt = nil
 		}
+	} else {
+		backfillStatusChangedAt(&t, time.Now().UTC())
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
 	d, err := Marshal(t)
@@ -1589,6 +1631,24 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	}
 	s.storeTaskCache(t)
 	return nil
+}
+
+func backfillStatusChangedAt(t *Task, fallback time.Time) {
+	if !t.StatusChangedAt.IsZero() {
+		return
+	}
+	t.StatusChangedAt = statusChangedAtBackfill(*t, fallback)
+}
+
+func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
+	switch {
+	case !t.UpdatedAt.IsZero():
+		return t.UpdatedAt
+	case !t.CreatedAt.IsZero():
+		return t.CreatedAt
+	default:
+		return fallback
+	}
 }
 
 // RunPatch describes a partial update to an AgentRun. Every field is a
@@ -1738,6 +1798,7 @@ func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	if !found {
 		return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 	}
+	backfillStatusChangedAt(&t, time.Now().UTC())
 	d, err := Marshal(t)
 	if err != nil {
 		return err

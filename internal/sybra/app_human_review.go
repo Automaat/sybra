@@ -370,11 +370,22 @@ func (h *humanReviewHandler) fileLocalConfigured(taskID, agentID string, v verdi
 		}
 		return
 	}
+	if existing, ok := h.findExistingLocalBugTask(v.IssueTitle); ok {
+		h.linkExistingLocalBug(taskID, agentID, existing, v)
+		return
+	}
 	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing route\n\nGitHub issue filing disabled by `human_review.sybra_bug_action: local_task`; Sybra created this local task instead."
 	tags := append([]string{"sybra-bug", "local"}, v.IssueLabels...)
 	init := task.Update{Tags: &tags}
 	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
 		init.ProjectID = &projectID
+	}
+	if existing := h.findExistingLocalBugTaskOnRoute(v.IssueTitle, "local"); existing != nil {
+		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+			"created": false, "url": "", "title": v.IssueTitle, "local_task_id": existing.ID,
+		})
+		h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by existing Sybra bug (local task)", v.Summary, existing.ID, "")
+		return
 	}
 	newTask, err := h.tasks.CreateFull(v.IssueTitle, body, task.AgentModeHeadless, init)
 	if err != nil {
@@ -388,23 +399,7 @@ func (h *humanReviewHandler) fileLocalConfigured(taskID, agentID string, v verdi
 		"created": true, "url": "", "title": v.IssueTitle, "local_task_id": newTask.ID,
 	})
 
-	origin, err := h.tasks.Get(taskID)
-	if err != nil {
-		h.logger.Error("human-review.local-configured.origin-get", "task_id", taskID, "err", err)
-		return
-	}
-	noteBody := fmt.Sprintf("**Linked local Sybra bug:** %s\n\n%s", newTask.ID, v.Summary)
-	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (local task)", noteBody)
-	upd := task.Update{
-		Body:         &newBody,
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(fmt.Sprintf("auto-review: %s (local task %s)", v.Summary, newTask.ID)),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
-		h.logger.Error("human-review.local-configured.origin-update", "task_id", taskID, "err", err)
-		return
-	}
-	h.markVerdictRendered(taskID, agentID)
+	h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (local task)", v.Summary, newTask.ID, "")
 }
 
 func sybraBugNoteBody(v verdictDecision, extra string) string {
@@ -463,10 +458,24 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	body, bodyRed := scrub.Scrub(v.IssueBody, wctx.Blocklist)
 	summary, _ := scrub.Scrub(v.Summary, wctx.Blocklist)
 
+	if existing, ok := h.findExistingLocalBugTask(title); ok {
+		h.linkExistingLocalBug(taskID, agentID, existing, verdictDecision{Summary: summary})
+		return
+	}
+
 	tags := append([]string{"sybra-bug", "scrubbed"}, v.IssueLabels...)
 	init := task.Update{Tags: &tags}
 	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
 		init.ProjectID = &projectID
+	}
+	if existing := h.findExistingLocalBugTaskOnRoute(title, "scrubbed"); existing != nil {
+		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+			"created": false, "url": "", "title": title,
+			"local_task_id": existing.ID, "redactions_title": titleRed, "redactions_body": bodyRed,
+			"scrubbed": true,
+		})
+		h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by existing Sybra bug (scrubbed)", summary, existing.ID, "")
+		return
 	}
 	newTask, err := h.tasks.CreateFull(title, body, task.AgentModeHeadless, init)
 	if err != nil {
@@ -485,24 +494,7 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 		"scrubbed": true,
 	})
 
-	statusReason := fmt.Sprintf("auto-review: %s (local task %s)", summary, newTask.ID)
-	noteBody := fmt.Sprintf("**Linked local sybra task:** %s\n\n%s", newTask.ID, summary)
-	origin, err := h.tasks.Get(taskID)
-	if err != nil {
-		h.logger.Error("human-review.local.origin-get", "task_id", taskID, "err", err)
-		return
-	}
-	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (scrubbed)", noteBody)
-	upd := task.Update{
-		Body:         &newBody,
-		Status:       task.Ptr(task.StatusBlocked),
-		StatusReason: task.Ptr(statusReason),
-	}
-	if _, err := h.tasks.Update(taskID, upd); err != nil {
-		h.logger.Error("human-review.local.origin-update", "task_id", taskID, "err", err)
-		return
-	}
-	h.markVerdictRendered(taskID, agentID)
+	h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (scrubbed)", summary, newTask.ID, "")
 }
 
 func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision) {
@@ -560,11 +552,23 @@ func (h *humanReviewHandler) fileLocalIssueFallback(taskID, agentID string, v ve
 	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
 		return false
 	}
+	if existing, ok := h.findExistingLocalBugTask(v.IssueTitle); ok {
+		h.linkExistingLocalBug(taskID, agentID, existing, v)
+		return true
+	}
 	body := strings.TrimSpace(v.IssueBody) + "\n\n## Filing failure\n\nGitHub issue filing failed, so Sybra created this local fallback task instead.\n\nError: " + submitErr.Error()
 	tags := append([]string{"sybra-bug", "issue-filing-failed"}, v.IssueLabels...)
 	init := task.Update{Tags: &tags}
 	if projectID := strings.TrimSpace(h.cfg.HumanReviewRepo()); projectID != "" {
 		init.ProjectID = &projectID
+	}
+	if existing := h.findExistingLocalBugTaskOnRoute(v.IssueTitle, "issue-filing-failed"); existing != nil {
+		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+			"created": false, "url": "", "title": v.IssueTitle, "local_task_id": existing.ID,
+			"fallback": true, "err": submitErr.Error(),
+		})
+		h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by existing Sybra bug (local fallback)", v.Summary, existing.ID, "GitHub issue filing failed: "+submitErr.Error())
+		return true
 	}
 	newTask, err := h.tasks.CreateFull(v.IssueTitle, body, task.AgentModeHeadless, init)
 	if err != nil {
@@ -580,25 +584,121 @@ func (h *humanReviewHandler) fileLocalIssueFallback(taskID, agentID string, v ve
 		"err":           submitErr.Error(),
 	})
 
+	return h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (local fallback)", v.Summary, newTask.ID, "GitHub issue filing failed: "+submitErr.Error())
+}
+
+func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag string) *task.Task {
+	title = strings.TrimSpace(title)
+	routeTag = strings.TrimSpace(routeTag)
+	if title == "" || routeTag == "" {
+		return nil
+	}
+	all, err := h.tasks.List()
+	if err != nil {
+		h.logger.Warn("human-review.local-dedupe.list", "title", title, "route_tag", routeTag, "err", err)
+		return nil
+	}
+	for i := range all {
+		t := &all[i]
+		if strings.TrimSpace(t.Title) != title {
+			continue
+		}
+		if slices.Contains(t.Tags, "sybra-bug") && slices.Contains(t.Tags, routeTag) {
+			return t
+		}
+	}
+	return nil
+}
+
+func (h *humanReviewHandler) blockOriginOnLocalBug(taskID, agentID, header, summary, localTaskID, extra string) bool {
 	origin, err := h.tasks.Get(taskID)
 	if err != nil {
-		h.logger.Error("human-review.issue.local-fallback.origin-get", "task_id", taskID, "err", err)
+		h.logger.Error("human-review.local.origin-get", "task_id", taskID, "err", err)
 		return false
 	}
-	noteBody := fmt.Sprintf("**Linked local Sybra bug:** %s\n\n%s\n\nGitHub issue filing failed: %s", newTask.ID, v.Summary, submitErr.Error())
-	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (local fallback)", noteBody)
-	statusReason := fmt.Sprintf("auto-review: %s (local task %s; issue filing failed)", v.Summary, newTask.ID)
+	noteBody := fmt.Sprintf("**Linked local Sybra bug:** %s\n\n%s", localTaskID, summary)
+	if extra = strings.TrimSpace(extra); extra != "" {
+		noteBody += "\n\n" + extra
+	}
+	newBody := appendSection(origin.Body, header, noteBody)
+	statusReason := fmt.Sprintf("auto-review: %s (local task %s)", summary, localTaskID)
+	if strings.Contains(strings.ToLower(extra), "issue filing failed") {
+		statusReason = fmt.Sprintf("auto-review: %s (local task %s; issue filing failed)", summary, localTaskID)
+	}
 	upd := task.Update{
 		Body:         &newBody,
 		Status:       task.Ptr(task.StatusBlocked),
 		StatusReason: task.Ptr(statusReason),
 	}
 	if _, err := h.tasks.Update(taskID, upd); err != nil {
-		h.logger.Error("human-review.issue.local-fallback.origin-update", "task_id", taskID, "err", err)
+		h.logger.Error("human-review.local.origin-update", "task_id", taskID, "err", err)
 		return false
 	}
 	h.markVerdictRendered(taskID, agentID)
 	return true
+}
+
+// findExistingLocalBugTask returns an already-filed local sybra-bug task with
+// an exact title match, if one exists. This is the local-fallback-path
+// counterpart to GHIssueSink.findOpenIssue's title-based dedup on the public
+// path: without it, a task that cycles human-required -> blocked -> todo ->
+// human-required for the same root cause spawns a brand-new local fallback
+// task on every fallback filing instead of pointing back at the one already
+// filed (see task 2379fece's repro: task 3e61e464 accumulated multiple
+// bug/fallback links for one underlying failure).
+func (h *humanReviewHandler) findExistingLocalBugTask(title string) (task.Task, bool) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return task.Task{}, false
+	}
+	all, err := h.tasks.List()
+	if err != nil {
+		h.logger.Warn("human-review.local.dedup-list", "err", err)
+		return task.Task{}, false
+	}
+	for i := range all {
+		if all[i].Title == title &&
+			slices.Contains(all[i].Tags, "sybra-bug") &&
+			hasAnyTag(all[i].Tags, "local", "scrubbed", "issue-filing-failed") {
+			return all[i], true
+		}
+	}
+	return task.Task{}, false
+}
+
+func hasAnyTag(tags []string, needles ...string) bool {
+	for _, needle := range needles {
+		if slices.Contains(tags, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// linkExistingLocalBug re-blocks taskID against an already-filed local
+// sybra-bug task instead of creating a duplicate.
+func (h *humanReviewHandler) linkExistingLocalBug(taskID, agentID string, existing task.Task, v verdictDecision) {
+	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+		"created": false, "url": "", "title": existing.Title, "local_task_id": existing.ID, "deduped": true,
+	})
+	origin, err := h.tasks.Get(taskID)
+	if err != nil {
+		h.logger.Error("human-review.local.dedup-origin-get", "task_id", taskID, "err", err)
+		return
+	}
+	summary := strings.TrimSpace(v.Summary)
+	noteBody := fmt.Sprintf("**Linked local sybra task (already filed):** %s\n\n%s", existing.ID, summary)
+	newBody := appendSection(origin.Body, "Auto-review verdict: blocked by Sybra bug (already filed)", noteBody)
+	upd := task.Update{
+		Body:         &newBody,
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr(fmt.Sprintf("auto-review: %s (local task %s, already filed)", summary, existing.ID)),
+	}
+	if _, err := h.tasks.Update(taskID, upd); err != nil {
+		h.logger.Error("human-review.local.dedup-origin-update", "task_id", taskID, "err", err)
+		return
+	}
+	h.markVerdictRendered(taskID, agentID)
 }
 
 // appendNote appends a section to the task body. Returns true if the update
@@ -818,20 +918,6 @@ func finalAssistantText(ag *agent.Agent) string {
 	}
 	for i := range slices.Backward(out) {
 		if out[i].Type == "result" {
-			return out[i].Content
-		}
-	}
-	return ""
-}
-
-// lastAssistantText returns the content of the last assistant-typed stream event.
-// Unlike finalAssistantText it applies no sybra-verdict gating — it is the
-// general "what did the model say last" accessor used to fill c.Result for
-// providers (codex) whose terminal turn.completed event carries no text.
-func lastAssistantText(ag *agent.Agent) string {
-	out := ag.Output()
-	for i := range slices.Backward(out) {
-		if out[i].Type == "assistant" {
 			return out[i].Content
 		}
 	}
