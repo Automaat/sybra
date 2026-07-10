@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -103,6 +104,9 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 		for {
 			if err := github.RefreshAppToken(ctx); err != nil {
 				a.logger.Warn("github.app.token.refresh", "err", err)
+			} else if tok := github.CurrentAppToken(); tok != "" {
+				_ = os.Setenv("GH_TOKEN", tok)
+				_ = os.Setenv("GITHUB_TOKEN", tok)
 			}
 			select {
 			case <-ctx.Done():

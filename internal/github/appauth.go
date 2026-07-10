@@ -104,6 +104,10 @@ func RefreshAppToken(ctx context.Context) error {
 // cachedAppToken returns the current installation token, or "" when App auth is
 // disabled or no token has been minted yet. Non-blocking — never performs I/O —
 // so the request gate is never stalled on a token mint.
+func CurrentAppToken() string {
+	return cachedAppToken()
+}
+
 func cachedAppToken() string {
 	src := currentAppSource()
 	if src == nil {

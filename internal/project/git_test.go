@@ -2740,3 +2740,26 @@ func TestCloneBare_InstallsSignoffHook(t *testing.T) {
 		t.Errorf("CloneBare worktree commit missing DCO trailer, got:\n%s", out)
 	}
 }
+
+func TestStripHTTPSUserinfo(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		changed bool
+	}{
+		{"token userinfo", "https://ghp_abc123@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"user colon token", "https://user:ghp_x@github.com/o/r.git", "https://github.com/o/r.git", true},
+		{"clean https", "https://github.com/o/r.git", "https://github.com/o/r.git", false},
+		{"ssh untouched", "git@github.com:o/r.git", "git@github.com:o/r.git", false},
+		{"at in path only", "https://github.com/o/r@v2.git", "https://github.com/o/r@v2.git", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := stripHTTPSUserinfo(tc.in)
+			if got != tc.want || changed != tc.changed {
+				t.Errorf("stripHTTPSUserinfo(%q) = (%q,%v), want (%q,%v)", tc.in, got, changed, tc.want, tc.changed)
+			}
+		})
+	}
+}

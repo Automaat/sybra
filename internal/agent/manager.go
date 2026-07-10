@@ -114,6 +114,8 @@ type Manager struct {
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
 
+	taskStatus func(taskID string) (string, bool)
+
 	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
 	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
@@ -123,6 +125,8 @@ type Manager struct {
 	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
 	// real operator store even though SYBRA_HOME points at the task's sandbox.
 	controlHome string
+
+	ghAppToken func() string
 
 	// deadAgentRetention bounds how long a completed agent stays in agents
 	// after markAgentDone before being evicted. <= 0 evicts synchronously
@@ -168,6 +172,7 @@ type ManagerConfig struct {
 	SurviveRestartDir string
 	SessionSink       func(taskID, agentID, sessionID string) error
 	TaskExists        func(taskID string) bool
+	TaskStatus        func(taskID string) (string, bool)
 	LimitSink         func(limits.Snapshot)
 
 	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
@@ -233,6 +238,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitSink:              cfg.LimitSink,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
+		taskStatus:             cfg.TaskStatus,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
@@ -394,6 +400,12 @@ func (m *Manager) taskExistsFn() func(taskID string) bool {
 	return m.taskExists
 }
 
+func (m *Manager) taskStatusFn() func(taskID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskStatus
+}
+
 // survives reports whether restart survival is active.
 func (m *Manager) survives() bool {
 	m.mu.RLock()
@@ -468,6 +480,12 @@ func (m *Manager) signalKill(a *Agent) {
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghAppToken = fn
 	m.mu.Unlock()
 }
 

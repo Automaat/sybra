@@ -19,6 +19,8 @@
   import TaskDiagnosticsPanel from '../components/task-detail/TaskDiagnosticsPanel.svelte'
   import { needsPlanApproval } from '../lib/statuses.js'
   import TaskProgressPanel from '../components/task-detail/TaskProgressPanel.svelte'
+  import TaskChildrenPanel from '../components/task-detail/TaskChildrenPanel.svelte'
+  import { childrenForUmbrella } from '../lib/umbrella-progress.js'
   import { ListTaskProgress } from '$lib/api'
 
   interface Props {
@@ -27,9 +29,10 @@
     onviewagent: (agentId: string) => void
     ondelete: () => void
     onreviewplan?: (taskId: string) => void
+    onselecttask?: (id: string) => void
   }
 
-  const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
+  const { taskId, onback, onviewagent, ondelete, onreviewplan, onselecttask }: Props = $props()
 
   const t = $derived(taskStore.tasks.get(taskId) ?? null)
   let error = $state('')
@@ -53,11 +56,17 @@
   let progressLoadSeq = 0
   const hasProgress = $derived(progressCount > 0)
 
+  const childData = $derived(t ? childrenForUmbrella(t, taskStore.list) : { children: [], unresolved: [], displayTotal: 0 })
+  const hasChildren = $derived(
+    !!t && (t.taskType === 'umbrella' || (t.dependsOn?.length ?? 0) > 0 || childData.displayTotal > 0),
+  )
+
   const tabs = $derived([
     { value: 'overview', label: 'Overview' },
     ...(showPlanTab ? [{ value: 'plan', label: pendingApproval ? 'Plan ●' : 'Plan' }] : []),
     ...(hasReview ? [{ value: 'review', label: 'Review' }] : []),
     ...(hasProgress ? [{ value: 'progress', label: 'Progress' }] : []),
+    ...(hasChildren ? [{ value: 'children', label: `Children · ${childData.displayTotal}` }] : []),
     { value: 'runs', label: runsCount > 0 ? `Runs · ${runsCount}` : 'Runs' },
     { value: 'diagnostics', label: 'Diagnostics' },
   ])
@@ -202,17 +211,19 @@
       <!-- Pinned outside the tabs so a live SSE stream never unmounts on a switch. -->
       <LiveAgentPanel task={t} {onviewagent} />
 
-      <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
-        <SegmentedControl.Control>
-          <SegmentedControl.Indicator />
-          {#each tabs as tab}
-            <SegmentedControl.Item value={tab.value}>
-              <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
-              <SegmentedControl.ItemHiddenInput />
-            </SegmentedControl.Item>
-          {/each}
-        </SegmentedControl.Control>
-      </SegmentedControl>
+      <div data-testid="task-detail-tabs" data-tab-labels={tabs.map((tab) => tab.label).join('|')}>
+        <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
+          <SegmentedControl.Control>
+            <SegmentedControl.Indicator />
+            {#each tabs as tab}
+              <SegmentedControl.Item value={tab.value}>
+                <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
+                <SegmentedControl.ItemHiddenInput />
+              </SegmentedControl.Item>
+            {/each}
+          </SegmentedControl.Control>
+        </SegmentedControl>
+      </div>
 
       <!-- Two-column: a wide main content column + a persistent properties rail,
            so the page uses its width instead of stranding a narrow column on the
@@ -242,6 +253,12 @@
           {#if hasProgress}
             <section class={panelClass('progress', 'flex flex-col gap-4')}>
               <TaskProgressPanel task={t} />
+            </section>
+          {/if}
+
+          {#if hasChildren}
+            <section class={panelClass('children', 'flex flex-col gap-4')}>
+              <TaskChildrenPanel task={t} onselecttask={onselecttask ?? (() => {})} />
             </section>
           {/if}
 
