@@ -166,6 +166,45 @@ func TestAgentView_ConcurrentWithMutation(t *testing.T) {
 	wg.Wait()
 }
 
+func TestAgentViewLocked_DoesNotRelockAgentWithQueuedWriter(t *testing.T) {
+	a := &Agent{
+		ID:       "agent-1",
+		Mode:     "headless",
+		State:    StateRunning,
+		Provider: "claude",
+	}
+
+	a.mu.RLock()
+	writerStarted := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		close(writerStarted)
+		a.mu.Lock()
+		a.State = StateStopped
+		a.mu.Unlock()
+		close(writerDone)
+	}()
+	<-writerStarted
+	time.Sleep(20 * time.Millisecond)
+
+	viewDone := make(chan View, 1)
+	go func() {
+		viewDone <- a.viewLocked(true)
+	}()
+
+	select {
+	case view := <-viewDone:
+		if !view.CanSteer {
+			t.Fatal("expected steerable snapshot while stdin pipe is live")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("viewLocked blocked while a writer was queued; snapshot code must not re-enter Agent.mu")
+	}
+
+	a.mu.RUnlock()
+	<-writerDone
+}
+
 func TestStreamEventJSONKeySet(t *testing.T) {
 	ts := time.Date(2026, 6, 28, 20, 31, 0, 0, time.UTC)
 

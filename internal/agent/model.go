@@ -252,8 +252,13 @@ type View struct {
 // serialize without holding a.mu. Built under a single RLock so concurrent
 // writers (runner, watchdog, approval server) cannot produce a torn read.
 func (a *Agent) View() View {
+	hasStdinPipe := a.convo.hasStdinPipe()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.viewLocked(hasStdinPipe)
+}
+
+func (a *Agent) viewLocked(hasStdinPipe bool) View {
 	return View{
 		ID:                       a.ID,
 		TaskID:                   a.TaskID,
@@ -291,7 +296,7 @@ func (a *Agent) View() View {
 		ErrorKind:                a.ErrorKind,
 		ErrorMsg:                 a.ErrorMsg,
 		AwaitingApproval:         a.AwaitingApproval,
-		CanSteer:                 a.computeCanSteer(),
+		CanSteer:                 a.computeCanSteerLocked(hasStdinPipe),
 		Resumable:                a.Resumable,
 	}
 }
@@ -910,14 +915,21 @@ func (a *Agent) isFinalizing() bool {
 // mode/provider (interactive, or headless claude). Mirrors the SendMessage
 // gate so the UI capability never disagrees with the backend.
 func (a *Agent) computeCanSteer() bool {
-	if !a.convo.hasStdinPipe() || a.isFinalizing() {
+	hasStdinPipe := a.convo.hasStdinPipe()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.computeCanSteerLocked(hasStdinPipe)
+}
+
+func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
+	if !hasStdinPipe || a.finalizing {
 		return false
 	}
 	switch a.Mode {
 	case "interactive":
 		return true
 	case "headless":
-		return a.GetProvider() == "claude"
+		return a.Provider == "claude"
 	default:
 		return false
 	}
@@ -926,7 +938,7 @@ func (a *Agent) computeCanSteer() bool {
 // refreshCanSteer recomputes and stores the CanSteer capability. Called from
 // the state/finalizing/stdin-transport transitions that can change it, so the
 // value serialized on the next AgentState emit is current. Must be called
-// without a.mu held (computeCanSteer takes a.mu.RLock via isFinalizing).
+// without a.mu held (computeCanSteer takes a.mu.RLock).
 func (a *Agent) refreshCanSteer() {
 	v := a.computeCanSteer()
 	a.mu.Lock()
