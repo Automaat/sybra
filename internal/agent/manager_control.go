@@ -336,7 +336,7 @@ func (m *Manager) Shutdown() {
 func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	m.mu.RLock()
 	count := len(m.agents)
-	dones := make([]chan struct{}, 0, count)
+	cancelled := make([]*Agent, 0, count)
 	survived := 0
 	for _, a := range m.agents {
 		// Detached agents are meant to outlive the app: do not cancel
@@ -349,25 +349,49 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 			a.cancel()
 		}
 		if a.done != nil {
-			dones = append(dones, a.done)
+			cancelled = append(cancelled, a)
 		}
 	}
 	m.mu.RUnlock()
 
-	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones), "survived", survived)
-	if len(dones) == 0 || grace <= 0 {
+	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(cancelled), "survived", survived)
+	if len(cancelled) == 0 || grace <= 0 {
 		return
 	}
 
 	deadline := time.After(grace)
-	for i, done := range dones {
+	exited := 0
+	for i, a := range cancelled {
 		select {
-		case <-done:
+		case <-a.done:
+			exited++
 		case <-deadline:
 			m.logger.Warn("agent.shutdown.timeout",
-				"exited", i, "remaining", len(dones)-i, "grace", grace)
+				"exited", i, "remaining", len(cancelled)-i, "grace", grace)
+			m.evictShutdownAgents(cancelled[:i])
 			return
 		}
 	}
-	m.logger.Info("agent.shutdown.done", "exited", len(dones))
+	m.logger.Info("agent.shutdown.done", "exited", exited)
+
+	// The process is going away: markAgentDone already scheduled a delayed
+	// eviction for each agent (deadAgentRetention), but there is no reader
+	// left to benefit from that window once Shutdown returns, so evict
+	// synchronously rather than leaking every agent that ever ran into a
+	// registry no one will read again.
+	m.evictShutdownAgents(cancelled)
+}
+
+// evictShutdownAgents removes the given agents from the live registry,
+// guarding against an ID being reused by a new registration in the
+// (vanishingly unlikely, shutdown-path) window between cancellation and
+// eviction.
+func (m *Manager) evictShutdownAgents(agents []*Agent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range agents {
+		if cur, ok := m.agents[a.ID]; ok && cur == a {
+			delete(m.agents, a.ID)
+		}
+	}
 }

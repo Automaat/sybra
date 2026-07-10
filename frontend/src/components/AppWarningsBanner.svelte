@@ -47,7 +47,7 @@
 
 {#if degradedWarnings.length > 0}
   <div class="flex shrink-0 flex-col gap-0.5">
-    {#each degradedWarnings as w, i (w.subsystem)}
+    {#each degradedWarnings as w, i}
       <div class="flex items-center gap-2 bg-warning-800/90 border-b border-warning-600 px-4 py-2 text-warning-100 text-sm">
         <AlertTriangle size={16} class="shrink-0" />
         <span><strong>{w.subsystem}</strong> degraded — {w.reason}</span>

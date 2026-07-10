@@ -2,16 +2,26 @@ package poll
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+// degradedWarningEvent mirrors the frontend's DegradedWarning shape
+// (frontend/src/lib/app-lifecycle.ts) so umbrella degradation renders through
+// the same startup:degraded warning banner as other subsystem warnings.
+type degradedWarningEvent struct {
+	Subsystem string `json:"subsystem"`
+	Reason    string `json:"reason"`
+}
 
 const IssuesPollInterval = 5 * time.Minute
 
@@ -305,6 +315,19 @@ func (f *IssuesFetcher) expandUmbrellaIssue(issue *github.Issue) {
 	}
 	if res.Degraded {
 		f.logger.Warn("issue-sync.umbrella-degraded", "issue", issue.URL, "created", res.Created)
+		if f.emit != nil && res.ChildCount > 0 && res.MaxParallel > 0 {
+			url := res.UmbrellaURL
+			if url == "" {
+				url = issue.URL
+			}
+			f.emit(events.StartupDegraded, degradedWarningEvent{
+				Subsystem: "umbrella",
+				Reason: fmt.Sprintf(
+					"%s expanded via linear-chain fallback: %d sub-issues, %d created, max-parallel reduced to %d",
+					url, res.ChildCount, res.Created, res.MaxParallel,
+				),
+			})
+		}
 	}
 }
 

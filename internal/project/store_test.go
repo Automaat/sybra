@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -291,6 +292,54 @@ func TestStoreSetSetupCommands(t *testing.T) {
 	}
 	if len(persisted.SetupCommands) != 2 {
 		t.Errorf("persisted SetupCommands = %v, want %v", persisted.SetupCommands, cmds)
+	}
+}
+
+// TestStoreConcurrentUpdatesDontDropWrites exercises the exact race the
+// mutex closes: MarkReady simulating an async clone completion racing
+// SetSetupCommands from a UI edit, both doing Get→mutate→writeFile against
+// the same project. Without per-id locking one goroutine's write can
+// silently overwrite the other's read-stale copy, dropping a field.
+func TestStoreConcurrentUpdatesDontDropWrites(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo", Type: ProjectTypePet, Status: ProjectStatusCloning}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n * 2)
+	for range n {
+		go func() {
+			defer wg.Done()
+			if err := store.MarkReady("owner/repo"); err != nil {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := store.SetSetupCommands("owner/repo", []string{"npm install"}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != ProjectStatusReady {
+		t.Errorf("Status = %q, want %q (a racing SetSetupCommands write dropped MarkReady's update)", got.Status, ProjectStatusReady)
+	}
+	if len(got.SetupCommands) != 1 {
+		t.Errorf("SetupCommands = %v, want 1 entry (a racing MarkReady write dropped SetSetupCommands's update)", got.SetupCommands)
 	}
 }
 

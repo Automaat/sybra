@@ -34,16 +34,10 @@ type Store struct {
 	planDecisions *PlanningSidecarStore
 	planBrief     *PlanningSidecarStore
 	codeReviews   *CodeReviewStore
-	writeLocksMu  sync.Mutex
-	writeLocks    map[string]*taskWriteLock
+	locker        *fsutil.KeyedLocker
 	cacheMu       sync.RWMutex
 	listCache     []Task
 	listValid     bool
-}
-
-type taskWriteLock struct {
-	mu   sync.Mutex
-	refs int
 }
 
 // NewStore creates dir if it does not exist and returns a Store rooted
@@ -64,7 +58,7 @@ func NewStore(dir string) (*Store, error) {
 		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
 		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
 		codeReviews:   NewCodeReviewStore(dir),
-		writeLocks:    map[string]*taskWriteLock{},
+		locker:        fsutil.NewKeyedLocker(),
 	}, nil
 }
 
@@ -149,47 +143,15 @@ func (s *Store) CodeReviews() *CodeReviewStore {
 // race this lock exists to close — so the in-process lock is released and an
 // error is returned instead.
 func (s *Store) lockTask(id string) (func(), error) {
-	s.writeLocksMu.Lock()
-	if s.writeLocks == nil {
-		s.writeLocks = map[string]*taskWriteLock{}
-	}
-	lock := s.writeLocks[id]
-	if lock == nil {
-		lock = &taskWriteLock{}
-		s.writeLocks[id] = lock
-	}
-	lock.refs++
-	s.writeLocksMu.Unlock()
-
-	lock.mu.Lock()
-
-	releaseInProcess := func() {
-		lock.mu.Unlock()
-		s.writeLocksMu.Lock()
-		defer s.writeLocksMu.Unlock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(s.writeLocks, id)
-		}
-	}
-
 	path, err := s.safePath(id)
 	if err != nil {
-		releaseInProcess()
 		return nil, err
 	}
-	unlockFile, err := fsutil.LockFile(path)
+	unlock, err := s.locker.Lock(id, path)
 	if err != nil {
-		releaseInProcess()
 		return nil, fmt.Errorf("lock task %s: %w", id, err)
 	}
-
-	return func() {
-		if err := unlockFile(); err != nil {
-			slog.Default().Warn("task.lockTask.unlock_failed", "id", id, "err", err)
-		}
-		releaseInProcess()
-	}, nil
+	return unlock, nil
 }
 
 // sidecarFileSuffixes lists every fixed-name (non-plan-draft) sidecar
@@ -1658,11 +1620,12 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // pointer: nil means "leave unchanged". Fields that carried an implicit
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
-// HeadSHA and string verdict/test/session values ignore empty strings, and
-// VerdictRendered is a latch that only ever flips true.
+// HeadSHA, Outcome, and string verdict/test/session values ignore empty
+// strings, and VerdictRendered is a latch that only ever flips true.
 type RunPatch struct {
 	// Lifecycle
 	State   *string
+	Outcome *string
 	Result  *string
 	LogFile *string
 	HeadSHA *string
@@ -1694,6 +1657,9 @@ type RunPatch struct {
 func applyRunLifecycle(run *AgentRun, p RunPatch) {
 	if p.State != nil {
 		run.State = *p.State
+	}
+	if p.Outcome != nil && *p.Outcome != "" {
+		run.Outcome = *p.Outcome
 	}
 	if p.Result != nil {
 		run.Result = *p.Result
