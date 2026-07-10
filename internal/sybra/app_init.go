@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -316,6 +317,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
@@ -678,6 +680,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
 	a.workflowEngine.SetPRFinder(prFinderAdapter{})
 	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		projects:   a.projects,
+		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:      a.audit,
+	})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -696,9 +704,17 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetContext(a.ctx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
-	// orchestrator is built before the reviewer.
-	if a.agentOrch != nil && a.reviewer != nil {
-		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	// orchestrator is built before the reviewer. Routed through
+	// workflowEngine.TryConflictRecovery (not reviewer.RecoverStaleBranchConflict
+	// directly): a rebase conflict discovered here can be reached from deep
+	// inside a still-executing StartWorkflow call (e.g. restart-stale's raw
+	// StartWorkflow(implement) hitting the conflict during execRunAgent's own
+	// worktree prep), and calling the reviewer directly in that case re-enters
+	// StartWorkflowWithVars while this task's starting marker is still held —
+	// ErrWorkflowAlreadyActive, silently dropped, straight to human-required.
+	// TryConflictRecovery detects the held marker and queues the retry instead.
+	if a.agentOrch != nil && a.workflowEngine != nil {
+		a.agentOrch.SetConflictRecovery(a.workflowEngine.TryConflictRecovery)
 	}
 	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
 	// (e.g. a reused worktree rebased out from under an earlier merge-based
@@ -708,7 +724,7 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
-	// to the AgentCompletionHandler constructed there.
+	// to the completion.Handler constructed there.
 }
 
 func (a *App) initAgentConfig() {

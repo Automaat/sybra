@@ -640,7 +640,7 @@ export class StepConfig {
     "bestOfNStep"?: string;
 
     /**
-     * run_agent: enforce the cumulative task cost budget before dispatching.
+     * run_agent: enforce the cumulative task cost budget before launch.
      * Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
      * pre-staged dir and so bypasses StartAgentWithAssignment's own budget
      * enforcement) so the run fails closed to human-required instead of
@@ -874,7 +874,7 @@ export enum StepType {
      * resume_status vars captured before the recovery workflow was started;
      * a missing resume_workflow_id is a no-op (the workflow simply ends, and
      * normal status-driven cascade dispatch — see
-     * AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+     * completion.Handler.OnWorkflowComplete — picks up whatever workflow
      * matches the restored task status).
      */
     StepResumeWorkflow = "resume_workflow",
@@ -913,6 +913,14 @@ export enum StepType {
      * session involved; replaces the create-pr agent role.
      */
     StepCreatePR = "create_pr",
+
+    /**
+     * StepClassifyTask deterministically runs the Go triage classifier
+     * (internal/triage) against the task and applies its verdict — no agent
+     * session involved. Replaces a run_agent step that wrapped a full Sonnet
+     * agent invoking the /sybra-triage skill around this same classifier.
+     */
+    StepClassifyTask = "classify_task",
 };
 
 /**

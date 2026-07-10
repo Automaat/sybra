@@ -154,31 +154,15 @@ func classifyOne(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	v, err := classifier.Classify(ctx, t, projects)
+	v, updated, err := triage.ClassifyAndApply(ctx, classifier, store, al, t, projects)
 	if err != nil {
+		// A triage failure is retryable — stamp a magic StatusReason the
+		// workflow engine's triage retry-coercion path recognises so the
+		// task is re-run rather than parked.
 		if markErr := markTriageRetryable(store, t, err); markErr != nil {
 			return triageResult{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
 		}
 		return triageResult{}, err
-	}
-	updated, err := triage.Apply(store, t, v, projects)
-	if err != nil {
-		return triageResult{}, err
-	}
-	if al != nil {
-		_ = al.Log(audit.Event{
-			Type:   audit.EventTriageClassified,
-			TaskID: t.ID,
-			Data: map[string]any{
-				"title":      v.Title,
-				"tags":       v.Tags,
-				"size":       v.Size,
-				"type":       v.Type,
-				"mode":       v.Mode,
-				"project_id": updated.ProjectID,
-				"status":     string(updated.Status),
-			},
-		})
 	}
 	return triageResult{Verdict: v, Task: updated}, nil
 }

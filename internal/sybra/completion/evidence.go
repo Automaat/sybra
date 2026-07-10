@@ -1,4 +1,4 @@
-package sybra
+package completion
 
 import (
 	"bytes"
@@ -17,18 +17,13 @@ import (
 )
 
 // maxEvidenceFiles bounds how many files a single test-runner evidence import
-// walks — a runaway Playwright MCP session (e.g. one screenshot per retry
-// loop iteration) must not turn into an unbounded artifact-store write.
+// walks — a runaway Playwright MCP session must not turn into an unbounded
+// artifact-store write.
 const maxEvidenceFiles = 50
 
-// maxEvidenceFileSize bounds an individual evidence file. Screenshots and
-// console logs are small; this guards against an accidental large capture
-// (e.g. a video recording) bloating the local artifact store.
+// maxEvidenceFileSize bounds an individual evidence file.
 const maxEvidenceFileSize = 10 * 1024 * 1024 // 10MB
 
-// evidenceNameSanitizeRe strips everything outside the artifact store's
-// allowed name charset (see artifact.validName) from an evidence file's stem
-// and extension.
 var evidenceNameSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
 var textEvidenceExtensions = map[string]struct{}{
@@ -44,7 +39,7 @@ var textEvidenceExtensions = map[string]struct{}{
 	".yml":  {},
 }
 
-func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
+func (h *Handler) importEvidenceForAgent(ag *agent.Agent) {
 	if h.tasks == nil || h.worktrees == nil {
 		return
 	}
@@ -59,30 +54,14 @@ func (h *AgentCompletionHandler) importEvidenceForAgent(ag *agent.Agent) {
 	}
 }
 
-// importTestRunnerEvidence walks a completed test-runner's evidence directory
-// (worktree.EvidenceDirName, populated by a headless Playwright MCP server —
-// see internal/agent/mcp.go) and imports bounded, sanitized regular files into
-// the task's local artifact store. Called synchronously from OnComplete
-// before the async worktree cleanup so the directory still exists.
-//
-// projectID resolves a WorkScrubContext via h.workScrub: for work-typed
-// tasks, evidence content is redacted through scrub.Scrub before it is
-// persisted, so a captured screenshot/console log can never carry a raw
-// work-repo identifier into the local artifact store. See CLAUDE.md —
-// Work-Data Confidentiality.
-//
-// Best-effort throughout: a missing/empty/unreadable evidence dir, a nil
-// artifact store, or a per-file failure are all no-ops or logged warnings —
-// evidence capture must never block workflow advancement past a completed
-// test-runner run.
-func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPath, projectID string) {
+func (h *Handler) importTestRunnerEvidence(ag *agent.Agent, wtPath, projectID string) {
 	if h.artifacts == nil || wtPath == "" {
 		return
 	}
 	dir := filepath.Join(wtPath, worktree.EvidenceDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return // missing/unreadable dir: nothing to import
+		return
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
@@ -113,12 +92,7 @@ func (h *AgentCompletionHandler) importTestRunnerEvidence(ag *agent.Agent, wtPat
 	}
 }
 
-// surfaceEvidenceImport appends a progress-log entry so imported evidence is
-// discoverable from the task's Progress tab (`sybra-cli --json progress list
-// <id>`), satisfying the "surface it on the task" requirement without a
-// dedicated GUI artifact viewer. Best-effort: a nil store or append failure
-// is logged, never fatal to the completion path.
-func (h *AgentCompletionHandler) surfaceEvidenceImport(ag *agent.Agent, imported int) {
+func (h *Handler) surfaceEvidenceImport(ag *agent.Agent, imported int) {
 	if h.artifacts == nil {
 		return
 	}
@@ -133,19 +107,13 @@ func (h *AgentCompletionHandler) surfaceEvidenceImport(ag *agent.Agent, imported
 	}
 }
 
-// importEvidenceEntry imports a single evidence-dir entry. ok reports whether
-// a file was actually imported (false for a silently-skipped directory or
-// symlink); err is non-nil only for a genuine failure worth logging. scrubCtx
-// is non-nil only for work-typed tasks — when set, only known text evidence
-// is imported and redacted through scrub.Scrub before it is written to the
-// artifact store.
-func (h *AgentCompletionHandler) importEvidenceEntry(ag *agent.Agent, dir string, e os.DirEntry, index int, scrubCtx *WorkScrubContext) (ok bool, err error) {
+func (h *Handler) importEvidenceEntry(ag *agent.Agent, dir string, e os.DirEntry, index int, scrubCtx *WorkScrubContext) (bool, error) {
 	info, err := e.Info()
 	if err != nil {
 		return false, err
 	}
 	if e.IsDir() || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return false, nil // skip: only plain regular files are imported
+		return false, nil
 	}
 	if !ag.StartedAt.IsZero() && info.ModTime().Before(ag.StartedAt) {
 		return false, nil
@@ -185,10 +153,6 @@ func isTextEvidenceFile(name string, content []byte) bool {
 	return !bytes.Contains(content, []byte{0})
 }
 
-// sanitizeEvidenceName derives a store-safe, collision-resistant artifact name
-// from an evidence file's original basename. Prefixing with the agent ID and
-// a per-run index means a rerun (a fresh agent ID) or a duplicate basename
-// within the same run never overwrites an earlier import.
 func sanitizeEvidenceName(agentID string, index int, base string) string {
 	ext := evidenceNameSanitizeRe.ReplaceAllString(filepath.Ext(base), "")
 	stem := evidenceNameSanitizeRe.ReplaceAllString(strings.TrimSuffix(base, filepath.Ext(base)), "-")

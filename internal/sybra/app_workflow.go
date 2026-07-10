@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -28,6 +29,7 @@ import (
 // Compile-time interface checks.
 var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
 	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
 	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
@@ -231,6 +233,34 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
+	return err
+}
+
+// taskClassifierAdapter bridges internal/triage's deterministic classifier to
+// workflow.TaskClassifier for the `classify_task` step. It runs the same
+// classify+apply pipeline as `sybra-cli triage classify <id>` and the
+// poll-based auto-triage handler (internal/poll.TriageHandler), so the
+// workflow step no longer needs a full agent session to reach it.
+type taskClassifierAdapter struct {
+	tasks      *task.Manager
+	projects   *project.Store
+	classifier triage.Classifier
+	audit      *audit.Logger
+}
+
+func (a *taskClassifierAdapter) ClassifyTask(ctx context.Context, taskID string) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	var projects []project.Project
+	if a.projects != nil {
+		projects, err = a.projects.List()
+		if err != nil {
+			return err
+		}
+	}
+	_, _, err = triage.ClassifyAndApply(ctx, a.classifier, a.tasks, a.audit, t, projects)
 	return err
 }
 
@@ -567,22 +597,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// For roles that don't go through StartAgentWithAssignment (triage, eval,
 	// plan, pr-fix, fix-review, test-runner, ...), build RunConfig directly.
 	r := agent.Role(role)
-	if err := a.claimDirectDispatch(taskID); err != nil {
-		return "", "", "", err
+	// claimDirectDispatch serializes this path per task, closing the same
+	// check-then-act race StartAgentWithAssignment closes for implementation
+	// agents: without it, two dispatchers (e.g. a fast ResumeStalled retry)
+	// can each observe no running agent and start a duplicate agent against
+	// the same task/worktree. claim.Release is idempotent, so the
+	// worktree-prep recovery path below can release it early (to unblock a
+	// nested same-task recovery dispatch) without this deferred call
+	// double-releasing on return.
+	claim, ok := a.agents.TryClaimDispatch(taskID)
+	if !ok {
+		return "", "", "", workflow.ErrDispatchInFlight
 	}
-	// claimReleased guards against a double release: the worktree-prep recovery
-	// path (below) releases the claim early so a nested recovery dispatch can
-	// re-enter for the same taskID. Because ReleaseTaskDispatch is an
-	// unconditional delete() keyed only by taskID (no ownership token), an
-	// unguarded defer would fire a second delete on return and could clobber a
-	// live claim taken by an independent dispatcher (e.g. ResumeStalled) during
-	// the network-bound recovery window.
-	claimReleased := false
-	defer func() {
-		if !claimReleased {
-			a.agents.ReleaseTaskDispatch(taskID)
-		}
-	}()
+	defer claim.Release()
 
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -638,11 +665,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	cleanRetryReset := false
 	if cfg.Dir == "" && needsWorktree {
 		var dir string
-		var released bool
-		t, dir, cleanRetryReset, released, err = a.resolveWorktreeDir(t, taskID, role, cleanRetryRef)
-		if released {
-			claimReleased = true
-		}
+		t, dir, cleanRetryReset, err = a.resolveWorktreeDir(t, taskID, role, cleanRetryRef, claim)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -696,20 +719,21 @@ func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID strin
 
 // resolveWorktreeDir auto-assigns a project to t (if needed), optionally
 // resets the worktree for a clean retry, and prepares the worktree dir for
-// the direct-dispatch path. released reports whether it already released the
-// caller's dispatch claim (see the ReleaseTaskDispatch call below) so the
-// caller's deferred release doesn't fire a second, unguarded delete.
-func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryRef string) (updated task.Task, dir string, cleanRetryReset, released bool, err error) {
+// the direct-dispatch path. claim is the caller's held dispatch claim: on a
+// worktree-prep failure this releases it early (see the claim.Release() call
+// below) rather than the caller's own deferred release, which — since
+// DispatchClaim.Release is idempotent — is then a safe no-op.
+func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, dir string, cleanRetryReset bool, err error) {
 	t, err = a.agentOrch.AutoAssignProject(t)
 	if err != nil {
-		return t, "", false, false, err
+		return t, "", false, err
 	}
 	if t.ProjectID == "" {
-		return t, "", false, false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
+		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
 		if resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef); resetErr != nil {
-			return t, "", false, false, resetErr
+			return t, "", false, resetErr
 		}
 		cleanRetryReset = true
 	}
@@ -732,24 +756,10 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		// attempt regardless (wtErr != nil means we never call a.agents.Run
 		// below), so releasing early is safe: it doesn't overlap with our own
 		// (never-attempted) agent start.
-		a.agents.ReleaseTaskDispatch(taskID)
-		return t, "", cleanRetryReset, true, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
+		claim.Release()
+		return t, "", cleanRetryReset, a.classifyDirectDispatchWorktreeErr(taskID, wtErr)
 	}
-	return t, d, cleanRetryReset, false, nil
-}
-
-// claimDirectDispatch serializes the direct-run dispatch path (every role
-// that bypasses StartAgentWithAssignment: triage, eval, plan, pr-fix,
-// fix-review, test-runner, ...) per task, closing the same check-then-act
-// race that StartAgentWithAssignment closes for implementation agents above:
-// without it, two dispatchers (e.g. a fast ResumeStalled retry) can each
-// observe no running agent and start a duplicate agent against the same
-// task/worktree.
-func (a *agentAdapter) claimDirectDispatch(taskID string) error {
-	if !a.agents.ClaimTaskDispatch(taskID) {
-		return workflow.ErrDispatchInFlight
-	}
-	return nil
+	return t, d, cleanRetryReset, nil
 }
 
 // classifyDirectDispatchWorktreeErr translates a PrepareForTask failure from
@@ -933,6 +943,14 @@ func (a *agentAdapter) ProviderCanFailover(provider string) bool {
 
 func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
+}
+
+func (a *agentAdapter) TryClaimDispatch(taskID string) (workflow.DispatchClaim, bool) {
+	return a.agents.TryClaimDispatch(taskID)
+}
+
+func (a *agentAdapter) IsDispatching(taskID string) bool {
+	return a.agents.IsDispatching(taskID)
 }
 
 // CheckTaskCostBudget implements workflow.CostBudgetChecker for the

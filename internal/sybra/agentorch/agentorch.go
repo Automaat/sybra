@@ -364,7 +364,7 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, releaseClaim func()) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
 	}
@@ -405,7 +405,7 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 		// result — or that nested dispatch always observes the claim as still
 		// held and bails with ErrDispatchInFlight without ever starting an
 		// agent (the branch-conflict-fix workflow never actually dispatches).
-		releaseClaim()
+		claim.Release()
 		if _, recovered := MarkRebaseBlockedWithRecoveryResult(o.tasks, taskID, wtErr, o.logger, o.conflictRecovery); recovered {
 			return t, "", workflow.ErrDispatchInFlight
 		}
@@ -422,21 +422,14 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	// a manual start) cannot observe "no running agent" and launch a duplicate
 	// on the same worktree. workflow.ErrDispatchInFlight is benign: the holder
 	// will produce the task's agent.
-	if !o.agents.ClaimTaskDispatch(taskID) {
+	claim, ok := o.agents.TryClaimDispatch(taskID)
+	if !ok {
 		return nil, "", workflow.ErrDispatchInFlight
 	}
-	// releaseClaim is idempotent so resolveDispatchDir can release it early
+	// claim.Release is idempotent so resolveDispatchDir can release it early
 	// (before triggering a nested same-task dispatch, e.g. branch-conflict
 	// recovery) without this defer double-releasing on return.
-	released := false
-	releaseClaim := func() {
-		if released {
-			return
-		}
-		released = true
-		o.agents.ReleaseTaskDispatch(taskID)
-	}
-	defer releaseClaim()
+	defer claim.Release()
 
 	// Consume a pending watchdog headless-nudge steer (no-op when none). Held
 	// within the dispatch claim so the read-then-clear is serialized per task.
@@ -465,7 +458,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
-	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, releaseClaim)
+	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, claim)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
@@ -879,10 +872,11 @@ func (o *Orchestrator) defaultProjectID() string {
 func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	// Same per-task dispatch serialization as StartAgent — a pr-fix dispatch
 	// must not race a concurrent implementation/recovery dispatch.
-	if !o.agents.ClaimTaskDispatch(taskID) {
+	claim, ok := o.agents.TryClaimDispatch(taskID)
+	if !ok {
 		return workflow.ErrDispatchInFlight
 	}
-	defer o.agents.ReleaseTaskDispatch(taskID)
+	defer claim.Release()
 
 	t, err := o.tasks.Get(taskID)
 	if err != nil {

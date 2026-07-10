@@ -29,6 +29,9 @@ func (f *fakeAgentLauncher) StartAgent(_, _, _, _, _, _, _ string, _ []string, _
 	}
 	return "fake-agent-id", "", "", nil
 }
+func (f *fakeAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
+	return nil, true
+}
 func (f *fakeAgentLauncher) HasRunningAgent(string) bool                     { return false }
 func (f *fakeAgentLauncher) HasOtherRunningAgentForTask(string, string) bool { return false }
 func (f *fakeAgentLauncher) FindRunningAgentForRole(string, string) (string, bool) {
@@ -40,6 +43,7 @@ func (f *fakeAgentLauncher) DefaultProvider() string          { return "" }
 func (f *fakeAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderHealthy(string) bool      { return true }
+func (f *fakeAgentLauncher) IsDispatching(string) bool        { return false }
 
 // setupDispatchTestService builds a TaskService whose workflow engine is
 // wired to a fakeAgentLauncher instead of the real agent.Manager-backed

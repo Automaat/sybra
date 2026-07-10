@@ -224,6 +224,16 @@ type PRContentGenerator interface {
 	GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error)
 }
 
+// TaskClassifier runs the deterministic Go triage classifier directly against
+// a task and applies its verdict. Used by the `classify_task` step, which
+// replaced a run_agent step that wrapped a full Sonnet agent (invoking the
+// /sybra-triage skill) around this same classifier — a second LLM call for
+// no benefit. Engine operates with a nil classifier — the step then flips
+// the task to human-required, since triage is mandatory to route the task.
+type TaskClassifier interface {
+	ClassifyTask(ctx context.Context, taskID string) error
+}
+
 // ArtifactRecorder stores per-task workflow artifacts (plan snapshots, trace
 // events). Engine operates with a nil recorder — all recorder calls are
 // guarded by nil checks so engine unit tests compile and pass unchanged.
@@ -245,10 +255,14 @@ type CompletionInfo struct {
 	Variables  map[string]string
 }
 
-// agentEntry records which task and step an agent was spawned for.
-type agentEntry struct {
+// agentRoute records which task and step an agent completion belongs to.
+type agentRoute struct {
 	taskID string
 	stepID string
+}
+
+type pendingRecovery struct {
+	onDecline func()
 }
 
 // Engine executes workflow definitions against tasks.
@@ -267,6 +281,7 @@ type Engine struct {
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
+	classifier       TaskClassifier
 	recorder         ArtifactRecorder
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
@@ -274,14 +289,14 @@ type Engine struct {
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}    // taskID → dispatch in progress
-	starting         map[string]struct{}    // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}    // taskID → HandleHumanAction in progress
-	agentSteps       map[string]agentEntry  // agentID → {taskID, stepID}
-	dispatchingStep  map[string]int         // "taskID|stepID" → run_agent dispatches in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int         // taskID → synchronous cascade hop depth (recursion guard)
-	pendingRecovery  map[string]struct{}    // taskID → branch-conflict recovery deferred until the outer marker releases
+	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
+	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
+	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
+	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
+	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
@@ -308,10 +323,10 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		dispatching:      make(map[string]struct{}),
 		starting:         make(map[string]struct{}),
 		humanAction:      make(map[string]struct{}),
-		agentSteps:       make(map[string]agentEntry),
-		dispatchingStep:  make(map[string]int),
+		agentRoutes:      make(map[string]agentRoute),
+		pendingStepStart: make(map[string]int),
 		cascadeDepth:     make(map[string]int),
-		pendingRecovery:  make(map[string]struct{}),
+		pendingRecovery:  make(map[string]pendingRecovery),
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 	}
@@ -374,6 +389,11 @@ func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualT
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
 
+// SetTaskClassifier wires the deterministic Go triage classifier used by the
+// `classify_task` step. Leaving it unset flips the task to human-required
+// when classify_task is reached, since a task cannot be routed without it.
+func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
+
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset
 // disables artifact recording — all calls are nil-guarded so engine unit
@@ -417,6 +437,13 @@ func (e *Engine) SetEvalGate(gate *prompteval.Gate) { e.evalGate = gate }
 // unconditional human escalation. Leaving it unset preserves the prior
 // behavior: any divergence flips straight to human-required.
 func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRecovery = fn }
+
+// SetDivergenceRecovery is a backward-compatible alias for SetConflictRecovery.
+// Older tests and callers still use the pre-rename name for the same
+// branch-divergence recovery hook.
+func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
+	e.SetConflictRecovery(fn)
+}
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
 	if e.manualTests == nil || t.ID == "" {

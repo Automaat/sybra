@@ -94,7 +94,7 @@ steps:
   # directly — this is what re-enters the interrupted review/testing stage
   # instead of skipping to a terminal status. With no captured workflow, ends
   # normally: the task's restored status drives the ordinary status-based
-  # cascade (AgentCompletionHandler.OnWorkflowComplete) to pick the right
+  # cascade (completion.Handler.OnWorkflowComplete) to pick the right
   # workflow back up.
   - id: resume_original
     name: Resume Interrupted Workflow

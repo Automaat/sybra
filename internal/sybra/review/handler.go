@@ -81,6 +81,15 @@ type Handler struct {
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
+	// dispatchFailures tracks consecutive transient (provider-unhealthy /
+	// rate-limit) failures starting the branch-conflict-fix workflow itself,
+	// keyed by task ID. Once a task hits branchConflictDispatchFailureLimit,
+	// it is escalated to human-required.
+	dispatchFailures map[string]int
+	// failureMu guards wtFailures and dispatchFailures. Recovery callbacks can
+	// run from independent agent-completion goroutines, so even unrelated task
+	// IDs must not write these maps concurrently.
+	failureMu sync.Mutex
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
@@ -203,6 +212,7 @@ func New(
 		worktrees:           worktrees,
 		renovatePRsFn:       renovatePRsFn,
 		wtFailures:          make(map[string]int),
+		dispatchFailures:    make(map[string]int),
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
 		enableAutoMergeFn:   github.EnableAutoMerge,
@@ -723,8 +733,12 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 		// Flip to done immediately with the base outcome — the status transition
 		// must never wait on GitHub enrichment.
 		base := classifyLandingOutcome(c.State)
+		landedStatus := task.StatusDone
+		if c.State == "CLOSED" {
+			landedStatus = task.StatusCancelled
+		}
 		if _, err := r.tasks.Update(c.TaskID, task.Update{
-			Status:  task.Ptr(task.StatusDone),
+			Status:  task.Ptr(landedStatus),
 			Outcome: task.Ptr(base),
 		}); err != nil {
 			r.logger.Error("pr-monitor.closed-update", "task_id", c.TaskID, "err", err)

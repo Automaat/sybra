@@ -16,6 +16,16 @@ import (
 // (see escapeHatchTags) and the umbrella dependency gate marker.
 var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
 
+const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
+	"guard blocked dispatch to avoid a wasted implement run; " +
+	"manually expand it from the issue URL, add the notumbrella tag to opt out, " +
+	"or fix the title if this isn't a tracker"
+
+// umbrellaGuardOptOutTag opts a task out of the ☂️-title umbrella guard for the
+// genuine case where a task keeps task_type=normal despite an umbrella-shaped
+// title or tag (see escapeHatchTags).
+const umbrellaGuardOptOutTag = "notumbrella"
+
 // Apply writes the classifier verdict to the task via Manager.UpdateMap.
 // All field changes happen in a single UpdateMap call so the write is
 // atomic per task (Manager holds a per-task mutex).
@@ -96,7 +106,8 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// pr-fix tasks (system-created to fix an existing PR) must never enter the
 	// planning phase — they go straight to implementation. Override any route
 	// that would park them in planning.
-	if t.RunRole == "pr-fix" || t.PRNumber > 0 {
+	isPRFix := isPRFixTask(t)
+	if isPRFix {
 		status = task.StatusTodo
 	}
 	updates["status"] = string(status)
@@ -105,11 +116,29 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// as a warning. Setting "status" without a reason makes the store clear any
 	// stale reason (e.g. "monitor: awaiting triage").
 
+	// A ☂️-titled task that never went through the GitHub issue fetcher (e.g.
+	// manual sybra-cli create) keeps task_type=normal and is invisible to the
+	// umbrella gate (internal/sybra/app_umbrella_gate.go), which filters
+	// strictly on TaskTypeUmbrella. Dispatching it as a flat implement task
+	// wastes a full run before the agent discovers there's no direct code
+	// surface. Catch it here — before dispatch — and park it for a human to
+	// either expand it from its issue URL, opt it out, or fix the title.
+	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
+		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
+		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
+		updates["status"] = string(task.StatusHumanRequired)
+		updates["status_reason"] = umbrellaNormalTypeStatusReason
+	}
+
 	updated, err := mgr.UpdateMap(t.ID, updates)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
 	return updated, nil
+}
+
+func isPRFixTask(t task.Task) bool {
+	return t.RunRole == "pr-fix" || t.PRNumber > 0
 }
 
 // projectTypeFor returns the registered project type for id and whether id

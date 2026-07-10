@@ -116,6 +116,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	if cfg.Mode == "headless" {
+		m.mu.RLock()
+		cfg.HeadlessSteerable = m.headlessSteerable
+		m.mu.RUnlock()
+	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
 	// approval hook to gate each tool call. If the approval server never
@@ -659,6 +664,22 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 				kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.limit_failover", logLevel: "warn", taskID: cfg.TaskID,
 			})
 			return alt, gateEvents, nil
+		}
+		// No fully available peer exists. Before failing closed, check
+		// whether a peer is only soft-threshold limited (e.g. near its
+		// session cap but still dispatching, the same leniency
+		// softLimitLastResort grants the resolved provider itself) — that
+		// peer is only a safe last-resort failover target when resolved is
+		// hard-blocked (e.g. rate limit actually reached). If resolved is
+		// itself only soft-threshold limited, keep it so the remaining
+		// budget is not stranded behind another soft-limited peer.
+		if !limits.IsSoftThresholdReason(reason) {
+			if alt, altReason := lg.ChooseSoftLimitedPeer(resolved, candidateProviders, healthy, lp); alt != "" {
+				gateEvents = append(gateEvents, providerGateEvent{
+					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
+				})
+				return alt, gateEvents, nil
+			}
 		}
 		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
 	} else {

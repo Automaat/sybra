@@ -14,7 +14,7 @@ import (
 )
 
 // classifierFactory lets tests inject a fake classifier. Production
-// callers leave it nil and the handler constructs a *triage.ClaudeClassifier.
+// callers leave it nil and the handler constructs a *triage.FallbackClassifier.
 type classifierFactory func(model string, logger *slog.Logger) triage.Classifier
 
 // TriageHandler runs the auto-triage loop. Each poll cycle:
@@ -121,29 +121,7 @@ func (h *TriageHandler) classifyOne(
 	ctx, cancel := context.WithTimeout(parent, h.perTaskTTL)
 	defer cancel()
 
-	v, err := classifier.Classify(ctx, t, projects)
-	if err != nil {
+	if _, _, err := triage.ClassifyAndApply(ctx, classifier, h.tasks, h.audit, t, projects); err != nil {
 		h.logger.Warn("triage.classify", "task", t.ID, "err", err)
-		return
-	}
-	updated, err := triage.Apply(h.tasks, t, v, projects)
-	if err != nil {
-		h.logger.Warn("triage.apply", "task", t.ID, "err", err)
-		return
-	}
-	if h.audit != nil {
-		_ = h.audit.Log(audit.Event{
-			Type:   audit.EventTriageClassified,
-			TaskID: t.ID,
-			Data: map[string]any{
-				"title":      v.Title,
-				"tags":       v.Tags,
-				"size":       v.Size,
-				"type":       v.Type,
-				"mode":       v.Mode,
-				"project_id": updated.ProjectID,
-				"status":     string(updated.Status),
-			},
-		})
 	}
 }
