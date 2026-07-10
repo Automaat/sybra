@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp } from '@lucide/svelte'
+  import { ClipboardList, Folder, MessageCircle, UserCircle, GitBranch, ClipboardCheck, LayoutDashboard, BarChart3, Settings, Archive, ChevronDown, ChevronUp, Bell, Activity } from '@lucide/svelte'
   import type { Component } from 'svelte'
   import { navStore } from '../../lib/navigation.svelte.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { agentStore } from '../../stores/agents.svelte.js'
+  import { notificationStore } from '../../stores/notifications.svelte.js'
   import { focusModeStore } from '../../lib/focus-mode.svelte.js'
+  import { activeTaskNeedsUserAttention } from '../../lib/task-attention.js'
 
   // Focus mode collapses the rail to the core destinations; "More" expands the
   // full nav so advanced views stay reachable.
@@ -21,6 +23,23 @@
   const reviewCount = $derived(
     taskStore.tasksNeedingPlanApproval().length
   )
+
+  // Global "needs you" signal — every active task awaiting the operator,
+  // regardless of which board column/filter is currently visible. Same
+  // attention semantics as the board toolbar counter and card accent.
+  const needsYouCount = $derived(
+    taskStore.list.filter(activeTaskNeedsUserAttention).length
+  )
+
+  const notificationCount = $derived(notificationStore.notifications.length)
+
+  function badgeLabel(count: number, singular: string, plural = `${singular}s`): string {
+    return `${count} ${count === 1 ? singular : plural}`
+  }
+
+  function badgeText(count: number): string {
+    return count > 99 ? '99+' : String(count)
+  }
 
   interface NavItem {
     kind: string[]
@@ -41,6 +60,8 @@
   ]
 
   const secondaryItems: NavItem[] = [
+    { kind: ['notifications'], label: 'Inbox', icon: Bell, onclick: () => navStore.reset({ kind: 'notifications' }) },
+    { kind: ['fleet'], label: 'Fleet', icon: Activity, onclick: () => navStore.reset({ kind: 'fleet' }) },
     { kind: ['logbook'], label: 'Logbook', icon: Archive, onclick: () => navStore.reset({ kind: 'logbook' }) },
     { kind: ['project-list', 'project-detail'], label: 'Projects', icon: Folder, onclick: () => navStore.reset({ kind: 'project-list' }) },
     { kind: ['workflows', 'workflow-detail'], label: 'Workflows', icon: LayoutDashboard, onclick: () => navStore.reset({ kind: 'workflows' }) },
@@ -81,12 +102,36 @@
   >
     <div class="relative">
       <Icon size={18} />
-      {#if item.label === 'Chats' && interactiveAgentCount > 0}
-        <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-primary-500 text-[8px] font-bold text-white">{interactiveAgentCount}</span>
+      {#if item.label === 'Board' && needsYouCount > 0}
+        <span
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-error-500 px-1 text-[8px] font-bold leading-none text-white"
+          title={`${badgeLabel(needsYouCount, 'task need', 'tasks need')} you`}
+          aria-label={`${badgeLabel(needsYouCount, 'task need', 'tasks need')} you`}
+        >{badgeText(needsYouCount)}</span>
+      {:else if item.label === 'Chats' && interactiveAgentCount > 0}
+        <span
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[8px] font-bold leading-none text-white"
+          title={badgeLabel(interactiveAgentCount, 'interactive chat')}
+          aria-label={badgeLabel(interactiveAgentCount, 'interactive chat')}
+        >{badgeText(interactiveAgentCount)}</span>
       {:else if item.label === 'Agents' && runningAgentCount > 0}
-        <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-success-500 text-[8px] font-bold text-white">{runningAgentCount}</span>
+        <span
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-success-500 px-1 text-[8px] font-bold leading-none text-white"
+          title={badgeLabel(runningAgentCount, 'running agent')}
+          aria-label={badgeLabel(runningAgentCount, 'running agent')}
+        >{badgeText(runningAgentCount)}</span>
       {:else if item.label === 'Reviews' && reviewCount > 0}
-        <span class="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-warning-500 text-[8px] font-bold text-white">{reviewCount}</span>
+        <span
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning-500 px-1 text-[8px] font-bold leading-none text-white"
+          title={badgeLabel(reviewCount, 'review')}
+          aria-label={badgeLabel(reviewCount, 'review')}
+        >{badgeText(reviewCount)}</span>
+      {:else if item.label === 'Inbox' && notificationCount > 0}
+        <span
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-secondary-500 px-1 text-[8px] font-bold leading-none text-white"
+          title={badgeLabel(notificationCount, 'notification')}
+          aria-label={badgeLabel(notificationCount, 'notification')}
+        >{badgeText(notificationCount)}</span>
       {/if}
     </div>
     <span class="leading-tight">{item.label}</span>

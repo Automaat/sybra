@@ -7,6 +7,7 @@ func TestEvalCondition(t *testing.T) {
 		"task.status": "in-progress",
 		"task.tags":   "backend,auth",
 		"task.title":  "implement auth middleware",
+		"task.review": " \nReview Verdict: CLEAN\n\nNo findings.",
 		"empty":       "",
 	}
 
@@ -49,6 +50,16 @@ func TestEvalCondition(t *testing.T) {
 			name: "contains keeps substring behavior for text fields",
 			cond: Condition{Field: "task.title", Operator: "contains", Value: "auth"},
 			want: true,
+		},
+		{
+			name: "starts_with matches trimmed prefix",
+			cond: Condition{Field: "task.review", Operator: "starts_with", Value: "Review Verdict: CLEAN"},
+			want: true,
+		},
+		{
+			name: "starts_with rejects later substring",
+			cond: Condition{Field: "task.title", Operator: "starts_with", Value: "auth"},
+			want: false,
 		},
 		{
 			name: "not_contains passes when tag absent",
@@ -229,6 +240,8 @@ func TestEvalConditions_AllMustMatch(t *testing.T) {
 //   - not_equals "x"  → true  ("" != "x")
 //   - contains ""     → true  (every string contains empty substring)
 //   - contains "x"    → false
+//   - starts_with ""  → true  (every string starts with empty string)
+//   - starts_with "x" → false
 //   - exists          → false (presence-check)
 //   - in "a,b"        → false (zero value not in list)
 //   - in ",a,b"       → true  (empty string IS in the csv-list containing "")
@@ -251,6 +264,8 @@ func TestEvalCondition_UndefinedField(t *testing.T) {
 		{"contains", "x", false},
 		{"not_contains", "x", true},
 		{"not_contains", "", false},
+		{"starts_with", "", true},
+		{"starts_with", "x", false},
 		{"exists", "", false},
 		{"exists", "x", false},
 		{"in", "a,b,c", false},

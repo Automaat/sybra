@@ -1,8 +1,6 @@
 package config
 
 type OrchestratorConfig struct {
-	AutoTriage bool `yaml:"auto_triage" json:"autoTriage"`
-	AutoPlan   bool `yaml:"auto_plan" json:"autoPlan"`
 	// DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
 	// dispatch pass (start the orchestrator, release unblocked children). Kept
 	// short — and also fired on demand on every status change — so a

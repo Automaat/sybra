@@ -125,6 +125,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// DefaultHeadlessSteerable returns the configured agent.headless_steerable
+// default, or true if unset.
+func (c *Config) DefaultHeadlessSteerable() bool {
+	if c != nil && c.Agent.HeadlessSteerable != nil {
+		return *c.Agent.HeadlessSteerable
+	}
+	return true
+}
+
 // NormalizeHeadlessPermissionMode canonicalizes a headless permission mode value.
 // Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
 // Any other value is rejected with an error.
@@ -188,6 +197,22 @@ func (c *Config) DefaultSandboxMode() string {
 		return "report"
 	}
 	return mode
+}
+
+// PlaywrightMCPEnabled reports whether test-runner runs should attach a
+// headless Playwright MCP server for visual/console verification. Default
+// false — an operator must opt in.
+func (c *Config) PlaywrightMCPEnabled() bool {
+	return c != nil && c.Agent.PlaywrightMCP.Enabled
+}
+
+// PlaywrightMCPExtraArgs returns the configured extra Playwright MCP launcher
+// args, appended verbatim after --output-dir.
+func (c *Config) PlaywrightMCPExtraArgs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Agent.PlaywrightMCP.ExtraArgs
 }
 
 // SurviveRestartEnabled reports whether agent subprocesses should be
@@ -324,12 +349,15 @@ func (c *Config) HumanReviewRepo() string {
 	return "Automaat/sybra"
 }
 
-// HumanReviewModel returns the configured model alias or "sonnet".
+// HumanReviewModel returns the configured model name or alias, defaulting to
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// inspector (applyWatchdogDefaults): classifying why a task stalled, not
+// authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "sonnet"
+	return "claude-haiku-4-5-20251001"
 }
 
 // HumanReviewIssueLabel returns the configured label or "sybra-bug".
@@ -479,7 +507,7 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
@@ -492,7 +520,7 @@ func WriteRawConfig(data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(configFilePerm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -562,6 +590,9 @@ func load(opts loadOptions) (*Config, error) {
 			return nil, writeErr
 		}
 	}
+	if opts.persistLoadReconciles {
+		tightenConfigPerms(path, existingFile)
+	}
 
 	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
@@ -617,9 +648,11 @@ func load(opts loadOptions) (*Config, error) {
 	if cfg.Triage.PollSeconds <= 0 {
 		cfg.Triage.PollSeconds = 60
 	}
-	if cfg.Triage.Model == "" {
-		cfg.Triage.Model = "sonnet"
-	}
+	// Triage.Model intentionally has no default override here: an empty
+	// model lets triage.FallbackClassifier fall through to its llmjob.Cheap
+	// tier (haiku), which is ~10x cheaper than sonnet for a structured
+	// classification job. A non-empty value (set explicitly by a user)
+	// still overrides the tier via claudeModelOverride.
 	if cfg.Agent.Provider == "" {
 		cfg.Agent.Provider = "claude"
 	}
@@ -1046,7 +1079,9 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IntervalSeconds = 300
 	}
 	if cfg.Monitor.Model == "" {
-		cfg.Monitor.Model = "sonnet"
+		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
+		// classifying an anomaly, not authoring a fix.
+		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30
@@ -1132,11 +1167,48 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 	}
 }
 
+const (
+	configDirPerm  os.FileMode = 0o700
+	configFilePerm os.FileMode = 0o600
+)
+
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), configFilePerm)
+}
+
+// tightenConfigPerms retrofits the config directory and file to 0o700/0o600
+// on installs created before those became the write-time default (config.yaml
+// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// not fatal — Load must still succeed on read-only or restricted filesystems.
+func tightenConfigPerms(path string, existingFile bool) {
+	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
+	if existingFile {
+		tightenPathPerm(path, configFilePerm, "config file")
+	}
+}
+
+func tightenPathPerm(path string, target os.FileMode, label string) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("config: failed to inspect perms", "path", path, "kind", label, "err", err)
+		}
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		slog.Warn("config: refusing to chmod symlink", "path", path, "kind", label)
+		return
+	}
+	current := info.Mode().Perm()
+	if current&^target == 0 {
+		return
+	}
+	if err := os.Chmod(path, target); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten perms", "path", path, "kind", label, "err", err)
+	}
 }
 
 func configPath() string {

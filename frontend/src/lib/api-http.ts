@@ -6,9 +6,10 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
+import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
@@ -185,9 +186,13 @@ export function BlessTampering(arg1: string): Promise<Task> { return call('TaskS
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
+export function ListTaskArtifacts(arg1: string): Promise<Array<TaskArtifactDTO>> { return call('TaskService', 'ListTaskArtifacts', arg1) }
+export function GetTaskSetupLog(arg1: string): Promise<TaskSetupLogDTO> { return call('TaskService', 'GetTaskSetupLog', arg1) }
+export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<TaskAuditEventDTO>> { return call('TaskService', 'ListTaskAuditEvents', arg1, arg2) }
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
+export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 
 // WorkflowService

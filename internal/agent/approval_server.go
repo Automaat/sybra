@@ -134,8 +134,12 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Find the agent by session_id; deny if unknown.
-	agentID := s.findAgentBySession(input.SessionID)
+	// Find the agent by session_id; deny if unknown. The stdout parser sets
+	// SessionID from the init event on a separate goroutine, with no ordering
+	// guarantee against the CLI's first tool call reaching this hook. Retry
+	// briefly on a miss before denying so that race doesn't fail the first
+	// tool call of an otherwise healthy run.
+	agentID := s.findAgentBySessionWithRetry(r.Context(), input.SessionID)
 	if agentID == "" {
 		s.logger.Warn("approval-server.no-agent", "session_id", input.SessionID)
 		s.respondDeny(w, "Unknown session")
@@ -242,23 +246,97 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 	}
 }
 
+// findAgentBySession resolves the agent a PreToolUse hook request came from.
+// Session IDs are provider-issued and unique per run, so this matches
+// regardless of Mode: a headless run only reaches here when it was started
+// with RequirePermissions (see buildClaudeHookSettings), and must resolve to
+// its agent the same way an interactive session does.
+//
+// The registry is never pruned, so a rate-limited retry that resumes a prior
+// session ID (RescheduleRateLimitedAgent) leaves the stopped original agent
+// registered with the same SessionID as the new live one. First-match over a
+// map is nondeterministic and could resolve to the dead original, hanging the
+// live retry. Resolve deterministically instead: prefer a non-stopped agent,
+// and among ties prefer the most-recently-started, so a live retry always
+// wins over the stale entry it reused a session ID from.
 func (s *ApprovalServer) findAgentBySession(sessionID string) string {
 	if s.agents == nil {
 		return ""
 	}
+	var best *Agent
 	for _, a := range s.agents.ListAgents() {
-		if a.GetSessionID() == sessionID && a.Mode == "interactive" {
-			return a.ID
+		if a.GetSessionID() != sessionID {
+			continue
+		}
+		if best == nil || betterSessionMatch(a, best) {
+			best = a
 		}
 	}
-	return ""
+	if best == nil {
+		return ""
+	}
+	return best.ID
 }
 
+// sessionLookupRetries and sessionLookupBackoff bound the wait for the stdout
+// parser to record SessionID before a first tool call is denied as unknown.
+const (
+	sessionLookupRetries = 20
+	sessionLookupBackoff = 50 * time.Millisecond
+)
+
+// findAgentBySessionWithRetry resolves a session to an agent, retrying briefly
+// to absorb the race where the CLI issues its first tool call before the
+// stdout parser has recorded the session ID. Returns "" if still unresolved
+// after the bounded wait or if the request is canceled.
+func (s *ApprovalServer) findAgentBySessionWithRetry(ctx context.Context, sessionID string) string {
+	if strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	for attempt := 0; ; attempt++ {
+		if id := s.findAgentBySession(sessionID); id != "" {
+			return id
+		}
+		if attempt >= sessionLookupRetries {
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(sessionLookupBackoff):
+		}
+	}
+}
+
+// betterSessionMatch reports whether candidate should win over incumbent when
+// both share a session ID: a live (non-stopped) agent beats a stopped one, and
+// among agents of the same liveness the most-recently-started wins.
+func betterSessionMatch(candidate, incumbent *Agent) bool {
+	candStopped := candidate.GetState() == StateStopped
+	incStopped := incumbent.GetState() == StateStopped
+	if candStopped != incStopped {
+		return !candStopped
+	}
+	candStarted := candidate.GetStartedAt()
+	incStarted := incumbent.GetStartedAt()
+	if !candStarted.Equal(incStarted) {
+		return candStarted.After(incStarted)
+	}
+	return candidate.ID > incumbent.ID
+}
+
+// isSafeTool reports whether a tool is safe to auto-approve without a
+// human prompt. MCP tools are never auto-approved here: their capabilities
+// are arbitrary and server-defined, so a blanket "mcp__*" allow would let an
+// injected agent reach dangerous or egress-capable tools unattended.
+// WebFetch is excluded too — it's an egress-sensitive tool (attacker-supplied
+// URL is a ready exfiltration channel for ingested content). WebSearch stays
+// safe: it can only issue search queries, not fetch arbitrary attacker-chosen
+// destinations.
 func isSafeTool(name string) bool {
-	safe := []string{"Read", "Glob", "Grep", "LSP", "WebSearch", "WebFetch"}
-	lower := strings.ToLower(name)
+	safe := []string{"Read", "Glob", "Grep", "LSP", "WebSearch"}
 	for _, s := range safe {
-		if strings.EqualFold(s, name) || strings.HasPrefix(lower, "mcp__") {
+		if strings.EqualFold(s, name) {
 			return true
 		}
 	}

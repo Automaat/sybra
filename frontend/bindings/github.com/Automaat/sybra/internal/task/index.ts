@@ -7,5 +7,6 @@ export {
     ReviewComment,
     Status,
     Task,
-    TaskType
+    TaskType,
+    Update
 } from "./models.js";

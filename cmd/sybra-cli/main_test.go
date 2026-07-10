@@ -463,6 +463,64 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	}
 }
 
+func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
+	dir := setupStore(t)
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{"config home permissions", "config file permissions"} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && strings.Contains(f.Message, want)
+		}) {
+			t.Fatalf("expected %q warning in report: %+v", want, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
+	dir := setupStore(t)
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	cfg := config.DefaultConfig()
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "config home permissions") ||
+			strings.Contains(f.Message, "config file permissions")
+	}) {
+		t.Fatalf("did not expect config permission warnings for stricter modes: %+v", report.Findings)
+	}
+}
+
 func TestListFilterStatus(t *testing.T) {
 	setupStore(t)
 

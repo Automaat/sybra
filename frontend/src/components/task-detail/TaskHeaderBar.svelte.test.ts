@@ -57,8 +57,12 @@ describe('TaskHeaderBar', () => {
     mockStartFixReview.mockReset()
     mockUpdate.mockResolvedValue(baseTask)
     mockRemove.mockResolvedValue(undefined)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
   })
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
 
   it('renders title', () => {
     render(TaskHeaderBar, { props: { task: baseTask as never, ondelete: vi.fn() } })
@@ -124,9 +128,20 @@ describe('TaskHeaderBar', () => {
     await fireEvent.click(screen.getByLabelText('More actions'))
     await fireEvent.click(screen.getByText('Delete task'))
     await waitFor(() => {
+      expect(window.confirm).toHaveBeenCalledWith('Delete task "Test Task"? This cannot be undone.')
       expect(mockRemove).toHaveBeenCalledWith('t1')
       expect(ondelete).toHaveBeenCalled()
     })
+  })
+
+  it('does not delete when confirmation is cancelled', async () => {
+    vi.mocked(window.confirm).mockReturnValue(false)
+    const ondelete = vi.fn()
+    render(TaskHeaderBar, { props: { task: baseTask as never, ondelete } })
+    await fireEvent.click(screen.getByLabelText('More actions'))
+    await fireEvent.click(screen.getByText('Delete task'))
+    expect(mockRemove).not.toHaveBeenCalled()
+    expect(ondelete).not.toHaveBeenCalled()
   })
 
   it('responds to task-detail:edit-title window event', async () => {

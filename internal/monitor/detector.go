@@ -379,7 +379,10 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		// only on an actual status transition (internal/task Store), unlike
 		// UpdatedAt which any unrelated field write (tags, status_reason, an
 		// audit sidecar) bumps — keying this off UpdatedAt would mask a truly
-		// lost agent for as long as anything kept touching the task.
+		// lost agent for as long as anything kept touching the task. Legacy
+		// task files predating the field are backfilled by Store.List on
+		// the very read this detector uses (internal/task/store.go), so
+		// StatusChangedAt is never permanently zero here in practice.
 		if !t.StatusChangedAt.IsZero() && in.Now.Sub(t.StatusChangedAt) < window {
 			continue
 		}

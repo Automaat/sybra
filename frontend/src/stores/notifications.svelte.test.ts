@@ -3,6 +3,7 @@ import { Notification } from '../../bindings/github.com/Automaat/sybra/internal/
 import { Notification as NotificationEvent } from '../lib/events.js'
 
 const mockListNotifications = vi.fn()
+const mockShowBrowserNotification = vi.fn()
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
 
 vi.mock('$lib/api', () => ({
@@ -11,6 +12,10 @@ vi.mock('$lib/api', () => ({
     eventCallbacks[event] = cb
     return () => { delete eventCallbacks[event] }
   },
+}))
+
+vi.mock('../lib/web-notifications.svelte.js', () => ({
+  showBrowserNotification: (...args: unknown[]) => mockShowBrowserNotification(...args),
 }))
 
 const { notificationStore } = await import('./notifications.svelte.js')
@@ -29,6 +34,7 @@ function makeNotification(overrides: Record<string, unknown> = {}): Notification
 describe('NotificationStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockShowBrowserNotification.mockClear()
     eventCallbacks = {}
     notificationStore.notifications = []
     notificationStore.clear()
@@ -50,6 +56,24 @@ describe('NotificationStore', () => {
       await notificationStore.load()
 
       expect(notificationStore.notifications).toHaveLength(0)
+    })
+
+    it('never shows a browser notification for buffered/history results', async () => {
+      mockListNotifications.mockResolvedValue([makeNotification({ id: 'n1' }), makeNotification({ id: 'n2' })])
+
+      await notificationStore.load()
+
+      expect(mockShowBrowserNotification).not.toHaveBeenCalled()
+    })
+
+    it('caps result at 50 entries, matching the event and local paths', async () => {
+      const ns = Array.from({ length: 75 }, (_, i) => makeNotification({ id: `n${i}` }))
+      mockListNotifications.mockResolvedValue(ns)
+
+      await notificationStore.load()
+
+      expect(notificationStore.notifications).toHaveLength(50)
+      expect(notificationStore.notifications[0].id).toBe('n0')
     })
   })
 
@@ -90,6 +114,32 @@ describe('NotificationStore', () => {
       unsub()
 
       expect(eventCallbacks[NotificationEvent]).toBeUndefined()
+    })
+
+    it('shows a browser notification for a live event', () => {
+      const unsub = notificationStore.listen()
+
+      eventCallbacks[NotificationEvent](makeNotification({ id: 'n1', title: 'T', message: 'M' }))
+
+      expect(mockShowBrowserNotification).toHaveBeenCalledTimes(1)
+      expect(mockShowBrowserNotification).toHaveBeenCalledWith(
+        { id: 'n1', title: 'T', message: 'M', taskId: undefined },
+        undefined,
+      )
+      unsub()
+    })
+
+    it('forwards onNavigateTask through to the browser-notification bridge', () => {
+      const onNavigateTask = vi.fn()
+      const unsub = notificationStore.listen(onNavigateTask)
+
+      eventCallbacks[NotificationEvent](makeNotification({ id: 'n1', taskId: 'task-1' }))
+
+      expect(mockShowBrowserNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'n1', taskId: 'task-1' }),
+        onNavigateTask,
+      )
+      unsub()
     })
   })
 

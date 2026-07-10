@@ -14,6 +14,12 @@ import (
 
 const linkedPRDriftWindow = 10 * time.Minute
 
+// reconciledLatchTag marks a task whose human-required blocker was already
+// auto-reconciled by reconcileHumanRequiredBlockers, so a later poll cycle
+// never re-matches and re-reconciles the same stale exhaustion reason after
+// the task has already been put back into motion once.
+const reconciledLatchTag = "monitor:reconciled"
+
 // reconcilePRPhases recomputes the lifecycle phase of every outbound own-PR
 // task (status in-review/ready-review, not tag `review`) from the live
 // monitored PRs and persists any delta. The phase is a pure overlay on the In
@@ -180,6 +186,7 @@ const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
 func exhaustedFixReason(attempts int, kind github.PRIssueKind) string {
 	return fmt.Sprintf("%s%d attempts (%s) — needs a human", exhaustedFixReasonPrefix, attempts, kind)
 }
+
 func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	rest, ok := strings.CutPrefix(reason, exhaustedFixReasonPrefix)
 	if !ok {
@@ -201,24 +208,42 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 	return github.PRIssueKind(kind), true
 }
 
-// humanRequiredBlockerReconcileEligible reports whether a human-required task
-// is a candidate for a live re-probe of its original blocker. Scoped tightly
-// to tasks escalateExhaustedFix parked on an exhausted ci_failure fix (a
-// failing named check — e.g. DCO — or CI job): that reason names a specific,
-// deterministic, externally-observable fact, so a clean re-probe is proof the
-// blocker itself cleared (#1641). Every other human-required reason (a draft
-// review awaiting a human's verification, a dwell escalation, a deliberate
-// watchdog stop, exhausted conflict/comments needing a rebase or judgment
-// call) requires a human decision to unpark and is left untouched.
-func humanRequiredBlockerReconcileEligible(t *task.Task) bool {
+// humanRequiredBlockerReconcilable reports whether t is a human-required task
+// parked solely by the pr-monitor auto-fix-exhausted escalation for a
+// ci_failure or conflict issue — the only kinds a live PR probe can decide
+// resolved itself. Excludes watchdog stops, tamper flags, comment-review
+// exhaustion (no CI-state probe can tell whether reviewer feedback was
+// actually addressed), human-authored reasons, and tasks already reconciled
+// once (latch tag present, to prevent flip-flopping).
+func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok bool) {
 	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
-		return false
+		return "", false
 	}
 	if t.Status != task.StatusHumanRequired || t.PRNumber == 0 {
-		return false
+		return "", false
 	}
-	kind, ok := exhaustedFixReasonKind(t.StatusReason)
-	return ok && kind == github.PRIssueCIFailure
+	if slices.Contains(t.Tags, reconciledLatchTag) {
+		return "", false
+	}
+	reason := strings.TrimSpace(t.StatusReason)
+	if workflow.IsTamperFlaggedReason(reason) {
+		return "", false
+	}
+	kind, ok = exhaustedFixReasonKind(reason)
+	if !ok {
+		return "", false
+	}
+	if kind != github.PRIssueCIFailure && kind != github.PRIssueConflict {
+		return "", false
+	}
+	return kind, true
+}
+
+// humanRequiredBlockerReconcileEligible reports whether a task should have its
+// PR included in the known-PR prefetch for blocker reconciliation.
+func humanRequiredBlockerReconcileEligible(t *task.Task) bool {
+	_, ok := humanRequiredBlockerReconcilable(t)
+	return ok
 }
 
 // hasFixableIssue reports whether any issue in the slice is a kind pr-fix
@@ -232,7 +257,7 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 		switch issues[i].Kind {
 		case github.PRIssueConflict, github.PRIssueCIFailure, github.PRIssueComments:
 			return true
-		case github.PRIssueBranchConflictNoPR, github.PRIssueReadyToMerge:
+		case github.PRIssueBranchConflictNoPR, github.PRIssueBranchRecreate, github.PRIssueReadyToMerge:
 			// branch_conflict_no_pr is tracker-only (never emitted by
 			// MatchTaskPRs); ready_to_merge is not a blocker.
 		}
@@ -241,55 +266,82 @@ func hasFixableIssue(issues []github.PRIssue) bool {
 }
 
 // reconcileHumanRequiredBlockers periodically re-probes human-required tasks
-// parked on an exhausted CI-failure fix (humanRequiredBlockerReconcileEligible)
-// against their PR's live state. prMonitorEligible excludes human-required
-// tasks from pr-fix dispatch entirely, so without this pass nothing ever
-// re-checks whether the original blocking check (e.g. DCO) has since gone
-// green — the task sits on a stale reason indefinitely (#1641). If the PR is
-// currently free of every fixable issue kind, the blocker cleared, so
-// reconcile the task back to in-review and clear its retry-tracker entry so a
-// fresh pr-fix budget is available should the same kind of issue recur.
+// parked by exhausted ci_failure/conflict auto-fixes against their PR's live
+// state. It prefers the poll cycle's monitoredPRs snapshot, but falls back to
+// a direct PR-state probe when a task's PR is not in that snapshot yet. If the
+// PR is now clearly open, mergeable, green, and free of every fixable issue
+// kind, the blocker cleared, so the task is reconciled back to in-review,
+// latched against repeat flip-flops, and its retry-tracker entry is cleared so
+// a fresh pr-fix budget is available should the same kind recur.
 func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs []github.PullRequest) {
 	byNumber, byBranch := indexMonitoredPRs(monitoredPRs)
+	fetchFn := github.FetchPRState
+	if r.fetchPRStateFn != nil {
+		fetchFn = r.fetchPRStateFn
+	}
+
 	for i := range tasks {
 		t := &tasks[i]
-		if !humanRequiredBlockerReconcileEligible(t) {
+		kind, ok := humanRequiredBlockerReconcilable(t)
+		if !ok || t.ProjectID == "" {
 			continue
 		}
-		pr := matchingPR(t, byNumber, byBranch)
-		if pr == nil || pr.IsDraft {
-			// Not found this cycle (closed/merged, or not yet surfaced by the
-			// fetch) or still a draft — leave parked, re-probe next poll.
-			continue
+
+		probe := map[string]any{}
+		if pr := matchingPR(t, byNumber, byBranch); pr != nil {
+			if pr.IsDraft || pr.CIStatus == "PENDING" || pr.HasPendingChecks {
+				continue
+			}
+			issues := github.MatchTaskPRs([]github.PullRequest{*pr}, []github.TaskMatcher{
+				{ID: t.ID, PRNumber: t.PRNumber, Branch: t.Branch, ProjectID: t.ProjectID},
+			})
+			if hasFixableIssue(issues) {
+				continue
+			}
+			probe["state"] = "OPEN"
+			probe["mergeable"] = pr.Mergeable
+			probe["ci_status"] = pr.CIStatus
+		} else {
+			state, err := fetchFn(t.ProjectID, t.PRNumber)
+			if err != nil {
+				r.logger.Info("pr-monitor.reconcile-blocker.probe-failed",
+					"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "err", err)
+				continue
+			}
+			ciStatus := state.CIStatus()
+			ready := state.State == "OPEN" && state.Mergeable == "MERGEABLE" &&
+				ciStatus == "SUCCESS" && !state.HasPendingChecks()
+			if !ready {
+				r.logger.Info("pr-monitor.reconcile-blocker.not-ready",
+					"task_id", t.ID, "pr", t.PRNumber, "kind", kind,
+					"state", state.State, "mergeable", state.Mergeable,
+					"ci_status", ciStatus, "pending", state.HasPendingChecks())
+				continue
+			}
+			probe["state"] = state.State
+			probe["mergeable"] = state.Mergeable
+			probe["ci_status"] = ciStatus
 		}
-		if pr.CIStatus == "PENDING" || pr.HasPendingChecks {
-			// MatchTaskPRs intentionally suppresses ci_failure while any check is
-			// still queued/running, so guard that live state here too: a parked
-			// ci_failure task only reconciles once the check run set has fully
-			// settled and no fixable issue remains.
-			continue
-		}
-		issues := github.MatchTaskPRs([]github.PullRequest{*pr}, []github.TaskMatcher{
-			{ID: t.ID, PRNumber: t.PRNumber, Branch: t.Branch, ProjectID: t.ProjectID},
-		})
-		if hasFixableIssue(issues) {
-			continue
-		}
+
+		priorReason := t.StatusReason
+		tags := append(append([]string{}, t.Tags...), reconciledLatchTag)
 		updated, err := r.tasks.Update(t.ID, task.Update{
 			Status:       task.Ptr(task.StatusInReview),
 			StatusReason: task.Ptr(""),
+			Tags:         task.Ptr(tags),
 		})
 		if err != nil {
-			r.logger.Error("pr-monitor.reconcile-human-required", "task_id", t.ID, "pr", t.PRNumber, "err", err)
+			r.logger.Error("pr-monitor.reconcile-blocker", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 			continue
 		}
 		tasks[i] = updated
 		if r.prTracker != nil {
-			r.prTracker.Clear(t.ID, github.PRIssueCIFailure)
+			r.prTracker.Clear(t.ID, kind)
 		}
-		r.logAudit(audit.EventPRHumanRequiredReconciled, t.ID, "", map[string]any{
-			"pr": t.PRNumber, "repo": t.ProjectID,
+		r.logAudit(audit.EventPRBlockerReconciled, t.ID, "", map[string]any{
+			"pr": t.PRNumber, "kind": kind, "prior_reason": priorReason, "probe": probe,
 		})
-		r.logger.Info("pr-monitor.reconcile-human-required", "task_id", t.ID, "pr", t.PRNumber)
+		r.logger.Info("pr-monitor.reconcile-blocker",
+			"task_id", t.ID, "pr", t.PRNumber, "kind", kind, "prior_reason", priorReason)
 	}
 }

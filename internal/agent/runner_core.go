@@ -53,6 +53,7 @@ type sandboxSpec struct {
 	worktree    string
 	sandboxHome string
 	tmp         string
+	sharedCache string
 	profilePath string
 }
 

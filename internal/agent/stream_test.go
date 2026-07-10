@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -211,6 +212,36 @@ func TestParseClaudeLine(t *testing.T) {
 				t.Helper()
 				if len(got.Raw) == 0 {
 					t.Error("Raw is empty")
+				}
+			},
+		},
+		{
+			name: "background_tasks_changed with live tasks",
+			line: `{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+				`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`,
+			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
+				if got.Subtype != "background_tasks_changed" {
+					t.Errorf("Subtype = %q, want background_tasks_changed", got.Subtype)
+				}
+				if want := []string{"bpzdm25og"}; !slices.Equal(got.BackgroundTaskIDs, want) {
+					t.Errorf("BackgroundTaskIDs = %v, want %v", got.BackgroundTaskIDs, want)
+				}
+			},
+		},
+		{
+			// REPLACE semantics: an empty tasks array means "no live tasks left",
+			// which must be a non-nil empty slice so callers can distinguish it
+			// from "no background_tasks_changed event seen at all".
+			name: "background_tasks_changed with no live tasks",
+			line: `{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`,
+			check: func(t *testing.T, got ClaudeEvent) {
+				t.Helper()
+				if got.BackgroundTaskIDs == nil {
+					t.Error("BackgroundTaskIDs is nil, want non-nil empty slice")
+				}
+				if len(got.BackgroundTaskIDs) != 0 {
+					t.Errorf("BackgroundTaskIDs = %v, want empty", got.BackgroundTaskIDs)
 				}
 			},
 		},

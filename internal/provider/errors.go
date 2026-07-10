@@ -19,10 +19,20 @@ var ErrProviderUnhealthy = errors.New("provider unhealthy")
 const RateLimitReason = "rate_limited"
 
 // UnhealthyError carries the structured reason a provider was refused.
+//
+// RateLimited marks a transient, self-healing capacity throttle (a health-gate
+// rate limit or a limits-store quota-reached block) as opposed to a permanent
+// refusal (auth failure needing a human login, provider disabled in config).
+// Downstream classification (workflow.isTransientCapacityError) keys off it so a
+// rate limit parks-and-retries instead of feeding the dispatch circuit breaker.
+// A rate limit is not always tagged with Until (the limits store knows the
+// condition but not always the exact reset time), so the flag is the reliable
+// signal where a zero Until would otherwise read as "not a rate limit".
 type UnhealthyError struct {
-	Provider string
-	Reason   string
-	Until    time.Time
+	Provider    string
+	Reason      string
+	Until       time.Time
+	RateLimited bool
 }
 
 func (e *UnhealthyError) Error() string {

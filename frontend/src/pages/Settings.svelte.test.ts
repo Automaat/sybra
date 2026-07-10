@@ -34,12 +34,26 @@ vi.mock('$lib/api', () => ({
 }))
 
 const Settings = (await import('./Settings.svelte')).default
+const { browserNotificationStore } = await import('../lib/web-notifications.svelte.js')
+
+function installFakeNotification(permission: NotificationPermission) {
+  class FakeNotification {
+    static permission = permission
+    static requestPermission = vi.fn(async () => FakeNotification.permission)
+  }
+  ;(window as unknown as { Notification: unknown }).Notification = FakeNotification
+  return FakeNotification
+}
+
+function uninstallNotification() {
+  delete (window as unknown as { Notification?: unknown }).Notification
+}
 
 function baseSettings() {
   return {
     agent: { provider: 'claude', model: 'sonnet', mode: 'headless', maxConcurrent: 3 },
     notification: { desktop: false },
-    orchestrator: { autoTriage: false, autoPlan: false, dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
+    orchestrator: { dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
     logging: { level: 'info', maxSizeMB: 100, maxFiles: 10 },
     audit: { retentionDays: 30, enabled: true },
     todoist: { enabled: false, apiToken: '', projectId: '', pollSeconds: 300 },
@@ -90,6 +104,9 @@ describe('Settings', () => {
     mockProviderHealthEnabled.mockResolvedValue(false)
     mockGetProviderHealth.mockResolvedValue([])
     mockEventsOn.mockReturnValue(vi.fn())
+    localStorage.clear()
+    browserNotificationStore.disable()
+    uninstallNotification()
 
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -109,6 +126,7 @@ describe('Settings', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('shows loading state while GetSettings is pending', () => {
@@ -433,16 +451,94 @@ describe('Settings', () => {
     })
   })
 
-  it('toggles autoTriage', async () => {
+  it('shows browser notifications as unsupported and disabled when the API is missing', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
+    expect(screen.getByText('Not supported in this browser')).toBeDefined()
+  })
+
+  it('enables browser notifications via a user gesture and requests permission', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
+    const FakeNotification = installFakeNotification('default')
+    // Real browsers flip Notification.permission once the user responds to
+    // the prompt; the fake must mirror that or the derived status text (which
+    // re-reads `permission`, not just our own `enabled` flag) never updates.
+    FakeNotification.requestPermission = vi.fn(async () => {
+      FakeNotification.permission = 'granted'
+      return FakeNotification.permission
+    })
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+
+    await fireEvent.click(checkbox)
+
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(checkbox.checked).toBe(true)
+      expect(screen.getByText(/live Sybra notifications will show/)).toBeDefined()
+    })
+  })
+
+  it('does not prompt again once permission was previously denied', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
+    installFakeNotification('denied')
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
+    expect(checkbox.disabled).toBe(true)
+    expect(screen.getByText(/Blocked/)).toBeDefined()
+  })
+
+  it('unchecking browser notifications disables the preference without re-prompting', async () => {
+    vi.stubEnv('VITE_MODE', 'web') // browser-notification toggle is web-mode-only
+    const FakeNotification = installFakeNotification('granted')
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    const checkbox = screen.getByLabelText(/Browser notifications/) as HTMLInputElement
+    await fireEvent.click(checkbox)
+    await vi.waitFor(() => expect(checkbox.checked).toBe(true))
+
+    await fireEvent.click(checkbox)
+
+    await vi.waitFor(() => expect(checkbox.checked).toBe(false))
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled()
+  })
+
+  it('hides the browser-notification toggle in desktop mode', async () => {
+    installFakeNotification('granted') // API present, but desktop must not expose it
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Notifications' }))
+    await goTo('Notifications')
+    // Native macOS toggle stays; the browser toggle is web-only.
+    expect(screen.getByLabelText(/Desktop notifications/)).toBeDefined()
+    expect(screen.queryByLabelText(/Browser notifications/)).toBeNull()
+  })
+
+  it('edits orchestrator dispatch interval', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Orchestrator' }))
     await goTo('Orchestrator')
-    const checkbox = screen.getByLabelText('Auto-triage') as HTMLInputElement
-    expect(checkbox.checked).toBe(false)
-    await fireEvent.click(checkbox)
+    await fireEvent.click(screen.getByText('Loop cadence'))
+    const input = screen.getByLabelText('Dispatch interval (seconds)') as HTMLInputElement
+    expect(input.value).toBe('10')
+    await fireEvent.input(input, { target: { value: '20' } })
     await vi.waitFor(() => {
-      expect(checkbox.checked).toBe(true)
+      expect(input.value).toBe('20')
     })
   })
 

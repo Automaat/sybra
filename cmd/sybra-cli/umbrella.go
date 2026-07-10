@@ -74,7 +74,7 @@ func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int, degr
 	}
 	fmt.Printf("Expanded %s: created %d child task(s), %d skipped (done or already present).\n", umbrellaURL, created, skipped)
 	if degraded {
-		fmt.Println("WARNING: planner exhausted its retries — fell back to a linear-chain plan (serial, no parallelism).")
+		fmt.Println("WARNING: planner exhausted its retries — fell back to an independent-parallel plan (no derived ordering, degraded parallelism cap).")
 	}
 	return 0
 }

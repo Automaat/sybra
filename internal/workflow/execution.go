@@ -43,6 +43,87 @@ type Execution struct {
 	// a step's count deliberately, for the re-arm case (a fresh attempt cycle
 	// that should not inherit a prior cycle's budget).
 	StepCounts map[string]int `yaml:"step_counts,omitempty" json:"stepCounts,omitempty"`
+	// BestOfNInflight tracks per-parent-step state for in-flight `best_of_n`
+	// blocks. Keyed by the parent (best_of_n) step ID. Unlike ParallelInflight,
+	// each attempt's slot also records its own worktree dir/branch,
+	// since — unlike a parallel child — a best-of-N attempt has no worktree the
+	// engine can otherwise rediscover (it is not the task's canonical
+	// worktree). Persisted so a process restart can resume the fan-out and so
+	// promoteBestOfN can locate the winning attempt's worktree without
+	// depending on live agent state.
+	BestOfNInflight map[string]*BestOfNInflight `yaml:"best_of_n_inflight,omitempty" json:"bestOfNInflight,omitempty"`
+}
+
+// BestOfNInflight is the in-flight bookkeeping for one `best_of_n` parent.
+type BestOfNInflight struct {
+	ParentStepID string                    `yaml:"parent_step_id" json:"parentStepId"`
+	StartedAt    time.Time                 `yaml:"started_at" json:"startedAt"`
+	Attempts     map[string]*AttemptStatus `yaml:"attempts" json:"attempts"`
+}
+
+// AttemptStatus is one best-of-N attempt's persisted slot.
+type AttemptStatus struct {
+	AttemptID string `yaml:"attempt_id" json:"attemptId"`
+	Provider  string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model     string `yaml:"model,omitempty" json:"model,omitempty"`
+	AgentID   string `yaml:"agent_id,omitempty" json:"agentId,omitempty"`
+	// Dir/Branch locate the attempt's isolated worktree so
+	// promoteBestOfN can promote the winner without depending on any live
+	// agent/registry state.
+	Dir    string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	Branch string `yaml:"branch,omitempty" json:"branch,omitempty"`
+	// Status: "pending" | "completed" | "failed".
+	Status  string `yaml:"status" json:"status"`
+	Output  string `yaml:"output,omitempty" json:"output,omitempty"`
+	Retries int    `yaml:"retries,omitempty" json:"retries,omitempty"`
+}
+
+// AllAttemptsDone reports whether every attempt reached a terminal status.
+func (b *BestOfNInflight) AllAttemptsDone() bool {
+	if b == nil {
+		return false
+	}
+	for _, a := range b.Attempts {
+		if a == nil {
+			return false
+		}
+		if a.Status != "completed" && a.Status != "failed" {
+			return false
+		}
+	}
+	return len(b.Attempts) > 0
+}
+
+// SuccessfulAttemptIDs returns the attempt IDs that completed successfully,
+// sorted for deterministic output.
+func (b *BestOfNInflight) SuccessfulAttemptIDs() []string {
+	if b == nil {
+		return nil
+	}
+	var ids []string
+	for id, a := range b.Attempts {
+		if a != nil && a.Status == "completed" {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// FailedAttemptIDs returns the attempt IDs that terminated with status
+// "failed", sorted for deterministic output.
+func (b *BestOfNInflight) FailedAttemptIDs() []string {
+	if b == nil {
+		return nil
+	}
+	var ids []string
+	for id, a := range b.Attempts {
+		if a != nil && a.Status == "failed" {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // ParallelChildren is the in-flight bookkeeping for one `parallel` parent.
@@ -98,6 +179,28 @@ func (e *Execution) Clone() *Execution {
 				}
 			}
 			cloned.ParallelInflight[key] = &childClone
+		}
+	}
+	if e.BestOfNInflight != nil {
+		cloned.BestOfNInflight = make(map[string]*BestOfNInflight, len(e.BestOfNInflight))
+		for key, parent := range e.BestOfNInflight {
+			if parent == nil {
+				cloned.BestOfNInflight[key] = nil
+				continue
+			}
+			parentClone := *parent
+			if parent.Attempts != nil {
+				parentClone.Attempts = make(map[string]*AttemptStatus, len(parent.Attempts))
+				for attemptID, status := range parent.Attempts {
+					if status == nil {
+						parentClone.Attempts[attemptID] = nil
+						continue
+					}
+					statusClone := *status
+					parentClone.Attempts[attemptID] = &statusClone
+				}
+			}
+			cloned.BestOfNInflight[key] = &parentClone
 		}
 	}
 	return &cloned

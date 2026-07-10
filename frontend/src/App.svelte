@@ -80,6 +80,12 @@
       })
     )
 
+    // URL-backed navigation only makes sense in the browser (deep links,
+    // back/forward, refresh) — the desktop Wails webview has no address bar.
+    const stopUrlRouting = import.meta.env.VITE_MODE === 'web'
+      ? untrack(() => navStore.startUrlRouting())
+      : undefined
+
     // Keyboard shortcuts only on devices with a fine pointer (mouse/keyboard).
     // Touch-only devices (iPhone, iPad without keyboard) skip listener entirely.
     const hasFinePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches
@@ -134,6 +140,7 @@
 
     return () => {
       stopLifecycle()
+      stopUrlRouting?.()
       if (quitConfirmTimer) clearTimeout(quitConfirmTimer)
       removeKeyHandler?.()
     }

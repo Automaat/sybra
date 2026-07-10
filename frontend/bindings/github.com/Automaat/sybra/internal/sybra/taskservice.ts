@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as artifact$0 from "../artifact/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -34,6 +37,20 @@ export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task>
  */
 export function CreateTask(title: string, body: string, mode: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(1715598451, title, body, mode).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * CreateTaskWithInit is CreateTask plus caller-supplied initial field
+ * overrides (e.g. TodoistID) applied atomically in the same first-write as
+ * task creation. Callers that need a dedupe key persisted alongside the task
+ * — so a crash between create and a second update can never re-import the
+ * same source item — should use this instead of CreateTask followed by a
+ * separate Update.
+ */
+export function CreateTaskWithInit(title: string, body: string, mode: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(1219464293, title, body, mode, init).then(($result: any) => {
         return $$createType0($result);
     });
 }
@@ -83,13 +100,41 @@ export function GetTask(id: string): $CancellablePromise<task$0.Task> {
     });
 }
 
+export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.TaskSetupLogDTO> {
+    return $Call.ByID(3273454814, taskID).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
+    return $Call.ByID(1612534482, taskID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
+    return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
+ * ListTaskProgress returns the agent-authored progress entries for a task.
+ * Empty (not an error) when the task has no progress log yet.
+ */
+export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
+    return $Call.ByID(821819796, taskID).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
 /**
  * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
  * Chat tasks are surfaced exclusively through the Chats view.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType9($result);
     });
 }
 
@@ -132,4 +177,11 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $models.TamperReportDTO.createFrom;
-const $$createType2 = $Create.Array($$createType0);
+const $$createType2 = $models.TaskSetupLogDTO.createFrom;
+const $$createType3 = $models.TaskArtifactDTO.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $models.TaskAuditEventDTO.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Array($$createType0);

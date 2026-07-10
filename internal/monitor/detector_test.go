@@ -31,13 +31,17 @@ func defaultCfg() config.MonitorConfig {
 }
 
 func mkTask(id string, status task.Status, opts ...func(*task.Task)) task.Task {
+	return mkTaskAt(time.Now().UTC(), id, status, opts...)
+}
+
+func mkTaskAt(now time.Time, id string, status task.Status, opts ...func(*task.Task)) task.Task {
 	t := task.Task{
 		ID:        id,
 		Title:     "task " + id,
 		Status:    status,
 		AgentMode: task.AgentModeHeadless,
 		Tags:      []string{"medium"},
-		UpdatedAt: time.Now().Add(-time.Hour).UTC(),
+		UpdatedAt: now.Add(-1 * time.Hour),
 	}
 	for _, o := range opts {
 		o(&t)
@@ -59,8 +63,8 @@ func TestDetect(t *testing.T) {
 			in: DetectInput{
 				Now: now,
 				Tasks: []task.Task{
-					mkTask("a", task.StatusInProgress),
-					mkTask("b", task.StatusDone),
+					mkTaskAt(now, "a", task.StatusInProgress),
+					mkTaskAt(now, "b", task.StatusDone),
 				},
 				LiveAgents: []liveAgent{{TaskID: "a", Running: true}},
 				Cfg:        cfg,
@@ -72,10 +76,10 @@ func TestDetect(t *testing.T) {
 			in: DetectInput{
 				Now: now,
 				Tasks: []task.Task{
-					mkTask("a", task.StatusInProgress),
-					mkTask("b", task.StatusInProgress),
-					mkTask("c", task.StatusInProgress),
-					mkTask("d", task.StatusInProgress),
+					mkTaskAt(now, "a", task.StatusInProgress),
+					mkTaskAt(now, "b", task.StatusInProgress),
+					mkTaskAt(now, "c", task.StatusInProgress),
+					mkTaskAt(now, "d", task.StatusInProgress),
 				},
 				LiveAgents: []liveAgent{
 					{TaskID: "a", Running: true},
@@ -91,7 +95,7 @@ func TestDetect(t *testing.T) {
 			name: "untriaged on todo missing agent_mode",
 			in: DetectInput{
 				Now:   now,
-				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) { t.AgentMode = "" })},
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusTodo, func(t *task.Task) { t.AgentMode = "" })},
 				Cfg:   cfg,
 			},
 			want: []AnomalyKind{KindUntriaged},
@@ -100,7 +104,7 @@ func TestDetect(t *testing.T) {
 			name: "untriaged on todo missing tags",
 			in: DetectInput{
 				Now:   now,
-				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) { t.Tags = nil })},
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusTodo, func(t *task.Task) { t.Tags = nil })},
 				Cfg:   cfg,
 			},
 			want: []AnomalyKind{KindUntriaged},
@@ -109,7 +113,7 @@ func TestDetect(t *testing.T) {
 			name: "untriaged not flagged on done tasks",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusDone, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusDone, func(t *task.Task) {
 					t.Tags = nil
 					t.AgentMode = ""
 				})},
@@ -121,7 +125,7 @@ func TestDetect(t *testing.T) {
 			name: "untriaged not flagged within grace period",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusTodo, func(t *task.Task) {
 					t.Tags = nil
 					t.CreatedAt = now
 				})},
@@ -133,7 +137,7 @@ func TestDetect(t *testing.T) {
 			name: "untriaged flagged after grace period",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusTodo, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusTodo, func(t *task.Task) {
 					t.Tags = nil
 					t.CreatedAt = now.Add(-20 * time.Minute)
 				})},
@@ -145,7 +149,7 @@ func TestDetect(t *testing.T) {
 			name: "plan-review past budget is NOT flagged — waits indefinitely for human",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusPlanReview, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusPlanReview, func(t *task.Task) {
 					t.UpdatedAt = now.Add(-9 * time.Hour)
 				})},
 				Cfg: cfg,
@@ -156,7 +160,7 @@ func TestDetect(t *testing.T) {
 			name: "stuck_human_blocked on human-required past budget",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 					t.UpdatedAt = now.Add(-9 * time.Hour)
 				})},
 				Cfg: cfg,
@@ -167,7 +171,7 @@ func TestDetect(t *testing.T) {
 			name: "stuck_human_blocked not flagged below budget",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 					t.UpdatedAt = now.Add(-2 * time.Hour)
 				})},
 				Cfg: cfg,
@@ -178,7 +182,7 @@ func TestDetect(t *testing.T) {
 			name: "pr_gap on stale in-review with project but no PR",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInReview, func(t *task.Task) {
 					t.ProjectID = "owner/repo"
 					t.UpdatedAt = now.Add(-20 * time.Minute)
 				})},
@@ -190,7 +194,7 @@ func TestDetect(t *testing.T) {
 			name: "pr_gap suppressed during grace period",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInReview, func(t *task.Task) {
 					t.ProjectID = "owner/repo"
 					t.UpdatedAt = now.Add(-5 * time.Minute)
 				})},
@@ -202,7 +206,7 @@ func TestDetect(t *testing.T) {
 			name: "pr_gap suppressed when PR is set",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInReview, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInReview, func(t *task.Task) {
 					t.ProjectID = "owner/repo"
 					t.PRNumber = 412
 				})},
@@ -214,7 +218,7 @@ func TestDetect(t *testing.T) {
 			name: "pr_gap suppressed when project missing",
 			in: DetectInput{
 				Now:   now,
-				Tasks: []task.Task{mkTask("a", task.StatusInReview)},
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInReview)},
 				Cfg:   cfg,
 			},
 			want: nil,
@@ -223,7 +227,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent when in-progress without recent agent event",
 			in: DetectInput{
 				Now:        now,
-				Tasks:      []task.Task{mkTask("a", task.StatusInProgress)},
+				Tasks:      []task.Task{mkTaskAt(now, "a", task.StatusInProgress)},
 				LiveAgents: []liveAgent{},
 				Cfg:        cfg,
 			},
@@ -233,7 +237,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent suppressed for umbrella tracker (rollup status, no agent)",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
 					t.TaskType = task.TaskTypeUmbrella
 				})},
 				LiveAgents: []liveAgent{},
@@ -245,7 +249,7 @@ func TestDetect(t *testing.T) {
 			name: "stuck_human_blocked still fires for a stalled umbrella tracker",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 					t.TaskType = task.TaskTypeUmbrella
 					t.UpdatedAt = now.Add(-24 * time.Hour)
 				})},
@@ -257,7 +261,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent suppressed by recent agent.* event",
 			in: DetectInput{
 				Now:   now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress)},
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress)},
 				Events15m: []audit.Event{
 					{Type: "agent.started", TaskID: "a", Timestamp: now.Add(-2 * time.Minute)},
 				},
@@ -269,7 +273,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent suppressed by live agent without audit yet",
 			in: DetectInput{
 				Now:        now,
-				Tasks:      []task.Task{mkTask("a", task.StatusInProgress)},
+				Tasks:      []task.Task{mkTaskAt(now, "a", task.StatusInProgress)},
 				LiveAgents: []liveAgent{{TaskID: "a", Running: true}},
 				Cfg:        cfg,
 			},
@@ -279,7 +283,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent suppressed when running run started recently",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
 					t.AgentRuns = []task.AgentRun{
 						{AgentID: "x", State: "running", StartedAt: now.Add(-2 * time.Minute)},
 					}
@@ -293,7 +297,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent fires when running run started outside window",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
 					t.AgentRuns = []task.AgentRun{
 						{AgentID: "x", State: "running", StartedAt: now.Add(-20 * time.Minute)},
 					}
@@ -307,7 +311,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent suppressed when task just transitioned to in-progress and dispatch hasn't recorded a run yet",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
 					// Prior completed run from an earlier lifecycle, neither
 					// running nor recent — only the status-transition
 					// timestamp is fresh, mirroring dispatch latency between
@@ -324,10 +328,28 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "lost_agent fires for legacy task with no StatusChangedAt and recent UpdatedAt",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
+					// Legacy tasks are migrated by the store on write; the
+					// detector must not keep treating UpdatedAt as status
+					// transition evidence.
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "stopped", StartedAt: now.Add(-4 * time.Hour)},
+					}
+					t.UpdatedAt = now.Add(-2 * time.Minute)
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindLostAgent},
+		},
+		{
 			name: "lost_agent still fires when only UpdatedAt (not StatusChangedAt) is recent",
 			in: DetectInput{
 				Now: now,
-				Tasks: []task.Task{mkTask("a", task.StatusInProgress, func(t *task.Task) {
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
 					// The task transitioned to in-progress long ago (outside
 					// the window) but something unrelated (a tag edit, an
 					// audit sidecar write) touched it moments ago. UpdatedAt
@@ -381,7 +403,7 @@ func TestDetect(t *testing.T) {
 			name: "lost_agent + failure_spike independent",
 			in: DetectInput{
 				Now:        now,
-				Tasks:      []task.Task{mkTask("a", task.StatusInProgress)},
+				Tasks:      []task.Task{mkTaskAt(now, "a", task.StatusInProgress)},
 				LiveAgents: []liveAgent{},
 				HourSummary: audit.Summary{
 					FailureRate: 0.5,
@@ -412,7 +434,7 @@ func TestDetectPRGap_EvidenceIncludesTiming(t *testing.T) {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	cfg := defaultCfg()
 	updatedAt := now.Add(-20 * time.Minute)
-	tk := mkTask("a", task.StatusInReview, func(t *task.Task) {
+	tk := mkTaskAt(now, "a", task.StatusInReview, func(t *task.Task) {
 		t.ProjectID = "owner/repo"
 		t.Branch = "task-a"
 		t.UpdatedAt = updatedAt
@@ -439,7 +461,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	cfg := defaultCfg()
 
 	t.Run("includes status_reason when set", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.StatusReason = "watchdog: turn limit exceeded"
 		})
@@ -458,7 +480,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("omits status_reason when empty", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
@@ -472,7 +494,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("includes last_agent_role and last_agent_state", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "old", Role: "plan", State: "stopped"},
@@ -494,7 +516,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("omits last_agent_role when role is empty", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "impl", Role: "", State: "stopped"},
@@ -515,7 +537,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("omits last_agent fields when no runs", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
@@ -533,7 +555,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("includes pr_number when set", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.PRNumber = 42
 		})
@@ -552,7 +574,7 @@ func TestDetectStuckHumanBlocked_Evidence(t *testing.T) {
 	})
 
 	t.Run("omits pr_number when zero", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
@@ -572,7 +594,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 
 	t.Run("still fires anomaly when result has human decision", func(t *testing.T) {
 		// Human-review confirmed genuine human-required: operator reminder must still fire.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -592,7 +614,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 
 	t.Run("still fires anomaly when Verdict field is human", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
@@ -609,7 +631,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 
 	t.Run("fires anomaly when result has sybra_bug decision", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -633,7 +655,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 
 	t.Run("omits human_review_verdict when result is empty", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Result: ""},
@@ -650,7 +672,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 
 	t.Run("omits human_review_verdict when agent still running", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -670,7 +692,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	})
 
 	t.Run("omits human_review_verdict when role is not human-review", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -693,7 +715,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		// Simulates a long review response where the sybra-verdict block was
 		// cut off during Result truncation but the Verdict field was populated
 		// from the live agent output at completion time.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -719,7 +741,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 
 	t.Run("Verdict field takes priority over Result parsing", func(t *testing.T) {
 		// Verdict field wins even when Result also contains a parseable block.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -746,7 +768,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 	t.Run("omits verdict when running human-review follows stopped human verdict", func(t *testing.T) {
 		// History: [stopped verdict=human, running human-review].
 		// Older verdict must not be surfaced while a newer review is still in flight.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
@@ -767,7 +789,7 @@ func TestDetectStuckHumanBlocked_HumanReviewVerdict(t *testing.T) {
 		// Simulates: human-review ran and returned "human", then a second
 		// human-review attempt was dispatched but failed with an API error
 		// (result has no sybra-verdict block). The earlier verdict must win.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -800,7 +822,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	cfg := defaultCfg()
 
 	t.Run("plan-review is never flagged, regardless of dwell", func(t *testing.T) {
-		tk := mkTask("a", task.StatusPlanReview, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusPlanReview, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
@@ -813,7 +835,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=false when human-review verdict is human", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
@@ -834,7 +856,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 		// escalated to human-required, single human-review run completed with the
 		// decision embedded in the Result text (Verdict field was not yet
 		// populated in this era). Detector must fall back to parsing Result.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{
@@ -857,7 +879,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true when human-review verdict is sybra_bug", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "sybra_bug"},
@@ -874,7 +896,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true when no human-review ran", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
 		in := DetectInput{Now: now, Tasks: []task.Task{tk}, Cfg: cfg}
@@ -888,7 +910,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true when human-review still running", func(t *testing.T) {
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "running", Verdict: "human"},
@@ -908,7 +930,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 	t.Run("RequiresLLM=true when running human-review follows stopped human verdict", func(t *testing.T) {
 		// History: [stopped verdict=human, running human-review].
 		// Running review blocks stale verdict — treat as unknown until it completes.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
@@ -929,7 +951,7 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 		// Simulates the real-world case: first human-review returned "human",
 		// second attempt hit API 529 with no parseable result. The task is still
 		// genuinely human-required — should not spawn an LLM investigation.
-		tk := mkTask("a", task.StatusHumanRequired, func(t *task.Task) {
+		tk := mkTaskAt(now, "a", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "rev1", Role: "human-review", State: "stopped", Verdict: "human"},
@@ -954,11 +976,11 @@ func TestDetectStuckHumanBlocked_RequiresLLM(t *testing.T) {
 // monitorRoutingSink.Submit would file it for a KindLostAgent anomaly on
 // originID, using the same fingerprint/body shape DeterministicIssueBody
 // produces (see internal/monitor/prompts.go).
-func lostAgentInvestigationTask(id, originID string, status task.Status) task.Task {
+func lostAgentInvestigationTask(now time.Time, id, originID string, status task.Status) task.Task {
 	fp := Fingerprint(KindLostAgent, originID, nil)
 	body := "## Detection\n- Kind: `lost_agent`\n- Fingerprint: `" + fp + "`\n\n" +
 		"## Affected task\n- `" + originID + "`\n\n"
-	return mkTask(id, status, func(t *task.Task) {
+	return mkTaskAt(now, id, status, func(t *task.Task) {
 		t.Tags = []string{lostAgentInvestigationTag}
 		t.Body = body
 	})
@@ -979,10 +1001,10 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 	}
 
 	t.Run("RequiresLLM=false and evidence set when an open lost_agent investigation tracks this task", func(t *testing.T) {
-		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+		stuck := mkTaskAt(now, "orig", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
-		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation := lostAgentInvestigationTask(now, "inv", "orig", task.StatusTodo)
 		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
 		got := findStuck(t, Detect(in))
 		if got.RequiresLLM {
@@ -994,10 +1016,10 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true when the investigation task is terminal", func(t *testing.T) {
-		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+		stuck := mkTaskAt(now, "orig", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
-		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusDone)
+		investigation := lostAgentInvestigationTask(now, "inv", "orig", task.StatusDone)
 		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
 		got := findStuck(t, Detect(in))
 		if !got.RequiresLLM {
@@ -1006,11 +1028,11 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true once the task already carries the auto-retried tag", func(t *testing.T) {
-		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+		stuck := mkTaskAt(now, "orig", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.Tags = []string{"medium", monitorAutoRetriedTag}
 		})
-		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation := lostAgentInvestigationTask(now, "inv", "orig", task.StatusTodo)
 		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
 		got := findStuck(t, Detect(in))
 		if !got.RequiresLLM {
@@ -1018,13 +1040,13 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 		}
 	})
 	t.Run("RequiresLLM=true when the investigation predates the current agent run", func(t *testing.T) {
-		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+		stuck := mkTaskAt(now, "orig", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 			t.AgentRuns = []task.AgentRun{
 				{AgentID: "new-run", State: "stopped", StartedAt: now.Add(-2 * time.Hour)},
 			}
 		})
-		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation := lostAgentInvestigationTask(now, "inv", "orig", task.StatusTodo)
 		investigation.UpdatedAt = now.Add(-4 * time.Hour)
 		in := DetectInput{Now: now, Tasks: []task.Task{stuck, investigation}, Cfg: cfg}
 		got := findStuck(t, Detect(in))
@@ -1037,10 +1059,10 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 	})
 
 	t.Run("RequiresLLM=true when the investigation fingerprint does not match the affected task", func(t *testing.T) {
-		stuck := mkTask("orig", task.StatusHumanRequired, func(t *task.Task) {
+		stuck := mkTaskAt(now, "orig", task.StatusHumanRequired, func(t *task.Task) {
 			t.UpdatedAt = now.Add(-9 * time.Hour)
 		})
-		investigation := lostAgentInvestigationTask("inv", "orig", task.StatusTodo)
+		investigation := lostAgentInvestigationTask(now, "inv", "orig", task.StatusTodo)
 		investigation.Body = strings.ReplaceAll(
 			investigation.Body,
 			"- Fingerprint: `"+Fingerprint(KindLostAgent, "orig", nil)+"`",
@@ -1055,11 +1077,12 @@ func TestDetectStuckHumanBlocked_KnownLostAgentCause(t *testing.T) {
 }
 
 func TestCounts(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	tasks := []task.Task{
-		mkTask("a", task.StatusTodo),
-		mkTask("b", task.StatusTodo),
-		mkTask("c", task.StatusInProgress),
-		mkTask("d", task.StatusDone),
+		mkTaskAt(now, "a", task.StatusTodo),
+		mkTaskAt(now, "b", task.StatusTodo),
+		mkTaskAt(now, "c", task.StatusInProgress),
+		mkTaskAt(now, "d", task.StatusDone),
 	}
 	c := countByStatus(tasks)
 	if c.Todo != 2 {
