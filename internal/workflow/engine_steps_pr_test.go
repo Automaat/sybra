@@ -328,7 +328,7 @@ func TestDrainPendingConflictRecovery_DeclineEscalates(t *testing.T) {
 	engine.SetConflictRecovery(func(string) bool { return false })
 
 	engine.mu.Lock()
-	engine.pendingRecovery["t1"] = struct{}{}
+	engine.pendingRecovery["t1"] = pendingRecovery{}
 	engine.mu.Unlock()
 
 	engine.drainPendingConflictRecovery("t1")

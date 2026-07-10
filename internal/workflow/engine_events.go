@@ -990,12 +990,18 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	// already parked.
 	if currentStatus != "human-required" && e.conflictRecovery != nil && errors.Is(err, worktreeerr.ErrRebaseFailed) {
 		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
-		if e.tryConflictRecovery(taskID) {
+		if e.tryConflictRecoveryWithFallback(taskID, func() {
+			e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
+		}) {
 			return
 		}
 		// Recovery declined (e.g. no linked PR, retry budget exhausted) — fall
 		// through to the normal classification/escalation below.
 	}
+	e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
+}
+
+func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
 	reason, permanent := ClassifyAgentStartError(err)
 	if reason == "" {
 		return

@@ -349,6 +349,55 @@ func TestSurfaceStartFailure_RebaseFailedRecoveryDeferredWhileMarkerHeld(t *test
 	}
 }
 
+// TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason locks
+// the queued-start-failure regression from PR #1749: when recovery is deferred
+// under a held marker and later declines, the fallback must preserve the
+// original rebase-failed classification instead of using the generic PR-tail
+// divergence escalation.
+func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "run_agent",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine.SetConflictRecovery(func(string) bool { return false })
+
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	taskInfo, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask(t1): %v", err)
+	}
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, taskInfo.Workflow, "run_agent")
+
+	engine.mu.Lock()
+	delete(engine.dispatching, "t1")
+	engine.mu.Unlock()
+	engine.drainPendingConflictRecovery("t1")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "branch stale") {
+		t.Fatalf("reason %q missing rebase-failed classification", reason)
+	}
+	if strings.Contains(reason, "branch diverged from remote") {
+		t.Fatalf("reason %q used PR-tail divergence fallback", reason)
+	}
+}
+
 func TestSurfaceStartFailure_NilErrIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
