@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -1042,10 +1043,14 @@ func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
 		return false
 	}
 	got, err := r.tasks.Get(taskID)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		r.dropWorktreeEntry(taskID)
 		r.logger.Warn("pr-monitor.worktree.task-gone", "task_id", taskID, "err", wtErr)
 		return true
+	}
+	if err != nil {
+		r.logger.Warn("pr-monitor.worktree.task-get", "task_id", taskID, "err", err)
+		return false
 	}
 	if !worktreeFailureTerminal(wtErr) {
 		return false
