@@ -988,6 +988,54 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure(t *
 	}
 }
 
+func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "permanently flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	var linkedPRCalls atomic.Int32
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		linkedPRCalls.Add(1)
+		return nil, errors.New("gh api: linked PRs lookup failed")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	if got := linkedPRCalls.Load(); got != 1 {
+		t.Fatalf("linked PR calls after initial enrichment = %d, want 1", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after first reconcile = %d, want 2", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after cooldown-gated reconcile = %d, want still 2", got)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should remain while linked-PRs fetch keeps failing", got.Tags)
+	}
+}
+
 func TestTaskService_ReconcilePendingEnrichment_SkipsTerminalStatus(t *testing.T) {
 	svc, _ := setupTaskService(t)
 

@@ -55,7 +55,13 @@ type TaskService struct {
 	// a maintenance tick never stacks a second concurrent gh fetch on the same
 	// stub. Zero value ready.
 	enrichReconciling sync.Map
+	// enrichRetryCooldown holds the next maintenance retry time per task ID.
+	// Initial async enrichment is not gated; this only prevents a permanently
+	// broken stub from spending GitHub calls on every reconcile tick.
+	enrichRetryCooldown sync.Map
 }
+
+const enrichPendingRetryCooldown = time.Hour
 
 type TamperReportDTO struct {
 	TaskID          string             `json:"taskId"`
@@ -728,6 +734,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 			s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 			return
 		}
+		s.enrichRetryCooldown.Delete(taskID)
 		s.logger.Info("enrich-pr.my-pr", "task_id", taskID, "pr", number, "title", pr.Title)
 		return
 	}
@@ -746,7 +753,9 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	}
 	if err := s.startPRReviewAgent(t); err != nil {
 		s.logger.Error("enrich-pr.review-agent", "task_id", taskID, "err", err)
+		return
 	}
+	s.enrichRetryCooldown.Delete(taskID)
 }
 
 // startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
@@ -847,7 +856,10 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		return
 	}
 	if linkedErr == nil && len(linkedPRs) == 0 {
+		s.enrichRetryCooldown.Delete(taskID)
 		s.startCreatedWorkflow(updated)
+	} else if linkedErr == nil {
+		s.enrichRetryCooldown.Delete(taskID)
 	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
 }
@@ -901,12 +913,16 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 			s.logger.Warn("enrich-reconcile.unparseable", "task_id", t.ID, "title", t.Title)
 			continue
 		}
+		if s.enrichPendingRetryCoolingDown(t.ID) {
+			continue
+		}
 		// Dedupe across ticks: skip if a reconcile enrichment is already running
 		// for this task (a slow gh call can span more than one maintenance tick).
 		if _, inFlight := s.enrichReconciling.LoadOrStore(t.ID, struct{}{}); inFlight {
 			continue
 		}
 		id := t.ID
+		s.enrichRetryCooldown.Store(id, time.Now().Add(enrichPendingRetryCooldown))
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber
@@ -922,6 +938,23 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 			s.enrichFromIssue(id, repo, number)
 		})
 	}
+}
+
+func (s *TaskService) enrichPendingRetryCoolingDown(taskID string) bool {
+	untilValue, ok := s.enrichRetryCooldown.Load(taskID)
+	if !ok {
+		return false
+	}
+	until, ok := untilValue.(time.Time)
+	if !ok || until.IsZero() {
+		s.enrichRetryCooldown.Delete(taskID)
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	s.enrichRetryCooldown.Delete(taskID)
+	return false
 }
 
 // umbrellaExpansionEnabled reports whether a detected umbrella issue should be
