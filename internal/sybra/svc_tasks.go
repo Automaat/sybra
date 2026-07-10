@@ -348,6 +348,16 @@ func providerForRun(run task.AgentRun) string {
 // CreateTask creates a new task and starts a matching workflow.
 // If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
+	return s.CreateTaskWithInit(title, body, mode, task.Update{})
+}
+
+// CreateTaskWithInit is CreateTask plus caller-supplied initial field
+// overrides (e.g. TodoistID) applied atomically in the same first-write as
+// task creation. Callers that need a dedupe key persisted alongside the task
+// — so a crash between create and a second update can never re-import the
+// same source item — should use this instead of CreateTask followed by a
+// separate Update.
+func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error) {
 	prRepo, prNumber := github.ParsePRURL(title)
 	issueRepo, issueNumber := github.ParseIssueURL(title)
 	isURLStub := prRepo != "" || issueRepo != ""
@@ -356,13 +366,15 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	// task.created dispatch can't race async enrichment and start a flat
 	// workflow on the un-enriched stub (CreateFull persists the tag before
 	// emitting TaskCreated). Non-URL tasks take the plain create path.
-	var t task.Task
-	var err error
+	createInit := init
 	if isURLStub {
-		t, err = s.tasks.CreateFull(title, body, mode, task.Update{Tags: task.Ptr([]string{enrichPendingTag})})
-	} else {
-		t, err = s.tasks.Create(title, body, mode)
+		tags := []string{enrichPendingTag}
+		if init.Tags != nil {
+			tags = append(tags, *init.Tags...)
+		}
+		createInit.Tags = task.Ptr(tags)
 	}
+	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
 		return t, err
 	}
@@ -811,10 +823,14 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	// Replace tags with the issue's labels (possibly empty), which also clears
 	// the enrich-pending marker so startCreatedWorkflow below can dispatch.
 	labels := issue.Labels
-	u.Tags = &labels
 	linkedPRs, linkedErr := s.fetchIssueLinkedPRsFunc()(repo, number)
 	if linkedErr != nil {
 		s.logger.Warn("enrich-issue.linked-prs", "task_id", taskID, "repo", repo, "number", number, "err", linkedErr)
+		// Keep the enrich-pending marker on a warn-only linked-PR fetch
+		// failure. Clearing it here would leave the task in todo with no
+		// marker, no workflow dispatch, and no way for
+		// ReconcilePendingEnrichment to find and retry it — inert forever.
+		labels = append(labels, enrichPendingTag)
 	} else if linked, ok := s.singleViewerLinkedPR(linkedPRs); ok {
 		u.PRNumber = task.Ptr(linked.Number)
 		u.Branch = task.Ptr(linked.HeadRefName)
@@ -824,6 +840,7 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 			s.logger.Warn("enrich-issue.linked-prs.ambiguous", "task_id", taskID, "count", viewerPRs)
 		}
 	}
+	u.Tags = &labels
 	updated, err := s.tasks.Update(taskID, u)
 	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
@@ -870,6 +887,13 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		// The stub still carries its raw URL as the title; re-derive the target.
 		prRepo, prNumber := github.ParsePRURL(t.Title)
 		issueRepo, issueNumber := github.ParseIssueURL(t.Title)
+		if prRepo == "" && issueRepo == "" && t.Issue != "" {
+			// Title was already rewritten to the real issue title by a prior
+			// enrich attempt that got the content but failed the linked-PR
+			// fetch (marker deliberately kept — see enrichFromIssue). Fall
+			// back to the persisted issue URL so the retry isn't stranded.
+			issueRepo, issueNumber = github.ParseIssueURL(t.Issue)
+		}
 		if prRepo == "" && issueRepo == "" {
 			// Title no longer parses as a GitHub URL (manually edited) yet the
 			// marker lingers — nothing to fetch. Warn once per tick; leave the
