@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -257,6 +258,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
 		TaskExists:  a.taskExistsForAgent,
+		TaskStatus:  a.taskStatusForAgent,
 		LimitSink:   a.recordLimitSnapshot,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
@@ -292,6 +294,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
+	a.agents.SetGHAppToken(github.CurrentAppToken)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
@@ -350,6 +353,17 @@ func (a *App) taskExistsForAgent(taskID string) bool {
 	}
 	a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
 	return true
+}
+
+func (a *App) taskStatusForAgent(taskID string) (string, bool) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			a.logger.Warn("agent.reattach.task-status", "task_id", taskID, "err", err)
+		}
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
@@ -819,6 +833,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WorkflowEngine:     a.workflowEngine,
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
+		PRs:                newRecoveryPRResolver(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,

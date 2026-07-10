@@ -39,6 +39,20 @@ type WorkflowRestarter interface {
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
 }
 
+// PRResolver resolves the GitHub PR a task lost track of when its pr_number was
+// cleared, so recovery can reconcile it. Implemented by the App over the repo's
+// github abstraction; kept a narrow interface so recovery stays a leaf package.
+type PRResolver interface {
+	ResolvePRForTask(ctx context.Context, repo, branch, issue string) (PRRef, error)
+}
+
+// PRRef is the PR a PRResolver matched to a task. State is "OPEN" or "MERGED";
+// a zero Number with an empty State means no unambiguous PR was found.
+type PRRef struct {
+	Number int
+	State  string
+}
+
 // Recovery owns the dependencies needed by the boot-time cleanup pass and
 // the periodic restart-stale sweep. Construct once during App.Startup,
 // reuse from the orchestrator loop.
@@ -49,6 +63,7 @@ type Recovery struct {
 	WorkflowEngine WorkflowRestarter // optional; nil-safe
 	Orchestrator   Orchestrator
 	Projects       ProjectGetter
+	PRs            PRResolver
 	Logger         *slog.Logger
 	Throttle       *logging.ErrorThrottle
 	WG             *sync.WaitGroup

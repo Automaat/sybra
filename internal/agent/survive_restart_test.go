@@ -372,10 +372,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	if found, isError := a.lastHeadlessResult(); !found || isError {
 		t.Fatal("expected terminal result in buffer")
 	}
-	// Registry record is removed on completion.
-	if list, _ := m.reg.List(); len(list) != 0 {
-		t.Fatalf("expected registry empty after completion, got %d", len(list))
-	}
+	waitForRegistryEmpty(t, m, 5*time.Second)
 }
 
 func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
@@ -729,6 +726,25 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for registry record for %s; records=%+v", agentID, recs)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func waitForRegistryEmpty(t *testing.T, m *Manager, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		list, err := m.reg.List()
+		if err != nil {
+			t.Fatalf("registry list: %v", err)
+		}
+		if len(list) == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected registry empty after completion, got %d", len(list))
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

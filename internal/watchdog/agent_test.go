@@ -577,6 +577,89 @@ func TestInspect_LoopAckOnlyWhenLeftRunning(t *testing.T) {
 	}
 }
 
+func TestHardDeadlineBreach(t *testing.T) {
+	const (
+		sl     = 15 * time.Minute
+		budget = 45 * time.Minute
+	)
+	tests := []struct {
+		name         string
+		stall, total time.Duration
+		background   bool
+		want         string
+	}{
+		{"within bounds", 5 * time.Minute, 10 * time.Minute, false, ""},
+		{"idle over ceiling", 40 * time.Minute, 10 * time.Minute, false, "idle"},
+		{"wall clock over ceiling", 5 * time.Minute, 2 * time.Hour, false, "wall_clock"},
+		{"idle within background grace", 40 * time.Minute, 10 * time.Minute, true, ""},
+		{"idle over even with background grace", 60 * time.Minute, 10 * time.Minute, true, "idle"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ag := &agent.Agent{}
+			if tc.background {
+				ag.SetBackgroundTaskIDs([]string{"bg1"})
+			}
+			got := hardDeadlineBreach(ag, tc.stall, tc.total, sl, budget)
+			if got != tc.want {
+				t.Fatalf("hardDeadlineBreach = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHardStop_MarksRetryableHangAndStops(t *testing.T) {
+	tests := []struct {
+		name       string
+		reason     string
+		wantReason string
+	}{
+		{"idle", "idle", "watchdog hang: idle deadline exceeded"},
+		{"wall_clock", "wall_clock", "watchdog hang: wall_clock deadline exceeded"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			stopped := ""
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(id string) error { stopped = id; return nil },
+			}
+
+			w.hardStop(&agent.Agent{ID: "a1", TaskID: tk.ID}, tc.reason, 40*time.Minute, time.Hour)
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if stopped != "a1" {
+				t.Fatalf("stopAgent called with %q, want a1", stopped)
+			}
+		})
+	}
+}
+
+func TestHardStop_NoTaskStillFreesSlot(t *testing.T) {
+	stopped := ""
+	w := &Watchdog{
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	w.hardStop(&agent.Agent{ID: "a1"}, "wall_clock", 0, 10*time.Hour)
+
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
 func newTestTasks(t *testing.T) (*task.Manager, task.Task) {
 	t.Helper()
 

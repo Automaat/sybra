@@ -54,6 +54,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
 	a.recovery.RestartStaleInProgress(ctx)
+	a.recovery.ReconcileLostPRNumber(ctx)
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
 	// raw-URL title) forever and never dispatch a workflow. The eventual
