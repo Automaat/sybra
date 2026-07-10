@@ -298,4 +298,7 @@ func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project
 	if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
 		m.logger.Warn("worktree.fork-only-push", "path", wtPath, "err", err)
 	}
+	if err := project.ConfigureGitHubAuth(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.github-auth", "path", wtPath, "err", err)
+	}
 }

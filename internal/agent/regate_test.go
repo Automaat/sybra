@@ -325,6 +325,7 @@ func TestRegateForTurn_WritesMarkerBeforePersistingSwitch(t *testing.T) {
 // (RequirePermissions) forward unchanged, so a sandboxed chat stays
 // sandboxed on its new provider instead of silently becoming permissive.
 func TestRegateForTurn_PreservesRequirePermissionsAcrossSwitch(t *testing.T) {
+	t.Setenv("SYBRA_DISABLE_CODEX_SANDBOX", "")
 	m, _ := newTestManager(t)
 	m.SetHealthGate(&fakeGate{
 		healthy: map[string]bool{"copilot": false, "codex": true},

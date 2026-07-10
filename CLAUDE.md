@@ -243,7 +243,7 @@ codex/copilot) routes through one constructor, `newProviderCmd`
 (`runner_core.go`) — the sole caller of a provider `exec.CommandContext`. A
 `rg exec.CommandContext internal/agent` drift check must only ever match
 `newProviderCmd` itself plus four documented non-provider probe sites
-(`reattach.go` ps, `discovery.go` pgrep/lsof, `skill_invoke.go` codex plugin
+(`reattach_other.go` ps, `discovery.go` pgrep/lsof, `skill_invoke.go` codex plugin
 list); a new spawn site cannot obtain an unsandboxed process by construction.
 
 `newProviderCmd` wraps the invocation via `wrapInvocation`

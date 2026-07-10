@@ -5,10 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -553,18 +550,4 @@ func reattachAlive(r Record) bool {
 		}
 	}
 	return true
-}
-
-// processStartString returns the OS-reported start time of a process as an
-// opaque string, used only for equality comparison to detect PID reuse.
-// Best-effort: an empty result disables the guard for that record.
-func processStartString(ctx context.Context, pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
