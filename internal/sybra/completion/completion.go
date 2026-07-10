@@ -198,7 +198,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	h.emitPermissionDenialAudits(ag)
 
-	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent)
+	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
@@ -292,7 +292,7 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	}
 }
 
-func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string) task.RunPatch {
+func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
@@ -306,6 +306,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 		SessionID:       task.Ptr(ag.GetSessionID()),
 		Model:           task.Ptr(ag.Model),
 		Provider:        task.Ptr(ag.Provider),
+	}
+	if outcome := runTerminalOutcome(ag, exitErr); outcome != "" {
+		runUpdates.Outcome = task.Ptr(outcome)
 	}
 	addRunMetadata(&runUpdates, ag)
 	// For human-review agents, parse the verdict from the live (untruncated)
@@ -346,17 +349,11 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if h.workflowEngine == nil {
 		return true
 	}
-	rateLimited := isRateLimitedRun(ag, exitErr)
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
-	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
-	stopStalled := ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
-	if isSignalKill(exitErr) || stopStalled || rateLimited {
+	stalled, rateLimited, stopStalled := classifyStall(ag, exitErr)
+	if stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stopStalled,
-			"rate_limited", rateLimited)
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited)
 		if rateLimited {
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		} else {
@@ -371,6 +368,37 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 		Success:  exitErr == nil,
 	})
 	return true
+}
+
+// classifyStall reports whether a completion is an infra stall — signal kill,
+// stop-before-result, or provider rate limit — rather than the agent's actual
+// terminal outcome. buildRunPatch and notifyWorkflowEngine both key off this
+// so the persisted AgentRun.Outcome and the workflow's Success signal can
+// never diverge: a stalled run is retried, so it must be neither a persisted
+// success nor a persisted failure.
+func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopStalled bool) {
+	rateLimited = isRateLimitedRun(ag, exitErr)
+	// Cost guardrails intentionally hard-stop the subprocess, but they are a
+	// budget failure, not an infra stall. Let them flow through the bounded
+	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
+	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
+	stalled = isSignalKill(exitErr) || stopStalled || rateLimited
+	return stalled, rateLimited, stopStalled
+}
+
+// runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
+// empty for a stall (see classifyStall — retried, not a definitive result),
+// otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
+// uses for AgentCompletion.Success.
+func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
+	if stalled, _, _ := classifyStall(ag, exitErr); stalled {
+		return ""
+	}
+	if exitErr == nil {
+		return task.RunOutcomeSuccess
+	}
+	return task.RunOutcomeFailure
 }
 
 func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
