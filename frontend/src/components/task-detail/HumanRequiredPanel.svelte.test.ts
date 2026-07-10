@@ -43,6 +43,13 @@ describe('HumanRequiredPanel', () => {
     expect(container.querySelector('button')).toBeNull()
   })
 
+  it('does not render for a pending prompt-lab proposal', () => {
+    const { container } = render(HumanRequiredPanel, {
+      props: { task: { ...baseTask, tags: ['prompt-lab-proposal'] } as never },
+    })
+    expect(container.querySelector('button')).toBeNull()
+  })
+
   it('disables dispatch buttons until a reason is typed', async () => {
     render(HumanRequiredPanel, { props: { task: baseTask as never } })
     const button = screen.getByText('Re-run implementation') as HTMLButtonElement

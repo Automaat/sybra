@@ -153,6 +153,16 @@ export function needsPlanApproval(task: {
 }
 
 /**
+ * True when a task is a pending Prompt Lab proposal: tagged
+ * "prompt-lab-proposal" and sitting in human-required. Gates the dedicated
+ * PromptLabProposalPanel and suppresses the generic HumanRequiredPanel for
+ * these tasks, so a proposal has exactly one action panel.
+ */
+export function isPromptLabProposal(task: { status?: string; tags?: string[] | null }): boolean {
+  return task.status === 'human-required' && (task.tags ?? []).includes('prompt-lab-proposal')
+}
+
+/**
  * Canonical, human-facing label for a status — the label every status surface
  * (board pill, list cell, move popover) should resolve through so one state
  * reads the same wherever it appears. Unknown values pass through verbatim so
