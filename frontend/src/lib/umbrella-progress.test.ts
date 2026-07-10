@@ -101,6 +101,7 @@ describe('umbrella progress', () => {
     it('excludes unresolved refs from the children list and dedupes repeats', () => {
       const umbrella = task({
         id: 'u1',
+        taskType: TaskType.TaskTypeUmbrella,
         issue: 'Automaat/sybra#1',
         dependsOn: ['Automaat/sybra#2', 'Automaat/sybra#2', 'https://github.com/Automaat/sybra/issues/2'],
       })
@@ -110,6 +111,23 @@ describe('umbrella progress', () => {
       expect(result.children).toEqual([])
       expect(result.unresolved).toEqual(['automaat/sybra#2'])
       expect(result.displayTotal).toBe(1)
+    })
+
+    it('does not treat normal task prerequisites as umbrella children', () => {
+      const childTask = task({
+        id: 'child',
+        taskType: TaskType.TaskTypeNormal,
+        issue: 'Automaat/sybra#10',
+        dependsOn: ['Automaat/sybra#1', 'Automaat/sybra#2'],
+      })
+
+      const result = childrenForUmbrella(childTask, [
+        task({ id: 'prereq', issue: 'Automaat/sybra#1' }),
+      ])
+
+      expect(result.children).toEqual([])
+      expect(result.unresolved).toEqual([])
+      expect(result.displayTotal).toBe(0)
     })
 
     it('returns no rows for a task with neither umbrella children nor dependsOn', () => {

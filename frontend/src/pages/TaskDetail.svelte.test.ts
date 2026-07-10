@@ -369,6 +369,33 @@ describe('TaskDetail', () => {
       expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
     })
 
+    it('does not show Children for a normal task that has prerequisites', async () => {
+      mockGet.mockResolvedValue({
+        ...mockTask,
+        taskType: 'normal',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/10'],
+      })
+      mockTasksMap.set('prereq-1', {
+        id: 'prereq-1',
+        title: 'Prerequisite task',
+        status: 'todo',
+        agentMode: 'headless',
+        tags: [],
+        issue: 'https://github.com/Automaat/sybra/issues/10',
+        createdAt: '2026-04-01T00:00:00Z',
+        updatedAt: '2026-04-01T00:00:00Z',
+      })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Test Task')).toBeDefined()
+      })
+      expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).not.toContain('Children')
+      expect(screen.queryByText('Prerequisite task')).toBeNull()
+      expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
+    })
+
     it('renders the Children panel with materialized children plus unresolved refs for an umbrella', async () => {
       mockGet.mockResolvedValue({
         ...mockTask,

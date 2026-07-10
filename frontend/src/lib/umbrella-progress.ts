@@ -34,6 +34,8 @@ export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgre
 // materialized child tasks (linked via umbrellaIssue) ordered by the umbrella's
 // declared dependsOn, plus unresolved dependsOn refs with no matching local task.
 export function childrenForUmbrella(umbrella: Task, tasks: Task[]): UmbrellaChildren {
+  if (umbrella.taskType !== 'umbrella') return { children: [], unresolved: [], displayTotal: 0 }
+
   const umbrellaKey = normalizeIssueRef(umbrella.issue ?? '')
 
   const byIssue = new Map<string, Task>()
