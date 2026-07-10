@@ -734,13 +734,6 @@ func touchesOverlap(a, b []string) bool {
 // validate confirms the plan covers every sub-issue exactly once and is
 // acyclic. resolve must run first so all refs are canonical.
 func (p *Plan) validate(subs []SubIssue) error {
-	if len(p.Children) != len(subs) {
-		msg := fmt.Sprintf("planner covered %d of %d sub-issues", len(p.Children), len(subs))
-		if missing := missingRefs(subs, p.Children); len(missing) > 0 {
-			msg += fmt.Sprintf(" (missing: %s)", strings.Join(missing, ", "))
-		}
-		return errors.New(msg)
-	}
 	seen := make(map[string]bool, len(p.Children))
 	var dups []string
 	nodes := make([]Node, 0, len(p.Children))
@@ -753,8 +746,20 @@ func (p *Plan) validate(subs []SubIssue) error {
 		seen[c.Ref] = true
 		nodes = append(nodes, Node{ID: c.Ref, Issue: c.Ref, DependsOn: c.DependsOn})
 	}
-	if len(dups) > 0 {
-		return fmt.Errorf("planner listed %s more than once", strings.Join(dups, ", "))
+	missing := missingRefs(subs, p.Children)
+	if len(dups) > 0 || len(missing) > 0 {
+		var parts []string
+		if len(dups) > 0 {
+			parts = append(parts, fmt.Sprintf("planner listed %s more than once", strings.Join(dups, ", ")))
+		}
+		if len(missing) > 0 {
+			if len(dups) > 0 {
+				parts = append(parts, fmt.Sprintf("omitted %s", strings.Join(missing, ", ")))
+			} else {
+				parts = append(parts, fmt.Sprintf("planner covered %d of %d sub-issues (missing: %s)", len(p.Children), len(subs), strings.Join(missing, ", ")))
+			}
+		}
+		return errors.New(strings.Join(parts, "; "))
 	}
 	if Build(nodes).HasCycle() {
 		return fmt.Errorf("planner produced a dependency cycle")
