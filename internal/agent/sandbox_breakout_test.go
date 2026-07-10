@@ -50,11 +50,16 @@ func newEnforceSandboxCfg(t *testing.T, worktree, sandboxHome, tmp string) *RunC
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(tmp): %v", err)
 	}
+	shared, err := canonicalizeRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalizeRoot(sharedCache): %v", err)
+	}
 	return &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
 		worktree:    wt,
 		sandboxHome: home,
 		tmp:         tp,
+		sharedCache: shared,
 		profilePath: profile,
 	}}
 }
