@@ -179,7 +179,7 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
 }
 
 /**
- * V3Services exposes the App and its 14 services as v3 application.Service
+ * V3Services exposes the App and its 15 services as v3 application.Service
  * values. Order matches the historical v2 BindTargets so generated bindings
  * keep stable IDs across migrations — new services must only be appended.
  */

@@ -3,6 +3,7 @@
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { extractAutoReviewVerdict } from '../../lib/auto-review-verdict.js'
   import { isTamperFlaggedTask } from '$lib/tamper.js'
+  import { isPromptLabProposal } from '../../lib/statuses.js'
 
   interface Props {
     task: Task
@@ -48,7 +49,7 @@
   }
 </script>
 
-{#if task.status === 'human-required'}
+{#if task.status === 'human-required' && !isPromptLabProposal(task)}
   <div class="flex flex-col gap-3 rounded-lg border border-warning-300 bg-warning-50 p-4 dark:border-warning-700 dark:bg-warning-900/30">
     <span class="text-sm font-semibold text-warning-800 dark:text-warning-200">Human Required</span>
 

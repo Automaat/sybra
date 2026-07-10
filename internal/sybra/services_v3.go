@@ -10,7 +10,7 @@ package sybra
 
 import "github.com/wailsapp/wails/v3/pkg/application"
 
-// V3Services exposes the App and its 14 services as v3 application.Service
+// V3Services exposes the App and its 15 services as v3 application.Service
 // values. Order matches the historical v2 BindTargets so generated bindings
 // keep stable IDs across migrations — new services must only be appended.
 func (a *App) V3Services() []application.Service {
@@ -30,5 +30,6 @@ func (a *App) V3Services() []application.Service {
 		application.NewService(a.infoSvc),
 		application.NewService(a.browserSvc),
 		application.NewService(a.learningSvc),
+		application.NewService(a.promptLabSvc),
 	}
 }
