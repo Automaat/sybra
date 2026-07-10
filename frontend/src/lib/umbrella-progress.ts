@@ -5,6 +5,12 @@ export interface UmbrellaProgress {
   total: number
 }
 
+const LANDED_OUTCOMES = new Set(['merged', 'merged_with_edits'])
+
+export function isGenuinelyDone(task: Task): boolean {
+  return task.status === 'done' && LANDED_OUTCOMES.has(task.outcome ?? '')
+}
+
 export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgress> {
   const byUmbrella = new Map<string, UmbrellaProgress>()
   for (const task of tasks) {
@@ -12,7 +18,7 @@ export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgre
     if (!key) continue
     const progress = byUmbrella.get(key) ?? { done: 0, total: 0 }
     progress.total += 1
-    if (task.status === 'done') progress.done += 1
+    if (isGenuinelyDone(task)) progress.done += 1
     byUmbrella.set(key, progress)
   }
   return byUmbrella
