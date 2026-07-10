@@ -5,10 +5,16 @@ export interface UmbrellaProgress {
   total: number
 }
 
-const LANDED_OUTCOMES = new Set(['merged', 'merged_with_edits'])
+export interface UmbrellaChildren {
+  children: Task[]
+  unresolved: string[]
+  displayTotal: number
+}
 
-export function isGenuinelyDone(task: Task): boolean {
-  return task.status === 'done' && LANDED_OUTCOMES.has(task.outcome ?? '')
+// Local shipped-work proxy: outcome is stamped by Sybra's PR monitor when a
+// task's own PR lands. `closed` means closed-unmerged, not completed work.
+export function isChildComplete(task: Task): boolean {
+  return (task.outcome ?? '').startsWith('merged')
 }
 
 export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgress> {
@@ -18,10 +24,112 @@ export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgre
     if (!key) continue
     const progress = byUmbrella.get(key) ?? { done: 0, total: 0 }
     progress.total += 1
-    if (isGenuinelyDone(task)) progress.done += 1
+    if (isChildComplete(task)) progress.done += 1
     byUmbrella.set(key, progress)
   }
   return byUmbrella
+}
+
+// childrenForUmbrella resolves the display rows for a task's Children panel.
+//
+// Two shapes feed this panel:
+//  - An umbrella tracker (taskType === 'umbrella'): children are materialized
+//    tasks linked via umbrellaIssue, plus local tasks resolved from the
+//    tracker's own declared dependsOn refs. Some fixtures and migrations
+//    carry child refs on the tracker itself while others only have
+//    umbrellaIssue on children, so both link shapes are accepted.
+//  - Any other task with a non-empty dependsOn (its own prerequisites):
+//    children are that task's declared refs resolved against the local task
+//    list by issue, in declared order.
+export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren {
+  const isUmbrella = task.taskType === 'umbrella'
+  if (!isUmbrella && (task.dependsOn ?? []).length === 0) {
+    return { children: [], unresolved: [], displayTotal: 0 }
+  }
+
+  const byIssue = new Map<string, Task>()
+  for (const t of tasks) {
+    const key = normalizeIssueRef(t.issue ?? '')
+    if (key) byIssue.set(key, t)
+  }
+
+  const taskKey = normalizeIssueRef(task.issue ?? '')
+  const linkedChildren = isUmbrella && taskKey
+    ? tasks.filter((t) => normalizeIssueRef(t.umbrellaIssue ?? '') === taskKey)
+    : []
+  const trackerDeclaredRefs = normalizedRefs(task.dependsOn ?? [])
+
+  const declaredRefs: string[] = []
+  const seenDeclared = new Set<string>()
+  const rawRefLists = isUmbrella
+    ? [...linkedChildren.map((t) => t.dependsOn ?? []), task.dependsOn ?? []]
+    : [task.dependsOn ?? []]
+  for (const list of rawRefLists) {
+    for (const ref of list) {
+      const key = normalizeIssueRef(ref)
+      if (!key || seenDeclared.has(key)) continue
+      seenDeclared.add(key)
+      declaredRefs.push(key)
+    }
+  }
+
+  const orderIndex = new Map<string, number>()
+  declaredRefs.forEach((ref, i) => {
+    if (!orderIndex.has(ref)) orderIndex.set(ref, i)
+  })
+
+  let children: Task[]
+  let materializedChildIssues = new Set<string>()
+  if (isUmbrella) {
+    const materialized: Task[] = []
+    const seenChildren = new Set<string>()
+    const addChild = (t: Task) => {
+      const key = normalizeIssueRef(t.issue ?? '') || t.id
+      if (!key || seenChildren.has(key)) return
+      seenChildren.add(key)
+      materialized.push(t)
+    }
+
+    for (const t of linkedChildren) addChild(t)
+    for (const ref of trackerDeclaredRefs) {
+      const t = byIssue.get(ref)
+      if (t) addChild(t)
+    }
+
+    const materializedByIssue = new Map<string, Task>()
+    for (const t of materialized) {
+      const key = normalizeIssueRef(t.issue ?? '')
+      if (!key) continue
+      materializedByIssue.set(key, t)
+      materializedChildIssues.add(key)
+    }
+
+    const ordered: Task[] = []
+    const unordered: Task[] = []
+    for (const t of materialized) {
+      const key = normalizeIssueRef(t.issue ?? '')
+      if (key && orderIndex.has(key)) continue
+      unordered.push(t)
+    }
+    const sortedRefs = [...orderIndex.entries()].sort((a, b) => a[1] - b[1])
+    for (const [ref] of sortedRefs) {
+      const t = materializedByIssue.get(ref)
+      if (t) ordered.push(t)
+    }
+    children = [...ordered, ...unordered]
+  } else {
+    children = declaredRefs
+      .map((ref) => byIssue.get(ref))
+      .filter((t): t is Task => !!t)
+  }
+
+  const unresolved: string[] = []
+  for (const ref of declaredRefs) {
+    if (isUmbrella ? materializedChildIssues.has(ref) : byIssue.has(ref)) continue
+    unresolved.push(ref)
+  }
+
+  return { children, unresolved, displayTotal: children.length + unresolved.length }
 }
 
 export function progressForUmbrellaTracker(
@@ -42,4 +150,16 @@ export function normalizeIssueRef(ref: string): string {
     return `${github[1].toLowerCase()}/${github[2].toLowerCase()}#${github[3]}`
   }
   return trimmed.toLowerCase()
+}
+
+function normalizedRefs(refs: string[]): string[] {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const ref of refs) {
+    const key = normalizeIssueRef(ref)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    normalized.push(key)
+  }
+  return normalized
 }
