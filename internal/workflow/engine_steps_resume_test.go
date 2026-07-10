@@ -91,7 +91,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 // when recovery began), execResumeWorkflow only restores status and
 // completes normally so the recovery workflow ends via the ordinary
 // resolveNext path — leaving the status-driven cascade
-// (completion.Handler.OnWorkflowComplete in package sybra) to pick up
+// (AgentCompletionHandler.OnWorkflowComplete in package sybra) to pick up
 // whatever workflow matches the restored status.
 func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	t.Parallel()
@@ -238,5 +238,76 @@ func TestExecResumeWorkflow_RestoresUnrelatedHumanRequired(t *testing.T) {
 	}
 	if got.StatusReason != "agent start blocked: task cumulative cost exceeds agent.max_task_cost_usd" {
 		t.Fatalf("status_reason = %q, want restored reason", got.StatusReason)
+	}
+}
+
+func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequiredWithResumeTarget(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "resume-target",
+		Name: "resume target",
+		Steps: []Step{
+			{
+				ID:   "triage",
+				Name: "Triage",
+				Type: StepSetStatus,
+				Config: StepConfig{
+					Status: "in-progress",
+				},
+				Next: []Transition{{GoTo: "resume_here"}},
+			},
+			{
+				ID:   "resume_here",
+				Name: "Resume Here",
+				Type: StepWaitHuman,
+				Config: StepConfig{
+					HumanActions: []string{"done"},
+				},
+				Next: []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wf := &Execution{
+		WorkflowID:  "branch-conflict-fix",
+		CurrentStep: "resume_original",
+		State:       ExecRunning,
+		Variables: map[string]string{
+			"resume_workflow_id":   "resume-target",
+			"resume_workflow_step": "resume_here",
+			"resume_status":        "human-required",
+			"resume_status_reason": worktreeerr.RebaseBlockedReason,
+		},
+	}
+	tasks.Put(TaskInfo{
+		ID:           "t5",
+		Status:       "in-progress",
+		StatusReason: "recovering from a branch conflict (no PR yet)",
+		Workflow:     wf,
+	})
+
+	_, err := engine.execResumeWorkflow("t5", &Step{ID: "resume_original"}, wf)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("execResumeWorkflow error = %v, want errStepParked", err)
+	}
+
+	got, gerr := tasks.GetTask("t5")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.Status == "human-required" {
+		t.Fatalf("status = %q, must not re-park mid-stream resume on the stale rebase-blocked reason", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "resume-target" {
+		t.Fatalf("workflow = %+v, want resumed resume-target", got.Workflow)
+	}
+	if got.Workflow.CurrentStep != "resume_here" {
+		t.Fatalf("current step = %q, want captured resume_here step", got.Workflow.CurrentStep)
 	}
 }

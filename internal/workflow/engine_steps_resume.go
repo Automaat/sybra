@@ -13,7 +13,7 @@ import (
 // resumeStatusVar is always set (to the task's status at the moment recovery
 // began) so a task that had no active workflow still gets its visible status
 // restored before the normal status-driven cascade (see
-// completion.Handler.OnWorkflowComplete) picks up wherever it left off.
+// AgentCompletionHandler.OnWorkflowComplete) picks up wherever it left off.
 const (
 	resumeWorkflowIDVar   = "resume_workflow_id"
 	resumeWorkflowStepVar = "resume_workflow_step"
@@ -31,7 +31,7 @@ const (
 // When no workflow was captured (the task had no active workflow at the
 // time recovery began), this is a no-op beyond restoring status: the step
 // completes normally, the recovery workflow ends, and
-// completion.Handler.OnWorkflowComplete's existing status-driven cascade
+// AgentCompletionHandler.OnWorkflowComplete's existing status-driven cascade
 // dispatches whatever workflow matches the now-restored task.status — the
 // same mechanism every other builtin workflow chain (plan → implement →
 // review → ...) already relies on.
@@ -80,7 +80,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 
 	// StartWorkflowWithVars refuses to start a new workflow while the task's
 	// current workflow (this one) is non-terminal, so finalize THIS execution
-	// first and persist it before launching the resume target. Returning
+	// first and persist it before dispatching the resume target. Returning
 	// errStepParked afterward tells executeSteps to stop without its own
 	// record/resolveNext/SetWorkflow pass — which would otherwise re-persist
 	// this now-stale (but already-completed) Execution over the freshly
