@@ -220,6 +220,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			// again since that earlier fetch.
 			callPhase(onPhase, "Syncing upstream…")
 			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
+				return "", err
+			}
 			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 		}
 		// Worktree was wiped — fall through to create paths below.
@@ -242,9 +245,8 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		callPhase(onPhase, "Syncing upstream…")
 		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-		callPhase(onPhase, "Running setup…")
-		if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-			return "", fmt.Errorf("setup on reused branch: %w", err)
+		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
+			return "", err
 		}
 		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 	}
@@ -254,9 +256,8 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
 	m.logger.Info("worktree.created", "task_id", t.ID, "path", wtPath)
-	callPhase(onPhase, "Running setup…")
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
-		return "", fmt.Errorf("setup on new worktree: %w", err)
+	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "new worktree", onPhase); err != nil {
+		return "", err
 	}
 	m.installChecks(ctx, wtPath, proj)
 
@@ -268,6 +269,14 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+func (m *Manager) runPrepareSetup(ctx context.Context, taskID, wtPath string, proj project.Project, label string, onPhase func(string)) error {
+	callPhase(onPhase, "Running setup…")
+	if err := m.runSetup(ctx, taskID, wtPath, m.resolveSetupCommands(wtPath, proj)); err != nil {
+		return fmt.Errorf("setup on %s: %w", label, err)
+	}
+	return nil
 }
 
 // reconcileAndRebase prepares a reused worktree branch for another agent run.

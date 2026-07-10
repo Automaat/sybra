@@ -826,6 +826,43 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	}
 }
 
+func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "setup-count")
+	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	secondPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("reused PrepareForTask: %v", err)
+	}
+	if secondPath != firstPath {
+		t.Fatalf("reused PrepareForTask path = %q, want %q", secondPath, firstPath)
+	}
+
+	count, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got, want := string(count), "xx"; got != want {
+		t.Fatalf("setup command ran %d times, want 2 (counter %q)", len(got), got)
+	}
+}
+
 // TestPrepareForTask_MergesRepoAndAppSetup confirms that .sybra.yaml's
 // `setup:` block runs first (canonical repo bootstrap) and then any
 // machine-local SetupCommands are appended. Both must execute and the
