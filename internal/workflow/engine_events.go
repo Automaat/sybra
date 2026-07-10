@@ -548,7 +548,32 @@ func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 		return
 	}
 	step := def.StepByID(t.Workflow.CurrentStep)
-	if step == nil || step.Type != StepRunAgent {
+	if step == nil {
+		e.clearAgentStep(agentID)
+		return
+	}
+	// best_of_n / parallel attempts keep the parent block as CurrentStep, so a
+	// checkpointed attempt is a child of the block, not a plain run_agent step.
+	// We can't synchronously re-drive a single attempt here (the block executors
+	// own attempt lifecycle), but we must still charge the checkpoint against
+	// the per-step budget so an attempt can't checkpoint-loop past
+	// agent.max_checkpoints — ResumeStalled re-enters the block resume-safely to
+	// respawn the pending attempt.
+	if step.Type == StepBestOfN || step.Type == StepParallel {
+		spawnedStep, tracked := e.lookupAgentStep(agentID)
+		isChild := (step.Type == StepParallel && parallelHasChild(step, spawnedStep)) ||
+			(step.Type == StepBestOfN && bestOfNStepMatches(step, spawnedStep))
+		e.clearAgentStep(agentID)
+		if !tracked || !isChild {
+			return
+		}
+		// Enforces MaxCheckpoints and escalates to human-required on exhaustion;
+		// the return value only gates the synchronous run_agent re-drive, which
+		// does not apply to block attempts, so it is intentionally ignored.
+		e.handleCheckpointReschedule(taskID, &t, step)
+		return
+	}
+	if step.Type != StepRunAgent {
 		e.clearAgentStep(agentID)
 		return
 	}

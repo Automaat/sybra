@@ -670,13 +670,16 @@ func TestCheckpointCommit(t *testing.T) {
 		}
 	})
 
-	t.Run("commit failure returns error", func(t *testing.T) {
+	t.Run("failing pre-commit hook does not block checkpoint", func(t *testing.T) {
 		t.Parallel()
 		repo := initRepoWithCommit(t)
 		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
+		// A checkpoint fires mid-implementation with plausibly lint-dirty code, so
+		// a failing pre-commit hook must NOT defeat this progress-preservation
+		// path — CheckpointCommit passes --no-verify to skip repo hooks.
 		hooksDir := filepath.Join(repo, ".git", "hooks-fail")
 		if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 			t.Fatal(err)
@@ -690,11 +693,34 @@ func TestCheckpointCommit(t *testing.T) {
 		}
 
 		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit blocked by pre-commit hook: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false despite dirty tree")
+		}
+	})
+
+	t.Run("commit failure returns error", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// A stale index.lock is a genuine git failure that --no-verify cannot
+		// bypass, so it exercises CheckpointCommit's strict error propagation.
+		lock := filepath.Join(repo, ".git", "index.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
 		if err == nil {
-			t.Fatal("CheckpointCommit error = nil, want hook failure")
+			t.Fatal("CheckpointCommit error = nil, want git failure")
 		}
 		if committed {
-			t.Fatal("CheckpointCommit reported committed=true on hook failure")
+			t.Fatal("CheckpointCommit reported committed=true on git failure")
 		}
 	})
 }
