@@ -569,7 +569,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 // the caller must hand it to fireComplete *after* releasing any per-task start
 // marker (see fireComplete). resolveNext deliberately does NOT invoke
 // e.onComplete itself: it runs inside DispatchEvent/StartWorkflowWithVars while
-// the dispatching/starting marker is held, so a cascade dispatched here would
+// the starting marker is held, so a cascade launched here would
 // be rejected as re-entrant (the bug that left synchronous mechanical workflows
 // — e.g. simple-task-handoff — never starting their successor).
 func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
@@ -631,7 +631,7 @@ const maxCascadeDepth = 64
 
 // fireComplete invokes the workflow-completion callback for a synchronously
 // finished workflow. Callers MUST invoke it only after releasing any per-task
-// start marker (the dispatching/starting maps), so the callback's cascade
+// start marker, so the callback's cascade
 // DispatchEvent isn't rejected as re-entrant against the workflow that just
 // finished. A nil completion (workflow did not finish in this call) is a no-op.
 func (e *Engine) fireComplete(c *CompletionInfo) {
@@ -675,6 +675,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.branch":                  t.Branch,
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 		"task.plan_critique":           t.PlanCritique,
+		"task.code_review":             t.CodeReview,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)

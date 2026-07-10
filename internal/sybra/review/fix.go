@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/executil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -29,6 +30,16 @@ const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 const branchRecreateKind = github.PRIssueBranchRecreate
 
 const wtFailureLimit = 5
+
+// branchConflictDispatchFailureLimit bounds retries for a transient
+// provider-unhealthy/rate-limit error starting the branch-conflict-fix
+// workflow itself (dispatchBranchConflictRecovery). Distinct from
+// wtFailureLimit (worktree-prep failures) and prTracker's
+// branchConflictRetryKind budget (workflow attempts that actually started):
+// this only guards the dispatch call itself, so a transient provider outage
+// doesn't fall straight through to a human-required escalation even though
+// the branch conflict itself was never actually attempted.
+const branchConflictDispatchFailureLimit = 5
 
 type branchConflictResumeState struct {
 	status       string
@@ -915,6 +926,24 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		err = r.WorkflowEngine.StartWorkflowWithVars(taskID, branchConflictFixWorkflowID, vars)
 	}
 	if err != nil {
+		// A concurrent StartWorkflow call (e.g. restart-stale's raw
+		// StartWorkflow(implement)) can grab this task's starting/dispatching
+		// marker sometime during the PrepareForBranchFix/worktree-setup work
+		// above — a TOCTOU window the caller's own upfront marker check
+		// (TryConflictRecovery) cannot close, since that check ran before this
+		// multi-second prep started. Rather than restore the prior workflow and
+		// give up (previously stranding the task once the concurrent call's own
+		// unaided rebase failed and escalated to human-required), queue this
+		// recovery for a retry once that call releases the marker — same
+		// deferred-drain contract tryConflictRecovery already gives
+		// push_branch/create_pr. Do NOT restore resume.prior here: the retry
+		// re-derives and re-dispatches from scratch, so restoring now would
+		// just be immediately clobbered by it.
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			r.logger.Info("pr-monitor.branch-conflict.dispatch-queued", "task_id", taskID, "err", err)
+			r.WorkflowEngine.QueueConflictRecoveryRetry(taskID)
+			return true
+		}
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
 		if resume.prior != nil {
 			if _, restoreErr := r.tasks.Update(taskID, task.Update{
@@ -924,32 +953,96 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 				r.logger.Error("pr-monitor.branch-conflict.restore-prior-workflow", "task_id", taskID, "err", restoreErr)
 			}
 		}
+		if isTransientBranchConflictDispatchFailure(err) {
+			return r.parkOrEscalateBranchConflictDispatchFailure(taskID, err)
+		}
 		return false
 	}
 
+	r.clearDispatchFailure(taskID)
 	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
 	return true
 }
 
+func isTransientBranchConflictDispatchFailure(err error) bool {
+	var ue *provider.UnhealthyError
+	if !errors.As(err, &ue) {
+		return false
+	}
+	return ue.RateLimited || ue.Reason == provider.RateLimitReason || !ue.Until.IsZero()
+}
+
+// parkOrEscalateBranchConflictDispatchFailure handles a transient
+// provider-unhealthy/rate-limit error starting the branch-conflict-fix
+// workflow — distinct from a genuine unresolved rebase conflict, which the
+// workflow never got a chance to attempt. The caller has already restored
+// the task's prior status/workflow, so the next worktree-prep rebase failure
+// for this task naturally re-enters RecoverStaleBranchConflict and retries
+// the dispatch; this only needs to avoid escalating straight to
+// human-required on the first transient hit. Once the bounded retry count is
+// spent, escalate explicitly with a reason that distinguishes it from a
+// genuinely unresolved conflict — mirroring the markConflictRecoveryExhausted
+// convention MarkRebaseBlocked relies on to avoid overwriting a specific
+// reason with its generic one.
+func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dispatchErr error) bool {
+	attempts := r.recordDispatchFailure(taskID)
+	if attempts < branchConflictDispatchFailureLimit {
+		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-retry",
+			"task_id", taskID, "attempts", attempts, "limit", branchConflictDispatchFailureLimit, "err", dispatchErr)
+		return true
+	}
+	r.clearDispatchFailure(taskID)
+	reason := fmt.Sprintf(
+		"branch-conflict-fix dispatch failed %d time(s), most recently: %s",
+		attempts, dispatchErr.Error())
+	if _, err := r.tasks.Update(taskID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted-status", "task_id", taskID, "err", err)
+	}
+	r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted", "task_id", taskID, "attempts", attempts)
+	return false
+}
+
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
-	r.recordWorktreeFailure(taskID, wtErr)
+	attempts := r.recordWorktreeFailure(taskID, wtErr)
 	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
 		return false
 	}
 	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
-		"task_id", taskID, "attempts", r.wtFailures[taskID], "limit", wtFailureLimit)
+		"task_id", taskID, "attempts", attempts, "limit", wtFailureLimit)
 	return true
 }
 
-func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
+func (r *Handler) recordDispatchFailure(taskID string) int {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	if r.dispatchFailures == nil {
+		r.dispatchFailures = make(map[string]int)
+	}
+	r.dispatchFailures[taskID]++
+	return r.dispatchFailures[taskID]
+}
+
+func (r *Handler) clearDispatchFailure(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	delete(r.dispatchFailures, taskID)
+}
+
+func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) int {
+	r.failureMu.Lock()
 	if r.wtFailures == nil {
 		r.wtFailures = make(map[string]int)
 	}
 	r.wtFailures[taskID]++
-	if r.wtFailures[taskID] >= wtFailureLimit {
+	attempts := r.wtFailures[taskID]
+	if attempts >= wtFailureLimit {
 		delete(r.wtFailures, taskID)
+		r.failureMu.Unlock()
 		r.logger.Error("pr-monitor.worktree.circuit-open",
 			"task_id", taskID, "failures", wtFailureLimit, "err", wtErr)
 		if _, uerr := r.tasks.Update(taskID, task.Update{
@@ -958,9 +1051,17 @@ func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.escalate", "task_id", taskID, "err", uerr)
 		}
-		return
+		return attempts
 	}
+	r.failureMu.Unlock()
 	r.logger.Error("pr-monitor.worktree", "task_id", taskID, "err", wtErr)
+	return attempts
+}
+
+func (r *Handler) clearWorktreeFailure(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	delete(r.wtFailures, taskID)
 }
 
 func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
@@ -971,7 +1072,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 		return false
 	}
 	if !ok {
-		delete(r.wtFailures, taskID)
+		r.clearWorktreeFailure(taskID)
 		return true
 	}
 	if setupFailure == "" {
@@ -1114,13 +1215,18 @@ func conflictPrompt(pr github.PullRequest) string {
 }
 
 func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
+	base := pr.BaseRefName
+	if base == "" {
+		base = "main"
+	}
+	baseRef := "refs/remotes/origin/" + base
 	return fmt.Sprintf(
 		"Fix merge conflicts on branch `%s` (PR #%d). "+
 			"Use the task body, PR diff, changed-file list, and current code as context, then merge.\n\n"+
 			"Steps:\n"+
 			"```bash\n"+
 			"git fetch origin\n"+
-			"git merge refs/remotes/origin/main\n"+
+			"git merge %s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
 			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
 			"# then git add and git commit to complete the merge.\n"+
@@ -1132,7 +1238,7 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
-			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
+			"- Use `%s` (the PR's base branch, a full ref not a bare name) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
 			"- Do not force-push or rewrite existing commits — the merge commit and any conflict-resolution commits must be purely additive, and a plain push is expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
@@ -1140,6 +1246,6 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, pr.HeadRefName, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, pr.HeadRefName, baseRef, filesCtx,
 	)
 }

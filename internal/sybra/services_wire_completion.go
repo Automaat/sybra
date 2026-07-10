@@ -32,9 +32,12 @@ func (a *App) newAgentCompletionHandler(emit func(string, any)) *completion.Hand
 		// a.humanReview may be nil (feature disabled) — the method value
 		// still binds cleanly and onComplete guards for a nil receiver.
 		HumanReviewComplete: a.humanReview.onComplete,
-		// a.reviewer.RecoverStaleBranchConflict is nil-receiver-safe (see its
-		// own guard), same pattern as agentOrch.SetConflictRecovery.
-		ConflictRecovery: a.reviewer.RecoverStaleBranchConflict,
+		// Routed through workflowEngine.TryConflictRecovery, not
+		// reviewer.RecoverStaleBranchConflict directly: completion can fire
+		// while a same-task StartWorkflow call is still active elsewhere, and
+		// TryConflictRecovery queues the retry instead of re-entering into
+		// ErrWorkflowAlreadyActive.
+		ConflictRecovery: a.workflowEngine.TryConflictRecovery,
 	})
 }
 

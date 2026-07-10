@@ -22,6 +22,7 @@ type AgentCompletion struct {
 // forever and the workflow never advances to the next step.
 type AgentLauncher interface {
 	StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error)
+	TryClaimDispatch(taskID string) (DispatchClaim, bool)
 	HasRunningAgent(taskID string) bool
 	// HasOtherRunningAgentForTask reports whether an agent other than
 	// exceptAgentID is still running for the task. verify_commits uses it to
@@ -46,6 +47,28 @@ type AgentLauncher interface {
 	// config-disabled provider is never picked as an eligible weighted
 	// variant. Empty name = default provider.
 	ProviderHealthy(provider string) bool
+	// IsDispatching reports whether the shared agent.Manager dispatch-claim
+	// coordinator currently holds a claim for taskID — set for the full
+	// duration of any StartAgent call, including the worktree-prep window
+	// before an agent ID exists, by every dispatcher: this engine's own
+	// execRunAgent, recovery.RestartStaleInProgress, or a direct non-workflow
+	// dispatch. The engine's own starting marker and agentRoutes bookkeeping
+	// still serialize workflow-level entry points and track step
+	// attribution — a different concern (this task's next *workflow
+	// advance*, not its next *agent process*) — but ownership decisions that
+	// gate a redispatch (DispatchEvent, ResumeStalled,
+	// RescheduleRateLimitedAgent) additionally consult this so a claim held
+	// by a dispatcher outside the engine's own visibility (e.g. recovery) is
+	// never missed.
+	IsDispatching(taskID string) bool
+}
+
+// DispatchClaim is the workflow-visible handle for a held per-task dispatch
+// claim. Agent launcher implementations typically back this with
+// agent.Manager's dispatch claim, but the workflow only needs idempotent
+// release semantics.
+type DispatchClaim interface {
+	Release()
 }
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
@@ -70,7 +93,7 @@ type PromptTransform struct {
 }
 
 // CostBudgetChecker is consulted before fanning out best-of-N attempts
-// (execBestOfN) and before dispatching a budget-preflight run_agent step such
+// (execBestOfN) and before launching a budget-preflight run_agent step such
 // as the judge (preflightRunAgentBudget): unlike StartAgentWithAssignment
 // (implementation agents on the canonical worktree), the direct-dispatch
 // AgentLauncher.StartAgent branch — which best-of-N attempts and the judge

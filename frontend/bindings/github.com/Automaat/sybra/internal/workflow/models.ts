@@ -128,7 +128,7 @@ export class Condition {
     "field": string;
 
     /**
-     * "equals", "not_equals", "contains", "not_contains", "exists", "in", "not_in"
+     * "equals", "not_equals", "contains", "not_contains", "starts_with", "exists", "in", "not_in"
      */
     "operator": string;
     "value": string;
@@ -640,7 +640,7 @@ export class StepConfig {
     "bestOfNStep"?: string;
 
     /**
-     * run_agent: enforce the cumulative task cost budget before dispatching.
+     * run_agent: enforce the cumulative task cost budget before launch.
      * Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
      * pre-staged dir and so bypasses StartAgentWithAssignment's own budget
      * enforcement) so the run fails closed to human-required instead of

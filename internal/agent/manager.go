@@ -144,6 +144,7 @@ type Manager struct {
 type LimitGate interface {
 	ProviderAvailable(provider string, policy limits.Policy) (bool, string)
 	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
+	ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
 // LimitGateOrNil wraps store as a LimitGate, returning a genuine nil
@@ -279,6 +280,60 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Lock()
 	delete(m.dispatchClaims, taskID)
 	m.mu.Unlock()
+}
+
+// IsDispatching reports whether a dispatch claim is currently held for
+// taskID, by any caller of ClaimTaskDispatch/TryClaimDispatch — the workflow
+// engine's execRunAgent, recovery.RestartStaleInProgress (via
+// agentorch.Orchestrator), or a direct non-workflow StartAgent call. This is
+// the single ground-truth answer to "is this task's next run already
+// owned?" that every dispatcher can consult before deciding to redispatch,
+// instead of each maintaining its own separate view of dispatch-in-flight
+// state.
+func (m *Manager) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, held := m.dispatchClaims[taskID]
+	return held
+}
+
+// DispatchClaim is a held per-task dispatch claim returned by
+// TryClaimDispatch. It centralizes the release-at-most-once bookkeeping every
+// dispatch call site used to hand-roll individually (a local `released bool`
+// guarding a deferred delete): releasing early to unblock a nested
+// same-task dispatch (e.g. branch-conflict recovery) can never race a
+// deferred second release into clobbering a claim a different dispatcher has
+// since acquired.
+type DispatchClaim struct {
+	manager  *Manager
+	taskID   string
+	released bool
+}
+
+// TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
+// true ok, the caller MUST release the returned claim exactly once dispatch
+// finishes (success or failure) — typically via `defer claim.Release()` —
+// and MAY call Release earlier to unblock a nested same-task dispatch before
+// the deferred call runs, since Release is idempotent. On ok=false a dispatch
+// is already in flight for the same task and the caller MUST NOT start an
+// agent.
+func (m *Manager) TryClaimDispatch(taskID string) (claim *DispatchClaim, ok bool) {
+	if !m.ClaimTaskDispatch(taskID) {
+		return nil, false
+	}
+	return &DispatchClaim{manager: m, taskID: taskID}, true
+}
+
+// Release releases the claim. Idempotent and nil-safe: a second call (or a
+// call on a nil claim) is a no-op, so an early manual release followed by a
+// deferred Release never double-deletes a claim a different dispatcher has
+// since acquired.
+func (c *DispatchClaim) Release() {
+	if c == nil || c.released {
+		return
+	}
+	c.released = true
+	c.manager.ReleaseTaskDispatch(c.taskID)
 }
 
 // ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
@@ -513,7 +568,18 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 	if lg == nil {
 		return false
 	}
-	alt, _ := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp)
+	candidates := []string{"claude", "codex", "copilot"}
+	if alt, _ := lg.ChooseProvider(resolved, candidates, healthy, lp); alt != "" {
+		return true
+	}
+	available, reason := lg.ProviderAvailable(resolved, lp)
+	if available || limits.IsSoftThresholdReason(reason) {
+		return false
+	}
+	// Mirror resolveProviderDecision's last-resort path: when no fully
+	// available peer exists, a soft-threshold-limited peer is still a usable
+	// failover target for a hard-blocked provider (e.g. rate limit reached).
+	alt, _ := lg.ChooseSoftLimitedPeer(resolved, candidates, healthy, lp)
 	return alt != ""
 }
 

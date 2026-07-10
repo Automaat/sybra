@@ -13,7 +13,7 @@ var errBestOfNParked = errors.New("best-of-n parked waiting for attempt completi
 
 // bestOfNAttemptSep separates a best_of_n parent step ID from a synthetic
 // attempt ID (e.g. "implement_n::attempt_2") in the compound stepID stashed
-// in agentSteps for an attempt agent. Attempts have no corresponding YAML
+// in agentRoutes for an attempt agent. Attempts have no corresponding YAML
 // Step (unlike `parallel` children), so they cannot be looked up via
 // Definition.StepByID — loadAdvanceContext instead detects this separator and
 // routes to the best-of-N attempt path. "::" cannot collide with a real
@@ -107,7 +107,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	// fast-completing attempt agent's onComplete callback can fire — and
 	// block in AdvanceStep on this same per-task mutex (see
 	// acquireInflight/handleFanOutCompletion) — before this loop has finished
-	// dispatching its siblings. advanceBestOfNAttempt persists a freshly
+	// launching its siblings. advanceBestOfNAttempt persists a freshly
 	// reloaded Execution when it runs; without holding the mutex here, this
 	// loop's own end-of-loop SetWorkflow below (built from an in-memory copy
 	// that predates that completion) would silently clobber it, permanently
@@ -212,14 +212,14 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	}
 
 	// Hold e.mu across StartAgent so a fast-exiting agent's completion cannot
-	// race past the agentSteps registration below (mirrors spawnParallelChild).
+	// race past the agentRoutes registration below (mirrors spawnParallelChild).
 	e.mu.Lock()
 	agentID, _, _, startErr := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, false, false, step.Config.OutputSchema, "", assignment)
 	if startErr != nil {
 		e.mu.Unlock()
 		return fmt.Errorf("start agent: %w", startErr)
 	}
-	e.agentSteps[agentID] = agentEntry{taskID: taskID, stepID: bestOfNAttemptStepKey(step.ID, attemptID)}
+	e.agentRoutes[agentID] = agentRoute{taskID: taskID, stepID: bestOfNAttemptStepKey(step.ID, attemptID)}
 	e.mu.Unlock()
 
 	status.AgentID = agentID

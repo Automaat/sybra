@@ -201,10 +201,10 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 // diverged push and reports whether the step must park.
 //
 // The callback (review.Handler.RecoverStaleBranchConflict) cancels this task's
-// active workflow and re-dispatches branch-conflict-fix — a re-entry into
+// active workflow and launches branch-conflict-fix — a re-entry into
 // StartWorkflow*/DispatchEvent. When push_branch/create_pr runs inside one of
-// those calls (DispatchEvent → startWorkflowLocked, or a resume re-dispatch),
-// the per-task starting/dispatching marker is still held, so invoking recovery
+// those calls (DispatchEvent → startWorkflowLocked), the per-task starting
+// marker is still held, so invoking recovery
 // now would hit ErrWorkflowAlreadyActive and silently no-op — the reentrancy
 // trap that made this whole path dead on arrival. Detect that case by the held
 // marker and queue the recovery instead; drainPendingConflictRecovery runs it
@@ -212,14 +212,20 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 // marker is held (the AdvanceStep tail, or a direct call), recovery is safe to
 // run inline and its own verdict is returned.
 func (e *Engine) tryConflictRecovery(taskID string) bool {
+	return e.tryConflictRecoveryWithFallback(taskID, func() {
+		e.escalatePendingConflictRecovery(taskID)
+	})
+}
+
+func (e *Engine) tryConflictRecoveryWithFallback(taskID string, onDecline func()) bool {
 	e.mu.Lock()
 	_, starting := e.starting[taskID]
 	_, dispatching := e.dispatching[taskID]
 	if starting || dispatching {
 		if e.pendingRecovery == nil {
-			e.pendingRecovery = make(map[string]struct{})
+			e.pendingRecovery = make(map[string]pendingRecovery)
 		}
-		e.pendingRecovery[taskID] = struct{}{}
+		e.pendingRecovery[taskID] = pendingRecovery{onDecline: onDecline}
 		e.mu.Unlock()
 		return true
 	}
@@ -227,27 +233,77 @@ func (e *Engine) tryConflictRecovery(taskID string) bool {
 	return e.conflictRecovery(taskID)
 }
 
+// TryConflictRecovery is the exported entry point for callers outside this
+// package that invoke the same review.Handler.RecoverStaleBranchConflict
+// callback as push_branch/create_pr: agentorch's worktree-prep rebase-failure
+// path (MarkRebaseBlockedWithRecoveryResult) and the fix-review
+// push-divergence handler. A rebase conflict discovered while this task's own
+// StartWorkflow call is still executing (e.g. execRunAgent's worktree prep,
+// deep inside the same synchronous stack that holds the starting marker)
+// needs the identical queue-instead-of-reenter treatment tryConflictRecovery
+// already gives push_branch/create_pr — without it, the recovery callback
+// races straight into ErrWorkflowAlreadyActive and gives up, stranding the
+// task on a raw ClassifyAgentStartError escalation instead of the autonomous
+// fix. Nil-receiver-safe (mirrors RecoverStaleBranchConflict's own guard) so
+// wiring this in ahead of a possibly-nil workflowEngine during degraded init
+// is safe. Returns false when the receiver or the recovery callback is nil.
+func (e *Engine) TryConflictRecovery(taskID string) bool {
+	if e == nil || e.conflictRecovery == nil {
+		return false
+	}
+	return e.tryConflictRecovery(taskID)
+}
+
+// QueueConflictRecoveryRetry defers a conflict-recovery retry until this
+// task's starting marker next releases, for a caller whose own launch of the
+// recovery workflow (e.g. dispatchBranchConflictRecovery's
+// StartWorkflowWithVars call) hit ErrWorkflowAlreadyActive despite
+// TryConflictRecovery's entry check having found no marker held. The marker
+// can be grabbed by a concurrent StartWorkflow call sometime during the
+// caller's own multi-second worktree-prep work — a TOCTOU window
+// TryConflictRecovery's up-front check alone cannot close. drainPendingConflictRecovery
+// re-invokes the full recovery callback once whichever call currently holds
+// the marker releases it.
+func (e *Engine) QueueConflictRecoveryRetry(taskID string) {
+	e.mu.Lock()
+	if e.pendingRecovery == nil {
+		e.pendingRecovery = make(map[string]pendingRecovery)
+	}
+	e.pendingRecovery[taskID] = pendingRecovery{onDecline: func() {
+		e.escalatePendingConflictRecovery(taskID)
+	}}
+	e.mu.Unlock()
+}
+
 // drainPendingConflictRecovery runs a branch-conflict recovery that
 // tryConflictRecovery deferred because a per-task marker was held when the
 // diverged push was detected. It MUST be called only after the caller has
-// released its starting/dispatching marker (alongside fireComplete), so the
-// callback's re-dispatch is not rejected as re-entrant. No-op when nothing was
+// released its starting marker (alongside fireComplete), so the callback's
+// launch is not rejected as re-entrant. No-op when nothing was
 // queued for the task. When recovery is unavailable or declines, the task is
 // escalated to human-required and its parked workflow terminated — the same
 // terminal outcome the inline divergence path produces.
 func (e *Engine) drainPendingConflictRecovery(taskID string) {
 	e.mu.Lock()
-	_, pending := e.pendingRecovery[taskID]
-	if pending {
+	pending, ok := e.pendingRecovery[taskID]
+	if ok {
 		delete(e.pendingRecovery, taskID)
 	}
 	e.mu.Unlock()
-	if !pending {
+	if !ok {
 		return
 	}
 	if e.conflictRecovery != nil && e.conflictRecovery(taskID) {
 		return // recovery cancelled this workflow and dispatched branch-conflict-fix
 	}
+	if pending.onDecline != nil {
+		pending.onDecline()
+		return
+	}
+	e.escalatePendingConflictRecovery(taskID)
+}
+
+func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)

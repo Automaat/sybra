@@ -80,6 +80,23 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	}
 }
 
+func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+		BaseRefName: "master",
+	}, "")
+
+	if !strings.Contains(prompt, "git merge refs/remotes/origin/master") {
+		t.Fatalf("conflict prompt did not merge the PR base ref (master):\n%s", prompt)
+	}
+	if strings.Contains(prompt, "origin/main") {
+		t.Fatalf("conflict prompt still references origin/main for a master-based PR:\n%s", prompt)
+	}
+}
+
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
@@ -2022,6 +2039,51 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	}
 	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
 		t.Errorf("workflow CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+}
+
+func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was closed unmerged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(1444),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		tasks:     tasks,
+		agents:    agentMgr,
+		prTracker: github.NewIssueTracker(time.Minute),
+	}
+	closedMatchers := []github.TaskMatcher{{ID: created.ID, PRNumber: 1444, ProjectID: "o/r"}}
+	fetchFn := func(string, int) (github.PRState, error) {
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	r.advanceClosedTaskPRsWithFetch(context.Background(), []github.PullRequest{}, closedMatchers, fetchFn)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusCancelled {
+		t.Errorf("status = %q, want cancelled (a PR closed without merging did not ship its work)", got.Status)
+	}
+	if got.Outcome != "closed" {
+		t.Errorf("outcome = %q, want closed", got.Outcome)
 	}
 }
 
