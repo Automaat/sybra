@@ -103,12 +103,17 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		oneShot := false
 		if t.AgentMode != "headless" {
 			lr := lastAgentRun(&t)
-			if lr == nil {
-				r.Logger.Info("recover-stale.no-run-fallthrough", "task_id", t.ID)
-			} else if !lr.OneShot {
+			switch {
+			case lr == nil:
+				// No recorded run: recoverStaleInteractive would no-op on
+				// lr == nil, silently skipping this task forever. Fall
+				// through to the normal dispatch path below so a stale
+				// interactive task with zero runs actually gets restarted.
+				r.Logger.Info("restart-stale.no-run-fallthrough", "task_id", t.ID)
+			case !lr.OneShot:
 				r.recoverStaleInteractive(&t)
 				continue
-			} else {
+			default:
 				oneShot = true
 				r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 			}
@@ -116,7 +121,13 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		if t.ProjectID == "" {
 			err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
-			r.surfaceStartFailure(t.ID, t.Status, err)
+			// Surface off the scan loop, matching the other two
+			// surfaceStartFailure call sites in this function, so a
+			// file-backed Tasks.Update never blocks the fleet-wide sweep.
+			taskID, currentStatus := t.ID, t.Status
+			r.WG.Go(func() {
+				r.surfaceStartFailure(taskID, currentStatus, err)
+			})
 			continue
 		}
 		r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
