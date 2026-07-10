@@ -683,6 +683,12 @@ func TestOnComplete_SinkError_CreatesLocalFallback(t *testing.T) {
 		!strings.Contains(got.Body, "GitHub issue filing failed: rate limited") {
 		t.Errorf("expected local fallback note in body; got:\n%s", got.Body)
 	}
+	if !strings.Contains(got.StatusReason, "issue filing failed") {
+		t.Errorf("status reason = %q, want issue filing failed context", got.StatusReason)
+	}
+	if !strings.Contains(got.StatusReason, "local task ") {
+		t.Errorf("status reason = %q, want local task pointer", got.StatusReason)
+	}
 }
 
 func TestOnComplete_SinkError_DedupesExistingLocalFallback(t *testing.T) {

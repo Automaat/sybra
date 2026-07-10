@@ -622,6 +622,9 @@ func (h *humanReviewHandler) blockOriginOnLocalBug(taskID, agentID, header, summ
 	}
 	newBody := appendSection(origin.Body, header, noteBody)
 	statusReason := fmt.Sprintf("auto-review: %s (local task %s)", summary, localTaskID)
+	if strings.Contains(strings.ToLower(extra), "issue filing failed") {
+		statusReason = fmt.Sprintf("auto-review: %s (local task %s; issue filing failed)", summary, localTaskID)
+	}
 	upd := task.Update{
 		Body:         &newBody,
 		Status:       task.Ptr(task.StatusBlocked),
