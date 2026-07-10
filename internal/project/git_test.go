@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseGitHubURL(t *testing.T) {
@@ -174,6 +175,70 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	err := FetchOrigin(context.Background(), bare)
 	if err == nil {
 		t.Fatal("expected error fetching from repo with no origin")
+	}
+}
+
+// TestFetchOriginTTLSkipsRepeatFetch proves the FetchTTL cache added for
+// issue #1527: within TTL, a second FetchOrigin call against the same bare
+// clone must not see a commit pushed to origin after the first call — the
+// second call is served from cache, not a real fetch. Not t.Parallel(): it
+// mutates the package-level FetchTTL/fetchTTLNow globals and must not race
+// other tests that call FetchOrigin expecting TTL disabled (the default).
+func TestFetchOriginTTLSkipsRepeatFetch(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	now := time.Now()
+	origTTL, origNow := FetchTTL, fetchTTLNow
+	FetchTTL = 60 * time.Second
+	fetchTTLNow = func() time.Time { return now }
+	t.Cleanup(func() {
+		FetchTTL, fetchTTLNow = origTTL, origNow
+		lastFetchAt.Delete(filepath.Clean(bare))
+	})
+
+	trackingRef := "refs/remotes/origin/" + branch
+	revParse := func() string {
+		t.Helper()
+		out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "--verify", trackingRef).CombinedOutput()
+		if err != nil {
+			t.Fatalf("rev-parse %s: %v: %s", trackingRef, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("initial FetchOrigin: %v", err)
+	}
+	before := revParse()
+
+	// Push a new commit to origin, then re-fetch a moment later (still well
+	// inside the TTL window). The cached call must be a no-op.
+	if out, err := exec.Command("git", "-C", src, "commit", "--allow-empty", "-m", "ttl-probe").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	now = now.Add(1 * time.Second)
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("cached FetchOrigin: %v", err)
+	}
+	if afterCached := revParse(); afterCached != before {
+		t.Fatalf("cached FetchOrigin call fetched anyway: tracking ref moved from %s to %s", before, afterCached)
+	}
+
+	// Once the TTL elapses, the next call must pick up the new commit.
+	now = now.Add(60 * time.Second)
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("post-TTL FetchOrigin: %v", err)
+	}
+	if afterExpired := revParse(); afterExpired == before {
+		t.Fatal("post-TTL FetchOrigin did not refresh the tracking ref")
 	}
 }
 

@@ -388,6 +388,53 @@ func (m *Manager) adoptWorktree(ctx context.Context, t task.Task, onPhase func(s
 	return wtPath, nil
 }
 
+// reuseFixWorktree is the fix/branch-fix analogue of PrepareForTask's
+// healOrRecreate + reconcile fast path: PrepareForFix and PrepareForBranchFix
+// used to unconditionally RemoveWorktreeReconcile any existing worktree and
+// recreate it from scratch (full setup: mise install, npm ci, npm run
+// build:desktop) on every single dispatch, even though a healthy worktree
+// already checked out on the right branch just needs its remote fast-forwarded.
+// Returns (true, nil) when wtPath is now healthy, on wantBranch, and synced to
+// the latest remote head — the caller can skip setup entirely, mirroring
+// PrepareForTask's genuine-reuse path. Returns (false, nil) when there was
+// nothing to reuse (no worktree, unhealthy, wrong branch, or the remote sync
+// hit a conflict) — in every such case wtPath has already been removed, so
+// the caller's normal create-fresh path runs unmodified.
+func (m *Manager) reuseFixWorktree(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat worktree %s: %w", wtPath, statErr)
+	}
+	usable, err := m.healOrRecreate(ctx, taskID, clonePath, wtPath, wantBranch)
+	if err != nil {
+		return false, err
+	}
+	if !usable {
+		return false, nil
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("fix.worktree.sanitize", "task_id", taskID, "err", err)
+	}
+	// Fast-forward the branch to the live remote head (e.g. a fix pushed from
+	// another clone/machine since this worktree was last used). Unlike
+	// PrepareForTask's reused path there is no rebase here — fix worktrees
+	// check out the PR/task branch directly. Any failure (dirty, diverged,
+	// transient network) falls back to a clean recreate rather than risk
+	// handing the fixer a stale or half-synced checkout; the reused worktree
+	// was always freshly recreated before this change, so recreation on
+	// failure is strictly no worse than the prior behavior.
+	if err := project.ReconcileWithRemote(ctx, wtPath, wantBranch); err != nil {
+		m.logger.Warn("fix.worktree.reconcile-failed-recreate", "task_id", taskID, "branch", wantBranch, "err", err)
+		if rerr := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); rerr != nil {
+			return false, fmt.Errorf("remove worktree after reconcile failure: %w", rerr)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
 // finalizeWorktree runs post-checkout hooks shared by the "reuse existing
 // worktree" and "checkout existing branch" fast-paths in PrepareForTask.
 func (m *Manager) finalizeWorktree(ctx context.Context, t task.Task, wtPath, wtBranch string, proj project.Project) (string, error) {
@@ -510,7 +557,10 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 		m.logger.Warn("review.worktree.signoff-hook", "task_id", t.ID, "err", err)
 	}
 	m.logger.Info("review.worktree.created", "task_id", t.ID, "path", wtPath, "branch", branch)
-	if err := m.runSetup(ctx, t.ID, wtPath, m.resolveTrustedSetupCommands(ctx, proj)); err != nil {
+	// Review is read-only and never builds anything — skip the desktop build
+	// step other roles' setup pulls in (see filterNonAuthoringSetup).
+	setupCmds := filterNonAuthoringSetup(m.resolveTrustedSetupCommands(ctx, proj))
+	if err := m.runSetup(ctx, t.ID, wtPath, setupCmds); err != nil {
 		return "", fmt.Errorf("review setup: %w", err)
 	}
 	return wtPath, nil
@@ -544,14 +594,21 @@ func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string,
 	branch := branchNameForTask(t)
 	wtPath := m.PathFor(t)
 
-	// Remove stale worktree, same rationale as PrepareForFix.
-	switch _, statErr := os.Stat(wtPath); {
-	case statErr == nil:
-		if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
-			return "", fmt.Errorf("remove stale branch-fix worktree: %w", err)
+	// Reuse a healthy worktree already on the task's branch, same rationale
+	// and fallback-to-recreate behavior as PrepareForFix.
+	reused, err := m.reuseFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch)
+	if err != nil {
+		return "", fmt.Errorf("reuse branch-fix worktree: %w", err)
+	}
+	if reused {
+		m.ensureBranch(t, branch)
+		m.logger.Info("branch-fix.worktree.reused", "task_id", t.ID, "path", wtPath, "branch", branch)
+		if t.RunRole != "pr-fix" {
+			if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
+				m.logger.Warn("branch-fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+			}
 		}
-	case !os.IsNotExist(statErr):
-		return "", fmt.Errorf("stat branch-fix worktree %s: %w", wtPath, statErr)
+		return wtPath, nil
 	}
 
 	originRef := "refs/remotes/origin/" + branch
@@ -661,16 +718,23 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 
 	wtPath := m.PathFor(t)
 
-	// Remove stale worktree — previous agent may have left dirty state, or a
-	// prior `worktree prune` (or crash) dropped the admin entry while the
-	// checkout dir survived (orphan). RemoveWorktreeReconcile handles both.
-	switch _, statErr := os.Stat(wtPath); {
-	case statErr == nil:
-		if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
-			return "", fmt.Errorf("remove stale fix worktree: %w", err)
+	// Reuse a healthy worktree already on the fix branch — fast-forwarded to
+	// the latest remote head, no setup re-run. Only when that isn't possible
+	// (no worktree, unhealthy, wrong branch, or a remote conflict) does the
+	// stale worktree get removed and recreated from scratch below.
+	reused, err := m.reuseFixWorktree(ctx, t.ID, proj.ClonePath, wtPath, branch)
+	if err != nil {
+		return "", fmt.Errorf("reuse fix worktree: %w", err)
+	}
+	if reused {
+		m.ensureBranch(t, branch)
+		m.logger.Info("fix.worktree.reused", "task_id", t.ID, "path", wtPath, "branch", branch)
+		if t.RunRole != "pr-fix" {
+			if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
+				m.logger.Warn("fix.worktree.fork-only-push", "task_id", t.ID, "err", err)
+			}
 		}
-	case !os.IsNotExist(statErr):
-		return "", fmt.Errorf("stat fix worktree %s: %w", wtPath, statErr)
+		return wtPath, nil
 	}
 
 	originRef := "refs/remotes/origin/" + branch

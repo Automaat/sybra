@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -277,6 +278,27 @@ func (m *Manager) resolveTrustedSetupCommands(ctx context.Context, proj project.
 			"total", len(merged))
 	}
 	return merged
+}
+
+// desktopBuildSetupMarker matches the desktop production build step
+// (`npm run build:desktop`) that .sybra.yaml setup blocks use so `go build`
+// has something to //go:embed. A code-authoring role needs it; a read-only
+// PR review worktree never builds anything, so running it there is pure
+// waste (issue #1527).
+const desktopBuildSetupMarker = "build:desktop"
+
+// filterNonAuthoringSetup drops setup commands that exist only to prepare a
+// worktree for building/embedding, for roles that never build — currently
+// just PrepareForReview's detached-HEAD, read-only checkout.
+func filterNonAuthoringSetup(commands []string) []string {
+	filtered := make([]string, 0, len(commands))
+	for _, c := range commands {
+		if strings.Contains(c, desktopBuildSetupMarker) {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
 }
 
 func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project.Project) {
