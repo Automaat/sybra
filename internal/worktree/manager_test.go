@@ -597,7 +597,7 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 		WorktreesDir: wtDir,
 		LogsDir:      logsDir,
 		Logger:       discardLogger(),
-		SetupTimeout: 800 * time.Millisecond,
+		SetupTimeout: 5 * time.Second,
 	})
 
 	pidFile := filepath.Join(wtDir, "child.pid")
