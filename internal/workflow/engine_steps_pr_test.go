@@ -677,3 +677,36 @@ func TestClassifyPRGitError_AuthFailureEscalatesAfterMaxRetries(t *testing.T) {
 		t.Errorf("status = %q, want human-required after exhausting auth retries", ti.Status)
 	}
 }
+
+// TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates covers a
+// push rejected by a project's own pre-push hook (e.g. `go test ./...`
+// failing under concurrent-agent CPU contention) — output that matches none
+// of the GitHub-shaped patterns. A single retry absorbs a flake; a genuine
+// regression fails again and still escalates.
+func TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	step := newPushBranchStep()
+	task := TaskInfo{ID: "t1", Status: "ready-pr"}
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	hookErr := errors.New("git push: exit status 1: FAIL internal/sybra TestAgentAdapterStartAgentDoesNotClobberForeignClaimAfterRecovery")
+	for i := range maxPRPushRetries {
+		_, err := engine.classifyPRGitError("t1", step, wfExec, task, hookErr, "git push")
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d: err = %v, want errStepParked", i, err)
+		}
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status == "human-required" {
+		t.Fatalf("status = %q after %d retries, want unchanged (still parked)", ti.Status, maxPRPushRetries)
+	}
+	if _, err := engine.classifyPRGitError("t1", step, wfExec, task, hookErr, "git push"); err != nil {
+		t.Fatalf("final attempt: unexpected error %v", err)
+	}
+	ti, _ = tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required after exhausting push retries", ti.Status)
+	}
+}
