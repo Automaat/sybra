@@ -91,6 +91,12 @@ func TestExpandPlannerDeadlineFallsBackToIndependentParallel(t *testing.T) {
 	if res.Created != 3 {
 		t.Fatalf("Created = %d, want 3", res.Created)
 	}
+	if res.ChildCount != 3 {
+		t.Fatalf("ChildCount = %d, want 3", res.ChildCount)
+	}
+	if res.MaxParallel != 3 {
+		t.Fatalf("MaxParallel = %d, want 3 (independent-parallel fallback uses the degraded cap)", res.MaxParallel)
+	}
 
 	all, err := tasks.List()
 	if err != nil {
