@@ -80,6 +80,23 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	}
 }
 
+func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+		BaseRefName: "master",
+	}, "")
+
+	if !strings.Contains(prompt, "git merge refs/remotes/origin/master") {
+		t.Fatalf("conflict prompt did not merge the PR base ref (master):\n%s", prompt)
+	}
+	if strings.Contains(prompt, "origin/main") {
+		t.Fatalf("conflict prompt still references origin/main for a master-based PR:\n%s", prompt)
+	}
+}
+
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
