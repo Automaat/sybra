@@ -22,18 +22,21 @@ type taskAPI interface {
 // judgment. It is split out from service.go so the service stays focused on
 // orchestration.
 type remediator struct {
-	tasks taskAPI
+	tasks            taskAPI
+	recoverLostAgent func(context.Context)
 }
 
-func newRemediator(t taskAPI) *remediator { return &remediator{tasks: t} }
+func newRemediator(t taskAPI, recoverLostAgent func(context.Context)) *remediator {
+	return &remediator{tasks: t, recoverLostAgent: recoverLostAgent}
+}
 
 // Apply executes the action for one anomaly. Returns a label suitable for the
 // Report.Remediated slice on success, or an error on failure. The caller logs
 // errors but does not abort the cycle on them.
-func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
+func (r *remediator) Apply(ctx context.Context, a Anomaly) (string, error) {
 	switch a.Kind {
 	case KindLostAgent:
-		return r.resetLostAgent(a)
+		return r.resetLostAgent(ctx, a)
 	case KindUntriaged:
 		return r.tagUntriaged(a)
 	case KindStuckHumanBlocked:
@@ -46,7 +49,7 @@ func (r *remediator) Apply(_ context.Context, a Anomaly) (string, error) {
 	}
 }
 
-func (r *remediator) resetLostAgent(a Anomaly) (string, error) {
+func (r *remediator) resetLostAgent(ctx context.Context, a Anomaly) (string, error) {
 	if a.TaskID == "" {
 		return "", fmt.Errorf("lost_agent without task id")
 	}
@@ -65,6 +68,9 @@ func (r *remediator) resetLostAgent(a Anomaly) (string, error) {
 	}
 	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
 		return "", fmt.Errorf("mark lost_agent task %s for recovery: %w", a.TaskID, err)
+	}
+	if r.recoverLostAgent != nil {
+		r.recoverLostAgent(ctx)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
 }

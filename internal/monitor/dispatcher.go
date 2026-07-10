@@ -143,6 +143,17 @@ func (d *agentDispatcher) resolveTarget(a Anomaly) (dir, taskID, name string) {
 			return path, a.TaskID, taskName
 		}
 	}
+	// A task with no project_id can never have an isolated worktree, now or
+	// later — never fall back to the shared repoDir for it. repoDir is a
+	// live, single, unsandboxed operator checkout (used for genuinely
+	// board-wide anomalies above); running a task-scoped agent there risks
+	// git-lock contention and stray writes against real dev work, the same
+	// bug class as the 2026-07-06 board-wipe (#1576). A task that DOES have a
+	// project but whose worktree isn't resolvable right now (in-flight prep,
+	// transient store hiccup) still falls back to repoDir below.
+	if t.ProjectID == "" {
+		return "", a.TaskID, taskName
+	}
 	return d.repoDir, a.TaskID, taskName
 }
 

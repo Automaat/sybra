@@ -177,6 +177,31 @@ func TestDispatcher_PRGapFallsBackToRepoDirWhenWorktreeMissing(t *testing.T) {
 	}
 }
 
+func TestDispatcher_NoProjectIDNeverFallsBackToRepoDir(t *testing.T) {
+	rr := &recordingRunner{}
+	// No project_id at all: this task can never have an isolated worktree.
+	theTask := task.Task{ID: "abc123", Title: "Prompt Lab proposal"}
+	tasks := dispatcherTasksStub{task: theTask}
+	worktreeFn := func(task.Task) (string, bool) { return "", false }
+	d := newTestDispatcher(rr, tasks, worktreeFn)
+
+	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
+	if _, err := d.Dispatch(context.Background(), a); err == nil {
+		t.Fatal("want dispatch error when task has no project_id and no worktree")
+	}
+	if len(rr.calls) != 0 {
+		t.Errorf("runner must not be called for a project-less task, got %d calls", len(rr.calls))
+	}
+
+	ok, reason := d.Dispatchable(a)
+	if ok {
+		t.Error("want false: a project-less task must never dispatch into the shared repoDir")
+	}
+	if reason != "" {
+		t.Errorf("want silent skip (matches the known external-task case), got reason %q", reason)
+	}
+}
+
 func TestDispatcher_TaskGetErrorFallsBackToRepoDir(t *testing.T) {
 	rr := &recordingRunner{}
 	tasks := dispatcherTasksStub{err: errors.New("boom")}

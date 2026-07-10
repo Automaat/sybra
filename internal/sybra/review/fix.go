@@ -950,7 +950,17 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		}
 		r.logger.Error("pr-monitor.branch-conflict.dispatch", "task_id", taskID, "err", err)
 		if resume.prior != nil {
-			if _, restoreErr := r.tasks.Update(taskID, task.Update{
+			// startWorkflowCore's surfaceInitialDispatchFailure may have already
+			// classified this same error as permanent and escalated the task to
+			// human-required underneath this call (ReplaceWorkflow/StartWorkflowWithVars
+			// → startWorkflowCore → surfaceStartFailureClassified). Restoring
+			// resume.status/prior here would silently clobber that escalation and
+			// resurrect the already-cancelled workflow. Mirror the sticky guard
+			// surfaceStartFailureClassified applies: leave a task a downstream
+			// handler already parked on a human alone.
+			if cur, getErr := r.tasks.Get(taskID); getErr == nil && cur.Status == task.StatusHumanRequired {
+				r.logger.Info("pr-monitor.branch-conflict.restore-skipped-escalated", "task_id", taskID)
+			} else if _, restoreErr := r.tasks.Update(taskID, task.Update{
 				Status:   task.Ptr(task.Status(resume.status)),
 				Workflow: task.Ptr(resume.prior),
 			}); restoreErr != nil {
