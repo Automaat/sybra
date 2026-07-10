@@ -564,6 +564,9 @@ func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
 	if strings.TrimSpace(r.TaskID) == "" {
 		return "no_task"
 	}
+	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {
+		return "task_gone"
+	}
 	if !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
 		return "deadline"
 	}

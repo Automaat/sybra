@@ -358,6 +358,9 @@ func (a *App) taskExistsForAgent(taskID string) bool {
 func (a *App) taskStatusForAgent(taskID string) (string, bool) {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			a.logger.Warn("agent.reattach.task-status", "task_id", taskID, "err", err)
+		}
 		return "", false
 	}
 	return string(t.Status), true

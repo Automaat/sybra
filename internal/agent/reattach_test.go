@@ -172,9 +172,10 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		record func(pid int) Record
-		status map[string]string
+		name        string
+		record      func(pid int) Record
+		status      map[string]string
+		taskDeleted bool
 	}{
 		{
 			name: "empty task id",
@@ -195,6 +196,13 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			},
 			status: map[string]string{"task-x": "todo"},
 		},
+		{
+			name: "task deleted while down",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			taskDeleted: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -205,6 +213,9 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			if tc.status != nil {
 				st := tc.status
 				cfg.TaskStatus = func(id string) (string, bool) { s, ok := st[id]; return s, ok }
+			}
+			if tc.taskDeleted {
+				cfg.TaskExists = func(string) bool { return false }
 			}
 			m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, cfg)
 
