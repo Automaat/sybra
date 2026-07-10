@@ -12,9 +12,24 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/project"
 )
 
+// preventFetchTTLLeak guards against Startup's project.FetchTTL = 60s
+// mutation leaking into other tests sharing this package's test binary — the
+// same discipline internal/project/git_test.go's TestFetchOriginTTLSkipsRepeatFetch
+// applies when it mutates that global directly. Without this, a Startup call
+// here permanently enables fetch caching for every later test in the binary,
+// including ones (e.g. app_workflow_test.go's conflict-recovery harness) that
+// rely on FetchOrigin always doing a real fetch.
+func preventFetchTTLLeak(t *testing.T) {
+	t.Helper()
+	orig := project.FetchTTL
+	t.Cleanup(func() { project.FetchTTL = orig })
+}
+
 func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
+	preventFetchTTLLeak(t)
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
@@ -73,6 +88,7 @@ func (r *startupEventRecorder) snapshot() []string {
 }
 
 func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
+	preventFetchTTLLeak(t)
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
@@ -110,6 +126,7 @@ func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
 }
 
 func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
+	preventFetchTTLLeak(t)
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
