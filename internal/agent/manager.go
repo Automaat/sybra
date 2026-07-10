@@ -114,6 +114,8 @@ type Manager struct {
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
 
+	taskStatus func(taskID string) (string, bool)
+
 	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
 	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
@@ -168,6 +170,7 @@ type ManagerConfig struct {
 	SurviveRestartDir string
 	SessionSink       func(taskID, agentID, sessionID string) error
 	TaskExists        func(taskID string) bool
+	TaskStatus        func(taskID string) (string, bool)
 	LimitSink         func(limits.Snapshot)
 
 	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
@@ -233,6 +236,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitSink:              cfg.LimitSink,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
+		taskStatus:             cfg.TaskStatus,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
@@ -392,6 +396,12 @@ func (m *Manager) taskExistsFn() func(taskID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.taskExists
+}
+
+func (m *Manager) taskStatusFn() func(taskID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskStatus
 }
 
 // survives reports whether restart survival is active.

@@ -97,6 +97,11 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 			continue
 		}
 
+		if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
+			m.reapStaleSurvivor(r, reg, reason)
+			continue
+		}
+
 		a := fromRecord(r)
 		// Rehydrate the buffer and capture the exact byte offset consumed, so
 		// the tailer resumes from there with no gap (a line appended between
@@ -567,4 +572,38 @@ func processStartString(ctx context.Context, pid int) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+const reattachMaxAge = 6 * time.Hour
+
+func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
+	if strings.TrimSpace(r.TaskID) == "" {
+		return "no_task"
+	}
+	if !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
+		return "deadline"
+	}
+	if statusFn := m.taskStatusFn(); statusFn != nil {
+		if status, ok := statusFn(r.TaskID); ok && staleForLiveAgent(status) {
+			return "task_status_" + status
+		}
+	}
+	return ""
+}
+
+func staleForLiveAgent(status string) bool {
+	switch status {
+	case "todo", "new":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) reapStaleSurvivor(r Record, reg survivalRegistry, reason string) {
+	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
+	signalPID(r.PID, stopSIGINTGrace)
+	if err := reg.Delete(r.ID); err != nil {
+		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
+	}
 }

@@ -257,6 +257,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
 		TaskExists:  a.taskExistsForAgent,
+		TaskStatus:  a.taskStatusForAgent,
 		LimitSink:   a.recordLimitSnapshot,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
@@ -350,6 +351,14 @@ func (a *App) taskExistsForAgent(taskID string) bool {
 	}
 	a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
 	return true
+}
+
+func (a *App) taskStatusForAgent(taskID string) (string, bool) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
