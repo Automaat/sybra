@@ -110,6 +110,7 @@ describe('TaskList', () => {
         },
         {
           ...mockTask('c1', 'Done child', 'done'),
+          outcome: 'merged',
           umbrellaIssue: 'Automaat/sybra#1213',
         },
         {
