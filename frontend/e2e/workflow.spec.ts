@@ -14,12 +14,22 @@ const FIXTURE_FILES = new Set([
   'plan0001.md',
 ])
 
+// A fixtures-only home accumulates at most a handful of test-created files
+// between cleanups; hundreds of strays means a real board (#1576) — refuse
+// rather than delete.
+const MAX_CLEANUP_STRAYS = 25
+
 async function cleanupCreatedTasks() {
   const files = await readdir(TASKS_DIR)
-  for (const f of files) {
-    if (!FIXTURE_FILES.has(f) && f.endsWith('.md')) {
-      await unlink(join(TASKS_DIR, f))
-    }
+  const strays = files.filter((f) => !FIXTURE_FILES.has(f) && f.endsWith('.md'))
+  if (strays.length > MAX_CLEANUP_STRAYS) {
+    throw new Error(
+      `cleanupCreatedTasks: ${strays.length} non-fixture task files in ${TASKS_DIR} — ` +
+        'not a disposable e2e home, refusing to delete',
+    )
+  }
+  for (const f of strays) {
+    await unlink(join(TASKS_DIR, f))
   }
 }
 
