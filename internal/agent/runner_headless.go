@@ -990,10 +990,22 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 // breach must terminate the subprocess immediately instead of leaving a
 // headless process alive while waiting for a response. Returns false so the
 // caller stops the stream and kills/cancels the subprocess.
+//
+// This is only ever called from handleHeadlessResult on a "result" event, so
+// the breach always coincides with a turn that already finished cleanly on
+// its own — there is no more work the subprocess could still do, only an
+// idle process left to reap. Mark completedByResult so the attempt-exit path
+// (wasCompletedByResult check in runHeadlessAttemptPipe/Survive) derives the
+// outcome from that terminal result event instead of stamping
+// errCostGuardrailExceeded — otherwise a legitimately completed turn (and
+// any sidecar it already wrote) gets discarded as a hard failure purely
+// because the kill happened to land after the cost ceiling (see task
+// 6ee7ee8d).
 func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
 	a.MarkStopped()
 	a.SetEscalationReason("cost")
+	a.setCompletedByResult(true)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:  "cost",
 		CostUSD: costNow,
