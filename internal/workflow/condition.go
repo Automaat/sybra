@@ -134,6 +134,7 @@ func checkEnumOperator(field, operator string) bool {
 //   - exists / equals / not_equals: single-value checks
 //   - contains / not_contains: for task.tags, exact tag membership in the
 //     comma-joined tag list; for other fields, substring check.
+//   - starts_with: prefix check after trimming surrounding whitespace.
 //   - in / not_in: membership check — condition value is a comma-separated
 //     list of allowed values, field must match one of them. Use this when
 //     the field is a single scalar (e.g. pr.issue_kind) and the trigger
@@ -152,6 +153,8 @@ func EvalCondition(c Condition, fields map[string]string) bool {
 		return containsFieldValue(c.Field, val, c.Value)
 	case "not_contains":
 		return !containsFieldValue(c.Field, val, c.Value)
+	case "starts_with":
+		return strings.HasPrefix(strings.TrimSpace(val), c.Value)
 	case "in":
 		return inList(val, c.Value)
 	case "not_in":

@@ -67,7 +67,7 @@ type Trigger struct {
 // Condition is a field-operator-value check.
 type Condition struct {
 	Field    string `yaml:"field" json:"field"`       // "task.tags", "task.status", "task.agent_mode"
-	Operator string `yaml:"operator" json:"operator"` // "equals", "not_equals", "contains", "not_contains", "exists", "in", "not_in"
+	Operator string `yaml:"operator" json:"operator"` // "equals", "not_equals", "contains", "not_contains", "starts_with", "exists", "in", "not_in"
 	Value    string `yaml:"value" json:"value"`
 }
 

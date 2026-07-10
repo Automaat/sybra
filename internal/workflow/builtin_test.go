@@ -579,6 +579,13 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 			codeReview: "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
 			want:       "fix_review",
 		},
+		{
+			name: "needs_fixes_echoing_clean_marker_routes_to_fix_review",
+			codeReview: "Review Verdict: NEEDS_FIXES\n\n" +
+				"This is not a Review Verdict: CLEAN pass; see the finding below.\n\n" +
+				"foo.go:12: nil deref risk.\n",
+			want: "fix_review",
+		},
 	}
 
 	for _, tc := range cases {
