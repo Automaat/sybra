@@ -43,5 +43,8 @@ export {
     MonitorReportBinding,
     TamperFindingDTO,
     TamperReportDTO,
+    TaskArtifactDTO,
+    TaskAuditEventDTO,
+    TaskSetupLogDTO,
     VersionInfo
 } from "./models.js";

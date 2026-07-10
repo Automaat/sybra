@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,6 +76,30 @@ type TamperFindingDTO struct {
 	Detail   string `json:"detail"`
 }
 
+type TaskArtifactDTO struct {
+	artifact.Meta
+	Content string `json:"content,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type TaskSetupLogDTO struct {
+	TaskID    string `json:"taskId"`
+	Path      string `json:"path,omitempty"`
+	Exists    bool   `json:"exists"`
+	Content   string `json:"content,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type TaskAuditEventDTO struct {
+	Timestamp time.Time      `json:"ts"`
+	Type      string         `json:"type"`
+	TaskID    string         `json:"taskId,omitempty"`
+	AgentID   string         `json:"agentId,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+const taskDiagnosticReadLimit = 256 * 1024
+
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
 // Chat tasks are surfaced exclusively through the Chats view.
 func (s *TaskService) ListTasks() ([]task.Task, error) {
@@ -98,6 +124,99 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 		return t, err
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
+}
+
+func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error) {
+	if s.artifacts == nil {
+		return []TaskArtifactDTO{}, nil
+	}
+	metas, err := s.artifacts.List(taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskArtifactDTO, 0, len(metas))
+	for i := range metas {
+		meta := metas[i]
+		meta.SourcePath = ""
+		dto := TaskArtifactDTO{Meta: meta}
+		data, _, readErr := s.artifacts.Read(taskID, meta.Name)
+		if readErr != nil {
+			dto.Error = readErr.Error()
+			out = append(out, dto)
+			continue
+		}
+		if len(data) > taskDiagnosticReadLimit {
+			if meta.Stream {
+				data = data[len(data)-taskDiagnosticReadLimit:]
+			} else {
+				data = data[:taskDiagnosticReadLimit]
+			}
+			dto.Error = fmt.Sprintf("truncated to %d bytes", taskDiagnosticReadLimit)
+		}
+		dto.Content = string(data)
+		out = append(out, dto)
+	}
+	return out, nil
+}
+
+func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
+	dto := TaskSetupLogDTO{TaskID: taskID}
+	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+		return dto, nil
+	}
+	path := filepath.Join(s.cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
+	root := filepath.Join(s.cfg.Logging.Dir, "worktrees")
+	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, cleanRoot) {
+		return dto, fmt.Errorf("setup log path escapes log root")
+	}
+	dto.Path = cleanPath
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return dto, nil
+		}
+		return dto, fmt.Errorf("read setup log: %w", err)
+	}
+	dto.Exists = true
+	if len(data) > taskDiagnosticReadLimit {
+		data = data[len(data)-taskDiagnosticReadLimit:]
+		dto.Truncated = true
+	}
+	dto.Content = string(data)
+	return dto, nil
+}
+
+func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditEventDTO, error) {
+	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+		return []TaskAuditEventDTO{}, nil
+	}
+	if days <= 0 || days > 90 {
+		days = 14
+	}
+	until := time.Now().UTC().Add(time.Minute)
+	since := until.AddDate(0, 0, -days)
+	events, err := audit.Read(s.cfg.AuditDir(), audit.Query{
+		Since:  since,
+		Until:  until,
+		TaskID: taskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskAuditEventDTO, 0, len(events))
+	for _, ev := range events {
+		out = append(out, TaskAuditEventDTO{
+			Timestamp: ev.Timestamp,
+			Type:      ev.Type,
+			TaskID:    ev.TaskID,
+			AgentID:   ev.AgentID,
+			Data:      ev.Data,
+		})
+	}
+	slices.Reverse(out)
+	return out, nil
 }
 
 // GetTamperReport returns the detector report artifact for a tamper-flagged task.

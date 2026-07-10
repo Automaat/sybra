@@ -311,6 +311,9 @@ jobs:
         run: |
           mkdir -p "$SYBRA_HOME/tasks"
           cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
+          # Marker proving this is a disposable e2e home; the suite refuses
+          # destructive task cleanup without it (#1576).
+          touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
