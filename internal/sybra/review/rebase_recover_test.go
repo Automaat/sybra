@@ -1124,6 +1124,37 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 	}
 }
 
+// TestDispatchBranchConflictRecovery_PreservesEscalationFromInitialDispatch is
+// the regression test for the restore-clobbers-escalation bug: a permanently
+// classified dispatch error (e.g. ErrNoProjectAssigned) causes
+// startWorkflowCore's surfaceInitialDispatchFailure to flip the task to
+// human-required *before* returning the error. The restore path must not then
+// overwrite that escalation back to the prior status/workflow — doing so would
+// resurrect the already-cancelled workflow and defeat the escalation.
+func TestDispatchBranchConflictRecovery_PreservesEscalationFromInitialDispatch(t *testing.T) {
+	launchErr := fmt.Errorf("task has no project_id: %w", workflow.ErrNoProjectAssigned)
+	r, tk := newDispatchFailureHandler(t, launchErr)
+	resume := r.captureBranchConflictResumeState(tk)
+	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
+		t.Fatalf("cancel prior workflow: %v", err)
+	}
+
+	if r.dispatchBranchConflictRecovery(tk.ID, "/tmp/does-not-matter", "main", tk, "deadbeef", resume, false) {
+		t.Fatal("want false: a permanent dispatch error must not report success")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required preserved from the initial-dispatch escalation (restore must not clobber it)", got.Status)
+	}
+	if got.Workflow != nil && got.Workflow.WorkflowID == resume.workflowID {
+		t.Fatalf("prior workflow %q was resurrected by the restore — escalation defeated", resume.workflowID)
+	}
+}
+
 func TestBranchConflictFailureCountersAllowConcurrentTasks(t *testing.T) {
 	r := &Handler{logger: slog.New(slog.DiscardHandler)}
 	var wg sync.WaitGroup

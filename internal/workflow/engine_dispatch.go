@@ -139,12 +139,20 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 // fires, minutes later than necessary. Mirrors the equivalent call ResumeStalled
 // already makes after every resumed dispatch attempt.
 func (e *Engine) surfaceInitialDispatchFailure(taskID string, wfExec *Execution, fallbackStepID string, err error) {
-	currentStatus := ""
-	if t, getErr := e.tasks.GetTask(taskID); getErr == nil {
-		currentStatus = t.Status
+	t, getErr := e.tasks.GetTask(taskID)
+	if getErr != nil {
+		// Without the current status we cannot preserve it for a non-permanent
+		// (transient) classification, and an empty target would be rejected by
+		// UpdateTaskStatus and swallowed under a misleading resume-stalled log.
+		// A store hiccup that blocks this read would block the status write too,
+		// so emit a dedicated signal and let a later ResumeStalled pass re-drive
+		// once the store recovers.
+		e.logger.Error("workflow.initial-dispatch.surface-read-failed",
+			"task_id", taskID, "err", getErr, "dispatch_err", err)
+		return
 	}
 	stepID := dispatchFailureStepID(err, fallbackStepID)
-	e.surfaceStartFailure(taskID, currentStatus, err, wfExec, stepID)
+	e.surfaceStartFailure(taskID, t.Status, err, wfExec, stepID)
 }
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.
