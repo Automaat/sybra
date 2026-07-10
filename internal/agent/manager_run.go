@@ -149,6 +149,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	if err := m.injectSharedBuildCache(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -232,6 +236,32 @@ func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
 	return nil
 }
 
+func sharedBuildCacheDir() string {
+	return filepath.Join(config.HomeDir(), "shared-cache")
+}
+
+func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	base := sharedBuildCacheDir()
+	goBuild := filepath.Join(base, "go-build")
+	goMod := filepath.Join(base, "go-mod")
+	npm := filepath.Join(base, "npm")
+	for _, d := range []string{goBuild, goMod, npm} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("agent.Run: create shared build cache %q: %w", d, err)
+		}
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GOCACHE", "GOMODCACHE", "npm_config_cache")
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"GOCACHE="+goBuild,
+		"GOMODCACHE="+goMod,
+		"npm_config_cache="+npm,
+	)
+	return nil
+}
+
 // injectProcessSandbox resolves this run's OS-level process-sandbox posture
 // and allowed write roots (worktree, per-task sandbox home, tmp) into
 // cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
@@ -259,6 +289,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		sandboxHome = worktree
 	}
 	tmp := os.TempDir()
+	sharedCache := sharedBuildCacheDir()
 
 	if !sandboxExecAvailable() {
 		if mode == "enforce" {
@@ -279,7 +310,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		// representative of what enforce would allow — but never fail the
 		// run closed on a canonicalization error; fall back to logging the
 		// raw (unresolved) roots instead.
-		logWorktree, logSandboxHome, logTmp := worktree, sandboxHome, tmp
+		logWorktree, logSandboxHome, logTmp, logShared := worktree, sandboxHome, tmp, sharedCache
 		if canon, err := canonicalizeRoot(worktree); err == nil {
 			logWorktree = canon
 		} else {
@@ -295,8 +326,13 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		} else {
 			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "tmp", "err", err)
 		}
+		if canon, err := canonicalizeRoot(sharedCache); err == nil {
+			logShared = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "shared_cache", "err", err)
+		}
 		m.logger.Info("agent.sandbox.report", "task_id", cfg.TaskID,
-			"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp)
+			"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
@@ -316,6 +352,12 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
 	}
+	_ = os.MkdirAll(sharedCache, 0o755)
+	canonSharedCache, err := canonicalizeRoot(sharedCache)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
+	}
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -327,10 +369,12 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		worktree:    canonWorktree,
 		sandboxHome: canonSandboxHome,
 		tmp:         canonTmp,
+		sharedCache: canonSharedCache,
 		profilePath: profilePath,
 	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
-		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp, "profile", profilePath)
+		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"shared_cache", canonSharedCache, "profile", profilePath)
 	return nil
 }
 

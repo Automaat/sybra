@@ -27,10 +27,14 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
+	base := sharedBuildCacheDir()
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
 	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] || cfg.ExtraEnv[2] != want[2] {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
@@ -161,11 +165,15 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
+	base := sharedBuildCacheDir()
 	want := []string{
 		"OTHER=keep-me",
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
 	if len(cfg.ExtraEnv) != len(want) {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
@@ -194,9 +202,13 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
+	base := sharedBuildCacheDir()
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
+		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
+		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
 	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
@@ -236,6 +248,48 @@ func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T)
 	}
 	if info, statErr := os.Stat(wantCache); statErr != nil || !info.IsDir() {
 		t.Fatalf("cache dir %q not created: %v", wantCache, statErr)
+	}
+}
+
+func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"GOCACHE=/attacker/cache", "GOMODCACHE=/attacker/mod"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+
+	base := sharedBuildCacheDir()
+	for key, want := range map[string]string{
+		"GOCACHE=":          filepath.Join(base, "go-build"),
+		"GOMODCACHE=":       filepath.Join(base, "go-mod"),
+		"npm_config_cache=": filepath.Join(base, "npm"),
+	} {
+		var got string
+		hits := 0
+		for _, kv := range cfg.ExtraEnv {
+			if v, ok := strings.CutPrefix(kv, key); ok {
+				got = v
+				hits++
+			}
+		}
+		if hits != 1 {
+			t.Fatalf("want exactly one %s entry, got %d in %v", key, hits, cfg.ExtraEnv)
+		}
+		if got != want {
+			t.Fatalf("%s%q, want shared %q", key, got, want)
+		}
+		if info, statErr := os.Stat(want); statErr != nil || !info.IsDir() {
+			t.Fatalf("shared cache dir %q not created: %v", want, statErr)
+		}
 	}
 }
 
