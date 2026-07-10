@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -408,16 +410,54 @@ func e2eTimeoutScale() int64 {
 	return e2eTimeoutScaleCached.value
 }
 
+const e2eTimeoutScaleCeiling = 12
+
 func e2eTimeoutScaleResolve() int64 {
 	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			return n
 		}
 	}
+	base := int64(1)
 	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
-		return 4
+		base = 4
 	}
-	return 1
+	scaled := base * hostOversubscriptionFactor()
+	if scaled < base {
+		return base
+	}
+	if scaled > e2eTimeoutScaleCeiling {
+		return e2eTimeoutScaleCeiling
+	}
+	return scaled
+}
+
+func hostOversubscriptionFactor() int64 {
+	load, ok := hostLoadPerCPU()
+	if !ok || load <= 1 {
+		return 1
+	}
+	return int64(math.Ceil(load))
+}
+
+func hostLoadPerCPU() (float64, bool) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	load1, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, false
+	}
+	cpus := runtime.NumCPU()
+	if cpus <= 0 {
+		return 0, false
+	}
+	return load1 / float64(cpus), true
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {

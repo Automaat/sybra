@@ -597,14 +597,14 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 		WorktreesDir: wtDir,
 		LogsDir:      logsDir,
 		Logger:       discardLogger(),
-		SetupTimeout: 800 * time.Millisecond,
+		SetupTimeout: 5 * time.Second,
 	})
 
 	pidFile := filepath.Join(wtDir, "child.pid")
 	// Background a grandchild that writes its pid immediately (well before
 	// the setup timeout fires) then outlives `sh`, staying alive for the
 	// rest of the test unless the whole process group is killed.
-	cmd := fmt.Sprintf("nohup sh -c 'echo $$ > %q; sleep 10' >/dev/null 2>&1 & sleep 10", pidFile)
+	cmd := fmt.Sprintf("nohup sh -c 'echo $$ > %q; sleep 30' >/dev/null 2>&1 & sleep 30", pidFile)
 
 	err := m.runSetup(context.Background(), "task-timeout-pg", wtDir, []string{cmd})
 	if err == nil {
