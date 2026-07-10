@@ -122,7 +122,29 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	if errors.Is(err, errBestOfNParked) {
 		return nil, errBestOfNParked
 	}
+	if err != nil {
+		e.surfaceInitialDispatchFailure(taskID, wfExec, start.ID, err)
+	}
 	return comp, err
+}
+
+// surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch
+// error from the very first execution of a workflow (StartWorkflow*,
+// DispatchEvent). Without this, a permanent failure like ErrNoProjectAssigned
+// on the first attempt is only logged by the caller (see
+// maybeStartWorkflowForExternalTask's "workflow.external-create.failed") and
+// never flips the task to human-required or feeds the circuit breaker — the
+// task is left with a live, non-terminal workflow silently retried by
+// ResumeStalled and other recovery loops until ITS classification finally
+// fires, minutes later than necessary. Mirrors the equivalent call ResumeStalled
+// already makes after every resumed dispatch attempt.
+func (e *Engine) surfaceInitialDispatchFailure(taskID string, wfExec *Execution, fallbackStepID string, err error) {
+	currentStatus := ""
+	if t, getErr := e.tasks.GetTask(taskID); getErr == nil {
+		currentStatus = t.Status
+	}
+	stepID := dispatchFailureStepID(err, fallbackStepID)
+	e.surfaceStartFailure(taskID, currentStatus, err, wfExec, stepID)
 }
 
 // MatchWorkflow finds the best workflow for a task based on trigger conditions.

@@ -5513,6 +5513,38 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError guards
+// against the workflow.external-create.failed gap: a permanent dispatch
+// error (e.g. ErrNoProjectAssigned) on the very FIRST execution of a
+// workflow — StartWorkflow/DispatchEvent, not a ResumeStalled retry — must
+// classify and escalate exactly like ResumeStalled already does. Before the
+// fix, startWorkflowCore returned the raw error to its caller (who only logs
+// it) and left the task's Workflow live/non-terminal, so the task silently
+// sat in limbo until some later resume attempt happened to escalate it.
+func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
+		t.Fatal("StartWorkflow should propagate the spawn error")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required on the very first dispatch attempt", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no project could be assigned") {
+		t.Errorf("status reason = %q, want it to mention the classified no-project reason", got.StatusReason)
+	}
+}
+
 // TestExecVerifyCommits_ParksWhileSiblingRunning asserts the step re-arms the
 // implement run_agent step and parks the workflow in ExecWaiting (returning
 // errStepParked) when another agent is still working the task — instead of
