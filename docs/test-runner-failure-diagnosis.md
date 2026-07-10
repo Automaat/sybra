@@ -8,9 +8,12 @@ each run's full NDJSON log under `~/.sybra/logs/agents/`, plus the matching
 
 ## Buckets
 
-| Bucket | Count | Share |
+Every `Share` value is a percentage of the full 41-run sample, including
+the indented `— of which` subset rows.
+
+| Bucket | Count | Share of 41 |
 |---|---|---|
-| Killed by workflow watchdog before producing a verdict | 39 | 95% |
+| Ended before producing a verdict (watchdog kill, env abort, or early death) | 39 | 95% |
 | — of which: genuine environment/tooling flakiness self-reported via `unable_to_run_reason` | 2 | 5% |
 | — of which: died immediately after `init` with zero further output | 1 | 2% |
 | Reached a valid verdict, misclassified as `failed` in stats | 1 | 2% |
@@ -21,7 +24,7 @@ job correctly.** The 22% headline failure rate is overwhelmingly an
 artifact of the workflow watchdog killing and re-dispatching test-runner
 agents before they finish, plus a smaller stats-classification bug.
 
-## Watchdog kill-before-verdict (39/41)
+## Ended before producing a verdict (39/41)
 
 All 39 runs show `costUsd: 0` in `stats.json` despite real work (10-89
 turns, 16-357s wall-clock) — consistent with the process being killed
