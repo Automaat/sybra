@@ -20,7 +20,8 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("task1", task.StatusInProgress, withRun),
 	}}
-	rem := newRemediator(ft)
+	var recoverCalls int
+	rem := newRemediator(ft, func(context.Context) { recoverCalls++ })
 	a := Anomaly{Kind: KindLostAgent, TaskID: "task1"}
 
 	label, err := rem.Apply(context.Background(), a)
@@ -29,6 +30,9 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("want 1 recovery call, got %d", recoverCalls)
 	}
 
 	// Task must remain in-progress so workflow/recovery can resume it; moving
@@ -65,7 +69,7 @@ func TestRemediator_LostAgent_NoRunningRun_SkipsRunUpdate(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("task2", task.StatusInProgress),
 	}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{Kind: KindLostAgent, TaskID: "task2"}
 
 	_, err := rem.Apply(context.Background(), a)
@@ -85,7 +89,7 @@ func TestRemediator_PlanReviewStuck_NotRemediated(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("pr1", task.StatusPlanReview),
 	}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "pr1",
@@ -107,7 +111,7 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 		t.StatusReason = "waiting for credentials from ops team"
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr1",
@@ -144,7 +148,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr2",
@@ -198,7 +202,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr3",
@@ -235,7 +239,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "hr4",
@@ -268,7 +272,7 @@ func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
 	ft := &fakeTasks{tasks: []task.Task{
 		mkTask("other1", task.StatusInProgress),
 	}}
-	rem := newRemediator(ft)
+	rem := newRemediator(ft, nil)
 	a := Anomaly{
 		Kind:   KindStuckHumanBlocked,
 		TaskID: "other1",
