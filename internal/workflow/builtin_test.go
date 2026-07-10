@@ -551,6 +551,51 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean locks
+// the #1524 fix: a clean review (zero actionable findings) routes straight
+// to done_review, skipping the fix_review agent entirely — the review-side
+// analog of route_critique_verdict's plan-critique gate (#1490).
+func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *testing.T) {
+	t.Parallel()
+
+	review := mustBuiltinDefinition(t, "simple-task-review")
+	step := review.StepByID("route_review_verdict")
+	if step == nil {
+		t.Fatal("route_review_verdict step not found in simple-task-review")
+	}
+
+	cases := []struct {
+		name       string
+		codeReview string
+		want       string
+	}{
+		{
+			name:       "clean_skips_fix_review",
+			codeReview: "Review Verdict: CLEAN\n\nNo actionable findings.\n",
+			want:       "done_review",
+		},
+		{
+			name:       "needs_fixes_routes_to_fix_review",
+			codeReview: "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
+			want:       "fix_review",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.code_review": tc.codeReview,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuiltinDefinitions(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
