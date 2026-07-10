@@ -42,6 +42,20 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
 }
 
 /**
+ * CreateTaskWithInit is CreateTask plus caller-supplied initial field
+ * overrides (e.g. TodoistID) applied atomically in the same first-write as
+ * task creation. Callers that need a dedupe key persisted alongside the task
+ * — so a crash between create and a second update can never re-import the
+ * same source item — should use this instead of CreateTask followed by a
+ * separate Update.
+ */
+export function CreateTaskWithInit(title: string, body: string, mode: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
+    return $Call.ByID(1219464293, title, body, mode, init).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * DeleteTask removes a task file from disk and cleans up its worktree.
  */
 export function DeleteTask(id: string): $CancellablePromise<void> {

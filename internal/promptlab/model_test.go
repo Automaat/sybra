@@ -16,10 +16,17 @@ func TestProposalIDStable(t *testing.T) {
 	if id1 == proposalID(s, "restructure-context") {
 		t.Fatalf("proposalID collided across distinct intents")
 	}
+	drifted := s
+	drifted.Samples = 13
+	drifted.EffectSize = 0.301
+	if id1 != proposalID(drifted, "tighten-instructions") {
+		t.Fatalf("proposalID must stay stable as evidence magnitude drifts")
+	}
+
 	other := s
-	other.Samples = 13
+	other.WorkflowStep = "review"
 	if id1 == proposalID(other, "tighten-instructions") {
-		t.Fatalf("proposalID collided across distinct sample counts")
+		t.Fatalf("proposalID collided across distinct workflow steps")
 	}
 }
 

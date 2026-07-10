@@ -574,6 +574,9 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 // update paths cannot drift.
 func applyCreateInit(t *Task, init Update, now time.Time) {
 	applyLinkFields(t, init)
+	if init.TodoistID != nil {
+		t.TodoistID = *init.TodoistID
+	}
 	if init.Tags != nil {
 		t.Tags = *init.Tags
 	}
