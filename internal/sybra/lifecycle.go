@@ -424,7 +424,11 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			if a.recovery == nil {
 				return
 			}
-			a.recovery.RestartStaleInProgress(ctx)
+			// Keep the monitor tick responsive: the stale-agent sweep can scan
+			// all in-progress tasks and spawn recovery work.
+			a.wg.Go(func() {
+				a.recovery.RestartStaleInProgress(ctx)
+			})
 		},
 	})
 	a.monitorSvc = svc
