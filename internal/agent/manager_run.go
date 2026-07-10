@@ -475,7 +475,34 @@ func (m *Manager) markAgentDone(a *Agent) {
 				}
 			}
 		}
+		retention := m.deadAgentRetention
 		m.mu.Unlock()
+
+		// Evict the finished agent from the live registry so its output
+		// buffer and prompt do not accumulate forever on a long-lived
+		// server. All completion side effects (recordCompletion/fireComplete,
+		// task-status advancement, stats persistence) already ran before
+		// markAgentDone was called. Eviction is delayed by deadAgentRetention
+		// rather than immediate, since callers routinely read final state
+		// (GetAgent/GetConvoOutput/Output) in the seconds right after a
+		// terminal transition (e.g. StopAgent's caller polling for
+		// StateStopped) — evicting synchronously here would race that
+		// read and turn a normal completion into a "not found" error.
+		evict := func() {
+			m.mu.Lock()
+			// Only delete the entry we scheduled eviction for, i.e. do not
+			// remove an agent whose id was reused by a still-live
+			// registration in the meantime.
+			if cur, ok := m.agents[a.ID]; ok && cur == a {
+				delete(m.agents, a.ID)
+			}
+			m.mu.Unlock()
+		}
+		if retention <= 0 {
+			evict()
+		} else {
+			time.AfterFunc(retention, evict)
+		}
 	})
 }
 
