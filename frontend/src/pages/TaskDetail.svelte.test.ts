@@ -394,6 +394,7 @@ describe('TaskDetail', () => {
         props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
       })
       await vi.waitFor(() => {
+        expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).toContain('Children · 2')
         expect(screen.getByText('Child task')).toBeDefined()
         expect(screen.getByText('automaat/sybra#99')).toBeDefined()
       })

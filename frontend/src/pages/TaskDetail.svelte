@@ -209,17 +209,19 @@
       <!-- Pinned outside the tabs so a live SSE stream never unmounts on a switch. -->
       <LiveAgentPanel task={t} {onviewagent} />
 
-      <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
-        <SegmentedControl.Control>
-          <SegmentedControl.Indicator />
-          {#each tabs as tab}
-            <SegmentedControl.Item value={tab.value}>
-              <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
-              <SegmentedControl.ItemHiddenInput />
-            </SegmentedControl.Item>
-          {/each}
-        </SegmentedControl.Control>
-      </SegmentedControl>
+      <div data-testid="task-detail-tabs" data-tab-labels={tabs.map((tab) => tab.label).join('|')}>
+        <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
+          <SegmentedControl.Control>
+            <SegmentedControl.Indicator />
+            {#each tabs as tab}
+              <SegmentedControl.Item value={tab.value}>
+                <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
+                <SegmentedControl.ItemHiddenInput />
+              </SegmentedControl.Item>
+            {/each}
+          </SegmentedControl.Control>
+        </SegmentedControl>
+      </div>
 
       <!-- Two-column: a wide main content column + a persistent properties rail,
            so the page uses its width instead of stranding a narrow column on the

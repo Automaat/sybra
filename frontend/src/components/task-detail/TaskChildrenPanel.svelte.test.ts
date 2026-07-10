@@ -73,13 +73,13 @@ describe('TaskChildrenPanel', () => {
   it('does not count a local-done child with no merged outcome as shipped', () => {
     mockList = [child({ id: 'c10', title: 'Ten', status: 'done', outcome: '' })]
     render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask: vi.fn() } })
-    expect(screen.getByText('0/1 shipped (merged locally)')).toBeDefined()
+    expect(screen.getByText('0/1 local merged-outcome progress')).toBeDefined()
   })
 
-  it('counts a merged child as shipped', () => {
-    mockList = [child({ id: 'c10', title: 'Ten', status: 'done', outcome: 'merged' })]
+  it('counts a merged-outcome child as shipped regardless of local status', () => {
+    mockList = [child({ id: 'c10', title: 'Ten', status: 'todo', outcome: 'merged' })]
     render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask: vi.fn() } })
-    expect(screen.getByText('1/1 shipped (merged locally)')).toBeDefined()
+    expect(screen.getByText('1/1 local merged-outcome progress')).toBeDefined()
   })
 
   it('navigates to the child task when its row is clicked', async () => {

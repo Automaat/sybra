@@ -28,7 +28,7 @@
 <div class="flex flex-col gap-3">
   {#if data.children.length > 0}
     <div class="flex items-center gap-2 text-sm text-surface-500">
-      <span>{completeCount}/{data.children.length} shipped (merged locally)</span>
+      <span>{completeCount}/{data.children.length} local merged-outcome progress</span>
     </div>
   {/if}
 

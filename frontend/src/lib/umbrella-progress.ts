@@ -11,12 +11,10 @@ export interface UmbrellaChildren {
   displayTotal: number
 }
 
-const LANDED_OUTCOMES = new Set(['merged', 'merged_with_edits'])
-
-// "Shipped" in the UI means the child is locally done and its outcome records
-// a landed merge shape, not merely that some PR existed or the issue closed.
+// Local shipped-work proxy: outcome is stamped by Sybra's PR monitor when a
+// task's own PR lands. `closed` means closed-unmerged, not completed work.
 export function isChildComplete(task: Task): boolean {
-  return task.status === 'done' && LANDED_OUTCOMES.has(task.outcome ?? '')
+  return (task.outcome ?? '').startsWith('merged')
 }
 
 export function buildUmbrellaProgress(tasks: Task[]): Map<string, UmbrellaProgress> {
