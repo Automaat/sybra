@@ -125,7 +125,7 @@ type Result struct {
 	UmbrellaURL string
 	Created     int  // child tasks created this run
 	Skipped     int  // sub-issues already materialized or done
-	Degraded    bool // true when the DAG came from independentFallback, not the model
+	Degraded    bool // true when the DAG came from linearChainFallback, not the model
 	ChildCount  int  // total sub-issues in the umbrella (Created + Skipped)
 	MaxParallel int  // effective expansion cap the plan materialized with; 0 on the all-materialized short-circuit, where no plan runs
 }
@@ -299,7 +299,7 @@ func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, erro
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
-// spec. When degraded (the plan came from independentFallback), the tracker
+// spec. When degraded (the plan came from linearChainFallback), the tracker
 // carries FallbackTag so a systematically-failing planner is board-visible:
 // on a fresh tracker the tag is included at creation; on re-expansion against
 // an already-materialized tracker it is appended idempotently (add-if-absent)
@@ -534,9 +534,10 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	if len(gates) > 0 {
 		gate = gates[0]
 	}
-	return func(ctx context.Context, prompt string) (string, error) {
+	return func(ctx context.Context, prompt, schema string) (string, error) {
 		spec := plannerJobSpec
 		spec.AttemptTimeout = plannerAttemptTimeout(len(prompt))
+		spec.Schema = schema
 		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err

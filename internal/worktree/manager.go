@@ -24,7 +24,7 @@ type AgentChecker func(taskID string) bool
 // defaultSetupTimeout caps the entire SetupCommands batch per worktree.
 // Accommodates cold `mise install` / `npm ci` runs on first use of a project
 // but prevents stuck commands from blocking worktree creation forever.
-const defaultSetupTimeout = 5 * time.Minute
+const defaultSetupTimeout = 10 * time.Minute
 
 type Config struct {
 	WorktreesDir     string

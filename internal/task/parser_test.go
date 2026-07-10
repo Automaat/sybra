@@ -415,6 +415,7 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 			AgentID:           "agent-001",
 			Mode:              "headless",
 			State:             "done",
+			EscalationReason:  "cost",
 			StartedAt:         now,
 			Verdict:           "sybra_bug",
 			VerdictRendered:   true,
@@ -446,6 +447,9 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 	}
 	if got.ProtocolViolation != original.AgentRuns[0].ProtocolViolation {
 		t.Errorf("ProtocolViolation = %q, want %q", got.ProtocolViolation, original.AgentRuns[0].ProtocolViolation)
+	}
+	if got.EscalationReason != original.AgentRuns[0].EscalationReason {
+		t.Errorf("EscalationReason = %q, want %q", got.EscalationReason, original.AgentRuns[0].EscalationReason)
 	}
 	if got.HeadSHA != original.AgentRuns[0].HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, original.AgentRuns[0].HeadSHA)
