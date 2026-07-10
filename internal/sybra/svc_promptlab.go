@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/task"
@@ -55,7 +56,7 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 // no feedback was given) as the status reason. Errors without mutating if
 // the task is not a pending proposal.
 func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error) {
-	reason := feedback
+	reason := strings.TrimSpace(feedback)
 	if reason == "" {
 		reason = rejectedNoFeedbackReason
 	}
@@ -65,9 +66,11 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 			return task.Update{}, err
 		}
 		status := task.StatusCancelled
+		tags := removeTag(cur.Tags, "requires-human")
 		return task.Update{
 			Status:       &status,
 			StatusReason: &reason,
+			Tags:         &tags,
 		}, nil
 	})
 	if err != nil {

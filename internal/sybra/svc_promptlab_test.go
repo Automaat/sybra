@@ -84,6 +84,9 @@ func TestPromptLabService_RejectProposal_WithFeedback(t *testing.T) {
 	if got.StatusReason != "not worth it" {
 		t.Fatalf("StatusReason = %q, want feedback", got.StatusReason)
 	}
+	if slices.Contains(got.Tags, "requires-human") {
+		t.Fatalf("tags = %v, want requires-human removed (symmetric with approve)", got.Tags)
+	}
 
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
@@ -108,6 +111,31 @@ func TestPromptLabService_RejectProposal_EmptyFeedback(t *testing.T) {
 	}
 	if got.StatusReason != rejectedNoFeedbackReason {
 		t.Fatalf("StatusReason = %q, want sentinel", got.StatusReason)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Message != rejectedNoFeedbackReason {
+		t.Fatalf("progress entries = %+v, want sentinel-logged blocker entry", entries)
+	}
+}
+
+func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "requires-human"})
+
+	got, err := svc.RejectProposal(created.ID, "   \n\t  ")
+	if err != nil {
+		t.Fatalf("RejectProposal: %v", err)
+	}
+	if got.Status != task.StatusCancelled {
+		t.Fatalf("status = %q, want cancelled", got.Status)
+	}
+	if got.StatusReason != rejectedNoFeedbackReason {
+		t.Fatalf("StatusReason = %q, want sentinel for whitespace-only feedback", got.StatusReason)
 	}
 
 	entries, err := svc.artifacts.ReadProgress(created.ID)

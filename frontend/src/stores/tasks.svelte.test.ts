@@ -278,16 +278,18 @@ describe('TaskStore', () => {
   })
 
   describe('rejectProposal', () => {
-    it('calls RejectProposal with feedback and updates task', async () => {
-      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required' }))
-      const rejected = makeTask({ id: 't1', status: 'cancelled' })
+    it('calls RejectProposal with feedback and writes the returned bumped-updatedAt task back', async () => {
+      taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'human-required', updatedAt: '2026-04-01T00:00:00Z' }))
+      const rejected = makeTask({ id: 't1', status: 'cancelled', updatedAt: '2026-04-01T00:05:00Z' })
       mockRejectProposal.mockResolvedValue(rejected)
 
       const result = await taskStore.rejectProposal('t1', 'not worth it')
 
       expect(mockRejectProposal).toHaveBeenCalledWith('t1', 'not worth it')
       expect(result.status).toBe('cancelled')
+      expect(result.updatedAt).toBe('2026-04-01T00:05:00Z')
       expect(taskStore.tasks.get('t1')!.status).toBe('cancelled')
+      expect(taskStore.tasks.get('t1')!.updatedAt).toBe('2026-04-01T00:05:00Z')
     })
   })
 
