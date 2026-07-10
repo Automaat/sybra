@@ -1,5 +1,6 @@
 import { FetchRenovatePRs, EventsOn } from '$lib/api'
 import { RenovateUpdated } from '../lib/events.js'
+import { passesRenovateMergeChecks } from '../lib/renovate.js'
 import type { RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 
 class RenovateStore {
@@ -13,12 +14,7 @@ class RenovateStore {
   }
 
   get eligible(): RenovatePR[] {
-    return this.prs.filter(
-      (pr) =>
-        !pr.isDraft &&
-        pr.mergeable === 'MERGEABLE' &&
-        (pr.ciStatus === 'SUCCESS' || pr.ciStatus === '' || pr.waitingForStability),
-    )
+    return this.prs.filter((pr) => passesRenovateMergeChecks(pr))
   }
 
   get failing(): RenovatePR[] {

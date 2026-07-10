@@ -255,6 +255,149 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
 	}
 }
 
+// TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired guards
+// the fix for sybra task d3be219e: a rebase failure detected before an agent
+// even starts (e.g. simple-task-implement's pre-dispatch worktree prep) must
+// try the same autonomous branch-conflict-fix recovery that push_branch/
+// create_pr already use for the equivalent project.ErrDivergedNeedsResolve
+// condition, instead of unconditionally parking the task human-required.
+func TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	var recoveredTaskID string
+	engine.SetConflictRecovery(func(taskID string) bool {
+		recoveredTaskID = taskID
+		return true
+	})
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
+
+	if recoveredTaskID != "t1" {
+		t.Errorf("conflictRecovery called with %q, want t1", recoveredTaskID)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress (recovery owns the transition)", got.Status)
+	}
+	if reason := tasks.Reason("t1"); reason != "" {
+		t.Errorf("reason = %q, want empty (recovery owns the transition)", reason)
+	}
+}
+
+// TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired
+// verifies the fallback: when branch-conflict-fix recovery declines (e.g. no
+// linked PR to fix, or its retry budget is spent), the task still lands
+// human-required with the original rebase-blocked reason — recovery is a
+// first attempt, not a silent swallow of a genuinely unrecoverable divergence.
+func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine.SetConflictRecovery(func(string) bool { return false })
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", got.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "branch stale") {
+		t.Errorf("reason %q missing rebase-failed classification", reason)
+	}
+}
+
+// TestSurfaceStartFailure_RebaseFailedRecoveryDeferredWhileMarkerHeld guards
+// the same reentrancy trap execPushBranch's tryConflictRecovery already
+// solves (TestConflictRecovery_DeferredWhileMarkerHeld): if
+// surfaceStartFailure ever runs while a starting/dispatching marker is still
+// held for the task, recovery must be queued (not invoked inline) and the
+// task left untouched, so a later drainPendingConflictRecovery can run it
+// without re-entering StartWorkflow*/DispatchEvent against the held marker.
+func TestSurfaceStartFailure_RebaseFailedRecoveryDeferredWhileMarkerHeld(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	var calls int
+	engine.SetConflictRecovery(func(string) bool { calls++; return true })
+
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
+
+	if calls != 0 {
+		t.Fatalf("recovery invoked inline under held marker (calls=%d); want deferred", calls)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress while recovery is queued", got.Status)
+	}
+
+	engine.mu.Lock()
+	delete(engine.dispatching, "t1")
+	engine.mu.Unlock()
+	engine.drainPendingConflictRecovery("t1")
+	if calls != 1 {
+		t.Fatalf("recovery calls=%d after drain; want exactly 1", calls)
+	}
+}
+
+// TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason locks
+// the queued-start-failure regression from PR #1749: when recovery is deferred
+// under a held marker and later declines, the fallback must preserve the
+// original rebase-failed classification instead of using the generic PR-tail
+// divergence escalation.
+func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "in-progress",
+		Workflow: &Execution{
+			WorkflowID:  "simple-task-implement",
+			CurrentStep: "run_agent",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine.SetConflictRecovery(func(string) bool { return false })
+
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
+	taskInfo, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask(t1): %v", err)
+	}
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, taskInfo.Workflow, "run_agent")
+
+	engine.mu.Lock()
+	delete(engine.dispatching, "t1")
+	engine.mu.Unlock()
+	engine.drainPendingConflictRecovery("t1")
+
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "branch stale") {
+		t.Fatalf("reason %q missing rebase-failed classification", reason)
+	}
+	if strings.Contains(reason, "branch diverged from remote") {
+		t.Fatalf("reason %q used PR-tail divergence fallback", reason)
+	}
+}
+
 func TestSurfaceStartFailure_NilErrIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -326,6 +469,32 @@ func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) 
 	got, _ := tasks.GetTask("t1")
 	if got.Status == "human-required" {
 		t.Fatal("transient rate limit escalated to human-required")
+	}
+}
+
+func TestSurfaceStartFailure_QuotaRateLimitDoesNotTripBreaker(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	quotaLimited := &provider.UnhealthyError{
+		Provider:    "codex",
+		Reason:      "provider reports rate limit reached",
+		RateLimited: true,
+	}
+	if !isTransientCapacityError(quotaLimited) {
+		t.Fatal("quota rate-limit (RateLimited flag, no RateLimitReason/Until) not classified transient")
+	}
+	wf := &Execution{CurrentStep: "code_review_staff", State: ExecRunning, Variables: map[string]string{}}
+
+	for i := range maxCircuitBreakerFailures + 2 {
+		engine.surfaceStartFailure("t1", "in-progress", quotaLimited, wf, "code_review_staff")
+		if wf.State == ExecFailed {
+			t.Fatalf("quota rate limit tripped the breaker on attempt %d", i+1)
+		}
+	}
+	if got, _ := tasks.GetTask("t1"); got.Status == "human-required" {
+		t.Fatal("quota rate limit escalated to human-required")
 	}
 }
 

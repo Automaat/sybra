@@ -714,6 +714,94 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 	return executil.Run(ctx, worktreePath, "git", "push", "-u", PushRemote(ctx, worktreePath), branch)
 }
 
+// SetBranchTo force-sets a branch ref in the bare clone to point at commit,
+// creating the branch if it does not already exist. Used by best-of-N
+// promotion to fast-forward the canonical task branch onto the winning
+// attempt's HEAD — a `git branch -f` against the shared bare repo, never a
+// push, so it can never rewrite already-published remote history.
+func SetBranchTo(ctx context.Context, barePath, branch, commit string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-f", branch, commit)
+		})
+	})
+}
+
+// DeleteBranch force-removes a local branch ref from the bare repo. Used by
+// best-of-N attempt cleanup so a discarded attempt branch is not silently
+// reused as the base for a later attempt with the same ID. Force-delete (`-D`)
+// because a losing attempt branch is never merged into the canonical branch,
+// so `git branch -d` would refuse it. No-op-safe: deleting a missing branch
+// returns an error the caller logs but does not treat as fatal.
+func DeleteBranch(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "branch", "-D", branch)
+		})
+	})
+}
+
+// BackupBranchRef points refs/sybra-backup/<branch> at the branch's current
+// tip so a subsequent DeleteBranch does not lose the commits — they stay
+// recoverable via the backup ref. Used before recreating a task's branch from
+// a fresh base when merge-based conflict recovery is exhausted.
+func BackupBranchRef(ctx context.Context, barePath, branch string) error {
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "refs/sybra-backup/"+branch, "refs/heads/"+branch)
+		})
+	})
+}
+
+// ResolveBareRef resolves a git ref (e.g. "refs/heads/<branch>") to its SHA in
+// the bare repo. Returns ("", false) if the ref does not exist. Exported
+// wrapper around resolveRef for best-of-N promotion's divergence check.
+func ResolveBareRef(ctx context.Context, barePath, ref string) (string, bool) {
+	return resolveRef(ctx, barePath, ref)
+}
+
+// IsAncestorInBare reports whether ancestor is reachable from descendant in
+// the bare repo's history. Returns false when either commit is unknown.
+// Exported for best-of-N promotion's divergence check (isAncestor requires a
+// worktree checkout; promotion only has the bare clone at this point).
+func IsAncestorInBare(ctx context.Context, barePath, ancestor, descendant string) bool {
+	return runBare(ctx, barePath, "merge-base", "--is-ancestor", ancestor, descendant) == nil
+}
+
+// IsWorktreeDirty reports whether a worktree has uncommitted changes
+// (tracked or untracked). Exported for best-of-N promotion's fail-closed
+// dirty-worktree check.
+func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
+	return worktreeDirty(ctx, worktreePath)
+}
+
+// HardResetWorktree resets a worktree's index and working tree to ref (a
+// branch name or commit SHA) via `git reset --hard`. Used by best-of-N
+// promotion to materialize the canonical worktree at the winning attempt's
+// HEAD after SetBranchTo has already moved the shared branch ref.
+func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
+	return executil.Run(ctx, worktreePath, "git", "reset", "--hard", ref)
+}
+
+// HeadArg returns the `gh pr create --head` value for branch: a bare branch
+// name when pushing to origin, or "fork-owner:branch" when a fork remote is
+// configured — matching PushRemote's routing decision so the PR always
+// points at the branch that was actually pushed.
+func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
+	if PushRemote(ctx, worktreePath) != "fork" {
+		return branch, nil
+	}
+	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	if err != nil {
+		return "", fmt.Errorf("resolve fork remote url: %w", err)
+	}
+	owner, _, err := ParseGitHubURL(strings.TrimSpace(forkURL))
+	if err != nil {
+		return "", fmt.Errorf("parse fork remote url: %w", err)
+	}
+	return owner + ":" + branch, nil
+}
+
 // CurrentBranch returns the checked-out branch name for a worktree.
 func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 	branch, err := executil.Output(ctx, worktreePath, "git", "branch", "--show-current")

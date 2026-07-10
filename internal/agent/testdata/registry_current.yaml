@@ -15,6 +15,9 @@ cwd: /tmp/sybra/worktrees/task-map
 started_at: 2026-06-28T20:30:00Z
 proc_started_at: Mon Jun 28 20:30:00 2026
 stdin_path: /tmp/sybra/agents/a-map.stdin
+pending_prompts:
+    - queued turn 1
+    - queued turn 2
 one_shot: true
 max_turns: 7
 require_permissions: true

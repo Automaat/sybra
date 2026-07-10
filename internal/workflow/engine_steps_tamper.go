@@ -14,7 +14,7 @@ import (
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
 // flagged diff and accepted it adds this tag, then moves the task back into the
-// flow. Without it, re-dispatching a flagged task would re-scan the same
+// flow. Without it, relaunching a flagged task would re-scan the same
 // committed diff and re-flag forever (livelock).
 const TamperBlessedTag = "tamper-blessed"
 

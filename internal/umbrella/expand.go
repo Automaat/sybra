@@ -125,7 +125,7 @@ type Result struct {
 	UmbrellaURL string
 	Created     int  // child tasks created this run
 	Skipped     int  // sub-issues already materialized or done
-	Degraded    bool // true when the DAG came from linearChainFallback, not the model
+	Degraded    bool // true when the DAG came from independentFallback, not the model
 }
 
 // Expand fetches a GitHub umbrella issue's native sub-issues, runs the planner
@@ -290,7 +290,7 @@ func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, erro
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
-// spec. When degraded (the plan came from linearChainFallback), the tracker
+// spec. When degraded (the plan came from independentFallback), the tracker
 // carries FallbackTag so a systematically-failing planner is board-visible:
 // on a fresh tracker the tag is included at creation; on re-expansion against
 // an already-materialized tracker it is appended idempotently (add-if-absent)

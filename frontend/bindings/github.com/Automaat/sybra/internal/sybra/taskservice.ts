@@ -12,6 +12,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as artifact$0 from "../artifact/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -102,12 +105,22 @@ export function ListTaskAuditEvents(taskID: string, days: number): $CancellableP
 }
 
 /**
+ * ListTaskProgress returns the agent-authored progress entries for a task.
+ * Empty (not an error) when the task has no progress log yet.
+ */
+export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
+    return $Call.ByID(821819796, taskID).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
+/**
  * ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
  * Chat tasks are surfaced exclusively through the Chats view.
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType9($result);
     });
 }
 
@@ -155,4 +168,6 @@ const $$createType3 = $models.TaskArtifactDTO.createFrom;
 const $$createType4 = $Create.Array($$createType3);
 const $$createType5 = $models.TaskAuditEventDTO.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = $Create.Array($$createType0);
+const $$createType7 = artifact$0.ProgressEntry.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $Create.Array($$createType0);

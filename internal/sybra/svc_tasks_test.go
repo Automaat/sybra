@@ -277,6 +277,45 @@ func TestTaskService_GetTamperReport(t *testing.T) {
 	}
 }
 
+func TestTaskService_ListTaskProgress(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Progress task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := svc.ListTaskProgress(created.ID); err != nil || len(got) != 0 {
+		t.Fatalf("empty log = %v, %v; want [], nil", got, err)
+	}
+
+	for _, m := range []string{"first", "second"} {
+		if err := svc.artifacts.AppendProgress(created.ID, artifact.ProgressEntry{
+			Kind: artifact.ProgressKindProgress, Message: m,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := svc.ListTaskProgress(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Message != "second" || got[1].Message != "first" {
+		t.Fatalf("ListTaskProgress = %+v, want newest-first [second, first]", got)
+	}
+}
+
+func TestTaskService_ListTaskProgressNoStore(t *testing.T) {
+	t.Parallel()
+	svc := &TaskService{}
+	got, err := svc.ListTaskProgress("any")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("nil store = %v, %v; want [], nil", got, err)
+	}
+}
+
 func TestTaskService_GetTamperReportMissing(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupTaskService(t)

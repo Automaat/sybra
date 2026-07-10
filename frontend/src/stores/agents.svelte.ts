@@ -8,7 +8,8 @@ import {
   StartChat,
   StopChat,
 } from '$lib/api'
-import { Agent, State, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { EntityStore } from './entity-store.svelte.js'
 import { extractStepText } from '$lib/step-text.js'
 import type { TimestampedStreamEvent } from '$lib/timeline.js'
@@ -97,7 +98,7 @@ class AgentStore extends EntityStore<Agent> {
     await StopAgent(agentID)
     const a = this.items.get(agentID)
     if (a) {
-      a.state = State.StateStopped
+      a.state = 'stopped'
       this.set(agentID, a)
     }
   }

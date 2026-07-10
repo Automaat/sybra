@@ -9,6 +9,7 @@ import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/interna
 import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, VersionInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
+import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Project as TodoistProject } from '../../bindings/github.com/Automaat/sybra/internal/todoist/models.js'
@@ -191,6 +192,7 @@ export function ListTaskAuditEvents(arg1: string, arg2: number): Promise<Array<a
 export function GetTamperReport(arg1: string): Promise<TamperReportDTO> { return call('TaskService', 'GetTamperReport', arg1) }
 export function GetTask(arg1: string): Promise<Task> { return call('TaskService', 'GetTask', arg1) }
 export function ListTasks(): Promise<Array<Task>> { return call('TaskService', 'ListTasks') }
+export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 
 // WorkflowService

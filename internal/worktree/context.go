@@ -19,6 +19,45 @@ import (
 // branches via shared bare-repo refs.
 const contextFileName = ".sybra-context.md"
 
+// EvidenceDirName is the per-worktree directory a headless Playwright MCP
+// server (see internal/agent/mcp.go) writes screenshots/console logs to.
+// Exported so internal/agent's MCP preflight and internal/sybra's evidence
+// importer share one name instead of duplicating the literal.
+const EvidenceDirName = ".sybra-evidence"
+
+// EvidenceBrowsersDirName is the child directory used for Playwright browser
+// downloads. Keeping it under EvidenceDirName makes it writable in the
+// per-worktree process sandbox and keeps all visual-verification scratch data
+// git-excluded together.
+const EvidenceBrowsersDirName = "browsers"
+
+// EvidenceNPMCacheDirName is the child directory used for npx/npm package
+// cache writes when launching the Playwright MCP server.
+const EvidenceNPMCacheDirName = "npm-cache"
+
+// ExcludeEvidenceDir git-excludes EvidenceDirName from wtPath so `git add -A`
+// never sweeps agent-captured screenshots/logs into a commit. Delegates to the
+// package-private addToInfoExclude — exported narrowly for internal/agent's
+// MCP preflight, which runs before the normal run-agent worktree machinery
+// touches info/exclude.
+func ExcludeEvidenceDir(ctx context.Context, wtPath string) error {
+	return addToInfoExclude(ctx, wtPath, EvidenceDirName)
+}
+
+// ExcludeWorktreePath git-excludes relPath from wtPath so generated scratch
+// directories under a worktree stay out of `git status` / `git add -A`.
+// relPath must be a relative path inside the worktree.
+func ExcludeWorktreePath(ctx context.Context, wtPath, relPath string) error {
+	if relPath == "" {
+		return fmt.Errorf("exclude worktree path: empty path")
+	}
+	if filepath.IsAbs(relPath) || relPath == "." || relPath == ".." ||
+		strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("exclude worktree path: %q must be relative to worktree", relPath)
+	}
+	return addToInfoExclude(ctx, wtPath, filepath.Clean(relPath))
+}
+
 // writeContextFile drops a markdown identity beacon at the worktree root and
 // best-effort-excludes it from `git status` so agents don't accidentally
 // commit it. Errors are surfaced to the caller; the beacon is load-bearing

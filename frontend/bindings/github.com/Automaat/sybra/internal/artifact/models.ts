@@ -23,9 +23,40 @@ export enum Kind {
      * KindTrace holds an append-only NDJSON stream of step-completion events.
      */
     KindTrace = "trace",
+    KindProgress = "progress",
 
     /**
      * KindGeneric is a catch-all for helper blobs that don't fit the above.
      */
     KindGeneric = "generic",
 };
+
+export class ProgressEntry {
+    "ts": string;
+    "kind": string;
+    "role"?: string;
+    "message": string;
+
+    /** Creates a new ProgressEntry instance. */
+    constructor($$source: Partial<ProgressEntry> = {}) {
+        if (!("ts" in $$source)) {
+            this["ts"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("message" in $$source)) {
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProgressEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProgressEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProgressEntry($$parsedSource as Partial<ProgressEntry>);
+    }
+}

@@ -14,6 +14,7 @@ const mockByState = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
+const mockListTaskProgress = vi.fn()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
@@ -82,6 +83,7 @@ vi.mock('$lib/api', () => ({
   ListTaskArtifacts: vi.fn(async () => []),
   GetTaskSetupLog: vi.fn(async () => ({ taskId: 'task-1', exists: false })),
   ListTaskAuditEvents: vi.fn(async () => []),
+  ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
@@ -130,6 +132,8 @@ describe('TaskDetail', () => {
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mockListTaskProgress.mockReset()
+    mockListTaskProgress.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -350,6 +354,7 @@ describe('TaskDetail', () => {
         expect(screen.getByText('Reject Plan')).toBeDefined()
       })
     })
+
   })
 
   describe('human-required dispatch', () => {
