@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestExtractTaskID(t *testing.T) {
+func TestExtractPrompt(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -53,11 +53,56 @@ func TestExtractTaskID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractTaskID(tt.args)
+			got := extractPrompt(tt.args)
 			if got != tt.want {
-				t.Errorf("extractTaskID(%v) = %q, want %q", tt.args, got, tt.want)
+				t.Errorf("extractPrompt(%v) = %q, want %q", tt.args, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPromptTaskID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{name: "found", prompt: "work on task a1b2c3d4 now", want: "a1b2c3d4"},
+		{name: "missing", prompt: "do some work please", want: ""},
+		{name: "short", prompt: "task a1b2c3 here", want: ""},
+		{name: "blank", prompt: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := promptTaskID(tt.prompt); got != tt.want {
+				t.Errorf("promptTaskID(%q) = %q, want %q", tt.prompt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseUserPromptLine(t *testing.T) {
+	t.Parallel()
+	line := []byte(`{"type":"user","message":{"role":"user","content":"Triage a1b2c3d4 now"}}` + "\n")
+	if got := parseUserPromptLine(line); got != "Triage a1b2c3d4 now" {
+		t.Fatalf("parseUserPromptLine() = %q", got)
+	}
+}
+
+func TestExtractSidecarPaths(t *testing.T) {
+	t.Parallel()
+	prompt := "write /tmp/sybra-plan.json and /tmp/sybra-plan.json plus .sybra-plan/brief.md"
+	got := extractSidecarPaths(prompt)
+	want := []string{"/tmp/sybra-plan.json", ".sybra-plan/brief.md"}
+	if len(got) != len(want) {
+		t.Fatalf("len(paths) = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paths[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 

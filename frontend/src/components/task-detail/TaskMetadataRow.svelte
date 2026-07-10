@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { CircleDot, Copy, FolderGit2, GitBranch, Bot, Tag, Calendar, Clock, CalendarClock, Wrench, Hash } from '@lucide/svelte'
+  import { CircleDot, Copy, FolderGit2, GitBranch, Bot, Tag, Calendar, Clock, CalendarClock, Wrench, Hash, DollarSign } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { openLink } from '$lib/browser.svelte.js'
   import { formatDateTime, formatShortDate, timeAgo } from '../../lib/dates.js'
+  import { taskTotalCost, taskRunCount, formatCost } from '../../lib/cost.js'
   import { fallbackReasoningEffortOptions, loadReasoningEffortOptions } from '../../lib/codex-reasoning.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
@@ -36,6 +37,9 @@
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
   )
+
+  const totalCost = $derived(taskTotalCost(task))
+  const runCount = $derived(taskRunCount(task))
 
   $effect(() => {
     function onEditTags() { tagEditor?.start() }
@@ -136,6 +140,12 @@
       </button>
     </dd>
   {/if}
+
+  <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Cost</dt>
+  <dd class="flex items-center gap-1.5 text-surface-700 dark:text-surface-300">
+    <DollarSign size={13} class="shrink-0 text-surface-400" />
+    {formatCost(totalCost)} · {runCount} {runCount === 1 ? 'run' : 'runs'}
+  </dd>
 
   <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Mode</dt>
   <dd class="flex items-center gap-1.5 text-surface-700 dark:text-surface-300">

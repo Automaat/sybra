@@ -1,13 +1,17 @@
 package workflow
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 const (
@@ -341,54 +345,54 @@ func traceID(taskID, stepID, agentID string) string {
 func (e *Engine) lookupAgentStep(agentID string) (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entry, ok := e.agentSteps[agentID]
+	entry, ok := e.agentRoutes[agentID]
 	return entry.stepID, ok
 }
 
 // hasTrackedAgentForTaskStep returns true when a tracked agent is already in
-// flight for the given task+step pair, OR a run_agent dispatch for that pair
-// is in progress but hasn't been assigned an agent ID yet (see
-// dispatchingStep). Used to detect phantom completions from untracked
+// flight for the given task+step pair, OR a run_agent start for that pair is
+// in progress but hasn't been assigned an agent ID yet (see pendingStepStart).
+// Used to detect phantom completions from untracked
 // (manually-dispatched, or reattached-and-stale) agents: without the
-// dispatchingStep check, a stale completion arriving while the real agent for
+// pendingStepStart check, a stale completion arriving while the real agent for
 // the current step is still being started (e.g. blocked on worktree prep)
 // falls back to "current step, nothing tracked yet" and gets misattributed —
 // advancing the step before its real agent ever ran.
 func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for _, entry := range e.agentSteps {
+	for _, entry := range e.agentRoutes {
 		if entry.taskID == taskID && entry.stepID == stepID {
 			return true
 		}
 	}
-	return e.dispatchingStep[dispatchingStepKey(taskID, stepID)] > 0
+	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
 }
 
-func dispatchingStepKey(taskID, stepID string) string {
+func pendingStepStartKey(taskID, stepID string) string {
 	return taskID + "|" + stepID
 }
 
-// markStepDispatching records that a run_agent step's agent-start sequence
+// markStepStarting records that a run_agent step's agent-start sequence
 // (which may block for seconds on worktree prep) is underway for taskID/stepID,
-// before an agent ID exists to register in agentSteps. Paired with
-// unmarkStepDispatching, always via defer, on every return path.
-func (e *Engine) markStepDispatching(taskID, stepID string) {
+// before an agent ID exists to register in agentRoutes. Paired with
+// unmarkStepStarting, always via defer, on every return path.
+func (e *Engine) markStepStarting(taskID, stepID string) {
 	e.mu.Lock()
-	key := dispatchingStepKey(taskID, stepID)
-	e.dispatchingStep[key]++
+	key := pendingStepStartKey(taskID, stepID)
+	e.pendingStepStart[key]++
 	e.mu.Unlock()
 }
 
-func (e *Engine) unmarkStepDispatching(taskID, stepID string) {
+func (e *Engine) unmarkStepStarting(taskID, stepID string) {
 	e.mu.Lock()
-	key := dispatchingStepKey(taskID, stepID)
-	if e.dispatchingStep[key] <= 1 {
-		delete(e.dispatchingStep, key)
+	key := pendingStepStartKey(taskID, stepID)
+	if e.pendingStepStart[key] <= 1 {
+		delete(e.pendingStepStart, key)
 		e.mu.Unlock()
 		return
 	}
-	e.dispatchingStep[key]--
+	e.pendingStepStart[key]--
 	e.mu.Unlock()
 }
 
@@ -398,7 +402,7 @@ func (e *Engine) clearAgentStep(agentID string) {
 		return
 	}
 	e.mu.Lock()
-	delete(e.agentSteps, agentID)
+	delete(e.agentRoutes, agentID)
 	e.mu.Unlock()
 }
 
@@ -416,9 +420,9 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 		return
 	}
 	e.mu.Lock()
-	for id, entry := range e.agentSteps {
+	for id, entry := range e.agentRoutes {
 		if entry.taskID == taskID {
-			delete(e.agentSteps, id)
+			delete(e.agentRoutes, id)
 		}
 	}
 	e.mu.Unlock()
@@ -484,6 +488,10 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		return
 	}
 	e.clearAgentStep(agentID)
+	e.rescheduleRateLimitedRunAgent(taskID, agentID, step, t, &def)
+}
+
+func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition) {
 	if e.shouldSkipResumeForRateLimitedProvider(&t, step) {
 		// Provider is still inside its rate-limit cooldown and no healthy peer is
 		// available to fail over to. Park the task without consuming a watchdog
@@ -504,34 +512,51 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 	}
 	mu.Unlock()
 
+	if !e.tryMarkRateLimitRescheduleDispatching(taskID, step) {
+		return
+	}
+	defer e.clearResumeDispatching(taskID)
+
+	claim, ok := e.agents.TryClaimDispatch(taskID)
+	if !ok {
+		e.logger.Debug("workflow.rate-limit-reschedule.skip",
+			"task_id", taskID, "reason", "claim-held", "step", step.ID)
+		return
+	}
+	defer claim.Release()
+	if e.handleWatchdogRateLimitRetry(&t, step) {
+		return
+	}
+
+	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
+	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
+	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
+	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
+	if rErr != nil {
+		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
+		return
+	}
+	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+}
+
+func (e *Engine) tryMarkRateLimitRescheduleDispatching(taskID string, step *Step) bool {
 	e.mu.Lock()
 	if _, dispatching := e.dispatching[taskID]; dispatching {
 		e.mu.Unlock()
 		e.logger.Debug("workflow.rate-limit-reschedule.skip",
 			"task_id", taskID, "reason", "dispatching", "step", step.ID)
-		return
+		return false
 	}
 	e.dispatching[taskID] = struct{}{}
 	e.mu.Unlock()
-	if e.handleWatchdogRateLimitRetry(&t, step) {
-		e.mu.Lock()
-		delete(e.dispatching, taskID)
-		e.mu.Unlock()
-		return
-	}
+	return true
+}
 
-	e.logger.Info("workflow.rate-limit-reschedule", "task_id", taskID, "step", step.ID)
-	comp, rErr := e.executeSteps(taskID, &def, step, t.Workflow)
+func (e *Engine) clearResumeDispatching(taskID string) {
 	e.mu.Lock()
 	delete(e.dispatching, taskID)
 	e.mu.Unlock()
-	e.fireComplete(comp)
-	e.resumeError.Log(e.logger, "workflow.rate-limit-reschedule.exec", taskID, rErr, "task_id", taskID)
-	if rErr != nil {
-		e.surfaceStartFailure(taskID, t.Status, rErr, t.Workflow, step.ID)
-	} else {
-		e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
-	}
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
@@ -623,16 +648,29 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	}
 }
 
-func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, acquired bool) {
-	// Skip tasks whose step is currently being dispatched. Interactive spawns
+func dispatchPriorityRank(status string) int {
+	switch status {
+	case "in-review", "ready-pr":
+		return 0
+	case "ready-review", "testing":
+		return 1
+	case "in-progress":
+		return 2
+	case "planning", "plan-review":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
+	// Skip tasks whose step is currently being started. Interactive spawns
 	// (worktree creation, rebase, agent process start) take several seconds
 	// during which no agent is yet registered — without this guard the ticker
 	// would spawn a duplicate and the second agent's completion would corrupt
 	// the workflow at the wait_human gate.
 	// inflightMutexes is a non-blocking probe: TryLock distinguishes "another
-	// goroutine currently holds the advance lock" from "free". We only set
-	// dispatching when both the advance lock and prior dispatching guard are
-	// free.
+	// goroutine currently holds the advance lock" from "free".
 	mu := e.taskInflightMutex(taskID)
 	advancing := !mu.TryLock()
 	if !advancing {
@@ -643,21 +681,28 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	defer e.mu.Unlock()
 
 	_, dispatching := e.dispatching[taskID]
-	// agentSteps holds outstanding agents the engine spawned but hasn't yet
+	// agentRoutes holds outstanding agents the engine spawned but hasn't yet
 	// routed completion for. Required because interactive agents pass through
 	// StatePaused after their first result event (one-shot path closes stdin →
 	// state Paused → process exits → onComplete fires → AdvanceStep), and
 	// HasRunningAgent returns false during that window. Without this check a
 	// tight ResumeStalled loop dispatches a duplicate.
 	hasOutstandingAgent := false
-	for _, entry := range e.agentSteps {
-		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID)) {
+	for _, entry := range e.agentRoutes {
+		if entry.taskID == taskID && (entry.stepID == step.ID || parallelHasChild(step, entry.stepID) || bestOfNStepMatches(step, entry.stepID)) {
 			hasOutstandingAgent = true
 			break
 		}
 	}
 
-	if !advancing && !dispatching && !hasOutstandingAgent {
+	// Also consult the shared agent.Manager dispatch-claim coordinator: a
+	// claim it holds for taskID (e.g. recovery.RestartStaleInProgress mid
+	// launch) is invisible to this engine's completion-routing bookkeeping,
+	// and without this check ResumeStalled could start another run
+	// concurrently with it.
+	claimedElsewhere := e.agents.IsDispatching(taskID)
+
+	if !advancing && !dispatching && !hasOutstandingAgent && !claimedElsewhere {
 		e.dispatching[taskID] = struct{}{}
 		return "", true
 	}
@@ -665,10 +710,14 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	switch {
 	case advancing:
 		return "inflight", false
+	case dispatching:
+		return "dispatching", false
 	case hasOutstandingAgent:
 		return "agent-pending-completion", false
+	case claimedElsewhere:
+		return "claimed-elsewhere", false
 	default:
-		return "dispatching", false
+		return "busy", false
 	}
 }
 
@@ -693,6 +742,10 @@ func (e *Engine) ResumeStalled() {
 		return
 	}
 
+	slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
+		return cmp.Compare(dispatchPriorityRank(a.Status), dispatchPriorityRank(b.Status))
+	})
+
 	for i := range tasks {
 		t := &tasks[i]
 		if t.Workflow == nil || t.Workflow.CurrentStep == "" {
@@ -714,8 +767,11 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		// Only resume async agent steps where no agent is running.
-		if step.Type != StepRunAgent && step.Type != StepParallel {
+		// Only resume async agent steps where no agent is running, plus
+		// classify_task: it's synchronous but can park in ExecWaiting on
+		// engine shutdown mid-classify (see engine_steps_classify.go), and
+		// nothing else re-drives a parked sync step.
+		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN && step.Type != StepClassifyTask {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
@@ -744,10 +800,10 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
-		// handleTransientFetchRetry runs only after the dispatching claim is
-		// acquired, so the retry budget tracks actual re-dispatch attempts —
+		// handleTransientFetchRetry runs only after the resume preflight passes,
+		// so the retry budget tracks actual restart attempts —
 		// a tick that loses the claim to a concurrent goroutine (already
-		// dispatching/advancing) never burns budget for a retry that didn't
+		// claimed/advancing) never burns budget for a retry that didn't
 		// happen.
 		if e.handleTransientFetchRetry(t, step) {
 			e.mu.Lock()
@@ -757,7 +813,7 @@ func (e *Engine) ResumeStalled() {
 		}
 
 		// Re-read to guard against stale snapshots from concurrent ResumeStalled
-		// calls: by the time we acquire dispatching, a prior goroutine may have
+		// calls: by the time we pass the preflight, a prior goroutine may have
 		// already advanced the workflow past this step.
 		fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
 		if skip {
@@ -773,10 +829,11 @@ func (e *Engine) ResumeStalled() {
 		delete(e.dispatching, t.ID)
 		e.mu.Unlock()
 		// ResumeStalled only resumes async run_agent steps, so comp is normally
-		// nil (fireComplete no-ops). Kept defensive + after the dispatching
-		// marker is cleared, so the day a sync step becomes resumable its
-		// completion cascades correctly instead of being silently dropped.
+		// nil (fireComplete no-ops). Kept defensive so the day a sync step
+		// becomes resumable its completion cascades correctly instead of being
+		// silently dropped.
 		e.fireComplete(comp)
+		e.drainPendingConflictRecovery(t.ID)
 		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
 		if rErr != nil {
 			e.surfaceStartFailure(t.ID, fresh.Status, rErr, fresh.Workflow, step.ID)
@@ -795,7 +852,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		return false
 	}
 	// A tracked agent for this task+step may still be mid-completion-routing
-	// even though HasRunningAgent already returned false (see the agentSteps
+	// even though HasRunningAgent already returned false (see the agentRoutes
 	// comment in ResumeStalled). Treating that window as a hang would burn
 	// retry budget and clear the hang marker without a clean re-dispatch
 	// actually happening.
@@ -973,6 +1030,27 @@ func workflowRetryAfter(wf *Execution) (time.Time, bool) {
 // tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
 // don't have them handy — the breaker simply stays inactive for that call.
 func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+	// A pre-agent-start rebase failure is the same "task branch conflicts
+	// with base" condition push_branch/create_pr hit further down the
+	// pipeline (see pushTaskBranch's project.ErrDivergedNeedsResolve branch) —
+	// try the same autonomous branch-conflict-fix recovery before parking the
+	// task on a human. currentStatus != "human-required" mirrors the sticky
+	// guard below: don't re-trigger recovery for a task a concurrent handler
+	// already parked.
+	if currentStatus != "human-required" && e.conflictRecovery != nil && errors.Is(err, worktreeerr.ErrRebaseFailed) {
+		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
+		if e.tryConflictRecoveryWithFallback(taskID, func() {
+			e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
+		}) {
+			return
+		}
+		// Recovery declined (e.g. no linked PR, retry budget exhausted) — fall
+		// through to the normal classification/escalation below.
+	}
+	e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
+}
+
+func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
 	reason, permanent := ClassifyAgentStartError(err)
 	if reason == "" {
 		return

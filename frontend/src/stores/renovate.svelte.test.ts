@@ -111,12 +111,13 @@ describe('RenovateStore', () => {
     it.each([
       { isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS', expected: true },
       { isDraft: false, mergeable: 'MERGEABLE', ciStatus: '', expected: true },
+      { isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS', waitingForStability: true, expected: false },
       { isDraft: true, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS', expected: false },
       { isDraft: false, mergeable: 'CONFLICTING', ciStatus: 'SUCCESS', expected: false },
       { isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'FAILURE', expected: false },
       { isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'PENDING', expected: false },
-    ])('isDraft=$isDraft mergeable=$mergeable ciStatus=$ciStatus → $expected', ({ isDraft, mergeable, ciStatus, expected }) => {
-      renovateStore.prs = [makePR({ number: 1, isDraft, mergeable, ciStatus })]
+    ])('isDraft=$isDraft mergeable=$mergeable ciStatus=$ciStatus waitingForStability=$waitingForStability → $expected', ({ isDraft, mergeable, ciStatus, waitingForStability, expected }) => {
+      renovateStore.prs = [makePR({ number: 1, isDraft, mergeable, ciStatus, waitingForStability })]
       expect(renovateStore.eligible).toHaveLength(expected ? 1 : 0)
     })
 
@@ -125,6 +126,7 @@ describe('RenovateStore', () => {
         makePR({ number: 1, isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS' }),
         makePR({ number: 2, isDraft: true, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS' }),
         makePR({ number: 3, isDraft: false, mergeable: 'MERGEABLE', ciStatus: '' }),
+        makePR({ number: 4, isDraft: false, mergeable: 'MERGEABLE', ciStatus: 'SUCCESS', waitingForStability: true }),
       ]
       expect(renovateStore.eligible).toHaveLength(2)
       expect(renovateStore.eligible.map((p) => p.number)).toEqual([1, 3])

@@ -2,11 +2,14 @@ package poll
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -21,6 +24,14 @@ type issuesFetcherEnv struct {
 	tasks       *task.Manager
 	projects    *project.Store
 	projectsDir string
+	emitted     *[]emittedEvent
+}
+
+// emittedEvent captures one f.emit(name, payload) call so tests can assert on
+// exact event name and JSON-visible payload fields.
+type emittedEvent struct {
+	name    string
+	payload any
 }
 
 // newIssuesFetcherForTest wires an IssuesFetcher with real Manager/Store + an
@@ -47,7 +58,10 @@ func newIssuesFetcherForTest(
 	taskMgr := task.NewManager(taskStore, nil)
 
 	logger := slog.New(slog.DiscardHandler)
-	f := NewIssuesFetcher(taskMgr, projStore, func(string, any) {}, logger, allowsType)
+	var emitted []emittedEvent
+	f := NewIssuesFetcher(taskMgr, projStore, func(name string, payload any) {
+		emitted = append(emitted, emittedEvent{name: name, payload: payload})
+	}, logger, allowsType)
 
 	// Inject the labeled fetch so tests control the "gh" response.
 	f.fetchLabeled = func([]string, string) ([]github.Issue, error) {
@@ -63,6 +77,7 @@ func newIssuesFetcherForTest(
 		tasks:       taskMgr,
 		projects:    projStore,
 		projectsDir: projectsDir,
+		emitted:     &emitted,
 	}
 }
 
@@ -89,6 +104,95 @@ func TestIssuesFetcher_SyncIssuesToTasks_AutoExpandsUmbrella(t *testing.T) {
 	}
 	// Only the normal issue produced a flat task.
 	assertStringSetEqual(t, taskIssueURLs(t, env.tasks), []string{"https://github.com/acme/pet1/issues/2"})
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_DegradedUmbrellaEmitsStartupDegraded(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	const umbURL = "https://github.com/acme/pet1/issues/1"
+	env.fetcher.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+		return umbrella.Result{
+			UmbrellaURL: umbURL,
+			Created:     2,
+			Degraded:    true,
+			ChildCount:  3,
+			MaxParallel: 1,
+		}, nil
+	})
+
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: umbURL, Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	var degraded []emittedEvent
+	for _, e := range *env.emitted {
+		if e.name == events.StartupDegraded {
+			degraded = append(degraded, e)
+		}
+	}
+	if len(degraded) != 1 {
+		t.Fatalf("StartupDegraded emissions = %d, want 1 (emitted: %+v)", len(degraded), *env.emitted)
+	}
+	payload, ok := degraded[0].payload.(degradedWarningEvent)
+	if !ok {
+		t.Fatalf("payload type = %T, want degradedWarningEvent", degraded[0].payload)
+	}
+	if payload.Subsystem != "umbrella" {
+		t.Fatalf("Subsystem = %q, want %q", payload.Subsystem, "umbrella")
+	}
+	if !strings.Contains(payload.Reason, umbURL) {
+		t.Fatalf("Reason %q does not contain umbrella URL %q", payload.Reason, umbURL)
+	}
+	if !strings.Contains(payload.Reason, "3") {
+		t.Fatalf("Reason %q does not mention child count 3", payload.Reason)
+	}
+	if !strings.Contains(payload.Reason, "max-parallel reduced to 1") {
+		t.Fatalf("Reason %q does not mention reduced max-parallel 1", payload.Reason)
+	}
+	// Round-trip through JSON to confirm the frontend-visible field names.
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if decoded["subsystem"] != "umbrella" {
+		t.Fatalf("JSON subsystem = %v, want umbrella", decoded["subsystem"])
+	}
+	if _, ok := decoded["reason"]; !ok {
+		t.Fatalf("JSON payload missing reason field: %v", decoded)
+	}
+}
+
+func TestIssuesFetcher_SyncIssuesToTasks_NonDegradedUmbrellaEmitsNothing(t *testing.T) {
+	t.Parallel()
+	env := newIssuesFetcherForTest(t, func(project.ProjectType) bool { return true }, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	env.fetcher.SetUmbrellaExpander(func(issueURL string) (umbrella.Result, error) {
+		return umbrella.Result{
+			UmbrellaURL: issueURL,
+			Created:     2,
+			ChildCount:  2,
+			MaxParallel: 5,
+		}, nil
+	})
+
+	issues := []github.Issue{
+		{Number: 1, Title: "☂️ umbrella", URL: "https://github.com/acme/pet1/issues/1", Repository: "acme/pet1"},
+	}
+	env.fetcher.syncIssuesToTasks(issues)
+
+	for _, e := range *env.emitted {
+		if e.name == events.StartupDegraded {
+			t.Fatalf("unexpected StartupDegraded emission for non-degraded result: %+v", e)
+		}
+	}
 }
 
 func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T) {

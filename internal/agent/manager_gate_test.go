@@ -93,6 +93,44 @@ func TestPrepareRunConfig_InteractiveFailsOverLikeHeadless(t *testing.T) {
 	}
 }
 
+// TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
+// locks in that prepareRunConfig — the single chokepoint every headless and
+// interactive run passes through — wires the background-task guardrail into
+// the final prompt for a headless, code-authoring run (SeedWorkingMemory),
+// and leaves other shapes untouched.
+func TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Provider:          "claude",
+		Mode:              "headless",
+		Prompt:            "implement the task",
+		SeedWorkingMemory: true,
+		Dir:               t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Prompt == "implement the task" {
+		t.Fatal("expected background-task guardrail to be appended to a headless code-author prompt")
+	}
+
+	cfg, _, err = m.prepareRunConfig(RunConfig{
+		Provider:          "claude",
+		Mode:              "headless",
+		Prompt:            "review the diff",
+		SeedWorkingMemory: false,
+		Dir:               t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Prompt != "review the diff" {
+		t.Errorf("verifier role (SeedWorkingMemory=false) should not get the guardrail, got: %q", cfg.Prompt)
+	}
+}
+
 func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetHealthGate(&fakeGate{
@@ -130,9 +168,12 @@ func TestGateProvider_IgnoreHealthGateBypasses(t *testing.T) {
 // fakeLimitGate lets a test control ProviderAvailable/ChooseProvider
 // decisions without a real limits.Store.
 type fakeLimitGate struct {
-	available    map[string]bool
-	reasons      map[string]string
-	chooseReason string
+	available      map[string]bool
+	reasons        map[string]string
+	chooseReason   string
+	chooseNone     bool // force ChooseProvider to find no fully-available peer
+	softPeer       string
+	softPeerReason string
 }
 
 func (f *fakeLimitGate) ProviderAvailable(p string, _ limits.Policy) (available bool, reason string) {
@@ -146,12 +187,27 @@ func (f *fakeLimitGate) ProviderAvailable(p string, _ limits.Policy) (available 
 }
 
 func (f *fakeLimitGate) ChooseProvider(requested string, candidates []string, healthy func(string) bool, _ limits.Policy) (chosen, reason string) {
+	if f.chooseNone {
+		return "", ""
+	}
 	for _, c := range candidates {
 		if c == requested {
 			continue
 		}
 		if healthy(c) {
 			return c, f.chooseReason
+		}
+	}
+	return "", ""
+}
+
+func (f *fakeLimitGate) ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, _ limits.Policy) (chosen, reason string) {
+	if f.softPeer == "" || f.softPeer == requested {
+		return "", ""
+	}
+	for _, c := range candidates {
+		if c == f.softPeer && healthy(c) {
+			return f.softPeer, f.softPeerReason
 		}
 	}
 	return "", ""
@@ -492,5 +548,140 @@ func TestGateProvider_HardLimitStillGatesWithNoPeer(t *testing.T) {
 	}
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		t.Fatalf("want ErrProviderUnhealthy, got %v", err)
+	}
+}
+
+// TestGateProvider_HardLimitFailsOverToSoftLimitedPeer is a regression guard
+// for task c61f327a: codex hard rate-limited (ProviderAvailable=false with a
+// hard reason) and ChooseProvider finds no fully-available peer, but claude
+// is only soft-threshold limited (still safely dispatching its own direct
+// runs, per TestGateProvider_SoftThresholdLastResortUsesRemainingBudget).
+// Dispatch must fail over to claude as a last resort instead of failing
+// closed system-wide.
+func TestGateProvider_HardLimitFailsOverToSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "provider reports rate limit reached"},
+			softPeer:       "claude",
+			softPeerReason: "session limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.gateProvider(RunConfig{Provider: "codex"})
+	if err != nil {
+		t.Fatalf("hard-limited provider with a soft-limited peer must fail over, got err: %v", err)
+	}
+	if got != "claude" {
+		t.Errorf("got %q, want claude (soft-limited peer used as last-resort failover)", got)
+	}
+}
+
+// TestGateProvider_SoftThresholdDoesNotFailOverToSoftLimitedPeer ensures the
+// new soft-limited-peer last-resort path only applies when the resolved
+// provider is hard-blocked. If resolved is itself merely near threshold, it
+// should keep using its remaining budget instead of bouncing to another
+// soft-limited peer.
+func TestGateProvider_SoftThresholdDoesNotFailOverToSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "session limit near threshold"},
+			chooseNone:     true,
+			softPeer:       "claude",
+			softPeerReason: "weekly limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.gateProvider(RunConfig{Provider: "codex"})
+	if err != nil {
+		t.Fatalf("soft-threshold provider with only a soft-limited peer must keep remaining budget, got err: %v", err)
+	}
+	if got != "codex" {
+		t.Errorf("got %q, want codex (soft-threshold last resort must not fail over)", got)
+	}
+}
+
+// TestGateProvider_HardLimitFailoverDisabledSkipsSoftLimitedPeer verifies
+// DisableProviderFailover suppresses the new soft-limited-peer path too, not
+// just the exact-quota ChooseProvider path.
+func TestGateProvider_HardLimitFailoverDisabledSkipsSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "provider reports rate limit reached"},
+			softPeer:       "claude",
+			softPeerReason: "session limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.gateProvider(RunConfig{Provider: "codex", DisableProviderFailover: true})
+	if err == nil {
+		t.Fatal("DisableProviderFailover must not use the soft-limited peer, got nil error")
+	}
+	if !errors.Is(err, provider.ErrProviderUnhealthy) {
+		t.Fatalf("want ErrProviderUnhealthy, got %v", err)
+	}
+}
+
+// TestProviderCanFailover_ReportsSoftLimitedPeer guards that ProviderCanFailover
+// mirrors resolveProviderDecision's last-resort path: when ChooseProvider finds
+// no fully-available peer but a soft-threshold-limited peer exists, failover is
+// still possible, so recovery must re-dispatch the stranded in-progress task
+// rather than skip it as provider_rate_limited.
+func TestProviderCanFailover_ReportsSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "provider reports rate limit reached"},
+			chooseNone:     true,
+			softPeer:       "claude",
+			softPeerReason: "session limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !m.ProviderCanFailover("codex") {
+		t.Fatal("ProviderCanFailover must report true when only a soft-limited peer is available")
+	}
+}
+
+func TestProviderCanFailover_SoftThresholdDoesNotReportSoftLimitedPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true, "codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:      map[string]bool{"codex": false},
+			reasons:        map[string]string{"codex": "session limit near threshold"},
+			chooseNone:     true,
+			softPeer:       "claude",
+			softPeerReason: "weekly limit near threshold",
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if m.ProviderCanFailover("codex") {
+		t.Fatal("ProviderCanFailover must stay false when the resolved provider is only soft-threshold limited")
 	}
 }

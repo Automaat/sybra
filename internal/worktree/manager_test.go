@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -583,6 +585,63 @@ func TestRunSetup_ParentCancellationKillsProcess(t *testing.T) {
 	}
 }
 
+// TestRunSetup_TimeoutKillsProcessGroup proves a grandchild spawned by a
+// setup command (e.g. a backgrounded daemon started by npm install) is
+// killed along with the shell when the batch timeout fires, not left
+// running as an orphan (issue #1538).
+func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
+	t.Parallel()
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	m := New(Config{
+		WorktreesDir: wtDir,
+		LogsDir:      logsDir,
+		Logger:       discardLogger(),
+		SetupTimeout: 800 * time.Millisecond,
+	})
+
+	pidFile := filepath.Join(wtDir, "child.pid")
+	// Background a grandchild that writes its pid immediately (well before
+	// the setup timeout fires) then outlives `sh`, staying alive for the
+	// rest of the test unless the whole process group is killed.
+	cmd := fmt.Sprintf("nohup sh -c 'echo $$ > %q; sleep 10' >/dev/null 2>&1 & sleep 10", pidFile)
+
+	err := m.runSetup(context.Background(), "task-timeout-pg", wtDir, []string{cmd})
+	if err == nil {
+		t.Fatal("expected error on timeout")
+	}
+
+	// Give the grandchild a moment to have written its pid before we assert
+	// it's gone — the write happens near-instantly after it forks, well
+	// before the setup timeout above ever fires.
+	deadline := time.Now().Add(3 * time.Second)
+	var pidRaw []byte
+	for time.Now().Before(deadline) {
+		pidRaw, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("grandchild never wrote pid file: %v", err)
+	}
+
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
+	if convErr != nil {
+		t.Fatalf("parse pid: %v", convErr)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscallKillErr := syscall.Kill(pid, 0); syscallKillErr != nil {
+			return // grandchild is gone — process group was killed
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("grandchild pid %d still alive after setup timeout", pid)
+}
+
 // TestRunSetup_NoLogsDir — when no LogsDir is configured the hook still
 // runs and returns errors correctly, only skipping file-based logging.
 // This protects test harnesses that skip log configuration.
@@ -764,6 +823,43 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "bootstrap-marker") {
 		t.Errorf("setup log missing command: %s", data)
+	}
+}
+
+func TestPrepareForTask_RerunsBootstrapOnExistingWorktreeReuse(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "setup-count")
+	h := prepareHarness(t, []string{fmt.Sprintf("printf x >> %s", strconv.Quote(counterPath))}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	secondPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("reused PrepareForTask: %v", err)
+	}
+	if secondPath != firstPath {
+		t.Fatalf("reused PrepareForTask path = %q, want %q", secondPath, firstPath)
+	}
+
+	count, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got, want := string(count), "xx"; got != want {
+		t.Fatalf("setup command ran %d times, want 2 (counter %q)", len(got), got)
 	}
 }
 

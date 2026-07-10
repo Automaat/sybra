@@ -24,6 +24,46 @@ func makeFIFO(path string) error {
 	return syscall.Mkfifo(path, 0o600)
 }
 
+// startHeadlessProcessSurviveStdin assigns a steerable detached headless
+// claude process's stdin to a FIFO (reusing makeFIFO/agentFIFOPath). Unlike a
+// conversational agent — which is handed an O_RDWR fd so it never sees EOF and
+// survives the parent indefinitely — a headless run MUST terminate when the
+// steer turn boundary closes stdin with no queued message (see
+// drainOrCloseHeadlessSteer). So the child is given a READ-ONLY stdin fd while
+// the parent keeps its own O_RDWR writer: closing the parent's only writer then
+// delivers EOF to the child, which exits exactly like a plain one-shot
+// `claude -p`. Passing the child an O_RDWR fd instead (as the convo path does)
+// leaves the child itself a writer on the pipe, so it never sees EOF and every
+// unsteered run hangs until postResultGrace kills it.
+//
+// The returned *os.File is the parent's copy of the child's read end; the
+// caller must close it after cmd.Start() (the child holds its own dup) so a
+// single closeStdinPipe on the parent's writer is enough to EOF the child.
+// Called from startHeadlessSurviveProcess before cmd.Start(); on any error
+// cmd.Stdin is left unset and the caller aborts the attempt.
+func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os.File, error) {
+	fifoPath := agentFIFOPath(m.registryDir(), a.ID)
+	if err := makeFIFO(fifoPath); err != nil {
+		return nil, fmt.Errorf("mkfifo: %w", err)
+	}
+	// Open the writer first (O_RDWR never blocks on a FIFO), so the read-only
+	// open below finds a writer present and returns immediately too.
+	writeFifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open fifo (write): %w", err)
+	}
+	childStdin, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	if err != nil {
+		_ = writeFifo.Close()
+		return nil, fmt.Errorf("open fifo (read): %w", err)
+	}
+	cmd.Stdin = childStdin
+	a.convo.replaceStdinPipe(writeFifo)
+	a.setStdinPath(fifoPath)
+	a.setFinalizing(false)
+	return childStdin, nil
+}
+
 // startConvoProcessSurvive spawns a detached conversational Claude process
 // whose stdin is a FIFO (opened O_RDWR so it never sees EOF and survives the
 // parent's exit) and whose stdout is the NDJSON log file. The manager reads

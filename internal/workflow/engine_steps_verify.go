@@ -17,7 +17,7 @@ import (
 // its own workflow in ExecWaiting (persisting the new CurrentStep/State itself).
 // executeSteps treats it as "stop, do not record/advance/complete" — completing
 // would fire the status-change cascade. Used by verify_commits to wait out a
-// still-running sibling agent without re-dispatching over it.
+// still-running sibling agent without launching over it.
 var errStepParked = errors.New("workflow step parked in ExecWaiting")
 
 // execEnsurePRClosesIssue verifies the task's PR closes its linked
@@ -99,7 +99,8 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // PR body, mirroring the deterministic floor applied to Sybra-authored issue/PR
 // comments (internal/attribution). It is the machine-side guarantee that every
 // Sybra-opened PR is identifiable as harness-generated, independent of whether
-// the create-pr agent honored the prompt-level ceiling instruction.
+// the LLM-drafted PR body (internal/prcontent, via the create_pr step)
+// happened to include it.
 //
 // It runs after ensure_pr_closes_issue so the footer lands as the last line,
 // below any `Closes <issue>` reference. attribution.Append is idempotent, so
