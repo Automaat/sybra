@@ -859,6 +859,7 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 // a non-nil engine without a real workflow store.
 type stubWorkflowEngine struct {
 	startWorkflowCalls int
+	completions        []workflow.AgentCompletion
 }
 
 func (s *stubWorkflowEngine) StartWorkflow(_, _ string) error {
@@ -866,7 +867,9 @@ func (s *stubWorkflowEngine) StartWorkflow(_, _ string) error {
 	return nil
 }
 
-func (s *stubWorkflowEngine) HandleAgentComplete(_ string, _ workflow.AgentCompletion) {}
+func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
+	s.completions = append(s.completions, c)
+}
 
 // TestRestartStalePRFixWorkflowRevertsToInReview verifies the root cause of the
 // b319d12f incident: a task left in-progress with a cancelled (ExecCompleted)
@@ -952,6 +955,147 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 	if !strings.Contains(updated.StatusReason, "conflict resolved") {
 		t.Errorf("status reason = %q, want cancellation reason", updated.StatusReason)
+	}
+}
+
+// newReviewTaskWithHeadlessRun creates an in-progress, review-tagged task
+// with a non-terminal workflow parked mid-step and a single headless run
+// whose lifecycle fields are the caller's to fill in. Shared setup for the
+// recoverCompletedHeadlessRun outcome-gating tests below.
+func newReviewTaskWithHeadlessRun(t *testing.T, tasks *task.Manager, run task.AgentRun) string {
+	t.Helper()
+	created, err := tasks.Create("review me", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	tags := []string{"review"}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-review",
+		State:       workflow.ExecRunning,
+		CurrentStep: "review_simple",
+		StartedAt:   time.Now(),
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Tags:     &tags,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, run); err != nil {
+		t.Fatal(err)
+	}
+	return created.ID
+}
+
+// TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome verifies recovery
+// replays a lost headless completion using the persisted AgentRun.Outcome
+// rather than inferring success from State ("stopped" covers both a clean
+// finish and a failed one) or Result's presence (truncated, so non-empty
+// proves nothing). This is the regression covered by #1537: a failed review
+// run lost across a restart must not be replayed as a success.
+func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
+	cases := []struct {
+		name        string
+		outcome     string
+		result      string
+		wantHandled bool
+		wantSuccess bool
+	}{
+		{
+			name:        "success outcome replays success",
+			outcome:     task.RunOutcomeSuccess,
+			result:      "review posted",
+			wantHandled: true,
+			wantSuccess: true,
+		},
+		{
+			name:        "failure outcome replays failure, not success",
+			outcome:     task.RunOutcomeFailure,
+			result:      "review posted before crash",
+			wantHandled: true,
+			wantSuccess: false,
+		},
+		{
+			name:        "missing outcome (legacy run) is not recovered here",
+			outcome:     "",
+			result:      "review posted",
+			wantHandled: false,
+		},
+		{
+			name:        "unknown outcome falls through instead of forcing failure",
+			outcome:     "garbage",
+			result:      "review posted",
+			wantHandled: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			dir := t.TempDir()
+			store, err := task.NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+			logger := discardLogger()
+			agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+			wm := worktree.New(worktree.Config{
+				WorktreesDir: t.TempDir(),
+				Tasks:        tasks,
+				Logger:       logger,
+				AgentChecker: agents.HasRunningAgentForTask,
+			})
+
+			taskID := newReviewTaskWithHeadlessRun(t, tasks, task.AgentRun{
+				AgentID:   "ag-review",
+				Role:      "review",
+				Mode:      "headless",
+				State:     string(agent.StateStopped),
+				Outcome:   tc.outcome,
+				Result:    tc.result,
+				StartedAt: time.Now().Add(-10 * time.Minute),
+			})
+
+			var wg sync.WaitGroup
+			stub := stubOrchestrator{}
+			wfStub := &stubWorkflowEngine{}
+			r := &recovery.Recovery{
+				Tasks:          tasks,
+				Agents:         agents,
+				Worktrees:      wm,
+				Orchestrator:   &stub,
+				WorkflowEngine: wfStub,
+				Logger:         logger,
+				Throttle:       logging.NewErrorThrottle(),
+				WG:             &wg,
+				LogDir:         t.TempDir(),
+			}
+			r.RestartStaleInProgress(context.Background())
+			wg.Wait()
+
+			if !tc.wantHandled {
+				if len(wfStub.completions) != 0 {
+					t.Fatalf("HandleAgentComplete called %d times; want 0 (no outcome to recover from)", len(wfStub.completions))
+				}
+				return
+			}
+			if len(wfStub.completions) != 1 {
+				t.Fatalf("HandleAgentComplete called %d times; want 1", len(wfStub.completions))
+			}
+			got := wfStub.completions[0]
+			if got.Success != tc.wantSuccess {
+				t.Errorf("Success = %v, want %v", got.Success, tc.wantSuccess)
+			}
+			if got.Result != tc.result {
+				t.Errorf("Result = %q, want %q", got.Result, tc.result)
+			}
+			_ = taskID
+		})
 	}
 }
 

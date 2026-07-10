@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Placeholder is the substitution used for every redacted match.
@@ -29,22 +30,29 @@ const Placeholder = "[redacted]"
 
 // staticPatterns are content-shaped redactions applied regardless of the
 // blocklist. They aim for high precision over recall:
-//   - Jira-shaped keys (2+ uppercase letters, dash, digits) tend to be
-//     project-specific identifiers; matching short tokens like "A-1" would
-//     be noisy, so the lower bound is two letters.
-//   - github.com URLs are redacted in their entirety because the path
-//     usually reveals owner/repo/branch/SHA. The host word survives so the
-//     scrub is visible.
+//   - Jira-shaped keys (2+ letters, dash, digits) tend to be project-specific
+//     identifiers; matching short tokens like "A-1" would be noisy, so the
+//     lower bound is two letters. Matched only in conventional uppercase form
+//     so ordinary lowercase repo/path segments like "repo-2" are not treated
+//     as tickets.
+//   - GitHub URLs are redacted in their entirety because the path usually
+//     reveals owner/repo/branch/SHA. Matched case-insensitively, with an
+//     optional "www." prefix. The host must begin with "github." so
+//     github.com and GitHub Enterprise hosts (e.g. github.mycorp.com) are
+//     covered without redacting unrelated hosts that merely contain "github".
+//     A second pattern catches the same shape when percent-encoded (e.g.
+//     inside a query string or forwarded proxy log).
 //   - Email addresses are redacted to avoid leaking author identity from
 //     commit-author lines or @mentions.
 var staticPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)https?://(?:www\.)?github\.[a-z0-9.-]+/[^\s)\]]+`),
+	regexp.MustCompile(`(?i)https?%3a%2f%2f(?:www(?:\.|%2e))?github(?:\.|%2e)[a-z0-9.\-%]+%2f[^\s)\]]+`),
 	regexp.MustCompile(`\b[A-Z]{2,}-\d+\b`),
-	regexp.MustCompile(`https?://github\.com/[^\s)\]]+`),
 	regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`),
 }
 
 // Scrub redacts every match of staticPatterns and every occurrence of any
-// blocklist literal (case-sensitive) from text. Empty or whitespace-only
+// blocklist literal (case-insensitive) from text. Empty or whitespace-only
 // entries in blocklist are ignored. Returns the redacted text and the total
 // number of substitutions performed.
 //
@@ -74,14 +82,78 @@ func Scrub(text string, blocklist []string) (scrubbed string, redactions int) {
 		return len(cleaned[i]) > len(cleaned[j])
 	})
 	for _, term := range cleaned {
-		count := strings.Count(out, term)
-		if count == 0 {
-			continue
-		}
-		out = strings.ReplaceAll(out, term, Placeholder)
-		total += count
+		var matches int
+		out, matches = replaceLiteralOutsidePlaceholders(out, term)
+		total += matches
 	}
 	return out, total
+}
+
+// replaceLiteralOutsidePlaceholders redacts every occurrence of term in text,
+// skipping over already-placed Placeholder markers. term is matched
+// case-insensitively when it is valid UTF-8 (regexp requires a valid-UTF-8
+// pattern to compile); a term containing invalid UTF-8 — which can reach
+// here from an untrusted blocklist entry — falls back to an exact byte
+// match instead of panicking regexp.MustCompile.
+func replaceLiteralOutsidePlaceholders(text, term string) (scrubbed string, redactions int) {
+	if !utf8.ValidString(term) {
+		return replaceLiteralBytesOutsidePlaceholders(text, term)
+	}
+	re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(term))
+	var b strings.Builder
+	matches := 0
+	for len(text) > 0 {
+		if strings.HasPrefix(text, Placeholder) {
+			b.WriteString(Placeholder)
+			text = text[len(Placeholder):]
+			continue
+		}
+
+		nextPlaceholder := strings.Index(text, Placeholder)
+		if nextPlaceholder < 0 {
+			nextPlaceholder = len(text)
+		}
+		segment := text[:nextPlaceholder]
+		locs := re.FindAllStringIndex(segment, -1)
+		if len(locs) == 0 {
+			b.WriteString(segment)
+		} else {
+			b.WriteString(re.ReplaceAllString(segment, Placeholder))
+			matches += len(locs)
+		}
+		text = text[nextPlaceholder:]
+	}
+	return b.String(), matches
+}
+
+// replaceLiteralBytesOutsidePlaceholders is the invalid-UTF-8 fallback for
+// replaceLiteralOutsidePlaceholders: an exact (case-sensitive) byte search,
+// since Unicode case folding is undefined for a non-UTF-8 term.
+func replaceLiteralBytesOutsidePlaceholders(text, term string) (scrubbed string, redactions int) {
+	var b strings.Builder
+	matches := 0
+	for len(text) > 0 {
+		if strings.HasPrefix(text, Placeholder) {
+			b.WriteString(Placeholder)
+			text = text[len(Placeholder):]
+			continue
+		}
+
+		nextPlaceholder := strings.Index(text, Placeholder)
+		if nextPlaceholder < 0 {
+			nextPlaceholder = len(text)
+		}
+		segment := text[:nextPlaceholder]
+		n := strings.Count(segment, term)
+		if n == 0 {
+			b.WriteString(segment)
+		} else {
+			b.WriteString(strings.ReplaceAll(segment, term, Placeholder))
+			matches += n
+		}
+		text = text[nextPlaceholder:]
+	}
+	return b.String(), matches
 }
 
 // dedupNonEmpty trims whitespace, drops empty entries, and removes
