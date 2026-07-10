@@ -30,7 +30,7 @@ func (rp recoveryPRResolver) ResolvePRForTask(ctx context.Context, repo, branch,
 		}
 	}
 	if issue != "" {
-		if _, number := github.ParseIssueURL(issue); number > 0 {
+		if parsedRepo, number := github.ParseIssueURL(issue); number > 0 && parsedRepo == repo {
 			prs, err := rp.issueLinked(repo, number)
 			if err != nil {
 				return recovery.PRRef{}, err
