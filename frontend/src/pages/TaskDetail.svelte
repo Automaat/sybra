@@ -15,6 +15,7 @@
   import LiveAgentPanel from '../components/task-detail/LiveAgentPanel.svelte'
   import AgentLauncher from '../components/task-detail/AgentLauncher.svelte'
   import AgentHistoryList from '../components/task-detail/AgentHistoryList.svelte'
+  import TaskDiagnosticsPanel from '../components/task-detail/TaskDiagnosticsPanel.svelte'
   import { needsPlanApproval } from '../lib/statuses.js'
   import TaskProgressPanel from '../components/task-detail/TaskProgressPanel.svelte'
   import { ListTaskProgress } from '$lib/api'
@@ -57,6 +58,7 @@
     ...(hasReview ? [{ value: 'review', label: 'Review' }] : []),
     ...(hasProgress ? [{ value: 'progress', label: 'Progress' }] : []),
     { value: 'runs', label: runsCount > 0 ? `Runs · ${runsCount}` : 'Runs' },
+    { value: 'diagnostics', label: 'Diagnostics' },
   ])
 
   // If the active tab disappears (e.g. its data was cleared), fall back to Overview.
@@ -244,6 +246,10 @@
           <section class={panelClass('runs')}>
             <AgentLauncher task={t} />
             <AgentHistoryList task={t} />
+          </section>
+
+          <section class={panelClass('diagnostics')}>
+            <TaskDiagnosticsPanel task={t} />
           </section>
         </div>
 

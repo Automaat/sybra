@@ -173,7 +173,7 @@
   <section class="flex flex-col gap-3">
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <h3 class="text-sm font-semibold text-surface-200">Interactive Session</h3>
+        <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">Interactive Session</h3>
         <div
           class="h-2.5 w-2.5 rounded-full {running ? 'bg-success-500 animate-pulse' : 'bg-surface-500'}"
         ></div>
@@ -223,7 +223,7 @@
     {#if running}
       <div
         bind:this={container}
-        class="flex max-h-[50dvh] md:max-h-[400px] flex-col gap-2 overflow-y-auto rounded-lg border border-surface-300 bg-surface-900 p-3 text-xs text-surface-200 dark:border-surface-600"
+        class="flex max-h-[50dvh] md:max-h-[400px] flex-col gap-2 overflow-y-auto rounded-lg border border-surface-300 bg-white p-3 text-xs text-surface-900 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100"
       >
         {#if events.length === 0}
           <p class="text-surface-500">Waiting for orchestrator…</p>
@@ -239,7 +239,7 @@
   <!-- Triage Agents -->
   <section class="flex min-h-0 flex-1 flex-col gap-3">
     <div class="flex items-center gap-3">
-      <h3 class="text-sm font-semibold text-surface-200">Triage Agents</h3>
+      <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">Triage Agents</h3>
       {#if runningTriageCount > 0}
         <span class="rounded-full bg-primary-500/20 px-2 py-0.5 text-xs font-medium text-primary-400">
           {runningTriageCount} running
@@ -254,13 +254,13 @@
     {:else}
       <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {#each triageAgents as ta (ta.id)}
-          <div class="rounded-lg border border-surface-300 bg-surface-800 dark:border-surface-600">
-            <div class="flex items-center justify-between border-b border-surface-700 px-3 py-2">
+          <div class="rounded-lg border border-surface-300 bg-white dark:border-surface-600 dark:bg-surface-800">
+            <div class="flex items-center justify-between border-b border-surface-200 px-3 py-2 dark:border-surface-700">
               <div class="flex items-center gap-2">
                 <div
                   class="h-2 w-2 rounded-full {ta.state === 'running' ? 'bg-success-500 animate-pulse' : ta.state === 'stopped' ? 'bg-surface-500' : 'bg-warning-500'}"
                 ></div>
-                <span class="text-xs font-medium text-surface-200">
+                <span class="text-xs font-medium text-surface-900 dark:text-surface-100">
                   {ta.name?.replace('triage:', '') || ta.taskId}
                 </span>
               </div>
@@ -268,7 +268,7 @@
                 {#if ta.costUsd > 0}
                   <span class="text-xs text-surface-400">${ta.costUsd.toFixed(4)}</span>
                 {/if}
-                <span class="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] font-medium text-surface-300">
+                <span class="rounded bg-surface-200 px-1.5 py-0.5 text-[10px] font-medium text-surface-700 dark:bg-surface-700 dark:text-surface-300">
                   {ta.state}
                 </span>
               </div>
@@ -285,7 +285,7 @@
   <!-- Eval Agents -->
   <section class="flex min-h-0 flex-1 flex-col gap-3">
     <div class="flex items-center gap-3">
-      <h3 class="text-sm font-semibold text-surface-200">Eval Agents</h3>
+      <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">Eval Agents</h3>
       {#if runningEvalCount > 0}
         <span class="rounded-full bg-warning-500/20 px-2 py-0.5 text-xs font-medium text-warning-400">
           {runningEvalCount} running
@@ -300,13 +300,13 @@
     {:else}
       <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {#each evalAgents as ea (ea.id)}
-          <div class="rounded-lg border border-surface-300 bg-surface-800 dark:border-surface-600">
-            <div class="flex items-center justify-between border-b border-surface-700 px-3 py-2">
+          <div class="rounded-lg border border-surface-300 bg-white dark:border-surface-600 dark:bg-surface-800">
+            <div class="flex items-center justify-between border-b border-surface-200 px-3 py-2 dark:border-surface-700">
               <div class="flex items-center gap-2">
                 <div
                   class="h-2 w-2 rounded-full {ea.state === 'running' ? 'bg-warning-500 animate-pulse' : ea.state === 'stopped' ? 'bg-surface-500' : 'bg-warning-500'}"
                 ></div>
-                <span class="text-xs font-medium text-surface-200">
+                <span class="text-xs font-medium text-surface-900 dark:text-surface-100">
                   {ea.name?.replace('eval:', '') || ea.taskId}
                 </span>
               </div>
@@ -314,7 +314,7 @@
                 {#if ea.costUsd > 0}
                   <span class="text-xs text-surface-400">${ea.costUsd.toFixed(4)}</span>
                 {/if}
-                <span class="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] font-medium text-surface-300">
+                <span class="rounded bg-surface-200 px-1.5 py-0.5 text-[10px] font-medium text-surface-700 dark:bg-surface-700 dark:text-surface-300">
                   {ea.state}
                 </span>
               </div>
