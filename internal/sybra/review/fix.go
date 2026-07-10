@@ -1215,13 +1215,18 @@ func conflictPrompt(pr github.PullRequest) string {
 }
 
 func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
+	base := pr.BaseRefName
+	if base == "" {
+		base = "main"
+	}
+	baseRef := "refs/remotes/origin/" + base
 	return fmt.Sprintf(
 		"Fix merge conflicts on branch `%s` (PR #%d). "+
 			"Use the task body, PR diff, changed-file list, and current code as context, then merge.\n\n"+
 			"Steps:\n"+
 			"```bash\n"+
 			"git fetch origin\n"+
-			"git merge refs/remotes/origin/main\n"+
+			"git merge %s\n"+
 			"# If the merge stopped for conflicts: resolve every conflict preserving\n"+
 			"# the PR intent and upstream changes, run targeted tests for touched code,\n"+
 			"# then git add and git commit to complete the merge.\n"+
@@ -1233,7 +1238,7 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"git push \"$PUSH_REMOTE\" HEAD:%s\n"+
 			"```\n\n"+
 			"Rules:\n"+
-			"- Use `refs/remotes/origin/main` (not `origin/main`) to avoid ambiguous refs\n"+
+			"- Use `%s` (the PR's base branch, a full ref not a bare name) to avoid ambiguous refs\n"+
 			"- Push to `fork` (not `origin`) when a `fork` remote exists — the PR was opened from the fork\n"+
 			"- Do not force-push or rewrite existing commits — the merge commit and any conflict-resolution commits must be purely additive, and a plain push is expected to succeed\n"+
 			"- Resolve conflicts keeping BOTH sides' intent\n"+
@@ -1241,6 +1246,6 @@ func buildConflictPrompt(pr github.PullRequest, filesCtx string) string {
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, pr.HeadRefName, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, pr.HeadRefName, baseRef, filesCtx,
 	)
 }
