@@ -235,14 +235,6 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 
 func TestReattachAdoptsHealthySurvivor(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
-	prevPoll := reattachPIDPoll
-	reattachPIDPoll = 30 * time.Millisecond
-	prevGrace := stopSIGINTGrace
-	stopSIGINTGrace = 30 * time.Millisecond
-	t.Cleanup(func() {
-		reattachPIDPoll = prevPoll
-		stopSIGINTGrace = prevGrace
-	})
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
