@@ -225,13 +225,16 @@ type AgentRun struct {
 	// tell success from failure either). Empty means the run never reached a
 	// definitive terminal outcome (still running, or stalled/rate-limited and
 	// due for retry) — callers must not infer success from Outcome == "".
-	Outcome         string    `json:"outcome,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	CostUSD         float64   `json:"costUsd"`
-	PremiumRequests float64   `json:"premiumRequests,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
-	Result          string    `json:"result"`
-	OneShot         bool      `json:"oneShot,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	// EscalationReason records the guardrail reason that stopped the run
+	// ("cost" or "turns"). Empty for ordinary completions.
+	EscalationReason string    `json:"escalationReason,omitempty"`
+	StartedAt        time.Time `json:"startedAt"`
+	CostUSD          float64   `json:"costUsd"`
+	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
+	Prompt           string    `json:"prompt,omitempty"`
+	Result           string    `json:"result"`
+	OneShot          bool      `json:"oneShot,omitempty"`
 	// Verdict holds the parsed decision for human-review runs ("human" or
 	// "sybra_bug"). Extracted from live agent output at completion time so
 	// it survives Result truncation.

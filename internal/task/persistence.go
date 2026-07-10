@@ -67,6 +67,7 @@ type agentRunRecord struct {
 	ReasoningEffort        string    `yaml:"reasoning_effort,omitempty"`
 	State                  string    `yaml:"state"`
 	Outcome                string    `yaml:"outcome,omitempty"`
+	EscalationReason       string    `yaml:"escalation_reason,omitempty"`
 	StartedAt              time.Time `yaml:"started_at"`
 	CostUSD                float64   `yaml:"cost_usd,omitempty"`
 	PremiumRequests        float64   `yaml:"premium_requests,omitempty"`

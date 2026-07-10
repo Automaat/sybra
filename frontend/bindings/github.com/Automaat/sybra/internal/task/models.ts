@@ -48,6 +48,12 @@ export class AgentRun {
      * due for retry) — callers must not infer success from Outcome == "".
      */
     "outcome"?: string;
+
+    /**
+     * EscalationReason records the guardrail reason that stopped the run
+     * ("cost" or "turns"). Empty for ordinary completions.
+     */
+    "escalationReason"?: string;
     "startedAt": string;
     "costUsd": number;
     "premiumRequests"?: number;

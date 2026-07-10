@@ -379,6 +379,7 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 	}
 
 	r.applyReviewPhase(t, computeReviewPhase(reviewSignals{
+		CostGuardrailStopped:      latestReviewRunStoppedByCostGuardrail(t),
 		HasDraft:                  myState.Pending,
 		ViewerApproved:            myState.Approved || inApproved,
 		Submitted:                 submitted,
@@ -388,6 +389,17 @@ func (r *Handler) reconcileReviewTask(t *task.Task, requested, approved map[stri
 		HeadLineageUnknown:        headLineageUnknown,
 		BaseOnlyMergeFromReviewed: baseOnlyMergeFromReviewed,
 	}))
+}
+
+func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
+	for i := range slices.Backward(t.AgentRuns) {
+		run := t.AgentRuns[i]
+		if run.Role != string(agent.RoleReview) {
+			continue
+		}
+		return run.EscalationReason == "cost"
+	}
+	return false
 }
 
 // applyReviewPhase persists only the fields that changed. Status is set only
