@@ -256,21 +256,15 @@ func TestStoreWriteLocksAreReclaimed(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	store.writeLocksMu.Lock()
-	lockCount := len(store.writeLocks)
-	store.writeLocksMu.Unlock()
-	if lockCount != 0 {
-		t.Fatalf("writeLocks length after update = %d, want 0", lockCount)
+	if lockCount := store.locker.Len(); lockCount != 0 {
+		t.Fatalf("locker entries after update = %d, want 0", lockCount)
 	}
 
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	store.writeLocksMu.Lock()
-	lockCount = len(store.writeLocks)
-	store.writeLocksMu.Unlock()
-	if lockCount != 0 {
-		t.Fatalf("writeLocks length after delete = %d, want 0", lockCount)
+	if lockCount := store.locker.Len(); lockCount != 0 {
+		t.Fatalf("locker entries after delete = %d, want 0", lockCount)
 	}
 }
 
