@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
 )
@@ -67,8 +68,7 @@ func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
 // and the poll-based auto-triage handler already apply. Without this guard,
 // classifying an arbitrary id can reclassify a task outside the triage
 // pipeline's ownership — e.g. a human-required Prompt Lab proposal whose
-// gating tags/status must survive untouched (see internal/triage/apply.go's
-// promptLabProposalTag).
+// gating tags/status must survive untouched (see promptlab.ProposalTag).
 func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	dir := t.TempDir()
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
@@ -81,7 +81,7 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	humanRequired := task.StatusHumanRequired
-	tags := []string{"prompt-lab-proposal", "requires-human"}
+	tags := []string{promptlab.ProposalTag, "requires-human"}
 	created, err = mgr.Update(created.ID, task.Update{Status: &humanRequired, Tags: &tags})
 	if err != nil {
 		t.Fatalf("Update: %v", err)

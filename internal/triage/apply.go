@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -15,21 +16,6 @@ import (
 // would silently break routing the task depends on: escape-hatch opt-outs
 // (see escapeHatchTags) and the umbrella dependency gate marker.
 var preservedTags = append(append([]string{}, escapeHatchTags...), umbrella.GatedTag)
-
-// promptLabProposalTag marks a task as a Prompt Lab proposal filed directly by
-// PromptLabService (internal/sybra/app_promptlab.go's fileScrubbedProposals):
-// gating tags (prompt-lab-proposal, role:<x>, optionally requires-human),
-// status human-required, and deliberately no project_id or workflow attached
-// — approve/reject is a direct task.Manager transition
-// (PromptLabService.ApproveProposal/RejectProposal), never a triage route.
-// The classifier's controlled vocabulary doesn't know these tags, so a
-// wholesale tag/status rewrite would silently drop the human-approval gate
-// and reroute the task into a workflow it was never meant to enter (it has no
-// project_id, so run_agent fails closed with ErrNoProjectAssigned and the
-// task bounces to human-required with a misleading reason). Apply must skip
-// the tag and status rewrite entirely whenever this tag is present, no matter
-// which entry point triggered the reclassify.
-const promptLabProposalTag = "prompt-lab-proposal"
 
 const umbrellaNormalTypeStatusReason = "☂️-titled task has task_type=normal, not umbrella — " +
 	"guard blocked dispatch to avoid a wasted implement run; " +
@@ -50,9 +36,12 @@ const umbrellaGuardOptOutTag = "notumbrella"
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
-	// A prompt-lab proposal's tags and status are gating state owned by
-	// PromptLabService, not the classifier — see promptLabProposalTag.
-	promptLabGated := slices.Contains(t.Tags, promptLabProposalTag)
+	// A prompt-lab proposal is owned by PromptLabService, not triage. It may
+	// be filed as todo or human-required, but in both cases the proposal text
+	// and routing fields stay under PromptLabService approval/rejection.
+	if slices.Contains(t.Tags, promptlab.ProposalTag) {
+		return t, nil
+	}
 
 	// t.ProjectID is sticky: once set (e.g. by the GitHub issue fetcher at
 	// task creation), the classifier's free-text guess must never override
@@ -101,7 +90,7 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 		updates["body"] = body
 	}
 
-	if len(v.Tags) > 0 && !promptLabGated {
+	if len(v.Tags) > 0 {
 		// Preserve routing tags the classifier vocabulary excludes
 		// (escape-hatch opt-outs, umbrella gate marker) — replacing tags
 		// wholesale would otherwise silently drop them.
@@ -125,32 +114,30 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 	// planning phase — they go straight to implementation. Override any route
 	// that would park them in planning.
 	isPRFix := isPRFixTask(t)
-	if !promptLabGated {
-		status := RouteStatus(v.Size, v.Type, projectType)
-		if isPRFix {
-			status = task.StatusTodo
-		}
-		updates["status"] = string(status)
-		// No status_reason on successful triage: the field is reserved for
-		// attention-worthy states (monitor/watchdog/blocked), which the UI
-		// renders as a warning. Setting "status" without a reason makes the
-		// store clear any stale reason (e.g. "monitor: awaiting triage").
+	status := RouteStatus(v.Size, v.Type, projectType)
+	if isPRFix {
+		status = task.StatusTodo
+	}
+	updates["status"] = string(status)
+	// No status_reason on successful triage: the field is reserved for
+	// attention-worthy states (monitor/watchdog/blocked), which the UI
+	// renders as a warning. Setting "status" without a reason makes the
+	// store clear any stale reason (e.g. "monitor: awaiting triage").
 
-		// A ☂️-titled task that never went through the GitHub issue fetcher
-		// (e.g. manual sybra-cli create) keeps task_type=normal and is
-		// invisible to the umbrella gate
-		// (internal/sybra/app_umbrella_gate.go), which filters strictly on
-		// TaskTypeUmbrella. Dispatching it as a flat implement task wastes a
-		// full run before the agent discovers there's no direct code
-		// surface. Catch it here — before dispatch — and park it for a
-		// human to either expand it from its issue URL, opt it out, or fix
-		// the title.
-		if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
-			!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
-			umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
-			updates["status"] = string(task.StatusHumanRequired)
-			updates["status_reason"] = umbrellaNormalTypeStatusReason
-		}
+	// A ☂️-titled task that never went through the GitHub issue fetcher
+	// (e.g. manual sybra-cli create) keeps task_type=normal and is
+	// invisible to the umbrella gate
+	// (internal/sybra/app_umbrella_gate.go), which filters strictly on
+	// TaskTypeUmbrella. Dispatching it as a flat implement task wastes a
+	// full run before the agent discovers there's no direct code
+	// surface. Catch it here — before dispatch — and park it for a
+	// human to either expand it from its issue URL, opt it out, or fix
+	// the title.
+	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
+		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
+		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {
+		updates["status"] = string(task.StatusHumanRequired)
+		updates["status_reason"] = umbrellaNormalTypeStatusReason
 	}
 
 	updated, err := mgr.UpdateMap(t.ID, updates)
