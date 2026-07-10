@@ -82,6 +82,7 @@
       onviewagent={navAgentDetail}
       ondelete={() => navStore.back()}
       onreviewplan={() => navStore.reset({ kind: 'reviews' })}
+      onselecttask={navTaskDetail}
     />
   {:else if navStore.page.kind === 'project-list'}
     {#await loadProjectList() then ProjectList}

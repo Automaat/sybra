@@ -30,6 +30,32 @@ const (
 // otherwise, so this is a hard backstop rather than the primary mechanism.
 const completedHangGrace = 5 * time.Minute
 
+const hardDeadlineMultiplier = 2
+
+const (
+	minHardWallClock = time.Hour
+	minHardIdle      = 30 * time.Minute
+)
+
+func hardWallClockLimit(budget time.Duration) time.Duration {
+	return max(hardDeadlineMultiplier*budget, minHardWallClock)
+}
+
+func hardIdleLimit(stallLim time.Duration) time.Duration {
+	return max(hardDeadlineMultiplier*stallLim, minHardIdle)
+}
+
+func hardDeadlineBreach(ag *agent.Agent, stall, total, stallLim, budget time.Duration) string {
+	switch {
+	case total > hardWallClockLimit(budget):
+		return "wall_clock"
+	case stall > ag.EffectiveHangGrace(hardIdleLimit(stallLim)):
+		return "idle"
+	default:
+		return ""
+	}
+}
+
 // stallLimit returns the max event-gap before triggering inspection.
 func stallLimit(tags []string) time.Duration {
 	switch {
@@ -181,10 +207,6 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 			w.checkCompletedHang(ag, now)
 			continue
 		}
-		logPath := ag.GetLogPath()
-		if logPath == "" {
-			continue
-		}
 
 		stall := now.Sub(ag.GetLastEventAt())
 		total := now.Sub(ag.StartedAt)
@@ -197,6 +219,16 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 		} else {
 			budget = sizeBudget(nil)
 			sl = stallLimit(nil)
+		}
+
+		if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
+			w.hardStop(ag, reason, stall, total)
+			continue
+		}
+
+		logPath := ag.GetLogPath()
+		if logPath == "" {
+			continue
 		}
 
 		trigger := decideTrigger(ag.ToolLoopStreak(), w.loopThreshold, ag.ToolLoopAcknowledged(), stall, sl, total, budget)
@@ -241,6 +273,23 @@ func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
 	}
 	if err := stop(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.completed_hang.stop_failed", "id", ag.ID, "err", err)
+	}
+}
+
+func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Duration) {
+	w.logger.Warn("agent.watchdog.hard_deadline",
+		"id", ag.ID, "task_id", ag.TaskID, "reason", reason,
+		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
+	if ag.TaskID != "" {
+		if _, err := w.tasks.Update(ag.TaskID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr("watchdog hang: " + reason + " deadline exceeded"),
+		}); err != nil {
+			w.logger.Error("agent.watchdog.hard_deadline.task.update", "task_id", ag.TaskID, "err", err)
+		}
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.hard_deadline.stop.failed", "id", ag.ID, "err", err)
 	}
 }
 

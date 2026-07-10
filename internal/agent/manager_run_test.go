@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -291,5 +292,30 @@ func TestNewProviderUnhealthy_RateLimitedFlag(t *testing.T) {
 		if ue.Provider != "codex" || ue.Reason != c.reason {
 			t.Errorf("newProviderUnhealthy dropped fields: %+v", ue)
 		}
+	}
+}
+
+func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.maxConcurrent = 2
+
+	for i := range m.maxConcurrent {
+		a := &Agent{ID: fmt.Sprintf("live%d", i), Provider: "claude", done: make(chan struct{})}
+		if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+			t.Fatalf("registerRunningAgent(live%d): %v", i, err)
+		}
+	}
+
+	normal := &Agent{ID: "normal", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(normal, RunConfig{}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("normal spawn at cap: err = %v, want ErrMaxConcurrentReached", err)
+	}
+
+	control := &Agent{ID: "control-plane", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); err != nil {
+		t.Fatalf("IgnoreConcurrencyLimit spawn at cap must succeed, got err = %v", err)
+	}
+	if _, err := m.GetAgent(control.ID); err != nil {
+		t.Fatalf("control-plane agent should be registered: %v", err)
 	}
 }

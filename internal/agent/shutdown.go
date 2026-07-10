@@ -19,7 +19,7 @@ const shutdownWaitDelay = 15 * time.Second
 // it restores terminal modes and persists the session ID for --resume
 // before exiting. 3 seconds is enough for cleanup in the common case;
 // SIGKILL handles any process that ignores SIGINT.
-const stopSIGINTGrace = 3 * time.Second
+var stopSIGINTGrace = 3 * time.Second
 
 // stopWithSIGINT sends SIGINT to cmd's process (CC v2.1.132+ graceful shutdown)
 // and escalates to SIGKILL if the process does not exit within grace. done is
