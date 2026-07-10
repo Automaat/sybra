@@ -510,7 +510,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		// every other role (verifier roles must never fork).
 		ForkSubagent:    t.ForkSubagent,
 		SandboxMode:     ResolveSandboxMode(t, o.cfg),
-		ReasoningEffort: FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort),
+		ReasoningEffort: FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, ResolveRoleEffort(agent.RoleImplementation, o.cfg)),
 		// Always an implementation run — prime it with the NOTES.md scratchpad.
 		SeedWorkingMemory: true,
 	})
@@ -1049,10 +1049,31 @@ func CurrentWorktreeHead(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// FirstNonEmpty returns a if non-empty, else b.
-func FirstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+// FirstNonEmpty returns the first non-empty string among vals, or "" if all
+// are empty.
+func FirstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return b
+	return ""
+}
+
+// ResolveRoleEffort returns the reasoning-effort level to fall back to for
+// role when neither an experiment assignment nor the task itself pins a
+// level. It checks the operator-configured Agent.RoleEffort override first
+// (validated against task.AllReasoningEfforts), then falls back to the
+// role's built-in default (agent.Role.DefaultReasoningEffort). Returns ""
+// when nothing applies, letting the manager's global DefaultReasoningEffort
+// take over.
+func ResolveRoleEffort(role agent.Role, cfg *config.Config) string {
+	if cfg != nil {
+		if override, ok := cfg.Agent.RoleEffort[string(role)]; ok {
+			if _, err := task.ValidateReasoningEffort(override); err == nil {
+				return override
+			}
+		}
+	}
+	return role.DefaultReasoningEffort()
 }

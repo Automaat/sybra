@@ -97,6 +97,14 @@ type AgentDefaults struct {
 	// human-required. Empty means no default (falls back to the
 	// sole-project behavior).
 	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
+	// RoleEffort overrides the built-in per-role reasoning-effort baseline
+	// (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g.
+	// "triage", "implementation"). Still loses to an experiment assignment's
+	// or the task's own ReasoningEffort — this only replaces the role
+	// fallback, not an explicit per-task/per-run override. Unknown role keys
+	// or invalid effort values are ignored (falls back to the built-in
+	// default for that role).
+	RoleEffort map[string]string `yaml:"role_effort" json:"roleEffort"`
 	// PlaywrightMCP configures the default-off headless Playwright MCP server
 	// attached to test-runner runs that resolve to the Claude provider.
 	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`

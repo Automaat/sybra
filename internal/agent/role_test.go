@@ -32,6 +32,36 @@ func TestRole_AgentName(t *testing.T) {
 	}
 }
 
+func TestRole_DefaultReasoningEffort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role Role
+		want string
+	}{
+		{RoleTriage, "low"},
+		{RoleEval, "low"},
+		{RolePlanCritic, "low"},
+		{RoleHumanReview, "low"},
+		{RoleImplementation, "high"},
+		{RoleFixReview, "high"},
+		{RolePRFix, "high"},
+		{RolePlan, ""},
+		{RoleReview, ""},
+		{RoleTestRunner, ""},
+		{Role(""), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			got := tt.role.DefaultReasoningEffort()
+			if got != tt.want {
+				t.Errorf("DefaultReasoningEffort() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRole_IsSystem(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
