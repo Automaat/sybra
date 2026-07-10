@@ -140,7 +140,7 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
-	slowOnce := "test -f .timeout-marker || { touch .timeout-marker; exec sleep 60; }"
+	slowOnce := "test -f .timeout-marker || { touch .timeout-marker; exec sleep 10; }"
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{slowOnce})
 	engine.SetVerifyTimeout(2 * time.Second)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

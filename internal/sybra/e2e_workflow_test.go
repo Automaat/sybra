@@ -418,10 +418,10 @@ func e2eTimeoutScaleResolve() int64 {
 			return n
 		}
 	}
-	base := int64(1)
-	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
-		base = 4
+	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
+		return 1
 	}
+	base := int64(4)
 	scaled := base * hostOversubscriptionFactor()
 	if scaled < base {
 		return base
