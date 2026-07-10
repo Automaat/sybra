@@ -245,7 +245,7 @@ func assertStartupServiceWiring(t *testing.T, app *App) {
 	if app.loopAgentSvc.store != app.loopAgents || app.loopAgentSvc.sched != app.loopSched {
 		t.Fatal("loop-agent service was not wired")
 	}
-	if app.configSvc.cfg != app.cfg || app.configSvc.agents != app.agents || app.configSvc.limits != app.limits {
+	if app.configSvc.cfg != app.cfg || app.configSvc.agents != app.agents || app.configSvc.limits != app.limits || app.configSvc.workflowEngine != app.workflowEngine {
 		t.Fatal("config service was not wired")
 	}
 	if app.intgSvc.tasks != app.tasks || app.intgSvc.projects != app.projects || app.intgSvc.workflowEngine != app.workflowEngine {

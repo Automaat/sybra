@@ -708,6 +708,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
 	if a.cfg.Evaluation.Offline.Enabled {
 		a.workflowEngine.SetEvalGate(prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline))
@@ -743,10 +744,12 @@ func (a *App) initWorkflowEngine() {
 
 func (a *App) initAgentConfig() {
 	a.agents.SetGuardrails(agent.Guardrails{
-		MaxCostUSD:       a.cfg.Agent.MaxCostUSD,
-		MaxTurns:         a.cfg.Agent.MaxTurns,
-		TurnCostFraction: a.cfg.Agent.TurnCostFraction,
-		TurnMultiplier:   a.cfg.Agent.TurnMultiplier,
+		MaxCostUSD:              a.cfg.Agent.MaxCostUSD,
+		MaxTurns:                a.cfg.Agent.MaxTurns,
+		MaxCheckpoints:          a.cfg.MaxCheckpoints(),
+		TurnCostFraction:        a.cfg.Agent.TurnCostFraction,
+		TurnMultiplier:          a.cfg.Agent.TurnMultiplier,
+		CheckpointOnTurnCeiling: a.cfg.CheckpointOnTurnCeilingEnabled(),
 	})
 }
 

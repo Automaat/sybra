@@ -53,7 +53,12 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 			DefaultProvider: cfg.Agent.Provider,
 		},
 	})
-	mgr.SetGuardrails(agent.Guardrails{MaxCostUSD: cfg.Agent.MaxCostUSD, MaxTurns: cfg.Agent.MaxTurns})
+	mgr.SetGuardrails(agent.Guardrails{
+		MaxCostUSD:              cfg.Agent.MaxCostUSD,
+		MaxTurns:                cfg.Agent.MaxTurns,
+		MaxCheckpoints:          cfg.MaxCheckpoints(),
+		CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+	})
 
 	notifier := notification.New(emit)
 
@@ -111,6 +116,9 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	next := *svc.cfg
 	next.Agent.MaxCostUSD = 20.0
 	next.Agent.MaxTurns = 300
+	next.Agent.MaxCheckpoints = 7
+	disabled := false
+	next.Agent.CheckpointOnTurnCeiling = &disabled
 	writeConfigYAML(t, cfgPath, &next)
 
 	hot, err := svc.ReloadFromDisk()
@@ -120,12 +128,24 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	if !slices.Contains(hot, "agent.max_cost_usd") {
 		t.Errorf("expected agent.max_cost_usd in hot, got %v", hot)
 	}
+	if !slices.Contains(hot, "agent.max_checkpoints") {
+		t.Errorf("expected agent.max_checkpoints in hot, got %v", hot)
+	}
+	if !slices.Contains(hot, "agent.checkpoint_on_turn_ceiling") {
+		t.Errorf("expected agent.checkpoint_on_turn_ceiling in hot, got %v", hot)
+	}
 	g := svc.agents.Guardrails()
 	if g.MaxCostUSD != 20.0 {
 		t.Errorf("Guardrails.MaxCostUSD = %v, want 20.0", g.MaxCostUSD)
 	}
 	if g.MaxTurns != 300 {
 		t.Errorf("Guardrails.MaxTurns = %d, want 300", g.MaxTurns)
+	}
+	if g.MaxCheckpoints != 7 {
+		t.Errorf("Guardrails.MaxCheckpoints = %d, want 7", g.MaxCheckpoints)
+	}
+	if g.CheckpointOnTurnCeiling {
+		t.Error("Guardrails.CheckpointOnTurnCeiling = true, want false")
 	}
 }
 

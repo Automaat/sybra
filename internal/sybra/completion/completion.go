@@ -56,7 +56,7 @@ type Config struct {
 	Tasks          *task.Manager
 	Worktrees      *worktree.Manager
 	Sandboxes      *sandbox.Manager
-	WorkflowEngine *workflow.Engine
+	WorkflowEngine workflow.CompletionWorkflow
 	Stats          *stats.Store
 	Limits         *limits.Store
 	LoopSched      *loopagent.Scheduler
@@ -95,7 +95,7 @@ type Handler struct {
 	tasks          *task.Manager
 	worktrees      *worktree.Manager
 	sandboxes      *sandbox.Manager
-	workflowEngine *workflow.Engine
+	workflowEngine workflow.CompletionWorkflow
 	stats          *stats.Store
 	limits         *limits.Store
 	loopSched      *loopagent.Scheduler
@@ -187,6 +187,13 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		auditData["premium_requests"] = premiumRequests
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
+	if reason := ag.GetEscalationReason(); reason == "checkpoint" || reason == "checkpoint_failed" {
+		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
+			"reason":     reason,
+			"turn_count": ag.GetTurnCount(),
+			"provider":   ag.Provider,
+		})
+	}
 
 	h.recordRunStats(ag, role, cost, duration, exitErr, resultContent)
 
@@ -360,14 +367,17 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if h.workflowEngine == nil {
 		return true
 	}
-	stalled, rateLimited, stopStalled := classifyStall(ag, exitErr)
+	stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
 	if stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited)
-		if rateLimited {
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "checkpoint", checkpointStopped)
+		switch {
+		case checkpointStopped:
+			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
+		case rateLimited:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
-		} else {
+		default:
 			h.workflowEngine.ClearAgentStep(ag.ID)
 		}
 		return false
@@ -387,15 +397,17 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 // so the persisted AgentRun.Outcome and the workflow's Success signal can
 // never diverge: a stalled run is retried, so it must be neither a persisted
 // success nor a persisted failure.
-func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopStalled bool) {
+func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopStalled, checkpointStopped bool) {
 	rateLimited = isRateLimitedRun(ag, exitErr)
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
-	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped
-	stalled = isSignalKill(exitErr) || stopStalled || rateLimited
-	return stalled, rateLimited, stopStalled
+	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == "checkpoint_failed"
+	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == "checkpoint"
+	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
+	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || checkpointStopped
+	return stalled, rateLimited, stopStalled, checkpointStopped
 }
 
 // runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
@@ -403,7 +415,7 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopSt
 // otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
 // uses for AgentCompletion.Success.
 func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
-	if stalled, _, _ := classifyStall(ag, exitErr); stalled {
+	if stalled, _, _, _ := classifyStall(ag, exitErr); stalled {
 		return ""
 	}
 	if exitErr == nil {
