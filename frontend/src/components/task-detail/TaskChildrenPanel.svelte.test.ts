@@ -108,7 +108,7 @@ describe('TaskChildrenPanel', () => {
     mockList = [child({ id: 'c10', title: 'Ten' })]
     const onselecttask = vi.fn()
     render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask } })
-    await fireEvent.click(screen.getByTitle('Open issue on GitHub'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Open issue on GitHub' }))
     expect(mockOpenLink).toHaveBeenCalledWith('https://github.com/Automaat/sybra/issues/10', expect.anything())
     expect(onselecttask).not.toHaveBeenCalled()
   })
@@ -117,7 +117,7 @@ describe('TaskChildrenPanel', () => {
     mockList = [child({ id: 'c10', title: 'Ten', prNumber: 42, projectId: 'Automaat/sybra' })]
     const onselecttask = vi.fn()
     render(TaskChildrenPanel, { props: { task: umbrella as never, onselecttask } })
-    await fireEvent.click(screen.getByTitle('Open PR #42 on GitHub'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Open PR #42 on GitHub' }))
     expect(mockOpenLink).toHaveBeenCalledWith('https://github.com/Automaat/sybra/pull/42', expect.anything())
     expect(onselecttask).not.toHaveBeenCalled()
   })

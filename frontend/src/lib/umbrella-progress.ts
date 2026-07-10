@@ -79,6 +79,7 @@ export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren
   })
 
   let children: Task[]
+  let materializedChildIssues = new Set<string>()
   if (isUmbrella) {
     const materialized: Task[] = []
     const seenChildren = new Set<string>()
@@ -98,7 +99,9 @@ export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren
     const materializedByIssue = new Map<string, Task>()
     for (const t of materialized) {
       const key = normalizeIssueRef(t.issue ?? '')
-      if (key) materializedByIssue.set(key, t)
+      if (!key) continue
+      materializedByIssue.set(key, t)
+      materializedChildIssues.add(key)
     }
 
     const ordered: Task[] = []
@@ -122,7 +125,7 @@ export function childrenForUmbrella(task: Task, tasks: Task[]): UmbrellaChildren
 
   const unresolved: string[] = []
   for (const ref of declaredRefs) {
-    if (byIssue.has(ref)) continue
+    if (isUmbrella ? materializedChildIssues.has(ref) : byIssue.has(ref)) continue
     unresolved.push(ref)
   }
 

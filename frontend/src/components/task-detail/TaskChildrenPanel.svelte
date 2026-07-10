@@ -54,6 +54,7 @@
               type="button"
               class="shrink-0 text-surface-400 hover:text-surface-700 dark:hover:text-surface-200"
               title="Open issue on GitHub"
+              aria-label="Open issue on GitHub"
               onclick={(e) => { e.stopPropagation(); openLink(child.issue, e) }}
             >
               <CircleDot size={14} />
@@ -64,6 +65,7 @@
               type="button"
               class="shrink-0 text-warning-600 hover:text-warning-800 dark:text-warning-400 dark:hover:text-warning-200"
               title="Open PR #{child.prNumber} on GitHub"
+              aria-label="Open PR #{child.prNumber} on GitHub"
               onclick={(e) => { e.stopPropagation(); openLink(`https://github.com/${child.projectId}/pull/${child.prNumber}`, e) }}
             >
               <GitPullRequest size={14} />

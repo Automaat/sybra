@@ -130,6 +130,31 @@ describe('umbrella progress', () => {
       expect(result.displayTotal).toBe(3)
     })
 
+    it('keeps a child-declared ref unresolved when a same-issue task exists outside the umbrella', () => {
+      const umbrella = task({
+        id: 'u1',
+        taskType: TaskType.TaskTypeUmbrella,
+        issue: 'o/r#100',
+      })
+      const materializedChild = task({
+        id: 'c1',
+        issue: 'o/r#101',
+        umbrellaIssue: 'o/r#100',
+        dependsOn: ['o/r#102'],
+      })
+      const mismatchedLocalTask = task({
+        id: 'c2',
+        issue: 'o/r#102',
+        umbrellaIssue: 'o/r#999',
+      })
+
+      const result = childrenForUmbrella(umbrella, [materializedChild, mismatchedLocalTask])
+
+      expect(result.children.map((t) => t.id)).toEqual(['c1'])
+      expect(result.unresolved).toEqual(['o/r#102'])
+      expect(result.displayTotal).toBe(2)
+    })
+
     it('resolves a tracker-declared dependsOn ref to a local child by issue', () => {
       const umbrella = task({
         id: 'manual-umbrella',
