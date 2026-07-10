@@ -959,7 +959,7 @@ func (r *Handler) dispatchBranchConflictRecovery(taskID, dir, base string, t tas
 		return false
 	}
 
-	delete(r.dispatchFailures, taskID)
+	r.clearDispatchFailure(taskID)
 	r.prTracker.MarkHandled(taskID, branchConflictRetryKind, headSHA)
 	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{})
 	r.logger.Info("pr-monitor.branch-conflict.recovered", "task_id", taskID)
@@ -987,17 +987,13 @@ func isTransientBranchConflictDispatchFailure(err error) bool {
 // convention MarkRebaseBlocked relies on to avoid overwriting a specific
 // reason with its generic one.
 func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dispatchErr error) bool {
-	if r.dispatchFailures == nil {
-		r.dispatchFailures = make(map[string]int)
-	}
-	r.dispatchFailures[taskID]++
-	attempts := r.dispatchFailures[taskID]
+	attempts := r.recordDispatchFailure(taskID)
 	if attempts < branchConflictDispatchFailureLimit {
 		r.logger.Info("pr-monitor.branch-conflict.dispatch-parked-retry",
 			"task_id", taskID, "attempts", attempts, "limit", branchConflictDispatchFailureLimit, "err", dispatchErr)
 		return true
 	}
-	delete(r.dispatchFailures, taskID)
+	r.clearDispatchFailure(taskID)
 	reason := fmt.Sprintf(
 		"branch-conflict-fix dispatch failed %d time(s), most recently: %s",
 		attempts, dispatchErr.Error())
@@ -1012,22 +1008,41 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 }
 
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
-	r.recordWorktreeFailure(taskID, wtErr)
+	attempts := r.recordWorktreeFailure(taskID, wtErr)
 	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
 		return false
 	}
 	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
-		"task_id", taskID, "attempts", r.wtFailures[taskID], "limit", wtFailureLimit)
+		"task_id", taskID, "attempts", attempts, "limit", wtFailureLimit)
 	return true
 }
 
-func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
+func (r *Handler) recordDispatchFailure(taskID string) int {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	if r.dispatchFailures == nil {
+		r.dispatchFailures = make(map[string]int)
+	}
+	r.dispatchFailures[taskID]++
+	return r.dispatchFailures[taskID]
+}
+
+func (r *Handler) clearDispatchFailure(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	delete(r.dispatchFailures, taskID)
+}
+
+func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) int {
+	r.failureMu.Lock()
 	if r.wtFailures == nil {
 		r.wtFailures = make(map[string]int)
 	}
 	r.wtFailures[taskID]++
-	if r.wtFailures[taskID] >= wtFailureLimit {
+	attempts := r.wtFailures[taskID]
+	if attempts >= wtFailureLimit {
 		delete(r.wtFailures, taskID)
+		r.failureMu.Unlock()
 		r.logger.Error("pr-monitor.worktree.circuit-open",
 			"task_id", taskID, "failures", wtFailureLimit, "err", wtErr)
 		if _, uerr := r.tasks.Update(taskID, task.Update{
@@ -1036,9 +1051,17 @@ func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) {
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.escalate", "task_id", taskID, "err", uerr)
 		}
-		return
+		return attempts
 	}
+	r.failureMu.Unlock()
 	r.logger.Error("pr-monitor.worktree", "task_id", taskID, "err", wtErr)
+	return attempts
+}
+
+func (r *Handler) clearWorktreeFailure(taskID string) {
+	r.failureMu.Lock()
+	defer r.failureMu.Unlock()
+	delete(r.wtFailures, taskID)
 }
 
 func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
@@ -1049,7 +1072,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 		return false
 	}
 	if !ok {
-		delete(r.wtFailures, taskID)
+		r.clearWorktreeFailure(taskID)
 		return true
 	}
 	if setupFailure == "" {

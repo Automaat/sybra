@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1113,6 +1114,27 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 	if n := r.dispatchFailures[tk.ID]; n != 0 {
 		t.Fatalf("dispatchFailures[%s] = %d, want 0 (never armed for a non-transient error)", tk.ID, n)
 	}
+}
+
+func TestBranchConflictFailureCountersAllowConcurrentTasks(t *testing.T) {
+	r := &Handler{logger: slog.New(slog.DiscardHandler)}
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			taskID := fmt.Sprintf("task-%03d", i)
+			if got := r.recordDispatchFailure(taskID); got != 1 {
+				t.Errorf("recordDispatchFailure(%s) = %d, want 1", taskID, got)
+			}
+			if got := r.recordWorktreeFailure(taskID, errors.New("setup failed")); got != 1 {
+				t.Errorf("recordWorktreeFailure(%s) = %d, want 1", taskID, got)
+			}
+			r.clearDispatchFailure(taskID)
+			r.clearWorktreeFailure(taskID)
+		}(i)
+	}
+	wg.Wait()
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
