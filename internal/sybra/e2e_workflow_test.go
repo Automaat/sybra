@@ -7,11 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/testutil/loadscale"
 	"github.com/Automaat/sybra/internal/triage"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -422,7 +421,7 @@ func e2eTimeoutScaleResolve() int64 {
 		return 1
 	}
 	base := int64(8)
-	scaled := base * hostOversubscriptionFactor()
+	scaled := base * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
 	if scaled < base {
 		return base
 	}
@@ -430,34 +429,6 @@ func e2eTimeoutScaleResolve() int64 {
 		return e2eTimeoutScaleCeiling
 	}
 	return scaled
-}
-
-func hostOversubscriptionFactor() int64 {
-	load, ok := hostLoadPerCPU()
-	if !ok || load <= 1 {
-		return 1
-	}
-	return int64(math.Ceil(load))
-}
-
-func hostLoadPerCPU() (float64, bool) {
-	data, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return 0, false
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return 0, false
-	}
-	load1, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil {
-		return 0, false
-	}
-	cpus := runtime.NumCPU()
-	if cpus <= 0 {
-		return 0, false
-	}
-	return load1 / float64(cpus), true
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {
