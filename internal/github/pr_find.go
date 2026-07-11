@@ -15,10 +15,13 @@ import (
 var findPRRunner = ghRunCtx
 
 // FindPRForBranch returns the number of an open PR whose head is branch, if
-// one exists. head is the `gh pr list --head` value: a bare branch name, or
-// "fork-owner:branch" for a fork-hosted branch. found is false (with nil err)
-// when no PR matches; a non-nil err signals the lookup itself failed and the
-// caller cannot distinguish "no PR" from "could not check".
+// one exists. head may be a bare branch name or "fork-owner:branch"; since
+// `gh pr list --head` matches only the bare branch, the owner (when present)
+// is stripped for the query and then used to filter results by
+// headRepositoryOwner, so a same-named branch on another fork is not
+// mis-matched. found is false (with nil err) when no PR matches; a non-nil err
+// signals the lookup itself failed and the caller cannot distinguish "no PR"
+// from "could not check".
 func FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
 	owner, branch := splitHead(head)
 	out, runErr := findPRRunner(ctx, "pr", "list",
