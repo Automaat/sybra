@@ -134,6 +134,7 @@ func run() (int, error) {
 	select {
 	case <-ctx.Done():
 		logger.Info("server.shutdown")
+		go forceExitAfter(logger, shutdownHardDeadline, &restartRequested)
 		// 30s window covers the agent manager's 20s grace (giving SIGTERM'd
 		// claude/codex processes a chance to flush their final result event)
 		// plus headroom for HTTP handlers to drain. Previously 10s, which
@@ -153,6 +154,18 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 	return 0, nil
+}
+
+const shutdownHardDeadline = 60 * time.Second
+
+func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) {
+	time.Sleep(d)
+	code := 0
+	if restart.Load() {
+		code = autoupdate.RestartExitCode
+	}
+	logger.Error("shutdown.forced", "after", d.String(), "code", code)
+	os.Exit(code)
 }
 
 // buildMux wires every HTTP route the server exposes onto a fresh ServeMux:
