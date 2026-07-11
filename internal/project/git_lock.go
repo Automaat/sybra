@@ -15,17 +15,33 @@ import (
 // paths still serialize against each other.
 var bareRepoLocks sync.Map // map[string]*sync.Mutex
 
+// bareRepoPushLocks serializes `git push` invocations for worktrees sharing a
+// bare clone. Unlike bareRepoLocks, this lock may be held while pre-push hooks
+// run, so it must not gate fetch/worktree/ref plumbing for other agents.
+var bareRepoPushLocks sync.Map // map[string]*sync.Mutex
+
 // withBareRepoLock runs fn while holding the mutex for barePath, blocking
 // concurrent git mutations against the same bare clone from other goroutines
 // in this process. It does not protect against another OS process (e.g. a
 // second Sybra instance) touching the same clone — see gitOpRetryBackoffs for
 // that cross-process safety net.
 func withBareRepoLock(barePath string, fn func() error) error {
-	key := filepath.Clean(barePath)
-	v, _ := bareRepoLocks.LoadOrStore(key, &sync.Mutex{})
+	return withPathLock(&bareRepoLocks, barePath, fn)
+}
+
+// withBareRepoPushLock runs fn while holding the per-clone push mutex. Use
+// this only around git push, whose hooks can be long-running; fast shared-clone
+// plumbing should continue to use withBareRepoLock.
+func withBareRepoPushLock(barePath string, fn func() error) error {
+	return withPathLock(&bareRepoPushLocks, barePath, fn)
+}
+
+func withPathLock(locks *sync.Map, path string, fn func() error) error {
+	key := filepath.Clean(path)
+	v, _ := locks.LoadOrStore(key, &sync.Mutex{})
 	mu, ok := v.(*sync.Mutex)
 	if !ok {
-		// Unreachable: bareRepoLocks only ever stores *sync.Mutex values.
+		// Unreachable: these maps only ever store *sync.Mutex values.
 		mu = &sync.Mutex{}
 	}
 	mu.Lock()
