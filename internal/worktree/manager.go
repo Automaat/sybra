@@ -133,7 +133,7 @@ func callPhase(fn func(string), phase string) {
 }
 
 func (m *Manager) ensureBranch(t task.Task, branch string) {
-	if t.Branch != "" {
+	if t.Branch == branch {
 		return
 	}
 	if _, err := m.tasks.Update(t.ID, task.Update{Branch: task.Ptr(branch)}); err != nil {
