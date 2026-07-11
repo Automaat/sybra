@@ -757,7 +757,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
 	if a.cfg.Evaluation.Offline.Enabled {
-		a.workflowEngine.SetEvalGate(prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline))
+		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
+		a.workflowEngine.SetEvalGate(gate)
+		a.agents.SetEvalPassed(func(variantID, digest string) bool {
+			allow, _, gateErr := gate.AllowEnrollment(variantID, digest)
+			return gateErr == nil && allow
+		})
 	}
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})

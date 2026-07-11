@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
@@ -78,6 +79,7 @@ type Manager struct {
 	limitGate         LimitGate
 	limitPolicy       limits.Policy
 	limitSink         func(limits.Snapshot)
+	evalPassed        abtest.EvalPassed
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -494,6 +496,16 @@ func (m *Manager) signalKill(a *Agent) {
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
+	m.mu.Unlock()
+}
+
+// SetEvalPassed wires the offline-eval enrollment predicate consulted by
+// ApplyABVariant, so ad-hoc A/B dispatch sites gate digested variants on their
+// stored eval verdict exactly like the workflow engine. A nil predicate (the
+// default) leaves eval gating off.
+func (m *Manager) SetEvalPassed(fn abtest.EvalPassed) {
+	m.mu.Lock()
+	m.evalPassed = fn
 	m.mu.Unlock()
 }
 

@@ -34,11 +34,14 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 			m.ProviderHealthy(provider) &&
 			!m.ProviderRateLimited(provider)
 	}
+	m.mu.RLock()
+	evalPassed := m.evalPassed
+	m.mu.RUnlock()
 	a, ok, err := abtest.SelectEligibleForContext(
 		ab,
 		abtest.SelectionContext{TaskID: taskID, Role: role},
 		allowed,
-		nil,
+		evalPassed,
 	)
 	if err != nil || !ok {
 		return cfg

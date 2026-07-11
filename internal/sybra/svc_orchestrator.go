@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -18,6 +19,14 @@ import (
 const orchestratorAgentName = "orchestrator"
 
 const orchestratorRole = "orchestrator"
+
+func orchestratorABKey() string {
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return host
+}
 
 // orchestratorKickoffPrompt is the first user message delivered to the
 // orchestrator brain so it actually takes a turn. The conversational runner
@@ -162,7 +171,7 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 		Dir:                    config.HomeDir(),
 		Prompt:                 orchestratorKickoffPrompt,
 		IgnoreConcurrencyLimit: true,
-	}, s.abTesting, "", orchestratorRole))
+	}, s.abTesting, orchestratorABKey(), orchestratorRole))
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)
 	}

@@ -70,6 +70,19 @@ func TestApplyABVariant_SkipsProviderWithMissingCLI(t *testing.T) {
 	}
 }
 
+func TestApplyABVariant_EvalGateExcludesDigestedVariant(t *testing.T) {
+	stubProviderCLIAvailable(t, func(string) bool { return true })
+	m := &Manager{}
+	m.SetEvalPassed(func(variantID, digest string) bool { return false })
+	ab := reviewExperiment(abtest.Variant{ID: "codex-digested", Provider: "codex", Model: "gpt-5.5", Digest: "d1", Weight: 1})
+
+	cfg := m.ApplyABVariant(RunConfig{Model: "opus"}, ab, "task-1", "review")
+
+	if cfg.Provider != "" {
+		t.Fatalf("Provider = %q, want empty — an eval-failed digested variant must not enroll", cfg.Provider)
+	}
+}
+
 func TestApplyABVariant_RoleMismatchLeavesConfigUnchanged(t *testing.T) {
 	stubProviderCLIAvailable(t, func(string) bool { return true })
 	m := &Manager{}
