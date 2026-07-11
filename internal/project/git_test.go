@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1928,6 +1930,99 @@ func TestPushSync_FastForwardWithoutForce(t *testing.T) {
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != newSHA {
 		t.Fatalf("remote SHA after fast-forward = %q, want %q", got, newSHA)
+	}
+}
+
+// TestPushSync_SerializesPrePushHookAcrossWorktreesOfSameClone guards the
+// fix for concurrent-agent pre-push hook flakes: two worktrees of the same
+// bare clone push at the same time, and the shared pre-push hook (installed
+// once, since the hooks dir lives in the clone's git-common-dir) must never
+// run concurrently for both — that's the CPU contention that flakes
+// unrelated race-sensitive tests when many agents push at once.
+func TestPushSync_SerializesPrePushHookAcrossWorktreesOfSameClone(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	remoteBare := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", remoteBare).CombinedOutput(); err != nil {
+		t.Fatalf("init remote bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", src, "remote", "add", "rem", remoteBare).CombinedOutput(); err != nil {
+		t.Fatalf("remote add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", src, "push", "rem", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("push seed: %v: %s", err, out)
+	}
+
+	sybraBare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), remoteBare, sybraBare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), sybraBare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+
+	wt1 := filepath.Join(t.TempDir(), "wt1")
+	wt2 := filepath.Join(t.TempDir(), "wt2")
+	branch1, branch2 := "sybra/push-1", "sybra/push-2"
+	if err := CreateWorktree(context.Background(), sybraBare, wt1, branch1, branch); err != nil {
+		t.Fatalf("create wt1: %v", err)
+	}
+	if err := CreateWorktree(context.Background(), sybraBare, wt2, branch2, branch); err != nil {
+		t.Fatalf("create wt2: %v", err)
+	}
+	for _, wt := range []string{wt1, wt2} {
+		for _, args := range [][]string{
+			{"config", "user.email", "test@test.com"},
+			{"config", "user.name", "Test"},
+			{"config", "commit.gpgsign", "false"},
+		} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = wt
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v: %s", args, err, out)
+			}
+		}
+	}
+	makeCommit(t, wt1, "one")
+	makeCommit(t, wt2, "two")
+
+	// markerDir acts as a mutual-exclusion test point via mkdir's atomicity;
+	// overlapFile is only ever written if a second hook invocation observes
+	// the marker already held.
+	markerDir := filepath.Join(t.TempDir(), "marker")
+	overlapFile := filepath.Join(t.TempDir(), "overlap")
+	hookCmd := fmt.Sprintf(
+		`if ! mkdir %q 2>/dev/null; then echo overlap > %q; fi; sleep 0.3; rmdir %q 2>/dev/null; exit 0`,
+		markerDir, overlapFile, markerDir,
+	)
+	// Hooks live in the shared git-common-dir, so installing once from wt1
+	// covers wt2's pushes too.
+	if err := InstallHooks(context.Background(), wt1, &ChecksConfig{PrePush: []string{hookCmd}}); err != nil {
+		t.Fatalf("install hooks: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs <- PushSync(context.Background(), wt1, branch1)
+	}()
+	go func() {
+		defer wg.Done()
+		errs <- PushSync(context.Background(), wt2, branch2)
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("PushSync: %v", err)
+		}
+	}
+
+	if _, err := os.Stat(overlapFile); err == nil {
+		t.Fatal("pre-push hooks ran concurrently across worktrees of the same clone — expected serialization")
 	}
 }
 

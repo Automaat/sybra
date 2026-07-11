@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // liveAgent is the minimal projection of agent.Agent the detector needs.
@@ -364,6 +365,12 @@ func detectLostAgents(in DetectInput) []Anomaly {
 		if active[t.ID] || live[t.ID] {
 			continue
 		}
+		if parkedAwaitingDispatch(t) {
+			continue
+		}
+		if isLostAgentReport(t) {
+			continue
+		}
 		// Skip if any running agent run started within the window. A freshly
 		// dispatched agent may not yet appear in the live list or have written
 		// its first audit event (e.g. during app restart recovery), so we wait
@@ -499,6 +506,31 @@ func projectAllowed(fn func(string) bool, projectID string) bool {
 		return true
 	}
 	return fn(projectID)
+}
+
+func parkedAwaitingDispatch(t *task.Task) bool {
+	if t.Workflow == nil || t.Workflow.State != workflow.ExecWaiting {
+		return false
+	}
+	return !hasRunningAgentRun(t.AgentRuns)
+}
+
+func hasRunningAgentRun(runs []task.AgentRun) bool {
+	for i := range runs {
+		if runs[i].State == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	lostAgentReportHeader = "## Detection\n- Kind: `" + string(KindLostAgent) + "`"
+	lostAgentReportMarker = "- Fingerprint: `" + string(KindLostAgent) + ":"
+)
+
+func isLostAgentReport(t *task.Task) bool {
+	return strings.Contains(t.Body, lostAgentReportHeader) && strings.Contains(t.Body, lostAgentReportMarker)
 }
 
 // lastHumanReviewVerdict returns the verdict from the most recent stopped
