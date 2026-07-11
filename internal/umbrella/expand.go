@@ -264,10 +264,11 @@ func allMaterialized(subs []SubIssue, existing map[string]bool) bool {
 // a given umbrella URL, if any. Bundled into one struct (rather than four
 // scanExisting return values) to stay under gocritic's result-count limit.
 type existingTracker struct {
-	exists bool
-	id     string
-	tags   []string
-	status task.Status
+	exists       bool
+	id           string
+	tags         []string
+	status       task.Status
+	statusReason string
 }
 
 // scanExisting returns the set of normalized issue refs that already have a
@@ -287,7 +288,7 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 			refs[NormalizeIssueRef(t.Issue)] = true
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
-			tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status}
+			tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status, statusReason: t.StatusReason}
 		}
 	}
 	return refs, tracker, nil

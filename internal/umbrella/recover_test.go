@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -213,6 +214,42 @@ func TestRecoverDegraded_PlannerErrorRecordsFailure(t *testing.T) {
 	}
 }
 
+func TestRecoverDegraded_PlannerErrorReasonIsSafeAndUTF8(t *testing.T) {
+	subs := makeTestIssues(2)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r", Body: "body"}
+	restore := githubFetchUmbrellaForTest(t, umb, subs)
+	defer restore()
+	tasks := newTestTaskManager(t)
+	mkTracker(t, tasks, umb, 5)
+	mkGatedChild(t, tasks, umb, subs[0].URL, nil, task.StatusTodo)
+	mkGatedChild(t, tasks, umb, subs[1].URL, []string{subs[0].URL}, task.StatusBlocked)
+	rawPayload := "INTERNAL-CUSTOMER " + strings.Repeat("界", 300)
+	run := erroringRunner(errors.New(`provider unavailable: "` + rawPayload + `" https://github.com/work/repo/issues/7 ABC-123 user@example.com`))
+
+	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("RecoverDegraded: %v", err)
+	}
+	if !utf8.ValidString(res.Reason) || len(res.Reason) > 160 {
+		t.Fatalf("RecoveryResult.Reason invalid or too long: len=%d valid=%v %q", len(res.Reason), utf8.ValidString(res.Reason), res.Reason)
+	}
+	for _, leak := range []string{"INTERNAL-CUSTOMER", "github.com/work/repo", "ABC-123", "user@example.com"} {
+		if strings.Contains(res.Reason, leak) {
+			t.Fatalf("RecoveryResult.Reason leaked %q: %q", leak, res.Reason)
+		}
+	}
+
+	tracker := mustGetByIssue(t, tasks, umb.URL, task.TaskTypeUmbrella)
+	if !utf8.ValidString(tracker.StatusReason) || len(tracker.StatusReason) > 200 {
+		t.Fatalf("StatusReason invalid or too long: len=%d valid=%v %q", len(tracker.StatusReason), utf8.ValidString(tracker.StatusReason), tracker.StatusReason)
+	}
+	for _, leak := range []string{"INTERNAL-CUSTOMER", "github.com/work/repo", "ABC-123", "user@example.com"} {
+		if strings.Contains(tracker.StatusReason, leak) {
+			t.Fatalf("StatusReason leaked %q: %q", leak, tracker.StatusReason)
+		}
+	}
+}
+
 // TestRecoverDegraded_FallbackPlanIsRefused guards the "recovery must not
 // accept a degraded plan" rule: a planner that never produces a valid DAG
 // makes Generate itself fall back to a linear chain (Fallback=true).
@@ -356,6 +393,45 @@ func TestRecoverDegraded_ActiveChildDependenciesUntouched(t *testing.T) {
 	tracker := mustGetByIssue(t, tasks, umb.URL, task.TaskTypeUmbrella)
 	if slices.Contains(tracker.Tags, FallbackTag) {
 		t.Fatalf("tracker tags = %v, want FallbackTag removed despite the frozen child", tracker.Tags)
+	}
+}
+
+func TestRecoverDegraded_RechecksTrackerStatusBeforeMutating(t *testing.T) {
+	subs := makeTestIssues(2)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r", Body: "body"}
+	restore := githubFetchUmbrellaForTest(t, umb, subs)
+	defer restore()
+	tasks := newTestTaskManager(t)
+	tracker := mkTracker(t, tasks, umb, 1)
+	c1 := mkGatedChild(t, tasks, umb, subs[0].URL, nil, task.StatusTodo)
+	c2 := mkGatedChild(t, tasks, umb, subs[1].URL, nil, task.StatusBlocked)
+	run := func(context.Context, string, string) (string, error) {
+		reason := "operator cancelled during recovery"
+		if _, err := tasks.Update(tracker.ID, task.Update{Status: task.Ptr(task.StatusCancelled), StatusReason: task.Ptr(reason)}); err != nil {
+			t.Fatalf("cancel tracker during planner run: %v", err)
+		}
+		return planJSON(t, 2, subs[0].URL, subs[1].URL), nil
+	}
+
+	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("RecoverDegraded: %v", err)
+	}
+	if res.Outcome != RecoverySkipped {
+		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoverySkipped, res.Reason)
+	}
+	if res.Reason != "tracker status is not recoverable" {
+		t.Fatalf("Reason = %q, want tracker status skip", res.Reason)
+	}
+
+	gotTracker := mustTaskByID(t, tasks, tracker.ID)
+	if !slices.Contains(gotTracker.Tags, FallbackTag) {
+		t.Fatalf("tracker tags = %v, want FallbackTag kept after cancelled recheck", gotTracker.Tags)
+	}
+	got1 := mustTaskByID(t, tasks, c1.ID)
+	got2 := mustTaskByID(t, tasks, c2.ID)
+	if !slices.Equal(got1.DependsOn, c1.DependsOn) || !slices.Equal(got2.DependsOn, c2.DependsOn) {
+		t.Fatalf("children mutated after tracker cancellation: c1=%v c2=%v", got1.DependsOn, got2.DependsOn)
 	}
 }
 

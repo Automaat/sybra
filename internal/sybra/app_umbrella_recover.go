@@ -10,10 +10,13 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
+const maxConcurrentUmbrellaRecoveries = 2
+
 // recoverDegradedUmbrellas scans for umbrella trackers tagged
 // umbrella.FallbackTag and schedules an async umbrella.RecoverDegraded run
 // for each eligible, due tracker — one goroutine per distinct umbrella ref,
-// single-flighted against App's own in-flight set. Ineligible trackers
+// single-flighted against App's own in-flight set and bounded by a small
+// process-local concurrency cap. Ineligible trackers
 // (disabled config, wrong project type, terminal/frozen status, exhausted,
 // cooling down, invalid ref, or duplicate tracker groups) are skipped without
 // ever calling the planner. Cheap to call every gate tick: once nothing is
@@ -116,7 +119,13 @@ func (a *App) umbrellaRecoveryProjectAllowed(tracker task.Task) bool {
 func (a *App) markUmbrellaRecoveryInFlight(ref string) bool {
 	a.umbrellaRecoveryMu.Lock()
 	defer a.umbrellaRecoveryMu.Unlock()
+	if a.umbrellaRecoveryInFlight == nil {
+		a.umbrellaRecoveryInFlight = make(map[string]bool)
+	}
 	if a.umbrellaRecoveryInFlight[ref] {
+		return false
+	}
+	if len(a.umbrellaRecoveryInFlight) >= maxConcurrentUmbrellaRecoveries {
 		return false
 	}
 	a.umbrellaRecoveryInFlight[ref] = true

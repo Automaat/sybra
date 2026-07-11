@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -156,6 +158,15 @@ func RecoverDegraded(ctx context.Context, tasks *task.Manager, run Runner, umbre
 		return res, recErr
 	}
 
+	state, err = scanUmbrellaState(tasks, umb.URL)
+	if err != nil {
+		return RecoveryResult{}, fmt.Errorf("rescan umbrella state before mutation: %w", err)
+	}
+	if skip, eligible := recoveryEligibility(state.tracker, time.Now()); !eligible {
+		skip.UmbrellaURL = umb.URL
+		return skip, nil
+	}
+
 	res, err := applyRecoveredPlan(tasks, umb, plan, planSubs, byRef, state)
 	res.UmbrellaURL = umb.URL
 	return res, err
@@ -170,12 +181,25 @@ func recoveryEligibility(tracker existingTracker, now time.Time) (skip RecoveryR
 		return RecoveryResult{Outcome: RecoverySkipped, Reason: "no umbrella tracker"}, false
 	case !slices.Contains(tracker.tags, FallbackTag):
 		return RecoveryResult{Outcome: RecoverySkipped, Reason: "tracker is not degraded"}, false
+	case !trackerStatusRecoveryEligible(tracker):
+		return RecoveryResult{Outcome: RecoverySkipped, Reason: "tracker status is not recoverable"}, false
 	case HasRecoverExhaustedTag(tracker.tags):
 		return RecoveryResult{Outcome: RecoverySkipped, Reason: "recovery exhausted"}, false
 	case !RecoverDue(tracker.tags, now):
 		return RecoveryResult{Outcome: RecoverySkipped, Reason: "recovery cooling down"}, false
 	default:
 		return RecoveryResult{}, true
+	}
+}
+
+func trackerStatusRecoveryEligible(tracker existingTracker) bool {
+	switch tracker.status {
+	case task.StatusDone, task.StatusCancelled:
+		return false
+	case task.StatusHumanRequired, task.StatusBlocked:
+		return tracker.statusReason == "" || strings.HasPrefix(tracker.statusReason, RecoveryFailureReasonPrefix)
+	default:
+		return true
 	}
 }
 
@@ -292,7 +316,7 @@ func scanUmbrellaState(tasks *task.Manager, umbrellaURL string) (umbrellaScanSta
 			state.refs[NormalizeIssueRef(t.Issue)] = true
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
-			state.tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status}
+			state.tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status, statusReason: t.StatusReason}
 		}
 		if t.UmbrellaIssue != "" && NormalizeIssueRef(t.UmbrellaIssue) == umbKey {
 			state.children = append(state.children, *t)
@@ -503,10 +527,11 @@ func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome Recove
 		if exhausted && !slices.Contains(newTags, RecoverExhaustedTag) {
 			newTags = append(newTags, RecoverExhaustedTag)
 		}
-		result = RecoveryResult{Outcome: outcome, Reason: cause.Error(), FailCount: count, Exhausted: exhausted}
+		reason := safeRecoveryFailureReason(cause)
+		result = RecoveryResult{Outcome: outcome, Reason: reason, FailCount: count, Exhausted: exhausted}
 		return task.Update{
 			Tags:         task.Ptr(newTags),
-			StatusReason: task.Ptr(formatRecoveryFailureReason(count, cause)),
+			StatusReason: task.Ptr(formatRecoveryFailureReason(count, reason)),
 		}, nil
 	})
 	if err != nil {
@@ -515,12 +540,67 @@ func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome Recove
 	return result, nil
 }
 
-func formatRecoveryFailureReason(count int, cause error) string {
-	reason := fmt.Sprintf("%s%d): %v", RecoveryFailureReasonPrefix, count, cause)
+func safeRecoveryFailureReason(cause error) string {
+	reason := cause.Error()
+	reason, _ = scrub.Scrub(reason, nil)
+	reason = stripRecoveryPayloads(reason)
+	return truncateUTF8(reason, 160)
+}
+
+func stripRecoveryPayloads(reason string) string {
+	reason = strings.ReplaceAll(reason, "\r", " ")
+	reason = strings.ReplaceAll(reason, "\n", " ")
+	reason = strings.Join(strings.Fields(reason), " ")
+	reason = stripDelimitedPayloads(reason, '"', '"')
+	reason = stripDelimitedPayloads(reason, '\'', '\'')
+	reason = stripDelimitedPayloads(reason, '{', '}')
+	reason = stripDelimitedPayloads(reason, '[', ']')
+	return strings.TrimSpace(reason)
+}
+
+func stripDelimitedPayloads(s string, open, closing rune) string {
+	var b strings.Builder
+	depth := 0
+	replaced := false
+	for _, r := range s {
+		switch {
+		case r == open && depth == 0:
+			depth = 1
+			if !replaced {
+				b.WriteString("[redacted]")
+				replaced = true
+			}
+		case r == open && open != closing && depth > 0:
+			depth++
+		case r == closing && depth > 0:
+			depth--
+			if depth == 0 {
+				replaced = false
+			}
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func formatRecoveryFailureReason(count int, reason string) string {
+	reason = fmt.Sprintf("%s%d): %s", RecoveryFailureReasonPrefix, count, reason)
 	const maxLen = 200
-	if len(reason) <= maxLen {
-		return reason
+	return truncateUTF8(reason, maxLen)
+}
+
+func truncateUTF8(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
 	}
 	const tail = "..."
-	return reason[:maxLen-len(tail)] + tail
+	if maxLen <= len(tail) {
+		return tail[:maxLen]
+	}
+	cut := maxLen - len(tail)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + tail
 }

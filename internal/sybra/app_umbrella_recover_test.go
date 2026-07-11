@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -172,6 +173,24 @@ func TestRecoverDegradedUmbrellas_AlreadyInFlightSkipsScheduling(t *testing.T) {
 	if got := calls(); len(got) != 0 {
 		t.Fatalf("recover calls = %v, want none for an already in-flight ref", got)
 	}
+}
+
+func TestRecoverDegradedUmbrellas_CapsConcurrentRecoveries(t *testing.T) {
+	t.Parallel()
+	app, tasks, _, _ := newUmbrellaRecoveryApp(t)
+	for i := 1; i <= maxConcurrentUmbrellaRecoveries+1; i++ {
+		mkDegradedTracker(t, tasks, "https://github.com/o/r/issues/"+strconv.Itoa(i), task.StatusInProgress, "", "")
+	}
+	fn, _, release := countingRecoverFn()
+	app.umbrellaRecoverFn = fn
+
+	app.recoverDegradedUmbrellas()
+
+	if got := len(app.umbrellaRecoveryInFlightSnapshot()); got != maxConcurrentUmbrellaRecoveries {
+		t.Fatalf("in-flight recoveries = %d, want cap %d", got, maxConcurrentUmbrellaRecoveries)
+	}
+	release()
+	app.wg.Wait()
 }
 
 func TestUmbrellaRecoveryEligible(t *testing.T) {
