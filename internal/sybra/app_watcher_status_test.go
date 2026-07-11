@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,8 +132,15 @@ func TestApp_WatcherStatusHook_ReleasesTaskAgentsOnExternalHandoffAndTerminal(t 
 	for _, target := range tests {
 		t.Run(string(target), func(t *testing.T) {
 			a := setupApp(t)
-			var released []string
-			a.taskAgentReleaser = func(taskID string) { released = append(released, taskID) }
+			var (
+				releasedMu sync.Mutex
+				released   []string
+			)
+			a.taskAgentReleaser = func(taskID string) {
+				releasedMu.Lock()
+				released = append(released, taskID)
+				releasedMu.Unlock()
+			}
 			a.initStatusHook()
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -177,9 +185,15 @@ func TestApp_WatcherStatusHook_ReleasesTaskAgentsOnExternalHandoffAndTerminal(t 
 			for {
 				select {
 				case <-deadline:
-					t.Fatalf("release not observed after external status change to %s; released=%v", target, released)
+					releasedMu.Lock()
+					snapshot := append([]string(nil), released...)
+					releasedMu.Unlock()
+					t.Fatalf("release not observed after external status change to %s; released=%v", target, snapshot)
 				case <-time.After(50 * time.Millisecond):
-					if len(released) == 1 && released[0] == created.ID {
+					releasedMu.Lock()
+					done := len(released) == 1 && released[0] == created.ID
+					releasedMu.Unlock()
+					if done {
 						return
 					}
 				}
