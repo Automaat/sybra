@@ -284,9 +284,9 @@ func TestReattachAlive_PIDReuseGuard(t *testing.T) {
 // asserts ReattachAll rebuilds the agent, rehydrates its buffer, streams
 // the new result, and finalizes via onComplete when the process exits.
 func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store(int64(50 * time.Millisecond))
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -378,9 +378,9 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
 	// Exercises the full Run -> persisted registry record -> fresh manager
 	// ReattachAll path; sibling reattach tests start from injected records.
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store(int64(50 * time.Millisecond))
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	binDir := t.TempDir()
 	fakeClaude := filepath.Join(binDir, "claude")

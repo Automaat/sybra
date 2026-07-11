@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -26,7 +27,9 @@ var errReattachedResultError = errors.New("agent: reattached run completed with 
 // reattachPIDPoll is how often a reattached agent's PID is checked for
 // liveness (there is no *exec.Cmd to Wait on). Var, not const, so tests
 // can shorten it.
-var reattachPIDPoll = time.Second
+var reattachPIDPoll atomic.Int64
+
+func init() { reattachPIDPoll.Store(int64(time.Second)) }
 
 // ReattachAll rebuilds in-memory agents for subprocesses recorded in the
 // registry that are still alive, and resumes streaming their output by
@@ -60,6 +63,12 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		if r.Mode == "interactive" {
 			// codex and copilot are per-turn conversational agents recreated
 			// on restart; claude interactive reattaches to its live process.
+			if strings.TrimSpace(r.TaskID) != "" {
+				if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
+					m.reapStaleSurvivor(r, reg, reason)
+					continue
+				}
+			}
 			prov, providerErr := lookupProvider(r.Provider)
 			if providerErr != nil {
 				m.logger.Warn("agent.reattach.provider", "id", r.ID, "provider", r.Provider, "err", providerErr)
@@ -439,7 +448,7 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 		close(done)
 		return
 	}
-	t := time.NewTicker(reattachPIDPoll)
+	t := time.NewTicker(time.Duration(reattachPIDPoll.Load()))
 	defer t.Stop()
 	for {
 		select {
