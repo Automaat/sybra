@@ -1958,7 +1958,8 @@ Commands:
            waiting) for tasks that landed in the window — where time is spent.
   health   [--severity warning|critical] [--category CATEGORY]
 
-  triage classify <id>         Classify a single task via claude -p and apply the verdict.
+  triage classify <id>         Classify a single task (must have status=new) via claude -p
+                               and apply the verdict.
   triage classify --all        Classify every task with status=new.
 
   install-skills               Install/refresh Sybra's bundled skills into

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -86,7 +87,7 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 // the race a stale browser tab could otherwise re-fire (double approve,
 // approve-after-reject, etc).
 func requirePendingProposal(cur task.Task) error {
-	if !slices.Contains(cur.Tags, "prompt-lab-proposal") || cur.Status != task.StatusHumanRequired {
+	if !slices.Contains(cur.Tags, promptlab.ProposalTag) || cur.Status != task.StatusHumanRequired {
 		return fmt.Errorf("task %s is not a pending prompt-lab proposal (status=%s)", cur.ID, cur.Status)
 	}
 	return nil
