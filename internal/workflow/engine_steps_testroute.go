@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -612,63 +613,46 @@ func ledgerEntryMarker(fingerprint string) string {
 }
 
 func capLedgerRepro(report string) string {
-	const (
-		maxLines = 40
-		maxBytes = 2 * 1024
-		suffix   = "\n\n[truncated for acceptance ledger]"
-	)
-
-	report = normalizeAcceptanceLedgerReport(report)
-	if report == "" {
-		return ""
-	}
-
-	lines := strings.Split(report, "\n")
-	truncated := false
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-		truncated = true
-	}
-	report = strings.TrimRight(strings.Join(lines, "\n"), "\n")
-	if len(report) <= maxBytes && !truncated {
-		return report
-	}
-
-	limit := maxBytes
-	if limit > len(suffix) {
-		limit -= len(suffix)
-	}
-	if len(report) > limit {
-		report = trimUTF8ToBytes(report, limit)
-		truncated = true
-	}
-	report = strings.TrimRight(report, "\n")
-	if !truncated {
-		return report
-	}
-	if report == "" {
-		return strings.TrimSpace(suffix)
-	}
-	return report + suffix
+	return capTextBlock(normalizeAcceptanceLedgerReport(report), 40, 2*1024, "\n\n[truncated for acceptance ledger]", false)
 }
 
 func capPriorAttemptText(text string) string {
-	const (
-		maxLines = 40
-		maxBytes = 4 * 1024
-		suffix   = "\n\n[truncated for prior-attempt note]"
-	)
+	return capTextBlock(text, 40, 4*1024, "\n\n[truncated for prior-attempt note]", false)
+}
 
+// capPriorAttemptDiffStat caps a `git diff --stat` block for a prior-attempt
+// note, preserving git's trailing "N files changed, ..." aggregate line (emitted
+// last) so a prior attempt touching more than maxLines files still shows its
+// overall size rather than only a head-cut file list.
+func capPriorAttemptDiffStat(text string) string {
+	return capTextBlock(text, 40, 4*1024, "\n\n[truncated for prior-attempt note]", true)
+}
+
+// capTextBlock head-truncates text to maxLines then byte-caps it to maxBytes,
+// appending suffix when anything was dropped. When preserveLastLine is set, the
+// final line is held aside before the line cut and re-appended afterwards — used
+// for `git diff --stat`, whose aggregate summary line is emitted last and would
+// otherwise be dropped by the head cut for large diffs.
+func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLastLine bool) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}
 
 	lines := strings.Split(text, "\n")
+	lastLine := ""
+	if preserveLastLine && len(lines) > 1 {
+		lastLine = lines[len(lines)-1]
+		lines = lines[:len(lines)-1]
+	}
+
 	truncated := false
 	if len(lines) > maxLines {
 		lines = lines[:maxLines]
 		truncated = true
+	}
+	if lastLine != "" {
+		lines = append(lines, lastLine)
 	}
 	text = strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	if len(text) <= maxBytes && !truncated {
@@ -2445,7 +2429,13 @@ func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, tas
 	if fingerprint == "" {
 		fingerprint = "unknown"
 	}
-	marker := fmt.Sprintf("<!-- sybra-prior-attempt:%s:%d:%s -->", taskID, attempts, fingerprint)
+	// The marker's sequence number is the total product-bug rejection count, NOT
+	// the fingerprint-gated `attempts` — `attempts` does not advance across
+	// low-detail rejections with an empty fingerprint, so two consecutive vague
+	// rejections would otherwise share the marker `...:0:unknown` and the second
+	// note's diff/reason would be silently dropped by AppendNote's dedup.
+	rejections := countProductBugRejections(t)
+	marker := fmt.Sprintf("<!-- sybra-prior-attempt:%s:%d:%s -->", taskID, rejections, fingerprint)
 	diffStat := e.attemptDiffStat(ctx, wtPath)
 	reason := reimplementRejectReason(t, wfExec)
 	section := fmt.Sprintf(
@@ -2470,13 +2460,21 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 	base := resolveOriginBase(diffCtx, wtPath)
 	cmd := exec.CommandContext(diffCtx, "git", "diff", "--stat", base+"...HEAD")
 	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	// Capture stderr separately so git's non-fatal advisories (safe.directory,
+	// advice.* hints) — which it can emit while still exiting 0 — never leak into
+	// the note's fenced diff-stat block presented as if part of the diff.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		diag := singleLineDiagnostic(err, string(out))
+		diag := singleLineDiagnostic(err, stderr.String())
 		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "err", err, "phase", "diff-stat")
 		return "(diff unavailable: " + diag + ")"
 	}
-	diff := capPriorAttemptText(string(out))
+	if stderr.Len() > 0 {
+		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, stderr.String()))
+	}
+	diff := capPriorAttemptDiffStat(string(out))
 	if diff == "" {
 		return "(no changes recorded)"
 	}
@@ -2678,6 +2676,32 @@ func (e *Engine) logSpecDecisionEscalation(taskID string, attempts, limit int, f
 		"task_id", taskID, "attempts", attempts, "cap", limit,
 		"recurring_classes", len(fingerprints), "fingerprints", fingerprints,
 		"non_converging_cap", nonConvergingCap)
+}
+
+// countProductBugRejections counts every valid product-bug test-runner
+// rejection in the current testing cycle, including low-detail ones with an
+// empty failure fingerprint that countValidProductTestAttempts deliberately
+// skips. It advances by one per rejection, giving each reimplement note a
+// marker sequence that stays unique even across consecutive fingerprint-less
+// rejections (see seedReimplementNote).
+func countProductBugRejections(t TaskInfo) int {
+	n := 0
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole {
+			continue
+		}
+		if run.ProtocolViolation != "" {
+			continue
+		}
+		if run.TestOutcome == testOutcomeProductBug {
+			n++
+		}
+	}
+	return n
 }
 
 func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (int, bool) {
