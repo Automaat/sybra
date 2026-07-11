@@ -14,7 +14,13 @@ import (
 	"time"
 )
 
-type fakeCheckGetter struct{ cmds, setup []string }
+type fakeCheckGetter struct {
+	cmds    []string
+	codegen []string
+	setup   []string
+}
+
+func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
 
 func (f *fakeCheckGetter) VerifyCommands(context.Context, string) []string { return f.cmds }
 

@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,16 +12,8 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig is the regression for
-// issue #1519's checks.verify half: verify_checks executes
-// checkConfigGetterAdapter.VerifyCommands' result unsandboxed via `sh -c`
-// (engine_steps_verify_checks.go), so those commands must never be sourced
-// from the checked-out worktree's own .sybra.yaml — a compromised or
-// prompt-injected agent could plant a malicious checks.verify block there and
-// get it executed on the next verify pass. Only the project's trusted
-// default-branch .sybra.yaml (or the app-level project config) may supply
-// verify commands.
-func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
+func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, want string, getCommands func(*checkConfigGetterAdapter, context.Context, string) []string) {
+	t.Helper()
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
 
@@ -45,6 +38,14 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	repoCfg := "checks:\n" +
+		"  codegen:\n" +
+		"    - echo TRUSTED_CODEGEN\n" +
+		"  verify:\n" +
+		"    - echo TRUSTED_VERIFY\n"
+	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte(repoCfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "init")
 
@@ -64,10 +65,10 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Project-level trusted config: not the checked-out worktree, and the
-	// default-branch .sybra.yaml has no checks.verify of its own, so this is
-	// the command MergeChecks must fall back to.
+	// trusted default-branch .sybra.yaml wins over both worktree edits and the
+	// app-level fallback.
 	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
-		"\nclone_path: " + bare + "\ntype: pet\nchecks:\n  verify:\n    - echo TRUSTED_DEFAULT_BRANCH\n"
+		"\nclone_path: " + bare + "\ntype: pet\nchecks:\n  codegen:\n    - echo APP_CODEGEN\n  verify:\n    - echo APP_VERIFY\n"
 	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -102,25 +103,56 @@ func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 
 	// Attacker-controlled .sybra.yaml planted directly in the task's own
 	// worktree (e.g. by a compromised implementation agent).
-	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  verify:\n    - echo UNTRUSTED_WORKTREE\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  codegen:\n    - echo UNTRUSTED_CODEGEN\n  verify:\n    - echo UNTRUSTED_VERIFY\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	getter := &checkConfigGetterAdapter{
+	adapter := &checkConfigGetterAdapter{
 		tasks:    taskMgr,
 		projects: projects,
 		mgr:      wm,
 	}
 
-	got := getter.VerifyCommands(t.Context(), tk.ID)
-	if len(got) != 1 || got[0] != "echo TRUSTED_DEFAULT_BRANCH" {
-		t.Fatalf("VerifyCommands = %#v, want only trusted default-branch command", got)
+	got := getCommands(adapter, t.Context(), tk.ID)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("%s = %#v, want only trusted default-branch command %q", which, got, want)
 	}
 
-	gotSetup := getter.SetupCommands(t.Context(), tk.ID)
+	gotSetup := adapter.SetupCommands(t.Context(), tk.ID)
 	for _, c := range gotSetup {
 		if c == "echo UNTRUSTED_SETUP" {
 			t.Fatalf("SetupCommands leaked the untrusted worktree setup: %#v", gotSetup)
 		}
 	}
+}
+
+// TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig is the regression for
+// issue #1519's checks.verify half: verify_checks executes
+// checkConfigGetterAdapter.VerifyCommands' result unsandboxed via `sh -c`
+// (engine_steps_verify_checks.go), so those commands must never be sourced
+// from the checked-out worktree's own .sybra.yaml.
+func TestAdversarialVerifyCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
+	testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(
+		t,
+		"VerifyCommands",
+		"echo TRUSTED_VERIFY",
+		func(a *checkConfigGetterAdapter, ctx context.Context, taskID string) []string {
+			return a.VerifyCommands(ctx, taskID)
+		},
+	)
+}
+
+// TestAdversarialCodegenCommandsIgnoreWorktreeRepoConfig is the checks.codegen
+// half of issue #1519: codegen_gate executes these commands unsandboxed via
+// `sh -c`, so the checked-out worktree's own .sybra.yaml must never be able to
+// replace the trusted default-branch config.
+func TestAdversarialCodegenCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
+	testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(
+		t,
+		"CodegenCommands",
+		"echo TRUSTED_CODEGEN",
+		func(a *checkConfigGetterAdapter, ctx context.Context, taskID string) []string {
+			return a.CodegenCommands(ctx, taskID)
+		},
+	)
 }

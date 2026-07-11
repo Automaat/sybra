@@ -38,6 +38,12 @@ checks:
   pre_push:
     - mise exec -- go test ./...
     - (cd frontend && npm run check)
+  # Mutation pass run by the codegen_gate workflow step right before PR
+  # creation/update so generated files, goimports, and go.mod drift are fixed
+  # in the worktree and committed before the branch is pushed.
+  codegen:
+    - mise exec -- golangci-lint fmt ./...
+    - mise exec -- go mod tidy
   # Verify suite run by the verify_checks workflow step (reward-hacking
   # phase 2): runs on the agent's branch HEAD before review so an
   # implementation that does not pass its own tests cannot reach a PR. This
