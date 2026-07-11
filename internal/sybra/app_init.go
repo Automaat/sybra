@@ -717,6 +717,22 @@ func (a *App) initWorkflowEngine() {
 		a.logger.Info("workflow.disabled")
 		return
 	}
+	// Construct the admission queue before the workflow engine so a failure
+	// here fails closed: no partially-initialized queue is ever wired into a
+	// live workflow engine. A construction failure (e.g. AgentQueueDir()
+	// unwritable) is logged and this function returns without creating the
+	// engine at all — matching the pre-existing behavior for a failed
+	// workflow.NewStore below.
+	q, qErr := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
+	if qErr != nil {
+		a.logger.Error("agentqueue.init", "err", qErr)
+		return
+	}
+	a.agentQueue = q
+	if a.agentOrch != nil {
+		a.agentOrch.SetQueue(q)
+	}
+
 	wfStore, err := workflow.NewStore(config.WorkflowsDir())
 	if err != nil {
 		a.logger.Error("workflow.store.init", "err", err)

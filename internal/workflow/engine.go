@@ -27,6 +27,12 @@ type TaskInfo struct {
 	StatusReason          string
 	Tags                  []string
 	AgentMode             string
+	// Priority mirrors task.Priority ("", "low", "medium", "high", "urgent").
+	// Kept as a plain string, not task.Priority, since internal/workflow must
+	// stay decoupled from internal/task (see dispatchorder's package doc) —
+	// an app-wired SetDispatchComparator converts it back when building an
+	// agentqueue.Item to reuse agentqueue.Less for ResumeStalled's ordering.
+	Priority              string
 	ProjectID             string
 	ProjectType           string
 	HandoffSourceProvider string
@@ -314,6 +320,19 @@ type Engine struct {
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
 	conflictRecovery func(taskID string) bool
+	// dispatchComparator, when set, orders TaskInfo pairs for ResumeStalled's
+	// per-tick dispatch scan, replacing the built-in
+	// dispatchorder.Rank(status)-only sort. Wired by app_init.go so
+	// agentqueue.Less can back the ordering without internal/workflow
+	// importing internal/agentqueue (which imports internal/task — see
+	// TaskInfo.Priority's doc comment). fn must return <0/0/>0 like
+	// cmp.Compare. nil preserves the original status-rank-only ordering.
+	dispatchComparator func(a, b TaskInfo) int
+	// queueReconciler, when set, runs once per ResumeStalled tick before the
+	// dispatch scan, pruning admission-queue items whose task has gone
+	// missing, terminal, or already in-progress (agentqueue.Queue.Reconcile).
+	// nil disables reconciliation (no queue wired).
+	queueReconciler func()
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -471,6 +490,22 @@ func (e *Engine) SetConflictRecovery(fn func(taskID string) bool) { e.conflictRe
 // branch-divergence recovery hook.
 func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
 	e.SetConflictRecovery(fn)
+}
+
+// SetDispatchComparator wires a total-order comparator for ResumeStalled's
+// per-tick task scan, replacing the built-in dispatchorder.Rank(status)-only
+// sort. fn must return <0/0/>0 like cmp.Compare. Leaving it unset (nil)
+// preserves the original status-rank-only ordering.
+func (e *Engine) SetDispatchComparator(fn func(a, b TaskInfo) int) {
+	e.dispatchComparator = fn
+}
+
+// SetQueueReconciler wires a hook invoked once per ResumeStalled tick, before
+// sorting/dispatch, to prune admission-queue items whose task has gone
+// missing, terminal, or already in-progress. Leaving it unset (nil) disables
+// reconciliation.
+func (e *Engine) SetQueueReconciler(fn func()) {
+	e.queueReconciler = fn
 }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {

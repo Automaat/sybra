@@ -856,15 +856,26 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
+	// Prune stale admission-queue items (missing/terminal/in-progress tasks)
+	// before scanning, so this tick's ordering never reasons about a queued
+	// item that no longer reflects live task state.
+	if e.queueReconciler != nil {
+		e.queueReconciler()
+	}
+
 	tasks, err := e.tasks.ListTasks()
 	if err != nil {
 		e.logger.Error("workflow.resume-stalled.list", "err", err)
 		return
 	}
 
-	slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-		return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
-	})
+	if e.dispatchComparator != nil {
+		slices.SortStableFunc(tasks, e.dispatchComparator)
+	} else {
+		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
+			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+		})
+	}
 
 	for i := range tasks {
 		t := &tasks[i]

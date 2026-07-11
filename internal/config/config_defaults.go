@@ -568,6 +568,7 @@ func (c *Config) Directories() map[string]string {
 		"artifacts":   ArtifactsDir(),
 		"experiences": c.ExperiencesDir(),
 		"learning":    LearningDir(),
+		"queue":       AgentQueueDir(),
 	}
 }
 
@@ -579,6 +580,14 @@ func LearningDir() string {
 
 func (c *Config) ExperiencesDir() string {
 	return filepath.Join(HomeDir(), "experience")
+}
+
+// AgentQueueDir is the directory under ~/.sybra that holds the persisted
+// agent-dispatch admission queue (internal/agentqueue). Always resolved
+// through HomeDir() — never reconstruct the operator home by another path
+// (see the no-home-fallback gate, #1576).
+func AgentQueueDir() string {
+	return filepath.Join(HomeDir(), "queue")
 }
 
 func Load() (*Config, error) {

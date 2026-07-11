@@ -118,6 +118,19 @@ type AgentDefaults struct {
 	// PlaywrightMCP configures the default-off headless Playwright MCP server
 	// attached to test-runner runs that resolve to the Claude provider.
 	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+	// Queue configures the agent-dispatch admission queue (internal/agentqueue)
+	// that a workflow implementation dispatch falls back to when the agent
+	// pool is saturated, instead of erroring or wasting a worktree prep.
+	Queue QueueConfig `yaml:"queue" json:"queue"`
+}
+
+// QueueConfig configures the agent-dispatch admission queue.
+type QueueConfig struct {
+	// MaxDepth caps the number of distinct tasks the admission queue holds at
+	// once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new
+	// task that can't get a pool slot is rejected with a normal dispatch
+	// error instead of being queued.
+	MaxDepth int `yaml:"max_depth" json:"maxDepth"`
 }
 
 // PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP

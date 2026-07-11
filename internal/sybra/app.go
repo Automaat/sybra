@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
@@ -87,6 +88,11 @@ type App struct {
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
 	agentOrch         *agentorch.Orchestrator
+	// agentQueue is the admission queue a workflow implementation dispatch
+	// falls back to when the agent pool is saturated. Constructed in
+	// initWorkflowEngine; nil when construction fails (fail-closed — the
+	// workflow engine is then never created either) or workflows are disabled.
+	agentQueue        *agentqueue.Queue
 	reviewer          *review.Handler
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
