@@ -422,6 +422,7 @@ func (a *App) Startup(ctx context.Context) error {
 		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
+	a.agentOrch.SetContext(ctx)
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 
 	a.initWorkflowEngine()
