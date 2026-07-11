@@ -42,6 +42,8 @@ checks:
   # review/testing so generated files, goimports, and go.mod drift are fixed
   # in the worktree and committed before downstream validation.
   codegen:
+    - mise exec -- go run ./cmd/gen-api-shim
+    - mise exec -- go generate ./internal/config/...
     - mise exec -- golangci-lint fmt ./...
     - mise exec -- go mod tidy
   # Verify suite run by the verify_checks workflow step (reward-hacking

@@ -41,7 +41,7 @@ func TestAdversarialVerifyChecks_DoesNotHumanRequireWhenCorruptInstallRepairFail
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

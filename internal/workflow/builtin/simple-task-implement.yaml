@@ -43,6 +43,10 @@ steps:
 
         {{acceptanceledger .Task.Body}}
         {{- end}}
+        {{- if getvar .Vars "verify_reask_note"}}
+
+        {{getvar .Vars "verify_reask_note"}}
+        {{- end}}
         {{- if getvar .Vars "watchdog_reask_note"}}
 
         {{getvar .Vars "watchdog_reask_note"}}
