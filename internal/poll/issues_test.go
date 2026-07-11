@@ -528,6 +528,113 @@ func TestIssuesFetcher_SyncIssuesToTasks_LinkedViewerPR(t *testing.T) {
 	}
 }
 
+// TestIssuesFetcher_SyncIssuesToTasks_TwoIssuesLinkedToSamePR_OnlyOneClaimsBranch
+// is a regression test for #696bc049: a single PR can close more than one
+// GitHub issue, so two distinct issues in the SAME poll batch can both
+// resolve to the same viewer-authored linked PR. Without a guard, both
+// resulting tasks would persist the identical Branch and later collide when
+// each tries to provision its own git worktree on that branch. Only the
+// first issue processed should claim the branch/PR link; the second must
+// stay a plain todo task rather than cross-claim a sibling's branch.
+func TestIssuesFetcher_SyncIssuesToTasks_TwoIssuesLinkedToSamePR_OnlyOneClaimsBranch(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	sharedPR := github.PullRequest{Number: 99, HeadRefName: "fix/shared-pr", Author: "me"}
+	env.fetcher.fetchIssueLinkedPRs = func(repo string, issueNumber int) ([]github.PullRequest, error) {
+		return []github.PullRequest{sharedPR}, nil
+	}
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{
+		{
+			Number:     10,
+			Title:      "first issue closed by the shared PR",
+			URL:        "https://github.com/acme/pet1/issues/10",
+			Repository: "acme/pet1",
+		},
+		{
+			Number:     11,
+			Title:      "second issue also closed by the shared PR",
+			URL:        "https://github.com/acme/pet1/issues/11",
+			Repository: "acme/pet1",
+		},
+	})
+
+	tasks, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	var claimed, unclaimed int
+	for _, tsk := range tasks {
+		switch {
+		case tsk.Branch == "fix/shared-pr" && tsk.PRNumber == 99 && tsk.Status == task.StatusInReview:
+			claimed++
+		case tsk.Branch == "" && tsk.PRNumber == 0 && tsk.Status == task.StatusTodo:
+			unclaimed++
+		default:
+			t.Fatalf("unexpected task state: %+v", tsk)
+		}
+	}
+	if claimed != 1 || unclaimed != 1 {
+		t.Fatalf("claimed = %d, unclaimed = %d, want exactly one of each (no duplicate branch assignment)", claimed, unclaimed)
+	}
+}
+
+// TestIssuesFetcher_SyncIssuesToTasks_LinkedPRBranchAlreadyOwnedKeepsTodo
+// covers the cross-poll variant of the same regression: a prior poll already
+// created a task owning a branch (e.g. via an earlier issue closed by the
+// same PR). A later poll processing a different issue that GitHub also links
+// to that PR must not cross-assign the already-claimed branch onto the new
+// task.
+func TestIssuesFetcher_SyncIssuesToTasks_LinkedPRBranchAlreadyOwnedKeepsTodo(t *testing.T) {
+	t.Parallel()
+
+	env := newIssuesFetcherForTest(t, nil, nil)
+	writeProject(t, env.projectsDir, "acme--pet1.yaml", "acme/pet1", "acme", "pet1", project.ProjectTypePet)
+
+	owner, err := env.tasks.CreateFull("earlier task", "", "headless", task.Update{
+		ProjectID: task.Ptr("acme/pet1"),
+		Branch:    task.Ptr("fix/shared-pr"),
+		PRNumber:  task.Ptr(99),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatalf("create owner task: %v", err)
+	}
+
+	env.fetcher.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return []github.PullRequest{{Number: 99, HeadRefName: "fix/shared-pr", Author: "me"}}, nil
+	}
+
+	env.fetcher.syncIssuesToTasks([]github.Issue{{
+		Number:     12,
+		Title:      "later issue also closed by the same PR",
+		URL:        "https://github.com/acme/pet1/issues/12",
+		Repository: "acme/pet1",
+	}})
+
+	tasks, err := env.tasks.List()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("task count = %d, want 2", len(tasks))
+	}
+	for _, tsk := range tasks {
+		if tsk.ID == owner.ID {
+			continue
+		}
+		if tsk.Branch != "" || tsk.PRNumber != 0 || tsk.Status != task.StatusTodo {
+			t.Fatalf("new task = %+v, want plain todo with no branch/PR cross-assigned from the owner task", tsk)
+		}
+	}
+}
+
 func TestIssuesFetcher_SyncIssuesToTasks_URLTitleLinkedViewerPR(t *testing.T) {
 	t.Parallel()
 
