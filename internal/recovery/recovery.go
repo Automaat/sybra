@@ -36,6 +36,11 @@ type ProjectGetter interface {
 // Defined as an interface so tests can stub it without wiring the full engine.
 type WorkflowRestarter interface {
 	StartWorkflow(taskID, workflowID string) error
+	// DispatchEvent matches the task's CURRENT status against builtin trigger
+	// conditions and starts whichever workflow matches — see
+	// handleTerminalWorkflow for why this must be preferred over blindly
+	// restarting a stale WorkflowID.
+	DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error)
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
 }
 
