@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
@@ -195,6 +196,7 @@ func (a *App) initLocalStores() {
 	a.initArtifacts()
 	a.initExperience()
 	a.initLearning()
+	a.initAgentQueue()
 }
 
 func (a *App) initExperience() {
@@ -216,6 +218,15 @@ func (a *App) initLearning() {
 		return
 	}
 	a.learning = store
+}
+
+func (a *App) initAgentQueue() {
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{}, a.logger)
+	if err != nil {
+		a.logger.Warn("agentqueue.init.degraded", "err", err)
+		return
+	}
+	a.agentQueue = queue
 }
 
 func (a *App) initLimits() {
