@@ -102,22 +102,87 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 
 	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
 
+	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+}
+
+func TestCIFailurePrompt_DetectsForkRemote(t *testing.T) {
+	t.Parallel()
+
+	prompt := ciFailurePrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+	})
+
+	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+	if strings.Contains(prompt, "gh pr view") {
+		t.Fatalf("ci failure prompt still derives push remote ad hoc instead of using create-pr semantics:\n%s", prompt)
+	}
+}
+
+func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
+	t.Parallel()
+
+	prompt := commentsPrompt(context.Background(), github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+		URL:         "https://github.com/acme/widgets/pull/1178",
+	})
+
+	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+}
+
+func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+	}, "")
+
+	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
+}
+
+func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string) {
+	t.Helper()
+
 	for _, forbidden := range []string{
 		"git push origin HEAD",
+		"git push origin HEAD:" + branch,
 	} {
 		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("branch conflict prompt still hardcodes origin push (%q):\n%s", forbidden, prompt)
+			t.Fatalf("prompt still hardcodes origin push (%q):\n%s", forbidden, prompt)
 		}
 	}
 	for _, want := range []string{
 		"PUSH_REMOTE=origin",
 		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
-		"git push \"$PUSH_REMOTE\" HEAD:fix/example",
-		"Push to `fork` (not `origin`) when a `fork` remote exists",
+		"git push \"$PUSH_REMOTE\" HEAD:" + branch,
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+
+	// Fence markers must be balanced and never nested — the push snippet must
+	// join an already-open fence rather than opening its own, or the agent is
+	// told to run a literal ```sh line (see review finding on prFixPushPrompt).
+	var open bool
+	var fences int
+	for line := range strings.SplitSeq(prompt, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		fences++
+		// A CommonMark closing fence may only be the bare backticks; an info
+		// string here (e.g. ```sh) means the helper opened a nested fence.
+		if open && trimmed != "```" {
+			t.Fatalf("closing fence has an info string (nested fence?) %q:\n%s", line, prompt)
+		}
+		open = !open
+	}
+	if open {
+		t.Fatalf("prompt has an unclosed code fence (%d markers):\n%s", fences, prompt)
 	}
 }
 
