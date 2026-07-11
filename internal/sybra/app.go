@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -531,7 +533,7 @@ func (a *App) Shutdown(_ context.Context) {
 		a.cancel()
 	}
 	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
-		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace)
+		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace, "stacks", a.dumpGoroutineStacks())
 	}
 	if a.agents != nil {
 		a.agents.Shutdown()
@@ -562,6 +564,19 @@ func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
 	case <-time.After(grace):
 		return false
 	}
+}
+
+func (a *App) dumpGoroutineStacks() string {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	if a.logDir == "" {
+		return "no logDir; " + fmt.Sprintf("%d goroutines", runtime.NumGoroutine())
+	}
+	path := filepath.Join(a.logDir, "shutdown-stacks.txt")
+	if err := os.WriteFile(path, buf[:n], 0o644); err != nil {
+		return "dump failed: " + err.Error()
+	}
+	return path
 }
 
 // StartAgent delegates to agentorch.Orchestrator and is exposed as a Wails-bound method.
