@@ -130,34 +130,53 @@ func RecoverAfterTag(t time.Time) string {
 }
 
 // ParseRecoverFailCount reads the consecutive recovery-failure count from a
-// tracker's tags, defaulting to 0 when absent, malformed, or negative.
+// tracker's tags, defaulting to 0 when absent, malformed, or negative. The
+// writer (recordRecoveryFailure) always collapses to a single
+// RecoverFailTagPrefix tag via ReplaceTagPrefix, but a hand-edited task file
+// could still carry duplicates — take the max across every matching tag so a
+// stray lower duplicate can never undercount failures and shorten backoff.
 func ParseRecoverFailCount(tags []string) int {
+	best := 0
 	for _, t := range tags {
 		if rest, ok := strings.CutPrefix(t, RecoverFailTagPrefix); ok {
-			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil && n >= 0 {
-				return n
+			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil && n > best {
+				best = n
 			}
 		}
 	}
-	return 0
+	return best
 }
 
 // RecoverDue reports whether recovery is allowed to run against a tracker
-// carrying tags, at instant now. Recovery is due when no RecoverAfterTag is
-// present, the tag is malformed (fails closed to "due" rather than blocking a
-// retry forever on a corrupt tag), or the encoded instant is not in the
-// future.
+// carrying tags, at instant now. Recovery is due when no (validly-formed)
+// RecoverAfterTag is present, or the latest encoded instant across every
+// matching tag is not in the future. The writer always collapses to a single
+// tag via ReplaceTagPrefix, but duplicates from a hand-edited task file are
+// scanned for the latest (most conservative) instant rather than the first
+// one seen; a malformed tag is ignored rather than treated as due, unless it
+// is the only match, in which case it still fails open to "due" rather than
+// blocking a retry forever on a corrupt tag.
 func RecoverDue(tags []string, now time.Time) bool {
+	var latest int64
+	found := false
 	for _, t := range tags {
-		if rest, ok := strings.CutPrefix(t, RecoverAfterTagPrefix); ok {
-			sec, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
-			if err != nil {
-				return true
-			}
-			return !now.Before(time.Unix(sec, 0))
+		rest, ok := strings.CutPrefix(t, RecoverAfterTagPrefix)
+		if !ok {
+			continue
+		}
+		sec, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+		if err != nil {
+			continue
+		}
+		found = true
+		if sec > latest {
+			latest = sec
 		}
 	}
-	return true
+	if !found {
+		return true
+	}
+	return !now.Before(time.Unix(latest, 0))
 }
 
 // HasRecoverExhaustedTag reports whether tags already carry

@@ -516,6 +516,14 @@ func removeFallbackTag(tasks *task.Manager, trackerID string) error {
 // StatusReason. FallbackTag and any dependency writes already applied before
 // the failure are left untouched — a recovery failure never clears existing
 // child dependencies.
+//
+// StatusReason is only overwritten when it is already empty or
+// recovery-owned (RecoveryFailureReasonPrefix) — mirroring
+// clearRecoveryState's ownsReason guard. The planner call this follows can
+// run for seconds to minutes, during which an operator or another
+// automation may have moved the tracker to blocked/human-required with an
+// unrelated reason; this read happens against cur (the fresh state at write
+// time), so that reason is never clobbered by a stale recovery attempt.
 func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome RecoveryOutcome, cause error) (RecoveryResult, error) {
 	var result RecoveryResult
 	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
@@ -529,10 +537,12 @@ func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome Recove
 		}
 		reason := safeRecoveryFailureReason(cause)
 		result = RecoveryResult{Outcome: outcome, Reason: reason, FailCount: count, Exhausted: exhausted}
-		return task.Update{
-			Tags:         task.Ptr(newTags),
-			StatusReason: task.Ptr(formatRecoveryFailureReason(count, reason)),
-		}, nil
+		upd := task.Update{Tags: task.Ptr(newTags)}
+		ownsReason := cur.StatusReason == "" || strings.HasPrefix(cur.StatusReason, RecoveryFailureReasonPrefix)
+		if ownsReason {
+			upd.StatusReason = task.Ptr(formatRecoveryFailureReason(count, reason))
+		}
+		return upd, nil
 	})
 	if err != nil {
 		return RecoveryResult{}, fmt.Errorf("record recovery failure: %w", err)

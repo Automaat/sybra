@@ -214,6 +214,53 @@ func TestRecoverDegraded_PlannerErrorRecordsFailure(t *testing.T) {
 	}
 }
 
+// TestRecoverDegraded_ConcurrentOperatorReasonNotClobberedOnFailure exercises
+// the race recordRecoveryFailure guards against: an operator (or another
+// automation) moves the tracker to blocked with an unrelated reason while
+// the planner call is in flight. The runner stub mutates the tracker
+// mid-call to simulate that window; the failure path must leave the
+// operator's reason alone rather than overwriting it with a recovery-owned
+// one.
+func TestRecoverDegraded_ConcurrentOperatorReasonNotClobberedOnFailure(t *testing.T) {
+	subs := makeTestIssues(2)
+	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r", Body: "body"}
+	restore := githubFetchUmbrellaForTest(t, umb, subs)
+	defer restore()
+	tasks := newTestTaskManager(t)
+	tracker := mkTracker(t, tasks, umb, 5)
+	mkGatedChild(t, tasks, umb, subs[0].URL, nil, task.StatusTodo)
+	mkGatedChild(t, tasks, umb, subs[1].URL, []string{subs[0].URL}, task.StatusBlocked)
+
+	const operatorReason = "blocked: waiting on an unrelated dependency"
+	run := func(context.Context, string, string) (string, error) {
+		if _, err := tasks.UpdateFn(tracker.ID, func(cur task.Task) (task.Update, error) {
+			return task.Update{
+				Status:       task.Ptr(task.StatusBlocked),
+				StatusReason: task.Ptr(operatorReason),
+			}, nil
+		}); err != nil {
+			t.Fatalf("simulate concurrent operator edit: %v", err)
+		}
+		return "", errors.New("provider unavailable")
+	}
+
+	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
+	if err != nil {
+		t.Fatalf("RecoverDegraded: %v", err)
+	}
+	if res.Outcome != RecoveryFailed {
+		t.Fatalf("res = %+v, want Failed", res)
+	}
+
+	got := mustGetByIssue(t, tasks, umb.URL, task.TaskTypeUmbrella)
+	if got.StatusReason != operatorReason {
+		t.Fatalf("StatusReason = %q, want operator's reason %q left untouched", got.StatusReason, operatorReason)
+	}
+	if ParseRecoverFailCount(got.Tags) != 1 {
+		t.Fatalf("recover fail count = %d, want 1 (retry bookkeeping still advances): %v", ParseRecoverFailCount(got.Tags), got.Tags)
+	}
+}
+
 func TestRecoverDegraded_PlannerErrorReasonIsSafeAndUTF8(t *testing.T) {
 	subs := makeTestIssues(2)
 	umb := github.Issue{Title: "umbrella", URL: "https://github.com/o/r/issues/100", Repository: "o/r", Body: "body"}

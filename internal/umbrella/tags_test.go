@@ -68,6 +68,7 @@ func TestParseRecoverFailCount(t *testing.T) {
 		{"malformed defaults", []string{"umbrella-recover-fail:abc"}, 0},
 		{"negative defaults", []string{"umbrella-recover-fail:-1"}, 0},
 		{"nil defaults", nil, 0},
+		{"duplicates take the max", []string{RecoverFailTag(1), RecoverFailTag(3), RecoverFailTag(2)}, 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -92,6 +93,8 @@ func TestRecoverDue(t *testing.T) {
 		{"future is not due", []string{RecoverAfterTag(now.Add(time.Hour))}, false},
 		{"past is due", []string{RecoverAfterTag(now.Add(-time.Hour))}, true},
 		{"exact instant is due", []string{RecoverAfterTag(now)}, true},
+		{"duplicates take the latest", []string{RecoverAfterTag(now.Add(-time.Hour)), RecoverAfterTag(now.Add(time.Hour))}, false},
+		{"malformed duplicate ignored alongside a valid future tag", []string{"umbrella-recover-after:not-a-number", RecoverAfterTag(now.Add(time.Hour))}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

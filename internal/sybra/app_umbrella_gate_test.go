@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
@@ -826,11 +827,20 @@ func TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease(t *t
 
 	app.releaseUnblockedChildren()
 
-	if got := calls(); len(got) != 1 {
-		t.Fatalf("recover calls = %v, want exactly 1 scheduled for the degraded umbrella", got)
-	}
 	if !app.umbrellaRecoveryInFlightSnapshot()[umbrella.NormalizeIssueRef(umbA)] {
 		t.Fatal("degraded umbrella ref not marked in-flight")
+	}
+	// recoverFn runs in its own goroutine (see recoverDegradedUmbrellas), so
+	// its call only becomes visible once that goroutine is scheduled —
+	// unlike the in-flight marker above, which is set synchronously before
+	// the goroutine is spawned. waitFor lives in an e2e-tagged file, so poll
+	// inline here rather than depend on it from an untagged test file.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls()) != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("recover calls = %v, want exactly 1 scheduled for the degraded umbrella", got)
 	}
 
 	gotB := mustTask(t, tasks, childB.ID)
