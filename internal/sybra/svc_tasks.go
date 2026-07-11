@@ -838,9 +838,13 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		Title:     task.Ptr(pr.Title),
 		ProjectID: task.Ptr(repo),
 		PRNumber:  task.Ptr(pr.Number),
-		Branch:    task.Ptr(pr.HeadRefName),
 		Slug:      task.Ptr(slug),
 	}
+	if branch, ok := s.claimIngestBranch(repo, pr.HeadRefName, taskID); ok {
+		u.Branch = task.Ptr(branch)
+	}
+	// claimIngestBranch already logs the reason (list failure vs. collision)
+	// on rejection; no need to duplicate/relabel it here.
 	// Replace tags with the PR's labels (possibly empty), which also clears the
 	// enrich-pending marker set on the URL stub at creation.
 	labels := pr.Labels
@@ -960,9 +964,17 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		// ReconcilePendingEnrichment to find and retry it — inert forever.
 		labels = append(labels, enrichPendingTag)
 	} else if linked, ok := s.singleViewerLinkedPR(linkedPRs); ok {
-		u.PRNumber = task.Ptr(linked.Number)
-		u.Branch = task.Ptr(linked.HeadRefName)
-		u.Status = task.Ptr(task.StatusInReview)
+		if branch, ok := s.claimIngestBranch(repo, linked.HeadRefName, taskID); ok {
+			u.PRNumber = task.Ptr(linked.Number)
+			u.Branch = task.Ptr(branch)
+			u.Status = task.Ptr(task.StatusInReview)
+		}
+		// Else: this PR's branch already belongs to a different task — e.g.
+		// one PR closes more than one GitHub issue, and another issue's task
+		// already claimed it — or the ownership check itself failed to read.
+		// Leave this task's own PR link unclaimed rather than have two tasks
+		// race to own the same branch/worktree; claimIngestBranch already
+		// logged the specific reason.
 	} else if len(linkedPRs) > 0 {
 		if viewerPRs := s.viewerLinkedPRCount(linkedPRs); viewerPRs > 1 {
 			s.logger.Warn("enrich-issue.linked-prs.ambiguous", "task_id", taskID, "count", viewerPRs)
@@ -1227,6 +1239,30 @@ func (s *TaskService) viewerLoginFunc() func() string {
 		return s.viewerLogin
 	}
 	return github.ViewerLogin
+}
+
+// claimIngestBranch returns (branch, true) unless branch is already the
+// Branch of a different live task in projectID, in which case it returns
+// ("", false) so the caller leaves the task's Branch unset — branchNameForTask
+// then derives a task-unique fallback from the task's own id instead of
+// cross-assigning a sibling's branch. A List failure fails closed (treated as
+// a collision): losing a real branch link on a transient read error is
+// strictly safer than risking two tasks racing to own the same worktree.
+func (s *TaskService) claimIngestBranch(projectID, branch, excludeTaskID string) (string, bool) {
+	if branch == "" {
+		return "", false
+	}
+	all, err := s.tasks.List()
+	if err != nil {
+		s.logger.Warn("ingest.branch-guard.list", "err", err)
+		return "", false
+	}
+	if owner, taken := task.BranchOwnedByOther(all, projectID, branch, excludeTaskID); taken {
+		s.logger.Warn("ingest.branch-guard.collision",
+			"task_id", excludeTaskID, "owner_task_id", owner, "branch", branch, "project_id", projectID)
+		return "", false
+	}
+	return branch, true
 }
 
 func (s *TaskService) singleViewerLinkedPR(prs []github.PullRequest) (github.PullRequest, bool) {

@@ -1132,6 +1132,107 @@ func TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker(t *testi
 	}
 }
 
+// TestTaskService_EnrichFromIssue_LinkedPRBranchAlreadyOwnedSkipsBranch is a
+// regression test for #696bc049: a PR can close more than one GitHub issue,
+// so enrichFromIssue's linked-PR discovery can resolve to a PR/branch that a
+// different, already-existing task already owns. Cross-assigning that
+// branch onto this task too would make both tasks fight over the same git
+// worktree. The guard must leave this task's PR link unclaimed instead.
+func TestTaskService_EnrichFromIssue_LinkedPRBranchAlreadyOwnedSkipsBranch(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	owner, err := svc.tasks.CreateFull("earlier task", "", "headless", task.Update{
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("fix/shared-pr"),
+		PRNumber:  task.Ptr(99),
+		Status:    task.Ptr(task.StatusInReview),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "later issue closed by the same PR",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return []github.PullRequest{{Number: 99, HeadRefName: "fix/shared-pr", Author: "me"}}, nil
+	}
+	svc.viewerLogin = func() string { return "me" }
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "" || got.PRNumber != 0 || got.Status == task.StatusInReview {
+		t.Fatalf("task = %+v, want no branch/PR cross-assigned from task %s", got, owner.ID)
+	}
+	if got.Title != "later issue closed by the same PR" {
+		t.Fatalf("Title = %q, want the real issue title even though the branch was skipped", got.Title)
+	}
+
+	ownerStillOwns, err := svc.GetTask(owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerStillOwns.Branch != "fix/shared-pr" || ownerStillOwns.PRNumber != 99 {
+		t.Fatalf("owner task = %+v, want its original branch/PR untouched", ownerStillOwns)
+	}
+}
+
+// TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch mirrors the
+// issue-side regression test above for the direct PR-URL enrichment path:
+// pasting a PR URL whose head branch is already owned by a different task
+// must not persist that branch onto the new task too.
+func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	owner, err := svc.tasks.CreateFull("earlier task", "", "headless", task.Update{
+		ProjectID: task.Ptr("owner/repo"),
+		Branch:    task.Ptr("fix/shared-pr"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.fetchPR = func(string, int) (github.PullRequest, error) {
+		return github.PullRequest{
+			Number:      7,
+			Title:       "a PR reusing another task's branch",
+			HeadRefName: "fix/shared-pr",
+			Author:      "me",
+		}, nil
+	}
+	svc.viewerLogin = func() string { return "me" }
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/pull/7", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "" {
+		t.Fatalf("Branch = %q, want empty (must not cross-assign task %s's branch)", got.Branch, owner.ID)
+	}
+	if got.Title != "a PR reusing another task's branch" {
+		t.Fatalf("Title = %q, want the real PR title even though the branch was skipped", got.Title)
+	}
+}
+
 // TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure
 // covers the recovery half of the above: once the title has already been
 // rewritten to the real issue title (so it no longer parses as a GitHub
