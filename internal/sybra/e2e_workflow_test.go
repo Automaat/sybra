@@ -440,19 +440,10 @@ func hostOversubscriptionFactor() int64 {
 	return int64(math.Ceil(load))
 }
 
-func hostLoadPerCPU() (float64, bool) {
-	data, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return 0, false
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return 0, false
-	}
-	load1, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil {
-		return 0, false
-	}
+// loadPerCPU divides a 1-minute load average by CPU count. Shared by the
+// per-OS hostLoadPerCPU implementations (e2e_hostload_linux_test.go,
+// e2e_hostload_darwin_test.go).
+func loadPerCPU(load1 float64) (float64, bool) {
 	cpus := runtime.NumCPU()
 	if cpus <= 0 {
 		return 0, false

@@ -166,7 +166,7 @@ func TestReattachCodexConvo_RecreatesIdleAgent(t *testing.T) {
 	}
 	select {
 	case <-a.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(scaledDeadline(3 * time.Second)):
 		t.Fatal("recreated codex agent did not exit after StopAgent")
 	}
 
@@ -454,7 +454,7 @@ func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
 		t.Fatalf("GetAgent: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for !completed.Load() {
 		select {
 		case <-deadline:
@@ -531,7 +531,7 @@ func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
 		t.Fatalf("expected FIFO path restored, got %q", a.GetStdinPath())
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for !completed.Load() {
 		select {
 		case <-deadline:
@@ -615,7 +615,7 @@ func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T)
 
 	m.reattachConvo(ctx, a, 0, procStart, false)
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(scaledDeadline(3 * time.Second))
 	for time.Now().Before(deadline) && a.GetSessionID() != "cop-fake" {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -645,7 +645,7 @@ func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T)
 	}
 	select {
 	case <-a.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(scaledDeadline(3 * time.Second)):
 		t.Fatal("agent did not exit after StopAgent")
 	}
 }
@@ -668,7 +668,7 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 
 	var outFile *os.File
 	var tailOffset int64
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), scaledDeadline(10*time.Second))
 	defer cancel()
 
 	resultCh := make(chan error, 1)
@@ -678,7 +678,7 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 	}()
 
 	// Wait for the FIFO to be assigned and persisted.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for a.GetStdinPath() == "" {
 		select {
 		case <-deadline:
@@ -693,7 +693,7 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 	}
 
 	var recs []Record
-	deadline = time.After(5 * time.Second)
+	deadline = time.After(scaledDeadline(5 * time.Second))
 	for {
 		var err error
 		recs, err = m.reg.List()
@@ -713,7 +713,7 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 	// The initial prompt was delivered over the FIFO — wait for the fake
 	// binary's echoed result to land in the log.
 	logPath := a.GetLogPath()
-	deadline = time.After(10 * time.Second)
+	deadline = time.After(scaledDeadline(10 * time.Second))
 	for {
 		data, _ := os.ReadFile(logPath)
 		if strings.Contains(string(data), "first turn") {
@@ -731,7 +731,7 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 	m.signalKill(a)
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(scaledDeadline(5 * time.Second)):
 		t.Fatal("runHeadlessAttemptSurvive did not return after signalKill")
 	}
 	// Unblocks stopWithSIGINT's internal SIGKILL-escalation goroutine
@@ -804,7 +804,7 @@ func TestReattachHeadlessReopensFIFO(t *testing.T) {
 	// reattachHeadless reopens the FIFO from its own goroutine
 	// (go m.reattachHeadless(...) in ReattachAllContext), so poll rather than
 	// assert immediately after ReattachAll returns.
-	fifoDeadline := time.After(5 * time.Second)
+	fifoDeadline := time.After(scaledDeadline(5 * time.Second))
 	for !a.convo.hasStdinPipe() {
 		select {
 		case <-fifoDeadline:
@@ -813,7 +813,7 @@ func TestReattachHeadlessReopensFIFO(t *testing.T) {
 		}
 	}
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for !completed.Load() {
 		select {
 		case <-deadline:
