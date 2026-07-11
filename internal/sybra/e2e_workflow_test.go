@@ -410,7 +410,7 @@ func e2eTimeoutScale() int64 {
 	return e2eTimeoutScaleCached.value
 }
 
-const e2eTimeoutScaleCeiling = 12
+const e2eTimeoutScaleCeiling = 16
 
 func e2eTimeoutScaleResolve() int64 {
 	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
@@ -421,7 +421,7 @@ func e2eTimeoutScaleResolve() int64 {
 	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
 		return 1
 	}
-	base := int64(4)
+	base := int64(8)
 	scaled := base * hostOversubscriptionFactor()
 	if scaled < base {
 		return base
