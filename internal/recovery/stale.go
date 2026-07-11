@@ -180,6 +180,12 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 // in-progress) directly — the same fix already applied to
 // TaskService.UpdateTask's manual in-progress restart (svc_tasks.go) for the
 // identical class of bug. See #1657.
+//
+// The redispatch runs in an async WG goroutine, so the status captured from
+// the List() snapshot can be stale by the time it fires. The goroutine
+// re-reads the task and bails unless it is still in-progress, so a concurrent
+// human-required park (human-review agent, monitor) is never overridden by a
+// stale in-progress dispatch.
 func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 	if r.WorkflowEngine == nil || t.Workflow == nil {
 		return false
@@ -212,9 +218,28 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		return true
 	}
 	taskID := t.ID
-	status := string(t.Status)
-	r.Logger.Info("restart-stale.redispatch", "task_id", taskID, "workflow", wfID, "status", status)
+	r.Logger.Info("restart-stale.redispatch", "task_id", taskID, "workflow", wfID, "status", string(t.Status))
 	r.WG.Go(func() {
+		// Re-read the task inside the goroutine: the status captured by the
+		// RestartStaleInProgress List() snapshot is stale by the time this
+		// closure runs (it contends with e.dispatching locking and every
+		// other WG goroutine from the same pass). If something moved the task
+		// off in-progress in that window — most importantly a human-review
+		// agent or monitor parking it at human-required — dispatching with the
+		// stale in-progress status would match simple-task-implement and
+		// silently resume implementation on a task an operator just parked.
+		// Bail out entirely rather than falling back to StartWorkflow.
+		cur, getErr := r.Tasks.Get(taskID)
+		if getErr != nil {
+			r.Logger.Warn("restart-stale.redispatch.reget-failed", "task_id", taskID, "err", getErr)
+			return
+		}
+		if cur.Status != task.StatusInProgress {
+			r.Logger.Info("restart-stale.redispatch.status-moved",
+				"task_id", taskID, "status", string(cur.Status))
+			return
+		}
+		status := string(cur.Status)
 		matched, dispatchErr := r.WorkflowEngine.DispatchEvent(
 			taskID, "task.status_changed", map[string]string{"task.status": status}, nil)
 		if dispatchErr == nil && matched != "" {
