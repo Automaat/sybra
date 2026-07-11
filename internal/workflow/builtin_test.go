@@ -766,9 +766,10 @@ func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 }
 
 // TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff proves the proactive
-// sync_branch step runs first — before the create_pr-vs-push_existing_pr
-// branch point — so both PR handoff paths (new PR and retry-with-pr_number)
-// get a fresh sync before the branch is pushed.
+// sync_branch step runs first, then codegen_gate runs before the
+// create_pr-vs-push_existing_pr branch point, so both PR handoff paths (new
+// PR and retry-with-pr_number) get a fresh sync and final mutation pass before
+// the branch is pushed.
 func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -797,12 +798,30 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 		t.Fatal("sync_branch step not found in simple-task-pr")
 		return
 	}
-	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
-		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
+	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "codegen_gate" {
+		t.Fatalf("sync_branch.Next = %+v, want unconditional goto codegen_gate", syncStep.Next)
+	}
+
+	codegenStep := simple.StepByID("codegen_gate")
+	if codegenStep == nil {
+		t.Fatal("codegen_gate step not found in simple-task-pr")
+		return
+	}
+	if codegenStep.Type != StepCodegenGate {
+		t.Fatalf("codegen_gate step type = %q, want %q", codegenStep.Type, StepCodegenGate)
+	}
+	if len(codegenStep.Next) != 2 {
+		t.Fatalf("codegen_gate.Next len = %d, want 2", len(codegenStep.Next))
+	}
+	if got, _ := ResolveTransition(codegenStep.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Fatalf("codegen_gate human-required transition = %q, want workflow stop", got)
+	}
+	if got, _ := ResolveTransition(codegenStep.Next, map[string]string{"task.status": "ready-pr"}); got != "maybe_create_pr" {
+		t.Fatalf("codegen_gate default transition = %q, want maybe_create_pr", got)
 	}
 
 	// maybe_create_pr must still be the branch point covering both downstream
-	// PR paths — sync_branch does not bypass either one.
+	// PR paths — sync_branch/codegen_gate do not bypass either one.
 	guard := simple.StepByID("maybe_create_pr")
 	if guard == nil {
 		t.Fatal("maybe_create_pr step not found in simple-task-pr")
