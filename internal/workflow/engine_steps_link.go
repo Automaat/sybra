@@ -26,6 +26,9 @@ const (
 	maxPRCreatePushedNoPRRetries  = 3
 	prCreateAuthAttemptsVar       = "workflow.pr_create_auth_attempts"
 	maxPRCreateAuthRetries        = 3
+	prPushRetryStatusReason       = "push failed — retrying once before ruling out a flake"
+	prPushAttemptsVar             = "workflow.pr_push_attempts"
+	maxPRPushRetries              = 1
 )
 
 // execLinkPRAndReview is a non-LLM mechanical step that tries to recover the

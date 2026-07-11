@@ -154,6 +154,25 @@ func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte
 	return nil, false, fmt.Errorf("git show %s:%s: %w", ref, path, runErr)
 }
 
+// gitCommonDir resolves worktreePath's shared .git directory — for a linked
+// worktree this is the bare clone's admin dir, identical across every
+// worktree of the same clone, which is what lets callers key a lock (e.g.
+// bareRepoLocks) so it serializes across concurrently-operating worktrees of
+// one project rather than just within a single worktree.
+func gitCommonDir(ctx context.Context, worktreePath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	return gitDir, nil
+}
+
 // InstallHooks writes pre-commit and pre-push git hooks into the worktree's
 // hooks directory. Existing hooks are overwritten. No-op if checks is nil or
 // both slices are empty.
@@ -162,15 +181,9 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
+	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
-		return fmt.Errorf("resolve git dir: %w", err)
-	}
-	gitDir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreePath, gitDir)
+		return err
 	}
 	hooksDir := filepath.Join(gitDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -221,15 +234,9 @@ git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$
 // lives in the git-common-dir and so covers every worktree of the clone; the
 // write is idempotent.
 func InstallSignoffHook(ctx context.Context, worktreePath string) error {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
+	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
-		return fmt.Errorf("resolve git dir: %w", err)
-	}
-	gitDir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreePath, gitDir)
+		return err
 	}
 	hooksDir := filepath.Join(gitDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -851,7 +858,24 @@ func stripHTTPSUserinfo(rawURL string) (string, bool) {
 // PushUpstream pushes branch to the fork remote if present, else origin,
 // with -u to set remote tracking.
 func PushUpstream(ctx context.Context, worktreePath, branch string) error {
-	return executil.Run(ctx, worktreePath, "git", "push", "-u", PushRemote(ctx, worktreePath), branch)
+	return pushLocked(ctx, worktreePath, "push", "-u", PushRemote(ctx, worktreePath), branch)
+}
+
+// pushLocked runs `git push` with args while holding the bareRepoLocks mutex
+// for worktreePath's shared git dir. A project's pre-push hook (typically
+// `go test ./...`) runs as a child of this exact subprocess, so this is what
+// actually serializes hook execution across every worktree of one project —
+// without it, N agents pushing concurrently each spawn their own full test
+// run at once, and the resulting host CPU contention is what flakes
+// timing-sensitive tests unrelated to any of their diffs.
+func pushLocked(ctx context.Context, worktreePath string, args ...string) error {
+	gitDir, err := gitCommonDir(ctx, worktreePath)
+	if err != nil {
+		return err
+	}
+	return withBareRepoLock(gitDir, func() error {
+		return executil.Run(ctx, worktreePath, "git", args...)
+	})
 }
 
 // SetBranchTo force-sets a branch ref in the bare clone to point at commit,
@@ -1124,7 +1148,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
 	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
-		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
+		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
 	}
 	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
@@ -1134,7 +1158,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 
 	// Fast-forward when remote SHA is reachable from local SHA.
 	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return executil.Run(ctx, worktreePath, "git", "push", "-u", remote, branch)
+		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
 	}
 
 	// Divergence path: never force-push. remoteSHA reflects the freshly
