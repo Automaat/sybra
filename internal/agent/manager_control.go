@@ -101,8 +101,8 @@ func (m *Manager) StopAgents(agents []*Agent) {
 		m.logger.Info("agent.stop-for-task", "agent_id", a.ID, "task_id", a.TaskID)
 		// Detached children do not observe stdin EOF or parent ctx cancel, so
 		// signal them directly before canceling to actually free the pool slot.
+		a.MarkStopped()
 		if a.isDetached() {
-			a.MarkStopped()
 			m.signalKill(a)
 		}
 		if a.cancel != nil {
