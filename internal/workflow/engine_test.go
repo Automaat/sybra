@@ -1896,6 +1896,48 @@ func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{"cancelled", "done", "human-required"} {
+		t.Run(keep, func(t *testing.T) {
+			tasks := newMemTasks()
+			engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: keep,
+				Workflow: &Execution{
+					WorkflowID:  "wait-human-wf",
+					CurrentStep: "review_plan",
+					State:       ExecWaiting,
+					Variables:   make(map[string]string),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			ti, _ := tasks.GetTask("t1")
+			if ti.Status != keep {
+				t.Fatalf("status = %q, want %q unchanged (skip status must not be reconciled)", ti.Status, keep)
+			}
+		})
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
