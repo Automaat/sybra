@@ -330,29 +330,30 @@ Startup logs an `app.automations` summary line so you can verify the role of eac
 
 ### Server Deployment (home-nas)
 
-Sybra also runs headless as a server, deployed from `~/sideprojects/home-nas`.
+Sybra runs headless as a **systemd service** (not Docker) directly on the LXC, deployed from `~/sideprojects/home-nas`. It builds from source on each start and **auto-deploys `main`** via the built-in `autoupdate` loop. Deployment artifacts live in this repo under `deploy/` (systemd unit + build/run scripts + full runbook in `deploy/README.md`).
 
-- **Host:** `synapse` LXC (CT 114) on Proxmox, `192.168.20.219` (VLAN 20), Ubuntu 24.04, 6 cores / 16GB RAM
-- **Container:** `ghcr.io/automaat/sybra:<version>` via Docker Compose (container name: `sybra`)
-- **Compose file:** `/opt/synapse/docker-compose.yml` on host (source: `ansible/docker-compose/synapse-stack.yml`)
-- **Volumes:** `/data/sybra/home` (→ `~/.sybra` inside container), `/data/sybra/claude` (Claude Code settings + hooks), `/data/sybra/codex` (Codex config)
+- **Host:** `sybra` LXC (CT 114) on Proxmox, `192.168.20.219` (VLAN 20), Ubuntu 24.04, 6 cores / 16GB RAM — single-tenant (only Sybra runs here).
+- **Runtime:** `systemd` unit `sybra` runs `sybra-server` directly (no container). `ExecStartPre=/opt/sybra/bin/sybra-build.sh` rebuilds the web bundle + Go binary from `/opt/sybra/src` (a git checkout on `main`) into `/opt/sybra/build`; `ExecStart` runs it via `mise exec`. Toolchain (go/node) + `claude`/`codex` CLIs are host-installed via `mise` for the `sybra` user.
+- **Data:** `/data/sybra/home` ⇄ `~sybra/.sybra` (symlink), `/data/sybra/{claude,codex,klaudiush}` ⇄ the sybra user's `~/.claude`, `~/.codex`, `~/.config/klaudiush`. Tasks, config, projects, worktrees, and the agent registry live under `/data/sybra/home` and survive any restart/redeploy.
+- **Lossless redeploy:** the unit sets `KillMode=process`, so a restart signals only `sybra-server`; the detached (`setsid`) agent subprocesses keep running and are re-adopted by `ReattachAll` on the next start (no interrupted turn). `Restart=on-failure` + `RestartForceExitStatus=42` + `TimeoutStopSec=45` mean a crash or a hung shutdown always self-recovers.
+- **Auto-deploy:** `auto_update` (config `enabled: true`, `mode: auto`, `repo_dir: /opt/sybra/src`) polls `origin/main` every 5 min, `git merge --ff-only`, then requests a restart (exit 42) → `ExecStartPre` rebuilds → lossless restart. `sybra-build.sh` keeps the last-good build on a failed build, so a broken `main` never downs the service (it does **not** gate on CI-green — see `deploy/README.md`).
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
-- **Deploy:** `ansible/playbooks/setup-synapse-lxc.yml` (provision LXC), `ansible/playbooks/deploy-synapse.yml` (push compose + restart)
-- **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring
+- **Deploy:** `ansible/playbooks/setup-sybra-lxc.yml` (provision LXC), `ansible/playbooks/deploy-sybra.yml` (provision toolchain, install unit + scripts, render config, `systemctl restart`).
+- **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring.
 
-**SSH access:** `ssh root@192.168.20.219` (no DNS for `synapse`/`synapse.mskalski.dev` from outside LAN — use IP). Inventory: `home-nas/ansible/inventory.yml` → group `synapse_lxc`. Common debug commands:
+**SSH access:** `ssh root@192.168.20.219` (no DNS for `synapse`/`synapse.mskalski.dev` from outside LAN — use IP). Inventory: `home-nas/ansible/inventory.yml` → group `sybra_lxc`. Common debug commands:
 
 ```bash
-ssh root@192.168.20.219 "docker ps"                                  # container status
-ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server logs
+ssh root@192.168.20.219 "systemctl status sybra"                     # service status
+ssh root@192.168.20.219 "journalctl -u sybra -n 100 --no-pager"      # unit journal (build + start)
+ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server app logs
 ssh root@192.168.20.219 "ls /data/sybra/home/tasks/"                 # task files
-ssh root@192.168.20.219 "cat /data/sybra/home/config.yaml"           # server config
-ssh root@192.168.20.219 "docker exec sybra sybra-cli list"           # CLI inside container
+ssh root@192.168.20.219 "sudo -u sybra env -i bash -lc 'cd /opt/sybra/src && mise exec -- /opt/sybra/build/sybra-cli list'"  # CLI
 ```
 
-Bumping the deployed version = update image tag in `ansible/docker-compose/synapse-stack.yml`, run the deploy playbook.
+Deploying = merge to `main` (auto-deploys within ~5 min) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).
 
-**Toolchain inside the server container.** The image ships `mise` only — no Go, Node extras, or lint tools are pre-installed. Every project declares its own bootstrap, resolved from two layers per worktree:
+**Toolchain on the server host.** The LXC has `mise` (+ go/node and the `claude`/`codex` CLIs) installed for the `sybra` user, but no per-project language tools. Every project declares its own bootstrap, resolved from two layers per worktree:
 
 1. `setup:` in the repo's `.sybra.yaml` — canonical toolchain, checked into git, identical on every machine.
 2. `SetupCommands []string` in `~/.sybra/projects/<id>.yaml` — machine-local extras (optional), editable from the Project → Setup tab in the UI.
@@ -526,7 +527,7 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Using `allowed_tools: []` without understanding the fallback is governed by `agent.require_permissions`/`agent.headless_permission_mode`, not always `--dangerously-skip-permissions` — see the permission-flag precedence under Agent Execution Modes
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
 - ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageTags` (`cmd/sybra-cli/main.go`) mapping it to a `handoff-<name>` tag, and add a `simple-task-handoff-<name>.yaml` builtin that flips a fresh task straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → `simple-task-handoff-testing.yaml` → status `testing`)
-- ❌ Baking project toolchains into the prod `Dockerfile` — the image ships `mise` only. Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require a container rebuild.
+- ❌ Baking project toolchains into the server host or `Dockerfile` — the server host has `mise` only (the darwin `Dockerfile` is CI/legacy, not the deploy path). Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require any host/image change.
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
 - ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.
 - ❌ Surfacing `internal/artifact/` content in a GitHub issue/PR/comment without routing through `App.workScrubContextForTask` + `scrub.Scrub` first — the artifact store is raw/local-debug-only and never scrubs at write time.
