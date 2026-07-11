@@ -25,6 +25,7 @@ function makePR(overrides: Record<string, unknown> = {}) {
     feedbackSig: '',
     viewerHasApproved: false,
     copilotReviewed: false,
+    selfAuthoredBot: false,
     createdAt: '2026-04-01T00:00:00Z',
     updatedAt: '2026-04-01T00:00:00Z',
     sourcedViaRest: false,
