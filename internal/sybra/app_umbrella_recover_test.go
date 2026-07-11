@@ -10,7 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -191,6 +193,49 @@ func TestRecoverDegradedUmbrellas_CapsConcurrentRecoveries(t *testing.T) {
 	}
 	release()
 	app.wg.Wait()
+}
+
+func TestRunUmbrellaRecovery_AuditErrorReasonIsSafe(t *testing.T) {
+	t.Parallel()
+	app, _, _, _ := newUmbrellaRecoveryApp(t)
+	auditDir := t.TempDir()
+	al, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = al.Close() })
+	app.audit = al
+
+	tracker := task.Task{
+		ID:    "tracker-1",
+		Issue: `not-a-ref "INTERNAL-CUSTOMER ` + strings.Repeat("界", 300) + `" https://github.com/work/repo/issues/7 ABC-123 user@example.com`,
+	}
+
+	app.runUmbrellaRecovery(tracker)
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Hour),
+		Until: time.Now().Add(time.Hour),
+		Type:  audit.EventUmbrellaRecovery,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("audit events = %d, want attempt and error events: %+v", len(events), events)
+	}
+	reason, ok := events[1].Data["reason"].(string)
+	if !ok {
+		t.Fatalf("error audit reason missing or not a string: %+v", events[1].Data)
+	}
+	if !utf8.ValidString(reason) || len(reason) > 160 {
+		t.Fatalf("audit reason invalid or too long: len=%d valid=%v %q", len(reason), utf8.ValidString(reason), reason)
+	}
+	for _, leak := range []string{"INTERNAL-CUSTOMER", "github.com/work/repo", "ABC-123", "user@example.com"} {
+		if strings.Contains(reason, leak) {
+			t.Fatalf("audit reason leaked %q: %q", leak, reason)
+		}
+	}
 }
 
 func TestUmbrellaRecoveryEligible(t *testing.T) {

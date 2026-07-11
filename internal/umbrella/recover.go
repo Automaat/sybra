@@ -540,7 +540,18 @@ func recordRecoveryFailure(tasks *task.Manager, trackerID string, outcome Recove
 	return result, nil
 }
 
+// SafeRecoveryFailureReason returns a bounded, scrubbed recovery failure reason
+// suitable for persisted task metadata or audit data. It deliberately strips
+// quoted/delimited payloads because planner/provider errors can echo issue
+// content or raw LLM output.
+func SafeRecoveryFailureReason(cause error) string {
+	return safeRecoveryFailureReason(cause)
+}
+
 func safeRecoveryFailureReason(cause error) string {
+	if cause == nil {
+		return ""
+	}
 	reason := cause.Error()
 	reason, _ = scrub.Scrub(reason, nil)
 	reason = stripRecoveryPayloads(reason)

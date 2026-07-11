@@ -178,8 +178,9 @@ func (a *App) runUmbrellaRecovery(tracker task.Task) {
 	// initIssuesFetcher's expander closure.
 	result, err := umbrella.RecoverDegraded(a.ctx, a.tasks, run, tracker.Issue, opts...)
 	if err != nil {
-		a.logger.Error("umbrella.recover.error", "task_id", tracker.ID, "err", err)
-		a.logAudit(audit.EventUmbrellaRecovery, tracker.ID, "", map[string]any{"outcome": "error", "reason": err.Error()})
+		reason := umbrella.SafeRecoveryFailureReason(err)
+		a.logger.Error("umbrella.recover.error", "task_id", tracker.ID, "reason", reason)
+		a.logAudit(audit.EventUmbrellaRecovery, tracker.ID, "", map[string]any{"outcome": "error", "reason": reason})
 		return
 	}
 	a.logger.Info("umbrella.recover.result", "task_id", tracker.ID,
