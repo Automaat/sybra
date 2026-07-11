@@ -860,11 +860,20 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 type stubWorkflowEngine struct {
 	startWorkflowCalls int
 	completions        []workflow.AgentCompletion
+
+	dispatchEventCalls  []map[string]string
+	dispatchEventResult string
+	dispatchEventErr    error
 }
 
 func (s *stubWorkflowEngine) StartWorkflow(_, _ string) error {
 	s.startWorkflowCalls++
 	return nil
+}
+
+func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[string]string) (string, error) {
+	s.dispatchEventCalls = append(s.dispatchEventCalls, extraFields)
+	return s.dispatchEventResult, s.dispatchEventErr
 }
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
@@ -955,6 +964,139 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 	if !strings.Contains(updated.StatusReason, "conflict resolved") {
 		t.Errorf("status reason = %q, want cancellation reason", updated.StatusReason)
+	}
+}
+
+// newTerminalWorkflowInProgressTask creates an in-progress task whose
+// recorded workflow (wfID) already reached a terminal state — the shape left
+// behind after, e.g., a testing bounce escalates to human-required and an
+// out-of-band caller (a monitor auto-retry, an operator dispatch) then flips
+// status back to in-progress without touching the stale Workflow field.
+func newTerminalWorkflowInProgressTask(t *testing.T, tasks *task.Manager, wfID string) string {
+	t.Helper()
+	created, err := tasks.Create("resume after testing bounce", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	wf := &workflow.Execution{
+		WorkflowID:  wfID,
+		State:       workflow.ExecCompleted,
+		CompletedAt: task.Ptr(time.Now().UTC()),
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Status: &status, Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	return created.ID
+}
+
+// TestRestartStaleTerminalWorkflowRedispatchesByCurrentStatus verifies the
+// fix for #1657: a task auto-resumed from human-required back to in-progress
+// still carries whatever workflow last ran (here: testing-task, from a
+// testing bounce) with a terminal state. Blindly restarting that stale
+// WorkflowID would replay testing (or, for a task that escalated out of
+// planning, triage/plan) instead of resuming implementation. Recovery must
+// redispatch via task.status_changed so the trigger system lands on
+// simple-task-implement, and must NOT fall back to the stale StartWorkflow
+// call when DispatchEvent already found a match.
+func TestRestartStaleTerminalWorkflowRedispatchesByCurrentStatus(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	taskID := newTerminalWorkflowInProgressTask(t, tasks, "testing-task")
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{dispatchEventResult: "simple-task-implement"}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.dispatchEventCalls) != 1 {
+		t.Fatalf("DispatchEvent called %d times; want 1", len(wfStub.dispatchEventCalls))
+	}
+	if got := wfStub.dispatchEventCalls[0]["task.status"]; got != string(task.StatusInProgress) {
+		t.Errorf("DispatchEvent task.status = %q; want %q", got, task.StatusInProgress)
+	}
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("StartWorkflow called %d times; want 0 (DispatchEvent already matched)", wfStub.startWorkflowCalls)
+	}
+
+	updated, err := tasks.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Errorf("task status = %s; want %s (unchanged, dispatch owns any further transition)", updated.Status, task.StatusInProgress)
+	}
+}
+
+// TestRestartStaleTerminalWorkflowFallsBackWhenNoTriggerMatches verifies the
+// safety net: if DispatchEvent finds no builtin trigger matching the task's
+// current status, recovery still falls back to restarting the recorded
+// WorkflowID directly rather than silently leaving the task inert.
+func TestRestartStaleTerminalWorkflowFallsBackWhenNoTriggerMatches(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	newTerminalWorkflowInProgressTask(t, tasks, "testing-task")
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{} // dispatchEventResult == "" -> no match
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.dispatchEventCalls) != 1 {
+		t.Fatalf("DispatchEvent called %d times; want 1", len(wfStub.dispatchEventCalls))
+	}
+	if wfStub.startWorkflowCalls != 1 {
+		t.Errorf("StartWorkflow called %d times; want 1 (fallback)", wfStub.startWorkflowCalls)
 	}
 }
 

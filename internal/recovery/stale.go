@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -165,6 +166,20 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 // Workflows that require external vars (pr-fix) are reverted to in-review so
 // the originating dispatcher re-evaluates rather than receiving nil vars from
 // a bare StartWorkflow call, which would launch the agent in the wrong dir.
+//
+// The generic fallback below redispatches via task.status_changed rather than
+// blindly restarting the stale t.Workflow.WorkflowID. This task is always
+// in-progress here (the caller loop only reaches handleTerminalWorkflow for
+// StatusInProgress tasks), but the recorded WorkflowID can be whatever stage
+// last ran before an out-of-band status write (e.g. a monitor auto-retry out
+// of human-required) parked it back at in-progress — testing-task after a
+// testing bounce, or even simple-task-plan after a plan-review escalation.
+// Blindly restarting that stale ID replays the wrong stage (re-testing, or
+// worse, triage/plan from scratch) instead of resuming implementation.
+// DispatchEvent matches simple-task-implement's trigger (status_changed,
+// in-progress) directly — the same fix already applied to
+// TaskService.UpdateTask's manual in-progress restart (svc_tasks.go) for the
+// identical class of bug. See #1657.
 func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 	if r.WorkflowEngine == nil || t.Workflow == nil {
 		return false
@@ -197,8 +212,25 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		return true
 	}
 	taskID := t.ID
-	r.Logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
+	status := string(t.Status)
+	r.Logger.Info("restart-stale.redispatch", "task_id", taskID, "workflow", wfID, "status", status)
 	r.WG.Go(func() {
+		matched, dispatchErr := r.WorkflowEngine.DispatchEvent(
+			taskID, "task.status_changed", map[string]string{"task.status": status}, nil)
+		if dispatchErr == nil && matched != "" {
+			return
+		}
+		if dispatchErr != nil && errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive) {
+			return
+		}
+		// No trigger matched the task's current status (or the redispatch
+		// itself failed) — fall back to the historical behavior of restarting
+		// the recorded WorkflowID directly rather than leaving the task inert.
+		if dispatchErr != nil {
+			r.Logger.Warn("restart-stale.redispatch.failed", "task_id", taskID, "workflow", wfID, "err", dispatchErr)
+		} else {
+			r.Logger.Warn("restart-stale.redispatch.no-match", "task_id", taskID, "workflow", wfID, "status", status)
+		}
 		if wfErr := r.WorkflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
 			r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
 		}
