@@ -274,9 +274,18 @@ func splitTopLevel(s string) []string {
 }
 
 func mapType(t string, bindingImports map[string]string, addImport func(string, string) string) string {
-	t = stripNull(strings.TrimSpace(t))
-	if strings.HasSuffix(t, "[]") {
-		return "Array<" + mapType(t[:len(t)-2], bindingImports, addImport) + ">"
+	t = strings.TrimSpace(t)
+	if inner, ok := strings.CutSuffix(t, ")[]"); ok && strings.HasPrefix(inner, "(") {
+		return "Array<" + mapType(inner[1:], bindingImports, addImport) + ">"
+	}
+	if inner, ok := strings.CutSuffix(t, "[]"); ok {
+		return "Array<" + mapType(inner, bindingImports, addImport) + ">"
+	}
+	if strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		return mapType(t[1:len(t)-1], bindingImports, addImport)
+	}
+	if s := stripNull(t); s != t {
+		return mapType(s, bindingImports, addImport)
 	}
 	if strings.HasPrefix(t, "Array<") && strings.HasSuffix(t, ">") {
 		return "Array<" + mapType(t[len("Array<"):len(t)-1], bindingImports, addImport) + ">"

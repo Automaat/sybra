@@ -31,6 +31,8 @@ func TestMapType(t *testing.T) {
 		{"array", "task$0.Task[]", "Array<Task>", "internal/task/models.Task"},
 		{"array_other_pkg", "artifact$0.ProgressEntry[]", "Array<ProgressEntry>", "internal/artifact/models.ProgressEntry"},
 		{"strip_null", "task$0.Task | null", "Task", "internal/task/models.Task"},
+		{"nullable_union_array", "(task$0.Task | null)[]", "Array<Task>", "internal/task/models.Task"},
+		{"nullable_single_paren", "(task$0.Task | null)", "Task", "internal/task/models.Task"},
 		{"models_alias", "$models.TamperReportDTO", "TamperReportDTO", "internal/sybra/models.TamperReportDTO"},
 	}
 	for _, tt := range tests {
