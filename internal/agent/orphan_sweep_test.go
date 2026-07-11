@@ -24,7 +24,7 @@ func TestReapOrphanProviderProcesses(t *testing.T) {
 	root := t.TempDir()
 	proc := spawnProviderProcess(t, root)
 
-	if got := m.ReapOrphanProviderProcesses([]string{root}); got != 1 {
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 1 {
 		t.Fatalf("reaped = %d, want 1", got)
 	}
 	waitForProcessExit(t, proc.Process.Pid)
@@ -43,7 +43,7 @@ func TestReapOrphanProviderProcesses_SkipsTrackedPID(t *testing.T) {
 	m.agents["tracked"] = &Agent{ID: "tracked", TaskID: "task-1", PID: proc.Process.Pid}
 	m.mu.Unlock()
 
-	if got := m.ReapOrphanProviderProcesses([]string{root}); got != 0 {
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 0 {
 		t.Fatalf("reaped = %d, want 0 for tracked pid", got)
 	}
 	if !processAlive(proc.Process.Pid) {

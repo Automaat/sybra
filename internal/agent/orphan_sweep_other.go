@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-func listProviderProcessesUnderRoots(roots []string) []providerProcess {
-	out, err := exec.CommandContext(context.Background(), "ps", "-axo", "pid=,command=").Output()
+func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []providerProcess {
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
 	if err != nil {
 		return nil
 	}
@@ -28,7 +28,7 @@ func listProviderProcessesUnderRoots(roots []string) []providerProcess {
 		if !isProviderProcessName(cmd) {
 			continue
 		}
-		cwdOut, err := exec.CommandContext(context.Background(), "lsof", "-a", "-d", "cwd", "-Fn", "-p", strconv.Itoa(pid)).Output()
+		cwdOut, err := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-Fn", "-p", strconv.Itoa(pid)).Output()
 		if err != nil {
 			continue
 		}

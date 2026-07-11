@@ -3,13 +3,14 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-func listProviderProcessesUnderRoots(roots []string) []providerProcess {
+func listProviderProcessesUnderRoots(_ context.Context, roots []string) []providerProcess {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil

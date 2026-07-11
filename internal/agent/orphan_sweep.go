@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 )
@@ -11,12 +12,12 @@ type providerProcess struct {
 	CWD     string
 }
 
-func (m *Manager) ReapOrphanProviderProcesses(roots []string) int {
+func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int {
 	roots = canonicalProcessRoots(roots)
 	if len(roots) == 0 {
 		return 0
 	}
-	procs := listProviderProcessesUnderRoots(roots)
+	procs := listProviderProcessesUnderRoots(ctx, roots)
 	if len(procs) == 0 {
 		return 0
 	}

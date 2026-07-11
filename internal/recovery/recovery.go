@@ -104,7 +104,7 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
-	if reaped := r.Agents.ReapOrphanProviderProcesses(r.OrphanRoots); reaped > 0 {
+	if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
 		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
