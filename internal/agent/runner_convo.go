@@ -380,7 +380,13 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
+		// Only a OneShot convo dispatch is a one-shot exit shape; a regular
+		// multi-turn interactive session persists background tasks across turns,
+		// so enforcing the guardrail there would fail an intentional stop.
+		// Mirrors withBackgroundTaskGuardrail's OneShot-only interactive scope.
+		if cfg.OneShot {
+			a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
+		}
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}
