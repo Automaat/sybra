@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -648,6 +650,47 @@ func capLedgerRepro(report string) string {
 		return strings.TrimSpace(suffix)
 	}
 	return report + suffix
+}
+
+func capPriorAttemptText(text string) string {
+	const (
+		maxLines = 40
+		maxBytes = 4 * 1024
+		suffix   = "\n\n[truncated for prior-attempt note]"
+	)
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+
+	lines := strings.Split(text, "\n")
+	truncated := false
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+	text = strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	if len(text) <= maxBytes && !truncated {
+		return text
+	}
+
+	limit := maxBytes
+	if limit > len(suffix) {
+		limit -= len(suffix)
+	}
+	if len(text) > limit {
+		text = trimUTF8ToBytes(text, limit)
+		truncated = true
+	}
+	text = strings.TrimRight(text, "\n")
+	if !truncated {
+		return text
+	}
+	if text == "" {
+		return strings.TrimSpace(suffix)
+	}
+	return text + suffix
 }
 
 func normalizeAcceptanceLedgerReport(report string) string {
@@ -2378,12 +2421,101 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	if err := e.tasks.MarkTaskReviewed(taskID); err != nil {
 		e.logger.Warn("workflow.test.mark-reviewed", "task_id", taskID, "err", err)
 	}
+	e.seedReimplementNote(e.ctx, wfExec, taskID, attempts, t)
 	reason := "manual testing found a grounded product defect — re-implementing the latest ## Test Failures repro"
 	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "reimplement"}, nil
+}
+
+func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, taskID string, attempts int, t TaskInfo) {
+	if e.attemptNotes == nil || e.worktrees == nil {
+		return
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return
+	}
+	fingerprint := ""
+	if wfExec != nil {
+		fingerprint = strings.TrimSpace(wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey])
+	}
+	if fingerprint == "" {
+		fingerprint = "unknown"
+	}
+	marker := fmt.Sprintf("<!-- sybra-prior-attempt:%s:%d:%s -->", taskID, attempts, fingerprint)
+	diffStat := e.attemptDiffStat(ctx, wtPath)
+	reason := reimplementRejectReason(t, wfExec)
+	section := fmt.Sprintf(
+		"## Prior attempt %d (rejected by test-runner)\n\n"+
+			"%s\n\n"+
+			"Prior branch diff summary (`git diff --stat <origin-base>...HEAD`):\n\n"+
+			"```text\n%s\n```\n\n"+
+			"Latest rejection reason:\n\n%s\n",
+		attempts, marker, diffStat, quoteMarkdownBlock(reason),
+	)
+	if err := e.attemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
+		e.logger.Warn("workflow.test.reimplement-note", "task_id", taskID, "worktree", wtPath, "attempts", attempts, "err", err)
+		return
+	}
+	e.logger.Info("workflow.test.reimplement-note", "task_id", taskID, "worktree", wtPath, "attempts", attempts, "fingerprint", fingerprint)
+}
+
+func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
+	diffCtx, cancel := context.WithTimeout(ctx, shellTimeout)
+	defer cancel()
+
+	base := resolveOriginBase(diffCtx, wtPath)
+	cmd := exec.CommandContext(diffCtx, "git", "diff", "--stat", base+"...HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		diag := singleLineDiagnostic(err, string(out))
+		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "err", err, "phase", "diff-stat")
+		return "(diff unavailable: " + diag + ")"
+	}
+	diff := capPriorAttemptText(string(out))
+	if diff == "" {
+		return "(no changes recorded)"
+	}
+	return diff
+}
+
+func reimplementRejectReason(t TaskInfo, wfExec *Execution) string {
+	_, sections := stripTestFailuresSections(t.Body)
+	if len(sections) > 0 {
+		if reason := capPriorAttemptText(sections[len(sections)-1]); reason != "" {
+			return reason
+		}
+	}
+
+	var lines []string
+	if wfExec != nil {
+		if outcome := strings.TrimSpace(wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]); outcome != "" {
+			lines = append(lines, "Outcome: "+outcome)
+		}
+		if fingerprint := strings.TrimSpace(wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]); fingerprint != "" {
+			lines = append(lines, "Failure fingerprint: "+fingerprint)
+		}
+	}
+	if len(lines) == 0 {
+		return "(test-runner rejection reason unavailable)"
+	}
+	return capPriorAttemptText(strings.Join(lines, "\n"))
+}
+
+func singleLineDiagnostic(err error, output string) string {
+	text := strings.TrimSpace(output)
+	if text == "" && err != nil {
+		text = err.Error()
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return "unknown error"
+	}
+	return trimUTF8ToBytes(text, 300)
 }
 
 // recurringProductBugFingerprints returns the distinct product-bug failure
