@@ -991,6 +991,10 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogHangRetries {
 		reason := fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts)
+		t.Workflow.State = ExecFailed
+		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+			e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		}
 		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
 			e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
@@ -1049,6 +1053,10 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	attempts := parseWorkflowInt(t.Workflow.Variables[retryKey])
 	if attempts >= maxWatchdogRateLimitRetries {
 		reason := fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts)
+		t.Workflow.State = ExecFailed
+		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+			e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+		}
 		if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
 			e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
