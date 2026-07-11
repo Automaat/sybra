@@ -318,16 +318,18 @@ func (e *Engine) HasActiveWorkflow(taskID string) bool {
 }
 
 // WorkflowParkedWaiting reports whether the task's active workflow is
-// workflowID and is currently parked mid-run in ExecWaiting (a non-empty
-// CurrentStep). This is the state a StepRunAgent step lands in when its
-// dispatch hit ErrAgentPoolBusy/ErrTestRunnerBusy/ErrDispatchInFlight — the
-// run persisted but no agent started, and ResumeStalled owns re-driving it
-// once a slot frees.
+// workflowID and is currently mid-run in ExecWaiting (a non-empty
+// CurrentStep). ExecWaiting is the general "workflow is live but this goroutine
+// is not advancing it" state a StepRunAgent step holds either while an agent it
+// started runs to completion, or while its dispatch parked on
+// ErrAgentPoolBusy/ErrTestRunnerBusy/ErrDispatchInFlight (run persisted, no
+// agent started) waiting for ResumeStalled to re-drive it once a slot frees.
 //
 // Branch-conflict recovery uses this to distinguish "a fix workflow already
-// dispatched and is waiting for the pool" from "no recovery in flight": in the
-// former case re-entering would cancel + re-dispatch that parked workflow and
-// burn a bounded retry-budget slot for a fix agent that never ran.
+// dispatched and is live" from "no recovery in flight". Either mid-run state is
+// a reason to leave the workflow alone: re-entering would cancel + re-dispatch
+// it, and for the parked-dispatch case that burns a bounded retry-budget slot
+// for a fix agent that never ran.
 func (e *Engine) WorkflowParkedWaiting(taskID, workflowID string) bool {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
