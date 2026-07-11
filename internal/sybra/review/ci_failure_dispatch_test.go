@@ -1,0 +1,100 @@
+package review
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
+)
+
+func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() (github.ReviewSummary, error)) *Handler {
+	t.Helper()
+	logger := slog.New(slog.DiscardHandler)
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wfStore, wfErr := workflow.NewStore(filepath.Join(t.TempDir(), "workflows"))
+	if wfErr != nil {
+		t.Fatal(wfErr)
+	}
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+	return &Handler{
+		logger:         logger,
+		emit:           func(string, any) {},
+		tasks:          tasks,
+		projects:       projects,
+		agents:         agentMgr,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+		fetchReviewsFn: fetchReviewsFn,
+	}
+}
+
+func TestPollAndMonitorPRs_CIFailureDispatchesFix(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusInReview),
+		PRNumber: task.Ptr(4242),
+		Branch:   task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-fail",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		Author:      "me",
+	}
+
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); got != 1 {
+		t.Errorf("ci_failure retries = %d, want 1 (a pr-fix dispatch marks it handled)", got)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no pr-fix workflow dispatched for a failing-CI in-review PR")
+	}
+	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueCIFailure) {
+		t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueCIFailure)
+	}
+}
