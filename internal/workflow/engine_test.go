@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -1829,8 +1830,8 @@ func TestDispatchPriorityRank(t *testing.T) {
 		{"", 4},
 	}
 	for _, tc := range cases {
-		if got := dispatchPriorityRank(tc.status); got != tc.want {
-			t.Errorf("dispatchPriorityRank(%q) = %d, want %d", tc.status, got, tc.want)
+		if got := dispatchorder.Rank(tc.status); got != tc.want {
+			t.Errorf("dispatchorder.Rank(%q) = %d, want %d", tc.status, got, tc.want)
 		}
 	}
 }
