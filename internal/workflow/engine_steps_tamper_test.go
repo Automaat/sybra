@@ -806,6 +806,46 @@ func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
 	}
 }
 
+func TestExecDetectTampering_MergedUpstreamSkipNotFlagged(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+
+	gitRun(t, wt, "checkout", "-b", "task")
+	baseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+
+	upstreamTest := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tt.Skip(\"linux-only process enumeration test\")\n\t}\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	gitRun(t, wt, "checkout", "main")
+	writeRepoFile(t, wt, "internal/agent/orphan_sweep_test.go", upstreamTest)
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "test: add orphan sweep")
+	gitRun(t, wt, "fetch", "origin")
+
+	gitRun(t, wt, "checkout", "task")
+	gitRun(t, wt, "merge", "--no-edit", "origin/main")
+
+	engine, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): baseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean; a t.Skip merged in from origin/main must not be attributed to the agent", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
 // TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase reproduces the
 // force-push scenario from issue #1477: the stored tamper_base baseline stays
 // git-resolvable (rev-parse --verify succeeds) but is no longer an ancestor

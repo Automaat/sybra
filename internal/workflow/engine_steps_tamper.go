@@ -600,7 +600,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		return tamperReport{}, fmt.Errorf("git diff --name-status: %w", err)
 	}
 
-	changes := parseNameStatus(string(nsOut))
+	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, parseNameStatus(string(nsOut)), e.logger)
 	fetched := 0
 	for i := range changes {
 		c := &changes[i]
@@ -691,6 +691,33 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID s
 	}
 	base = resolveOriginBase(ctx, wtPath)
 	return base, base + "...HEAD"
+}
+
+func dropUpstreamMergedChanges(ctx context.Context, wtPath, taskID string, changes []tamperChange, logger *slog.Logger) []tamperChange {
+	upstream := resolveOriginBase(ctx, wtPath)
+	if upstream == "" {
+		return changes
+	}
+	kept := changes[:0]
+	dropped := 0
+	for _, c := range changes {
+		if classifyTamperPath(c.Path) != tamperCatOther && pathIdenticalToUpstream(ctx, wtPath, upstream, c.Path) {
+			dropped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if dropped > 0 && logger != nil {
+		logger.Info("workflow.detect-tampering.upstream-merged-skipped",
+			"task_id", taskID, "upstream", upstream, "dropped", dropped)
+	}
+	return kept
+}
+
+func pathIdenticalToUpstream(ctx context.Context, wtPath, upstream, path string) bool {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--quiet", upstream, "HEAD", "--", path)
+	cmd.Dir = wtPath
+	return cmd.Run() == nil
 }
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
