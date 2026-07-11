@@ -359,6 +359,18 @@ func TestDetect(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "lost_agent still fires when body only mentions the fingerprint without the monitor header",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
+					t.Body = "Notes: earlier this looked like - Fingerprint: `lost_agent:3e2f0953` but it is real work.\n"
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindLostAgent},
+		},
+		{
 			name: "lost_agent suppressed when task just transitioned to in-progress and dispatch hasn't recorded a run yet",
 			in: DetectInput{
 				Now: now,

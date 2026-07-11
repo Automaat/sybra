@@ -524,10 +524,13 @@ func hasRunningAgentRun(runs []task.AgentRun) bool {
 	return false
 }
 
-const lostAgentReportMarker = "- Fingerprint: `" + string(KindLostAgent) + ":"
+const (
+	lostAgentReportHeader = "## Detection\n- Kind: `" + string(KindLostAgent) + "`"
+	lostAgentReportMarker = "- Fingerprint: `" + string(KindLostAgent) + ":"
+)
 
 func isLostAgentReport(t *task.Task) bool {
-	return strings.Contains(t.Body, lostAgentReportMarker)
+	return strings.Contains(t.Body, lostAgentReportHeader) && strings.Contains(t.Body, lostAgentReportMarker)
 }
 
 // lastHumanReviewVerdict returns the verdict from the most recent stopped
