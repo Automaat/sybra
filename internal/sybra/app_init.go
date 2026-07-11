@@ -412,6 +412,7 @@ func (a *App) limitPolicy() limits.Policy {
 
 func (a *App) initStatusHook() {
 	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+		releaseTaskAgents := shouldReleaseTaskAgentsForStatus(task.Status(to))
 		data := map[string]any{"from": from, "to": to}
 		if to == string(task.StatusHumanRequired) {
 			if t, err := a.tasks.Get(taskID); err == nil {
@@ -432,6 +433,9 @@ func (a *App) initStatusHook() {
 		// never exit between turns) signal step completion.
 		if a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
+		}
+		if releaseTaskAgents {
+			a.releaseTaskAgents(taskID)
 		}
 
 		switch to {
@@ -462,6 +466,47 @@ func (a *App) initStatusHook() {
 			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 		}
 	})
+}
+
+func shouldReleaseTaskAgentsForStatus(status task.Status) bool {
+	return status == task.StatusHumanRequired || task.IsTerminalStatus(status)
+}
+
+func (a *App) releaseTaskAgents(taskID string) {
+	if a.taskAgentReleaser != nil {
+		a.taskAgentReleaser(taskID)
+		return
+	}
+	if a.agents == nil {
+		return
+	}
+	targets := a.agents.FindAllRunningAgentsForTask(taskID, "")
+	if len(targets) == 0 {
+		return
+	}
+	filtered := make([]*agent.Agent, 0, len(targets))
+	for _, ag := range targets {
+		if agent.RoleFromName(ag.Name) == agent.RoleHumanReview {
+			continue
+		}
+		filtered = append(filtered, ag)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	go func(agentsToStop []*agent.Agent) {
+		for _, ag := range agentsToStop {
+			var err error
+			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
+				err = a.agents.StopCompletedAgent(ag.ID)
+			} else {
+				err = a.agents.StopAgent(ag.ID)
+			}
+			if err != nil {
+				a.logger.Warn("task.status.release-agent", "task_id", taskID, "agent_id", ag.ID, "err", err)
+			}
+		}
+	}(filtered)
 }
 
 // dispatchStatusWorkflow starts the workflow matching a status-change event.
@@ -844,6 +889,10 @@ func (a *App) newRecovery() *recovery.Recovery {
 		LogDir:             a.logDir,
 		LogRetention:       retention,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
+		OrphanRoots: []string{
+			filepath.Join(config.HomeDir(), "sandboxes"),
+			filepath.Join(config.HomeDir(), "worktrees"),
+		},
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

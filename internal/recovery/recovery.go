@@ -75,6 +75,7 @@ type Recovery struct {
 
 	LogDir       string
 	LogRetention time.Duration // 0 disables age-based pruning
+	OrphanRoots  []string
 
 	// TrashRetentionDays bounds how long a soft-deleted task (see
 	// task.Store.Delete) survives under the trash dir before
@@ -102,6 +103,9 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// stale, or restart them.
 	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
+	}
+	if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
+		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
 	r.gcOrphanChats(ctx)

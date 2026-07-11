@@ -126,6 +126,9 @@ type App struct {
 	// it to exercise scheduling/single-flight without spawning a real
 	// planner subprocess.
 	umbrellaRecoverFn func(tracker task.Task)
+	// taskAgentReleaser overrides releaseTaskAgents for tests. nil uses the
+	// live agent-manager-backed implementation.
+	taskAgentReleaser func(taskID string)
 
 	bgops *bgop.Tracker
 
