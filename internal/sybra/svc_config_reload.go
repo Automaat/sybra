@@ -81,14 +81,26 @@ func (s *ConfigService) ReloadFromDisk() (changedHot []string, err error) {
 		}
 	}
 	// SetGuardrails once if any guardrail field changed.
-	guardrailFields := []string{"agent.max_cost_usd", "agent.max_turns", "agent.turn_cost_fraction", "agent.turn_multiplier"}
+	guardrailFields := []string{
+		"agent.max_cost_usd",
+		"agent.max_turns",
+		"agent.max_checkpoints",
+		"agent.checkpoint_on_turn_ceiling",
+		"agent.turn_cost_fraction",
+		"agent.turn_multiplier",
+	}
 	if slices.ContainsFunc(guardrailFields, func(f string) bool { return slices.Contains(hot, f) }) {
 		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:       next.Agent.MaxCostUSD,
-			MaxTurns:         next.Agent.MaxTurns,
-			TurnCostFraction: next.Agent.TurnCostFraction,
-			TurnMultiplier:   next.Agent.TurnMultiplier,
+			MaxCostUSD:              next.Agent.MaxCostUSD,
+			MaxTurns:                next.Agent.MaxTurns,
+			MaxCheckpoints:          next.MaxCheckpoints(),
+			TurnCostFraction:        next.Agent.TurnCostFraction,
+			TurnMultiplier:          next.Agent.TurnMultiplier,
+			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
 		})
+		if s.workflowEngine != nil {
+			s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+		}
 	}
 	if s.logger != nil {
 		for _, k := range restart {

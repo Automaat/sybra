@@ -300,6 +300,7 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	maxCheckpoints   int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
 	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
@@ -310,6 +311,10 @@ type Engine struct {
 // when SetTestingMaxAttempts was never called. Mirrors
 // config.DefaultTestingMaxAttempts directly.
 const defaultTestAttempts = config.DefaultTestingMaxAttempts
+
+// defaultMaxCheckpoints caps checkpoint handoffs per workflow step when
+// SetMaxCheckpoints was never called. Mirrors config.DefaultMaxCheckpoints.
+const defaultMaxCheckpoints = config.DefaultMaxCheckpoints
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
@@ -419,6 +424,11 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // bounce back to in-progress before route_test_result escalates it to
 // human-required. Values <= 0 fall back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetMaxCheckpoints sets how many checkpoint handoffs a workflow step may
+// spend before the task is parked human-required. Values <= 0 fall back to
+// defaultMaxCheckpoints.
+func (e *Engine) SetMaxCheckpoints(n int) { e.maxCheckpoints = n }
 
 // SetABTestingConfig wires deterministic A/B assignment for run_agent steps.
 func (e *Engine) SetABTestingConfig(cfg abtest.Config) { e.abTesting = cfg }

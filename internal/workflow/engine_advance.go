@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -87,6 +88,13 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		wfExec.SetVar("step."+output.StepID+".pr_fix_reason", reason)
 	}
 
+	if output.TerminalStatus != "" {
+		if err := e.finishTerminalStepOutput(taskID, wfExec, output, release); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	// Retry failed steps if max_retries configured and not exhausted.
 	if output.Status == "failed" && currentStep.Config.MaxRetries > 0 && ctx.Task.Status != "human-required" {
 		retries := wfExec.CountStep(output.StepID)
@@ -161,6 +169,26 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 		return true, bErr
 	}
 	return false, nil
+}
+
+func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, output StepOutput, release func()) error {
+	if err := e.tasks.UpdateTaskStatus(taskID, output.TerminalStatus, output.TerminalReason); err != nil {
+		return err
+	}
+	now := time.Now()
+	wfExec.CurrentStep = ""
+	wfExec.State = ExecCompleted
+	wfExec.CompletedAt = &now
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return err
+	}
+	release()
+	e.fireComplete(&CompletionInfo{
+		TaskID:     taskID,
+		WorkflowID: wfExec.WorkflowID,
+		Variables:  maps.Clone(wfExec.Variables),
+	})
+	return nil
 }
 
 func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wfExec *Execution) error {

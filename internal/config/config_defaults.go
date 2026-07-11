@@ -54,6 +54,30 @@ func (c *Config) RetryWatchdog() int {
 	return DefaultRetryWatchdog
 }
 
+// DefaultMaxCheckpoints bounds how many checkpoint handoffs a single workflow
+// step may spend before Sybra parks the task human-required instead of
+// redispatching forever.
+const DefaultMaxCheckpoints = 3
+
+// MaxCheckpoints returns the configured checkpoint-handoff cap or
+// DefaultMaxCheckpoints when unset/non-positive.
+func (c *Config) MaxCheckpoints() int {
+	if c != nil && c.Agent.MaxCheckpoints > 0 {
+		return c.Agent.MaxCheckpoints
+	}
+	return DefaultMaxCheckpoints
+}
+
+// CheckpointOnTurnCeilingEnabled reports whether eligible code-author
+// headless runs should checkpoint-and-handoff at the turn ceiling instead of
+// using the legacy raise-MaxTurns auto-continue. Nil/unset defaults to true.
+func (c *Config) CheckpointOnTurnCeilingEnabled() bool {
+	if c != nil && c.Agent.CheckpointOnTurnCeiling != nil {
+		return *c.Agent.CheckpointOnTurnCeiling
+	}
+	return true
+}
+
 // DefaultMaxLogEvents returns the configured cap or 500 if unset.
 func (c *Config) DefaultMaxLogEvents() int {
 	if c != nil && c.Agent.MaxLogEvents > 0 {
@@ -412,6 +436,7 @@ func DefaultConfig() *Config {
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
+			MaxCheckpoints:   DefaultMaxCheckpoints,
 			DispatchJitterMs: 1000,
 		},
 		Notification: NotificationConfig{

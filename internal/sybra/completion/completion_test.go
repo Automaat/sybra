@@ -201,6 +201,34 @@ func TestIsSignalKill(t *testing.T) {
 	}
 }
 
+func TestClassifyStall_CheckpointDisposition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("checkpoint is a retryable stall", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.MarkStopped()
+		ag.SetEscalationReason("checkpoint")
+
+		stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, nil)
+		if !stalled || rateLimited || stopStalled || !checkpointStopped {
+			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v stopStalled=%v checkpointStopped=%v",
+				stalled, rateLimited, stopStalled, checkpointStopped)
+		}
+	})
+
+	t.Run("checkpoint_failed is not a stall", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.MarkStopped()
+		ag.SetEscalationReason("checkpoint_failed")
+
+		stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, errors.New("checkpoint commit failed"))
+		if stalled || rateLimited || stopStalled || checkpointStopped {
+			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v stopStalled=%v checkpointStopped=%v",
+				stalled, rateLimited, stopStalled, checkpointStopped)
+		}
+	})
+}
+
 func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) {
 	taskMgr := newMinimalTaskManager(t)
 	wt := t.TempDir()

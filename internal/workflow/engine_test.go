@@ -396,6 +396,8 @@ type mockAgents struct {
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
+	claimInsideStart  bool
+	failSpawnOnce     error
 	startGate         chan struct{}
 	startEntered      chan struct{}
 }
@@ -425,6 +427,21 @@ func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.claimInsideStart {
+		if m.dispatchClaimed == nil {
+			m.dispatchClaimed = make(map[string]bool)
+		}
+		if m.dispatchClaimed[taskID] {
+			return "", "", "", ErrDispatchInFlight
+		}
+		m.dispatchClaimed[taskID] = true
+		defer delete(m.dispatchClaimed, taskID)
+	}
+	if m.failSpawnOnce != nil {
+		err := m.failSpawnOnce
+		m.failSpawnOnce = nil
+		return "", "", "", err
+	}
 	if m.failSpawn != nil {
 		return "", "", "", m.failSpawn
 	}
@@ -2325,6 +2342,181 @@ func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t 
 	}
 }
 
+func TestRescheduleCheckpointedAgent_RerunsCurrentStepSameWorktree(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.claimInsideStart = true
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetMaxCheckpoints(3)
+
+	const worktreeDir = "/tmp/checkpoint-worktree"
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                    worktreeDir,
+				"step.implement.checkpoint_count": "1",
+			},
+		},
+	})
+	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("expected replacement agent start, got %d", got)
+	}
+	agents.mu.Lock()
+	call := agents.calls[len(agents.calls)-1]
+	agents.mu.Unlock()
+	if call.Dir != worktreeDir {
+		t.Fatalf("replacement dir = %q, want %q", call.Dir, worktreeDir)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Workflow.Variables["step.implement.checkpoint_count"] != "2" {
+		t.Fatalf("checkpoint count = %q, want 2", got.Workflow.Variables["step.implement.checkpoint_count"])
+	}
+	if _, tracked := engine.lookupAgentStep("checkpoint-agent"); tracked {
+		t.Fatal("checkpointed agent step mapping was not cleared")
+	}
+}
+
+func TestRescheduleCheckpointedAgent_RetriesGhostDispatchPark(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.failSpawnOnce = ErrDispatchInFlight
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetMaxCheckpoints(3)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:                    "/tmp/checkpoint-worktree",
+				"step.implement.checkpoint_count": "1",
+			},
+		},
+	})
+	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1 after retrying ghost park", got)
+	}
+}
+
+func TestRescheduleCheckpointedAgent_ParksAtCap(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetMaxCheckpoints(2)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				"step.implement.checkpoint_count": "2",
+			},
+		},
+	})
+	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	engine.RescheduleCheckpointedAgent("t1", "checkpoint-agent")
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.Workflow.Variables["step.implement.checkpoint_count"] != "2" {
+		t.Fatalf("checkpoint count = %q, want unchanged 2", got.Workflow.Variables["step.implement.checkpoint_count"])
+	}
+}
+
+func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "todo",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "triage",
+			State:       ExecWaiting,
+		},
+	})
+	engine.agentRoutes["checkpoint-agent"] = agentRoute{taskID: "t1", stepID: "triage"}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID:          "checkpoint-agent",
+		Provider:         "claude",
+		Success:          false,
+		EscalationReason: "checkpoint_failed",
+	})
+
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("replacement agent starts = %d, want 0", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created" {
+		t.Fatalf("status reason = %q", got.StatusReason)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil")
+	}
+	if got.Workflow.State != ExecCompleted {
+		t.Fatalf("workflow state = %q, want completed", got.Workflow.State)
+	}
+	if got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow current step = %q, want empty", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.CountStep("triage") != 1 {
+		t.Fatalf("step count = %d, want 1", got.Workflow.CountStep("triage"))
+	}
+	if len(got.Workflow.StepHistory) != 1 || got.Workflow.StepHistory[0].Status != "failed" {
+		t.Fatalf("step history = %+v, want one failed triage record", got.Workflow.StepHistory)
+	}
+	if _, tracked := engine.lookupAgentStep("checkpoint-agent"); tracked {
+		t.Fatal("checkpoint_failed agent step mapping was not cleared")
+	}
+}
 func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
