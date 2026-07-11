@@ -124,6 +124,13 @@ type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
 }
 
+// AttemptNoteAppender persists re-implementation context into a task's local
+// NOTES.md scratchpad. Engine passes the already-resolved worktree path so the
+// adapter can reuse the same path for both diff inspection and the append.
+type AttemptNoteAppender interface {
+	AppendReimplementNote(ctx context.Context, taskID, wtPath, marker, note string) error
+}
+
 // BranchSyncer proactively reconciles a task's worktree branch with the
 // project's default branch. Used by the `sync_branch` step. Engine operates
 // with a nil BranchSyncer — the step then records a skipped outcome and
@@ -278,6 +285,7 @@ type Engine struct {
 	prFinder         PRFinder
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
+	attemptNotes     AttemptNoteAppender
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
 	manualTests      ManualTestConfigGetter
@@ -374,9 +382,14 @@ func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
 func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
 
-// SetWorktreeGetter wires a WorktreeGetter used by the `verify_commits` step.
-// Leaving it unset makes the step a no-op.
+// SetWorktreeGetter wires a WorktreeGetter used by steps that need the task's
+// live git checkout (verify_commits, re-implementation note seeding). Leaving
+// it unset makes those worktree-dependent paths no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetAttemptNoteAppender wires the local NOTES.md writer used when testing
+// routes a task back to implementation. Leaving it unset disables note seeding.
+func (e *Engine) SetAttemptNoteAppender(a AttemptNoteAppender) { e.attemptNotes = a }
 
 // SetBranchSyncer wires a BranchSyncer used by the `sync_branch` step.
 // Leaving it unset makes the step a no-op (skipped outcome).

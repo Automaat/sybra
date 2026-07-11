@@ -1,13 +1,20 @@
 package workflow
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/notes"
 )
 
 func TestExtractTestVerdict(t *testing.T) {
@@ -1592,6 +1599,43 @@ func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 	return engine, tasks
 }
 
+type recordingAttemptNoteAppender struct {
+	err    error
+	calls  int
+	taskID string
+	wtPath string
+	marker string
+	note   string
+}
+
+func (a *recordingAttemptNoteAppender) AppendReimplementNote(_ context.Context, taskID, wtPath, marker, note string) error {
+	a.calls++
+	a.taskID = taskID
+	a.wtPath = wtPath
+	a.marker = marker
+	a.note = note
+	if a.err != nil {
+		return a.err
+	}
+	return appendWorkflowTestNote(wtPath, marker, note)
+}
+
+func appendWorkflowTestNote(wtPath, marker, note string) error {
+	path := filepath.Join(wtPath, notes.FileName)
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+	case errors.Is(err, os.ErrNotExist):
+		data = []byte(notes.SeedTemplate)
+	default:
+		return err
+	}
+	if marker != "" && strings.Contains(string(data), marker) {
+		return nil
+	}
+	return os.WriteFile(path, append(data, []byte("\n"+note+"\n")...), 0o600)
+}
+
 func productBugRun(startedAt time.Time, fingerprint string) AgentRunInfo {
 	return AgentRunInfo{
 		Role:                   testRunnerRole,
@@ -2727,6 +2771,285 @@ func TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent(t *testing.T) 
 	}
 	if strings.Count(ti.Body, specDecisionHeading) != 1 {
 		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	}
+}
+
+func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
+	t.Parallel()
+
+	e, tasks := makeTestEngine(t)
+	wtPath := makeGitRepo(t, true)
+	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	appender := &recordingAttemptNoteAppender{}
+	e.SetAttemptNoteAppender(appender)
+
+	now := time.Now().UTC()
+	var report strings.Builder
+	report.WriteString("## Problem\nInvestigate the failing feature.\n\n")
+	report.WriteString("## Test Failures\n\n")
+	for i := range 60 {
+		report.WriteString("Evidence line ")
+		report.WriteString(strconv.Itoa(i))
+		report.WriteString(": reproduced failure with grounded output.\n")
+	}
+	report.WriteString("\n## Later\n\nIgnore this heading.\n")
+
+	taskID := "t-reimplement-note"
+	tasks.Put(TaskInfo{
+		ID:     taskID,
+		Status: "testing",
+		Body:   report.String(),
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-1"},
+		},
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "fp-1",
+		},
+	}
+
+	out, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Fatalf("output = %q, want reimplement", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, taskID)
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", ti.Status)
+	}
+	if !ti.Reviewed {
+		t.Fatal("task not marked reviewed")
+	}
+	if appender.calls != 1 {
+		t.Fatalf("appender calls = %d, want 1", appender.calls)
+	}
+	if appender.taskID != taskID {
+		t.Fatalf("appender taskID = %q, want %q", appender.taskID, taskID)
+	}
+	if appender.wtPath != wtPath {
+		t.Fatalf("appender wtPath = %q, want %q", appender.wtPath, wtPath)
+	}
+	if appender.marker != "<!-- sybra-prior-attempt:"+taskID+":1:fp-1 -->" {
+		t.Fatalf("marker = %q", appender.marker)
+	}
+	if !strings.Contains(appender.note, "## Prior attempt 1 (rejected by test-runner)") {
+		t.Fatalf("note missing attempt heading:\n%s", appender.note)
+	}
+	if !strings.Contains(appender.note, "change.txt | 1 +") {
+		t.Fatalf("note missing diff stat:\n%s", appender.note)
+	}
+	if !strings.Contains(appender.note, "## Test Failures") {
+		t.Fatalf("note missing test-failure reason:\n%s", appender.note)
+	}
+	if !strings.Contains(appender.note, "[truncated for prior-attempt note]") {
+		t.Fatalf("note missing truncation marker:\n%s", appender.note)
+	}
+	if strings.Contains(appender.note, "## Later") {
+		t.Fatalf("note should stop at next heading:\n%s", appender.note)
+	}
+
+	content, err := os.ReadFile(filepath.Join(wtPath, notes.FileName))
+	if err != nil {
+		t.Fatalf("read notes: %v", err)
+	}
+	got := string(content)
+	if !strings.Contains(got, appender.marker) {
+		t.Fatalf("NOTES.md missing marker:\n%s", got)
+	}
+	if !strings.Contains(got, "## Prior attempt 1 (rejected by test-runner)") {
+		t.Fatalf("NOTES.md missing appended section:\n%s", got)
+	}
+}
+
+func TestExecRouteTestResult_ReimplementNoteIdempotent(t *testing.T) {
+	t.Parallel()
+
+	e, tasks := makeTestEngine(t)
+	wtPath := makeGitRepo(t, true)
+	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	appender := &recordingAttemptNoteAppender{}
+	e.SetAttemptNoteAppender(appender)
+
+	now := time.Now().UTC()
+	taskID := "t-reimplement-idem"
+	tasks.Put(TaskInfo{
+		ID:     taskID,
+		Status: "testing",
+		Body:   "## Test Failures\n\nGrounded repro.\n",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-idem"},
+		},
+	})
+
+	route := func() {
+		wf := &Execution{
+			WorkflowID: "testing-task",
+			StartedAt:  now,
+			Variables: map[string]string{
+				"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+				"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+				"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "fp-idem",
+			},
+		}
+		if _, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	route()
+	path := filepath.Join(wtPath, notes.FileName)
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read first notes: %v", err)
+	}
+	route()
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read second notes: %v", err)
+	}
+	if !bytes.Equal(second, first) {
+		t.Fatalf("NOTES.md changed on rerun:\nfirst:\n%s\n\nsecond:\n%s", first, second)
+	}
+	if strings.Count(string(second), "<!-- sybra-prior-attempt:"+taskID+":1:fp-idem -->") != 1 {
+		t.Fatalf("marker count = %d, want 1:\n%s",
+			strings.Count(string(second), "<!-- sybra-prior-attempt:"+taskID+":1:fp-idem -->"), second)
+	}
+	if strings.Count(string(second), "## Prior attempt 1 (rejected by test-runner)") != 1 {
+		t.Fatalf("heading count = %d, want 1:\n%s",
+			strings.Count(string(second), "## Prior attempt 1 (rejected by test-runner)"), second)
+	}
+}
+
+func TestExecRouteTestResult_AppenderErrorFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	e, tasks := makeTestEngine(t)
+	e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
+	appender := &recordingAttemptNoteAppender{err: errors.New("disk full")}
+	e.SetAttemptNoteAppender(appender)
+
+	now := time.Now().UTC()
+	taskID := "t-reimplement-appender-error"
+	tasks.Put(TaskInfo{
+		ID:     taskID,
+		Status: "testing",
+		Body:   "## Test Failures\n\nGrounded repro.\n",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-open"},
+		},
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "fp-open",
+		},
+	}
+
+	out, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Fatalf("output = %q, want reimplement", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, taskID)
+	if ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", ti.Status)
+	}
+	if !ti.Reviewed {
+		t.Fatal("task not marked reviewed")
+	}
+	if appender.calls != 1 {
+		t.Fatalf("appender calls = %d, want 1", appender.calls)
+	}
+}
+
+func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		taskID string
+		task   TaskInfo
+		wf     *Execution
+		status string
+	}{
+		{
+			name:   "pass_to_ready_pr",
+			taskID: "t-pass",
+			task:   TaskInfo{ID: "t-pass", Status: "testing"},
+			wf: &Execution{
+				WorkflowID: "testing-task",
+				StartedAt:  time.Now().UTC(),
+				Variables:  map[string]string{"step." + testVerdictSourceStep + ".verdict": "PASS"},
+			},
+			status: "ready-pr",
+		},
+		{
+			name:   "ambiguous_to_human_required",
+			taskID: "t-ambiguous",
+			task:   TaskInfo{ID: "t-ambiguous", Status: "testing"},
+			wf: &Execution{
+				WorkflowID: "testing-task",
+				StartedAt:  time.Now().UTC(),
+				Variables: map[string]string{
+					"step." + testVerdictSourceStep + ".verdict":                  "FAIL",
+					"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey: testOutcomeAmbiguousRequirement,
+				},
+			},
+			status: "human-required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, tasks := makeTestEngine(t)
+			e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
+			appender := &recordingAttemptNoteAppender{}
+			e.SetAttemptNoteAppender(appender)
+			tasks.Put(tt.task)
+
+			out, err := e.execRouteTestResult(tt.taskID, &Step{ID: "route_test"}, tt.wf, mustGetTaskInfo(t, tasks, tt.taskID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Status != "completed" {
+				t.Fatalf("step status = %q, want completed", out.Status)
+			}
+			if got := mustGetTaskInfo(t, tasks, tt.taskID).Status; got != tt.status {
+				t.Fatalf("task status = %q, want %q", got, tt.status)
+			}
+			if appender.calls != 0 {
+				t.Fatalf("appender calls = %d, want 0", appender.calls)
+			}
+		})
+	}
+}
+
+func TestAttemptDiffStat_DiffUnavailable(t *testing.T) {
+	t.Parallel()
+
+	e, _ := makeTestEngine(t)
+	wtPath := t.TempDir()
+	cmd := exec.Command("git", "init", "-b", "main")
+	cmd.Dir = wtPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	got := e.attemptDiffStat(context.Background(), wtPath)
+	if !strings.Contains(got, "(diff unavailable:") {
+		t.Fatalf("diff stat = %q, want unavailable diagnostic", got)
 	}
 }
 

@@ -44,6 +44,14 @@ export class ConvoEvent {
     "errorType"?: string;
     "errorStatus"?: number;
 
+    /**
+     * BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+     * a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+     * of every CLI background bash task (e.g. a `run_in_background` Bash call)
+     * still live after the change. Mirrors ClaudeEvent.BackgroundTaskIDs.
+     */
+    "backgroundTaskIds"?: string[];
+
     /** Creates a new ConvoEvent instance. */
     constructor($$source: Partial<ConvoEvent> = {}) {
         if (!("type" in $$source)) {
@@ -63,6 +71,7 @@ export class ConvoEvent {
         const $$createField4_0 = $$createType1;
         const $$createField5_0 = $$createType3;
         const $$createField13_0 = $$createType5;
+        const $$createField19_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("toolUses" in $$parsedSource) {
             $$parsedSource["toolUses"] = $$createField4_0($$parsedSource["toolUses"]);
@@ -72,6 +81,9 @@ export class ConvoEvent {
         }
         if ("limitSnapshot" in $$parsedSource) {
             $$parsedSource["limitSnapshot"] = $$createField13_0($$parsedSource["limitSnapshot"]);
+        }
+        if ("backgroundTaskIds" in $$parsedSource) {
+            $$parsedSource["backgroundTaskIds"] = $$createField19_0($$parsedSource["backgroundTaskIds"]);
         }
         return new ConvoEvent($$parsedSource as Partial<ConvoEvent>);
     }
@@ -190,9 +202,9 @@ export class StreamEvent {
      * Creates a new StreamEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): StreamEvent {
-        const $$createField14_0 = $$createType7;
-        const $$createField15_0 = $$createType8;
-        const $$createField16_0 = $$createType8;
+        const $$createField14_0 = $$createType8;
+        const $$createField15_0 = $$createType6;
+        const $$createField16_0 = $$createType6;
         const $$createField18_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("plan_steps" in $$parsedSource) {
@@ -283,7 +295,7 @@ const $$createType2 = ToolResultBlock.createFrom;
 const $$createType3 = $Create.Array($$createType2);
 const $$createType4 = limits$0.Snapshot.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = PlanStep.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $Create.Array($Create.Any);
+const $$createType6 = $Create.Array($Create.Any);
+const $$createType7 = PlanStep.createFrom;
+const $$createType8 = $Create.Array($$createType7);
 const $$createType9 = $Create.Map($Create.Any, $Create.Any);

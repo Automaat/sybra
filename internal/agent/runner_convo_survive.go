@@ -211,7 +211,12 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(nil)
+		// Non-OneShot detached interactive session: a regular multi-turn run
+		// persists background tasks across turns, so the one-shot guardrail
+		// does not apply here (an intentional stop would otherwise be failed).
+		if cfg.OneShot {
+			a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
+		}
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}
@@ -307,7 +312,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(nil)
+		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}

@@ -907,6 +907,51 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 	})
 }
 
+// DeleteUpstreamBranch removes branch from the remote future task pushes target
+// ("fork" when configured, else "origin") and drops the matching cached
+// remote-tracking ref from the bare clone. RecreateFromBase uses this to avoid
+// leaving a published stale branch behind after discarding the local task
+// branch: without it, the next fresh-base implementation hits a non-fast-
+// forward push against the orphaned remote tip and loops back into conflict
+// recovery. Missing remotes/branches are a no-op. A transiently unreachable
+// remote is also a no-op when there is no cached tracking ref to clean up:
+// that case has no evidence a published stale branch exists, so failing the
+// entire recreate path would only strand a task on a local-only cleanup.
+func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
+	remote := PushRemote(ctx, barePath)
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote."+remote+".url")
+	cmd.Dir = barePath
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("resolve remote %s config: %w", remote, err)
+	}
+	trackingRef := "refs/remotes/" + remote + "/" + branch
+	trackingExists := RefExists(ctx, barePath, trackingRef)
+	sha, err := remoteBranchHead(ctx, barePath, remote, branch)
+	if err != nil {
+		if IsTransientNetworkError(err) && !trackingExists {
+			return nil
+		}
+		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
+	}
+	if sha != "" {
+		if err := pushLocked(ctx, barePath, "push", remote, "--delete", branch); err != nil {
+			return fmt.Errorf("delete remote branch %s/%s: %w", remote, branch, err)
+		}
+	}
+	if !trackingExists {
+		return nil
+	}
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "-d", trackingRef)
+		})
+	})
+}
+
 // BackupBranchRef points refs/sybra-backup/<branch> at the branch's current
 // tip so a subsequent DeleteBranch does not lose the commits — they stay
 // recoverable via the backup ref. Used before recreating a task's branch from
@@ -999,14 +1044,18 @@ func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) 
 func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {
 	var out string
 	err := withNetworkRetry(ctx, func() error {
-		var runErr error
-		out, runErr = executil.Output(ctx, worktreePath, "git", "ls-remote", remote, "refs/heads/"+branch)
-		return runErr
+		cmd := exec.CommandContext(ctx, "git", "ls-remote", remote, "refs/heads/"+branch)
+		cmd.Dir = worktreePath
+		raw, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			return fmt.Errorf("git ls-remote %s refs/heads/%s: %w: %s", remote, branch, runErr, strings.TrimSpace(string(raw)))
+		}
+		out = strings.TrimSpace(string(raw))
+		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	out = strings.TrimSpace(out)
 	if out == "" {
 		return "", nil
 	}

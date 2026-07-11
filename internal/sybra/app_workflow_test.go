@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -216,6 +217,55 @@ func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "get task") {
 		t.Fatalf("err = %v, want get task context", err)
+	}
+}
+
+func TestAttemptNoteAppenderAdapter_WritesNote(t *testing.T) {
+	t.Parallel()
+
+	wt := t.TempDir()
+	for _, args := range [][]string{
+		{"git", "init", "-b", "main"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = wt
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s %v: %v\n%s", args[0], args[1:], err, out)
+		}
+	}
+
+	adapter := &attemptNoteAppenderAdapter{}
+	marker := "<!-- sybra-prior-attempt:t1:1:fp -->"
+	note := marker + "\n\n## Prior attempt 1\n\nGrounded repro."
+	if err := adapter.AppendReimplementNote(context.Background(), "t1", wt, marker, note); err != nil {
+		t.Fatalf("AppendReimplementNote: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(wt, notes.FileName))
+	if err != nil {
+		t.Fatalf("read NOTES.md: %v", err)
+	}
+	got := string(content)
+	if !strings.Contains(got, marker) || !strings.Contains(got, "## Prior attempt 1") {
+		t.Fatalf("NOTES.md missing appended note:\n%s", got)
+	}
+
+	info, err := os.Stat(filepath.Join(wt, notes.FileName))
+	if err != nil {
+		t.Fatalf("stat NOTES.md: %v", err)
+	}
+	if perms := info.Mode().Perm(); perms != 0o600 {
+		t.Fatalf("NOTES.md perms = %o, want 0600", perms)
+	}
+
+	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), notes.FileName) {
+		t.Fatalf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
 	}
 }
 

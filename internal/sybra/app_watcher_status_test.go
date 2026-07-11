@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,9 +40,6 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	// Mirror app.go's emit callback: forward task file events through
-	// task.Manager.OnExternalUpdate so cross-process writes participate
-	// in the same status-hook plumbing as in-process Manager updates.
 	// Mirror app.go's emit callback: forward task file events through
 	// task.Manager.OnExternalUpdate so cross-process writes participate
 	// in the same status-hook plumbing as in-process Manager updates.
@@ -126,6 +124,109 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 				return // success — workflow advanced
 			}
 		}
+	}
+}
+
+func TestApp_WatcherStatusHook_ReleasesTaskAgentsOnExternalHandoffAndTerminal(t *testing.T) {
+	tests := []task.Status{task.StatusHumanRequired, task.StatusDone, task.StatusCancelled}
+	for _, target := range tests {
+		t.Run(string(target), func(t *testing.T) {
+			a := setupApp(t)
+			var (
+				releasedMu sync.Mutex
+				released   []string
+			)
+			a.taskAgentReleaser = func(taskID string) {
+				releasedMu.Lock()
+				released = append(released, taskID)
+				releasedMu.Unlock()
+			}
+			a.initStatusHook()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			emit := func(event string, data any) {
+				switch event {
+				case events.TaskCreated, events.TaskUpdated, events.TaskDeleted:
+					if path, ok := data.(string); ok {
+						a.tasks.OnExternalUpdate(path)
+					}
+				}
+			}
+			w := watcher.New(a.tasksDir, emit, a.logger)
+			if err := w.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			<-w.Ready()
+
+			created, err := a.tasks.Create("external release task agents", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+				t.Fatal(err)
+			}
+
+			current, err := a.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current.Status = target
+			data, err := task.Marshal(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fsutil.AtomicWrite(current.FilePath, data); err != nil {
+				t.Fatal(err)
+			}
+
+			deadline := time.After(5 * time.Second)
+			for {
+				select {
+				case <-deadline:
+					releasedMu.Lock()
+					snapshot := append([]string(nil), released...)
+					releasedMu.Unlock()
+					t.Fatalf("release not observed after external status change to %s; released=%v", target, snapshot)
+				case <-time.After(50 * time.Millisecond):
+					releasedMu.Lock()
+					done := len(released) == 1 && released[0] == created.ID
+					releasedMu.Unlock()
+					if done {
+						return
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
+	tests := []task.Status{task.StatusHumanRequired, task.StatusDone, task.StatusCancelled}
+	for _, target := range tests {
+		t.Run(string(target), func(t *testing.T) {
+			a := setupApp(t)
+			var released []string
+			a.taskAgentReleaser = func(taskID string) { released = append(released, taskID) }
+			a.initStatusHook()
+
+			created, err := a.tasks.Create("release task agents", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(target)}); err != nil {
+				t.Fatal(err)
+			}
+
+			if len(released) != 1 || released[0] != created.ID {
+				t.Fatalf("released = %v, want [%s]", released, created.ID)
+			}
+		})
 	}
 }
 

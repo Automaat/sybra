@@ -151,6 +151,11 @@ func TestReattachAccountingInvariant(t *testing.T) {
 
 func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 30 * time.Millisecond
+	t.Cleanup(func() {
+		stopSIGINTGrace = prevGrace
+	})
 	spawnSleeper := func(t *testing.T) *exec.Cmd {
 		t.Helper()
 		cmd := exec.Command("sleep", "30")
@@ -218,6 +223,17 @@ func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
 	if !present["orchestrator"] {
 		t.Errorf("taskless orchestrator must NOT be reaped, but its record is gone")
 	}
+	if err := orchCmd.Process.Kill(); err != nil {
+		t.Fatalf("kill reattached orchestrator process: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	for m.RunningCount() > 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("reattached orchestrator did not stop; liveCount=%d", m.RunningCount())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func TestReattachReapsStaleSurvivors(t *testing.T) {
@@ -263,6 +279,20 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
 			},
 			status: map[string]string{"task-x": "todo"},
+		},
+		{
+			name: "human-required task still has live agent",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			status: map[string]string{"task-x": "human-required"},
+		},
+		{
+			name: "done task still has live agent",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			status: map[string]string{"task-x": "done"},
 		},
 		{
 			name: "task deleted while down",

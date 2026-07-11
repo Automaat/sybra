@@ -45,7 +45,7 @@ const testStateWaitTimeout = 10 * time.Second
 
 func waitForAgentState(t *testing.T, a *Agent, want State, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(scaledDeadline(timeout))
 	for time.Now().Before(deadline) {
 		if a.GetState() == want {
 			return
@@ -57,7 +57,7 @@ func waitForAgentState(t *testing.T, a *Agent, want State, timeout time.Duration
 
 func waitForAgentProvider(t *testing.T, a *Agent, want string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(scaledDeadline(timeout))
 	for time.Now().Before(deadline) {
 		if a.GetProvider() == want {
 			return
@@ -139,7 +139,7 @@ func TestRunPerTurnConversational_FailsOverMidConversation(t *testing.T) {
 	}
 	select {
 	case <-a.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(scaledDeadline(3 * time.Second)):
 		t.Fatal("agent did not exit after StopAgent")
 	}
 }
@@ -188,7 +188,7 @@ func TestRunPerTurnConversational_NoPeerParksInstead(t *testing.T) {
 
 	select {
 	case <-a.done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(scaledDeadline(3 * time.Second)):
 		t.Fatal("agent did not finalize after a blocked re-gate")
 	}
 

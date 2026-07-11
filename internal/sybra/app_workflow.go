@@ -41,6 +41,7 @@ var (
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
+	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
@@ -434,6 +435,8 @@ type worktreeGetterAdapter struct {
 	mgr   *worktree.Manager
 }
 
+type attemptNoteAppenderAdapter struct{}
+
 // checkConfigGetterAdapter resolves a task's verify-suite commands by merging
 // the repo `.sybra.yaml` checks (read from the project's trusted default
 // branch, never the checked-out worktree — see resolveTrustedSetupCommands
@@ -550,6 +553,10 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	return path, true
 }
 
+func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
+	return worktree.AppendNote(ctx, wtPath, marker, note)
+}
+
 // branchSyncerAdapter bridges task.Manager + worktree.Manager → workflow.BranchSyncer.
 type branchSyncerAdapter struct {
 	tasks *task.Manager
@@ -589,9 +596,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
+		// agentOrch.StartAgentWithAssignment already translates
+		// agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy at the
+		// source, so every caller (this adapter, recovery.Recovery) sees the
+		// same benign sentinel without needing its own wrap here.
 		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
 		if err != nil {
-			return "", "", "", translatePoolBusy(err)
+			return "", "", "", err
 		}
 		return ag.ID, "", baselineRef, nil
 	}
