@@ -1853,6 +1853,49 @@ func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "todo",
+		Workflow: &Execution{
+			WorkflowID:  "wait-human-wf",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "plan-review" {
+		t.Fatalf("status = %q, want plan-review (wait_human status must be reconciled)", ti.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("wait_human step must not spawn an agent, got %d", agents.CallCount())
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

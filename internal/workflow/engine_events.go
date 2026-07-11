@@ -767,6 +767,15 @@ func (e *Engine) ResumeStalled() {
 			continue
 		}
 
+		if step.Type == StepWaitHuman && step.Config.Status != "" && t.Status != step.Config.Status {
+			if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
+				e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
+			} else {
+				e.logger.Info("workflow.resume-stalled.reconcile-status",
+					"task_id", t.ID, "step", step.ID, "from", t.Status, "to", step.Config.Status)
+			}
+		}
+
 		// Only resume async agent steps where no agent is running, plus
 		// classify_task: it's synchronous but can park in ExecWaiting on
 		// engine shutdown mid-classify (see engine_steps_classify.go), and
