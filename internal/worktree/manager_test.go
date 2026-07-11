@@ -808,6 +808,41 @@ func TestHasMiseConfig(t *testing.T) {
 // errors (not silent logs). This is the regression guard for the aa9ba123
 // class of failure where agents start on a worktree missing required
 // toolchain.
+func TestPrepareForTask_RunsBootstrap(t *testing.T) {
+	h := prepareHarness(t, []string{"touch bootstrap-marker"}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("bootstrap task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(path, "bootstrap-marker")); statErr != nil {
+		t.Errorf("bootstrap marker missing in worktree — SetupCommands did not run: %v", statErr)
+	}
+
+	// Setup log must exist and include the command.
+	logPath := filepath.Join(h.logsDir, "worktrees", tk.ID+"-setup.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read setup log: %v", err)
+	}
+	if !strings.Contains(string(data), "bootstrap-marker") {
+		t.Errorf("setup log missing command: %s", data)
+	}
+}
+
 func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 	ctx := context.Background()
@@ -857,41 +892,6 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	}
 	if t2.Branch == t1.Branch {
 		t.Fatalf("t2 branch %q still collides with t1 — should have re-derived a unique branch", t2.Branch)
-	}
-}
-
-func TestPrepareForTask_RunsBootstrap(t *testing.T) {
-	h := prepareHarness(t, []string{"touch bootstrap-marker"}, 30*time.Second)
-
-	tk, err := h.tasks.Store().Create("bootstrap task", "", "headless")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
-		t.Fatal(err)
-	}
-	tk, err = h.tasks.Get(tk.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
-	if err != nil {
-		t.Fatalf("PrepareForTask: %v", err)
-	}
-
-	if _, statErr := os.Stat(filepath.Join(path, "bootstrap-marker")); statErr != nil {
-		t.Errorf("bootstrap marker missing in worktree — SetupCommands did not run: %v", statErr)
-	}
-
-	// Setup log must exist and include the command.
-	logPath := filepath.Join(h.logsDir, "worktrees", tk.ID+"-setup.log")
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read setup log: %v", err)
-	}
-	if !strings.Contains(string(data), "bootstrap-marker") {
-		t.Errorf("setup log missing command: %s", data)
 	}
 }
 

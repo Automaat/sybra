@@ -296,6 +296,7 @@ func (m *Manager) branchCollidesWithOtherWorktree(ctx context.Context, clonePath
 	}
 	wts, err := project.ListWorktrees(ctx, clonePath)
 	if err != nil {
+		m.logger.Warn("worktree.branch-collision.list", "clone", clonePath, "err", err)
 		return "", false
 	}
 	want := filepath.Clean(wtPath)
