@@ -191,61 +191,150 @@ func (w *Watchdog) Run(ctx context.Context) {
 
 func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 	for _, ag := range w.agents.ListAgents() {
-		if ag.GetState() != agent.StateRunning || ag.Mode != "headless" || ag.External {
+		if ag.External {
 			continue
 		}
-		// A headless agent whose stream already ended in a successful terminal
-		// result is logically complete; its process just has not exited yet (a
-		// skill that spawns subagents can leave CC alive after the final
-		// result). The runner's post-result guard usually finalizes it within
-		// seconds, so never inspect or escalate such an agent — doing so flips
-		// a finished run to human-required on a false stall (task c4a0fda0).
-		// If it is still alive well past that grace, the runner's reaper isn't
-		// covering it (e.g. non-detached run, lost tailer); hard-stop it
-		// directly instead of leaving it to linger indefinitely.
-		if ag.CompletedSuccessfully() {
-			w.checkCompletedHang(ag, now)
+		state := ag.GetState()
+		switch ag.Mode {
+		case "headless":
+			if state != agent.StateRunning {
+				continue
+			}
+			if w.reapTaskAgentForStatus(ag) {
+				continue
+			}
+			// A headless agent whose stream already ended in a successful terminal
+			// result is logically complete; its process just has not exited yet (a
+			// skill that spawns subagents can leave CC alive after the final
+			// result). The runner's post-result guard usually finalizes it within
+			// seconds, so never inspect or escalate such an agent — doing so flips
+			// a finished run to human-required on a false stall (task c4a0fda0).
+			// If it is still alive well past that grace, the runner's reaper isn't
+			// covering it (e.g. non-detached run, lost tailer); hard-stop it
+			// directly instead of leaving it to linger indefinitely.
+			if ag.CompletedSuccessfully() {
+				w.checkCompletedHang(ag, now)
+				continue
+			}
+			w.inspectHeadless(ctx, s, now, ag)
+		case "interactive":
+			if state != agent.StateRunning && state != agent.StatePaused {
+				continue
+			}
+			w.reapIdleInteractive(ag, now)
+		default:
 			continue
 		}
-
-		stall := now.Sub(ag.GetLastEventAt())
-		total := now.Sub(ag.StartedAt)
-
-		t, err := w.tasks.Get(ag.TaskID)
-		var budget, sl time.Duration
-		if err == nil {
-			budget = sizeBudget(t.Tags)
-			sl = stallLimit(t.Tags)
-		} else {
-			budget = sizeBudget(nil)
-			sl = stallLimit(nil)
-		}
-
-		if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
-			w.hardStop(ag, reason, stall, total)
-			continue
-		}
-
-		logPath := ag.GetLogPath()
-		if logPath == "" {
-			continue
-		}
-
-		trigger := decideTrigger(ag.ToolLoopStreak(), w.loopThreshold, ag.ToolLoopAcknowledged(), stall, sl, total, budget)
-		if trigger == "" {
-			continue
-		}
-		if !s.shouldInspect(ag.ID, now) {
-			continue
-		}
-
-		w.logger.Info("agent.watchdog.inspect",
-			"id", ag.ID, "trigger", trigger,
-			"loop_streak", ag.ToolLoopStreak(),
-			"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-
-		w.wg.Go(func() { w.inspect(ctx, ag, t, trigger, int(stall.Seconds()), int(total.Seconds())) })
 	}
+}
+
+func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time, ag *agent.Agent) {
+	stall := now.Sub(ag.GetLastEventAt())
+	total := now.Sub(ag.StartedAt)
+
+	t, err := w.tasks.Get(ag.TaskID)
+	var budget, sl time.Duration
+	if err == nil {
+		budget = sizeBudget(t.Tags)
+		sl = stallLimit(t.Tags)
+	} else {
+		budget = sizeBudget(nil)
+		sl = stallLimit(nil)
+	}
+
+	if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
+		w.hardStop(ag, reason, stall, total)
+		return
+	}
+
+	logPath := ag.GetLogPath()
+	if logPath == "" {
+		return
+	}
+
+	trigger := decideTrigger(ag.ToolLoopStreak(), w.loopThreshold, ag.ToolLoopAcknowledged(), stall, sl, total, budget)
+	if trigger == "" {
+		return
+	}
+	if !s.shouldInspect(ag.ID, now) {
+		return
+	}
+
+	w.logger.Info("agent.watchdog.inspect",
+		"id", ag.ID, "trigger", trigger,
+		"loop_streak", ag.ToolLoopStreak(),
+		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
+
+	w.wg.Go(func() { w.inspect(ctx, ag, t, trigger, int(stall.Seconds()), int(total.Seconds())) })
+}
+
+func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
+	if ag.TaskID == "" || w.tasks == nil {
+		return false
+	}
+	t, err := w.tasks.Get(ag.TaskID)
+	if err != nil {
+		return false
+	}
+	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		return false
+	}
+	if !shouldReleaseTaskAgentForStatus(t.Status) {
+		return false
+	}
+	w.logger.Warn("agent.watchdog.status_release",
+		"id", ag.ID, "task_id", ag.TaskID, "status", t.Status)
+	if err := w.stopForRelease(ag); err != nil {
+		w.logger.Error("agent.watchdog.status_release.stop_failed", "id", ag.ID, "err", err)
+	}
+	return true
+}
+
+func (w *Watchdog) reapIdleInteractive(ag *agent.Agent, now time.Time) {
+	if ag.TaskID == "" || w.tasks == nil {
+		return
+	}
+	t, err := w.tasks.Get(ag.TaskID)
+	if err != nil {
+		return
+	}
+	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		return
+	}
+	if shouldReleaseTaskAgentForStatus(t.Status) {
+		w.logger.Warn("agent.watchdog.status_release",
+			"id", ag.ID, "task_id", ag.TaskID, "status", t.Status)
+		if err := w.stopForRelease(ag); err != nil {
+			w.logger.Error("agent.watchdog.status_release.stop_failed", "id", ag.ID, "err", err)
+		}
+		return
+	}
+	stall := now.Sub(ag.GetLastEventAt())
+	total := now.Sub(ag.StartedAt)
+	if reason := hardDeadlineBreach(ag, stall, total, stallLimit(t.Tags), sizeBudget(t.Tags)); reason != "" {
+		w.hardStop(ag, reason, stall, total)
+	}
+}
+
+func shouldReleaseTaskAgentForStatus(status task.Status) bool {
+	return status == task.StatusHumanRequired || task.IsTerminalStatus(status)
+}
+
+func (w *Watchdog) stopForRelease(ag *agent.Agent) error {
+	if ag.Mode == "headless" && ag.CompletedSuccessfully() {
+		stop := w.stopCompletedAgent
+		if stop == nil {
+			stop = w.stopAgent
+		}
+		if stop == nil {
+			return nil
+		}
+		return stop(ag.ID)
+	}
+	if w.stopAgent == nil {
+		return nil
+	}
+	return w.stopAgent(ag.ID)
 }
 
 // checkCompletedHang force-stops a headless agent that finished its work (a
