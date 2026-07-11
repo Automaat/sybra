@@ -113,6 +113,20 @@ type App struct {
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
 
+	// umbrellaRecoveryMu guards umbrellaRecoveryInFlight — App-owned recovery
+	// coordination state (deliberately not a package-level map) for the
+	// degraded-umbrella auto-recovery pass: recoverDegradedUmbrellas
+	// single-flights an async RecoverDegraded run per normalized umbrella
+	// ref, and releaseUnblockedChildren excludes in-flight refs from release
+	// and tracker rollup for that gate tick.
+	umbrellaRecoveryMu       sync.Mutex
+	umbrellaRecoveryInFlight map[string]bool
+	// umbrellaRecoverFn overrides the single recovery attempt run per
+	// scheduled tracker. nil defaults to runUmbrellaRecovery; tests override
+	// it to exercise scheduling/single-flight without spawning a real
+	// planner subprocess.
+	umbrellaRecoverFn func(tracker task.Task)
+
 	bgops *bgop.Tracker
 
 	// skillsFS is an optional embedded FS used as a fallback when the
@@ -176,17 +190,18 @@ func WithSkillsFS(skillsFS fs.FS) Option {
 
 func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, opts ...Option) *App {
 	a := &App{
-		tasksDir:        cfg.TasksDir,
-		skillsDir:       cfg.SkillsDir,
-		repoDir:         cfg.RepoDir,
-		worktreesDir:    cfg.WorktreesDir,
-		logger:          logger,
-		logDir:          cfg.Logging.Dir,
-		auditDir:        cfg.AuditDir(),
-		cfg:             cfg,
-		logLevel:        logLevel,
-		restartStaleErr: logging.NewErrorThrottle(),
-		dispatchNudge:   make(chan struct{}, 1),
+		tasksDir:                 cfg.TasksDir,
+		skillsDir:                cfg.SkillsDir,
+		repoDir:                  cfg.RepoDir,
+		worktreesDir:             cfg.WorktreesDir,
+		logger:                   logger,
+		logDir:                   cfg.Logging.Dir,
+		auditDir:                 cfg.AuditDir(),
+		cfg:                      cfg,
+		logLevel:                 logLevel,
+		restartStaleErr:          logging.NewErrorThrottle(),
+		dispatchNudge:            make(chan struct{}, 1),
+		umbrellaRecoveryInFlight: make(map[string]bool),
 	}
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
