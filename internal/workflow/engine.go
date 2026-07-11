@@ -307,7 +307,7 @@ type Engine struct {
 	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int           // testing → re-implement loop cap (0 → defaultTestAttempts)
+	maxTestAttempts  int           // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	maxCheckpoints   int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	abTesting        abtest.Config
@@ -315,9 +315,10 @@ type Engine struct {
 	conflictRecovery func(taskID string) bool
 }
 
-// defaultTestAttempts caps the testing → in-progress re-implementation loop
-// when SetTestingMaxAttempts was never called. Mirrors
-// config.DefaultTestingMaxAttempts directly.
+// defaultTestAttempts is the generous absolute backstop for the testing →
+// in-progress re-implementation loop when SetTestingMaxAttempts was never
+// called. Recurring grounded failure fingerprints are the primary
+// non-convergence signal; this mirrors config.DefaultTestingMaxAttempts.
 const defaultTestAttempts = config.DefaultTestingMaxAttempts
 
 // defaultMaxCheckpoints caps checkpoint handoffs per workflow step when
@@ -433,9 +434,11 @@ func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) { e.attempt
 // completed state. Used to clear external debounce trackers.
 func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 
-// SetTestingMaxAttempts sets how many times a task may fail manual testing and
-// bounce back to in-progress before route_test_result escalates it to
-// human-required. Values <= 0 fall back to defaultTestAttempts.
+// SetTestingMaxAttempts sets the generous absolute backstop for how many times
+// a task may fail manual testing and bounce back to in-progress before
+// route_test_result parks it human-required. Recurring grounded failure
+// fingerprints still escalate independently of this count. Values <= 0 fall
+// back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
 
 // SetMaxCheckpoints sets how many checkpoint handoffs a workflow step may

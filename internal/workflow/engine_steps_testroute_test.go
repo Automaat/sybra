@@ -3257,6 +3257,75 @@ func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframe
 	}
 }
 
+func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing.T) {
+	t.Parallel()
+	e, tasks, _ := makeTestingTaskEngine(t)
+	now := time.Now().UTC()
+
+	buildRuns := func(attempts int) []AgentRunInfo {
+		runs := make([]AgentRunInfo, 0, attempts*2-1)
+		for i := range attempts {
+			startedAt := now.Add(time.Duration(i*2) * time.Minute)
+			runs = append(runs, productBugRun(startedAt, "fp-"+strconv.Itoa(i+1)))
+			if i < attempts-1 {
+				runs = append(runs, AgentRunInfo{
+					AgentID:   "impl-" + strconv.Itoa(i+1),
+					Role:      "implementation",
+					StartedAt: startedAt.Add(time.Minute),
+				})
+			}
+		}
+		return runs
+	}
+
+	tests := []struct {
+		name       string
+		taskID     string
+		attempts   int
+		wantOutput string
+		wantStatus string
+	}{
+		{
+			name:       "past old cap still reimplements",
+			taskID:     "t-default-cap-11",
+			attempts:   11,
+			wantOutput: "reimplement",
+			wantStatus: "in-progress",
+		},
+		{
+			name:       "one below new backstop still reimplements",
+			taskID:     "t-default-cap-24",
+			attempts:   24,
+			wantOutput: "reimplement",
+			wantStatus: "in-progress",
+		},
+		{
+			name:       "at new backstop escalates",
+			taskID:     "t-default-cap-25",
+			attempts:   25,
+			wantOutput: "escalated",
+			wantStatus: "human-required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := buildRuns(tc.attempts)
+			out, err := runRouteTestResult(e, tasks, tc.taskID, "FAIL", now, runs, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Output != tc.wantOutput {
+				t.Fatalf("output = %q, want %q", out.Output, tc.wantOutput)
+			}
+			ti := mustGetTaskInfo(t, tasks, tc.taskID)
+			if ti.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", ti.Status, tc.wantStatus)
+			}
+		})
+	}
+}
+
 // TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason
 // verifies the generic cap-time floor is preserved when the product-bug
 // attempts that exhausted the cap were never separated by a code-author run
