@@ -31,6 +31,7 @@ type PullRequest struct {
 	FeedbackSig       string `json:"feedbackSig"`
 	ViewerHasApproved bool   `json:"viewerHasApproved"`
 	CopilotReviewed   bool   `json:"copilotReviewed"` // GitHub Copilot has submitted a review
+	SelfAuthoredBot   bool   `json:"selfAuthoredBot"`
 	CreatedAt         string `json:"createdAt"`
 	UpdatedAt         string `json:"updatedAt"`
 	// BaseRefName is the PR's target branch (e.g. "main"). Used to pre-flight

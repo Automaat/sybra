@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -165,6 +166,26 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 // Workflows that require external vars (pr-fix) are reverted to in-review so
 // the originating dispatcher re-evaluates rather than receiving nil vars from
 // a bare StartWorkflow call, which would launch the agent in the wrong dir.
+//
+// The generic fallback below redispatches via task.status_changed rather than
+// blindly restarting the stale t.Workflow.WorkflowID. This task is always
+// in-progress here (the caller loop only reaches handleTerminalWorkflow for
+// StatusInProgress tasks), but the recorded WorkflowID can be whatever stage
+// last ran before an out-of-band status write (e.g. a monitor auto-retry out
+// of human-required) parked it back at in-progress — testing-task after a
+// testing bounce, or even simple-task-plan after a plan-review escalation.
+// Blindly restarting that stale ID replays the wrong stage (re-testing, or
+// worse, triage/plan from scratch) instead of resuming implementation.
+// DispatchEvent matches simple-task-implement's trigger (status_changed,
+// in-progress) directly — the same fix already applied to
+// TaskService.UpdateTask's manual in-progress restart (svc_tasks.go) for the
+// identical class of bug. See #1657.
+//
+// The redispatch runs in an async WG goroutine, so the status captured from
+// the List() snapshot can be stale by the time it fires. The goroutine
+// re-reads the task and bails unless it is still in-progress, so a concurrent
+// human-required park (human-review agent, monitor) is never overridden by a
+// stale in-progress dispatch.
 func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 	if r.WorkflowEngine == nil || t.Workflow == nil {
 		return false
@@ -197,8 +218,44 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		return true
 	}
 	taskID := t.ID
-	r.Logger.Info("restart-stale.restart-workflow", "task_id", taskID, "workflow", wfID)
+	r.Logger.Info("restart-stale.redispatch", "task_id", taskID, "workflow", wfID, "status", string(t.Status))
 	r.WG.Go(func() {
+		// Re-read the task inside the goroutine: the status captured by the
+		// RestartStaleInProgress List() snapshot is stale by the time this
+		// closure runs (it contends with e.dispatching locking and every
+		// other WG goroutine from the same pass). If something moved the task
+		// off in-progress in that window — most importantly a human-review
+		// agent or monitor parking it at human-required — dispatching with the
+		// stale in-progress status would match simple-task-implement and
+		// silently resume implementation on a task an operator just parked.
+		// Bail out entirely rather than falling back to StartWorkflow.
+		cur, getErr := r.Tasks.Get(taskID)
+		if getErr != nil {
+			r.Logger.Warn("restart-stale.redispatch.reget-failed", "task_id", taskID, "err", getErr)
+			return
+		}
+		if cur.Status != task.StatusInProgress {
+			r.Logger.Info("restart-stale.redispatch.status-moved",
+				"task_id", taskID, "status", string(cur.Status))
+			return
+		}
+		status := string(cur.Status)
+		matched, dispatchErr := r.WorkflowEngine.DispatchEvent(
+			taskID, "task.status_changed", map[string]string{"task.status": status}, nil)
+		if dispatchErr == nil && matched != "" {
+			return
+		}
+		if dispatchErr != nil && errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive) {
+			return
+		}
+		// No trigger matched the task's current status (or the redispatch
+		// itself failed) — fall back to the historical behavior of restarting
+		// the recorded WorkflowID directly rather than leaving the task inert.
+		if dispatchErr != nil {
+			r.Logger.Warn("restart-stale.redispatch.failed", "task_id", taskID, "workflow", wfID, "err", dispatchErr)
+		} else {
+			r.Logger.Warn("restart-stale.redispatch.no-match", "task_id", taskID, "workflow", wfID, "status", status)
+		}
 		if wfErr := r.WorkflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
 			r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
 		}

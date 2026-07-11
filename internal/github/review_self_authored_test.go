@@ -73,4 +73,7 @@ func TestFetchReviewsWith_KeepsSelfAuthoredBotPRDropsThirdParty(t *testing.T) {
 	if pr.CIStatus != "FAILURE" {
 		t.Errorf("CIStatus = %q, want FAILURE", pr.CIStatus)
 	}
+	if !pr.SelfAuthoredBot {
+		t.Errorf("SelfAuthoredBot = false, want true (bare bot login matches suffixed viewer)")
+	}
 }

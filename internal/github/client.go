@@ -401,6 +401,7 @@ func convertCommonPR(n *gqlPR, viewer string) PullRequest {
 		FeedbackSig:       feedbackSig,
 		ViewerHasApproved: viewerApproved,
 		CopilotReviewed:   copilotReviewed,
+		SelfAuthoredBot:   isBot(n.Author.Type, n.Author.Login) && sameActor(n.Author.Login, viewer),
 		CreatedAt:         n.CreatedAt,
 		UpdatedAt:         n.UpdatedAt,
 		AutoMergeEnabled:  n.AutoMergeRequest != nil,
