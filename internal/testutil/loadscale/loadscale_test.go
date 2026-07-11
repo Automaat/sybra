@@ -49,3 +49,17 @@ func TestLoadPerCPU(t *testing.T) {
 		t.Fatalf("LoadPerCPU = %v, want 2", got)
 	}
 }
+
+func TestLoadPerCPUUsesLowerGOMAXPROCS(t *testing.T) {
+	original := runtime.GOMAXPROCS(0)
+	runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(original) })
+
+	got, ok := LoadPerCPU(2)
+	if !ok {
+		t.Fatal("LoadPerCPU returned ok=false")
+	}
+	if got != 2 {
+		t.Fatalf("LoadPerCPU with GOMAXPROCS=1 = %v, want 2", got)
+	}
+}
