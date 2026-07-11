@@ -50,3 +50,21 @@ func TestBuildWatchdogReaskNote_AttemptCount(t *testing.T) {
 		t.Fatalf("buildWatchdogReaskNote(2) = %q", got)
 	}
 }
+
+func TestClearWatchdogReaskNote(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID: "test-simple",
+		Variables:  map[string]string{watchdogReaskNoteVar: "stale hang guidance"},
+		StartedAt:  time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
+
+	engine.clearWatchdogReaskNote("t1", wf)
+	if _, ok := wf.Variables[watchdogReaskNoteVar]; ok {
+		t.Fatal("watchdog reask note should be cleared on success")
+	}
+	engine.clearWatchdogReaskNote("t1", wf)
+}

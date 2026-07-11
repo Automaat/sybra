@@ -639,6 +639,7 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		return
 	}
 	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+	e.clearWatchdogReaskNote(taskID, t.Workflow)
 }
 
 func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
@@ -966,6 +967,7 @@ func (e *Engine) ResumeStalled() {
 		} else {
 			e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
 			e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
+			e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
 		}
 	}
 }
@@ -1105,6 +1107,19 @@ func (e *Engine) clearTransientFetchRetry(taskID string, wf *Execution, stepID s
 	delete(wf.Variables, retryKey)
 	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.transient-fetch.clear", "task_id", taskID, "step", stepID, "err", err)
+	}
+}
+
+func (e *Engine) clearWatchdogReaskNote(taskID string, wf *Execution) {
+	if wf == nil || wf.Variables == nil {
+		return
+	}
+	if _, ok := wf.Variables[watchdogReaskNoteVar]; !ok {
+		return
+	}
+	delete(wf.Variables, watchdogReaskNoteVar)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.watchdog-hang.reask-clear", "task_id", taskID, "err", err)
 	}
 }
 
