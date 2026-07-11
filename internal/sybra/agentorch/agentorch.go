@@ -415,6 +415,24 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 	return t, d, nil
 }
 
+// translatePoolBusy maps the agent-package concurrency sentinel onto
+// workflow.ErrAgentPoolBusy so every caller of this package's dispatch
+// methods — the workflow engine's agentAdapter, the recovery loop's
+// RestartStaleInProgress, or a future caller — sees the same benign,
+// self-healing signal regardless of entry point. Without this translation at
+// the source, a caller that reaches agent.Manager.Run through this package
+// without its own wrapping (e.g. recovery.Recovery, which invokes
+// StartAgent/StartPRFixAgent directly) lets the raw agent.ErrMaxConcurrentReached
+// through to workflow.ClassifyAgentStartError, which then falls to the
+// generic "agent start failed" branch and writes a scary, non-suppressed
+// status_reason for a condition that resolves itself once a pool slot frees.
+func translatePoolBusy(err error) error {
+	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
+	}
+	return err
+}
+
 func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
@@ -516,7 +534,7 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	})
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
-		return nil, "", err
+		return nil, "", translatePoolBusy(err)
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
@@ -943,7 +961,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
 	})
 	if err != nil {
-		return err
+		return translatePoolBusy(err)
 	}
 
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
