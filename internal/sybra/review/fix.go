@@ -748,6 +748,10 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	if err != nil || t.ProjectID == "" {
 		return false
 	}
+	if r.WorkflowEngine.WorkflowParkedWaiting(taskID, branchConflictFixWorkflowID) {
+		r.logger.Info("pr-monitor.branch-conflict.already-parked-waiting", "task_id", taskID)
+		return true
+	}
 	// No PR yet (still in implementation/review/testing, or at create_pr) —
 	// there is no PR to check out via the PR-numbered path below. Resolve the
 	// task's own branch by name instead. This never re-enters the PR-numbered
