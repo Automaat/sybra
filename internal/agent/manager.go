@@ -150,6 +150,12 @@ type Manager struct {
 	// dispatching its next agent inside the prior agent's onComplete (whose
 	// `done` channel is not yet closed) is never blocked.
 	dispatchClaims map[string]struct{}
+
+	// queueNudge is a buffer-1 coalescing signal mirroring App.dispatchNudge:
+	// at most one pending nudge is retained, so a burst of completions that
+	// each free a slot collapses into a single pending wake-up for whatever
+	// dispatch loop reads QueueNudge.
+	queueNudge chan struct{}
 }
 
 type LimitGate interface {
@@ -228,6 +234,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 	m := &Manager{
 		agents:                 make(map[string]*Agent),
 		dispatchClaims:         make(map[string]struct{}),
+		queueNudge:             make(chan struct{}, 1),
 		liveByProvider:         make(map[string]int),
 		ctx:                    ctx,
 		emit:                   emit,
@@ -747,4 +754,39 @@ func (m *Manager) RunningCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.liveCount
+}
+
+// TryReserveSlot is an advisory peek at capacity: it reports whether a slot
+// is currently available (liveCount below maxConcurrent, or the cap
+// disabled) without claiming or mutating anything. registerRunningAgent
+// remains the sole authoritative slot claim — it re-checks the cap under the
+// same lock at registration time and additionally enforces
+// IgnoreConcurrencyLimit, which TryReserveSlot cannot honor since it has no
+// RunConfig to consult. Callers should treat a true result as "worth
+// attempting dispatch", not as a held reservation.
+func (m *Manager) TryReserveSlot() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxConcurrent <= 0 || m.liveCount < m.maxConcurrent
+}
+
+// signalQueueNudge fires a non-blocking, coalescing signal on queueNudge. If
+// a nudge is already pending (buffer full), the send is dropped — one
+// pending nudge is sufficient to prompt a dispatcher to re-scan.
+func (m *Manager) signalQueueNudge() {
+	if m.queueNudge == nil {
+		return
+	}
+	select {
+	case m.queueNudge <- struct{}{}:
+	default:
+	}
+}
+
+// QueueNudge returns a channel that receives a signal each time a slot frees
+// (see markAgentDone), so an external dispatch loop can react promptly
+// instead of waiting for its next poll tick. Mirrors App.dispatchNudge's
+// buffer-1 coalescing contract.
+func (m *Manager) QueueNudge() <-chan struct{} {
+	return m.queueNudge
 }

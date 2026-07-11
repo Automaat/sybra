@@ -319,3 +319,154 @@ func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
 		t.Fatalf("control-plane agent should be registered: %v", err)
 	}
 }
+
+// TestTryReserveSlot exercises the three capacity postures TryReserveSlot
+// must report: under cap, at cap, and cap disabled. It is an advisory peek
+// only — the assertions never look at liveCount mutation, since
+// TryReserveSlot must not mutate anything.
+func TestTryReserveSlot(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.mu.Lock()
+	m.maxConcurrent = 1
+	m.mu.Unlock()
+
+	if !m.TryReserveSlot() {
+		t.Fatal("expected a slot to be available under the cap")
+	}
+
+	a := &Agent{ID: "occupant", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+
+	if m.TryReserveSlot() {
+		t.Fatal("expected no slot available once at maxConcurrent")
+	}
+
+	m.mu.Lock()
+	m.maxConcurrent = 0
+	m.mu.Unlock()
+	if !m.TryReserveSlot() {
+		t.Fatal("expected maxConcurrent<=0 to always report a slot available")
+	}
+}
+
+// TestMarkAgentDone_QueueNudge locks in that freeing a slot in markAgentDone
+// delivers exactly one pending signal on QueueNudge.
+func TestMarkAgentDone_QueueNudge(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a := &Agent{ID: "nudge-me", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+
+	m.markAgentDone(a)
+
+	select {
+	case <-m.QueueNudge():
+	default:
+		t.Fatal("expected a pending nudge after markAgentDone freed a slot")
+	}
+
+	select {
+	case <-m.QueueNudge():
+		t.Fatal("expected only one pending nudge, buffer should be drained")
+	default:
+	}
+}
+
+// TestMarkAgentDone_QueueNudgeCoalesces verifies the buffer-1 coalescing
+// contract: back-to-back completions while a nudge is already pending must
+// not block and must leave at most one pending signal.
+func TestMarkAgentDone_QueueNudgeCoalesces(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	agents := []*Agent{
+		{ID: "coalesce-1", Provider: "claude", done: make(chan struct{})},
+		{ID: "coalesce-2", Provider: "claude", done: make(chan struct{})},
+		{ID: "coalesce-3", Provider: "claude", done: make(chan struct{})},
+	}
+	for _, a := range agents {
+		if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+			t.Fatalf("registerRunningAgent(%s): %v", a.ID, err)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, a := range agents {
+			m.markAgentDone(a)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("markAgentDone should never block on a full queueNudge buffer")
+	}
+
+	select {
+	case <-m.QueueNudge():
+	default:
+		t.Fatal("expected one coalesced pending nudge after three completions")
+	}
+	select {
+	case <-m.QueueNudge():
+		t.Fatal("expected coalescing to retain at most one pending nudge")
+	default:
+	}
+}
+
+// TestMarkAgentDone_DoneOnceSingleNudge verifies doneOnce gates the nudge
+// fire site: a repeated markAgentDone call on an already-completed agent
+// must not fire a second nudge.
+func TestMarkAgentDone_DoneOnceSingleNudge(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	a := &Agent{ID: "repeat-done", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+
+	m.markAgentDone(a)
+	m.markAgentDone(a)
+	m.markAgentDone(a)
+
+	select {
+	case <-m.QueueNudge():
+	default:
+		t.Fatal("expected exactly one nudge from the first markAgentDone call")
+	}
+	select {
+	case <-m.QueueNudge():
+		t.Fatal("repeated markAgentDone on the same agent must not fire a second nudge")
+	default:
+	}
+}
+
+// TestTryReserveSlot_RegisterNoDoubleCount verifies a TryReserveSlot peek
+// followed by the authoritative registerRunningAgent claim converts into
+// exactly one liveCount/liveByProvider increment, with the accounting
+// invariant intact.
+func TestTryReserveSlot_RegisterNoDoubleCount(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if !m.TryReserveSlot() {
+		t.Fatal("expected a slot to be available on a fresh manager")
+	}
+
+	a := &Agent{ID: "reserve-then-register", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+
+	if got := m.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount = %d, want 1", got)
+	}
+	if got := m.InFlightByProvider()["claude"]; got != 1 {
+		t.Fatalf("claude in-flight = %d, want 1", got)
+	}
+	assertAccountingInvariant(t, m)
+}
