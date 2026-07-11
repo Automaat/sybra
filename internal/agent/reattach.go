@@ -29,7 +29,7 @@ var errReattachedResultError = errors.New("agent: reattached run completed with 
 // can shorten it.
 var reattachPIDPoll atomic.Int64
 
-func init() { reattachPIDPoll.Store(int64(time.Second)) }
+func init() { reattachPIDPoll.Store(time.Second.Nanoseconds()) }
 
 // ReattachAll rebuilds in-memory agents for subprocesses recorded in the
 // registry that are still alive, and resumes streaming their output by

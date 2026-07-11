@@ -38,6 +38,10 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 // per-provider dispatch cap silently desyncs after every restart that finds
 // in-flight agents.
 func TestReattachAccountingInvariant(t *testing.T) {
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
+
 	logDir := t.TempDir()
 	regDir := t.TempDir()
 	agentsLogDir := filepath.Join(logDir, "agents")
