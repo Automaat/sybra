@@ -19,6 +19,7 @@ const (
 	watchdogHangStatusReasonPrefix  = "watchdog hang"
 	watchdogHangRetryVarPrefix      = "watchdog.hang_retry."
 	watchdogHangCleanRetryVarPrefix = "watchdog.hang_clean_retry."
+	watchdogReaskNoteVar            = "watchdog_reask_note"
 	maxWatchdogHangRetries          = 2
 	watchdogRateLimitStatusPrefix   = "watchdog: rate limit"
 	watchdogRateLimitRetryVarPrefix = "watchdog.rate_limit_retry."
@@ -638,6 +639,7 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		return
 	}
 	e.clearCircuitBreakerOnSuccess(taskID, t.Workflow, step.ID)
+	e.clearWatchdogReaskNote(taskID, t.Workflow)
 }
 
 func (e *Engine) shouldRetryGhostPark(taskID, stepID string) bool {
@@ -965,6 +967,7 @@ func (e *Engine) ResumeStalled() {
 		} else {
 			e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
 			e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
+			e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
 		}
 	}
 }
@@ -1001,6 +1004,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 		cleanRef = "HEAD"
 	}
 	t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
+	t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogReaskNote(attempts+1))
 	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 		return true
@@ -1017,6 +1021,24 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 func isWatchdogHangReason(reason string) bool {
 	reason = strings.TrimSpace(reason)
 	return reason == watchdogHangStatusReasonPrefix || strings.HasPrefix(reason, watchdogHangStatusReasonPrefix+":")
+}
+
+func buildWatchdogReaskNote(attempt int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because it produced no output "+
+		"for an extended period (watchdog hang) — attempt %d of %d. A hang almost always means a "+
+		"command blocked: the full test suite, a foreground server that never backgrounds, an "+
+		"interactive prompt, or a wedged build.\n\n", attempt, maxWatchdogHangRetries)
+	b.WriteString("To make forward progress this time:\n")
+	b.WriteString("- Do NOT run the whole suite (`mise run verify`, `go test ./...`, full `npm` builds). " +
+		"Sybra runs codegen and the verify suite deterministically AFTER you finish — build and test only " +
+		"the narrow packages you changed.\n")
+	b.WriteString("- Never launch a foreground long-running or interactive process; background any server " +
+		"and bound every command.\n")
+	b.WriteString("- Commit and push incrementally so partial progress survives a restart.\n")
+	b.WriteString("- If you are genuinely blocked, STOP and mark the task human-required with the specific " +
+		"blocker instead of looping.")
+	return b.String()
 }
 
 func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
@@ -1085,6 +1107,19 @@ func (e *Engine) clearTransientFetchRetry(taskID string, wf *Execution, stepID s
 	delete(wf.Variables, retryKey)
 	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.transient-fetch.clear", "task_id", taskID, "step", stepID, "err", err)
+	}
+}
+
+func (e *Engine) clearWatchdogReaskNote(taskID string, wf *Execution) {
+	if wf == nil || wf.Variables == nil {
+		return
+	}
+	if _, ok := wf.Variables[watchdogReaskNoteVar]; !ok {
+		return
+	}
+	delete(wf.Variables, watchdogReaskNoteVar)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.watchdog-hang.reask-clear", "task_id", taskID, "err", err)
 	}
 }
 

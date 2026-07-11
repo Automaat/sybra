@@ -47,6 +47,10 @@ steps:
 
         {{getvar .Vars "verify_reask_note"}}
         {{- end}}
+        {{- if getvar .Vars "watchdog_reask_note"}}
+
+        {{getvar .Vars "watchdog_reask_note"}}
+        {{- end}}
 
         Before committing broad/sweep changes ("everywhere", "all", "single
         utility", "unified", "no raw X remains"), derive and run a cheap
