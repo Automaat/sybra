@@ -156,6 +156,25 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			wantMerged: true,
 		},
 		{
+			name:      "pet self-authored bot, no copilot -> merges (bypass)",
+			projectID: "pet-owner/pet-repo",
+			pr: github.PullRequest{
+				Repository: "pet-owner/pet-repo", Number: 16,
+				Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: false, SelfAuthoredBot: true,
+			},
+			wantMerged: true,
+		},
+		{
+			name:      "pet self-authored bot, changes requested -> holds",
+			projectID: "pet-owner/pet-repo",
+			pr: github.PullRequest{
+				Repository: "pet-owner/pet-repo", Number: 17,
+				Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: false,
+				SelfAuthoredBot: true, ReviewDecision: "CHANGES_REQUESTED",
+			},
+			wantMerged: false,
+		},
+		{
 			name:      "pet, copilot not reviewed -> holds",
 			projectID: "pet-owner/pet-repo",
 			pr: github.PullRequest{
