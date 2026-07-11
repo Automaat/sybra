@@ -774,6 +774,15 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	}
 }
 
+func isResumableStepType(t StepType) bool {
+	switch t {
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
 	// Skip tasks whose step is currently being started. Interactive spawns
 	// (worktree creation, rebase, agent process start) take several seconds
@@ -887,11 +896,7 @@ func (e *Engine) ResumeStalled() {
 			}
 		}
 
-		// Only resume async agent steps where no agent is running, plus
-		// classify_task: it's synchronous but can park in ExecWaiting on
-		// engine shutdown mid-classify (see engine_steps_classify.go), and
-		// nothing else re-drives a parked sync step.
-		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN && step.Type != StepClassifyTask {
+		if !isResumableStepType(step.Type) {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
@@ -1156,8 +1161,13 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	// try the same autonomous branch-conflict-fix recovery before parking the
 	// task on a human. currentStatus != "human-required" mirrors the sticky
 	// guard below: don't re-trigger recovery for a task a concurrent handler
-	// already parked.
-	if currentStatus != "human-required" && e.conflictRecovery != nil && errors.Is(err, worktreeerr.ErrRebaseFailed) {
+	// already parked. A disk-space-caused rebase failure skips recovery
+	// entirely — a full host disk is not a content conflict a conflict-fix
+	// agent can resolve, so routing it through recovery would just waste an
+	// agent run before falling back to the same human-required park anyway.
+	// See #1856.
+	if currentStatus != "human-required" && e.conflictRecovery != nil &&
+		errors.Is(err, worktreeerr.ErrRebaseFailed) && !worktreeerr.IsDiskSpaceError(err) {
 		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
 		if e.tryConflictRecoveryWithFallback(taskID, func() {
 			e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)

@@ -42,6 +42,29 @@ func TestClassifyAgentStartError(t *testing.T) {
 			wantContains:  "branch stale: rebase failed before agent start",
 		},
 		{
+			// Regression guard for sybra#1856: an ENOSPC failure during
+			// worktree reconcile gets wrapped in ErrRebaseFailed by
+			// reconcileAndRebase, but must surface the real root cause
+			// instead of the generic "branch stale" rebase-conflict message
+			// — a human reading that would waste time hunting for a merge
+			// conflict that doesn't exist.
+			name:          "disk space error wrapped in rebase failed is permanent with distinct reason",
+			err:           fmt.Errorf("%w: reconcile branch with remote: %w", worktreeerr.ErrRebaseFailed, errors.New("no space left on device")),
+			wantPermanent: true,
+			wantContains:  "disk space exhausted",
+		},
+		{
+			// A raw ENOSPC error (e.g. from FetchOrigin, not wrapped in
+			// ErrRebaseFailed) previously fell into the generic default case
+			// (permanent=false, so the resume loop kept retrying into a full
+			// disk). It must now be classified as its own permanent,
+			// distinct failure.
+			name:          "raw disk space error is permanent with distinct reason",
+			err:           errors.New("fetch origin: cannot open 'FETCH_HEAD': No space left on device"),
+			wantPermanent: true,
+			wantContains:  "disk space exhausted",
+		},
+		{
 			name:         "transient fetch failure is not permanent",
 			err:          fmt.Errorf("prepare worktree: %w", worktreeerr.ErrTransientFetch),
 			wantContains: "agent start delayed: transient network failure",
@@ -252,6 +275,41 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToHumanRequired(t *testing.T) {
 	reason := tasks.Reason("t1")
 	if !strings.Contains(reason, "branch stale") {
 		t.Errorf("reason %q missing rebase-failed classification", reason)
+	}
+}
+
+// TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery guards sybra#1856:
+// an ENOSPC failure wrapped in ErrRebaseFailed must not be routed into
+// branch-conflict-fix recovery (a disk-full host isn't a content conflict a
+// conflict-fix agent can resolve) and must surface the real root cause
+// instead of the generic rebase-blocked reason.
+func TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+
+	var recoveryCalled bool
+	engine.SetConflictRecovery(func(string) bool {
+		recoveryCalled = true
+		return true
+	})
+
+	wrapped := fmt.Errorf("%w: reconcile branch with remote: %w", worktreeerr.ErrRebaseFailed, errors.New("no space left on device"))
+	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
+
+	if recoveryCalled {
+		t.Error("conflict recovery was invoked for a disk-space failure — a full disk is not a content conflict it can resolve")
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("disk-space failure should flip to human-required, got %q", got.Status)
+	}
+	reason := tasks.Reason("t1")
+	if !strings.Contains(reason, "disk space exhausted") {
+		t.Errorf("reason %q missing disk-space classification", reason)
+	}
+	if strings.Contains(reason, "branch stale") {
+		t.Errorf("reason %q used the generic rebase-blocked message instead of the disk-space one", reason)
 	}
 }
 
