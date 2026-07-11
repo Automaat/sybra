@@ -41,6 +41,7 @@ var (
 	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
 	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
+	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
 	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
 	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
@@ -434,6 +435,8 @@ type worktreeGetterAdapter struct {
 	mgr   *worktree.Manager
 }
 
+type attemptNoteAppenderAdapter struct{}
+
 // checkConfigGetterAdapter resolves a task's verify-suite commands by merging
 // the repo `.sybra.yaml` checks (read from the project's trusted default
 // branch, never the checked-out worktree — see resolveTrustedSetupCommands
@@ -548,6 +551,10 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 		return "", false
 	}
 	return path, true
+}
+
+func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
+	return worktree.AppendNote(ctx, wtPath, marker, note)
 }
 
 // branchSyncerAdapter bridges task.Manager + worktree.Manager → workflow.BranchSyncer.
