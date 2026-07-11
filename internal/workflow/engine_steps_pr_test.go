@@ -710,3 +710,42 @@ func TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates(t *testing
 		t.Errorf("status = %q, want human-required after exhausting push retries", ti.Status)
 	}
 }
+
+type raceThenFoundFinder struct{ n int }
+
+func (f *raceThenFoundFinder) FindPRForBranch(context.Context, string, string) (number int, found bool, err error) {
+	f.n++
+	if f.n == 1 {
+		return 0, false, nil
+	}
+	return 55, true, nil
+}
+
+func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/my-branch")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
+	tasks.Put(task)
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPRFinder(&raceThenFoundFinder{})
+	engine.SetPRCreator(&fakePRCreator{err: errors.New(`a pull request for branch "acme:feat/my-branch" into branch "main" already exists: https://github.com/acme/widgets/pull/55`)})
+	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.PRNumber != 55 {
+		t.Errorf("PRNumber = %d, want 55 (adopted existing PR)", ti.PRNumber)
+	}
+	if ti.Status == "human-required" {
+		t.Errorf("must not escalate to human-required when the PR already exists: %s", tasks.Reason("t1"))
+	}
+}
