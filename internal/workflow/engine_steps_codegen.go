@@ -49,10 +49,9 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		_, _ = io.WriteString(tail, output)
 
 		if failedCmd != "" && verifyMissingToolchainRe.MatchString(output) {
-			report.Skipped = append(report.Skipped, raw)
-			e.logger.Warn("workflow.codegen-gate.skip-toolchain",
-				"task_id", taskID, "cmd", trimDiffLine(raw))
-			continue
+			reason := "codegen gate could not run " + trimDiffLine(failedCmd) +
+				" because the configured toolchain is missing from PATH — rerun setup or install the missing tool, then retry"
+			return e.flagCodegenGate(taskID, step, reason, tailString(output, 400))
 		}
 
 		if runErr != nil {
@@ -76,7 +75,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 		}
 	}
 
-	committed, err := project.CheckpointCommit(ctx, wtPath, "chore(codegen): apply codegen and goimports")
+	committed, err := project.CheckpointCommit(ctx, wtPath, "chore(codegen): apply generated changes")
 	if err != nil {
 		reason := "codegen gate could not checkpoint generated changes: " + trimDiffLine(err.Error())
 		return e.flagCodegenGate(taskID, step, reason, err.Error())

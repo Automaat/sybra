@@ -367,9 +367,10 @@ Typical repo `setup:` examples:
 - multi-step: `./.sybra/bootstrap.sh`
 
 Repo `.sybra.yaml` may also declare `checks.codegen` for the deterministic
-mutation pass run by `simple-task-pr` before PR creation/update. Keep this list
-to formatters / codegen refresh only (for example `golangci-lint fmt ./...`,
-`go mod tidy`), not tests; tests belong in `checks.verify`.
+mutation pass run by `simple-task-implement` before tamper/verify/review/
+testing. Keep this list to formatters / codegen refresh only (for example
+`golangci-lint fmt ./...`, `go mod tidy`), not tests; tests belong in
+`checks.verify`.
 
 App-level `SetupCommands` should stay empty for most projects; use it only for host-specific extras such as copying a local `.env`.
 

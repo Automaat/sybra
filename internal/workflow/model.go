@@ -122,9 +122,9 @@ const (
 	// continues to its next step regardless of outcome.
 	StepSyncBranch StepType = "sync_branch"
 	// StepCodegenGate runs the project's configured mutation pass
-	// (`checks.codegen`) in the task worktree right before PR handoff, then
-	// checkpoint-commits any resulting drift so both PR push paths carry a
-	// clean tree.
+	// (`checks.codegen`) in the task worktree before detect_tampering,
+	// verify_checks, review, and testing, then checkpoint-commits any
+	// resulting drift so downstream validation sees the final branch content.
 	StepCodegenGate StepType = "codegen_gate"
 	// StepResumeWorkflow is the terminal step of a recovery workflow
 	// (branch-conflict-fix) that re-enters the task's original interrupted

@@ -22,8 +22,8 @@ type ChecksConfig struct {
 	PrePush   []string `yaml:"pre_push,omitempty"   json:"prePush,omitempty"`
 	// Codegen is the project's deterministic mutation pass (formatters,
 	// goimports, go mod tidy, generated-file refresh) run by the codegen_gate
-	// workflow step right before PR handoff. Each entry is a shell command run
-	// in the worktree root, in order.
+	// workflow step before downstream tamper/verify/review/testing validation.
+	// Each entry is a shell command run in the worktree root, in order.
 	Codegen []string `yaml:"codegen,omitempty" json:"codegen,omitempty"`
 	// Verify is the project's deterministic verification suite (tests /
 	// typecheck), run by the verify_checks workflow step on the agent's branch

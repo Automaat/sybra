@@ -38,9 +38,9 @@ checks:
   pre_push:
     - mise exec -- go test ./...
     - (cd frontend && npm run check)
-  # Mutation pass run by the codegen_gate workflow step right before PR
-  # creation/update so generated files, goimports, and go.mod drift are fixed
-  # in the worktree and committed before the branch is pushed.
+  # Mutation pass run by the codegen_gate workflow step before tamper/verify/
+  # review/testing so generated files, goimports, and go.mod drift are fixed
+  # in the worktree and committed before downstream validation.
   codegen:
     - mise exec -- golangci-lint fmt ./...
     - mise exec -- go mod tidy

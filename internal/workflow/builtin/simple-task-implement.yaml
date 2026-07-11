@@ -108,6 +108,23 @@ steps:
           operator: equals
           value: done
         goto: ""
+      - goto: codegen_gate
+
+  # Mechanical mutation pass (no LLM): run the project's configured
+  # format/codegen commands before tamper detection, verify_checks, review,
+  # and testing so any generated drift is committed inside every downstream
+  # validation boundary. A clean tree is a no-op; command failure, missing
+  # toolchain, timeout, or checkpoint-commit failure flips the task to
+  # human-required.
+  - id: codegen_gate
+    name: Codegen Gate
+    type: codegen_gate
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: detect_tampering
 
   # Mechanical check (no LLM): inspects the worktree diff for reward-hacking /

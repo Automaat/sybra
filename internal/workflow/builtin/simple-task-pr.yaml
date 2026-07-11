@@ -18,21 +18,6 @@ steps:
     name: Sync Branch
     type: sync_branch
     next:
-      - goto: codegen_gate
-
-  # Run repo-declared format/codegen drift fixups after the last sync and
-  # before either PR handoff path. A clean tree is a no-op; any generated or
-  # formatting drift is committed once so both create_pr and push_existing_pr
-  # push a clean branch.
-  - id: codegen_gate
-    name: Codegen Gate
-    type: codegen_gate
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
       - goto: maybe_create_pr
 
   # Guard: when the task already has a PR number (retries), skip create_pr

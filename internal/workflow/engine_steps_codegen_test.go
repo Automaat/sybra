@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newCodegenGateStep() *Step { return &Step{ID: "codegen_gate", Type: StepCodegenGate} }
@@ -134,7 +135,7 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	if got := codegenGitOutput(t, wt, "rev-list", "--count", "HEAD"); got != "2" {
 		t.Fatalf("commit count = %s, want 2", got)
 	}
-	if got := codegenGitOutput(t, wt, "log", "-1", "--pretty=%s"); got != "chore(codegen): apply codegen and goimports" {
+	if got := codegenGitOutput(t, wt, "log", "-1", "--pretty=%s"); got != "chore(codegen): apply generated changes" {
 		t.Fatalf("last subject = %q, want codegen checkpoint subject", got)
 	}
 	if got := codegenGitOutput(t, wt, "status", "--porcelain"); got != "" {
@@ -145,7 +146,7 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	}
 }
 
-func TestExecCodegenGate_MissingToolchainSkipsFailOpen(t *testing.T) {
+func TestExecCodegenGate_MissingToolchainFlagsHumanRequired(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	engine, tasks := newCodegenGateEngine(t, wt, []string{`echo "wails3: command not found" >&2; exit 1`})
@@ -155,14 +156,15 @@ func TestExecCodegenGate_MissingToolchainSkipsFailOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "clean" {
-		t.Fatalf("Output = %q, want clean after skipped toolchain miss", out.Output)
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
 	}
-	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
-		t.Fatalf("status = %q, want unchanged", ti.Status)
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
-	if got := codegenGitOutput(t, wt, "rev-list", "--count", "HEAD"); got != "1" {
-		t.Fatalf("commit count = %s, want no extra commit", got)
+	if !strings.Contains(ti.StatusReason, "configured toolchain is missing from PATH") {
+		t.Fatalf("status reason = %q, want missing toolchain detail", ti.StatusReason)
 	}
 }
 
@@ -185,6 +187,29 @@ func TestExecCodegenGate_HardFailureFlagsHumanRequired(t *testing.T) {
 	}
 	if !strings.Contains(ti.StatusReason, "codegen gate failed while running") {
 		t.Fatalf("status reason = %q, want codegen failure detail", ti.StatusReason)
+	}
+}
+
+func TestExecCodegenGate_TimeoutFlagsHumanRequired(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"sleep 1"})
+	engine.SetVerifyTimeout(100 * time.Millisecond)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "exceeded the time budget") {
+		t.Fatalf("status reason = %q, want timeout detail", ti.StatusReason)
 	}
 }
 

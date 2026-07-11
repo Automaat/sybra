@@ -916,6 +916,11 @@ func TestMergeChecks(t *testing.T) {
 			wantCodegen:   []string{"app fmt"},
 		},
 		{
+			name:    "empty codegen-only config collapses to nil",
+			repo:    &ChecksConfig{Codegen: []string{}},
+			wantNil: true,
+		},
+		{
 			name:       "verify only repo is non-nil",
 			repo:       &ChecksConfig{Verify: []string{"go test ./..."}},
 			wantVerify: []string{"go test ./..."},
