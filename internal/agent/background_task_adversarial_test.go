@@ -128,6 +128,30 @@ func TestAdversarial_LiveBackgroundTaskAtConvoOneShotExitDoesNotCompleteCleanly(
 	}
 }
 
+// TestCheckLiveBackgroundTasksAtExit_IntentionalStopIsClean guards the
+// exemption that keeps a normal StopAgent from being mislabeled as a failed
+// run. A regular multi-turn interactive session can hold a live CLI
+// background task across turns; stopping it closes stdin and produces a clean
+// process exit, which must NOT be reported as errBackgroundTaskLiveAtExit —
+// the guardrail (backgroundTaskGuardrail prompt) only targets one-shot exit
+// shapes and was never injected into that session.
+func TestCheckLiveBackgroundTasksAtExit_IntentionalStopIsClean(t *testing.T) {
+	m := &Manager{logger: discardLogger()}
+
+	live := &Agent{}
+	live.SetBackgroundTaskIDs([]string{"bg1"})
+
+	// Sanity: without a stop, a live background task at exit is still a failure.
+	if err := checkLiveBackgroundTasksAtExit(m, live); !errors.Is(err, errBackgroundTaskLiveAtExit) {
+		t.Fatalf("live task, not stopped: got %v, want errBackgroundTaskLiveAtExit", err)
+	}
+
+	live.MarkStopped()
+	if err := checkLiveBackgroundTasksAtExit(m, live); err != nil {
+		t.Fatalf("live task, intentionally stopped: got %v, want nil", err)
+	}
+}
+
 // logCapture is a minimal concurrency-safe io.Writer for slog output,
 // avoiding a data race between the runner goroutine's logging and the test
 // goroutine's failure-message formatting.
