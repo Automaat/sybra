@@ -773,6 +773,15 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 	}
 }
 
+func isResumableStepType(t StepType) bool {
+	switch t {
+	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepCreatePR, StepPushBranch:
+		return true
+	default:
+		return false
+	}
+}
+
 func dispatchPriorityRank(status string) int {
 	switch status {
 	case "in-review", "ready-pr":
@@ -901,11 +910,7 @@ func (e *Engine) ResumeStalled() {
 			}
 		}
 
-		// Only resume async agent steps where no agent is running, plus
-		// classify_task: it's synchronous but can park in ExecWaiting on
-		// engine shutdown mid-classify (see engine_steps_classify.go), and
-		// nothing else re-drives a parked sync step.
-		if step.Type != StepRunAgent && step.Type != StepParallel && step.Type != StepBestOfN && step.Type != StepClassifyTask {
+		if !isResumableStepType(step.Type) {
 			continue
 		}
 		if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
