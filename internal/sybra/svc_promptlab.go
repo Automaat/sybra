@@ -18,7 +18,7 @@ const rejectedNoFeedbackReason = "rejected (no feedback provided)"
 
 // PromptLabService exposes Prompt Lab proposal approve/reject operations as
 // Wails-bound methods. Proposals are plain tasks (tagged
-// promptlab.ProposalTag + "requires-human", status human-required) with no
+// "prompt-lab-proposal" + "requires-human", status human-required) with no
 // workflow attached, so approve/reject are direct task.Manager transitions
 // rather than workflow-engine actions.
 type PromptLabService struct {

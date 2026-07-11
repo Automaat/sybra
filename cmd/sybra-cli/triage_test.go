@@ -91,6 +91,7 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
 	}
+	t.Setenv("SYBRA_HOME", dir)
 	cfg := config.DefaultConfig()
 
 	code, _ := captureStdout(t, func() int {
