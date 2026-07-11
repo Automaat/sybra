@@ -41,7 +41,7 @@ func TestExecVerifyChecks_NoGetterSkips(t *testing.T) {
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestExecVerifyChecks_NoCommandsSkips(t *testing.T) {
 	engine, tasks := newVerifyChecksEngine(t, t.TempDir(), nil)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestExecVerifyChecks_PassIsClean(t *testing.T) {
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{"true", "echo ok"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{"true", "exit 1"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestExecVerifyChecks_BlessedTagSkips(t *testing.T) {
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{"exit 1"}) // would fail
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(),
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil,
 		TaskInfo{ID: "t1", Tags: []string{"verify-blessed"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -131,7 +131,7 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 	engine.SetVerifyTimeout(150 * time.Millisecond)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	engine.SetVerifyTimeout(2 * time.Second)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestExecVerifyChecks_ToolchainHealRepairs(t *testing.T) {
 	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestExecVerifyChecks_ToolchainHealMatchesDashNotFound(t *testing.T) {
 	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestExecVerifyChecks_ToolchainHealSetupFailsEscalates(t *testing.T) {
 	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"false"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
 	engine, tasks := newVerifyChecksEngineWithSetup(t, wt, cmds, []string{"touch .healed"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{flaky})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), TaskInfo{ID: "t1"})
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

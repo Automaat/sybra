@@ -570,7 +570,7 @@ func (e *Engine) execSyncStep(taskID string, step *Step, wfExec *Execution, ctx 
 	case StepDetectTampering:
 		return e.execDetectTampering(taskID, step, t)
 	case StepVerifyChecks:
-		return e.execVerifyChecks(taskID, step, t)
+		return e.execVerifyChecks(taskID, step, wfExec, t)
 	case StepRoutePRFixResult:
 		return e.execRoutePRFixResult(taskID, step, wfExec, t)
 	case StepRouteTestResult:

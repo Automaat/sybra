@@ -43,6 +43,10 @@ steps:
 
         {{acceptanceledger .Task.Body}}
         {{- end}}
+        {{- if getvar .Vars "verify_reask_note"}}
+
+        {{getvar .Vars "verify_reask_note"}}
+        {{- end}}
 
         Before committing broad/sweep changes ("everywhere", "all", "single
         utility", "unified", "no raw X remains"), derive and run a cheap
