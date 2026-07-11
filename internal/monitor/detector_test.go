@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func defaultCfg() config.MonitorConfig {
@@ -306,6 +307,56 @@ func TestDetect(t *testing.T) {
 				Cfg:        cfg,
 			},
 			want: []AnomalyKind{KindLostAgent},
+		},
+		{
+			name: "lost_agent suppressed when workflow parked awaiting a dispatch slot",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "stopped", StartedAt: now.Add(-4 * time.Hour)},
+					}
+					t.Workflow = &workflow.Execution{
+						WorkflowID:  "simple-task-plan",
+						CurrentStep: "implement",
+						State:       workflow.ExecWaiting,
+					}
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "lost_agent fires when workflow waiting but a running run is outside the window",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
+					t.AgentRuns = []task.AgentRun{
+						{AgentID: "x", State: "running", StartedAt: now.Add(-20 * time.Minute)},
+					}
+					t.Workflow = &workflow.Execution{
+						WorkflowID:  "simple-task-plan",
+						CurrentStep: "implement",
+						State:       workflow.ExecWaiting,
+					}
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindLostAgent},
+		},
+		{
+			name: "lost_agent suppressed for a task that is itself a monitor lost_agent report",
+			in: DetectInput{
+				Now: now,
+				Tasks: []task.Task{mkTaskAt(now, "a", task.StatusInProgress, func(t *task.Task) {
+					t.Body = "## Detection\n- Kind: `lost_agent`\n- Fingerprint: `lost_agent:3e2f0953`\n"
+				})},
+				LiveAgents: []liveAgent{},
+				Cfg:        cfg,
+			},
+			want: nil,
 		},
 		{
 			name: "lost_agent suppressed when task just transitioned to in-progress and dispatch hasn't recorded a run yet",
