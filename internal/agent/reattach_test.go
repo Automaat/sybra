@@ -38,9 +38,9 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 // per-provider dispatch cap silently desyncs after every restart that finds
 // in-flight agents.
 func TestReattachAccountingInvariant(t *testing.T) {
-	prevPoll := reattachPIDPoll
-	reattachPIDPoll = 30 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prevPoll })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -149,14 +149,82 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	}
 }
 
+func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	spawnSleeper := func(t *testing.T) *exec.Cmd {
+		t.Helper()
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleeper: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		go func() { _ = cmd.Wait() }()
+		return cmd
+	}
+
+	logDir := t.TempDir()
+	agentsLogDir := filepath.Join(logDir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	regDir := t.TempDir()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) {},
+	})
+
+	logFor := func(id string) string {
+		p := filepath.Join(agentsLogDir, id+".ndjson")
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	staleCmd := spawnSleeper(t)
+	orchCmd := spawnSleeper(t)
+	records := []Record{
+		{
+			ID: "task-agent", TaskID: "task-x", Mode: "interactive", Provider: "claude",
+			PID: staleCmd.Process.Pid, LogPath: logFor("task-agent"),
+			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
+			ProcStartedAt: processStartString(context.Background(), staleCmd.Process.Pid),
+		},
+		{
+			ID: "orchestrator", Mode: "interactive", Provider: "claude",
+			PID: orchCmd.Process.Pid, LogPath: logFor("orchestrator"),
+			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
+			ProcStartedAt: processStartString(context.Background(), orchCmd.Process.Pid),
+		},
+	}
+	for _, r := range records {
+		if err := m.reg.Save(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m.ReattachAll()
+
+	recs, err := m.reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := map[string]bool{}
+	for _, r := range recs {
+		present[r.ID] = true
+	}
+	if present["task-agent"] {
+		t.Errorf("stale interactive task agent must be reaped, but its record survives")
+	}
+	if !present["orchestrator"] {
+		t.Errorf("taskless orchestrator must NOT be reaped, but its record is gone")
+	}
+}
+
 func TestReattachReapsStaleSurvivors(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
-	prevPoll := reattachPIDPoll
-	reattachPIDPoll = 30 * time.Millisecond
 	prevGrace := stopSIGINTGrace
 	stopSIGINTGrace = 30 * time.Millisecond
 	t.Cleanup(func() {
-		reattachPIDPoll = prevPoll
 		stopSIGINTGrace = prevGrace
 	})
 
