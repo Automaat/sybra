@@ -36,11 +36,24 @@ read_lines_into() {
   done
 }
 
-# Exported Go method names allowlisted for HTTP dispatch, e.g. `"GetTask",`.
-# Restricted to capitalized identifiers so this doesn't also match unrelated
-# quoted strings (import paths, package names) elsewhere in the file. Uses
-# BRE grep + sed instead of PCRE (-P) so this also runs on macOS/BSD grep.
-read_lines_into methods < <(grep -oE '^[[:space:]]*"[A-Z][A-Za-z0-9_]*",?$' "${SERVICES_GO}" | sed -E 's/^[[:space:]]*"([A-Za-z0-9_]+)",?$/\1/' | sort -u)
+# Only Wails-bound services need frontend shims. An HTTP-only control-plane
+# service (in the HTTP allowlist but with no wails3 binding, e.g. QueueService)
+# has no api.ts pick() counterpart and no frontend caller, so it is exempt —
+# gated below by whether its binding file exists. Portable awk for BSD + gawk;
+# the capitalized-only method regex still skips import paths and package names.
+BINDING_DIR="frontend/bindings/github.com/Automaat/sybra/internal/sybra"
+read_lines_into methods < <(awk -v bdir="${BINDING_DIR}" '
+  /httpapi\.NewService\(/ {
+    svc = $0
+    sub(/^[[:space:]]*"/, "", svc)
+    sub(/".*/, "", svc)
+    wails = (system("test -f \"" bdir "/" tolower(svc) ".ts\"") == 0)
+    next
+  }
+  /^[[:space:]]*"[A-Z][A-Za-z0-9_]*",?[[:space:]]*$/ {
+    if (wails) { m = $0; sub(/^[[:space:]]*"/, "", m); sub(/",?[[:space:]]*$/, "", m); print m }
+  }
+' "${SERVICES_GO}" | sort -u)
 
 if [[ "${#methods[@]}" -eq 0 ]]; then
   echo "::error::no methods parsed from ${SERVICES_GO} — check the extraction regex" >&2
