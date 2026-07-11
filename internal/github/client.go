@@ -434,7 +434,7 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	prs := make([]PullRequest, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
-		if isBot(n.Author.Type, n.Author.Login) {
+		if isBot(n.Author.Type, n.Author.Login) && !sameActor(n.Author.Login, viewer) {
 			continue
 		}
 		prs = append(prs, convertCommonPR(n, viewer))
@@ -444,6 +444,14 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 
 func isBot(typeName, login string) bool {
 	return typeName == "Bot" || strings.Contains(login, "[bot]")
+}
+
+func sameActor(a, b string) bool {
+	strip := func(s string) string {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), "[bot]")
+	}
+	base := strip(a)
+	return base != "" && base == strip(b)
 }
 
 // IsCopilotReviewer reports whether a review-author login belongs to GitHub

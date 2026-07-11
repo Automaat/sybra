@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/learning"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -98,7 +99,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	staleStatus := task.StatusTodo
-	staleTags := []string{"prompt-lab-proposal"}
+	staleTags := []string{promptlab.ProposalTag}
 	stale, err := mgr.CreateFull("Stale proposal", "body", task.AgentModeInteractive, task.Update{
 		Status: &staleStatus,
 		Tags:   &staleTags,
@@ -127,7 +128,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	}
 
 	pendingStatus := task.StatusHumanRequired
-	pendingTags := []string{"prompt-lab-proposal", "requires-human"}
+	pendingTags := []string{promptlab.ProposalTag, "requires-human"}
 	pending, err := mgr.CreateFull("Pending proposal", "body", task.AgentModeInteractive, task.Update{
 		Status: &pendingStatus,
 		Tags:   &pendingTags,

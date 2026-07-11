@@ -407,9 +407,9 @@ func TestRegistryDelete_RemovesFIFO(t *testing.T) {
 // record (no FIFO / empty StdinPath) reattaches tail-only and finalizes
 // when its single turn completes — no FIFO reopen required.
 func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -471,9 +471,9 @@ func TestReattachInteractive_OneShotTailOnly(t *testing.T) {
 // conversational agent, rehydrates its buffer, reopens its FIFO, streams a
 // late event, and finalizes when the process exits.
 func TestReattachInteractive_ReattachesLiveAgent(t *testing.T) {
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -743,9 +743,9 @@ func TestSurviveHeadlessStoresAndReopensFIFO(t *testing.T) {
 // TestReattachInteractive_ReattachesLiveAgent for the conversational path),
 // so a steer message sent after reattach still reaches the child.
 func TestReattachHeadlessReopensFIFO(t *testing.T) {
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()

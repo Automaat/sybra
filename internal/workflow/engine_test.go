@@ -113,6 +113,7 @@ type memTasks struct {
 	gets      map[string]int
 	onGet     func(id string, t *TaskInfo, count int)
 	appendErr error
+	failGet   bool
 }
 
 func newMemTasks() *memTasks {
@@ -155,9 +156,21 @@ func (m *memTasks) SetGetTaskHook(hook func(id string, t *TaskInfo, count int)) 
 	m.onGet = hook
 }
 
+// SetFailGet forces GetTask to error even when the task exists, simulating a
+// transient store read hiccup. Other operations (UpdateTaskStatus, etc.) keep
+// working, so it can model a read failure concurrent with a live task.
+func (m *memTasks) SetFailGet(fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failGet = fail
+}
+
 func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failGet {
+		return TaskInfo{}, fmt.Errorf("task %s: simulated store read failure", id)
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return TaskInfo{}, fmt.Errorf("task %s not found", id)
@@ -1837,6 +1850,91 @@ func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
 	want := []string{"t-review", "t-mid", "t-new"}
 	if !slices.Equal(order, want) {
 		t.Fatalf("dispatch order = %v, want %v", order, want)
+	}
+}
+
+func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "todo",
+		Workflow: &Execution{
+			WorkflowID:  "wait-human-wf",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "plan-review" {
+		t.Fatalf("status = %q, want plan-review (wait_human status must be reconciled)", ti.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("wait_human step must not spawn an agent, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{"cancelled", "done", "human-required"} {
+		t.Run(keep, func(t *testing.T) {
+			tasks := newMemTasks()
+			engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: keep,
+				Workflow: &Execution{
+					WorkflowID:  "wait-human-wf",
+					CurrentStep: "review_plan",
+					State:       ExecWaiting,
+					Variables:   make(map[string]string),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			ti, _ := tasks.GetTask("t1")
+			if ti.Status != keep {
+				t.Fatalf("status = %q, want %q unchanged (skip status must not be reconciled)", ti.Status, keep)
+			}
+		})
 	}
 }
 
@@ -5510,6 +5608,66 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
 		t.Fatal("StartWorkflow should propagate a real spawn error")
+	}
+}
+
+// TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError guards
+// against the workflow.external-create.failed gap: a permanent dispatch
+// error (e.g. ErrNoProjectAssigned) on the very FIRST execution of a
+// workflow — StartWorkflow/DispatchEvent, not a ResumeStalled retry — must
+// classify and escalate exactly like ResumeStalled already does. Before the
+// fix, startWorkflowCore returned the raw error to its caller (who only logs
+// it) and left the task's Workflow live/non-terminal, so the task silently
+// sat in limbo until some later resume attempt happened to escalate it.
+func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
+		t.Fatal("StartWorkflow should propagate the spawn error")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required on the very first dispatch attempt", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no project could be assigned") {
+		t.Errorf("status reason = %q, want it to mention the classified no-project reason", got.StatusReason)
+	}
+}
+
+// TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus covers
+// the joint-failure edge: a store hiccup makes the current-status read fail at
+// the same moment a dispatch fails. Without the read guard, a non-permanent
+// classification would fall through with an empty target and push
+// UpdateTaskStatus(id, "", reason) — rejected and swallowed under a misleading
+// resume-stalled log while corrupting the task's status. The guard must skip
+// the surface entirely and leave the task's status untouched.
+func TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	tasks.SetFailGet(true)
+	wf := &Execution{WorkflowID: "x", CurrentStep: "run_agent", State: ExecRunning}
+	// A non-permanent error would target the (now unreadable) current status.
+	engine.surfaceInitialDispatchFailure("t1", wf, "run_agent", fmt.Errorf("git fetch: timeout"))
+
+	tasks.SetFailGet(false)
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress (no empty-status write)", got.Status)
 	}
 }
 

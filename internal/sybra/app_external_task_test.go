@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -22,10 +23,10 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	// write simulates the cross-process file write sybra-cli performs: it
 	// bypasses the in-process task.Manager (AtomicWrite straight to disk),
 	// then primes the Manager cache the way app.go's emit callback does.
-	write := func(id string, status task.Status) string {
+	write := func(id string, status task.Status, tags ...string) string {
 		tk := task.Task{
 			ID: id, Title: "ext " + id, Status: status,
-			AgentMode: task.AgentModeHeadless, CreatedAt: time.Now().UTC(),
+			AgentMode: task.AgentModeHeadless, Tags: tags, CreatedAt: time.Now().UTC(),
 		}
 		data, err := task.Marshal(tk)
 		if err != nil {
@@ -49,6 +50,19 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	}
 	if tk.Workflow == nil || tk.Workflow.WorkflowID != "simple-task-plan" {
 		t.Fatalf("fresh todo task: expected simple-task-plan workflow attached, got %+v", tk.Workflow)
+	}
+
+	// Prompt Lab proposal tasks may be todo, but they are reviewed and
+	// advanced by PromptLabService rather than task.created workflows.
+	promptLabPath := write("ext-promptlab", task.StatusTodo, promptlab.ProposalTag, "role:review")
+	app.maybeStartWorkflowForExternalTask(promptLabPath)
+	app.wg.Wait()
+	pl, err := app.tasks.Get("ext-promptlab")
+	if err != nil {
+		t.Fatalf("get ext-promptlab: %v", err)
+	}
+	if pl.Workflow != nil {
+		t.Fatalf("prompt-lab proposal: expected no workflow, got %+v", pl.Workflow)
 	}
 
 	// Idempotency: re-firing onto a task that already owns an active workflow

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -34,6 +35,13 @@ const umbrellaGuardOptOutTag = "notumbrella"
 // which feeds into routing rules (work projects force interactive mode).
 func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project) (task.Task, error) {
 	updates := make(map[string]any, 8)
+
+	// A prompt-lab proposal is owned by PromptLabService, not triage. It may
+	// be filed as todo or human-required, but in both cases the proposal text
+	// and routing fields stay under PromptLabService approval/rejection.
+	if slices.Contains(t.Tags, promptlab.ProposalTag) {
+		return t, nil
+	}
 
 	// t.ProjectID is sticky: once set (e.g. by the GitHub issue fetcher at
 	// task creation), the classifier's free-text guess must never override
@@ -102,27 +110,29 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 		updates["project_id"] = projectID
 	}
 
-	status := RouteStatus(v.Size, v.Type, projectType)
 	// pr-fix tasks (system-created to fix an existing PR) must never enter the
 	// planning phase — they go straight to implementation. Override any route
 	// that would park them in planning.
 	isPRFix := isPRFixTask(t)
+	status := RouteStatus(v.Size, v.Type, projectType)
 	if isPRFix {
 		status = task.StatusTodo
 	}
 	updates["status"] = string(status)
 	// No status_reason on successful triage: the field is reserved for
-	// attention-worthy states (monitor/watchdog/blocked), which the UI renders
-	// as a warning. Setting "status" without a reason makes the store clear any
-	// stale reason (e.g. "monitor: awaiting triage").
+	// attention-worthy states (monitor/watchdog/blocked), which the UI
+	// renders as a warning. Setting "status" without a reason makes the
+	// store clear any stale reason (e.g. "monitor: awaiting triage").
 
-	// A ☂️-titled task that never went through the GitHub issue fetcher (e.g.
-	// manual sybra-cli create) keeps task_type=normal and is invisible to the
-	// umbrella gate (internal/sybra/app_umbrella_gate.go), which filters
-	// strictly on TaskTypeUmbrella. Dispatching it as a flat implement task
-	// wastes a full run before the agent discovers there's no direct code
-	// surface. Catch it here — before dispatch — and park it for a human to
-	// either expand it from its issue URL, opt it out, or fix the title.
+	// A ☂️-titled task that never went through the GitHub issue fetcher
+	// (e.g. manual sybra-cli create) keeps task_type=normal and is
+	// invisible to the umbrella gate
+	// (internal/sybra/app_umbrella_gate.go), which filters strictly on
+	// TaskTypeUmbrella. Dispatching it as a flat implement task wastes a
+	// full run before the agent discovers there's no direct code
+	// surface. Catch it here — before dispatch — and park it for a
+	// human to either expand it from its issue URL, opt it out, or fix
+	// the title.
 	if !isPRFix && t.TaskType != task.TaskTypeUmbrella &&
 		!slices.Contains(t.Tags, umbrellaGuardOptOutTag) &&
 		umbrella.IsUmbrellaIssue(newTitle, t.Tags) {

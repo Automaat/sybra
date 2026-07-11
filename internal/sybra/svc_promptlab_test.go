@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -36,7 +37,7 @@ func createProposal(t *testing.T, svc *PromptLabService, status task.Status, tag
 func TestPromptLabService_ApproveProposal(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	tags := []string{"prompt-lab-proposal", "role:test-runner", "requires-human", "requires-human"}
+	tags := []string{promptlab.ProposalTag, "role:test-runner", "requires-human", "requires-human"}
 	created := createProposal(t, svc, task.StatusHumanRequired, tags)
 	stale := "some stale reason"
 	if _, err := svc.tasks.Update(created.ID, task.Update{StatusReason: &stale}); err != nil {
@@ -56,7 +57,7 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	if slices.Contains(got.Tags, "requires-human") {
 		t.Fatalf("tags = %v, want requires-human fully removed", got.Tags)
 	}
-	if !slices.Contains(got.Tags, "prompt-lab-proposal") || !slices.Contains(got.Tags, "role:test-runner") {
+	if !slices.Contains(got.Tags, promptlab.ProposalTag) || !slices.Contains(got.Tags, "role:test-runner") {
 		t.Fatalf("tags = %v, want prompt-lab-proposal and role tags preserved", got.Tags)
 	}
 
@@ -72,7 +73,7 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 func TestPromptLabService_RejectProposal_WithFeedback(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "role:test-runner", "requires-human"})
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "role:test-runner", "requires-human"})
 
 	got, err := svc.RejectProposal(created.ID, "not worth it")
 	if err != nil {
@@ -100,7 +101,7 @@ func TestPromptLabService_RejectProposal_WithFeedback(t *testing.T) {
 func TestPromptLabService_RejectProposal_EmptyFeedback(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "requires-human"})
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.RejectProposal(created.ID, "")
 	if err != nil {
@@ -125,7 +126,7 @@ func TestPromptLabService_RejectProposal_EmptyFeedback(t *testing.T) {
 func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "requires-human"})
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.RejectProposal(created.ID, "   \n\t  ")
 	if err != nil {
@@ -153,7 +154,7 @@ func TestPromptLabService_StaleStatusGuard(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			t.Parallel()
 			svc := setupPromptLabService(t)
-			created := createProposal(t, svc, status, []string{"prompt-lab-proposal", "requires-human"})
+			created := createProposal(t, svc, status, []string{promptlab.ProposalTag, "requires-human"})
 
 			if _, err := svc.ApproveProposal(created.ID); err == nil {
 				t.Fatal("ApproveProposal: want error for non-pending status")
@@ -200,7 +201,7 @@ func TestPromptLabService_MissingTagGuard(t *testing.T) {
 func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "requires-human"})
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	if _, err := svc.ApproveProposal(created.ID); err != nil {
 		t.Fatalf("first ApproveProposal: %v", err)
@@ -236,7 +237,7 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 		tasks:     task.NewManager(store, nil),
 		artifacts: artifact.New(badRoot.Name()),
 	}
-	created := createProposal(t, svc, task.StatusHumanRequired, []string{"prompt-lab-proposal", "requires-human"})
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.ApproveProposal(created.ID)
 	if err != nil {

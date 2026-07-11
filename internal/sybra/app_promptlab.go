@@ -127,7 +127,7 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 			continue
 		}
 		body := c.scrubBody(promptlab.RenderProposalBody(p), p.Evidence.ProjectIDs)
-		tags := []string{"prompt-lab-proposal", "role:" + p.Subject.Role}
+		tags := []string{promptlab.ProposalTag, "role:" + p.Subject.Role}
 		status := task.StatusTodo
 		if p.RequiresHumanApproval {
 			tags = append(tags, "requires-human")
@@ -185,7 +185,7 @@ func findExistingPromptLabProposal(tasks []task.Task, proposalID string) (task.T
 		if task.IsTerminalStatus(tasks[i].Status) {
 			continue
 		}
-		if !slices.Contains(tasks[i].Tags, "prompt-lab-proposal") {
+		if !slices.Contains(tasks[i].Tags, promptlab.ProposalTag) {
 			continue
 		}
 		if strings.Contains(tasks[i].Body, marker) {
