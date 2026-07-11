@@ -177,6 +177,7 @@ func TestServiceTickEndToEnd(t *testing.T) {
 	}}
 	disp := &fakeDispatcher{}
 	sink := &fakeSink{createNext: true}
+	var recoverCalls int
 	svc := NewService(Deps{
 		Cfg:        cfg,
 		Tasks:      tasks,
@@ -186,6 +187,9 @@ func TestServiceTickEndToEnd(t *testing.T) {
 		Sink:       sink,
 		Logger:     slog.Default(),
 		Now:        func() time.Time { return now },
+		RecoverLostAgent: func(context.Context) {
+			recoverCalls++
+		},
 	})
 
 	report, err := svc.tick(context.Background())
@@ -210,6 +214,9 @@ func TestServiceTickEndToEnd(t *testing.T) {
 	// Idempotent remediations should have updated lost + untriaged.
 	if got := len(tasks.updates); got != 2 {
 		t.Fatalf("want 2 task updates, got %d (%v)", got, tasks.updates)
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("want 1 lost-agent recovery call, got %d", recoverCalls)
 	}
 
 	// pr_gap is RequiresLLM=true → must be dispatched.
@@ -294,6 +301,7 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	tasks := &fakeTasks{tasks: []task.Task{mkTask("lost", task.StatusInProgress)}}
 	sink := &fakeSink{createNext: true}
 	disp := &fakeDispatcher{}
+	var recoverCalls int
 	svc := NewService(Deps{
 		Cfg:        defaultCfg(),
 		Tasks:      tasks,
@@ -303,6 +311,9 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 		Sink:       sink,
 		Logger:     slog.Default(),
 		Now:        func() time.Time { return now },
+		RecoverLostAgent: func(context.Context) {
+			recoverCalls++
+		},
 	})
 	r, err := svc.Scan(context.Background())
 	if err != nil {
@@ -314,6 +325,9 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	if len(tasks.updates) != 0 || len(sink.submissions) != 0 || len(disp.calls) != 0 {
 		t.Errorf("scan must not produce side effects (updates=%d sink=%d dispatch=%d)",
 			len(tasks.updates), len(sink.submissions), len(disp.calls))
+	}
+	if recoverCalls != 0 {
+		t.Fatalf("scan must not call lost-agent recovery, got %d calls", recoverCalls)
 	}
 }
 
