@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1871,6 +1872,93 @@ func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
 	want := []string{"t-review", "t-mid", "t-new"}
 	if !slices.Equal(order, want) {
 		t.Fatalf("dispatch order = %v, want %v", order, want)
+	}
+}
+
+// TestResumeStalled_DispatchComparatorOverridesDefaultOrder pins that an
+// injected SetDispatchComparator replaces the built-in
+// dispatchorder.Rank(status)-only sort entirely, so app wiring (agentqueue.Less)
+// controls ordering without internal/workflow importing internal/agentqueue.
+func TestResumeStalled_DispatchComparatorOverridesDefaultOrder(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	parked := func(id, status string) TaskInfo {
+		return TaskInfo{
+			ID:        id,
+			Status:    status,
+			AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				Variables:   make(map[string]string),
+			},
+		}
+	}
+	tasks.Put(parked("t-new", "todo"))
+	tasks.Put(parked("t-review", "in-review"))
+
+	// Reverse alphabetical order by ID — deliberately nothing like the
+	// built-in status-rank sort, so a passing test proves the comparator
+	// actually drove the ordering rather than coincidentally matching it.
+	engine.SetDispatchComparator(func(a, b TaskInfo) int {
+		return cmp.Compare(b.ID, a.ID)
+	})
+
+	engine.ResumeStalled()
+
+	var order []string
+	for _, c := range agents.calls {
+		order = append(order, c.TaskID)
+	}
+	want := []string{"t-review", "t-new"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("dispatch order = %v, want %v (injected comparator must win over the default status-rank sort)", order, want)
+	}
+}
+
+// TestResumeStalled_QueueReconcilerInvokedBeforeDispatch pins that a wired
+// SetQueueReconciler runs once per ResumeStalled tick, before the dispatch
+// scan (see the doc comment on Engine.queueReconciler).
+func TestResumeStalled_QueueReconcilerInvokedBeforeDispatch(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "todo",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	var calls int
+	var calledBeforeDispatch bool
+	engine.SetQueueReconciler(func() {
+		calls++
+		calledBeforeDispatch = agents.CallCount() == 0
+	})
+
+	engine.ResumeStalled()
+
+	if calls != 1 {
+		t.Fatalf("queue reconciler called %d times, want 1", calls)
+	}
+	if !calledBeforeDispatch {
+		t.Fatal("queue reconciler must run before the dispatch scan, not after")
+	}
+
+	engine.ResumeStalled()
+	if calls != 2 {
+		t.Fatalf("queue reconciler called %d times across two ticks, want 2", calls)
 	}
 }
 

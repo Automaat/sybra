@@ -801,6 +801,41 @@ func (a *App) initWorkflowEngine() {
 	if a.workflowEngine != nil && a.reviewer != nil {
 		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
+	// Order ResumeStalled's per-tick scan with the same agentqueue.Less
+	// ordering the admission queue itself uses (priority/status-floor,
+	// manual, dispatch-status, age), and prune stale queue entries first.
+	// Wired here (not inside internal/workflow) so the engine package never
+	// imports internal/agentqueue — see TaskInfo.Priority's doc comment.
+	a.workflowEngine.SetDispatchComparator(func(x, y workflow.TaskInfo) int {
+		snap := q.Snapshot()
+		queued := make(map[string]agentqueue.Item, len(snap))
+		for _, it := range snap {
+			queued[it.TaskID] = it
+		}
+		toItem := func(t workflow.TaskInfo) agentqueue.Item {
+			it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+			if qit, ok := queued[t.ID]; ok {
+				it.Manual = qit.Manual
+				it.Enqueued = qit.Enqueued
+			}
+			return it
+		}
+		ai, bi := toItem(x), toItem(y)
+		switch {
+		case agentqueue.Less(ai, bi):
+			return -1
+		case agentqueue.Less(bi, ai):
+			return 1
+		default:
+			return 0
+		}
+	})
+	a.workflowEngine.SetQueueReconciler(func() {
+		q.Reconcile(func(id string) (task.Task, bool) {
+			t, err := a.tasks.Get(id)
+			return t, err == nil
+		})
+	})
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
 }

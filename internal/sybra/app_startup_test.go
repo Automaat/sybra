@@ -156,6 +156,44 @@ func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
 	second.Shutdown(context.Background())
 }
 
+// TestAppStartup_QueueInitFailureFailsWorkflowEngineClosed pins the
+// fail-closed contract in initWorkflowEngine: when agentqueue.New fails
+// (e.g. its dir is blocked by a regular file), both the queue and the
+// workflow engine must stay nil — a partially-initialized queue must never
+// be wired into a live workflow engine. Startup itself is unaffected since
+// workflow wiring failures were already non-fatal before this feature.
+func TestAppStartup_QueueInitFailureFailsWorkflowEngineClosed(t *testing.T) {
+	preventFetchTTLLeak(t)
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	if err := os.WriteFile(filepath.Join(home, "queue"), []byte("blocks mkdir"), 0o644); err != nil {
+		t.Fatalf("seed queue path as file: %v", err)
+	}
+
+	cfg := startupTestConfig(home)
+	logger := slog.New(slog.DiscardHandler)
+	app := NewApp(logger, &slog.LevelVar{}, cfg)
+
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v (queue init failure must not be fatal)", err)
+	}
+	t.Cleanup(func() {
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	})
+
+	if app.agentQueue != nil {
+		t.Fatal("agentQueue must stay nil when agentqueue.New fails")
+	}
+	if app.workflowEngine != nil {
+		t.Fatal("workflowEngine must stay nil when the admission queue failed to construct (fail closed)")
+	}
+}
+
 func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
 	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, startupTestConfig(t.TempDir()))
 
@@ -232,6 +270,9 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	}
 	if app.workflowEngine == nil || app.workflowStore == nil {
 		t.Fatal("workflow engine/store were not initialized")
+	}
+	if app.agentQueue == nil {
+		t.Fatal("agent admission queue was not initialized")
 	}
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
