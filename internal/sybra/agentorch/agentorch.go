@@ -150,6 +150,7 @@ type Orchestrator struct {
 	// the nil guards even if app.go's init order changes to close the window;
 	// the ordering is easy to regress silently.
 	conflictRecovery func(taskID string) bool
+	ctx              context.Context
 }
 
 // New constructs an Orchestrator. Sandboxes and Bgops are late-bound fields,
@@ -189,6 +190,17 @@ func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
 // once the review.Handler that implements it exists.
 func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
 	o.conflictRecovery = fn
+}
+
+// SetContext late-binds the app root context so dispatch-path worktree/sandbox
+// prep is cancelled on shutdown instead of running detached to its own timeout.
+func (o *Orchestrator) SetContext(ctx context.Context) { o.ctx = ctx }
+
+func (o *Orchestrator) baseCtx() context.Context {
+	if o.ctx != nil {
+		return o.ctx
+	}
+	return context.Background()
 }
 
 // Sandboxes returns the late-bound sandbox manager, for callers (e.g.
@@ -382,10 +394,7 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 		}
 	}
 	opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-	// context.Background(): StartAgentWithAssignment is reached from both
-	// App.StartAgent (Wails-bound, no ctx) and workflow.AgentDispatcher.StartAgent
-	// (fixed interface signature, no ctx) — no real context to thread here.
-	d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
+	d, wtErr := o.worktrees.PrepareForTask(o.baseCtx(), t, onPhase)
 	if wtErr != nil {
 		o.failWorktreeOp(opID, wtErr)
 		// A tracked agent is still live in this worktree (see
@@ -793,9 +802,7 @@ func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent
 	}
 
 	opID, onPhase := o.startWorktreeOp("Preparing chat worktree", projectID, t.ID)
-	// context.Background(): StartChat is reached from App.StartChat, a
-	// Wails-bound method with no ctx parameter.
-	dir, err := o.worktrees.PrepareForChat(context.Background(), t, onPhase)
+	dir, err := o.worktrees.PrepareForChat(o.baseCtx(), t, onPhase)
 	if err != nil {
 		o.failWorktreeOp(opID, err)
 		if delErr := o.tasks.Delete(t.ID); delErr != nil {
@@ -932,10 +939,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 			return fmt.Errorf("task %s has no project_id: refusing to start pr-fix agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 		}
 		opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-		// context.Background(): StartPRFixAgent implements the recovery package's
-		// Orchestrator interface, a fixed func(taskID string) error signature
-		// invoked from the background stale-agent recovery loop with no ctx.
-		d, wtErr := o.worktrees.PrepareForTask(context.Background(), t, onPhase)
+		d, wtErr := o.worktrees.PrepareForTask(o.baseCtx(), t, onPhase)
 		if wtErr != nil {
 			o.failWorktreeOp(opID, wtErr)
 			return fmt.Errorf("worktree required: %w", wtErr)
