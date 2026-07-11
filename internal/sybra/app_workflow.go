@@ -434,7 +434,7 @@ type worktreeGetterAdapter struct {
 	mgr   *worktree.Manager
 }
 
-// checkConfigGetterAdapter resolves a task's verify-suite commands by merging
+// checkConfigGetterAdapter resolves a task's codegen/verify commands by merging
 // the repo `.sybra.yaml` checks (read from the project's trusted default
 // branch, never the checked-out worktree — see resolveTrustedSetupCommands
 // and issue #1519) with the app-level project config.
@@ -485,7 +485,23 @@ func (a *manualTestConfigGetterAdapter) ManualTestConfig(taskID string) workflow
 	}
 }
 
+func (a *checkConfigGetterAdapter) CodegenCommands(ctx context.Context, taskID string) []string {
+	merged := a.mergedChecks(ctx, taskID)
+	if merged == nil {
+		return nil
+	}
+	return merged.Codegen
+}
+
 func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID string) []string {
+	merged := a.mergedChecks(ctx, taskID)
+	if merged == nil {
+		return nil
+	}
+	return merged.Verify
+}
+
+func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID string) *project.ChecksConfig {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
 		return nil
@@ -511,11 +527,7 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 			}
 		}
 	}
-	merged := project.MergeChecks(repoChecks, appChecks)
-	if merged == nil {
-		return nil
-	}
-	return merged.Verify
+	return project.MergeChecks(repoChecks, appChecks)
 }
 
 func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID string) []string {

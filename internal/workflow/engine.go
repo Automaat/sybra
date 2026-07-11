@@ -135,9 +135,11 @@ type BranchSyncer interface {
 // CheckConfigGetter resolves a task's verify-suite commands (the project's
 // deterministic tests/typecheck), merged from repo `.sybra.yaml` and the
 // app-level project config. Returns nil/empty when the task has no verify
-// suite configured — the verify_checks step then becomes a no-op. Engine
-// operates with a nil getter (step skips), so unit tests need not wire one.
+// suite or codegen pass configured — the verify_checks/codegen_gate steps then
+// become no-ops. Engine operates with a nil getter (step skips), so unit tests
+// need not wire one.
 type CheckConfigGetter interface {
+	CodegenCommands(ctx context.Context, taskID string) []string
 	VerifyCommands(ctx context.Context, taskID string) []string
 	SetupCommands(ctx context.Context, taskID string) []string
 }

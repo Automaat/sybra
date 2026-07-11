@@ -121,6 +121,11 @@ const (
 	// recorded but never flip the task to human-required — the workflow
 	// continues to its next step regardless of outcome.
 	StepSyncBranch StepType = "sync_branch"
+	// StepCodegenGate runs the project's configured mutation pass
+	// (`checks.codegen`) in the task worktree right before PR handoff, then
+	// checkpoint-commits any resulting drift so both PR push paths carry a
+	// clean tree.
+	StepCodegenGate StepType = "codegen_gate"
 	// StepResumeWorkflow is the terminal step of a recovery workflow
 	// (branch-conflict-fix) that re-enters the task's original interrupted
 	// workflow/stage. Reads resume_workflow_id/resume_workflow_vars/
