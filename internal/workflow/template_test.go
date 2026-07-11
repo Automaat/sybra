@@ -253,7 +253,11 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 		Task: TaskInfo{ID: "task-ledger", Body: body},
 	}
 
-	implementPrompt, err := RenderTemplate(mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement").Config.Prompt, ctx)
+	implementStep := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")
+	if implementStep == nil {
+		t.Fatal("simple-task-implement missing implement step")
+	}
+	implementPrompt, err := RenderTemplate(implementStep.Config.Prompt, ctx)
 	if err != nil {
 		t.Fatalf("render implement prompt: %v", err)
 	}
@@ -264,7 +268,11 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 		t.Fatalf("implement prompt missing ledger entries:\n%s", implementPrompt)
 	}
 
-	testPrompt, err := RenderTemplate(mustBuiltinDefinition(t, "testing-task").StepByID("run_test").Config.Prompt, ctx)
+	testStep := mustBuiltinDefinition(t, "testing-task").StepByID("run_test")
+	if testStep == nil {
+		t.Fatal("testing-task missing run_test step")
+	}
+	testPrompt, err := RenderTemplate(testStep.Config.Prompt, ctx)
 	if err != nil {
 		t.Fatalf("render testing prompt: %v", err)
 	}
