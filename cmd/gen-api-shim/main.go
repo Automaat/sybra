@@ -46,11 +46,19 @@ func run(root string, checkOnly bool) error {
 		return err
 	}
 
-	nextTS, addedTS, err := fillAPITS(string(apiTS), services)
+	bindingDir := filepath.Join(root, bindingDirRel)
+	skip, skipReasons := unresolvableMethods(services, bindingDir)
+	if len(skipReasons) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"gen-api-shim: skipping %d method(s) with no Wails binding — regenerate bindings (`wails3 generate bindings`): %s\n",
+			len(skipReasons), strings.Join(skipReasons, ", "))
+	}
+
+	nextTS, addedTS, err := fillAPITS(string(apiTS), services, skip)
 	if err != nil {
 		return err
 	}
-	nextHTTP, addedHTTP, err := fillAPIHTTP(string(apiHTTP), services, filepath.Join(root, bindingDirRel))
+	nextHTTP, addedHTTP, err := fillAPIHTTP(string(apiHTTP), services, bindingDir, skip)
 	if err != nil {
 		return err
 	}

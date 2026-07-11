@@ -18,7 +18,29 @@ var (
 	bindingImportP = "@wailsio/runtime"
 )
 
-func fillAPITS(src string, services []service) (out string, added []string, err error) {
+func unresolvableMethods(services []service, bindingDir string) (skip map[string]bool, reasons []string) {
+	skip = map[string]bool{}
+	for _, svc := range services {
+		data, err := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
+		if err != nil {
+			for _, m := range svc.methods {
+				skip[m] = true
+			}
+			reasons = append(reasons, fmt.Sprintf("%s.* (no binding %s.ts)", svc.name, bindingModuleBase(svc.name)))
+			continue
+		}
+		src := string(data)
+		for _, m := range svc.methods {
+			if _, _, ok := parseBindingSig(src, m); !ok {
+				skip[m] = true
+				reasons = append(reasons, svc.name+"."+m+" (no binding signature)")
+			}
+		}
+	}
+	return skip, reasons
+}
+
+func fillAPITS(src string, services []service, skip map[string]bool) (out string, added []string, err error) {
 	lines := strings.Split(src, "\n")
 
 	existing := map[string]bool{}
@@ -45,7 +67,7 @@ func fillAPITS(src string, services []service) (out string, added []string, err 
 			continue
 		}
 		for _, method := range svc.methods {
-			if existing[method] {
+			if existing[method] || skip[method] {
 				continue
 			}
 			anchor, ok := lastAliasLine[alias]
@@ -102,7 +124,7 @@ type moduleImport struct {
 	lineIndex int
 }
 
-func fillAPIHTTP(src string, services []service, bindingDir string) (out string, added []string, err error) {
+func fillAPIHTTP(src string, services []service, bindingDir string, skip map[string]bool) (out string, added []string, err error) {
 	lines := strings.Split(src, "\n")
 
 	existing := map[string]bool{}
@@ -142,7 +164,7 @@ func fillAPIHTTP(src string, services []service, bindingDir string) (out string,
 		var bindingImports map[string]string
 		var bindingSrc string
 		for _, method := range svc.methods {
-			if existing[method] {
+			if existing[method] || skip[method] {
 				continue
 			}
 			if bindingSrc == "" {
