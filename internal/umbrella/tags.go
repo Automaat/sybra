@@ -1,8 +1,10 @@
 package umbrella
 
 import (
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MaxParallelTagPrefix carries the planner's max-parallel value on the tracker
@@ -74,6 +76,144 @@ func HasMaxParallelTag(tags []string) bool {
 		}
 	}
 	return false
+}
+
+// RecoverFailTagPrefix carries a degraded tracker's consecutive recovery
+// (re-plan) failure count, e.g. "umbrella-recover-fail:2". Distinct from
+// ExpandFailTagPrefix: recovery only ever runs against an already-degraded
+// tracker (one carrying FallbackTag), so it needs its own counter and its own
+// backoff rather than sharing/resetting the expansion failure state.
+const RecoverFailTagPrefix = "umbrella-recover-fail:"
+
+// RecoverAfterTagPrefix carries the Unix-seconds timestamp before which
+// recovery must not re-attempt a degraded tracker, e.g.
+// "umbrella-recover-after:1735689600". Written on every recovery failure with
+// an exponential backoff (see RecoverBackoff) so a systematically-unplannable
+// umbrella is retried on a bounded schedule instead of every gate tick.
+const RecoverAfterTagPrefix = "umbrella-recover-after:"
+
+// RecoverExhaustedTag marks a degraded tracker that has failed recovery
+// RecoverFailThreshold times in a row. App-level scheduling skips an
+// exhausted tracker outright (no planner call) even though it still carries
+// FallbackTag, so a permanently-unplannable umbrella stops burning planner
+// calls and stays board-visible for a human to intervene.
+const RecoverExhaustedTag = "umbrella-recover-exhausted"
+
+// RecoverFailThreshold is how many consecutive recovery failures are
+// tolerated before a degraded tracker is marked RecoverExhaustedTag.
+const RecoverFailThreshold = 3
+
+// recoverBackoffBase and recoverBackoffMax bound RecoverBackoff: 1 hour base,
+// doubling per consecutive failure, capped at 24 hours so a systematically
+// failing planner is retried at most once a day.
+const (
+	recoverBackoffBase = time.Hour
+	recoverBackoffMax  = 24 * time.Hour
+)
+
+// RecoveryFailureReasonPrefix marks a tracker StatusReason as owned by the
+// recovery failure-recording path (see formatRecoveryFailureReason), so
+// callers (e.g. the app's eligibility filter, clearRecoveryState) can tell a
+// recovery-authored reason apart from one set by unrelated tracker rollup.
+const RecoveryFailureReasonPrefix = "umbrella recovery failed (attempt "
+
+// RecoverFailTag renders the tracker tag encoding n consecutive recovery
+// failures.
+func RecoverFailTag(n int) string {
+	return RecoverFailTagPrefix + strconv.Itoa(n)
+}
+
+// RecoverAfterTag renders the tracker tag encoding the Unix-seconds instant
+// before which recovery must not retry.
+func RecoverAfterTag(t time.Time) string {
+	return RecoverAfterTagPrefix + strconv.FormatInt(t.Unix(), 10)
+}
+
+// ParseRecoverFailCount reads the consecutive recovery-failure count from a
+// tracker's tags, defaulting to 0 when absent, malformed, or negative. The
+// writer (recordRecoveryFailure) always collapses to a single
+// RecoverFailTagPrefix tag via ReplaceTagPrefix, but a hand-edited task file
+// could still carry duplicates — take the max across every matching tag so a
+// stray lower duplicate can never undercount failures and shorten backoff.
+func ParseRecoverFailCount(tags []string) int {
+	best := 0
+	for _, t := range tags {
+		if rest, ok := strings.CutPrefix(t, RecoverFailTagPrefix); ok {
+			if n, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil && n > best {
+				best = n
+			}
+		}
+	}
+	return best
+}
+
+// RecoverDue reports whether recovery is allowed to run against a tracker
+// carrying tags, at instant now. Recovery is due when no (validly-formed)
+// RecoverAfterTag is present, or the latest encoded instant across every
+// matching tag is not in the future. The writer always collapses to a single
+// tag via ReplaceTagPrefix, but duplicates from a hand-edited task file are
+// scanned for the latest (most conservative) instant rather than the first
+// one seen; a malformed tag is ignored rather than treated as due, unless it
+// is the only match, in which case it still fails open to "due" rather than
+// blocking a retry forever on a corrupt tag.
+func RecoverDue(tags []string, now time.Time) bool {
+	var latest int64
+	found := false
+	for _, t := range tags {
+		rest, ok := strings.CutPrefix(t, RecoverAfterTagPrefix)
+		if !ok {
+			continue
+		}
+		sec, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+		if err != nil {
+			continue
+		}
+		found = true
+		if sec > latest {
+			latest = sec
+		}
+	}
+	if !found {
+		return true
+	}
+	return !now.Before(time.Unix(latest, 0))
+}
+
+// HasRecoverExhaustedTag reports whether tags already carry
+// RecoverExhaustedTag.
+func HasRecoverExhaustedTag(tags []string) bool {
+	return slices.Contains(tags, RecoverExhaustedTag)
+}
+
+// RecoverBackoff returns the delay before the next recovery attempt is due,
+// given the failure count after the attempt that just failed (1 for the
+// first failure). Doubles per failure from a 1 hour base, capped at 24 hours.
+func RecoverBackoff(failCount int) time.Duration {
+	if failCount < 1 {
+		failCount = 1
+	}
+	shift := failCount - 1
+	const maxShift = 10 // 1h<<10 already exceeds the 24h cap; bounds the shift against overflow
+	if shift > maxShift {
+		shift = maxShift
+	}
+	d := recoverBackoffBase * time.Duration(1<<uint(shift))
+	return min(d, recoverBackoffMax)
+}
+
+// ReplaceTagPrefix returns tags with every entry sharing prefix removed and
+// newTag appended in its place (unless newTag is empty, which just deletes).
+// Used to collapse any stale/duplicate tags sharing a prefix (e.g. a tracker
+// that somehow accumulated more than one umbrella-max-parallel:* tag) down to
+// exactly one canonical tag.
+func ReplaceTagPrefix(tags []string, prefix, newTag string) []string {
+	out := slices.DeleteFunc(slices.Clone(tags), func(t string) bool {
+		return strings.HasPrefix(t, prefix)
+	})
+	if newTag != "" {
+		out = append(out, newTag)
+	}
+	return out
 }
 
 // controlTags are Sybra-load-bearing tags a child task must not inherit from a

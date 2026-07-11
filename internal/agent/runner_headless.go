@@ -16,6 +16,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/project"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
@@ -33,6 +34,7 @@ var errSurviveShutdown = errors.New("agent: detached, leaving process running fo
 // clean success in cost/audit metrics.
 var errStoppedPendingReap = errors.New("agent: stopped, subprocess not yet reaped")
 var errCostGuardrailExceeded = errors.New("agent: cost guardrail exceeded")
+var errCheckpointCommitFailed = errors.New("agent: checkpoint commit failed")
 
 // errBackgroundTaskLiveAtExit is recorded as the agent's exit error when the
 // headless subprocess exits (naturally, or after the post-result-hang guard
@@ -508,6 +510,10 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 // guard stopped, deriving completion from the terminal result event rather
 // than the kill signal that appears in the process wait error.
 func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
+	if a.GetEscalationReason() == "checkpoint_failed" {
+		a.SetExitErr(errCheckpointCommitFailed)
+		return
+	}
 	evs := attemptEventsFrom(a.Output(), prevLen)
 	if streamErr := resultStreamError(evs); streamErr != nil {
 		a.SetExitErr(streamErr)
@@ -1047,6 +1053,9 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 	}
 	m.logger.Warn("agent.guardrail.turns", "id", a.ID, "turns", turns, "limit", maxTurns)
 	if m.canAutoContinueTurns(a) {
+		if m.canCheckpointOnTurnCeiling(a) {
+			return m.checkpointAndHandoff(ctx, a, turns, maxTurns)
+		}
 		multiplier := m.effectiveTurnMultiplier()
 		newLimit := int(float64(maxTurns) * multiplier)
 		a.SetMaxTurns(newLimit)
@@ -1074,6 +1083,39 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, maxTurns int) bool {
+	worktreeDir := strings.TrimSpace(a.sessionCWD)
+	if worktreeDir == "" {
+		a.SetEscalationReason("checkpoint_failed")
+		a.MarkStopped()
+		a.setCompletedByResult(true)
+		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
+			"id", a.ID, "turns", turns, "limit", maxTurns, "err", "missing worktree dir")
+		m.emit(events.AgentState(a.ID), a)
+		return false
+	}
+
+	msg := fmt.Sprintf("chore(checkpoint): preserve progress at turn %d\n\nSybra checkpointed this run at the per-run turn ceiling (%d turns) before handing off to a fresh agent.", turns, maxTurns)
+	committed, err := project.CheckpointCommit(ctx, worktreeDir, msg)
+	if err != nil {
+		a.SetEscalationReason("checkpoint_failed")
+		a.MarkStopped()
+		a.setCompletedByResult(true)
+		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
+			"id", a.ID, "turns", turns, "limit", maxTurns, "dir", worktreeDir, "err", err)
+		m.emit(events.AgentState(a.ID), a)
+		return false
+	}
+
+	a.SetEscalationReason("checkpoint")
+	a.MarkStopped()
+	a.setCompletedByResult(true)
+	m.logger.Info("agent.guardrail.turns.checkpoint",
+		"id", a.ID, "turns", turns, "limit", maxTurns, "dir", worktreeDir, "committed", committed)
+	m.emit(events.AgentState(a.ID), a)
+	return false
 }
 
 // effectiveMaxTurns returns the turn limit for a: per-agent override when set,

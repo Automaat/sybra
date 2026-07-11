@@ -612,6 +612,119 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 	}
 }
 
+func TestCheckpointCommit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dirty tree commits", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false on a dirty tree")
+		}
+
+		out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
+		if err != nil {
+			t.Fatalf("git log: %v", err)
+		}
+		if got := strings.TrimSpace(string(out)); got != "chore(checkpoint): save progress" {
+			t.Fatalf("last subject = %q", got)
+		}
+		statusOut, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if strings.TrimSpace(string(statusOut)) != "" {
+			t.Fatalf("worktree not clean after checkpoint commit: %s", statusOut)
+		}
+	})
+
+	t.Run("clean tree is noop", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+
+		headBefore, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("git rev-parse before: %v", err)
+		}
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit: %v", err)
+		}
+		if committed {
+			t.Fatal("CheckpointCommit reported committed=true on a clean tree")
+		}
+		headAfter, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("git rev-parse after: %v", err)
+		}
+		if !bytes.Equal(bytes.TrimSpace(headBefore), bytes.TrimSpace(headAfter)) {
+			t.Fatal("HEAD changed on a clean-tree checkpoint")
+		}
+	})
+
+	t.Run("failing pre-commit hook does not block checkpoint", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// A checkpoint fires mid-implementation with plausibly lint-dirty code, so
+		// a failing pre-commit hook must NOT defeat this progress-preservation
+		// path — CheckpointCommit passes --no-verify to skip repo hooks.
+		hooksDir := filepath.Join(repo, ".git", "hooks-fail")
+		if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		hook := filepath.Join(hooksDir, "pre-commit")
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
+			t.Fatalf("git config core.hooksPath: %v: %s", err, out)
+		}
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err != nil {
+			t.Fatalf("CheckpointCommit blocked by pre-commit hook: %v", err)
+		}
+		if !committed {
+			t.Fatal("CheckpointCommit reported committed=false despite dirty tree")
+		}
+	})
+
+	t.Run("commit failure returns error", func(t *testing.T) {
+		t.Parallel()
+		repo := initRepoWithCommit(t)
+		if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// A stale index.lock is a genuine git failure that --no-verify cannot
+		// bypass, so it exercises CheckpointCommit's strict error propagation.
+		lock := filepath.Join(repo, ".git", "index.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		committed, err := CheckpointCommit(context.Background(), repo, "chore(checkpoint): save progress")
+		if err == nil {
+			t.Fatal("CheckpointCommit error = nil, want git failure")
+		}
+		if committed {
+			t.Fatal("CheckpointCommit reported committed=true on git failure")
+		}
+	})
+}
+
 func TestResetWorktreeForRetry_DiscardsPartialWorkAndKeepsIgnoredNotes(t *testing.T) {
 	t.Parallel()
 	src := initRepoWithCommit(t)

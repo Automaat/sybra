@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -475,7 +477,7 @@ func newUmbrellaGateApp(t *testing.T) (*App, *task.Manager) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
-	app := &App{tasks: tasks, logger: slog.New(slog.DiscardHandler)}
+	app := &App{tasks: tasks, logger: slog.New(slog.DiscardHandler), umbrellaRecoveryInFlight: make(map[string]bool)}
 	return app, tasks
 }
 
@@ -738,6 +740,113 @@ func TestBuildGroundLister(t *testing.T) {
 			t.Fatal("expected an error for an unregistered project")
 		}
 	})
+}
+
+// TestReleaseUnblockedChildren_InFlightUmbrellaSkipsReleaseAndRollup guards
+// the recovery/gate coordination contract: a ref marked recovering on App
+// must not release ready children or roll up its tracker from a snapshot
+// RecoverDegraded may be mutating concurrently.
+func TestReleaseUnblockedChildren_InFlightUmbrellaSkipsReleaseAndRollup(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	child := mkChild(t, m, "ready", "Automaat/sybra#1", umb, nil, task.StatusTodo)
+
+	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umb)] = true
+
+	app.releaseUnblockedChildren()
+
+	got := mustTask(t, m, child.ID)
+	if got.Status != task.StatusTodo || !slices.Contains(got.Tags, umbrellaGatedTag) {
+		t.Fatalf("child = status=%q tags=%v, want held gated while umbrella recovers", got.Status, got.Tags)
+	}
+	gotTracker := mustTask(t, m, tracker.ID)
+	if gotTracker.Status != task.StatusInProgress {
+		t.Fatalf("tracker status = %q, want unchanged while recovering", gotTracker.Status)
+	}
+}
+
+// TestReleaseUnblockedChildren_InFlightUmbrellaDoesNotBlockUnrelated proves
+// the in-flight exclusion is scoped to the recovering ref only — an
+// unrelated umbrella's ready children still release in the same tick.
+func TestReleaseUnblockedChildren_InFlightUmbrellaDoesNotBlockUnrelated(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umbA = "https://github.com/Automaat/sybra/issues/100"
+	const umbB = "https://github.com/Automaat/sybra/issues/200"
+	mkTracker(t, m, umbA, 5)
+	mkTracker(t, m, umbB, 5)
+	childA := mkChild(t, m, "a", "Automaat/sybra#1", umbA, nil, task.StatusTodo)
+	childB := mkChild(t, m, "b", "Automaat/sybra#2", umbB, nil, task.StatusTodo)
+
+	app.umbrellaRecoveryInFlight[umbrella.NormalizeIssueRef(umbA)] = true
+
+	app.releaseUnblockedChildren()
+
+	gotA := mustTask(t, m, childA.ID)
+	if gotA.Status != task.StatusTodo || !slices.Contains(gotA.Tags, umbrellaGatedTag) {
+		t.Fatalf("in-flight umbrella's child = %+v, want held", gotA)
+	}
+	gotB := mustTask(t, m, childB.ID)
+	if gotB.Status != task.StatusTodo || slices.Contains(gotB.Tags, umbrellaGatedTag) {
+		t.Fatalf("unrelated umbrella's child = %+v, want released", gotB)
+	}
+}
+
+// TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease
+// exercises the full releaseUnblockedChildren -> recoverDegradedUmbrellas
+// scheduling path (not a manually pre-set in-flight marker): a degraded
+// tracker's recovery is scheduled and left running (its recoverFn is stubbed
+// to block), while an unrelated, non-degraded umbrella's ready child still
+// releases in the very same gate tick.
+func TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
+	fn, calls, release := countingRecoverFn()
+	app := &App{
+		tasks:                    tasks,
+		logger:                   slog.New(slog.DiscardHandler),
+		cfg:                      &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}},
+		ctx:                      context.Background(),
+		umbrellaRecoveryInFlight: make(map[string]bool),
+		umbrellaRecoverFn:        fn,
+	}
+	defer release()
+
+	const umbA = "https://github.com/Automaat/sybra/issues/300"
+	const umbB = "https://github.com/Automaat/sybra/issues/301"
+	mkDegradedTracker(t, tasks, umbA, task.StatusInProgress, "", "")
+	mkTracker(t, tasks, umbB, 5)
+	childB := mkChild(t, tasks, "b", "Automaat/sybra#1", umbB, nil, task.StatusTodo)
+
+	app.releaseUnblockedChildren()
+
+	if !app.umbrellaRecoveryInFlightSnapshot()[umbrella.NormalizeIssueRef(umbA)] {
+		t.Fatal("degraded umbrella ref not marked in-flight")
+	}
+	// recoverFn runs in its own goroutine (see recoverDegradedUmbrellas), so
+	// its call only becomes visible once that goroutine is scheduled —
+	// unlike the in-flight marker above, which is set synchronously before
+	// the goroutine is spawned. waitFor lives in an e2e-tagged file, so poll
+	// inline here rather than depend on it from an untagged test file.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls()) != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("recover calls = %v, want exactly 1 scheduled for the degraded umbrella", got)
+	}
+
+	gotB := mustTask(t, tasks, childB.ID)
+	if gotB.Status != task.StatusTodo || slices.Contains(gotB.Tags, umbrellaGatedTag) {
+		t.Fatalf("unrelated umbrella's child = %+v, want released despite concurrent recovery", gotB)
+	}
 }
 
 // TestUmbrellaGroundingWired proves the wiring contract: the umbrella.Ground

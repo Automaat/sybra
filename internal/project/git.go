@@ -485,6 +485,44 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	return commit.Run() == nil
 }
 
+// CheckpointCommit stages and commits the current worktree state with message.
+// Returns committed=false when the tree is already clean. Unlike
+// AutoCommitUncommitted this is strict: any git failure is returned so callers
+// never assume durable state exists when the checkpoint commit did not land.
+func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bool, err error) {
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = wtPath
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("git status --porcelain: %w: %s", err, strings.TrimSpace(string(statusOut)))
+	}
+	if len(strings.TrimSpace(string(statusOut))) == 0 {
+		return false, nil
+	}
+
+	add := exec.CommandContext(ctx, "git", "add", "-A")
+	add.Dir = wtPath
+	if out, err := add.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Mirror AutoCommitUncommitted's safety nets: --no-verify skips repo
+	// pre-commit hooks (installed from .sybra.yaml) so a failing/lint-dirty hook
+	// can't defeat a mid-work checkpoint, and -c user.* supplies a fallback
+	// identity for worktrees where the agent never configured one. Without these
+	// a checkpoint fails exactly when it matters most — mid-implementation, with
+	// code plausibly lint-dirty — turning the safety net into a hard failure.
+	commit := exec.CommandContext(ctx, "git",
+		"-c", "user.name=Sybra",
+		"-c", "user.email=sybra@localhost",
+		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
+	commit.Dir = wtPath
+	if out, err := commit.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("git commit checkpoint: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
 // SanitizeWorktree cleans up worktree state that would confuse agents:
 //   - aborts any stuck rebase/merge/cherry-pick
 //   - deletes local branches that shadow remote refs (e.g. local "origin/main")

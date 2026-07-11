@@ -88,6 +88,10 @@ const (
 	// audit log can see which tasks are running with unrestricted file-write
 	// access instead of only discovering it after an incident.
 	EventAgentSandboxDisabled = "agent.sandbox_disabled"
+	// EventAgentCheckpoint records a turn-ceiling checkpoint handoff attempt.
+	// Data.reason distinguishes a committed handoff ("checkpoint") from a
+	// failed commit ("checkpoint_failed").
+	EventAgentCheckpoint = "agent.checkpoint"
 
 	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
 	// when codex fires its session/subagent lifecycle hooks. Distinct from the
@@ -109,6 +113,12 @@ const (
 	// Data.reason carries an actionable, categorical explanation; the
 	// previous digest is left intact.
 	EventLearningDigestFailed = "learning.digest_failed"
+
+	// EventUmbrellaRecovery records one outcome of the async degraded-umbrella
+	// auto-recovery pass (internal/umbrella.RecoverDegraded): attempted,
+	// skipped, safety_refused, failed, or recovered. Data carries "outcome"
+	// and, when applicable, "reason" — never planner prompts or agent output.
+	EventUmbrellaRecovery = "umbrella.recovery"
 )
 
 type Event struct {

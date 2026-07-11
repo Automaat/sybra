@@ -15,6 +15,22 @@ export class AgentDefaults {
     "maxTurns": number;
 
     /**
+     * MaxCheckpoints bounds how many times a single workflow step may
+     * checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
+     * use DefaultMaxCheckpoints (3).
+     */
+    "maxCheckpoints": number;
+
+    /**
+     * CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
+     * a checkpoint-and-handoff to a fresh run when an eligible code-author
+     * headless run hits its per-run turn ceiling. nil means not configured
+     * (defaults to true). Set false to restore the legacy in-process
+     * auto-continue behavior with no code revert.
+     */
+    "checkpointOnTurnCeiling": boolean | null;
+
+    /**
      * MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
      * has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
      * where each retry stays under the per-run cap but the task's total spend
@@ -191,6 +207,12 @@ export class AgentDefaults {
         if (!("maxTurns" in $$source)) {
             this["maxTurns"] = 0;
         }
+        if (!("maxCheckpoints" in $$source)) {
+            this["maxCheckpoints"] = 0;
+        }
+        if (!("checkpointOnTurnCeiling" in $$source)) {
+            this["checkpointOnTurnCeiling"] = null;
+        }
         if (!("maxTaskCostUsd" in $$source)) {
             this["maxTaskCostUsd"] = 0;
         }
@@ -253,14 +275,14 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField23_0 = $$createType0;
-        const $$createField24_0 = $$createType1;
+        const $$createField25_0 = $$createType0;
+        const $$createField26_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField23_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField25_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField24_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField26_0($$parsedSource["playwrightMcp"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

@@ -88,6 +88,15 @@ steps:
         context only. Reproduce them against the CURRENT worktree before counting
         them; if the current code no longer exhibits that behavior, ignore the
         stale report instead of emitting FAIL.
+        {{if acceptanceledger .Task.Body}}
+        The task body carries a persistent acceptance ledger of distinct prior
+        product bugs. Reproduce and re-verify EVERY ledger entry against the
+        CURRENT worktree on every pass. PASS only if all ledger entries hold
+        simultaneously, plus your normal manual-testing evidence says you could
+        not break the feature.
+
+        {{acceptanceledger .Task.Body}}
+        {{end}}
         If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.
