@@ -1,6 +1,8 @@
 package agentorch
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -220,6 +222,55 @@ func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
+// TestMarkRebaseBlocked_DiskSpaceErrorSkipsRecoveryAndPRProbe guards sybra#1856:
+// an ENOSPC failure wrapped in ErrRebaseFailed must surface the real root
+// cause (host disk space exhausted) instead of the generic branch-stale
+// reason, and must never be routed into conflict recovery or the PR
+// already-resolved re-probe — neither is relevant to a full disk.
+func TestMarkRebaseBlocked_DiskSpaceErrorSkipsRecoveryAndPRProbe(t *testing.T) {
+	orig := fetchPRStateForRebaseBlock
+	defer func() { fetchPRStateForRebaseBlock = orig }()
+	fetchPRStateForRebaseBlock = func(repo string, number int) (github.PRState, error) {
+		t.Fatal("fetchPRStateForRebaseBlock should not be called for a disk-space error")
+		return github.PRState{}, nil
+	}
+
+	tasks := newRebaseBlockTestManager(t)
+	tk, err := tasks.Create("disk space task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := "acme/widgets"
+	prNumber := 42
+	if _, err := tasks.Update(tk.ID, task.Update{ProjectID: &projectID, PRNumber: &prNumber}); err != nil {
+		t.Fatal(err)
+	}
+
+	recoveryCalled := false
+	diskSpaceErr := fmt.Errorf("%w: reconcile branch with remote: %w", worktree.ErrRebaseFailed, errors.New("cannot open 'FETCH_HEAD': No space left on device"))
+	handled := MarkRebaseBlocked(tasks, tk.ID, diskSpaceErr, discardSlogLogger(), func(string) bool {
+		recoveryCalled = true
+		return true
+	})
+	if !handled {
+		t.Fatal("MarkRebaseBlocked = false, want true (handled)")
+	}
+	if recoveryCalled {
+		t.Fatal("conflict recovery was invoked for a disk-space failure")
+	}
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if got.StatusReason != worktreeerr.DiskSpaceExhaustedReason {
+		t.Fatalf("reason = %q, want %q", got.StatusReason, worktreeerr.DiskSpaceExhaustedReason)
 	}
 }
 
