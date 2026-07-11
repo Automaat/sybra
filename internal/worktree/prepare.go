@@ -732,6 +732,9 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 			return fmt.Errorf("delete branch: %w", derr)
 		}
 	}
+	if derr := project.DeleteUpstreamBranch(ctx, proj.ClonePath, branch); derr != nil {
+		return fmt.Errorf("delete upstream branch: %w", derr)
+	}
 	m.logger.Info("worktree.recreated-from-base", "task_id", t.ID, "branch", branch)
 	return nil
 }

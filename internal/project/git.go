@@ -907,6 +907,35 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 	})
 }
 
+// DeleteUpstreamBranch removes branch from the remote future task pushes target
+// ("fork" when configured, else "origin") and drops the matching cached
+// remote-tracking ref from the bare clone. RecreateFromBase uses this to avoid
+// leaving a published stale branch behind after discarding the local task
+// branch: without it, the next fresh-base implementation hits a non-fast-
+// forward push against the orphaned remote tip and loops back into conflict
+// recovery. Missing remote branches are a no-op.
+func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
+	remote := PushRemote(ctx, barePath)
+	sha, err := remoteBranchHead(ctx, barePath, remote, branch)
+	if err != nil {
+		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
+	}
+	if sha != "" {
+		if err := pushLocked(ctx, barePath, "push", remote, "--delete", branch); err != nil {
+			return fmt.Errorf("delete remote branch %s/%s: %w", remote, branch, err)
+		}
+	}
+	trackingRef := "refs/remotes/" + remote + "/" + branch
+	if !RefExists(ctx, barePath, trackingRef) {
+		return nil
+	}
+	return withBareRepoLock(barePath, func() error {
+		return withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "-d", trackingRef)
+		})
+	})
+}
+
 // BackupBranchRef points refs/sybra-backup/<branch> at the branch's current
 // tip so a subsequent DeleteBranch does not lose the commits — they stay
 // recoverable via the backup ref. Used before recreating a task's branch from

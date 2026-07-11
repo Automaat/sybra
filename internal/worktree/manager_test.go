@@ -1173,6 +1173,98 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 }
 
+// TestRecreateFromBase_DeletesPublishedBranch proves the exhausted-conflict
+// recovery path discards the published task branch as well as the local one.
+// Without the remote delete, the recreated fresh-base branch hits a non-fast-
+// forward rejection on its next push and loops back into branch-conflict
+// recovery forever.
+func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("recreate branch from base", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "recreate.txt"), []byte("stale remote tip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "recreate.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "stale remote tip")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+	staleSHA := strings.TrimSpace(mustOutputInDir(t, h.src, "git", "rev-parse", "--verify", "refs/heads/"+branch))
+
+	if err := project.FetchOrigin(context.Background(), h.proj.ClonePath); err != nil {
+		t.Fatalf("FetchOrigin after push: %v", err)
+	}
+	trackingRef := "refs/remotes/origin/" + branch
+	if !project.RefExists(context.Background(), h.proj.ClonePath, trackingRef) {
+		t.Fatalf("expected fetched tracking ref %s to exist before recreate", trackingRef)
+	}
+
+	if err := h.m.RecreateFromBase(context.Background(), tk); err != nil {
+		t.Fatalf("RecreateFromBase: %v", err)
+	}
+	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("local branch %s still exists after recreate", branch)
+	}
+	if project.RefExists(context.Background(), h.proj.ClonePath, trackingRef) {
+		t.Fatalf("tracking ref %s still exists after recreate", trackingRef)
+	}
+	if out, err := exec.Command("git", "-C", h.src, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).CombinedOutput(); err == nil {
+		t.Fatalf("remote branch %s still exists after recreate", branch)
+	} else {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("verify remote branch deletion: %v: %s", err, out)
+		}
+	}
+	backupSHA, ok := project.ResolveBareRef(context.Background(), h.proj.ClonePath, "refs/sybra-backup/"+branch)
+	if !ok {
+		t.Fatalf("backup ref for %s missing after recreate", branch)
+	}
+	if backupSHA != staleSHA {
+		t.Fatalf("backup ref SHA = %s, want stale remote tip %s", backupSHA, staleSHA)
+	}
+
+	wtPath, err = h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("recreated PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "recreate.txt"), []byte("fresh implementation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "recreate.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "fresh implementation")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+
+	pushedSHA := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
+	remoteSHA := strings.TrimSpace(mustOutputInDir(t, h.src, "git", "rev-parse", "--verify", "refs/heads/"+branch))
+	if remoteSHA != pushedSHA {
+		t.Fatalf("remote branch SHA = %s, want pushed HEAD %s", remoteSHA, pushedSHA)
+	}
+	if remoteSHA == staleSHA {
+		t.Fatalf("remote branch stayed on stale tip %s after fresh push", staleSHA)
+	}
+}
+
 // TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed proves the fix for
 // the bug where a network blip during reconcileAndRebase's remote fetch was
 // indistinguishable from a genuine content conflict: both wrapped
