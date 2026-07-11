@@ -21,12 +21,12 @@ const (
 
 // TaskInfo is the subset of task data the engine needs.
 type TaskInfo struct {
-	ID                    string
-	Title                 string
-	Status                string
-	StatusReason          string
-	Tags                  []string
-	AgentMode             string
+	ID           string
+	Title        string
+	Status       string
+	StatusReason string
+	Tags         []string
+	AgentMode    string
 	// Priority mirrors task.Priority ("", "low", "medium", "high", "urgent").
 	// Kept as a plain string, not task.Priority, since internal/workflow must
 	// stay decoupled from internal/task (see dispatchorder's package doc) —

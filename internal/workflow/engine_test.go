@@ -1042,6 +1042,9 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 			if got.Workflow.Variables[watchdogHangRetryKey("implement")] != tc.wantRetry {
 				t.Fatalf("hang retry var = %q, want %q", got.Workflow.Variables[watchdogHangRetryKey("implement")], tc.wantRetry)
 			}
+			if tc.wantStatus == "human-required" && got.Workflow.State != ExecFailed {
+				t.Fatalf("workflow state = %q, want ExecFailed so the operator can re-dispatch", got.Workflow.State)
+			}
 			if tc.wantStarts > 0 {
 				if got := agents.calls[0].CleanRetryRef; got != tc.wantClean {
 					t.Fatalf("clean retry ref = %q, want %q", got, tc.wantClean)

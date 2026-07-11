@@ -24,6 +24,7 @@ const (
 	claudeUserAgent     = "claude-code/2.1.0"
 	liveFetchTimeout    = 15 * time.Second
 	keychainTimeout     = 3 * time.Second
+	codexWaitDelay      = 5 * time.Second
 )
 
 type claudeCredentials struct {
@@ -269,6 +270,7 @@ func claudeUsageCycle(raw *claudeUsageWindow, windowMinutes int) (*CycleSnapshot
 
 func fetchCodexLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapshot, bool, error) {
 	cmd := exec.CommandContext(ctx, "codex", "-s", "read-only", "-a", "untrusted", "app-server")
+	cmd.WaitDelay = codexWaitDelay
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return Snapshot{}, false, err
