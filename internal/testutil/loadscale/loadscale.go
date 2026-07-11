@@ -40,9 +40,17 @@ func OversubscriptionFactor(load float64, ok bool, ceiling int64) int64 {
 
 // LoadPerCPU divides a 1-minute load average by CPU count.
 func LoadPerCPU(load1 float64) (float64, bool) {
-	cpus := runtime.NumCPU()
+	cpus := effectiveCPUCount()
 	if cpus <= 0 {
 		return 0, false
 	}
 	return load1 / float64(cpus), true
+}
+
+func effectiveCPUCount() int {
+	cpus := runtime.NumCPU()
+	if gomax := runtime.GOMAXPROCS(0); gomax > 0 && (cpus <= 0 || gomax < cpus) {
+		return gomax
+	}
+	return cpus
 }

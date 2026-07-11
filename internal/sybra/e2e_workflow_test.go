@@ -382,16 +382,10 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	}
 }
 
-// e2eTimeoutScaleCached memoizes the result of e2eTimeoutScaleResolve so
-// repeated waitFor invocations don't repeatedly stat env vars. Tests should
-// not rely on dynamic mutation of CI / SYBRA_E2E_TIMEOUT_SCALE.
-var e2eTimeoutScaleCached struct {
-	once  sync.Once
-	value int64
-}
-
 // e2eTimeoutScale returns the integer multiplier applied to every waitFor
-// deadline. Resolution priority:
+// deadline. Resolved per wait so later waits in the same package can absorb
+// higher live runner contention instead of freezing the first-observed scale
+// for the full suite. Resolution priority:
 //
 //  1. SYBRA_E2E_TIMEOUT_SCALE env var (positive integer) — explicit override.
 //  2. CI=true or GITHUB_ACTIONS=true — defaults to 4 (CI fork/exec variance).
@@ -403,10 +397,7 @@ var e2eTimeoutScaleCached struct {
 // CI ceiling — long enough for the slowest observed runner, short enough that
 // a deadlocked test still fails the job within the per-job budget.
 func e2eTimeoutScale() int64 {
-	e2eTimeoutScaleCached.once.Do(func() {
-		e2eTimeoutScaleCached.value = e2eTimeoutScaleResolve()
-	})
-	return e2eTimeoutScaleCached.value
+	return e2eTimeoutScaleResolve()
 }
 
 const e2eTimeoutScaleCeiling = 16
