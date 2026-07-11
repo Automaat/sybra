@@ -109,6 +109,12 @@ const (
 	// Data.reason carries an actionable, categorical explanation; the
 	// previous digest is left intact.
 	EventLearningDigestFailed = "learning.digest_failed"
+
+	// EventUmbrellaRecovery records one outcome of the async degraded-umbrella
+	// auto-recovery pass (internal/umbrella.RecoverDegraded): attempted,
+	// skipped, safety_refused, failed, or recovered. Data carries "outcome"
+	// and, when applicable, "reason" — never planner prompts or agent output.
+	EventUmbrellaRecovery = "umbrella.recovery"
 )
 
 type Event struct {

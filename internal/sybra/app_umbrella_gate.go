@@ -56,10 +56,13 @@ const (
 // from its children (cycle or a stuck child → human-required; all done →
 // done + close the umbrella issue). No-op when no umbrella tasks exist.
 func (a *App) releaseUnblockedChildren() {
+	a.recoverDegradedUmbrellas()
+
 	tasks, err := a.tasks.List()
 	if err != nil {
 		return
 	}
+	inFlight := a.umbrellaRecoveryInFlightSnapshot()
 
 	byID := make(map[string]*task.Task, len(tasks))
 	states := map[string]*umbrellaState{}
@@ -98,8 +101,12 @@ func (a *App) releaseUnblockedChildren() {
 			// Gate-marked todo children (current model) and legacy
 			// blocked+gated children (tasks created before this change)
 			// are both eligible for release. Never release a task that is
-			// blocked without the gating tag (contained Sybra bug).
+			// blocked without the gating tag (contained Sybra bug). A child
+			// whose umbrella is currently mid-recovery is held regardless —
+			// RecoverDegraded may be mutating this same umbrella's children
+			// concurrently, so this tick must not release from a partial graph.
 			Awaiting: t.UmbrellaIssue != "" &&
+				!inFlight[umbrella.NormalizeIssueRef(t.UmbrellaIssue)] &&
 				(t.Status == task.StatusTodo || t.Status == task.StatusBlocked) &&
 				slices.Contains(t.Tags, umbrellaGatedTag),
 		}
@@ -117,6 +124,14 @@ func (a *App) releaseUnblockedChildren() {
 	// A blocked tracker pauses only tracker rollup/issue close; dependency-ready
 	// children still release so independent work under the umbrella can proceed.
 	a.releaseCapped(g.ReadyToRelease(), byID, states)
+
+	// An in-flight recovery run owns this umbrella's tracker/children this
+	// tick; skip its rollup entirely rather than computing status from a
+	// snapshot RecoverDegraded may be mutating underneath. Unrelated
+	// umbrellas continue rolling up normally.
+	for ref := range inFlight {
+		delete(states, ref)
+	}
 	a.rollupTrackers(states, cyclic)
 }
 
