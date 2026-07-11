@@ -88,6 +88,49 @@ func TestWithBareRepoLock_DoesNotSerializeDifferentClonePaths(t *testing.T) {
 	wg.Wait()
 }
 
+func TestWithBareRepoPushLock_DoesNotBlockBareRepoLockForSameClonePath(t *testing.T) {
+	t.Parallel()
+	bare := filepath.Join(t.TempDir(), "bare.git")
+
+	pushStarted := make(chan struct{})
+	releasePush := make(chan struct{})
+	pushDone := make(chan error, 1)
+	go func() {
+		pushDone <- withBareRepoPushLock(bare, func() error {
+			close(pushStarted)
+			<-releasePush
+			return nil
+		})
+	}()
+
+	<-pushStarted
+
+	bareEntered := make(chan struct{})
+	bareDone := make(chan error, 1)
+	go func() {
+		bareDone <- withBareRepoLock(bare, func() error {
+			close(bareEntered)
+			return nil
+		})
+	}()
+
+	select {
+	case <-bareEntered:
+	case <-time.After(2 * time.Second):
+		close(releasePush)
+		<-pushDone
+		t.Fatal("bare repo lock was blocked by push lock for the same clone path")
+	}
+
+	if err := <-bareDone; err != nil {
+		t.Fatalf("withBareRepoLock: %v", err)
+	}
+	close(releasePush)
+	if err := <-pushDone; err != nil {
+		t.Fatalf("withBareRepoPushLock: %v", err)
+	}
+}
+
 func TestWithLockRetry_RetriesOnLockContention(t *testing.T) {
 	prevBackoffs, prevSleep := gitOpRetryBackoffs, gitOpRetrySleep
 	t.Cleanup(func() { gitOpRetryBackoffs, gitOpRetrySleep = prevBackoffs, prevSleep })
