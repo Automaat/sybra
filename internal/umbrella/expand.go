@@ -336,6 +336,14 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}
 	}
 
+	return createChildren(tasks, umb, specs, byRef)
+}
+
+// createChildren creates one gated todo child task per spec, deriving each
+// child's dependencies, project, and tags from byRef. Shared by materialize
+// (fresh expansion) and RecoverDegraded (recovery re-plan), so both
+// materialize open sub-issues into child tasks identically.
+func createChildren(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef map[string]github.Issue) (int, error) {
 	created := 0
 	for _, spec := range specs {
 		if _, err := tasks.CreateFull(spec.Title, spec.Body, task.AgentModeHeadless, task.Update{
