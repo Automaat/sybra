@@ -482,15 +482,7 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	if err := add.Run(); err != nil {
 		return false
 	}
-	// --no-verify skips repo pre-commit hooks (installed from .sybra.yaml) so a
-	// failing hook can't defeat this recovery path. -c user.* supplies a
-	// fallback identity for worktrees where the agent never configured one.
-	commit := exec.CommandContext(ctx, "git",
-		"-c", "user.name=Sybra",
-		"-c", "user.email=sybra@localhost",
-		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
-	commit.Dir = wtPath
-	return commit.Run() == nil
+	return runRecoveryCommit(ctx, wtPath, message) == nil
 }
 
 // CheckpointCommit stages and commits the current worktree state with message.
@@ -514,19 +506,8 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Mirror AutoCommitUncommitted's safety nets: --no-verify skips repo
-	// pre-commit hooks (installed from .sybra.yaml) so a failing/lint-dirty hook
-	// can't defeat a mid-work checkpoint, and -c user.* supplies a fallback
-	// identity for worktrees where the agent never configured one. Without these
-	// a checkpoint fails exactly when it matters most — mid-implementation, with
-	// code plausibly lint-dirty — turning the safety net into a hard failure.
-	commit := exec.CommandContext(ctx, "git",
-		"-c", "user.name=Sybra",
-		"-c", "user.email=sybra@localhost",
-		"commit", "--no-verify", "--no-gpg-sign", "--signoff", "-m", message)
-	commit.Dir = wtPath
-	if out, err := commit.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("git commit checkpoint: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := runRecoveryCommit(ctx, wtPath, message); err != nil {
+		return false, fmt.Errorf("checkpoint: %w", err)
 	}
 	return true, nil
 }
