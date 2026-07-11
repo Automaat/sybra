@@ -193,7 +193,10 @@ func TestUnresolvableMethods(t *testing.T) {
 		{name: "QueueService", methods: []string{"SnapshotDepth"}},
 	}
 
-	skip, reasons := unresolvableMethods(services, bindingDir)
+	skip, reasons, err := unresolvableMethods(services, bindingDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if skip["GetTask"] {
 		t.Error("GetTask has a binding signature and must not be skipped")
 	}

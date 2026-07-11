@@ -18,11 +18,14 @@ var (
 	bindingImportP = "@wailsio/runtime"
 )
 
-func unresolvableMethods(services []service, bindingDir string) (skip map[string]bool, reasons []string) {
+func unresolvableMethods(services []service, bindingDir string) (skip map[string]bool, reasons []string, err error) {
 	skip = map[string]bool{}
 	for _, svc := range services {
-		data, err := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
-		if err != nil {
+		data, readErr := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
+		if readErr != nil {
+			if !os.IsNotExist(readErr) {
+				return nil, nil, readErr
+			}
 			for _, m := range svc.methods {
 				skip[m] = true
 			}
@@ -37,7 +40,7 @@ func unresolvableMethods(services []service, bindingDir string) (skip map[string
 			}
 		}
 	}
-	return skip, reasons
+	return skip, reasons, nil
 }
 
 func fillAPITS(src string, services []service, skip map[string]bool) (out string, added []string, err error) {
