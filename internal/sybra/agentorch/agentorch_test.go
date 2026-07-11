@@ -184,6 +184,20 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	}
 	tm := task.NewManager(ts, nil)
 
+	// Fake claude CLI on PATH so the first dispatch can actually "start" and
+	// saturate the pool without spending real model credits or failing with
+	// an exec-not-found error on a machine without the CLI installed.
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
+		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
+		"sleep 5\n"+
+		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
+		0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
 		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: 1},
 		SandboxHome: func(string) (string, error) {
@@ -217,6 +231,7 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	if err := o.StartPRFixAgent(first.ID); err != nil {
 		t.Fatalf("StartPRFixAgent(first) unexpected err: %v", err)
 	}
+	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
 	second, err := tm.Create("hits the concurrency cap", "", "headless")
 	if err != nil {
