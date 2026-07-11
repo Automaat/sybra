@@ -124,6 +124,7 @@ couldn't catch).
 | `agent.default_project_id` | `string` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
 | `agent.role_effort` | `map[string]string` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
 | `agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
+| `agent.queue` | `QueueConfig` | _(see below)_ | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
 
 ## PlaywrightMCPConfig (`agent.playwright_mcp`)
 
@@ -136,6 +137,14 @@ provider and pass a launcher preflight (see internal/agent/mcp.go).
 |---|---|---|---|
 | `agent.playwright_mcp.enabled` | `bool` |  | Enabled opts this machine into attaching the Playwright MCP server. |
 | `agent.playwright_mcp.extra_args` | `[]string` |  | ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest --headless --output-dir <dir>` launch command. |
+
+## QueueConfig (`agent.queue`)
+
+QueueConfig configures the agent-dispatch admission queue.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.queue.max_depth` | `int` |  | MaxDepth caps the number of distinct tasks the admission queue holds at once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new task that can't get a pool slot is rejected with a normal dispatch error instead of being queued. |
 
 ## TestingConfig (`testing`)
 
