@@ -303,6 +303,8 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		r.handleMatchedPRIssues(ctx, issues)
 	}
 
+	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
+
 	if len(closedMatchers) > 0 {
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
@@ -422,6 +424,8 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		r.handleMatchedPRIssues(ctx, issues)
 	}
 
+	r.logPollSummary(monitoredPRs, len(matchers), len(issues))
+
 	if len(closedMatchers) > 0 {
 		r.advanceClosedTaskPRs(ctx, monitoredPRs, closedMatchers)
 	}
@@ -528,8 +532,22 @@ func (r *Handler) handleMatchedPRIssues(ctx context.Context, issues []github.PRI
 // retry/cooldown gates for one task, then dispatches at most one action:
 // a coalesced fix agent for every handleable fixable issue, an escalation when
 // the only remaining fixable issue has exhausted its budget, or an auto-merge.
+func (r *Handler) logPollSummary(monitoredPRs []github.PullRequest, eligible, issues int) {
+	nums := make([]int, 0, len(monitoredPRs))
+	for i := range monitoredPRs {
+		nums = append(nums, monitoredPRs[i].Number)
+	}
+	r.logger.Info("reviews.poll", "monitored", len(monitoredPRs), "monitored_prs", nums, "eligible", eligible, "issues", issues)
+}
+
 func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues []github.PRIssue) {
+	kinds := make([]string, 0, len(issues))
+	for i := range issues {
+		kinds = append(kinds, string(issues[i].Kind))
+	}
+	r.logger.Info("reviews.task-issues", "task_id", taskID, "kinds", kinds)
 	if r.agents.HasRunningAgentForTask(taskID) {
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "running_agent")
 		return
 	}
 	// Gate dispatch on workflow state too: an agent may have just exited while
@@ -539,6 +557,7 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// triggers a layered re-dispatch that DispatchEvent later rejects, but only
 	// after we've prepped a worktree and emitted audit noise.
 	if r.WorkflowEngine != nil && r.WorkflowEngine.HasActiveWorkflow(taskID) {
+		r.logger.Info("reviews.dispatch.gate", "task_id", taskID, "gate", "active_workflow")
 		return
 	}
 
@@ -578,6 +597,11 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 	// Prefer making progress: dispatch every handleable fix in one agent. Only
 	// escalate when nothing is handleable and a fix budget is spent — escalating
 	// flips the task to human-required and would strand a still-fixable sibling.
+	r.logger.Info("reviews.dispatch.decision",
+		"task_id", taskID,
+		"to_handle", len(toHandle),
+		"exhausted", exhausted != nil,
+		"merge", merge != nil)
 	switch {
 	case len(toHandle) > 0:
 		r.dispatchFixIssues(ctx, taskID, toHandle)
