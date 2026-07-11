@@ -366,6 +366,12 @@ Typical repo `setup:` examples:
 - uv/Python: `uv sync`
 - multi-step: `./.sybra/bootstrap.sh`
 
+Repo `.sybra.yaml` may also declare `checks.codegen` for the deterministic
+mutation pass run by `simple-task-implement` before tamper/verify/review/
+testing. Keep this list to formatters / codegen refresh only (for example
+`golangci-lint fmt ./...`, `go mod tidy`), not tests; tests belong in
+`checks.verify`.
+
 App-level `SetupCommands` should stay empty for most projects; use it only for host-specific extras such as copying a local `.env`.
 
 **Server-context quality gates.** On the server, do NOT treat the desktop build (`go build .`) as a commit gate — webkit2gtk is not installed and desktop builds are a CI concern (and darwin-only). Use `mise run build:server` (HTTP server) or `go build ./cmd/sybra-server` for a server-side build verification instead. Lint (`golangci-lint run ./...`, `hadolint Dockerfile`, `npx oxlint`) and tests (`go test ./...`) remain the authoritative gates — all installable via the project's `mise install` bootstrap.

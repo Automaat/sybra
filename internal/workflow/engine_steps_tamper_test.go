@@ -416,14 +416,15 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
 	}
 
-	// verify_commits default (no status condition) must route to detect_tampering.
+	// verify_commits default (no status condition) must route to codegen_gate,
+	// which then hands off to detect_tampering once generated drift is fixed.
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
 		return
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
-		t.Errorf("verify_commits default goto = %q, want detect_tampering", got)
+	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "ready-review"}); got != "codegen_gate" {
+		t.Errorf("verify_commits default goto = %q, want codegen_gate", got)
 	}
 
 	cases := []struct {

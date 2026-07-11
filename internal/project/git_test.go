@@ -859,6 +859,7 @@ func TestMergeChecks(t *testing.T) {
 		app           *ChecksConfig
 		wantPreCommit []string
 		wantPrePush   []string
+		wantCodegen   []string
 		wantVerify    []string
 		wantNil       bool
 	}{
@@ -902,6 +903,24 @@ func TestMergeChecks(t *testing.T) {
 			wantPreCommit: []string{"echo app"},
 		},
 		{
+			name:        "repo wins codegen",
+			repo:        &ChecksConfig{Codegen: []string{"repo fmt"}},
+			app:         &ChecksConfig{Codegen: []string{"app fmt"}},
+			wantCodegen: []string{"repo fmt"},
+		},
+		{
+			name:          "codegen falls back to app",
+			repo:          &ChecksConfig{PreCommit: []string{"echo repo"}},
+			app:           &ChecksConfig{Codegen: []string{"app fmt"}},
+			wantPreCommit: []string{"echo repo"},
+			wantCodegen:   []string{"app fmt"},
+		},
+		{
+			name:    "empty codegen-only config collapses to nil",
+			repo:    &ChecksConfig{Codegen: []string{}},
+			wantNil: true,
+		},
+		{
 			name:       "verify only repo is non-nil",
 			repo:       &ChecksConfig{Verify: []string{"go test ./..."}},
 			wantVerify: []string{"go test ./..."},
@@ -939,6 +958,9 @@ func TestMergeChecks(t *testing.T) {
 			}
 			if !slicesEqual(got.PrePush, tt.wantPrePush) {
 				t.Errorf("PrePush = %v, want %v", got.PrePush, tt.wantPrePush)
+			}
+			if !slicesEqual(got.Codegen, tt.wantCodegen) {
+				t.Errorf("Codegen = %v, want %v", got.Codegen, tt.wantCodegen)
 			}
 			if !slicesEqual(got.Verify, tt.wantVerify) {
 				t.Errorf("Verify = %v, want %v", got.Verify, tt.wantVerify)

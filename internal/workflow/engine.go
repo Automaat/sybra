@@ -139,12 +139,13 @@ type BranchSyncer interface {
 	SyncTaskBranch(ctx context.Context, taskID string) (result string, err error)
 }
 
-// CheckConfigGetter resolves a task's verify-suite commands (the project's
-// deterministic tests/typecheck), merged from repo `.sybra.yaml` and the
-// app-level project config. Returns nil/empty when the task has no verify
-// suite configured — the verify_checks step then becomes a no-op. Engine
-// operates with a nil getter (step skips), so unit tests need not wire one.
+// CheckConfigGetter resolves a task's codegen and verify command sets, merged
+// from repo `.sybra.yaml` and the app-level project config. Returns nil/empty
+// when the task has no verify suite or codegen pass configured — the
+// verify_checks/codegen_gate steps then become no-ops. Engine operates with a
+// nil getter (step skips), so unit tests need not wire one.
 type CheckConfigGetter interface {
+	CodegenCommands(ctx context.Context, taskID string) []string
 	VerifyCommands(ctx context.Context, taskID string) []string
 	SetupCommands(ctx context.Context, taskID string) []string
 }
@@ -396,8 +397,9 @@ func (e *Engine) SetAttemptNoteAppender(a AttemptNoteAppender) { e.attemptNotes 
 // Leaving it unset makes the step a no-op (skipped outcome).
 func (e *Engine) SetBranchSyncer(s BranchSyncer) { e.branchSyncer = s }
 
-// SetCheckConfigGetter wires the project verify-suite resolver used by the
-// `verify_checks` step. Leaving it unset makes the step a no-op.
+// SetCheckConfigGetter wires the project codegen/verify resolver used by the
+// `codegen_gate` and `verify_checks` steps. Leaving it unset makes those steps
+// no-ops.
 func (e *Engine) SetCheckConfigGetter(g CheckConfigGetter) { e.checks = g }
 
 // SetManualTestConfigGetter wires the manual-test surface resolver used by

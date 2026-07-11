@@ -14,6 +14,14 @@ export class ChecksConfig {
     "prePush"?: string[];
 
     /**
+     * Codegen is the project's deterministic mutation pass (formatters,
+     * goimports, go mod tidy, generated-file refresh) run by the codegen_gate
+     * workflow step before downstream tamper/verify/review/testing validation.
+     * Each entry is a shell command run in the worktree root, in order.
+     */
+    "codegen"?: string[];
+
+    /**
      * Verify is the project's deterministic verification suite (tests /
      * typecheck), run by the verify_checks workflow step on the agent's branch
      * before review so an implementation that does not pass its own tests
@@ -35,6 +43,7 @@ export class ChecksConfig {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType0;
+        const $$createField3_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("preCommit" in $$parsedSource) {
             $$parsedSource["preCommit"] = $$createField0_0($$parsedSource["preCommit"]);
@@ -42,8 +51,11 @@ export class ChecksConfig {
         if ("prePush" in $$parsedSource) {
             $$parsedSource["prePush"] = $$createField1_0($$parsedSource["prePush"]);
         }
+        if ("codegen" in $$parsedSource) {
+            $$parsedSource["codegen"] = $$createField2_0($$parsedSource["codegen"]);
+        }
         if ("verify" in $$parsedSource) {
-            $$parsedSource["verify"] = $$createField2_0($$parsedSource["verify"]);
+            $$parsedSource["verify"] = $$createField3_0($$parsedSource["verify"]);
         }
         return new ChecksConfig($$parsedSource as Partial<ChecksConfig>);
     }

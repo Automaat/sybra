@@ -370,12 +370,11 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	}
 }
 
-// TestBuiltinSimpleTaskImplement_VerifyCommitsRouting pins the verify_commits
-// transition table: human-required and done end the run, everything else flows
-// into the detect_tampering gate before review. (The sibling-still-running case
-// is handled in Go by parking the workflow in ExecWaiting, not by a transition
-// — see execVerifyCommits.)
-func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
+// TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
+// implementation workflow ordering: verify_commits flows into codegen_gate,
+// which must run before detect_tampering and verify_checks so downstream
+// review/testing validate the final committed branch content.
+func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	t.Parallel()
 
 	defs, err := BuiltinDefinitions()
@@ -392,42 +391,41 @@ func TestBuiltinSimpleTaskImplement_VerifyCommitsRouting(t *testing.T) {
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
 	}
-	step := impl.StepByID("verify_commits")
-	if step == nil {
+	verifyCommits := impl.StepByID("verify_commits")
+	if verifyCommits == nil {
 		t.Fatal("verify_commits step not found in simple-task-implement")
 	}
 
-	cases := []struct {
-		name   string
-		fields map[string]string
-		want   string
-	}{
-		{
-			name:   "human-required ends the run",
-			fields: map[string]string{"task.status": "human-required"},
-			want:   "",
-		},
-		{
-			name:   "done ends the run",
-			fields: map[string]string{"task.status": "done"},
-			want:   "",
-		},
-		{
-			name:   "clean in-progress flows into tamper gate",
-			fields: map[string]string{"task.status": "in-progress"},
-			want:   "detect_tampering",
-		},
+	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("verify_commits human-required goto = %q, err=%v; want end", got, err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(step.Next, tc.fields)
-			if err != nil {
-				t.Fatalf("ResolveTransition: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("goto = %q, want %q", got, tc.want)
-			}
-		})
+	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "done"}); err != nil || got != "" {
+		t.Fatalf("verify_commits done goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "codegen_gate" {
+		t.Fatalf("verify_commits clean goto = %q, err=%v; want codegen_gate", got, err)
+	}
+
+	codegen := impl.StepByID("codegen_gate")
+	if codegen == nil {
+		t.Fatal("codegen_gate step not found in simple-task-implement")
+	}
+	if codegen.Type != StepCodegenGate {
+		t.Fatalf("codegen_gate type = %q, want %q", codegen.Type, StepCodegenGate)
+	}
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("codegen_gate human-required goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
+		t.Fatalf("codegen_gate clean goto = %q, err=%v; want detect_tampering", got, err)
+	}
+
+	detect := impl.StepByID("detect_tampering")
+	if detect == nil {
+		t.Fatal("detect_tampering step not found in simple-task-implement")
+	}
+	if got, err := ResolveTransition(detect.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_checks" {
+		t.Fatalf("detect_tampering clean goto = %q, err=%v; want verify_checks", got, err)
 	}
 }
 
@@ -765,11 +763,11 @@ func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 	}
 }
 
-// TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff proves the proactive
-// sync_branch step runs first — before the create_pr-vs-push_existing_pr
-// branch point — so both PR handoff paths (new PR and retry-with-pr_number)
-// get a fresh sync before the branch is pushed.
-func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
+// TestBuiltinSimpleTaskPR_NoCodegenAfterTesting guards the PR handoff
+// workflow's non-mutating contract: after review/testing pass, the workflow
+// may sync, push, create, and link a PR, but it must not run codegen_gate and
+// create a new unreviewed commit.
+func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
 	if err != nil {
@@ -800,9 +798,12 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
 		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
 	}
+	if step := simple.StepByID("codegen_gate"); step != nil {
+		t.Fatalf("codegen_gate must not exist in simple-task-pr; got %+v", step)
+	}
 
 	// maybe_create_pr must still be the branch point covering both downstream
-	// PR paths — sync_branch does not bypass either one.
+	// PR paths after the best-effort sync.
 	guard := simple.StepByID("maybe_create_pr")
 	if guard == nil {
 		t.Fatal("maybe_create_pr step not found in simple-task-pr")

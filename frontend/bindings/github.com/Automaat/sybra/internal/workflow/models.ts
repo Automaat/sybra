@@ -868,6 +868,14 @@ export enum StepType {
     StepSyncBranch = "sync_branch",
 
     /**
+     * StepCodegenGate runs the project's configured mutation pass
+     * (`checks.codegen`) in the task worktree before detect_tampering,
+     * verify_checks, review, and testing, then checkpoint-commits any
+     * resulting drift so downstream validation sees the final branch content.
+     */
+    StepCodegenGate = "codegen_gate",
+
+    /**
      * StepResumeWorkflow is the terminal step of a recovery workflow
      * (branch-conflict-fix) that re-enters the task's original interrupted
      * workflow/stage. Reads resume_workflow_id/resume_workflow_vars/
