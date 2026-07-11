@@ -434,7 +434,7 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	prs := make([]PullRequest, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
-		if isBot(n.Author.Type, n.Author.Login) {
+		if isBot(n.Author.Type, n.Author.Login) && !strings.EqualFold(n.Author.Login, viewer) {
 			continue
 		}
 		prs = append(prs, convertCommonPR(n, viewer))
