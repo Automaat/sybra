@@ -317,6 +317,27 @@ func (e *Engine) HasActiveWorkflow(taskID string) bool {
 	return t.Workflow.State != ExecCompleted && t.Workflow.State != ExecFailed
 }
 
+// WorkflowParkedWaiting reports whether the task's active workflow is
+// workflowID and is currently parked mid-run in ExecWaiting (a non-empty
+// CurrentStep). This is the state a StepRunAgent step lands in when its
+// dispatch hit ErrAgentPoolBusy/ErrTestRunnerBusy/ErrDispatchInFlight — the
+// run persisted but no agent started, and ResumeStalled owns re-driving it
+// once a slot frees.
+//
+// Branch-conflict recovery uses this to distinguish "a fix workflow already
+// dispatched and is waiting for the pool" from "no recovery in flight": in the
+// former case re-entering would cancel + re-dispatch that parked workflow and
+// burn a bounded retry-budget slot for a fix agent that never ran.
+func (e *Engine) WorkflowParkedWaiting(taskID, workflowID string) bool {
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil {
+		return false
+	}
+	return t.Workflow.WorkflowID == workflowID &&
+		t.Workflow.State == ExecWaiting &&
+		t.Workflow.CurrentStep != ""
+}
+
 // CancelWorkflow terminates a task's active workflow without running any
 // remaining steps. Stops in-flight agents for the task, marks the workflow
 // ExecCompleted with the cancellation reason recorded in variables, and
