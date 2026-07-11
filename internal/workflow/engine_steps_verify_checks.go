@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,13 @@ const verifyChecksOutputTail = 8000
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
 // suite) and let the task proceed instead of re-blocking on every re-dispatch.
 const verifyBlessedTag = "verify-blessed"
+
+const (
+	verifyChecksImplStepID     = "implement"
+	verifyReaskNoteVar         = "verify_reask_note"
+	verifyChecksAutoFixCap     = 2
+	verifyChecksAutoFixBackoff = 90 * time.Second
+)
 
 // verifyChecksFlakeRetries is how many extra times a failed verify command is
 // re-run before the gate blocks. A single retry absorbs a nondeterministic
@@ -102,7 +110,7 @@ type verifyChecksReport struct {
 // exceeding the time budget (an agent could hang a test to dodge) — blocks.
 // Only engine-shutdown cancellation and the node_modules case fail open, so a
 // harness/infra problem never strands or misattributes work.
-func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	if slices.Contains(t.Tags, verifyBlessedTag) {
 		e.logger.Info("workflow.verify-checks.blessed", "task_id", taskID)
 		return stepDone(step, "blessed")
@@ -176,7 +184,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, t TaskInfo) (StepOu
 	if failedCmd != "" {
 		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
 			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
-		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, failedCmd, output)
 	}
 
 	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
@@ -233,6 +241,47 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 	}
 	e.logger.Warn("workflow.verify-checks.flagged", "task_id", taskID, "detail", detail)
 	return stepDone(step, "flagged")
+}
+
+func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
+	if wfExec == nil {
+		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+	}
+	key := "step." + step.ID + ".auto_fix"
+	attempts := parseWorkflowInt(wfExec.Variables[key])
+	if attempts >= verifyChecksAutoFixCap || wfExec.CountStep(verifyChecksImplStepID) == 0 {
+		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+	}
+
+	wfExec.SetVar(key, strconv.Itoa(attempts+1))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+	wfExec.ClearStepRecords(verifyChecksImplStepID)
+	wfExec.CurrentStep = verifyChecksImplStepID
+	wfExec.State = ExecWaiting
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
+	}
+	retryReason := fmt.Sprintf("auto-fixing failed verify check (attempt %d/%d): %s",
+		attempts+1, verifyChecksAutoFixCap, trimDiffLine(failedCmd))
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, retryReason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Info("workflow.verify-checks.auto-fix",
+		"task_id", taskID, "attempt", attempts+1, "cap", verifyChecksAutoFixCap, "cmd", trimDiffLine(failedCmd))
+	return StepOutput{}, errStepParked
+}
+
+func buildVerifyReaskNote(failedCmd, output string) string {
+	var b strings.Builder
+	b.WriteString("A prior implementation FAILED the project verify suite. Fix the ROOT CAUSE ")
+	b.WriteString("so the failing command passes on a clean run — do NOT weaken, skip, or edit ")
+	b.WriteString("the check to make it pass.\n\n## Failing verify command\n\n`")
+	b.WriteString(failedCmd)
+	b.WriteString("`\n\n## Output (tail)\n\n```\n")
+	b.WriteString(tailString(strings.TrimSpace(output), 3000))
+	b.WriteString("\n```")
+	return b.String()
 }
 
 // miseConfigNames are the mise config filenames that gate `mise exec` behind
