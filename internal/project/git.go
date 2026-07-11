@@ -156,9 +156,9 @@ func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte
 
 // gitCommonDir resolves worktreePath's shared .git directory — for a linked
 // worktree this is the bare clone's admin dir, identical across every
-// worktree of the same clone, which is what lets callers key a lock (e.g.
-// bareRepoLocks) so it serializes across concurrently-operating worktrees of
-// one project rather than just within a single worktree.
+// worktree of the same clone, which lets callers key per-clone coordination so
+// it serializes across concurrently-operating worktrees of one project rather
+// than just within a single worktree.
 func gitCommonDir(ctx context.Context, worktreePath string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = worktreePath
@@ -823,19 +823,20 @@ func PushUpstream(ctx context.Context, worktreePath, branch string) error {
 	return pushLocked(ctx, worktreePath, "push", "-u", PushRemote(ctx, worktreePath), branch)
 }
 
-// pushLocked runs `git push` with args while holding the bareRepoLocks mutex
-// for worktreePath's shared git dir. A project's pre-push hook (typically
+// pushLocked runs `git push` with args while holding a push-specific mutex for
+// worktreePath's shared git dir. A project's pre-push hook (typically
 // `go test ./...`) runs as a child of this exact subprocess, so this is what
 // actually serializes hook execution across every worktree of one project —
 // without it, N agents pushing concurrently each spawn their own full test
 // run at once, and the resulting host CPU contention is what flakes
-// timing-sensitive tests unrelated to any of their diffs.
+// timing-sensitive tests unrelated to any of their diffs. The push lock is
+// intentionally separate from bareRepoLocks because hooks can run for minutes.
 func pushLocked(ctx context.Context, worktreePath string, args ...string) error {
 	gitDir, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
 		return err
 	}
-	return withBareRepoLock(gitDir, func() error {
+	return withBareRepoPushLock(gitDir, func() error {
 		return executil.Run(ctx, worktreePath, "git", args...)
 	})
 }
