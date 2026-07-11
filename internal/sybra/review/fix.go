@@ -82,6 +82,16 @@ func readyForCopilotAutoMerge(pr github.PullRequest) bool {
 		pr.ReviewDecision != "CHANGES_REQUESTED"
 }
 
+func readyForOwnBotAutoMerge(pr github.PullRequest) bool {
+	return pr.SelfAuthoredBot &&
+		!pr.SourcedViaREST &&
+		!pr.IsDraft &&
+		pr.Mergeable == "MERGEABLE" &&
+		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
+		pr.UnresolvedCount == 0 &&
+		pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
 // readyToArmNativeAutoMerge reports whether a PR is ready to have GitHub's
 // native auto-merge armed: the same review-cycle gate as
 // readyForCopilotAutoMerge MINUS the CI-green requirement (native auto-merge
@@ -205,7 +215,7 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		// authored and never receive a Copilot review, so the Copilot gate would
 		// strand them. The ReadyToMerge issue already implies green + mergeable +
 		// !draft, so preserve their prior green auto-merge.
-		ready = renovateFix || readyForCopilotAutoMerge(issue.PR)
+		ready = renovateFix || readyForOwnBotAutoMerge(issue.PR) || readyForCopilotAutoMerge(issue.PR)
 	}
 	if !ready {
 		return
