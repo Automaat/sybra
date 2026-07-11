@@ -172,6 +172,7 @@ export class PullRequest {
      * GitHub Copilot has submitted a review
      */
     "copilotReviewed": boolean;
+    "selfAuthoredBot": boolean;
     "createdAt": string;
     "updatedAt": string;
 
@@ -285,6 +286,9 @@ export class PullRequest {
         if (!("copilotReviewed" in $$source)) {
             this["copilotReviewed"] = false;
         }
+        if (!("selfAuthoredBot" in $$source)) {
+            this["selfAuthoredBot"] = false;
+        }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = "";
         }
@@ -385,6 +389,7 @@ export class RenovatePR {
      * GitHub Copilot has submitted a review
      */
     "copilotReviewed": boolean;
+    "selfAuthoredBot": boolean;
     "createdAt": string;
     "updatedAt": string;
 
@@ -500,6 +505,9 @@ export class RenovatePR {
         if (!("copilotReviewed" in $$source)) {
             this["copilotReviewed"] = false;
         }
+        if (!("selfAuthoredBot" in $$source)) {
+            this["selfAuthoredBot"] = false;
+        }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = "";
         }
@@ -539,13 +547,13 @@ export class RenovatePR {
      */
     static createFrom($$source: any = {}): RenovatePR {
         const $$createField7_0 = $$createType0;
-        const $$createField27_0 = $$createType2;
+        const $$createField28_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("labels" in $$parsedSource) {
             $$parsedSource["labels"] = $$createField7_0($$parsedSource["labels"]);
         }
         if ("checkRuns" in $$parsedSource) {
-            $$parsedSource["checkRuns"] = $$createField27_0($$parsedSource["checkRuns"]);
+            $$parsedSource["checkRuns"] = $$createField28_0($$parsedSource["checkRuns"]);
         }
         return new RenovatePR($$parsedSource as Partial<RenovatePR>);
     }
