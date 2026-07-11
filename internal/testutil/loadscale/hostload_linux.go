@@ -1,6 +1,6 @@
 //go:build linux
 
-package agent
+package loadscale
 
 import (
 	"os"
@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// hostLoadPerCPU reads the 1-minute load average from /proc/loadavg.
-func hostLoadPerCPU() (float64, bool) {
+// HostLoadPerCPU reads the 1-minute load average from /proc/loadavg.
+func HostLoadPerCPU() (float64, bool) {
 	data, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
 		return 0, false
@@ -22,5 +22,5 @@ func hostLoadPerCPU() (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return loadPerCPU(load1)
+	return LoadPerCPU(load1)
 }
