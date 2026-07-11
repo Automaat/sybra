@@ -227,6 +227,27 @@ func TestQueue_StarvationBoostDisabledWhenZero(t *testing.T) {
 	}
 }
 
+func TestBumpTier(t *testing.T) {
+	tests := []struct {
+		in   task.Priority
+		want task.Priority
+	}{
+		{task.PriorityNone, task.PriorityLow},
+		{task.PriorityLow, task.PriorityMedium},
+		{task.PriorityMedium, task.PriorityHigh},
+		{task.PriorityHigh, task.PriorityUrgent},
+		{task.PriorityUrgent, task.PriorityUrgent},
+		// Unknown values fold to Low, mirroring priorityRank (which ranks them
+		// at 0) rather than jumping straight to the top tier.
+		{task.Priority("bogus"), task.PriorityLow},
+	}
+	for _, tt := range tests {
+		if got := bumpTier(tt.in); got != tt.want {
+			t.Errorf("bumpTier(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestQueue_Reconcile(t *testing.T) {
 	q := mustQueue(t, Options{})
 	q.Offer(Item{TaskID: "missing"})
