@@ -104,8 +104,8 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	if !containsPair(got, "--body", attribution.Append("body")) {
 		t.Errorf("missing body: %v", got)
 	}
-	if !containsPair(got, "--label", "monitor,bug") {
-		t.Errorf("missing label pair: %v", got)
+	if !containsLabelArgs(got, "monitor", "bug") {
+		t.Errorf("missing label args: %v", got)
 	}
 	if len(fe.callsMatching("issue", "comment")) != 0 {
 		t.Errorf("should not comment on dedup miss")
@@ -163,6 +163,108 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 	// Two labels (monitor + bug) are created once, not three times.
 	if len(labelCreates) != 2 {
 		t.Fatalf("want 2 label create calls (once), got %d", len(labelCreates))
+	}
+}
+
+func TestGHIssueSink_EnsuresExtraLabelsBeforeCreate(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate", "bug", "  ", "monitor"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	// monitor + bug (ensureLabels, once) + duplicate-candidate (ensureExtraLabels).
+	// "bug" and "monitor" from extraLabels are skipped since ensureLabels
+	// already covers them.
+	if len(labelCreates) != 3 {
+		t.Fatalf("want 3 label create calls, got %d: %v", len(labelCreates), labelCreates)
+	}
+	found := false
+	for _, c := range labelCreates {
+		if len(c) >= 4 && c[2] == "--" && c[3] == "duplicate-candidate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a label create call for duplicate-candidate, got %v", labelCreates)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsLabelArgs(creates[0], "monitor", "duplicate-candidate", "bug") {
+		t.Errorf("wrong label args: %v", creates[0])
+	}
+}
+
+func TestGHIssueSink_ExtraLabelStartingWithDashIsNotParsedAsFlag(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"-1-of-3"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	found := false
+	for _, c := range labelCreates {
+		if len(c) >= 4 && c[2] == "--" && c[3] == "-1-of-3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a `--` separated label create call for -1-of-3, got %v", labelCreates)
+	}
+}
+
+func TestGHIssueSink_CreatePreservesCommaContainingLabelAsSingleArg(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"ops,infra"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsLabelArgs(creates[0], "monitor", "ops,infra") {
+		t.Fatalf("expected comma-containing label to stay a single argv token, got %v", creates[0])
+	}
+}
+
+func TestGHIssueSink_ExtraLabelsNotEnsuredOnCommentPath(t *testing.T) {
+	fe := &fakeExecer{
+		listResp: []byte(`[{"number":87,"title":"title"}]`),
+	}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	// Only monitor + bug (ensureLabels, once) — extraLabels are only attached
+	// on the create branch, so they must not be ensured on a dedup hit.
+	if len(labelCreates) != 2 {
+		t.Fatalf("want 2 label create calls (ensureLabels only), got %d: %v", len(labelCreates), labelCreates)
+	}
+	for _, c := range labelCreates {
+		if len(c) >= 3 && c[2] == "duplicate-candidate" {
+			t.Fatalf("extra label should not be created on comment path, got %v", labelCreates)
+		}
+	}
+
+	if len(fe.callsMatching("issue", "create")) != 0 {
+		t.Errorf("should not create on dedup hit")
 	}
 }
 
@@ -314,6 +416,15 @@ func containsPair(args []string, key, val string) bool {
 		}
 	}
 	return false
+}
+
+func containsLabelArgs(args []string, labels ...string) bool {
+	for _, label := range labels {
+		if !containsPair(args, "--label", label) {
+			return false
+		}
+	}
+	return true
 }
 
 // verify the fakeExecer actually satisfies the ghExecer interface at compile
