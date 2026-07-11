@@ -6,6 +6,7 @@ package agentqueue
 import (
 	"time"
 
+	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -52,36 +53,19 @@ func effectivePriority(it Item) task.Priority {
 }
 
 // bumpTier raises p by exactly one priority tier, capped at PriorityUrgent.
+// Unrecognized values fold to PriorityLow (a one-tier bump from the bottom),
+// mirroring priorityRank which ranks both PriorityNone and unknown values at 0
+// — so an unknown priority is never silently promoted straight to the top tier.
 func bumpTier(p task.Priority) task.Priority {
 	switch p {
-	case task.PriorityNone:
-		return task.PriorityLow
 	case task.PriorityLow:
 		return task.PriorityMedium
 	case task.PriorityMedium:
 		return task.PriorityHigh
-	default:
+	case task.PriorityHigh, task.PriorityUrgent:
 		return task.PriorityUrgent
-	}
-}
-
-// dispatchPriorityRank is an inlined, unexported copy of
-// internal/workflow/engine_events.go's dispatchPriorityRank. It ranks a
-// task's pipeline status for dispatch ordering (lower = dispatched sooner).
-// Promoting this to a shared helper both packages import is deferred to a
-// later step of umbrella #1844.
-func dispatchPriorityRank(status task.Status) int {
-	switch status {
-	case task.StatusInReview, task.StatusReadyPR:
-		return 0
-	case task.StatusReadyReview, task.StatusTesting:
-		return 1
-	case task.StatusInProgress:
-		return 2
-	case task.StatusPlanning, task.StatusPlanReview:
-		return 3
 	default:
-		return 4
+		return task.PriorityLow
 	}
 }
 
@@ -121,8 +105,8 @@ func lessByPriority(a Item, aPri task.Priority, b Item, bPri task.Priority) bool
 	if a.Manual != b.Manual {
 		return a.Manual // Manual DESC (true sorts first)
 	}
-	if ar, br := dispatchPriorityRank(a.Status), dispatchPriorityRank(b.Status); ar != br {
-		return ar < br // dispatchPriorityRank ASC
+	if ar, br := dispatchorder.Rank(string(a.Status)), dispatchorder.Rank(string(b.Status)); ar != br {
+		return ar < br // dispatchorder.Rank ASC
 	}
 	return a.Enqueued.Before(b.Enqueued) // Enqueued ASC
 }

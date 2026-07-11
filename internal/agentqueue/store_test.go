@@ -45,6 +45,49 @@ func TestStore_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestStore_LoadPreservesEmptyStatus guards the write/read contract symmetry:
+// Offer accepts an item with a zero-value Status (task.validStatuses has no ""
+// entry), so the read path must not drop it on reload or a queued item would
+// be silently lost across a restart.
+func TestStore_LoadPreservesEmptyStatus(t *testing.T) {
+	dir := t.TempDir()
+	s, err := newStore(dir)
+	if err != nil {
+		t.Fatalf("newStore: %v", err)
+	}
+	it := Item{TaskID: "t1", Priority: task.PriorityLow, Enqueued: time.Now()}
+	if err := s.put(it); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	loaded := s.load(discardLogger())
+	if len(loaded) != 1 || loaded[0].TaskID != "t1" || loaded[0].Status != "" {
+		t.Fatalf("load() = %v, want single item with empty status", loaded)
+	}
+}
+
+// TestQueue_EmptyStatusSurvivesRestart reproduces the original data-loss bug at
+// the Queue level: an offered zero-Status item must still be present after a
+// fresh New against the same dir (a simulated restart).
+func TestQueue_EmptyStatusSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	q, err := New(dir, Options{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !q.Offer(Item{TaskID: "t1", Priority: task.PriorityLow}) {
+		t.Fatal("Offer should enqueue a new item")
+	}
+
+	reloaded, err := New(dir, Options{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New (restart): %v", err)
+	}
+	if got := reloaded.Snapshot(); len(got) != 1 || got[0].TaskID != "t1" {
+		t.Fatalf("after restart Snapshot() = %v, want single item t1", got)
+	}
+}
+
 func TestStore_DelMissingIsNotAnError(t *testing.T) {
 	s, err := newStore(t.TempDir())
 	if err != nil {

@@ -118,9 +118,16 @@ func (s *store) loadOne(path string, log *slog.Logger) (Item, bool) {
 		log.Warn("agentqueue.store.load.invalid-priority", "path", path, "priority", it.Priority)
 		return Item{}, false
 	}
-	if _, err := task.ValidateStatus(string(it.Status)); err != nil {
-		log.Warn("agentqueue.store.load.invalid-status", "path", path, "status", it.Status)
-		return Item{}, false
+	// An empty Status is a legitimate in-memory state that Offer accepts (a
+	// task/role pair queued before it has a pipeline status). task.validStatuses
+	// has no "" entry, so ValidateStatus("") fails — accept it here explicitly
+	// to keep the read path's contract identical to the write path's, otherwise
+	// zero-Status items are silently dropped across a restart.
+	if it.Status != "" {
+		if _, err := task.ValidateStatus(string(it.Status)); err != nil {
+			log.Warn("agentqueue.store.load.invalid-status", "path", path, "status", it.Status)
+			return Item{}, false
+		}
 	}
 	return it, true
 }

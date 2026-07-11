@@ -232,17 +232,29 @@ func (q *Queue) PopReady(n int) []Item {
 // cancelled), or already in-progress, using the fresh task.Status exists
 // returns rather than the item's own possibly-stale Status.
 func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
+	// Snapshot the queued IDs under the lock, then release it before calling
+	// the (possibly slow, disk-backed, or reentrant) exists callback — holding
+	// q.mu across an arbitrary caller-supplied lookup would block every other
+	// queue op for the full O(n) sweep and deadlock if exists ever re-entered
+	// this Queue. Re-lock only for the mutation phase, re-checking the index
+	// since items may have moved or been removed while unlocked.
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	ids := make([]string, len(q.h.items))
+	for i, it := range q.h.items {
+		ids[i] = it.TaskID
+	}
+	q.mu.Unlock()
 
-	stale := make([]string, 0, len(q.h.items))
-	for _, it := range q.h.items {
-		t, ok := exists(it.TaskID)
+	stale := make([]string, 0, len(ids))
+	for _, id := range ids {
+		t, ok := exists(id)
 		if !ok || task.IsTerminalStatus(t.Status) || t.Status == task.StatusInProgress {
-			stale = append(stale, it.TaskID)
+			stale = append(stale, id)
 		}
 	}
 
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	for _, id := range stale {
 		pos, ok := q.h.index[id]
 		if !ok {
