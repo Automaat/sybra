@@ -264,13 +264,12 @@ func (c *Config) InAppBrowserEnabled() bool {
 const DefaultTestingMaxConcurrent = 3
 
 // DefaultTestingMaxAttempts bounds the testing → in-progress re-implementation
-// loop when TestingConfig.MaxAttempts is unset. This is a cost backstop, not
-// the primary stall detector — workflow.countValidProductTestAttempts
-// escalates immediately on a genuine stall (same grounded failure fingerprint
-// twice with an intervening code-author run), so a sequence that keeps
-// finding distinct grounded defects should not be starved by a low count
-// here.
-const DefaultTestingMaxAttempts = 10
+// loop when TestingConfig.MaxAttempts is unset. Recurring grounded failure
+// fingerprints remain the primary non-convergence detector — route_test_result
+// escalates immediately when the same fingerprint returns after an intervening
+// code-author run. This numeric cap is a generous safety-net backstop only for
+// loops that keep surfacing distinct grounded defects without converging.
+const DefaultTestingMaxAttempts = 25
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {

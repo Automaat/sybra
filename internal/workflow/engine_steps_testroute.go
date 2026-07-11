@@ -2276,14 +2276,20 @@ func ExtractTestVerdict(output string) string {
 // task. It prints testVerdictPass only when it failed to break the feature.
 //
 //   - pass        → ready-pr (a separate workflow opens the PR)
-//   - product bug → in-progress with the latest grounded repro, until the
-//     distinct-defect cap, then human-required for targeted local reproduction.
+//   - product bug → two tiers:
+//   - same grounded failure fingerprint recurring after an intervening
+//     code-author run escalates immediately to human-required as a
+//     non-convergence/spec-decision signal, independent of attempt count.
+//   - otherwise the task returns to in-progress with the latest grounded repro
+//     until it hits the generous absolute backstop cap, which is a safety-net
+//     for distinct-defect loops that never converge.
 //   - tester/provisioning failures and ambiguous specs do not consume the
 //     implementation retry budget.
 //
 // Counting prior test-runner runs (which persist on the task across the
 // implement→review→test loop) gives a natural, stateless attempt counter:
-// the just-finished run is already recorded, so the Nth failure sees N runs.
+// the just-finished run is already recorded, so the Nth failure sees N runs;
+// the recurring-fingerprint check runs before the cap and does not depend on N.
 func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	// Read the untruncated verdict/outcome vars (set in engine_advance from the
 	// full agent output and current body delta). Missing or infrastructure-shaped

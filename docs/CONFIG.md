@@ -149,7 +149,7 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `testing.max_concurrent` | `int` |  | MaxConcurrent caps simultaneously-running test-runner agents on this machine. 0 falls back to DefaultTestingMaxConcurrent. |
-| `testing.max_attempts` | `int` |  | MaxAttempts caps how many times a task may fail testing and bounce back to in-progress for re-implementation before it is escalated to human-required instead. 0 falls back to DefaultTestingMaxAttempts. |
+| `testing.max_attempts` | `int` |  | MaxAttempts is the generous absolute backstop for the testing → re-implementation loop. Recurring grounded failure fingerprints escalate independently of this count; this limit only parks a task human-required when distinct grounded defects keep surfacing without convergence. 0 falls back to DefaultTestingMaxAttempts. |
 
 ## NotificationConfig (`notification`)
 

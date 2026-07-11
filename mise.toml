@@ -94,7 +94,7 @@ run = "cd frontend && npm run build:web"
 description = "Build frontend for web (output: frontend/dist-web/)"
 
 [tasks."build:server"]
-run = "cd frontend && npm run build:web && go build -o bin/sybra-server ./cmd/sybra-server"
+run = ["cd frontend && npm run build:web", "go build -o bin/sybra-server ./cmd/sybra-server"]
 description = "Build HTTP server binary (builds web frontend first)"
 
 [tasks."dev:server"]
