@@ -211,7 +211,7 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(nil)
+		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}
@@ -307,7 +307,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(nil)
+		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}

@@ -31,6 +31,11 @@ type ConvoEvent struct {
 	// envelope (e.g. "overloaded_error", 529) when subtype == "error".
 	ErrorType   string `json:"errorType,omitempty"`
 	ErrorStatus int    `json:"errorStatus,omitempty"`
+	// BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+	// a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+	// of every CLI background bash task (e.g. a `run_in_background` Bash call)
+	// still live after the change. Mirrors ClaudeEvent.BackgroundTaskIDs.
+	BackgroundTaskIDs []string `json:"backgroundTaskIds,omitempty"`
 }
 
 // ToolUseBlock represents a single tool call from the assistant.

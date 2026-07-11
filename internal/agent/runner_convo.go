@@ -28,6 +28,8 @@ func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
 		Raw:       e.Raw,
 	}
 	switch e.Type {
+	case "system":
+		ev.BackgroundTaskIDs = e.BackgroundTaskIDs
 	case "assistant":
 		if e.Message != nil {
 			ev.Text = e.Message.Text
@@ -378,7 +380,7 @@ func (m *Manager) runConvoAttempt(ctx context.Context, a *Agent, cfg RunConfig, 
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
 	} else {
-		a.SetExitErr(nil)
+		a.SetExitErr(checkLiveBackgroundTasksAtExit(m, a))
 		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
 			a.SetExitErr(errProviderRateLimited)
 		}
@@ -459,6 +461,9 @@ func (m *Manager) processConvoLine(ctx context.Context, a *Agent, line []byte, s
 
 	switch event.Type {
 	case "system":
+		if event.Subtype == "background_tasks_changed" {
+			a.SetBackgroundTaskIDs(event.BackgroundTaskIDs)
+		}
 		if event.SessionID != "" && a.GetSessionID() != event.SessionID {
 			// Capture the session id as soon as it appears so a restart can
 			// resume the conversation. Only persist a registry record for a
