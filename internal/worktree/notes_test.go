@@ -81,6 +81,92 @@ func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
 	}
 }
 
+func TestAppendNote(t *testing.T) {
+	wt := t.TempDir()
+	mustRunInDir(t, wt, "git", "init", "-b", "main")
+
+	const section = "## Prior attempt 1\n\nmarker-free body"
+	if err := AppendNote(context.Background(), wt, "", section); err != nil {
+		t.Fatalf("AppendNote: %v", err)
+	}
+
+	path := filepath.Join(wt, notes.FileName)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read scratchpad: %v", err)
+	}
+	got := string(content)
+	if !strings.HasPrefix(got, notes.SeedTemplate) {
+		t.Fatalf("scratchpad = %q, want seed template prefix", got)
+	}
+	if !strings.Contains(got, section) {
+		t.Fatalf("scratchpad missing appended section:\n%s", got)
+	}
+	if !strings.Contains(got, notes.SeedTemplate+"\n"+section+"\n") {
+		t.Fatalf("scratchpad missing expected append framing:\n%s", got)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat scratchpad: %v", err)
+	}
+	if perms := info.Mode().Perm(); perms != 0o600 {
+		t.Fatalf("scratchpad perms = %o, want 0600", perms)
+	}
+
+	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.Contains(string(out), notes.FileName) {
+		t.Fatalf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
+	}
+}
+
+func TestAppendNoteIdempotent(t *testing.T) {
+	wt := t.TempDir()
+	mustRunInDir(t, wt, "git", "init", "-b", "main")
+
+	if err := ensureNotesFile(context.Background(), wt); err != nil {
+		t.Fatalf("ensureNotesFile: %v", err)
+	}
+	path := filepath.Join(wt, notes.FileName)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat seeded scratchpad: %v", err)
+	}
+	if perms := info.Mode().Perm(); perms != 0o600 {
+		t.Fatalf("seeded perms = %o, want 0600", perms)
+	}
+
+	const marker = "<!-- sybra-prior-attempt:t1:1:abc -->"
+	const section = marker + "\n\n## Prior attempt 1\n\nsame body"
+	for range 2 {
+		if err := AppendNote(context.Background(), wt, marker, section); err != nil {
+			t.Fatalf("AppendNote: %v", err)
+		}
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read scratchpad: %v", err)
+	}
+	got := string(content)
+	if strings.Count(got, marker) != 1 {
+		t.Fatalf("marker count = %d, want 1:\n%s", strings.Count(got, marker), got)
+	}
+	if strings.Count(got, "## Prior attempt 1") != 1 {
+		t.Fatalf("section count = %d, want 1:\n%s", strings.Count(got, "## Prior attempt 1"), got)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat scratchpad after append: %v", err)
+	}
+	if perms := info.Mode().Perm(); perms != 0o600 {
+		t.Fatalf("scratchpad perms after append = %o, want 0600", perms)
+	}
+}
+
 // TestAppendSetupFailureNote_SeedsAndAppends confirms a fresh worktree (no
 // NOTES.md yet, as fix-role prepares don't call seedWorktree) gets the
 // scratchpad created, excluded, and the failure recorded so SeedWorkingMemory
