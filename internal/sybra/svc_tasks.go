@@ -842,9 +842,9 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	}
 	if branch, ok := s.claimIngestBranch(repo, pr.HeadRefName, taskID); ok {
 		u.Branch = task.Ptr(branch)
-	} else {
-		s.logger.Warn("enrich-pr.branch-collision", "task_id", taskID, "pr", number, "branch", pr.HeadRefName)
 	}
+	// claimIngestBranch already logs the reason (list failure vs. collision)
+	// on rejection; no need to duplicate/relabel it here.
 	// Replace tags with the PR's labels (possibly empty), which also clears the
 	// enrich-pending marker set on the URL stub at creation.
 	labels := pr.Labels
@@ -968,13 +968,13 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 			u.PRNumber = task.Ptr(linked.Number)
 			u.Branch = task.Ptr(branch)
 			u.Status = task.Ptr(task.StatusInReview)
-		} else {
-			// This PR's branch already belongs to a different task — e.g. one
-			// PR closes more than one GitHub issue, and another issue's task
-			// already claimed it. Leave this task's own PR link unclaimed
-			// rather than have two tasks race to own the same branch/worktree.
-			s.logger.Warn("enrich-issue.linked-pr.branch-collision", "task_id", taskID, "issue", issue.URL, "pr", linked.Number)
 		}
+		// Else: this PR's branch already belongs to a different task — e.g.
+		// one PR closes more than one GitHub issue, and another issue's task
+		// already claimed it — or the ownership check itself failed to read.
+		// Leave this task's own PR link unclaimed rather than have two tasks
+		// race to own the same branch/worktree; claimIngestBranch already
+		// logged the specific reason.
 	} else if len(linkedPRs) > 0 {
 		if viewerPRs := s.viewerLinkedPRCount(linkedPRs); viewerPRs > 1 {
 			s.logger.Warn("enrich-issue.linked-prs.ambiguous", "task_id", taskID, "count", viewerPRs)

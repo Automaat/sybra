@@ -30,6 +30,15 @@ const issuesTransientWarnThreshold = 3
 // synapseIssueLabel is the GitHub label that triggers auto-creation of Sybra tasks.
 const synapseIssueLabel = "sybra"
 
+// branchKey identifies a project+branch pair for claimedBranches. A struct key
+// (rather than a "projectID|branch" string) avoids collisions between
+// different {projectID, branch} pairs when either component — branch names
+// are external GitHub input — happens to contain the delimiter.
+type branchKey struct {
+	projectID string
+	branch    string
+}
+
 // IssuesFetcher polls GitHub for assigned and labeled issues and syncs them to tasks.
 type IssuesFetcher struct {
 	tasks                 *task.Manager
@@ -279,13 +288,13 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 	}
 	issueURLs := make(map[string]struct{})
 	urlTitleTasks := make(map[string]string) // issue URL → task ID for URL-titled stubs
-	// claimedBranches tracks "projectID|branch" → owner (task ID, or the
+	// claimedBranches tracks {projectID, branch} → owner (task ID, or the
 	// issue URL for a task this pass is about to create) across the whole
 	// batch. Seeding it from the pre-batch snapshot and updating it as each
 	// issue in the batch claims a branch (see enrichLinkedViewerPR) prevents
 	// two issues in the SAME poll — e.g. one PR that closes more than one
 	// GitHub issue — from both claiming that PR's branch for their own task.
-	claimedBranches := make(map[string]string, len(tasks))
+	claimedBranches := make(map[branchKey]string, len(tasks))
 	for i := range tasks {
 		if tasks[i].Issue != "" {
 			issueURLs[tasks[i].Issue] = struct{}{}
@@ -294,7 +303,7 @@ func (f *IssuesFetcher) syncIssuesToTasks(issues []github.Issue) {
 			urlTitleTasks[tasks[i].Title] = tasks[i].ID
 		}
 		if tasks[i].Branch != "" {
-			claimedBranches[tasks[i].ProjectID+"|"+tasks[i].Branch] = tasks[i].ID
+			claimedBranches[branchKey{tasks[i].ProjectID, tasks[i].Branch}] = tasks[i].ID
 		}
 	}
 	for i := range flat {
@@ -343,7 +352,7 @@ func (f *IssuesFetcher) expandUmbrellaIssue(issue *github.Issue) {
 
 // syncFlatIssue creates or enriches a single non-umbrella issue task, honoring
 // the dedup snapshot and project-type filter.
-func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]struct{}, urlTitleTasks map[string]string, claimedBranches map[string]string) {
+func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]struct{}, urlTitleTasks map[string]string, claimedBranches map[branchKey]string) {
 	if _, exists := issueURLs[issue.URL]; exists {
 		return
 	}
@@ -410,7 +419,7 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 // which happens when one PR closes more than one GitHub issue: only the first
 // issue processed gets to claim it, and any others are left without a linked
 // PR rather than racing for the same branch/worktree.
-func (f *IssuesFetcher) enrichLinkedViewerPR(issue *github.Issue, u *task.Update, claimedBranches map[string]string, ownerID string) {
+func (f *IssuesFetcher) enrichLinkedViewerPR(issue *github.Issue, u *task.Update, claimedBranches map[branchKey]string, ownerID string) {
 	if f.fetchIssueLinkedPRs == nil || f.viewerLogin == nil {
 		return
 	}
@@ -439,7 +448,7 @@ func (f *IssuesFetcher) enrichLinkedViewerPR(issue *github.Issue, u *task.Update
 		return
 	}
 	pr := mine[0]
-	key := issue.Repository + "|" + pr.HeadRefName
+	key := branchKey{issue.Repository, pr.HeadRefName}
 	if owner, taken := claimedBranches[key]; taken && owner != ownerID {
 		f.logger.Warn("issue-sync.linked-pr.branch-collision",
 			"issue", issue.URL, "pr", pr.Number, "branch", pr.HeadRefName, "owner", owner)
