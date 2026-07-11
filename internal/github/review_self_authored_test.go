@@ -14,7 +14,7 @@ func TestFetchReviewsWith_KeepsSelfAuthoredBotPRDropsThirdParty(t *testing.T) {
 						"title": "my own PR with failing CI",
 						"url": "https://github.com/o/r/pull/4242",
 						"headRefName": "feat/x",
-						"author": {"login": "sybra-app[bot]", "type": "Bot"},
+						"author": {"login": "sybra-app", "type": "Bot"},
 						"repository": {"name": "r", "nameWithOwner": "o/r"},
 						"labels": {"nodes": []},
 						"commits": {"nodes": [{
