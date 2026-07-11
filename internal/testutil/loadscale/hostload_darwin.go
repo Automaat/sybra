@@ -1,17 +1,22 @@
-//go:build e2e && darwin
+//go:build darwin
 
-package sybra
+package loadscale
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// hostLoadPerCPU reads the 1-minute load average via `sysctl -n vm.loadavg`
+// HostLoadPerCPU reads the 1-minute load average via `sysctl -n vm.loadavg`
 // (darwin has no /proc/loadavg). Output looks like "{ 1.23 1.09 1.15 }".
-func hostLoadPerCPU() (float64, bool) {
-	out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
+func HostLoadPerCPU() (float64, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "sysctl", "-n", "vm.loadavg").Output()
 	if err != nil {
 		return 0, false
 	}
@@ -23,5 +28,5 @@ func hostLoadPerCPU() (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return loadPerCPU(load1)
+	return LoadPerCPU(load1)
 }

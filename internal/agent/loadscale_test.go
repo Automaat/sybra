@@ -1,20 +1,21 @@
 package agent
 
 import (
-	"math"
-	"runtime"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/testutil/loadscale"
 )
 
 // scaledDeadline extends base to absorb background load on the host running
 // the test - e.g. a pre-push `go test -race ./...` competing with Sybra's own
-// fleet of agent processes for CPU. Unlike the e2e suite's timeout scaling
-// (internal/sybra/e2e_workflow_test.go), this is unconditional: it is not
-// gated behind CI/GITHUB_ACTIONS, since local dev machines (darwin in
-// particular) see the same oversubscription CI does.
+// fleet of agent processes for CPU. Set SYBRA_AGENT_TIMEOUT_SCALE=1 to force
+// unscaled deadlines while debugging timing locally.
 func scaledDeadline(base time.Duration) time.Duration {
-	return time.Duration(int64(base) * hostOversubscriptionFactor())
+	return loadscale.ScaleDuration(base, hostOversubscriptionFactor())
 }
 
 // hostOversubscriptionCeiling caps scaledDeadline's multiplier so a runaway
@@ -40,24 +41,17 @@ func hostOversubscriptionFactor() int64 {
 }
 
 func hostOversubscriptionFactorResolve() int64 {
-	load, ok := hostLoadPerCPU()
-	if !ok || load <= 1 {
-		return 1
-	}
-	factor := int64(math.Ceil(load))
-	if factor > hostOversubscriptionCeiling {
-		return hostOversubscriptionCeiling
-	}
-	return factor
+	return hostOversubscriptionFactorResolveWith(
+		os.Getenv("SYBRA_AGENT_TIMEOUT_SCALE"),
+		func() int64 { return loadscale.HostOversubscriptionFactor(hostOversubscriptionCeiling) },
+	)
 }
 
-// loadPerCPU divides a 1-minute load average by CPU count. Shared by the
-// per-OS hostLoadPerCPU implementations (loadscale_linux_test.go,
-// loadscale_darwin_test.go).
-func loadPerCPU(load1 float64) (float64, bool) {
-	cpus := runtime.NumCPU()
-	if cpus <= 0 {
-		return 0, false
+func hostOversubscriptionFactorResolveWith(envValue string, hostFactor func() int64) int64 {
+	if v := strings.TrimSpace(envValue); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
 	}
-	return load1 / float64(cpus), true
+	return hostFactor()
 }
