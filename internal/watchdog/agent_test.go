@@ -474,6 +474,53 @@ func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
 	}
 }
 
+func TestReapIdleInteractive_ReleasesHumanRequiredTaskAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "interactive", StartedAt: time.Now(), LastEventAt: time.Now()}
+	w.reapIdleInteractive(ag, time.Now())
+
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
+func TestReapIdleInteractive_HardStopsHungTaskAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	now := time.Now()
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "interactive", StartedAt: now.Add(-time.Hour), LastEventAt: now.Add(-40 * time.Minute)}
+	w.reapIdleInteractive(ag, now)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.StatusReason != "watchdog hang: idle deadline exceeded" {
+		t.Fatalf("status_reason = %q, want watchdog idle deadline", got.StatusReason)
+	}
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
 // TestApplyVerdict_NudgeLiveTransportDeliversInPlace covers the live-transport
 // path: an agent with a working SendPromptToAgent (interactive/conversational)
 // is steered in place and left running — no stop, no persisted steer.

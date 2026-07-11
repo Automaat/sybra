@@ -129,6 +129,34 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	}
 }
 
+func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
+	tests := []task.Status{task.StatusHumanRequired, task.StatusDone, task.StatusCancelled}
+	for _, target := range tests {
+		t.Run(string(target), func(t *testing.T) {
+			a := setupApp(t)
+			var released []string
+			a.taskAgentReleaser = func(taskID string) { released = append(released, taskID) }
+			a.initStatusHook()
+
+			created, err := a.tasks.Create("release task agents", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(target)}); err != nil {
+				t.Fatal(err)
+			}
+
+			if len(released) != 1 || released[0] != created.ID {
+				t.Fatalf("released = %v, want [%s]", released, created.ID)
+			}
+		})
+	}
+}
+
 // TestApp_StatusHook_ReadyReview_DispatchesReviewWorkflow verifies that
 // initStatusHook dispatches simple-task-review when a task is manually
 // moved to ready-review. Before this fix the ready-review case was absent
