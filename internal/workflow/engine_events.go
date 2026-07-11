@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -782,21 +783,6 @@ func isResumableStepType(t StepType) bool {
 	}
 }
 
-func dispatchPriorityRank(status string) int {
-	switch status {
-	case "in-review", "ready-pr":
-		return 0
-	case "ready-review", "testing":
-		return 1
-	case "in-progress":
-		return 2
-	case "planning", "plan-review":
-		return 3
-	default:
-		return 4
-	}
-}
-
 func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
 	// Skip tasks whose step is currently being started. Interactive spawns
 	// (worktree creation, rebase, agent process start) take several seconds
@@ -877,7 +863,7 @@ func (e *Engine) ResumeStalled() {
 	}
 
 	slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-		return cmp.Compare(dispatchPriorityRank(a.Status), dispatchPriorityRank(b.Status))
+		return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
 	})
 
 	for i := range tasks {

@@ -541,6 +541,7 @@ func (m *Manager) markAgentDone(a *Agent) {
 		}
 		retention := m.deadAgentRetention
 		m.mu.Unlock()
+		m.signalQueueNudge()
 
 		// Evict the finished agent from the live registry so its output
 		// buffer and prompt do not accumulate forever on a long-lived
