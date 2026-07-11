@@ -916,6 +916,15 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 // recovery. Missing remote branches are a no-op.
 func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
 	remote := PushRemote(ctx, barePath)
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote."+remote+".url")
+	cmd.Dir = barePath
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("resolve remote %s config: %w", remote, err)
+	}
 	sha, err := remoteBranchHead(ctx, barePath, remote, branch)
 	if err != nil {
 		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
