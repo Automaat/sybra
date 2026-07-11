@@ -104,8 +104,8 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	if !containsPair(got, "--body", attribution.Append("body")) {
 		t.Errorf("missing body: %v", got)
 	}
-	if !containsPair(got, "--label", "monitor,bug") {
-		t.Errorf("missing label pair: %v", got)
+	if !containsLabelArgs(got, "monitor", "bug") {
+		t.Errorf("missing label args: %v", got)
 	}
 	if len(fe.callsMatching("issue", "comment")) != 0 {
 		t.Errorf("should not comment on dedup miss")
@@ -196,8 +196,8 @@ func TestGHIssueSink_EnsuresExtraLabelsBeforeCreate(t *testing.T) {
 	if len(creates) != 1 {
 		t.Fatalf("want 1 issue create call, got %d", len(creates))
 	}
-	if !containsPair(creates[0], "--label", "monitor,duplicate-candidate,bug") {
-		t.Errorf("wrong label list: %v", creates[0])
+	if !containsLabelArgs(creates[0], "monitor", "duplicate-candidate", "bug") {
+		t.Errorf("wrong label args: %v", creates[0])
 	}
 }
 
@@ -219,6 +219,24 @@ func TestGHIssueSink_ExtraLabelStartingWithDashIsNotParsedAsFlag(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a `--` separated label create call for -1-of-3, got %v", labelCreates)
+	}
+}
+
+func TestGHIssueSink_CreatePreservesCommaContainingLabelAsSingleArg(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"ops,infra"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsLabelArgs(creates[0], "monitor", "ops,infra") {
+		t.Fatalf("expected comma-containing label to stay a single argv token, got %v", creates[0])
 	}
 }
 
@@ -398,6 +416,15 @@ func containsPair(args []string, key, val string) bool {
 		}
 	}
 	return false
+}
+
+func containsLabelArgs(args []string, labels ...string) bool {
+	for _, label := range labels {
+		if !containsPair(args, "--label", label) {
+			return false
+		}
+	}
+	return true
 }
 
 // verify the fakeExecer actually satisfies the ghExecer interface at compile
