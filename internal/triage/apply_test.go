@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -133,6 +134,65 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 	if !slices.Contains(updated.Tags, umbrella.GatedTag) {
 		t.Errorf("umbrella-gated tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeInteractive)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// PromptLabService.fileScrubbedProposals sets these before any triage
+	// pass runs. Proposals may be todo or human-required, but their routing
+	// fields stay owned by PromptLabService until approval/rejection.
+	todo := task.StatusTodo
+	projectID := ""
+	tags := []string{promptlab.ProposalTag, "role:review"}
+	created, err = mgr.Update(created.ID, task.Update{Status: &todo, ProjectID: &projectID, Tags: &tags})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// A reclassify pass (e.g. an ungated `sybra-cli triage classify <id>`)
+	// returns a verdict from the classifier's controlled vocabulary, which
+	// knows nothing about the prompt-lab gating tags.
+	v := Verdict{
+		Title:       "chore(prompt): rewritten by classifier",
+		Description: "classifier-generated replacement body",
+		Tags:        []string{"backend", "docs", "medium", "chore"},
+		Size:        "medium",
+		Type:        "chore",
+		Mode:        "headless",
+		ProjectID:   "example-org/example-repo",
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypePet},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Equal(updated.Tags, created.Tags) {
+		t.Errorf("tags: got %v, want unchanged %v", updated.Tags, created.Tags)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want unchanged todo", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty (untouched)", updated.StatusReason)
+	}
+	if updated.AgentMode != task.AgentModeInteractive {
+		t.Errorf("agent_mode: got %q, want unchanged interactive", updated.AgentMode)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want unchanged empty", updated.ProjectID)
+	}
+	if updated.Title != created.Title {
+		t.Errorf("title: got %q, want unchanged %q", updated.Title, created.Title)
+	}
+	if updated.Body != created.Body {
+		t.Errorf("body: got %q, want unchanged %q", updated.Body, created.Body)
 	}
 }
 
