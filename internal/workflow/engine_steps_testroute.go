@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -39,6 +40,7 @@ const (
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
 	testFailuresHeading        = "## Test Failures"
+	acceptanceLedgerHeading    = "## Acceptance Ledger"
 	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
 	// is renamed to when a newer cycle supersedes it (see
 	// stripTestFailuresSections). Deliberately distinct from testFailuresHeading
@@ -446,6 +448,15 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 	}
 
 	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body, t)
+	if outcome == testOutcomeProductBug && fingerprint != "" {
+		report := currentTestFailureReport(output.Output, *body, wfExec, output.StepID)
+		if nextBody, changed := upsertAcceptanceLedger(*body, fingerprint, report); changed {
+			if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
+				return fmt.Errorf("update acceptance ledger: %w", err)
+			}
+			*body = nextBody
+		}
+	}
 	if output.AgentID != "" && outcome != "" {
 		if err := e.tasks.MarkAgentRunTestOutcome(taskID, output.AgentID, outcome, fingerprint); err != nil {
 			return fmt.Errorf("mark test outcome: %w", err)
@@ -592,6 +603,138 @@ func archiveTestFailuresSection(section string) string {
 		return resolvedTestFailuresHeading
 	}
 	return resolvedTestFailuresHeading + "\n" + lines[1]
+}
+
+func ledgerEntryMarker(fingerprint string) string {
+	return "<!-- sybra:ledger:" + fingerprint + " -->"
+}
+
+func capLedgerRepro(report string) string {
+	const (
+		maxLines = 40
+		maxBytes = 2 * 1024
+		suffix   = "\n\n[truncated for acceptance ledger]"
+	)
+
+	report = normalizeAcceptanceLedgerReport(report)
+	if report == "" {
+		return ""
+	}
+
+	lines := strings.Split(report, "\n")
+	truncated := false
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+	report = strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	if len(report) <= maxBytes && !truncated {
+		return report
+	}
+
+	limit := maxBytes
+	if limit > len(suffix) {
+		limit -= len(suffix)
+	}
+	if len(report) > limit {
+		report = trimUTF8ToBytes(report, limit)
+		truncated = true
+	}
+	report = strings.TrimRight(report, "\n")
+	if !truncated {
+		return report
+	}
+	if report == "" {
+		return strings.TrimSpace(suffix)
+	}
+	return report + suffix
+}
+
+func normalizeAcceptanceLedgerReport(report string) string {
+	report = strings.TrimSpace(stripTestVerdictMarkers(report))
+	if report == "" {
+		return ""
+	}
+
+	lines := strings.Split(report, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if i == 0 && isTestFailuresHeading(trimmed) {
+			lines[i] = "Failure repro snapshot"
+			continue
+		}
+		switch trimmed {
+		case testVerdictPass, testVerdictFail:
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + "TEST_VERDICT omitted in ledger snapshot"
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func trimUTF8ToBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	s = s[:limit]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		_, size := utf8.DecodeLastRuneInString(s)
+		if size <= 1 {
+			s = s[:len(s)-1]
+			continue
+		}
+		s = s[:len(s)-size]
+	}
+	return s
+}
+
+func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
+	if fingerprint == "" || report == "" {
+		return body, false
+	}
+	marker := ledgerEntryMarker(fingerprint)
+	if strings.Contains(body, marker) {
+		return body, false
+	}
+
+	entry := strings.TrimSpace(strings.Join([]string{
+		"### Ledger entry " + fingerprint,
+		marker,
+		quoteMarkdownBlock(capLedgerRepro(report)),
+	}, "\n\n"))
+	if entry == "" {
+		return body, false
+	}
+
+	if _, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading); ok {
+		before := strings.TrimRight(body[:end], "\n")
+		after := strings.TrimLeft(body[end:], "\n")
+		nextBody = appendRawBody(before, entry)
+		if after != "" {
+			nextBody = strings.TrimRight(nextBody, "\n") + "\n\n" + after
+		}
+		return nextBody, true
+	}
+
+	return appendRawBody(body, acceptanceLedgerHeading+"\n\n"+entry), true
+}
+
+func quoteMarkdownBlock(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			lines[i] = ">"
+			continue
+		}
+		lines[i] = "> " + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func plainTestFailureReport(output string) string {
