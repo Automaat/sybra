@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -197,6 +198,7 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	wtBranch := branchNameForTask(t)
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
+	wtBranch = m.resolveTaskBranch(ctx, t, proj.ClonePath, wtPath, wtBranch)
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		callPhase(onPhase, "Checking worktree…")
 		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
@@ -269,6 +271,40 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {
+	other, ok := m.branchCollidesWithOtherWorktree(ctx, clonePath, wtBranch, wtPath)
+	if !ok {
+		return wtBranch
+	}
+	unique := branchPrefixForTask(t) + "/" + t.DirName()
+	if unique == wtBranch {
+		return wtBranch
+	}
+	m.logger.Warn("worktree.branch-collision.rederive",
+		"task_id", t.ID, "stored", wtBranch, "other", other, "rederived", unique)
+	if _, uErr := m.tasks.Update(t.ID, task.Update{Branch: task.Ptr(unique)}); uErr != nil {
+		m.logger.Warn("worktree.branch-collision.persist", "task_id", t.ID, "err", uErr)
+	}
+	return unique
+}
+
+func (m *Manager) branchCollidesWithOtherWorktree(ctx context.Context, clonePath, branch, wtPath string) (string, bool) {
+	if branch == "" {
+		return "", false
+	}
+	wts, err := project.ListWorktrees(ctx, clonePath)
+	if err != nil {
+		return "", false
+	}
+	want := filepath.Clean(wtPath)
+	for _, w := range wts {
+		if w.Branch == branch && filepath.Clean(w.Path) != want {
+			return w.Path, true
+		}
+	}
+	return "", false
 }
 
 func (m *Manager) runPrepareSetup(ctx context.Context, taskID, wtPath string, proj project.Project, label string, onPhase func(string)) error {
@@ -482,6 +518,7 @@ func (m *Manager) PrepareForChat(ctx context.Context, t task.Task, onPhase func(
 	wtBranch := branchNameForTask(t)
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
+	wtBranch = m.resolveTaskBranch(ctx, t, proj.ClonePath, wtPath, wtBranch)
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
 		if err != nil {

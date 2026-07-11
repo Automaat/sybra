@@ -808,6 +808,58 @@ func TestHasMiseConfig(t *testing.T) {
 // errors (not silent logs). This is the regression guard for the aa9ba123
 // class of failure where agents start on a worktree missing required
 // toolchain.
+func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+	ctx := context.Background()
+
+	mk := func(title string) task.Task {
+		tk, err := h.tasks.Store().Create(title, "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	t1 := mk("fix: first task")
+	if _, err := h.m.PrepareForTask(ctx, t1, nil); err != nil {
+		t.Fatalf("PrepareForTask t1: %v", err)
+	}
+	t1, err := h.tasks.Get(t1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if t1.Branch == "" {
+		t.Fatal("t1 branch not set after prepare")
+	}
+
+	t2 := mk("fix: second task")
+	if _, err := h.tasks.Update(t2.ID, task.Update{Branch: task.Ptr(t1.Branch)}); err != nil {
+		t.Fatal(err)
+	}
+	t2, err = h.tasks.Get(t2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.m.PrepareForTask(ctx, t2, nil); err != nil {
+		t.Fatalf("PrepareForTask t2 with colliding branch: %v", err)
+	}
+	t2, err = h.tasks.Get(t2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if t2.Branch == t1.Branch {
+		t.Fatalf("t2 branch %q still collides with t1 — should have re-derived a unique branch", t2.Branch)
+	}
+}
+
 func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	h := prepareHarness(t, []string{"touch bootstrap-marker"}, 30*time.Second)
 
