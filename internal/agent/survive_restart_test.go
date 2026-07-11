@@ -351,7 +351,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	}
 
 	// Wait for the helper to exit and completion to fire.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for !completed.Load() {
 		select {
 		case <-deadline:
@@ -711,7 +711,7 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 
 func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(scaledDeadline(5 * time.Second))
 	for {
 		recs, err := m.reg.List()
 		if err != nil {
@@ -733,7 +733,7 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 
 func waitForRegistryEmpty(t *testing.T, m *Manager, timeout time.Duration) {
 	t.Helper()
-	deadline := time.After(timeout)
+	deadline := time.After(scaledDeadline(timeout))
 	for {
 		list, err := m.reg.List()
 		if err != nil {
@@ -757,7 +757,7 @@ func waitForAgentDone(t *testing.T, ag *Agent, timeout time.Duration) {
 	}
 	select {
 	case <-ag.done:
-	case <-time.After(timeout):
+	case <-time.After(scaledDeadline(timeout)):
 		t.Fatalf("timed out waiting for agent %s to stop", ag.ID)
 	}
 }
