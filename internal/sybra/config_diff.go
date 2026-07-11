@@ -32,6 +32,12 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 	if old.Agent.MaxTurns != next.Agent.MaxTurns {
 		hot = append(hot, "agent.max_turns")
 	}
+	if old.Agent.MaxCheckpoints != next.Agent.MaxCheckpoints {
+		hot = append(hot, "agent.max_checkpoints")
+	}
+	if old.Agent.CheckpointOnTurnCeiling != next.Agent.CheckpointOnTurnCeiling {
+		hot = append(hot, "agent.checkpoint_on_turn_ceiling")
+	}
 	if old.Agent.TurnCostFraction != next.Agent.TurnCostFraction {
 		hot = append(hot, "agent.turn_cost_fraction")
 	}

@@ -388,4 +388,11 @@ type StepOutput struct {
 	Output   string
 	AgentID  string
 	Provider string
+	// TerminalStatus/Reason stop the workflow immediately after recording this
+	// step output instead of following generic retry/next-edge handling. Used
+	// for non-retryable failures like checkpoint_failed, where Sybra must park
+	// human-required without redispatching or running downstream steps on
+	// phantom durable state.
+	TerminalStatus string
+	TerminalReason string
 }

@@ -613,6 +613,118 @@ func TestCurrentTestFailuresTemplateFunc(t *testing.T) {
 	}
 }
 
+func TestUpsertAcceptanceLedger(t *testing.T) {
+	t.Parallel()
+
+	productBugReport := strings.Join([]string{
+		testFailuresHeading,
+		"",
+		"Classification: " + testOutcomeProductBug,
+		"",
+		"Command run:",
+		"```sh",
+		"go test ./internal/workflow -run TestThing",
+		"```",
+		"",
+		"Output:",
+		"```text",
+		"boom",
+		"```",
+		"",
+		"Expected: the task says the workflow must keep prior acceptance state.",
+		"",
+		"Code evidence:",
+		"```text",
+		"internal/workflow/engine_steps_testroute.go:442",
+		"```",
+	}, "\n")
+
+	t.Run("accumulates distinct entries", func(t *testing.T) {
+		t.Parallel()
+
+		body := "## Problem\nTrack acceptance over retries."
+		got, changed := upsertAcceptanceLedger(body, "fp-1", productBugReport)
+		if !changed {
+			t.Fatal("changed = false, want true on first insert")
+		}
+		if strings.Count(got, acceptanceLedgerHeading) != 1 {
+			t.Fatalf("body = %q, want one acceptance ledger heading", got)
+		}
+		if strings.Count(got, ledgerEntryMarker("fp-1")) != 1 {
+			t.Fatalf("body = %q, want marker for fp-1", got)
+		}
+
+		got, changed = upsertAcceptanceLedger(got, "fp-2", strings.ReplaceAll(productBugReport, "boom", "kaboom"))
+		if !changed {
+			t.Fatal("changed = false, want true for a distinct fingerprint")
+		}
+		if strings.Count(got, "### Ledger entry ") != 2 {
+			t.Fatalf("body = %q, want two ledger entries", got)
+		}
+		if strings.Count(got, acceptanceLedgerHeading) != 1 {
+			t.Fatalf("body = %q, want a single acceptance ledger section", got)
+		}
+	})
+
+	t.Run("dedups fingerprint despite wording drift", func(t *testing.T) {
+		t.Parallel()
+
+		body, changed := upsertAcceptanceLedger("", "same-fp", productBugReport)
+		if !changed {
+			t.Fatal("first insert changed = false, want true")
+		}
+		wordingDrift := strings.ReplaceAll(productBugReport,
+			"Expected: the task says the workflow must keep prior acceptance state.",
+			"Expected behaviour per task: prior acceptance failures remain satisfied together.")
+		got, changed := upsertAcceptanceLedger(body, "same-fp", wordingDrift)
+		if changed {
+			t.Fatalf("changed = true, want false for same fingerprint; body:\n%s", got)
+		}
+		if strings.Count(got, ledgerEntryMarker("same-fp")) != 1 {
+			t.Fatalf("body = %q, want one marker for same-fp", got)
+		}
+	})
+
+	t.Run("non product bug outcomes do not append", func(t *testing.T) {
+		t.Parallel()
+
+		e, tasks := makeTestEngine(t)
+		taskID := "t-ledger-non-product-bug"
+		initialBody := "## Problem\nOnly confirmed product bugs should accumulate."
+		tasks.Put(TaskInfo{ID: taskID, Body: initialBody})
+
+		wfExec := &Execution{Variables: map[string]string{}}
+		prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, initialBody)
+		infraReport := strings.Join([]string{
+			testFailuresHeading,
+			"",
+			"Classification: " + testOutcomeInfraFailure,
+			"",
+			"Command run:",
+			"```sh",
+			"curl http://127.0.0.1:9999/health",
+			"```",
+			"",
+			"Output:",
+			"```text",
+			"connection refused",
+			"```",
+		}, "\n")
+		output := StepOutput{
+			StepID: testVerdictSourceStep,
+			Status: "completed",
+			Output: `{"verdict":"FAIL","outcome":"infra_failure","failures_markdown":` + strconv.Quote(infraReport) + `}`,
+		}
+		body := initialBody
+		if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+			t.Fatalf("prepareTestStepCompletion: %v", err)
+		}
+		if strings.Contains(body, acceptanceLedgerHeading) {
+			t.Fatalf("body = %q, want no acceptance ledger for infra_failure", body)
+		}
+	})
+}
+
 func TestHasReportLinePrefixNormalizesPrefixes(t *testing.T) {
 	t.Parallel()
 
@@ -3028,6 +3140,109 @@ func TestRouteTestResult_DuplicateFailureWithoutInterveningFixDoesNotEscalate(t 
 	ti, _ := tasks.GetTask("t-dup-no-fix")
 	if ti.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress", ti.Status)
+	}
+}
+
+func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
+	t.Parallel()
+
+	e, tasks := makeTestEngine(t)
+	taskID := "t-ledger-coexists"
+	initialBody := "## Problem\nKeep all prior product-bug acceptance criteria green."
+	tasks.Put(TaskInfo{ID: taskID, Body: initialBody})
+
+	buildOutput := func(report string) StepOutput {
+		return StepOutput{
+			StepID: testVerdictSourceStep,
+			Status: "completed",
+			Output: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`,
+		}
+	}
+
+	report1 := strings.Join([]string{
+		testFailuresHeading,
+		"",
+		"Classification: " + testOutcomeProductBug,
+		"",
+		"Command run:",
+		"```sh",
+		"go test ./internal/workflow -run TestAcceptanceProbe",
+		"```",
+		"",
+		"Output:",
+		"```text",
+		"acceptance ledger regression: threshold 3 still passes on one event",
+		"```",
+		"",
+		"Expected: the task requires cumulative acceptance across retries.",
+		"",
+		"Code evidence:",
+		"```text",
+		"internal/workflow/engine_steps_testroute.go:442",
+		"```",
+	}, "\n")
+	report2 := strings.Join([]string{
+		testFailuresHeading,
+		"",
+		"Classification: " + testOutcomeProductBug,
+		"",
+		"Command run:",
+		"```sh",
+		"go test ./internal/workflow -run TestAcceptanceProbe",
+		"```",
+		"",
+		"Output:",
+		"```text",
+		"acceptance ledger regression: threshold 3 still passes on one event",
+		"```",
+		"",
+		"Expected behaviour per task: every prior defect must stay fixed at once.",
+		"",
+		"Code evidence:",
+		"```text",
+		"internal/workflow/engine_steps_testroute.go:442",
+		"```",
+	}, "\n")
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	body := initialBody
+
+	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
+	output := buildOutput(report1)
+	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+		t.Fatalf("first prepareTestStepCompletion: %v", err)
+	}
+	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "threshold 3 still passes on one event") {
+		t.Fatalf("currentTestFailures = %q, want live report preserved in body:\n%s", current, body)
+	}
+	if strings.Count(body, acceptanceLedgerHeading) != 1 {
+		t.Fatalf("body = %q, want one acceptance ledger section", body)
+	}
+	fp1 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
+	if fp1 == "" {
+		t.Fatalf("wfExec fingerprint empty after first completion; body:\n%s", body)
+	}
+	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("body = %q, want one ledger marker for %s", body, fp1)
+	}
+
+	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
+	output = buildOutput(report2)
+	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+		t.Fatalf("second prepareTestStepCompletion: %v", err)
+	}
+	fp2 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
+	if fp2 != fp1 {
+		t.Fatalf("fingerprint drifted across wording-only change: first=%q second=%q", fp1, fp2)
+	}
+	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
+		t.Fatalf("currentTestFailures = %q, want latest live report preserved in body:\n%s", current, body)
+	}
+	if strings.Count(body, acceptanceLedgerHeading) != 1 {
+		t.Fatalf("body = %q, want one acceptance ledger section after wording-drift rerun", body)
+	}
+	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("body = %q, want deduped acceptance ledger entry for %s", body, fp1)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // modelNameRe restricts the agent model identifier to characters safe to embed
@@ -21,15 +22,16 @@ var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
-	mu         sync.RWMutex
-	cfg        *config.Config
-	logLevel   *slog.LevelVar
-	notifier   *notification.Emitter
-	agents     *agent.Manager
-	limits     *limits.Store
-	logger     *slog.Logger
-	policy     func() limits.Policy
-	reloadHook func() // called after todoist config changes
+	mu             sync.RWMutex
+	cfg            *config.Config
+	logLevel       *slog.LevelVar
+	notifier       *notification.Emitter
+	agents         *agent.Manager
+	limits         *limits.Store
+	workflowEngine *workflow.Engine
+	logger         *slog.Logger
+	policy         func() limits.Policy
+	reloadHook     func() // called after todoist config changes
 }
 
 // GetSettings returns the current app settings for the config UI.
@@ -217,11 +219,16 @@ func (s *ConfigService) applyFromConfig(next config.Config) error {
 	}
 	if s.agents != nil {
 		s.agents.SetGuardrails(agent.Guardrails{
-			MaxCostUSD:       next.Agent.MaxCostUSD,
-			MaxTurns:         next.Agent.MaxTurns,
-			TurnCostFraction: next.Agent.TurnCostFraction,
-			TurnMultiplier:   next.Agent.TurnMultiplier,
+			MaxCostUSD:              next.Agent.MaxCostUSD,
+			MaxTurns:                next.Agent.MaxTurns,
+			MaxCheckpoints:          next.MaxCheckpoints(),
+			TurnCostFraction:        next.Agent.TurnCostFraction,
+			TurnMultiplier:          next.Agent.TurnMultiplier,
+			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
 		})
+	}
+	if s.workflowEngine != nil {
+		s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
 	}
 	if s.logLevel != nil {
 		s.logLevel.Set(s.cfg.Logging.SlogLevel())

@@ -104,6 +104,8 @@ couldn't catch).
 | `agent.research_machine_dir` | `string` |  |  |
 | `agent.max_cost_usd` | `float64` | `5` |  |
 | `agent.max_turns` | `int` | `150` |  |
+| `agent.max_checkpoints` | `int` | `3` | MaxCheckpoints bounds how many times a single workflow step may checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means use DefaultMaxCheckpoints (3). |
+| `agent.checkpoint_on_turn_ceiling` | `*bool` | _(nil)_ | CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for a checkpoint-and-handoff to a fresh run when an eligible code-author headless run hits its per-run turn ceiling. nil means not configured (defaults to true). Set false to restore the legacy in-process auto-continue behavior with no code revert. |
 | `agent.max_task_cost_usd` | `float64` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike MaxCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
 | `agent.turn_cost_fraction` | `float64` |  | TurnCostFraction is the fraction of MaxCostUSD below which a turns escalation is auto-continued. Default 0.8 when unset. |
 | `agent.turn_multiplier` | `float64` |  | TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset. |

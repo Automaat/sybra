@@ -89,6 +89,9 @@ func TestDiffConfig_GuardrailsHot(t *testing.T) {
 	next := *old
 	next.Agent.MaxCostUSD = 10.0
 	next.Agent.MaxTurns = 200
+	next.Agent.MaxCheckpoints = 7
+	disabled := false
+	next.Agent.CheckpointOnTurnCeiling = &disabled
 
 	hot, _ := diffConfig(*old, next)
 
@@ -97,6 +100,12 @@ func TestDiffConfig_GuardrailsHot(t *testing.T) {
 	}
 	if !slices.Contains(hot, "agent.max_turns") {
 		t.Errorf("expected agent.max_turns in hot, got %v", hot)
+	}
+	if !slices.Contains(hot, "agent.max_checkpoints") {
+		t.Errorf("expected agent.max_checkpoints in hot, got %v", hot)
+	}
+	if !slices.Contains(hot, "agent.checkpoint_on_turn_ceiling") {
+		t.Errorf("expected agent.checkpoint_on_turn_ceiling in hot, got %v", hot)
 	}
 }
 

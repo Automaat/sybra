@@ -38,6 +38,10 @@ var ErrMaxConcurrentReached = errors.New("max concurrent agents reached")
 type Guardrails struct {
 	MaxCostUSD float64
 	MaxTurns   int
+	// MaxCheckpoints bounds how many checkpoint handoffs a single workflow step
+	// may spend before the workflow parks human-required. Stored here so
+	// guardrail reads reflect live config reloads in tests/UI snapshots.
+	MaxCheckpoints int
 	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
 	// escalation is auto-continued without human approval. Default 0.8.
 	// Only effective when MaxCostUSD > 0.
@@ -45,6 +49,9 @@ type Guardrails struct {
 	// TurnMultiplier scales the turn limit on each auto-continuation so
 	// the agent gets progressively more turns. Default 2.
 	TurnMultiplier float64
+	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
+	// a checkpoint-and-handoff on eligible code-author headless runs.
+	CheckpointOnTurnCeiling bool
 }
 
 type Manager struct {
@@ -664,6 +671,16 @@ func (m *Manager) canAutoContinueTurns(a *Agent) bool {
 		fraction = 0.8
 	}
 	return a.GetCostUSD() < maxCost*fraction
+}
+
+func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
+	if !RoleFromName(a.Name).AuthorsCode() {
+		return false
+	}
+	m.mu.RLock()
+	enabled := m.guardrails.CheckpointOnTurnCeiling
+	m.mu.RUnlock()
+	return enabled
 }
 
 // effectiveTurnMultiplier returns the configured TurnMultiplier, defaulting to 2.
