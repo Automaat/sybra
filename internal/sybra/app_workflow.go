@@ -589,9 +589,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	// PrepareForFix) bypasses the orchestrator's worktree path and uses the
 	// caller-provided dir directly.
 	if (role == "" || role == string(agent.RoleImplementation)) && dir == "" {
+		// agentOrch.StartAgentWithAssignment already translates
+		// agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy at the
+		// source, so every caller (this adapter, recovery.Recovery) sees the
+		// same benign sentinel without needing its own wrap here.
 		ag, baselineRef, err := a.agentOrch.StartAgentWithAssignment(taskID, mode, prompt, false, oneShot, cleanRetryRef, assignment)
 		if err != nil {
-			return "", "", "", translatePoolBusy(err)
+			return "", "", "", err
 		}
 		return ag.ID, "", baselineRef, nil
 	}
