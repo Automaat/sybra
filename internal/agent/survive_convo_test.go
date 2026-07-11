@@ -597,8 +597,11 @@ func TestReattachConvo_SameProcessHandoffSkipsOrdinaryFinalization(t *testing.T)
 	a.SetLogPath(logPath)
 	// Mirrors real usage: regateBeforeClaudeTurn (called from advanceClaudeTurn
 	// before beginConvoHandoff/SetPendingHandoff) already flips a.Provider to
-	// the peer before the handoff is recorded.
+	// the peer and clears the old provider's session state before the handoff
+	// is recorded.
 	a.SetProviderAndModel("copilot", "")
+	a.SetSessionID("")
+	a.SetSessionFilePath("")
 	a.SetPendingHandoff(RunConfig{TaskID: "t-hoff1", Provider: "copilot"}, "continue-on-peer")
 
 	ctx, cancel := context.WithCancel(context.Background())

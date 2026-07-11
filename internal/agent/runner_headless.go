@@ -48,11 +48,19 @@ var errBackgroundTaskLiveAtExit = errors.New("agent: process exited while a back
 
 // checkLiveBackgroundTasksAtExit returns errBackgroundTaskLiveAtExit if the
 // agent's last reported CLI state still shows a live background bash task.
-// Called at every point a headless attempt is about to report a clean exit,
-// so the guardrail described on backgroundTaskGuardrail is enforced even
-// when the provider ignores the prompt instruction and ends its turn with a
-// task still running.
+// Called at every point a one-shot attempt (headless, or interactive OneShot)
+// is about to report a clean exit, so the guardrail described on
+// backgroundTaskGuardrail is enforced even when the provider ignores the
+// prompt instruction and ends its turn with a task still running.
+//
+// An intentional StopAgent is exempt: stopping a session (e.g. closing stdin
+// on a regular interactive run) produces a clean process exit, but that is a
+// deliberate teardown, not a runaway process leaving the worktree corrupt, so
+// it must not be mislabeled as a failed run.
 func checkLiveBackgroundTasksAtExit(m *Manager, a *Agent) error {
+	if a.WasStopped() {
+		return nil
+	}
 	if !a.HasBackgroundTasks() {
 		return nil
 	}
