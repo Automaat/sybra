@@ -167,6 +167,81 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 }
 
+// TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel pins the fix for
+// the lost_agent false-positive on task 3e2f0953: recovery.Recovery calls
+// StartPRFixAgent directly (internal/recovery/stale.go), bypassing the
+// workflow-engine agentAdapter that previously was the only caller
+// translating agent.ErrMaxConcurrentReached into workflow.ErrAgentPoolBusy.
+// Without translating at the source, a benign, self-healing "pool full"
+// condition reached workflow.ClassifyAgentStartError as a raw error it
+// doesn't recognize, which fell through to the generic "agent start failed"
+// branch and wrote a scary, non-suppressed status_reason for a task that was
+// only waiting for a slot to free — not one whose agent actually died.
+func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: 1},
+		SandboxHome: func(string) (string, error) {
+			return t.TempDir(), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+
+	// TaskTypeResearch + a real ResearchMachineDir skips worktree/project
+	// setup entirely (see ResolveExecution), so the dispatch reaches
+	// o.agents.Run directly without any git/project plumbing. Disabling
+	// require_permissions avoids the "needs a running approval server"
+	// error a gated headless run would hit first.
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+		},
+	})
+
+	first, err := tm.Create("occupies the only pool slot", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create (first): %v", err)
+	}
+	if _, err := tm.Update(first.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
+		t.Fatalf("Update (first): %v", err)
+	}
+	if err := o.StartPRFixAgent(first.ID); err != nil {
+		t.Fatalf("StartPRFixAgent(first) unexpected err: %v", err)
+	}
+
+	second, err := tm.Create("hits the concurrency cap", "", "headless")
+	if err != nil {
+		t.Fatalf("task Create (second): %v", err)
+	}
+	if _, err := tm.Update(second.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
+		t.Fatalf("Update (second): %v", err)
+	}
+
+	err = o.StartPRFixAgent(second.ID)
+	if err == nil {
+		t.Fatal("expected pool-busy error once the single slot is saturated, got nil")
+	}
+	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	}
+	reason, permanent := workflow.ClassifyAgentStartError(err)
+	if reason != "" {
+		t.Errorf("reason = %q, want suppressed (empty) for a benign, self-healing pool-busy condition", reason)
+	}
+	if permanent {
+		t.Error("pool-busy must never classify as permanent — a slot frees on its own")
+	}
+}
+
 // TestPickImplementationResumeSession pins two regression guards on the
 // resume-session walker:
 //
