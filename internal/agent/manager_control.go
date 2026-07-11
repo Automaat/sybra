@@ -90,6 +90,30 @@ func (m *Manager) FindAllRunningAgentsForTask(taskID string, role Role) []*Agent
 	return result
 }
 
+// StopAgents stops the provided agents without waiting for their goroutines to
+// exit. Callers that need deterministic teardown (task delete/worktree
+// cleanup) should use KillAgentsForTask instead.
+func (m *Manager) StopAgents(agents []*Agent) {
+	for _, a := range agents {
+		if a == nil {
+			continue
+		}
+		m.logger.Info("agent.stop-for-task", "agent_id", a.ID, "task_id", a.TaskID)
+		// Detached children do not observe stdin EOF or parent ctx cancel, so
+		// signal them directly before canceling to actually free the pool slot.
+		a.MarkStopped()
+		if a.isDetached() {
+			m.signalKill(a)
+		}
+		if a.cancel != nil {
+			a.cancel()
+		}
+		a.SetState(StateStopped)
+		a.convo.closeStdinPipe()
+		m.emit(events.AgentState(a.ID), a)
+	}
+}
+
 // KillAgentsForTask stops all running agents for the given task ID and waits
 // for their goroutines to exit (up to timeout). Safe to call from DeleteTask
 // before worktree cleanup.
@@ -103,23 +127,7 @@ func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
 	}
 	m.mu.RUnlock()
 
-	for _, a := range targets {
-		m.logger.Info("agent.kill-for-task", "agent_id", a.ID, "task_id", taskID)
-		// A detached subprocess cannot be killed via ctx-cancel or stdin EOF
-		// (own session, never-EOF FIFO stdin). Mark it stopped so its tailer
-		// finalizes, and signal it by PID so the process actually dies before
-		// the caller cleans up the worktree it is using.
-		if a.isDetached() {
-			a.MarkStopped()
-			m.signalKill(a)
-		}
-		if a.cancel != nil {
-			a.cancel()
-		}
-		a.SetState(StateStopped)
-		a.convo.closeStdinPipe()
-		m.emit(events.AgentState(a.ID), a)
-	}
+	m.StopAgents(targets)
 
 	deadline := time.After(timeout)
 	for _, a := range targets {
