@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +38,9 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 			continue
 		}
 		if r.Agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		if r.Agents.IsDispatching(t.ID) {
 			continue
 		}
 		// Don't re-dispatch to the same provider while it is rate-limited; do
@@ -98,16 +102,22 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		// onAgentComplete.
 		oneShot := false
 		if t.AgentMode != "headless" {
-			lr := lastAgentRun(&t)
-			if lr == nil || !lr.OneShot {
-				r.recoverStaleInteractive(&t)
+			var handled bool
+			oneShot, handled = r.resolveInteractiveStaleRestart(&t)
+			if handled {
 				continue
 			}
-			oneShot = true
-			r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
 		}
 		if t.ProjectID == "" {
+			err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
+			// Surface off the scan loop, matching the other two
+			// surfaceStartFailure call sites in this function, so a
+			// file-backed Tasks.Update never blocks the fleet-wide sweep.
+			taskID, currentStatus := t.ID, t.Status
+			r.WG.Go(func() {
+				r.surfaceStartFailure(taskID, currentStatus, err)
+			})
 			continue
 		}
 		r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
@@ -240,6 +250,40 @@ func (r *Recovery) surfaceStartFailure(taskID string, currentStatus task.Status,
 	}
 }
 
+// resolveInteractiveStaleRestart decides how a stale interactive task's
+// last agent run should be handled: recovered in place via
+// recoverStaleInteractive (handled=true, caller should skip re-dispatch), or
+// fallen through to the normal restart/escalation path below with the
+// resolved oneShot flag.
+func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handled bool) {
+	lr := lastAgentRun(t)
+	switch {
+	case lr == nil:
+		// No recorded run: recoverStaleInteractive would no-op on
+		// lr == nil, silently skipping this task forever. Fall
+		// through to the normal dispatch path below so a stale
+		// interactive task with zero runs actually gets restarted.
+		r.Logger.Info("restart-stale.no-run-fallthrough", "task_id", t.ID)
+		return false, false
+	case lr.Mode != "interactive":
+		// Last run's mode doesn't match the task's current
+		// interactive AgentMode (e.g. flipped by selfmonitor's
+		// flipAgentMode after a headless run). recoverStaleInteractive
+		// would no-op on the mode mismatch, silently leaving the task
+		// stuck in-progress forever. Fall through to the normal
+		// restart path instead.
+		r.Logger.Info("restart-stale.mode-mismatch-fallthrough",
+			"task_id", t.ID, "last_run_mode", lr.Mode)
+		return false, false
+	case !lr.OneShot:
+		r.recoverStaleInteractive(t)
+		return false, true
+	default:
+		r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
+		return true, false
+	}
+}
+
 // recoverStaleInteractive handles interactive in-progress tasks whose
 // agent died or disappeared across restarts. Marks the last agent run as
 // stopped (if still claiming running) and drives the workflow engine to
@@ -295,10 +339,18 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 }
 
 // recoverCompletedHeadlessRun advances the workflow for a headless agent whose
-// run completed successfully (state: stopped, non-empty result) but whose step
-// was never recorded in the workflow history. This bridges the gap when the
-// HandleAgentComplete callback is lost across an app restart — e.g. when the
-// agent ran before the survival registry was active.
+// run reached a definitive terminal outcome (state: stopped, Outcome
+// recorded) but whose step was never recorded in the workflow history. This
+// bridges the gap when the HandleAgentComplete callback is lost across an app
+// restart — e.g. when the agent ran before the survival registry was active.
+//
+// Recovery keys strictly on the persisted AgentRun.Outcome rather than
+// inferring success from Result's presence: State is "stopped" for both
+// successful and failed runs, and Result is truncated to maxResultLen, so
+// neither can tell success from failure. An empty Outcome (run never reached
+// a definitive result — e.g. it was a stall eligible for retry, or predates
+// this field) is not recoverable here; it falls through to the generic
+// stale-restart path below instead of being guessed at.
 //
 // Guards: only fires when the workflow is non-terminal, the current step has no
 // history record (not yet processed), and no agent is currently running.
@@ -310,7 +362,10 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if lr == nil {
 		return false
 	}
-	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) || lr.Result == "" {
+	if lr.Mode != "headless" || lr.State != string(agent.StateStopped) {
+		return false
+	}
+	if lr.Outcome != task.RunOutcomeSuccess && lr.Outcome != task.RunOutcomeFailure {
 		return false
 	}
 	if r.WorkflowEngine == nil || t.Workflow == nil {
@@ -330,8 +385,10 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return false
 	}
+	success := lr.Outcome == task.RunOutcomeSuccess
 	r.Logger.Info("recover-completed-headless-run",
-		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep)
+		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep,
+		"outcome", lr.Outcome)
 	// Set Recovered so downstream steps know .Prev.Output is from a stored
 	// result, not a freshly produced one — same contract as recoverStaleInteractive.
 	wf := t.Workflow
@@ -343,7 +400,7 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	r.WorkflowEngine.HandleAgentComplete(t.ID, workflow.AgentCompletion{
 		AgentID:  lr.AgentID,
 		Provider: lr.Provider,
-		Success:  true,
+		Success:  success,
 		Result:   lr.Result,
 	})
 	return true

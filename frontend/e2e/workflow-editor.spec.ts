@@ -2,9 +2,10 @@ import { test, expect, type Page } from '@playwright/test'
 import { copyFile, unlink, readFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+import { isolatedSybraHome } from './lib/sybra-home'
+
+const SYBRA_HOME = isolatedSybraHome()
 const WORKFLOWS_DIR = join(SYBRA_HOME, 'workflows')
 const FIXTURE_ID = 'wf-editor-e2e'
 const FIXTURE_DEST = join(WORKFLOWS_DIR, `${FIXTURE_ID}.yaml`)

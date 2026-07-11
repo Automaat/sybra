@@ -1,6 +1,7 @@
 package task
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -46,6 +47,37 @@ func TestCommentStore_AddAndList(t *testing.T) {
 	}
 	if comments[0].ID != c.ID {
 		t.Errorf("ID mismatch: got %q, want %q", comments[0].ID, c.ID)
+	}
+}
+
+// TestCommentStore_ConcurrentAddsDontDropWrites exercises the List→append→
+// write race directly: without a per-task lock around the whole critical
+// section, two goroutines can both List the same (empty) baseline and each
+// write back a single-comment slice, so the loser's Add is silently
+// discarded. With the lock, every Add lands.
+func TestCommentStore_ConcurrentAddsDontDropWrites(t *testing.T) {
+	t.Parallel()
+	s := NewCommentStore(t.TempDir())
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			if _, err := s.Add("task-race", i, "comment"); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	comments, err := s.List("task-race")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(comments) != n {
+		t.Errorf("got %d comments, want %d (a racing Add dropped an update)", len(comments), n)
 	}
 }
 
@@ -136,37 +168,5 @@ func TestCommentStore_Delete_NotFound(t *testing.T) {
 	s := NewCommentStore(t.TempDir())
 	if err := s.Delete("task-1", "nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent comment")
-	}
-}
-
-func TestCommentStore_DeleteAll(t *testing.T) {
-	t.Parallel()
-	s := NewCommentStore(t.TempDir())
-
-	if _, err := s.Add("task-1", 1, "a"); err != nil {
-		t.Fatalf("Add a: %v", err)
-	}
-	if _, err := s.Add("task-1", 2, "b"); err != nil {
-		t.Fatalf("Add b: %v", err)
-	}
-
-	if err := s.DeleteAll("task-1"); err != nil {
-		t.Fatalf("DeleteAll: %v", err)
-	}
-
-	comments, err := s.List("task-1")
-	if err != nil {
-		t.Fatalf("List after DeleteAll: %v", err)
-	}
-	if len(comments) != 0 {
-		t.Errorf("expected empty, got %d comments", len(comments))
-	}
-}
-
-func TestCommentStore_DeleteAll_NoFile(t *testing.T) {
-	t.Parallel()
-	s := NewCommentStore(t.TempDir())
-	if err := s.DeleteAll("task-1"); err != nil {
-		t.Fatalf("DeleteAll with no file: %v", err)
 	}
 }

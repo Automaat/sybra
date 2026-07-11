@@ -32,6 +32,36 @@ func TestRole_AgentName(t *testing.T) {
 	}
 }
 
+func TestRole_DefaultReasoningEffort(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role Role
+		want string
+	}{
+		{RoleTriage, "low"},
+		{RoleEval, "low"},
+		{RolePlanCritic, "low"},
+		{RoleHumanReview, "low"},
+		{RoleImplementation, "high"},
+		{RoleFixReview, "high"},
+		{RolePRFix, "high"},
+		{RolePlan, ""},
+		{RoleReview, ""},
+		{RoleTestRunner, ""},
+		{Role(""), ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			got := tt.role.DefaultReasoningEffort()
+			if got != tt.want {
+				t.Errorf("DefaultReasoningEffort() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRole_IsSystem(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -118,6 +148,31 @@ func TestRoleFromName(t *testing.T) {
 			got := RoleFromName(tt.name)
 			if got != tt.want {
 				t.Errorf("RoleFromName(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRoleFromName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		want   Role
+		wantOK bool
+	}{
+		{"test-runner:Run Tests", RoleTestRunner, true},
+		{"implementation:Impl", RoleImplementation, true},
+		{"unknown:something", RoleImplementation, false},
+		{"no-colon", RoleImplementation, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := ParseRoleFromName(tt.name)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("ParseRoleFromName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}

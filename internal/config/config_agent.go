@@ -8,6 +8,14 @@ type AgentDefaults struct {
 	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
 	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
 	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	// MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task
+	// has ever had (unlike MaxCostUSD, which resets every run). Closes the gap
+	// where each retry stays under the per-run cap but the task's total spend
+	// still balloons unbounded. Checked once per dispatch, before an agent is
+	// started — StartAgentWithAssignment refuses to start and flips the task
+	// to human-required when the task's already-recorded AgentRuns.CostUSD sum
+	// meets or exceeds this. 0 (default) disables the check.
+	MaxTaskCostUSD float64 `yaml:"max_task_cost_usd" json:"maxTaskCostUsd"`
 	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
 	// escalation is auto-continued. Default 0.8 when unset.
 	TurnCostFraction float64 `yaml:"turn_cost_fraction" json:"turnCostFraction"`
@@ -62,6 +70,54 @@ type AgentDefaults struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// agent dispatch, so a wave of concurrently ready tasks does not all
 	// probe the provider health gate in the same tick. 0 disables jitter.
-	// Never applied to interactive/chat dispatch. Default 0 (opt-in).
+	// Never applied to interactive/chat dispatch. Default 1000 — set 0 to
+	// disable.
 	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
+	// SandboxMode sets the default OS-level process-sandbox posture for agent
+	// subprocesses (darwin: sandbox-exec seatbelt). "off" spawns unwrapped
+	// with no validation. "report" (default) validates and logs the
+	// resolved write allowlist (worktree/sandbox-home/tmp) without ever
+	// wrapping the spawn, so a profile/wrapper defect can only affect an
+	// explicit "enforce" posture, never the default rollout posture.
+	// "enforce" actually wraps the spawn and blocks writes outside that
+	// allowlist, failing the spawn closed if the wrapper is unavailable.
+	// Empty treated as "report".
+	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// HeadlessSteerable controls whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages (instead of
+	// the legacy one-shot `-p <prompt>` invocation). nil means not configured
+	// (defaults to true). Set false to restore the legacy launch shape with
+	// no stdin transport — a config-only rollback with no code revert.
+	HeadlessSteerable *bool `yaml:"headless_steerable" json:"headlessSteerable"`
+	// DefaultProjectID pins the project a project-less task auto-assigns to
+	// when it needs an isolated worktree (e.g. a meta/self-referential task
+	// routed to the plan step). Without it, auto-assignment only fires when
+	// exactly one project is registered — on a machine with two or more
+	// projects, a project-less task can never dispatch and always ends up
+	// human-required. Empty means no default (falls back to the
+	// sole-project behavior).
+	DefaultProjectID string `yaml:"default_project_id" json:"defaultProjectId"`
+	// RoleEffort overrides the built-in per-role reasoning-effort baseline
+	// (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g.
+	// "triage", "implementation"). Still loses to an experiment assignment's
+	// or the task's own ReasoningEffort — this only replaces the role
+	// fallback, not an explicit per-task/per-run override. Unknown role keys
+	// or invalid effort values are ignored (falls back to the built-in
+	// default for that role).
+	RoleEffort map[string]string `yaml:"role_effort" json:"roleEffort"`
+	// PlaywrightMCP configures the default-off headless Playwright MCP server
+	// attached to test-runner runs that resolve to the Claude provider.
+	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+}
+
+// PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+// server for visual/console verification. Default-off: Manager.prepareRunConfig
+// only attaches it for headless test-runner runs that resolve to the Claude
+// provider and pass a launcher preflight (see internal/agent/mcp.go).
+type PlaywrightMCPConfig struct {
+	// Enabled opts this machine into attaching the Playwright MCP server.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
+	// --headless --output-dir <dir>` launch command.
+	ExtraArgs []string `yaml:"extra_args" json:"extraArgs"`
 }

@@ -84,6 +84,7 @@ describe('TaskList', () => {
     expect(screen.getByText('In Progress')).toBeDefined()
     expect(screen.getByText('In Review')).toBeDefined()
     expect(screen.getByText('Human Required')).toBeDefined()
+    expect(screen.getByText('Failed')).toBeDefined()
     expect(screen.queryByText(/^Done$/)).toBeNull()
   })
 
@@ -109,6 +110,7 @@ describe('TaskList', () => {
         },
         {
           ...mockTask('c1', 'Done child', 'done'),
+          outcome: 'merged',
           umbrellaIssue: 'Automaat/sybra#1213',
         },
         {

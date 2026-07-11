@@ -1,5 +1,5 @@
 [tools]
-go = "1.26.4"
+go = "1.26.5"
 node = "24"
 hadolint = "2.14.0"
 golangci-lint = "2.12.2"
@@ -76,13 +76,14 @@ run = [
   "cd frontend && npx oxlint .",
   "cd frontend && node scripts/check-pin-strategy.mjs",
   "bash scripts/check-api-shim-sync.sh",
+  "bash scripts/check-no-home-fallback.sh",
   "bash scripts/resolve-release-version.test.sh",
   "bash scripts/generate-release-notes.test.sh",
   "command -v wails3 >/dev/null 2>&1 || (echo 'wails3 not found — install with: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87 (see .github/workflows/ci.yml for the full workaround)' && exit 1)",
   "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
   "hadolint Dockerfile",
 ]
-description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
 
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"
@@ -105,6 +106,9 @@ env = { SYBRA_PORT = "8080" }
 run = [
   "mkdir -p /tmp/sybra-e2e/tasks",
   "cp frontend/e2e/fixtures/*.md /tmp/sybra-e2e/tasks/",
+  # Marker proving this is a disposable e2e home; the suite refuses destructive
+  # task cleanup without it (#1576).
+  "touch /tmp/sybra-e2e/.sybra-e2e-home",
   "cd frontend && npx playwright test",
 ]
 description = "Run e2e tests (run 'mise run dev:server' in another terminal first)"

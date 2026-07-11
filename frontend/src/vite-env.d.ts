@@ -3,8 +3,5 @@
 interface ImportMetaEnv {
   readonly VITE_MODE?: string
   readonly VITE_API_BASE?: string
-}
-
-interface Window {
-  runtime?: unknown
+  readonly VITE_API_TOKEN?: string
 }

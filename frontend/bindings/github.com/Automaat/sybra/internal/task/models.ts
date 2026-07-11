@@ -8,9 +8,6 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AgentRun records one dispatch of an agent process against a task: what was
@@ -40,7 +37,24 @@ export class AgentRun {
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
     "state": string;
-    "startedAt": time$0.Time;
+
+    /**
+     * Outcome records the terminal result the completion handler actually
+     * observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
+     * ("stopped" covers both a clean finish and a failed one) and independent
+     * of Result (truncated to maxResultLen, so its presence/absence cannot
+     * tell success from failure either). Empty means the run never reached a
+     * definitive terminal outcome (still running, or stalled/rate-limited and
+     * due for retry) — callers must not infer success from Outcome == "".
+     */
+    "outcome"?: string;
+
+    /**
+     * EscalationReason records the guardrail reason that stopped the run
+     * ("cost" or "turns"). Empty for ordinary completions.
+     */
+    "escalationReason"?: string;
+    "startedAt": string;
     "costUsd": number;
     "premiumRequests"?: number;
     "prompt"?: string;
@@ -107,7 +121,7 @@ export class AgentRun {
             this["state"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;
@@ -160,7 +174,7 @@ export class ReviewComment {
     "line": number;
     "body": string;
     "resolved": boolean;
-    "createdAt": time$0.Time;
+    "createdAt": string;
 
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
@@ -177,7 +191,7 @@ export class ReviewComment {
             this["resolved"] = false;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -335,8 +349,8 @@ export class Task {
     "prPhase"?: string;
     "todoistId": string;
     "priority"?: Priority;
-    "dueDate"?: time$0.Time | null;
-    "closedAt"?: time$0.Time | null;
+    "dueDate"?: string | null;
+    "closedAt"?: string | null;
 
     /**
      * Outcome records how a task's own PR concluded: "merged", "merged_with_edits",
@@ -379,6 +393,16 @@ export class Task {
     "forkSubagent"?: boolean;
 
     /**
+     * Sandbox is an escape hatch for the system default OS-level sandbox
+     * posture (see config.AgentDefaults.SandboxMode) for this task's agent
+     * processes. nil or true = use system default. false = disable the
+     * sandbox-exec wrap entirely for this task's agents. Setting true does
+     * NOT tighten posture beyond the system default (ResolveSandboxMode only
+     * treats Sandbox=false as meaningful).
+     */
+    "sandbox"?: boolean | null;
+
+    /**
      * ReasoningEffort sets the reasoning level for this task's agents
      * (low/medium/high/xhigh). Empty = model default. Applied across providers:
      * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -393,11 +417,21 @@ export class Task {
      * counting toward TestingMaxAttempts. Nil means no re-dispatch has occurred
      * and all test-runner runs count (correct for first-ever cycles).
      */
-    "testingCycleStartedAt"?: time$0.Time | null;
+    "testingCycleStartedAt"?: string | null;
     "agentRuns": AgentRun[];
     "workflow"?: workflow$0.Execution | null;
-    "createdAt": time$0.Time;
-    "updatedAt": time$0.Time;
+    "createdAt": string;
+    "updatedAt": string;
+
+    /**
+     * StatusChangedAt marks the last time Status actually transitioned, as
+     * opposed to UpdatedAt which is bumped by any field write (tags, audit
+     * sidecars, status_reason, ...). Detectors that need to know "how long
+     * has this task been in its current status" (e.g. detectLostAgents'
+     * dispatch-latency grace window) must key off this field, not UpdatedAt —
+     * see internal/monitor/detector.go.
+     */
+    "statusChangedAt": string;
     "body": string;
     "plan"?: string;
     "planContract"?: string;
@@ -487,10 +521,13 @@ export class Task {
             this["agentRuns"] = [];
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = null;
+            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("statusChangedAt" in $$source)) {
+            this["statusChangedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("body" in $$source)) {
             this["body"] = "";
@@ -512,9 +549,9 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField36_0 = $$createType2;
-        const $$createField37_0 = $$createType4;
-        const $$createField48_0 = $$createType5;
+        const $$createField37_0 = $$createType2;
+        const $$createField38_0 = $$createType4;
+        const $$createField50_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -526,13 +563,13 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField36_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField37_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField37_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField38_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField48_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField50_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -567,6 +604,204 @@ export enum TaskType {
     TaskTypeUmbrella = "umbrella",
 };
 
+/**
+ * Update carries optional field changes for Store.Update.
+ * A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
+ * For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+ */
+export class Update {
+    "Title": string | null;
+    "Slug": string | null;
+    "Status": Status | null;
+    "StatusReason": string | null;
+    "BlockedByIssue": string | null;
+    "UmbrellaIssue": string | null;
+    "DependsOn": string[] | null;
+    "AgentMode": string | null;
+    "TaskType": TaskType | null;
+    "Body": string | null;
+    "Tags": string[] | null;
+    "ProjectID": string | null;
+    "Branch": string | null;
+    "WorktreeDir": string | null;
+    "HandoffSourceProvider": string | null;
+    "PRNumber": number | null;
+    "Issue": string | null;
+    "RefIssue": string | null;
+    "Reviewed": boolean | null;
+    "RunRole": string | null;
+    "SupervisorSteer": string | null;
+    "ReviewPhase": string | null;
+    "PRPhase": string | null;
+    "TodoistID": string | null;
+    "Priority": Priority | null;
+    "DueDate": string | null;
+    "Workflow": workflow$0.Execution | null;
+    "Plan": string | null;
+    "PlanContract": string | null;
+    "PlanCritique": string | null;
+    "PlanResearch": string | null;
+    "PlanDecisions": string | null;
+    "PlanBrief": string | null;
+    "CodeReview": string | null;
+    "MaxTurns": number | null;
+    "ForkSubagent": boolean | null;
+    "Sandbox": boolean | null;
+    "ReasoningEffort": string | null;
+    "Outcome": string | null;
+    "MergeCommit": string | null;
+    "TestingCycleStartedAt": string | null;
+
+    /** Creates a new Update instance. */
+    constructor($$source: Partial<Update> = {}) {
+        if (!("Title" in $$source)) {
+            this["Title"] = null;
+        }
+        if (!("Slug" in $$source)) {
+            this["Slug"] = null;
+        }
+        if (!("Status" in $$source)) {
+            this["Status"] = null;
+        }
+        if (!("StatusReason" in $$source)) {
+            this["StatusReason"] = null;
+        }
+        if (!("BlockedByIssue" in $$source)) {
+            this["BlockedByIssue"] = null;
+        }
+        if (!("UmbrellaIssue" in $$source)) {
+            this["UmbrellaIssue"] = null;
+        }
+        if (!("DependsOn" in $$source)) {
+            this["DependsOn"] = null;
+        }
+        if (!("AgentMode" in $$source)) {
+            this["AgentMode"] = null;
+        }
+        if (!("TaskType" in $$source)) {
+            this["TaskType"] = null;
+        }
+        if (!("Body" in $$source)) {
+            this["Body"] = null;
+        }
+        if (!("Tags" in $$source)) {
+            this["Tags"] = null;
+        }
+        if (!("ProjectID" in $$source)) {
+            this["ProjectID"] = null;
+        }
+        if (!("Branch" in $$source)) {
+            this["Branch"] = null;
+        }
+        if (!("WorktreeDir" in $$source)) {
+            this["WorktreeDir"] = null;
+        }
+        if (!("HandoffSourceProvider" in $$source)) {
+            this["HandoffSourceProvider"] = null;
+        }
+        if (!("PRNumber" in $$source)) {
+            this["PRNumber"] = null;
+        }
+        if (!("Issue" in $$source)) {
+            this["Issue"] = null;
+        }
+        if (!("RefIssue" in $$source)) {
+            this["RefIssue"] = null;
+        }
+        if (!("Reviewed" in $$source)) {
+            this["Reviewed"] = null;
+        }
+        if (!("RunRole" in $$source)) {
+            this["RunRole"] = null;
+        }
+        if (!("SupervisorSteer" in $$source)) {
+            this["SupervisorSteer"] = null;
+        }
+        if (!("ReviewPhase" in $$source)) {
+            this["ReviewPhase"] = null;
+        }
+        if (!("PRPhase" in $$source)) {
+            this["PRPhase"] = null;
+        }
+        if (!("TodoistID" in $$source)) {
+            this["TodoistID"] = null;
+        }
+        if (!("Priority" in $$source)) {
+            this["Priority"] = null;
+        }
+        if (!("DueDate" in $$source)) {
+            this["DueDate"] = null;
+        }
+        if (!("Workflow" in $$source)) {
+            this["Workflow"] = null;
+        }
+        if (!("Plan" in $$source)) {
+            this["Plan"] = null;
+        }
+        if (!("PlanContract" in $$source)) {
+            this["PlanContract"] = null;
+        }
+        if (!("PlanCritique" in $$source)) {
+            this["PlanCritique"] = null;
+        }
+        if (!("PlanResearch" in $$source)) {
+            this["PlanResearch"] = null;
+        }
+        if (!("PlanDecisions" in $$source)) {
+            this["PlanDecisions"] = null;
+        }
+        if (!("PlanBrief" in $$source)) {
+            this["PlanBrief"] = null;
+        }
+        if (!("CodeReview" in $$source)) {
+            this["CodeReview"] = null;
+        }
+        if (!("MaxTurns" in $$source)) {
+            this["MaxTurns"] = null;
+        }
+        if (!("ForkSubagent" in $$source)) {
+            this["ForkSubagent"] = null;
+        }
+        if (!("Sandbox" in $$source)) {
+            this["Sandbox"] = null;
+        }
+        if (!("ReasoningEffort" in $$source)) {
+            this["ReasoningEffort"] = null;
+        }
+        if (!("Outcome" in $$source)) {
+            this["Outcome"] = null;
+        }
+        if (!("MergeCommit" in $$source)) {
+            this["MergeCommit"] = null;
+        }
+        if (!("TestingCycleStartedAt" in $$source)) {
+            this["TestingCycleStartedAt"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Update instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Update {
+        const $$createField6_0 = $$createType6;
+        const $$createField10_0 = $$createType6;
+        const $$createField26_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("DependsOn" in $$parsedSource) {
+            $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
+        }
+        if ("Tags" in $$parsedSource) {
+            $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
+        }
+        if ("Workflow" in $$parsedSource) {
+            $$parsedSource["Workflow"] = $$createField26_0($$parsedSource["Workflow"]);
+        }
+        return new Update($$parsedSource as Partial<Update>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = AgentRun.createFrom;
@@ -574,3 +809,5 @@ const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = workflow$0.Execution.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
 const $$createType5 = $Create.Map($Create.Any, $Create.Any);
+const $$createType6 = $Create.Nullable($$createType0);
+const $$createType7 = $Create.Nullable($$createType4);

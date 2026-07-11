@@ -9,9 +9,13 @@ import {
   RejectPlan,
   SendPlanMessage,
   HasLivePlanAgent,
+  DispatchFromHumanRequired,
+  ApproveProposal,
+  RejectProposal,
 } from '$lib/api'
 import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import { EntityStore } from './entity-store.svelte.js'
+import { needsPlanApproval } from '../lib/statuses.js'
 
 class TaskStore extends EntityStore<Task> {
   // Per-id operation counter guarding the async patchOne against its own
@@ -58,6 +62,14 @@ class TaskStore extends EntityStore<Task> {
   byStatus(status: string): Task[] {
     if (status === 'all') return this.list
     return this.list.filter((t) => t.status === status)
+  }
+
+  // Tasks genuinely waiting on a plan approve/reject decision — keyed off the
+  // workflow engine's own currentStep/state rather than solely the top-level
+  // status, so a manual status update that desyncs from an active workflow
+  // (issue #1642) can't hide a pending decision from the review surfaces.
+  tasksNeedingPlanApproval(): Task[] {
+    return this.list.filter(needsPlanApproval)
   }
 
   async get(id: string): Promise<Task> {
@@ -142,6 +154,24 @@ class TaskStore extends EntityStore<Task> {
 
   async hasLivePlanAgent(id: string): Promise<boolean> {
     return HasLivePlanAgent(id)
+  }
+
+  async approveProposal(id: string): Promise<Task> {
+    const result = await ApproveProposal(id)
+    this.set(result.id, result)
+    return result
+  }
+
+  async rejectProposal(id: string, feedback: string): Promise<Task> {
+    const result = await RejectProposal(id, feedback)
+    this.set(result.id, result)
+    return result
+  }
+
+  async dispatchFromHumanRequired(id: string, target: string, reason: string): Promise<Task> {
+    const result = await DispatchFromHumanRequired(id, target, reason)
+    this.set(result.id, result)
+    return result
   }
 }
 

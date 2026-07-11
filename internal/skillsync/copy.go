@@ -9,7 +9,7 @@ import (
 
 // copyDirTree recursively copies src into dst. Uses os.Root to confine
 // reads to the source subtree, preventing symlink TOCTOU escape.
-func copyDirTree(src, dst string) error {
+func copyDirTree(src, dst string, transform func([]byte) []byte) error {
 	srcRoot, err := os.OpenRoot(src)
 	if err != nil {
 		return err
@@ -44,6 +44,9 @@ func copyDirTree(src, dst string) error {
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
+		}
+		if transform != nil {
+			data = transform(data)
 		}
 		return os.WriteFile(target, data, 0o644)
 	})
@@ -89,7 +92,7 @@ func (s *Syncer) copySkillDir(src, dst, cleanSrc, cleanDst, name, logPrefix stri
 		s.warn(logPrefix+".clean.fail", "name", name, "err", err)
 		return false
 	}
-	if err := copyDirTree(srcSkillDir, dstSkillDir); err != nil {
+	if err := copyDirTree(srcSkillDir, dstSkillDir, s.transform); err != nil {
 		s.error(logPrefix+".copy.tree", "name", name, "err", err)
 		return false
 	}

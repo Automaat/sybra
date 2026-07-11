@@ -175,15 +175,28 @@ const prQuery = `query($q: String!) {
 }`
 
 // gqlCheckContext captures both `CheckRun` and `StatusContext` shapes from
-// the StatusCheckRollup contexts edge. The GraphQL query aliases
-// `StatusContext.context` → `name` and only `CheckRun` populates
-// status/conclusion, so callers must dispatch on Typename.
+// the StatusCheckRollup contexts edge. The prQuery GraphQL fragment in this
+// file aliases `StatusContext.context` → `name`, but `gh pr view --json
+// statusCheckRollup` (used by FetchPRState) emits the raw field name
+// `context` instead — both are captured so effectiveName() works for either
+// source. Only `CheckRun` populates status/conclusion, so callers must
+// dispatch on Typename.
 type gqlCheckContext struct {
 	Typename   string `json:"__typename"`
 	Name       string `json:"name"`
+	Context    string `json:"context"`    // StatusContext, non-GraphQL-aliased sources only
 	Status     string `json:"status"`     // CheckRun only: QUEUED|IN_PROGRESS|COMPLETED|...
 	Conclusion string `json:"conclusion"` // CheckRun only: SUCCESS|FAILURE|NEUTRAL|...
 	State      string `json:"state"`      // StatusContext only: PENDING|SUCCESS|FAILURE|ERROR|EXPECTED
+}
+
+// effectiveName returns the check's display name regardless of which JSON
+// shape populated it (GraphQL-aliased `name`, or raw `context`).
+func (c gqlCheckContext) effectiveName() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Context
 }
 
 type gqlStatusCheckRollup struct {
@@ -421,7 +434,7 @@ func convertPRs(nodes []gqlPR, viewer string) []PullRequest {
 	prs := make([]PullRequest, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
-		if isBot(n.Author.Type, n.Author.Login) {
+		if isBot(n.Author.Type, n.Author.Login) && !strings.EqualFold(n.Author.Login, viewer) {
 			continue
 		}
 		prs = append(prs, convertCommonPR(n, viewer))
@@ -504,4 +517,16 @@ func IsTransientError(err error) bool {
 	return strings.Contains(msg, "dial tcp") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "context deadline exceeded")
+}
+
+// IsAuthError reports whether err is a GitHub authentication failure (HTTP
+// 401 / "Bad credentials") that will not resolve on its own — a dead or
+// revoked token needs a human to rotate it, so pollers should circuit-break
+// on this instead of retrying at their normal cadence.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 401") || strings.Contains(msg, "bad credentials")
 }

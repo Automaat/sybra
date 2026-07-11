@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -76,10 +78,58 @@ func (c *Config) DefaultLogRetentionDays() int {
 	return c.Agent.LogRetentionDays
 }
 
+// DefaultTrashRetentionDays returns the configured retention window for
+// soft-deleted tasks under ~/.sybra/trash, or 14 days if unset. A negative
+// value disables age-based pruning entirely.
+func (c *Config) DefaultTrashRetentionDays() int {
+	if c == nil {
+		return 14
+	}
+	if c.Trash.RetentionDays < 0 {
+		return c.Trash.RetentionDays
+	}
+	if c.Trash.RetentionDays == 0 {
+		return 14
+	}
+	return c.Trash.RetentionDays
+}
+
+// DefaultTaskSnapshotIntervalSeconds is the fallback commit interval for the
+// tasks-dir git snapshotter when TaskSnapshot.IntervalSeconds is unset.
+const DefaultTaskSnapshotIntervalSeconds = 30
+
+// DefaultTaskSnapshotInterval returns the configured commit interval in
+// seconds, falling back to DefaultTaskSnapshotIntervalSeconds when unset or
+// non-positive.
+func (c *Config) DefaultTaskSnapshotInterval() int {
+	if c != nil && c.TaskSnapshot.IntervalSeconds > 0 {
+		return c.TaskSnapshot.IntervalSeconds
+	}
+	return DefaultTaskSnapshotIntervalSeconds
+}
+
+// TaskSnapshotEnabled reports whether the background git snapshotter should
+// run. nil (unset) defaults to true.
+func (c *Config) TaskSnapshotEnabled() bool {
+	if c == nil || c.TaskSnapshot.Enabled == nil {
+		return true
+	}
+	return *c.TaskSnapshot.Enabled
+}
+
 // DefaultRequirePermissions returns the configured default, or true if unset.
 func (c *Config) DefaultRequirePermissions() bool {
 	if c != nil && c.Agent.RequirePermissions != nil {
 		return *c.Agent.RequirePermissions
+	}
+	return true
+}
+
+// DefaultHeadlessSteerable returns the configured agent.headless_steerable
+// default, or true if unset.
+func (c *Config) DefaultHeadlessSteerable() bool {
+	if c != nil && c.Agent.HeadlessSteerable != nil {
+		return *c.Agent.HeadlessSteerable
 	}
 	return true
 }
@@ -116,6 +166,55 @@ func (c *Config) DefaultHeadlessPermissionMode() string {
 	return mode
 }
 
+// NormalizeSandboxMode canonicalizes an OS-level process-sandbox posture
+// value. Empty string maps to "report" (the safe, non-blocking rollout
+// default). "off", "report", and "enforce" pass through unchanged. Any other
+// value is rejected with an error.
+func NormalizeSandboxMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "report":
+		return "report", nil
+	case "off":
+		return "off", nil
+	case "enforce":
+		return "enforce", nil
+	default:
+		return "", fmt.Errorf("invalid sandbox_mode %q (valid: off, report, enforce)", s)
+	}
+}
+
+// DefaultSandboxMode returns the configured default OS-level process-sandbox
+// posture, or "report" if unset. An invalid config value is logged and
+// treated as "report" so a misconfigured server never silently drops to
+// unwrapped ("off") or fail-closed ("enforce") posture.
+func (c *Config) DefaultSandboxMode() string {
+	if c == nil || c.Agent.SandboxMode == "" {
+		return "report"
+	}
+	mode, err := NormalizeSandboxMode(c.Agent.SandboxMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.sandbox_mode; falling back to report", "value", c.Agent.SandboxMode)
+		return "report"
+	}
+	return mode
+}
+
+// PlaywrightMCPEnabled reports whether test-runner runs should attach a
+// headless Playwright MCP server for visual/console verification. Default
+// false — an operator must opt in.
+func (c *Config) PlaywrightMCPEnabled() bool {
+	return c != nil && c.Agent.PlaywrightMCP.Enabled
+}
+
+// PlaywrightMCPExtraArgs returns the configured extra Playwright MCP launcher
+// args, appended verbatim after --output-dir.
+func (c *Config) PlaywrightMCPExtraArgs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Agent.PlaywrightMCP.ExtraArgs
+}
+
 // SurviveRestartEnabled reports whether agent subprocesses should be
 // detached to survive an app restart and reattached on the next startup.
 // Defaults to true when unset.
@@ -141,8 +240,13 @@ func (c *Config) InAppBrowserEnabled() bool {
 const DefaultTestingMaxConcurrent = 3
 
 // DefaultTestingMaxAttempts bounds the testing → in-progress re-implementation
-// loop when TestingConfig.MaxAttempts is unset.
-const DefaultTestingMaxAttempts = 3
+// loop when TestingConfig.MaxAttempts is unset. This is a cost backstop, not
+// the primary stall detector — workflow.countValidProductTestAttempts
+// escalates immediately on a genuine stall (same grounded failure fingerprint
+// twice with an intervening code-author run), so a sequence that keeps
+// finding distinct grounded defects should not be starved by a low count
+// here.
+const DefaultTestingMaxAttempts = 10
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {
@@ -175,6 +279,18 @@ const (
 // shared token.
 func (c GitHubConfig) RunsSearchPollers() bool {
 	return !strings.EqualFold(strings.TrimSpace(c.PollerRole), "secondary")
+}
+
+// RunsIssuesFetcher reports the effective state of the GitHub Issues fetcher:
+// the top-level kill-switch AND the issues-specific sub-toggle.
+func (c GitHubConfig) RunsIssuesFetcher() bool {
+	return c.Enabled && c.IssuesEnabled
+}
+
+// RunsReviewer reports the effective state of PR reviewer poll registration:
+// the top-level kill-switch AND the reviews-specific sub-toggle.
+func (c GitHubConfig) RunsReviewer() bool {
+	return c.Enabled && c.ReviewsEnabled
 }
 
 func (c GitHubConfig) reviewsFast() time.Duration {
@@ -233,12 +349,15 @@ func (c *Config) HumanReviewRepo() string {
 	return "Automaat/sybra"
 }
 
-// HumanReviewModel returns the configured model alias or "sonnet".
+// HumanReviewModel returns the configured model name or alias, defaulting to
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// inspector (applyWatchdogDefaults): classifying why a task stalled, not
+// authoring a fix.
 func (c *Config) HumanReviewModel() string {
 	if c != nil && c.HumanReview.Model != "" {
 		return c.HumanReview.Model
 	}
-	return "sonnet"
+	return "claude-haiku-4-5-20251001"
 }
 
 // HumanReviewIssueLabel returns the configured label or "sybra-bug".
@@ -290,10 +409,10 @@ func DefaultConfig() *Config {
 		},
 		Agent: AgentDefaults{
 			Provider:         "claude",
-			MaxConcurrent:    100,
+			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
-			DispatchJitterMs: 0,
+			DispatchJitterMs: 1000,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,
@@ -303,7 +422,9 @@ func DefaultConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
-			Enabled: true,
+			Enabled:        true,
+			IssuesEnabled:  true,
+			ReviewsEnabled: true,
 		},
 		Monitor: MonitorConfig{
 			Enabled: true,
@@ -386,7 +507,7 @@ func ReadRawConfig() (string, error) {
 // the file watcher and concurrent readers never observe a partial write.
 func WriteRawConfig(data []byte) error {
 	path := configPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
@@ -399,7 +520,7 @@ func WriteRawConfig(data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(configFilePerm); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -437,11 +558,30 @@ func (c *Config) ExperiencesDir() string {
 }
 
 func Load() (*Config, error) {
+	return load(loadOptions{persistLoadReconciles: true})
+}
+
+// LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
+// without writing any migration back to disk. Reload paths use this to keep
+// their read-only contract and to preserve raw-editor formatting/comments.
+func LoadNoPersist() (*Config, error) {
+	return load(loadOptions{})
+}
+
+type loadOptions struct {
+	persistLoadReconciles bool
+}
+
+func load(opts loadOptions) (*Config, error) {
 	cfg := DefaultConfig()
 
 	path := configPath()
 	data, err := os.ReadFile(path)
-	if err == nil {
+	existingFile := err == nil
+	if existingFile {
+		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
+		// reflect the document exactly: nil means "key absent" on older files.
+		cfg.ABTesting.BuiltinVersion = nil
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
@@ -449,6 +589,9 @@ func Load() (*Config, error) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
 		}
+	}
+	if opts.persistLoadReconciles {
+		tightenConfigPerms(path, existingFile)
 	}
 
 	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
@@ -505,9 +648,11 @@ func Load() (*Config, error) {
 	if cfg.Triage.PollSeconds <= 0 {
 		cfg.Triage.PollSeconds = 60
 	}
-	if cfg.Triage.Model == "" {
-		cfg.Triage.Model = "sonnet"
-	}
+	// Triage.Model intentionally has no default override here: an empty
+	// model lets triage.FallbackClassifier fall through to its llmjob.Cheap
+	// tier (haiku), which is ~10x cheaper than sonnet for a structured
+	// classification job. A non-empty value (set explicitly by a user)
+	// still overrides the tier via claudeModelOverride.
 	if cfg.Agent.Provider == "" {
 		cfg.Agent.Provider = "claude"
 	}
@@ -521,12 +666,76 @@ func Load() (*Config, error) {
 	applyHarnessEvolveDefaults(cfg)
 	applyPromptLabDefaults(cfg)
 	applyExperienceDefaults(cfg)
-	applyABTestingDefaults(cfg)
+	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
 	applyOrchestratorDefaults(cfg)
 	applyAutoUpdateDefaults(cfg)
 	applyReviewHoldDefaults(cfg)
+	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
+
+	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
 
 	return cfg, nil
+}
+
+// persistLoadReconciles writes back in-memory-only changes made during load()
+// that must survive a restart: the ab_testing builtin reconcile (existing
+// files only) and a freshly generated server auth token (even for a
+// brand-new install — sybra-server reads Server.AuthToken once at startup,
+// so an unsaved token would silently rotate on every restart and lock
+// operators out).
+func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
+	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
+		}
+	}
+	if opts.persistLoadReconciles && serverTokenGenerated {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
+		}
+	}
+}
+
+// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
+// env vars win when set, otherwise a missing token is auto-generated so the
+// HTTP control plane always fails closed instead of silently running
+// unauthenticated. Returns true when a new token was generated (the caller
+// must persist it — see load()). Read-only config loads pass allowGenerate=false
+// so they never invent an in-memory-only secret that diverges from disk.
+func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
+	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
+		cfg.Server.AuthToken = v
+	}
+	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
+		origins := strings.Split(v, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		cfg.Server.AllowedOrigins = origins
+	}
+	if cfg.Server.AuthToken != "" {
+		return false
+	}
+	if !allowGenerate {
+		return false
+	}
+	token, err := generateAuthToken()
+	if err != nil {
+		slog.Warn("config: failed to generate server auth token", "err", err)
+		return false
+	}
+	cfg.Server.AuthToken = token
+	return true
+}
+
+// generateAuthToken returns a random 256-bit hex-encoded shared secret for
+// sybra-server's bearer-token auth.
+func generateAuthToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // Review-hold modes control how far the hold extends to the fix-review agent's
@@ -610,9 +819,13 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	}
 }
 
-func applyABTestingDefaults(cfg *Config) {
+// applyABTestingDefaults fills zero-value A/B testing config and reconciles
+// built-in experiments against the current code defaults. Returns true when
+// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
+// so the caller knows whether the change needs persisting.
+func applyABTestingDefaults(cfg *Config, persist bool) bool {
 	if cfg == nil {
-		return
+		return false
 	}
 	def := abtest.DefaultConfig()
 	if cfg.ABTesting.Enabled == nil {
@@ -623,7 +836,69 @@ func applyABTestingDefaults(cfg *Config) {
 	}
 	if len(cfg.ABTesting.Experiments) == 0 {
 		cfg.ABTesting.Experiments = def.Experiments
+		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		return false
 	}
+	return reconcileBuiltinExperiments(cfg, def, persist)
+}
+
+// reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
+// experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
+// current defaults. Experiments outside that ID set — i.e. user-authored —
+// are left untouched. A one-generation backup of the prior experiment list is
+// written before the built-ins are replaced, so a same-ID hand-tuned built-in
+// is recoverable even though reconcile treats the ID as Sybra-owned.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+	priorVersion := cfg.ABTesting.BuiltinVersionValue()
+	if priorVersion >= def.BuiltinVersionValue() {
+		return false
+	}
+	if persist {
+		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
+			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
+			return false
+		}
+	}
+	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
+	for _, id := range abtest.BuiltinExperimentIDs {
+		builtin[id] = true
+	}
+	kept := make([]abtest.Experiment, 0, len(cfg.ABTesting.Experiments)+len(def.Experiments))
+	for i := range cfg.ABTesting.Experiments {
+		if exp := cfg.ABTesting.Experiments[i]; !builtin[exp.ID] {
+			kept = append(kept, exp)
+		}
+	}
+	kept = append(kept, def.Experiments...)
+	cfg.ABTesting.Experiments = kept
+	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
+	return true
+}
+
+// abTestingBackupPath returns the version-stamped backup path written before a
+// builtin reconcile overwrites persisted experiments. Each prior builtin
+// version keeps its own snapshot so successive builtin-version bumps do not
+// destroy the true pre-migration original.
+func abTestingBackupPath(priorVersion int) string {
+	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
+}
+
+type abTestingBackup struct {
+	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
+	Experiments         []abtest.Experiment `yaml:"experiments"`
+}
+
+func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
+	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
+	if err != nil {
+		return err
+	}
+	path := abTestingBackupPath(priorVersion)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 // applyWatchdogDefaults fills the Watchdog model default. Enabled and
@@ -804,7 +1079,9 @@ func applyMonitorDefaults(cfg *Config) {
 		cfg.Monitor.IntervalSeconds = 300
 	}
 	if cfg.Monitor.Model == "" {
-		cfg.Monitor.Model = "sonnet"
+		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
+		// classifying an anomaly, not authoring a fix.
+		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
 	}
 	if cfg.Monitor.IssueCooldownMinutes <= 0 {
 		cfg.Monitor.IssueCooldownMinutes = 30
@@ -890,11 +1167,48 @@ func (c *LoggingConfig) SlogLevel() slog.Level {
 	}
 }
 
+const (
+	configDirPerm  os.FileMode = 0o700
+	configFilePerm os.FileMode = 0o600
+)
+
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), 0o644)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), configFilePerm)
+}
+
+// tightenConfigPerms retrofits the config directory and file to 0o700/0o600
+// on installs created before those became the write-time default (config.yaml
+// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// not fatal — Load must still succeed on read-only or restricted filesystems.
+func tightenConfigPerms(path string, existingFile bool) {
+	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
+	if existingFile {
+		tightenPathPerm(path, configFilePerm, "config file")
+	}
+}
+
+func tightenPathPerm(path string, target os.FileMode, label string) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("config: failed to inspect perms", "path", path, "kind", label, "err", err)
+		}
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		slog.Warn("config: refusing to chmod symlink", "path", path, "kind", label)
+		return
+	}
+	current := info.Mode().Perm()
+	if current&^target == 0 {
+		return
+	}
+	if err := os.Chmod(path, target); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten perms", "path", path, "kind", label, "err", err)
+	}
 }
 
 func configPath() string {

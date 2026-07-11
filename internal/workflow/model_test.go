@@ -49,6 +49,21 @@ func TestValidate_ExactlyAtLimit(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsStepIDContainingBestOfNAttemptSeparator(t *testing.T) {
+	d := Definition{
+		Steps: []Step{
+			{ID: "parent::child"},
+		},
+	}
+	err := d.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for step id containing best-of-n attempt separator")
+	}
+	if !strings.Contains(err.Error(), "::") {
+		t.Fatalf("error = %v, want mention of :: separator", err)
+	}
+}
+
 func TestStepByID_NotFound(t *testing.T) {
 	d := Definition{Steps: []Step{{ID: "a"}}}
 	if s := d.StepByID("missing"); s != nil {

@@ -24,6 +24,46 @@ func makeFIFO(path string) error {
 	return syscall.Mkfifo(path, 0o600)
 }
 
+// startHeadlessProcessSurviveStdin assigns a steerable detached headless
+// claude process's stdin to a FIFO (reusing makeFIFO/agentFIFOPath). Unlike a
+// conversational agent — which is handed an O_RDWR fd so it never sees EOF and
+// survives the parent indefinitely — a headless run MUST terminate when the
+// steer turn boundary closes stdin with no queued message (see
+// drainOrCloseHeadlessSteer). So the child is given a READ-ONLY stdin fd while
+// the parent keeps its own O_RDWR writer: closing the parent's only writer then
+// delivers EOF to the child, which exits exactly like a plain one-shot
+// `claude -p`. Passing the child an O_RDWR fd instead (as the convo path does)
+// leaves the child itself a writer on the pipe, so it never sees EOF and every
+// unsteered run hangs until postResultGrace kills it.
+//
+// The returned *os.File is the parent's copy of the child's read end; the
+// caller must close it after cmd.Start() (the child holds its own dup) so a
+// single closeStdinPipe on the parent's writer is enough to EOF the child.
+// Called from startHeadlessSurviveProcess before cmd.Start(); on any error
+// cmd.Stdin is left unset and the caller aborts the attempt.
+func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os.File, error) {
+	fifoPath := agentFIFOPath(m.registryDir(), a.ID)
+	if err := makeFIFO(fifoPath); err != nil {
+		return nil, fmt.Errorf("mkfifo: %w", err)
+	}
+	// Open the writer first (O_RDWR never blocks on a FIFO), so the read-only
+	// open below finds a writer present and returns immediately too.
+	writeFifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open fifo (write): %w", err)
+	}
+	childStdin, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	if err != nil {
+		_ = writeFifo.Close()
+		return nil, fmt.Errorf("open fifo (read): %w", err)
+	}
+	cmd.Stdin = childStdin
+	a.convo.replaceStdinPipe(writeFifo)
+	a.setStdinPath(fifoPath)
+	a.setFinalizing(false)
+	return childStdin, nil
+}
+
 // startConvoProcessSurvive spawns a detached conversational Claude process
 // whose stdin is a FIFO (opened O_RDWR so it never sees EOF and survives the
 // parent's exit) and whose stdout is the NDJSON log file. The manager reads
@@ -36,9 +76,7 @@ func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg Ru
 	}
 
 	args := m.buildConvoArgs(a, cfg)
-	// no Context: a cancelled ctx must not kill a detached child
-	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
-	configureDetached(cmd)
+	cmd := newProviderCmd(ctx, &cfg, true, "claude", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
@@ -70,6 +108,12 @@ func (m *Manager) startConvoProcessSurvive(ctx context.Context, a *Agent, cfg Ru
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		// Records the starting provider up front so a mid-run
+		// regateBeforeClaudeTurn switch away from Claude can be told apart
+		// from this initial segment on rehydration (see
+		// rehydratePerTurnConvoFromLog). Written directly (the child hasn't
+		// started yet, so nothing else has written to the file).
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 
@@ -157,20 +201,22 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
-		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -183,9 +229,7 @@ func (m *Manager) runConvoAttemptSurvive(ctx context.Context, a *Agent, cfg RunC
 // empty, which is how reattach recognizes a one-shot (tail-only).
 func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, tailOffset *int64) (retry bool, err error) {
 	args := m.buildOneShotConvoArgs(a, cfg)
-	// no Context: a cancelled ctx must not kill a detached child
-	cmd := exec.CommandContext(context.Background(), "claude", args...) //nolint:contextcheck // detached child must survive a cancelled parent ctx
-	configureDetached(cmd)
+	cmd := newProviderCmd(ctx, &cfg, true, "claude", args...)
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
@@ -202,6 +246,7 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 		}
 		a.SetLogPath(f.Name())
 		*outFile = f
+		writeProviderMarkerLine(f, a.Provider)
 	}
 	cmd.Stdout = *outFile
 
@@ -252,20 +297,22 @@ func (m *Manager) runConvoAttemptSurviveOneShot(ctx context.Context, a *Agent, c
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if stderrOut != "" {
-		m.logger.Error("agent.convo.stderr", "id", a.ID, "stderr", stderrOut)
-	}
 	attemptEvents := attemptEventsFrom(a.ConvoOutput(), prevLen)
 	if waitErr != nil {
-		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		a.SetExitErr(waitErr)
+		m.logger.Error("agent.convo.exit", "id", a.ID, "err", waitErr)
 		if shouldRetryConvo(stderrOut, attemptEvents, m.logger) {
+			logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 			return true, nil
 		}
 		m.reportProviderHealthSignalConvo(a, stderrOut, attemptEvents)
-	} else if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
-		a.SetExitErr(errProviderRateLimited)
+	} else {
+		a.SetExitErr(nil)
+		if m.reportCleanProviderHealthSignalConvo(a, stderrOut, attemptEvents) == providerpkg.SignalRateLimit {
+			a.SetExitErr(errProviderRateLimited)
+		}
 	}
+	logAttemptStderr(m.logger, "agent.convo.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false, nil
 }
 
@@ -409,6 +456,23 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	exited, _ := m.tailConvoFile(ctx, a, a.GetLogPath(), startOffset, oneShot, procDone)
 	if !exited {
 		m.logger.Info("agent.reattach.detach", "id", a.ID, "pid", a.GetPID(), "reason", "shutdown")
+		return
+	}
+
+	// A pending handoff can only exist here if this *Agent is the same
+	// in-memory object that had SendMessage/advanceClaudeTurn regate it onto
+	// a peer just before its (now-doomed) Claude process was torn down — the
+	// handoff field is never persisted, so a genuine restart's fromRecord
+	// Agent always has none and falls through to ordinary finalization below.
+	if handoffCfg, prompt, ok := a.ConsumePendingHandoff(); ok {
+		prevLogPath := a.GetLogPath()
+		outFile, err := m.reopenConvoHandoffLog(a, nil)
+		if err != nil {
+			m.logger.Warn("agent.reattach.handoff.log", "id", a.ID, "err", err)
+		} else if prevLogPath != "" && outFile.Name() != prevLogPath {
+			m.logger.Warn("agent.reattach.handoff.log-fallback", "id", a.ID, "from", prevLogPath, "to", outFile.Name())
+		}
+		m.completeConvoHandoff(ctx, a, outFile, handoffCfg, prompt)
 		return
 	}
 

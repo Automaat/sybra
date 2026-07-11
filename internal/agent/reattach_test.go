@@ -38,9 +38,9 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 // per-provider dispatch cap silently desyncs after every restart that finds
 // in-flight agents.
 func TestReattachAccountingInvariant(t *testing.T) {
-	prevPoll := reattachPIDPoll
-	reattachPIDPoll = 30 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prevPoll })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -124,6 +124,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	}, reg)
 	if perTurnAgent == nil {
 		t.Fatal("reattachPerTurnConvo returned nil, expected a live agent")
+		return
 	}
 	assertAccountingInvariant(t, m)
 
@@ -146,4 +147,211 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	if got := m.InFlightByProvider(); len(got) != 0 {
 		t.Fatalf("expected empty in-flight map after full drain, got %+v", got)
 	}
+}
+
+func TestReattachReapsStaleInteractiveTaskAgent(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	spawnSleeper := func(t *testing.T) *exec.Cmd {
+		t.Helper()
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleeper: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		go func() { _ = cmd.Wait() }()
+		return cmd
+	}
+
+	logDir := t.TempDir()
+	agentsLogDir := filepath.Join(logDir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	regDir := t.TempDir()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) {},
+	})
+
+	logFor := func(id string) string {
+		p := filepath.Join(agentsLogDir, id+".ndjson")
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	staleCmd := spawnSleeper(t)
+	orchCmd := spawnSleeper(t)
+	records := []Record{
+		{
+			ID: "task-agent", TaskID: "task-x", Mode: "interactive", Provider: "claude",
+			PID: staleCmd.Process.Pid, LogPath: logFor("task-agent"),
+			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
+			ProcStartedAt: processStartString(context.Background(), staleCmd.Process.Pid),
+		},
+		{
+			ID: "orchestrator", Mode: "interactive", Provider: "claude",
+			PID: orchCmd.Process.Pid, LogPath: logFor("orchestrator"),
+			StartedAt:     time.Now().Add(-24 * time.Hour).UTC(),
+			ProcStartedAt: processStartString(context.Background(), orchCmd.Process.Pid),
+		},
+	}
+	for _, r := range records {
+		if err := m.reg.Save(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	m.ReattachAll()
+
+	recs, err := m.reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := map[string]bool{}
+	for _, r := range recs {
+		present[r.ID] = true
+	}
+	if present["task-agent"] {
+		t.Errorf("stale interactive task agent must be reaped, but its record survives")
+	}
+	if !present["orchestrator"] {
+		t.Errorf("taskless orchestrator must NOT be reaped, but its record is gone")
+	}
+}
+
+func TestReattachReapsStaleSurvivors(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 30 * time.Millisecond
+	t.Cleanup(func() {
+		stopSIGINTGrace = prevGrace
+	})
+
+	spawnSleeper := func(t *testing.T) *exec.Cmd {
+		t.Helper()
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start helper process: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		go func() { _ = cmd.Wait() }()
+		return cmd
+	}
+
+	tests := []struct {
+		name        string
+		record      func(pid int) Record
+		status      map[string]string
+		taskDeleted bool
+	}{
+		{
+			name: "empty task id",
+			record: func(pid int) Record {
+				return Record{ID: "s1", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+		},
+		{
+			name: "past wall-clock deadline",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().Add(-24 * time.Hour).UTC()}
+			},
+		},
+		{
+			name: "inconsistent task status",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			status: map[string]string{"task-x": "todo"},
+		},
+		{
+			name: "task deleted while down",
+			record: func(pid int) Record {
+				return Record{ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude", PID: pid, StartedAt: time.Now().UTC()}
+			},
+			taskDeleted: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logDir := t.TempDir()
+			regDir := t.TempDir()
+			cfg := ManagerConfig{SurviveRestartDir: regDir, OnComplete: func(*Agent) {}}
+			if tc.status != nil {
+				st := tc.status
+				cfg.TaskStatus = func(id string) (string, bool) { s, ok := st[id]; return s, ok }
+			}
+			if tc.taskDeleted {
+				cfg.TaskExists = func(string) bool { return false }
+			}
+			m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, cfg)
+
+			cmd := spawnSleeper(t)
+			rec := tc.record(cmd.Process.Pid)
+			rec.ProcStartedAt = processStartString(context.Background(), cmd.Process.Pid)
+			if err := m.reg.Save(rec); err != nil {
+				t.Fatal(err)
+			}
+
+			reattached := m.ReattachAll()
+			if len(reattached) != 0 {
+				t.Fatalf("ReattachAll adopted %d stale agents, want 0", len(reattached))
+			}
+			if m.RunningCount() != 0 {
+				t.Fatalf("liveCount = %d, want 0 (a reaped survivor must not hold a pool slot)", m.RunningCount())
+			}
+			recs, err := m.reg.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recs) != 0 {
+				t.Fatalf("stale survivor record not reaped: %d remain", len(recs))
+			}
+		})
+	}
+}
+
+func TestReattachAdoptsHealthySurvivor(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	logDir := t.TempDir()
+	regDir := t.TempDir()
+	agentsLogDir := filepath.Join(logDir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: regDir,
+		OnComplete:        func(*Agent) {},
+		TaskStatus:        func(string) (string, bool) { return "in-progress", true },
+	})
+
+	logPath := filepath.Join(agentsLogDir, "h1.ndjson")
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	go func() { _ = cmd.Wait() }()
+
+	if err := m.reg.Save(Record{
+		ID: "h1", TaskID: "task-h", Mode: "headless", Provider: "claude",
+		PID: cmd.Process.Pid, LogPath: logPath, StartedAt: time.Now().UTC(),
+		ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reattached := m.ReattachAll()
+	if len(reattached) != 1 {
+		t.Fatalf("ReattachAll adopted %d healthy agents, want 1", len(reattached))
+	}
+	if m.RunningCount() != 1 {
+		t.Fatalf("liveCount = %d, want 1", m.RunningCount())
+	}
+	assertAccountingInvariant(t, m)
 }

@@ -38,24 +38,62 @@ func (r Role) AuthorsCode() bool {
 	}
 }
 
+// IsVerifier reports whether the role independently checks another agent's
+// work (review, test-runner, eval). These roles must not have their turn
+// budget auto-bumped: a verifier stuck in a fan-out loop should escalate to a
+// human promptly rather than being handed progressively larger turn budgets.
+func (r Role) IsVerifier() bool {
+	switch r {
+	case RoleReview, RoleTestRunner, RoleEval:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsSystem returns true for roles whose agents should not trigger
 // user-facing notifications (triage, eval, plan-critic, human-review).
 func (r Role) IsSystem() bool {
 	return r == RoleTriage || r == RoleEval || r == RolePlanCritic || r == RoleHumanReview
 }
 
-// RoleFromName extracts the Role from a prefixed agent name.
-// Returns RoleImplementation for names without a known prefix.
-func RoleFromName(name string) Role {
+// ParseRoleFromName extracts the Role from a prefixed agent name.
+// The bool reports whether the name carried a known role prefix.
+func ParseRoleFromName(name string) (Role, bool) {
 	prefix, _, ok := strings.Cut(name, ":")
 	if !ok {
-		return RoleImplementation
+		return RoleImplementation, false
 	}
 	r := Role(prefix)
 	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleHumanReview:
-		return r
+	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation, RoleHumanReview:
+		return r, true
 	default:
-		return RoleImplementation
+		return RoleImplementation, false
+	}
+}
+
+// RoleFromName extracts the Role from a prefixed agent name.
+// Returns RoleImplementation for names without a known prefix.
+func RoleFromName(name string) Role {
+	r, _ := ParseRoleFromName(name)
+	return r
+}
+
+// DefaultReasoningEffort returns the built-in per-role reasoning-effort
+// baseline used when neither an experiment assignment nor the task itself
+// pins a level (see RunConfig.ReasoningEffort). System/verifier roles that
+// mostly classify or check pre-existing work default to "low"; the
+// code-authoring roles that most benefit from deeper reasoning default to
+// "high". Everything else falls back to DefaultReasoningEffort ("medium")
+// via the empty return.
+func (r Role) DefaultReasoningEffort() string {
+	switch r {
+	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview:
+		return "low"
+	case RoleImplementation, RoleFixReview, RolePRFix:
+		return "high"
+	default:
+		return ""
 	}
 }

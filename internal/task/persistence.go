@@ -44,12 +44,14 @@ type taskFrontmatter struct {
 	RequirePermissions     *bool               `yaml:"require_permissions,omitempty"`
 	HeadlessPermissionMode string              `yaml:"headless_permission_mode,omitempty"`
 	ForkSubagent           bool                `yaml:"fork_subagent,omitempty"`
+	Sandbox                *bool               `yaml:"sandbox,omitempty"`
 	ReasoningEffort        string              `yaml:"reasoning_effort,omitempty"`
 	TestingCycleStartedAt  *time.Time          `yaml:"testing_cycle_started_at,omitempty"`
 	AgentRuns              []agentRunRecord    `yaml:"agent_runs,omitempty"`
 	Workflow               *workflow.Execution `yaml:"workflow,omitempty"`
 	CreatedAt              time.Time           `yaml:"created_at"`
 	UpdatedAt              time.Time           `yaml:"updated_at"`
+	StatusChangedAt        time.Time           `yaml:"status_changed_at,omitempty"`
 }
 
 type agentRunRecord struct {
@@ -64,6 +66,8 @@ type agentRunRecord struct {
 	AssignmentKey          string    `yaml:"assignment_key,omitempty"`
 	ReasoningEffort        string    `yaml:"reasoning_effort,omitempty"`
 	State                  string    `yaml:"state"`
+	Outcome                string    `yaml:"outcome,omitempty"`
+	EscalationReason       string    `yaml:"escalation_reason,omitempty"`
 	StartedAt              time.Time `yaml:"started_at"`
 	CostUSD                float64   `yaml:"cost_usd,omitempty"`
 	PremiumRequests        float64   `yaml:"premium_requests,omitempty"`
@@ -118,11 +122,13 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		RequirePermissions:     fm.RequirePermissions,
 		HeadlessPermissionMode: fm.HeadlessPermissionMode,
 		ForkSubagent:           fm.ForkSubagent,
+		Sandbox:                fm.Sandbox,
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
 		Workflow:               fm.Workflow,
 		CreatedAt:              fm.CreatedAt,
 		UpdatedAt:              fm.UpdatedAt,
+		StatusChangedAt:        fm.StatusChangedAt,
 		Body:                   body,
 	}
 	if t.TaskType == "" {
@@ -172,12 +178,14 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		RequirePermissions:     t.RequirePermissions,
 		HeadlessPermissionMode: t.HeadlessPermissionMode,
 		ForkSubagent:           t.ForkSubagent,
+		Sandbox:                t.Sandbox,
 		ReasoningEffort:        t.ReasoningEffort,
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
 		AgentRuns:              agentRunRecordsFromRuns(t.AgentRuns),
 		Workflow:               t.Workflow,
 		CreatedAt:              t.CreatedAt,
 		UpdatedAt:              t.UpdatedAt,
+		StatusChangedAt:        t.StatusChangedAt,
 	}
 }
 

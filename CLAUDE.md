@@ -1,6 +1,6 @@
 # Sybra
 
-Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive tmux + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
+Local desktop app to orchestrate a swarm of Claude Code agents. Markdown-based task management, two execution modes (interactive conversational session + headless `claude -p`), Wails v3 alpha GUI (darwin-only).
 
 ## Work-Data Confidentiality (HARD RULE)
 
@@ -51,8 +51,6 @@ sybra/
 │   │   ├── model.go         # Agent struct, State enum, StreamEvent
 │   │   ├── manager.go       # Start/stop/list agents
 │   │   └── runner_headless.go # claude -p NDJSON stream parser
-│   ├── tmux/
-│   │   └── manager.go       # tmux session CRUD via os/exec
 │   ├── project/             # GitHub repo mirror + git worktree management
 │   │   ├── model.go         # Project struct
 │   │   ├── store.go         # YAML-backed project store
@@ -83,8 +81,8 @@ sybra/
 
 ### Backend
 
-- **Go 1.26.4**
-- **Wails v3 alpha** (`v3.0.0-alpha2.111`, per go.mod) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
+- **Go** (pinned version in `mise.toml`)
+- **Wails v3 alpha** (pinned version in `go.mod`) — desktop app framework with service-based binding, multi-window, typed events. Darwin-only on this branch.
 - **fsnotify** — file watching for task changes
 - **gopkg.in/yaml.v3** — YAML frontmatter parsing
 
@@ -98,7 +96,7 @@ sybra/
 
 ### Tooling
 
-- **mise** — tool version management (Go 1.26.4, Node 24)
+- **mise** — tool version management (Go, Node — see `mise.toml`)
 - **golangci-lint v2** — Go linting (gocritic, nilerr, nilnesserr, nilnil, nolintlint, modernize)
 - **oxlint** — frontend linting
 - **GitHub Actions** — CI (lint-go, lint-frontend, build)
@@ -195,12 +193,11 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
 
 **Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
 
-**Interactive** (tmux):
-```bash
-tmux new-session -d -s sybra-<id> -x 200 -y 50 "claude"
-```
-- GUI polls `tmux capture-pane -t sybra-<id> -p` for preview
-- User attaches via terminal
+**Interactive** (persistent conversational session — not tmux):
+
+`agent.Manager.Run` spawns a long-lived CLI process that streams stream-json over stdin/stdout: claude via `runConversational` (persistent approval-hook runner), codex/copilot via the per-turn conversational runner (`UsesPerTurnConvo()`). The GUI renders the live stream in a bounded session box; the user drives it by sending turns.
+
+**Same provider gate as headless.** Both modes resolve the provider through `prepareRunConfig` → `gateProvider` → `resolveProviderDecision`, so an unhealthy/rate-limited provider fails over (claude → codex → copilot) and the model is remapped (`NormalizeModel`) exactly like headless. There is no provider-pinned interactive launcher. Failover is decided at *dispatch*; an agent already running when its own provider caps mid-run does not hot-swap (headless recovers by re-dispatch via `RescheduleRateLimitedAgent`).
 
 ### Worktree Agent Context
 
@@ -234,6 +231,56 @@ aborts if exclusion fails, so an unignored scratchpad of work-derived notes is
 never left for `SanitizeWorktree`'s `git add -A` to commit onto the PR. For
 work-typed tasks the file stays local; route through `internal/scrub` if ever
 summarized into a persisted artifact.
+
+### OS-Level Process Sandbox (darwin)
+
+Env-level isolation (`SYBRA_HOME`, see above) is advisory — a malicious or
+confused tool can still write anywhere the OS user can, which is the blast
+radius the 2026-07-06 board-wipe incident (#1576) exploited. `internal/agent`
+adds a second, OS-enforced layer on darwin: every provider CLI spawn
+(headless pipe/survive, persistent claude convo, convo-survive, per-turn
+codex/copilot) routes through one constructor, `newProviderCmd`
+(`runner_core.go`) — the sole caller of a provider `exec.CommandContext`. A
+`rg exec.CommandContext internal/agent` drift check must only ever match
+`newProviderCmd` itself plus four documented non-provider probe sites
+(`reattach_other.go` ps, `discovery.go` pgrep/lsof, `skill_invoke.go` codex plugin
+list); a new spawn site cannot obtain an unsandboxed process by construction.
+
+`newProviderCmd` wraps the invocation via `wrapInvocation`
+(`procsandbox_darwin.go`, `!darwin` no-op stub in `procsandbox_other.go`),
+transposing it through `sandbox-exec` with an embedded seatbelt profile
+(`agent_sandbox.sb`) that denies `file-write*` everywhere except three
+canonicalized roots supplied via `-D`: the task's worktree, its sandbox home
+(`injectSandboxHome`'s resolved dir), and the tmp root from `os.TempDir()`
+(typically `/var/folders/.../T` on macOS, or `/private/tmp` if `TMPDIR` points
+at `/tmp`) — canonicalized in enforce mode so a symlinked tmp root (e.g. the
+`/tmp` symlink) resolves to its real path, or legitimate tmp writes would be
+denied. Reads stay unrestricted. `sandbox-exec` execs the child in place,
+preserving its PID and signal delivery (required for the watchdog kill path
+and detached-agent reattach), and the profile applies transitively to
+grandchild processes (e.g. a Playwright/npm/node subprocess an agent
+spawns) — the literal #1576 shape.
+
+Posture is `agent.sandbox_mode` (`off`/`report`/`enforce`, config default
+**`report`**) plus a per-task `sandbox: false` escape hatch (nil/true =
+inherit config; false = force off), resolved by
+`agentorch.ResolveSandboxMode` and set into `RunConfig.SandboxMode`.
+`Manager.injectProcessSandbox` (`manager_run.go`) resolves this once per run
+into an unexported `RunConfig.sandbox` spec:
+
+- `off`: no validation, no wrap.
+- `report`: validates and logs the resolved allowlist via `slog`, but
+  **never wraps the spawn** — a profile/SBPL defect can only ever affect an
+  explicit `enforce` posture, never the default rollout posture. This is
+  why `report` is safe to ship as the default.
+- `enforce`: canonicalizes the roots, materializes the embedded profile, and
+  fails the run closed (no spawn) if `sandbox-exec` or the profile is
+  unavailable — mirroring `injectSandboxHome`'s fail-closed discipline.
+
+The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
+logs a warning and records `audit.EventAgentSandboxDisabled`. Server/Linux
+has no equivalent OS enforcement yet (`sandbox-exec` is macOS-only) — tracked
+as a follow-up (#1595), not silently out of scope.
 
 ### Verified Experience Memory
 
@@ -366,7 +413,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
-**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash
 mise run verify
@@ -477,3 +524,4 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
 - ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.
 - ❌ Surfacing `internal/artifact/` content in a GitHub issue/PR/comment without routing through `App.workScrubContextForTask` + `scrub.Scrub` first — the artifact store is raw/local-debug-only and never scrubs at write time.
+- ❌ Reconstructing the operator's real Sybra home (joining a home-dir lookup with `.sybra`) anywhere outside `config.HomeDir()` (`internal/config/config_defaults.go`) — this is the exact pattern that caused the 2026-07-06 board wipe (#1576: a test suite silently fell back to `~/.sybra` and deleted files there). Call `config.HomeDir()` (Go) or require `SYBRA_HOME` explicitly (shell/TS) instead. `scripts/check-no-home-fallback.sh` (run in `mise run verify` and CI) fails on new occurrences outside its allowlist.

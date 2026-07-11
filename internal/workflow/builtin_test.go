@@ -31,6 +31,7 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("maybe_critique")
 	if step == nil {
@@ -96,10 +97,12 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("require_plan_critique")
 	if step == nil {
 		t.Fatal("require_plan_critique step not found in simple-task-plan")
+		return
 	}
 	if !step.Config.AllowMissing {
 		t.Fatal("require_plan_critique must soft-fail when the critic produces no sidecar")
@@ -112,6 +115,133 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 	if got != "review_plan" {
 		t.Fatalf("missing critique next = %q, want review_plan", got)
+	}
+}
+
+// TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove locks the
+// behavior that an APPROVE plan-critique verdict routes straight to
+// review_plan, skipping the second full opus address_critique run — that
+// run only makes sense when the critic asked for changes.
+func TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+		return
+	}
+	step := simple.StepByID("route_critique_verdict")
+	if step == nil {
+		t.Fatal("route_critique_verdict step not found in simple-task-plan")
+	}
+
+	cases := []struct {
+		name         string
+		planCritique string
+		want         string
+	}{
+		{
+			name:         "approve_skips_address_critique",
+			planCritique: "# Plan Review: APPROVE\n\n## Verdict\n\nExecutable as-is.\n",
+			want:         "review_plan",
+		},
+		{
+			name:         "refine_routes_to_address_critique",
+			planCritique: "# Plan Review: REFINE\n\n## Verdict\n\nNeeds targeted edits.\n",
+			want:         "reset_for_address",
+		},
+		{
+			name:         "reject_routes_to_address_critique",
+			planCritique: "# Plan Review: REJECT\n\n## Verdict\n\nUngrounded.\n",
+			want:         "reset_for_address",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.plan_critique": tc.planCritique,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
+// iteration cap: task.replan_count is start_replan's own step-history count
+// as of the current reject, so 0/1/2 still have budget for another full
+// opus replan cycle, and 3+ hands the task to a human instead of burning a
+// 4th opus run on a plan the human keeps rejecting.
+func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+	}
+	step := simple.StepByID("check_replan_cap")
+	if step == nil {
+		t.Fatal("check_replan_cap step not found in simple-task-plan")
+	}
+
+	cases := []struct {
+		name        string
+		replanCount string
+		want        string
+	}{
+		{name: "first_reject_under_cap", replanCount: "0", want: "start_replan"},
+		{name: "second_reject_under_cap", replanCount: "1", want: "start_replan"},
+		{name: "third_reject_under_cap", replanCount: "2", want: "start_replan"},
+		{name: "fourth_reject_hits_cap", replanCount: "3", want: "replan_cap_exceeded"},
+		{name: "well_past_cap", replanCount: "9", want: "replan_cap_exceeded"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.replan_count": tc.replanCount,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	exceeded := simple.StepByID("replan_cap_exceeded")
+	if exceeded == nil {
+		t.Fatal("replan_cap_exceeded step not found in simple-task-plan")
+		return
+	}
+	if exceeded.Config.Status != "human-required" {
+		t.Errorf("replan_cap_exceeded status = %q, want human-required", exceeded.Config.Status)
 	}
 }
 
@@ -131,10 +261,12 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		return
 	}
 	step := simple.StepByID("address_critique")
 	if step == nil {
 		t.Fatal("address_critique step not found in simple-task-plan")
+		return
 	}
 	got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
 	if err != nil {
@@ -159,6 +291,7 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 		step := simple.StepByID(c.step)
 		if step == nil {
 			t.Fatalf("%s step not found in simple-task-plan", c.step)
+			return
 		}
 		got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
 		if err != nil {
@@ -193,18 +326,18 @@ func TestBuiltinSimpleTaskPlan_AgentStepsAreHeadless(t *testing.T) {
 		t.Fatal("simple-task-plan builtin definition not found")
 	}
 
-	var agentSteps int
+	var runAgentSteps int
 	for i := range simple.Steps {
 		step := &simple.Steps[i]
 		if step.Type != StepRunAgent {
 			continue
 		}
-		agentSteps++
+		runAgentSteps++
 		if step.Config.Mode != "headless" {
 			t.Errorf("run_agent step %q mode = %q, want headless (autonomous planning agents must stay under watchdog supervision)", step.ID, step.Config.Mode)
 		}
 	}
-	if agentSteps == 0 {
+	if runAgentSteps == 0 {
 		t.Fatal("expected simple-task-plan to contain run_agent steps")
 	}
 }
@@ -225,10 +358,12 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
+		return
 	}
 	step := impl.StepByID("implement")
 	if step == nil {
 		t.Fatal("implement step not found in simple-task-implement")
+		return
 	}
 	if !strings.Contains(step.Config.Prompt, "sybra-cli get --compact {{.Task.ID}}") {
 		t.Fatalf("implement prompt must use compact task view, got:\n%s", step.Config.Prompt)
@@ -362,6 +497,112 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting locks the trivial
+// escape hatch in simple-task-review's maybe_review transition table: a
+// trivial tag routes straight to done_review (skipping the code-review
+// agents), same as an already-reviewed task, while noreview and the normal
+// path are unaffected.
+func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
+	t.Parallel()
+
+	review := mustBuiltinDefinition(t, "simple-task-review")
+	step := review.StepByID("maybe_review")
+	if step == nil {
+		t.Fatal("maybe_review step not found in simple-task-review")
+	}
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "no_escape_hatch_goes_to_triage_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,feature"},
+			want:   "triage_review",
+		},
+		{
+			name:   "trivial_skips_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,trivial"},
+			want:   "done_review",
+		},
+		{
+			name:   "noreview_skips_review",
+			fields: map[string]string{"task.reviewed": "false", "task.tags": "backend,noreview"},
+			want:   "done_review",
+		},
+		{
+			name:   "already_reviewed_wins_over_normal_path",
+			fields: map[string]string{"task.reviewed": "true", "task.tags": "backend,feature"},
+			want:   "done_review",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, tc.fields)
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean locks
+// the #1524 fix: a clean review (zero actionable findings) routes straight
+// to done_review, skipping the fix_review agent entirely — the review-side
+// analog of route_critique_verdict's plan-critique gate (#1490).
+func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *testing.T) {
+	t.Parallel()
+
+	review := mustBuiltinDefinition(t, "simple-task-review")
+	step := review.StepByID("route_review_verdict")
+	if step == nil {
+		t.Fatal("route_review_verdict step not found in simple-task-review")
+	}
+
+	cases := []struct {
+		name       string
+		codeReview string
+		want       string
+	}{
+		{
+			name:       "clean_skips_fix_review",
+			codeReview: "Review Verdict: CLEAN\n\nNo actionable findings.\n",
+			want:       "done_review",
+		},
+		{
+			name:       "needs_fixes_routes_to_fix_review",
+			codeReview: "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
+			want:       "fix_review",
+		},
+		{
+			name: "needs_fixes_echoing_clean_marker_routes_to_fix_review",
+			codeReview: "Review Verdict: NEEDS_FIXES\n\n" +
+				"This is not a Review Verdict: CLEAN pass; see the finding below.\n\n" +
+				"foo.go:12: nil deref risk.\n",
+			want: "fix_review",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(step.Next, map[string]string{
+				"task.code_review": tc.codeReview,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("goto = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuiltinDefinitions(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -416,6 +657,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	fix := prfix.StepByID("fix")
 	if fix == nil {
 		t.Fatal("fix step missing from pr-fix")
+		return
 	}
 	if got, err := ResolveTransition(fix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "route_pr_fix_result" {
 		t.Fatalf("fix next = %q, err=%v; want route_pr_fix_result", got, err)
@@ -423,6 +665,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	route := prfix.StepByID("route_pr_fix_result")
 	if route == nil {
 		t.Fatal("route_pr_fix_result step missing from pr-fix")
+		return
 	}
 	if route.Type != StepRoutePRFixResult {
 		t.Fatalf("route_pr_fix_result type = %q, want %q", route.Type, StepRoutePRFixResult)
@@ -435,7 +678,51 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	}
 }
 
-func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
+// TestBuiltinDefinitions_NeverInstructForcePush is the repo-wide acceptance
+// probe for the "never force-push" invariant: no builtin workflow prompt may
+// instruct an agent to force-push, under any spelling. Sybra's own process
+// (project.PushSync) already refuses to force-push and instead returns
+// ErrDivergedNeedsResolve for agent-driven recovery — this test guards the
+// other force-push surface, the prompts Sybra authors for agents, so a new
+// builtin workflow can't reintroduce a force-push instruction unnoticed.
+func TestBuiltinDefinitions_NeverInstructForcePush(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	// Match actual git-push instructions, not advisory prose like
+	// "Never force-push" or unrelated commands that may legitimately use
+	// a --force flag.
+	forbidden := []string{"--force-with-lease", "--force", " -f", "\t-f", "`-f`"}
+	for _, def := range defs {
+		for _, step := range def.Steps {
+			prompt := step.Config.Prompt
+			if prompt == "" {
+				continue
+			}
+			for line := range strings.Lines(prompt) {
+				if !strings.Contains(line, "git push") {
+					continue
+				}
+				for _, term := range forbidden {
+					if strings.Contains(line, term) {
+						t.Fatalf("builtin %q step %q prompt instructs force-push (contains %q):\n%s", def.ID, step.ID, term, prompt)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic proves create_pr and
+// push_existing_pr are the mechanized `create_pr`/`push_branch` step types,
+// not an agent whose prompt hand-rolls fork-remote routing/never-force-push
+// logic in shell. That routing now lives in project.HeadArg/PushSync (see
+// TestHeadArg_WithFork/NoFork and TestPushSync_* in internal/project), and
+// this test just guards against a regression back to a run_agent step.
+func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
 	if err != nil {
@@ -450,32 +737,31 @@ func TestBuiltinSimpleTaskReview_CreatePRUsesForkRemote(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-pr builtin definition not found")
+		return
 	}
-	step := simple.StepByID("create_pr")
-	if step == nil {
+
+	createStep := simple.StepByID("create_pr")
+	if createStep == nil {
 		t.Fatal("create_pr step not found in simple-task-pr")
+		return
 	}
-	prompt := step.Config.Prompt
-	for _, want := range []string{
-		`remote.fork.url`,
-		`PUSH_REMOTE="fork"`,
-		`REMOTE_URL="$(git config --get "remote.$PUSH_REMOTE.url")"`,
-		`--head "$HEAD_ARG"`,
-		`git push -u "$PUSH_REMOTE" HEAD:"$BRANCH"`,
-		`headRefOid`,
-		`test "$LOCAL_SHA" = "$PR_SHA"`,
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("create_pr prompt missing %q", want)
-		}
+	if createStep.Type != StepCreatePR {
+		t.Fatalf("create_pr step type = %q, want %q", createStep.Type, StepCreatePR)
 	}
-	for _, forbidden := range []string{
-		"git push -u origin HEAD",
-		"git push --force-with-lease -u origin HEAD",
-	} {
-		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("create_pr prompt still hardcodes %q", forbidden)
-		}
+	if createStep.Config.Prompt != "" {
+		t.Fatalf("create_pr step still carries an agent prompt: %q", createStep.Config.Prompt)
+	}
+
+	pushStep := simple.StepByID("push_existing_pr")
+	if pushStep == nil {
+		t.Fatal("push_existing_pr step not found in simple-task-pr")
+		return
+	}
+	if pushStep.Type != StepPushBranch {
+		t.Fatalf("push_existing_pr step type = %q, want %q", pushStep.Type, StepPushBranch)
+	}
+	if pushStep.Config.Prompt != "" {
+		t.Fatalf("push_existing_pr step still carries an agent prompt: %q", pushStep.Config.Prompt)
 	}
 }
 
@@ -498,6 +784,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-pr builtin definition not found")
+		return
 	}
 
 	first := simple.FirstStep()
@@ -508,6 +795,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	syncStep := simple.StepByID("sync_branch")
 	if syncStep == nil {
 		t.Fatal("sync_branch step not found in simple-task-pr")
+		return
 	}
 	if len(syncStep.Next) != 1 || syncStep.Next[0].GoTo != "maybe_create_pr" {
 		t.Fatalf("sync_branch.Next = %+v, want unconditional goto maybe_create_pr", syncStep.Next)
@@ -518,6 +806,7 @@ func TestBuiltinSimpleTaskPR_SyncBranchPrecedesPRHandoff(t *testing.T) {
 	guard := simple.StepByID("maybe_create_pr")
 	if guard == nil {
 		t.Fatal("maybe_create_pr step not found in simple-task-pr")
+		return
 	}
 	var gotoTargets []string
 	for _, n := range guard.Next {
@@ -763,6 +1052,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	step := testingDef.StepByID("run_test")
 	if step == nil {
 		t.Fatal("run_test step not found in testing-task")
+		return
 	}
 	const wantSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}`
 	if step.Config.OutputSchema != wantSchema {
@@ -858,19 +1148,61 @@ func isCodexObjectSchema(schema map[string]any) bool {
 	return hasProperties || hasRequired || hasAdditionalProperties
 }
 
+// TestBuiltinTestingTask_NotestStillRunsTester asserts the real invariant:
+// notest only downgrades evidence requirements (app-start exemption), it
+// must never bypass the test-runner. skip_testing exists (for `trivial`) but
+// notest-tagged tasks must still route to run_test.
 func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 	t.Parallel()
 
 	testingDef := mustBuiltinDefinition(t, "testing-task")
-	if testingDef.StepByID("skip_testing") != nil {
-		t.Fatal("testing-task must not bypass test-runner for notest tasks")
-	}
 	maybe := testingDef.StepByID("maybe_test")
 	if maybe == nil {
 		t.Fatal("maybe_test step not found in testing-task")
+		return
 	}
-	if len(maybe.Next) != 1 || maybe.Next[0].GoTo != "run_test" {
-		t.Fatalf("maybe_test next = %+v, want unconditional run_test", maybe.Next)
+	for _, n := range maybe.Next {
+		if n.When != nil && n.When.Value == "notest" {
+			t.Fatalf("maybe_test must not branch on notest, got branch to %q", n.GoTo)
+		}
+	}
+	if len(maybe.Next) == 0 {
+		t.Fatal("maybe_test has no transitions")
+	}
+	if got := maybe.Next[len(maybe.Next)-1].GoTo; got != "run_test" {
+		t.Fatalf("maybe_test fallthrough = %q, want run_test", got)
+	}
+}
+
+func TestBuiltinTestingTask_TrivialSkipsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	maybe := testingDef.StepByID("maybe_test")
+	if maybe == nil {
+		t.Fatal("maybe_test step not found in testing-task")
+		return
+	}
+	var gotTrivialBranch bool
+	for _, n := range maybe.Next {
+		if n.When != nil && n.When.Field == "task.tags" && n.When.Operator == "contains" && n.When.Value == "trivial" {
+			gotTrivialBranch = true
+			if n.GoTo != "skip_testing" {
+				t.Fatalf("trivial branch goto = %q, want skip_testing", n.GoTo)
+			}
+		}
+	}
+	if !gotTrivialBranch {
+		t.Fatal("maybe_test has no branch for task.tags contains trivial")
+	}
+
+	skip := testingDef.StepByID("skip_testing")
+	if skip == nil {
+		t.Fatal("skip_testing step not found in testing-task")
+		return
+	}
+	if skip.Type != "set_status" || skip.Config.Status != "ready-pr" {
+		t.Fatalf("skip_testing = %+v, want set_status to ready-pr", skip)
 	}
 }
 
@@ -887,4 +1219,88 @@ func mustBuiltinDefinition(t *testing.T, id string) *Definition {
 	}
 	t.Fatalf("%s builtin definition not found", id)
 	return nil
+}
+
+// TestBuiltinBestOfN_OptInTriggerPriority locks the opt-in contract: an
+// untagged in-progress task must still select simple-task-implement, and only
+// a task carrying the best-of-n tag selects simple-task-best-of-n-implement
+// — which requires a strictly higher trigger priority so it wins the tie on
+// the same task.status_changed/in-progress event.
+func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
+	t.Parallel()
+
+	implement := mustBuiltinDefinition(t, "simple-task-implement")
+	bestOfN := mustBuiltinDefinition(t, "simple-task-best-of-n-implement")
+
+	if bestOfN.Trigger.Priority <= implement.Trigger.Priority {
+		t.Fatalf("simple-task-best-of-n-implement priority %d must be > simple-task-implement priority %d",
+			bestOfN.Trigger.Priority, implement.Trigger.Priority)
+	}
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	untagged := TaskInfo{ID: "t1", Status: "in-progress", Tags: []string{"backend"}}
+	if got := engine.MatchWorkflow(untagged, "task.status_changed"); got == nil || got.ID != "simple-task-implement" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("untagged in-progress task matched %q, want simple-task-implement", id)
+	}
+
+	tagged := TaskInfo{ID: "t2", Status: "in-progress", Tags: []string{"backend", "best-of-n"}}
+	if got := engine.MatchWorkflow(tagged, "task.status_changed"); got == nil || got.ID != "simple-task-best-of-n-implement" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("best-of-n-tagged in-progress task matched %q, want simple-task-best-of-n-implement", id)
+	}
+}
+
+// TestBuiltinBestOfN_DeclaresMechanicalSteps confirms the opt-in workflow
+// wires both new step types with the promote step correctly cross-referencing
+// the judge and best_of_n steps — a minimal regression net for the YAML
+// staying in sync with model.go's step-type constants.
+func TestBuiltinBestOfN_DeclaresMechanicalSteps(t *testing.T) {
+	t.Parallel()
+
+	def := mustBuiltinDefinition(t, "simple-task-best-of-n-implement")
+
+	var sawBestOfN, sawPromote bool
+	for i := range def.Steps {
+		s := &def.Steps[i]
+		switch s.Type {
+		case StepBestOfN:
+			sawBestOfN = true
+			if s.Config.Attempts < 2 {
+				t.Errorf("best_of_n step %q attempts = %d, want >= 2", s.ID, s.Config.Attempts)
+			}
+		case StepPromoteBestOfN:
+			sawPromote = true
+			if s.Config.JudgeStep == "" || s.Config.BestOfNStep == "" {
+				t.Errorf("promote_best_of_n step %q missing judge_step/best_of_n_step", s.ID)
+			}
+		default:
+			// Every other step type in this workflow (run_agent, verify_commits,
+			// detect_tampering, verify_checks, set_status, ...) is out of scope
+			// for this regression net.
+		}
+	}
+	if !sawBestOfN {
+		t.Error("simple-task-best-of-n-implement has no best_of_n step")
+	}
+	if !sawPromote {
+		t.Error("simple-task-best-of-n-implement has no promote_best_of_n step")
+	}
 }

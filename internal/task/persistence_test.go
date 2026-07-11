@@ -14,6 +14,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 	closedAt := now.Add(time.Hour)
 	dueDate := now.Add(24 * time.Hour)
 	requirePermissions := false
+	sandbox := false
 	testingCycleStartedAt := now.Add(2 * time.Hour)
 	completedAt := now.Add(3 * time.Hour)
 	original := Task{
@@ -51,6 +52,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		RequirePermissions:     &requirePermissions,
 		HeadlessPermissionMode: "auto",
 		ForkSubagent:           true,
+		Sandbox:                &sandbox,
 		ReasoningEffort:        "xhigh",
 		TestingCycleStartedAt:  &testingCycleStartedAt,
 		AgentRuns: []AgentRun{{
@@ -65,6 +67,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			AssignmentKey:          "task1234",
 			ReasoningEffort:        "high",
 			State:                  "done",
+			EscalationReason:       "cost",
 			StartedAt:              now,
 			CostUSD:                1.25,
 			PremiumRequests:        2.5,
@@ -253,6 +256,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.HeadlessPermissionMode = "auto"
 	case "ForkSubagent":
 		task.ForkSubagent = true
+	case "Sandbox":
+		task.Sandbox = &falseValue
 	case "ReasoningEffort":
 		task.ReasoningEffort = "xhigh"
 	case "TestingCycleStartedAt":
@@ -270,6 +275,7 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 			AssignmentKey:          "task-persist",
 			ReasoningEffort:        "high",
 			State:                  "done",
+			EscalationReason:       "cost",
 			StartedAt:              now,
 			CostUSD:                1.25,
 			PremiumRequests:        2.5,
@@ -298,6 +304,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.CreatedAt = now
 	case "UpdatedAt":
 		task.UpdatedAt = later
+	case "StatusChangedAt":
+		task.StatusChangedAt = later
 	default:
 		t.Fatalf("no persistence test value for Task.%s", name)
 	}

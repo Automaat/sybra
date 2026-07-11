@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +20,44 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
+
+// TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
+// simple-task-plan replan/critique gates depend on: task.plan_critique
+// mirrors TaskInfo.PlanCritique verbatim (route_critique_verdict substring-
+// matches its verdict heading), and task.replan_count is start_replan's own
+// step-history count as of the current call — the number of full opus
+// replan cycles already spent, not counting the one about to start.
+func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plan_critique mirrors TaskInfo verbatim", func(t *testing.T) {
+		ti := TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n"}
+		fields := taskFields(ti)
+		if got := fields["task.plan_critique"]; got != ti.PlanCritique {
+			t.Errorf("task.plan_critique = %q, want %q", got, ti.PlanCritique)
+		}
+	})
+
+	t.Run("replan_count absent without a workflow", func(t *testing.T) {
+		fields := taskFields(TaskInfo{ID: "t1"})
+		if _, ok := fields["task.replan_count"]; ok {
+			t.Errorf("task.replan_count = %q, want absent when Workflow is nil", fields["task.replan_count"])
+		}
+	})
+
+	t.Run("replan_count reflects start_replan history", func(t *testing.T) {
+		wf := &Execution{}
+		wf.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+		wf.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
+		ti := TaskInfo{ID: "t1", Workflow: wf}
+		fields := taskFields(ti)
+		if got := fields["task.replan_count"]; got != "2" {
+			t.Errorf("task.replan_count = %q, want %q", got, "2")
+		}
+	})
+}
 
 // --- Test helpers ---
 
@@ -27,6 +66,8 @@ func init() {
 	// retry loop — tests drive attempt counts via the linker queue.
 	prVerifySleep = func(time.Duration) {}
 	prVerifyBackoffs = []time.Duration{0, 0, 0}
+	// Skip real backoff waits in the classify_task retry loop.
+	classifyTaskRetryBackoffs = []time.Duration{0, 0, 0}
 }
 
 func discardLogger() *slog.Logger {
@@ -65,12 +106,14 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu      sync.Mutex
-	tasks   map[string]*TaskInfo
-	reasons map[string]string
-	steers  map[string]string
-	gets    map[string]int
-	onGet   func(id string, t *TaskInfo, count int)
+	mu        sync.Mutex
+	tasks     map[string]*TaskInfo
+	reasons   map[string]string
+	steers    map[string]string
+	gets      map[string]int
+	onGet     func(id string, t *TaskInfo, count int)
+	appendErr error
+	failGet   bool
 }
 
 func newMemTasks() *memTasks {
@@ -113,9 +156,21 @@ func (m *memTasks) SetGetTaskHook(hook func(id string, t *TaskInfo, count int)) 
 	m.onGet = hook
 }
 
+// SetFailGet forces GetTask to error even when the task exists, simulating a
+// transient store read hiccup. Other operations (UpdateTaskStatus, etc.) keep
+// working, so it can model a read failure concurrent with a live task.
+func (m *memTasks) SetFailGet(fail bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failGet = fail
+}
+
 func (m *memTasks) GetTask(id string) (TaskInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failGet {
+		return TaskInfo{}, fmt.Errorf("task %s: simulated store read failure", id)
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return TaskInfo{}, fmt.Errorf("task %s not found", id)
@@ -228,6 +283,9 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -237,6 +295,17 @@ func (m *memTasks) AppendTaskBody(id, content string) error {
 		body += "\n\n"
 	}
 	t.Body = body + content + "\n"
+	return nil
+}
+
+func (m *memTasks) ReplaceTaskBody(id, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Body = body
 	return nil
 }
 
@@ -326,6 +395,9 @@ type mockAgents struct {
 	providerFailover  bool            // when true, ProviderCanFailover reports true
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
+	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
+	startGate         chan struct{}
+	startEntered      chan struct{}
 }
 
 type panicStartAgents struct{ *mockAgents }
@@ -342,6 +414,15 @@ func newMockAgents() *mockAgents {
 }
 
 func (m *mockAgents) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
+	if m.startEntered != nil {
+		select {
+		case m.startEntered <- struct{}{}:
+		default:
+		}
+	}
+	if m.startGate != nil {
+		<-m.startGate
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failSpawn != nil {
@@ -462,6 +543,50 @@ func (m *mockAgents) SendPrompt(agentID, message string) error {
 }
 
 func (m *mockAgents) DefaultProvider() string { return "claude" }
+
+func (m *mockAgents) TryClaimDispatch(taskID string) (DispatchClaim, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dispatchClaimed == nil {
+		m.dispatchClaimed = make(map[string]bool)
+	}
+	if m.dispatchClaimed[taskID] {
+		return nil, false
+	}
+	m.dispatchClaimed[taskID] = true
+	return mockDispatchClaim{m: m, taskID: taskID}, true
+}
+
+func (m *mockAgents) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dispatchClaimed[taskID]
+}
+
+type mockDispatchClaim struct {
+	m      *mockAgents
+	taskID string
+}
+
+func (c mockDispatchClaim) Release() {
+	c.m.mu.Lock()
+	defer c.m.mu.Unlock()
+	if c.m.dispatchClaimed != nil {
+		delete(c.m.dispatchClaimed, c.taskID)
+	}
+}
+
+// SetDispatchClaimed simulates an out-of-band dispatcher (e.g.
+// recovery.RestartStaleInProgress) holding the shared agent.Manager
+// dispatch claim for taskID, independent of this engine's own bookkeeping.
+func (m *mockAgents) SetDispatchClaimed(taskID string, v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dispatchClaimed == nil {
+		m.dispatchClaimed = make(map[string]bool)
+	}
+	m.dispatchClaimed[taskID] = v
+}
 
 // SimulateComplete marks the agent for a task as no longer running.
 func (m *mockAgents) SimulateComplete(taskID string) {
@@ -946,6 +1071,62 @@ func TestResumeStalled_WatchdogLoopHumanRequiredDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestResumeStalled_TransientFetchRetriesThenEscalates(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(worktreeerr.ErrTransientFetch)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: transientFetchStatusReason,
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	for attempt := 1; attempt <= maxTransientFetchRetries; attempt++ {
+		engine.ResumeStalled()
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatalf("get task after attempt %d: %v", attempt, err)
+		}
+		if got.Status != "in-progress" {
+			t.Fatalf("attempt %d status = %q, want in-progress", attempt, got.Status)
+		}
+		if got.Workflow.Variables[transientFetchRetryKey("implement")] != strconv.Itoa(attempt) {
+			t.Fatalf("attempt %d retry var = %q, want %q", attempt, got.Workflow.Variables[transientFetchRetryKey("implement")], strconv.Itoa(attempt))
+		}
+		if got.StatusReason != transientFetchStatusReason {
+			t.Fatalf("attempt %d status_reason = %q, want %q", attempt, got.StatusReason, transientFetchStatusReason)
+		}
+	}
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after retry exhaustion", got.Status)
+	}
+	wantReason := "agent start blocked: transient network retry budget exhausted after 2 attempts reconciling worktree with remote"
+	if got.StatusReason != wantReason {
+		t.Fatalf("status_reason = %q, want %q", got.StatusReason, wantReason)
+	}
+	if got.Workflow.Variables[transientFetchRetryKey("implement")] != strconv.Itoa(maxTransientFetchRetries) {
+		t.Fatalf("retry var = %q, want %d", got.Workflow.Variables[transientFetchRetryKey("implement")], maxTransientFetchRetries)
+	}
+}
+
 func TestResumeStalled_WatchdogHangDoesNotBurnBudgetWhileAgentRunning(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -1118,7 +1299,7 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 // aborted_streaming result followed by a provider-error exit); both used to
 // land on the run_test step and exhaust max_retries instantly.
 //
-// After the fix, dispatching the retry stops the original agent AND clears its
+// After the fix, launching the retry stops the original agent AND clears its
 // step mapping, so its second completion is untracked and dropped by the
 // phantom-completion guard rather than triggering a further retry.
 func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
@@ -1613,6 +1794,150 @@ func TestNoWorkflowField(t *testing.T) {
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Result: "result", Success: true})
 }
 
+func TestDispatchPriorityRank(t *testing.T) {
+	cases := []struct {
+		status string
+		want   int
+	}{
+		{"in-review", 0},
+		{"ready-pr", 0},
+		{"ready-review", 1},
+		{"testing", 1},
+		{"in-progress", 2},
+		{"planning", 3},
+		{"plan-review", 3},
+		{"todo", 4},
+		{"new", 4},
+		{"blocked", 4},
+		{"", 4},
+	}
+	for _, tc := range cases {
+		if got := dispatchPriorityRank(tc.status); got != tc.want {
+			t.Errorf("dispatchPriorityRank(%q) = %d, want %d", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	parked := func(id, status string) TaskInfo {
+		return TaskInfo{
+			ID:        id,
+			Status:    status,
+			AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				Variables:   make(map[string]string),
+			},
+		}
+	}
+	tasks.Put(parked("t-new", "todo"))
+	tasks.Put(parked("t-mid", "in-progress"))
+	tasks.Put(parked("t-review", "in-review"))
+
+	engine.ResumeStalled()
+
+	var order []string
+	for _, c := range agents.calls {
+		order = append(order, c.TaskID)
+	}
+	want := []string{"t-review", "t-mid", "t-new"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("dispatch order = %v, want %v", order, want)
+	}
+}
+
+func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "todo",
+		Workflow: &Execution{
+			WorkflowID:  "wait-human-wf",
+			CurrentStep: "review_plan",
+			State:       ExecWaiting,
+			Variables:   make(map[string]string),
+		},
+	})
+
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "plan-review" {
+		t.Fatalf("status = %q, want plan-review (wait_human status must be reconciled)", ti.Status)
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("wait_human step must not spawn an agent, got %d", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(Definition{
+		ID:   "wait-human-wf",
+		Name: "wait human wf",
+		Steps: []Step{
+			{
+				ID:     "review_plan",
+				Name:   "Review Plan",
+				Type:   StepWaitHuman,
+				Config: StepConfig{Status: "plan-review", HumanActions: []string{"approve", "reject"}},
+				Next:   []Transition{{GoTo: ""}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{"cancelled", "done", "human-required"} {
+		t.Run(keep, func(t *testing.T) {
+			tasks := newMemTasks()
+			engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+			tasks.Put(TaskInfo{
+				ID:     "t1",
+				Status: keep,
+				Workflow: &Execution{
+					WorkflowID:  "wait-human-wf",
+					CurrentStep: "review_plan",
+					State:       ExecWaiting,
+					Variables:   make(map[string]string),
+				},
+			})
+
+			engine.ResumeStalled()
+
+			ti, _ := tasks.GetTask("t1")
+			if ti.Status != keep {
+				t.Fatalf("status = %q, want %q unchanged (skip status must not be reconciled)", ti.Status, keep)
+			}
+		})
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -1687,7 +2012,7 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 			Variables:   make(map[string]string),
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1747,7 +2072,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 					Variables:   vars,
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1774,12 +2099,80 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+// TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover is the
+// regression guard for sybra#1585: a reschedule that fires while the step's
+// provider is still inside its rate-limit cooldown (and no healthy peer exists
+// to fail over to) must PARK the task — not consume a watchdog retry budget and
+// not escalate to human-required. Even with the retry budget already exhausted,
+// the task waits for the cooldown to expire instead of bothering a human.
+func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *testing.T) {
+	tests := []struct {
+		name    string
+		retries string
+	}{
+		{name: "fresh budget parks", retries: ""},
+		{name: "exhausted budget still parks", retries: strconv.Itoa(maxWatchdogRateLimitRetries)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			// Provider throttled, no peer to fail over to → must park and wait.
+			agents.SetProviderRateLimited(true)
+			engine := NewEngine(store, tasks, agents, discardLogger())
+
+			vars := map[string]string{}
+			if tc.retries != "" {
+				vars[watchdogRateLimitRetryKey("implement")] = tc.retries
+			}
+			tasks.Put(TaskInfo{
+				ID:           "t1",
+				Status:       "in-progress",
+				StatusReason: "watchdog: rate limit: org-level quota exhausted",
+				AgentMode:    "headless",
+				Workflow: &Execution{
+					WorkflowID:  "test-simple",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					Variables:   vars,
+				},
+			})
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+			if got := agents.CallCount(); got != 0 {
+				t.Fatalf("expected no replacement agent starts while parked, got %d", got)
+			}
+			got, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != "in-progress" {
+				t.Fatalf("status = %q, want in-progress (parked, not escalated)", got.Status)
+			}
+			// Budget untouched: the parked attempt never counted.
+			if got := got.Workflow.Variables[watchdogRateLimitRetryKey("implement")]; got != tc.retries {
+				t.Fatalf("rate-limit retry var = %q, want unchanged %q", got, tc.retries)
+			}
+			// Breaker untouched: a transient throttle is not a dispatch failure.
+			if _, tripped := got.Workflow.Variables[circuitBreakerFailureKey("implement")]; tripped {
+				t.Fatalf("circuit breaker recorded a failure for a transient rate limit: %v", got.Workflow.Variables)
+			}
+			if _, tracked := engine.lookupAgentStep("limited-agent"); tracked {
+				t.Fatal("rate-limited agent step mapping was not cleared")
+			}
+		})
+	}
+}
+
 func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	engine.RescheduleRateLimitedAgent("", "limited-agent")
 
@@ -1811,7 +2204,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
 	mu := engine.taskInflightMutex("t1")
 	mu.Lock()
@@ -1836,7 +2229,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 	}
 }
 
-func TestRescheduleRateLimitedAgent_SkippedDispatchingDoesNotConsumeWatchdogRetry(t *testing.T) {
+func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1856,11 +2249,9 @@ func TestRescheduleRateLimitedAgent_SkippedDispatchingDoesNotConsumeWatchdogRetr
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "implement"}
 
-	engine.mu.Lock()
-	engine.dispatching["t1"] = struct{}{}
-	engine.mu.Unlock()
+	agents.SetDispatchClaimed("t1", true)
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
 	if got := agents.CallCount(); got != 0 {
@@ -1875,6 +2266,59 @@ func TestRescheduleRateLimitedAgent_SkippedDispatchingDoesNotConsumeWatchdogRetr
 	}
 	if got.StatusReason != "watchdog: rate limit: org-level quota exhausted" {
 		t.Fatalf("status_reason = %q", got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
+		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
+	}
+}
+
+func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.startEntered = make(chan struct{}, 1)
+	agents.startGate = make(chan struct{})
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	engine.agentRoutes["limited-agent-1"] = agentRoute{taskID: "t1", stepID: "implement"}
+	engine.agentRoutes["limited-agent-2"] = agentRoute{taskID: "t1", stepID: "implement"}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		engine.RescheduleRateLimitedAgent("t1", "limited-agent-1")
+	}()
+
+	<-agents.startEntered
+
+	go func() {
+		defer wg.Done()
+		engine.RescheduleRateLimitedAgent("t1", "limited-agent-2")
+	}()
+
+	close(agents.startGate)
+	wg.Wait()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
 	}
 	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "1" {
 		t.Fatalf("rate-limit retry var = %q, want 1", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
@@ -1907,7 +2351,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 			},
 		},
 	})
-	engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+	engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -1937,6 +2381,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	child := rec.Children["plan_a"]
 	if child == nil {
 		t.Fatal("child plan_a missing")
+		return
 	}
 	if child.AgentID != "agent-1" || child.Status != "pending" {
 		t.Fatalf("child status = %+v, want pending agent-1", child)
@@ -2000,7 +2445,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 					},
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 
 			engine.RescheduleRateLimitedAgent("t1", "limited-agent")
 
@@ -2071,6 +2516,7 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	for id, child := range rec.Children {
 		if child == nil {
 			t.Fatalf("child %s missing", id)
+			return
 		}
 		if child.Status != "pending" {
 			t.Fatalf("child %s status = %q, want pending after transient provider block", id, child.Status)
@@ -2325,7 +2771,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRe
 					},
 				},
 			})
-			engine.agentSteps["limited-agent"] = agentEntry{taskID: "t1", stepID: "plan_a"}
+			engine.agentRoutes["limited-agent"] = agentRoute{taskID: "t1", stepID: "plan_a"}
 			tasks.SetGetTaskHook(func(id string, task *TaskInfo, count int) {
 				if id == "t1" && count == 2 {
 					task.Status = tc.status
@@ -2685,6 +3131,36 @@ func TestShellStep_FailingCommandSetsStatusFailed(t *testing.T) {
 	}
 	if output.Status != "failed" {
 		t.Fatalf("expected failed, got %q", output.Status)
+	}
+}
+
+func TestShellStep_EmptyRenderedDirFailsClosed(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	step := &Step{
+		ID:   "shell-empty-dir",
+		Type: StepShell,
+		Config: StepConfig{
+			Command: "pwd",
+			Dir:     "{{getvar .Vars \"missing_dir\"}}",
+		},
+	}
+
+	ctx := TemplateContext{
+		Task: TaskInfo{ID: "t1"},
+		Step: *step,
+		Vars: make(map[string]string),
+	}
+
+	_, err := engine.execShell(step, ctx)
+	if err == nil {
+		t.Fatal("expected error for empty rendered dir")
+	}
+	if !strings.Contains(err.Error(), "resolved to empty path") {
+		t.Fatalf("err = %v, want empty-path failure", err)
 	}
 }
 
@@ -3183,6 +3659,199 @@ func TestExecRunAgent_ABTestingSkipsConfigDisabledProvider(t *testing.T) {
 	}
 }
 
+// demotionRecordHandler captures slog records for assertions, mirroring
+// internal/sybra's recordHandler test helper.
+type demotionRecordHandler struct {
+	records *[]slog.Record
+}
+
+func (h *demotionRecordHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *demotionRecordHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r.Clone())
+	return nil
+}
+func (h *demotionRecordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *demotionRecordHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func recordAttr(r slog.Record, key string) string {
+	var out string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// TestExecRunAgent_ProviderDemotionEmitsThrottledSignal proves selection-time
+// provider filtering (here: rate limiting) that changes the A/B outcome
+// surfaces a first-class demotion signal — wanted/selected/reason — logged at
+// Error on first occurrence and throttled to Debug on identical repeats, so a
+// sustained rate limit does not flood the log with duplicate errors.
+func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, logger)
+	enabled := true
+	// codex carries almost all the weight so the unfiltered ("wanted")
+	// selection is codex with overwhelming probability for any task ID,
+	// making the test deterministic without hand-computing the hash.
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-variant", Provider: "codex", Model: "gpt-5.5", Weight: 100},
+				{ID: "claude-variant", Provider: "claude", Model: "opus", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+
+	runOnce := func(taskID string) {
+		wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+		ctx := TemplateContext{Task: TaskInfo{ID: taskID}, Step: *step, Vars: wfExec.Variables}
+		if err := engine.execRunAgent(taskID, step, wfExec, ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runOnce("t1")
+	call := agents.LastCall()
+	if call.Provider != "claude" {
+		t.Fatalf("provider = %q, want claude (codex is rate-limited)", call.Provider)
+	}
+
+	var demotions []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_demoted" {
+			demotions = append(demotions, r)
+		}
+	}
+	if len(demotions) != 1 {
+		t.Fatalf("got %d demotion records after first run, want 1: %+v", len(demotions), demotions)
+	}
+	first := demotions[0]
+	if first.Level != slog.LevelError {
+		t.Fatalf("first demotion level = %v, want Error", first.Level)
+	}
+	if got := recordAttr(first, "wanted_provider"); got != "codex" {
+		t.Fatalf("wanted_provider = %q, want codex", got)
+	}
+	if got := recordAttr(first, "selected_provider"); got != "claude" {
+		t.Fatalf("selected_provider = %q, want claude", got)
+	}
+	if got := recordAttr(first, "reason"); got != "rate_limited" {
+		t.Fatalf("reason = %q, want rate_limited", got)
+	}
+	if got := recordAttr(first, "task_id"); got != "t1" {
+		t.Fatalf("task_id = %q, want t1", got)
+	}
+
+	// A second identical demotion for a different task must still be
+	// throttled to Debug — otherwise a sustained outage floods the log with
+	// one Error per dispatch across the fleet.
+	records = nil
+	tasks.Put(TaskInfo{ID: "t2", Status: "todo", AgentMode: "headless"})
+	runOnce("t2")
+	var second []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_demoted" {
+			second = append(second, r)
+		}
+	}
+	if len(second) != 1 {
+		t.Fatalf("got %d demotion records after second run, want 1: %+v", len(second), second)
+	}
+	if second[0].Level != slog.LevelDebug {
+		t.Fatalf("repeat demotion level = %v, want Debug (throttled)", second[0].Level)
+	}
+	if got := recordAttr(second[0], "task_id"); got != "t2" {
+		t.Fatalf("task_id = %q, want t2 on throttled cross-task repeat", got)
+	}
+}
+
+// TestExecRunAgent_ProviderShutoutEmitsSignal proves the single-provider
+// fallback is observable: when provider filtering excludes *every* variant of
+// an experiment (all variants share one unhealthy provider), the experiment
+// degrades silently to non-A/B dispatch — but that total shutout emits a
+// distinct throttled signal so an operator can tell it apart from A/B being
+// disabled or no experiment matching the role.
+func TestExecRunAgent_ProviderShutoutEmitsSignal(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	// Every variant is on codex, and codex is rate-limited — provider
+	// filtering zeroes out the whole experiment, forcing the fallback.
+	agents.SetProviderRateLimitedFor("codex", true)
+	engine := NewEngine(store, tasks, agents, logger)
+	enabled := true
+	engine.SetABTestingConfig(abtest.Config{
+		Enabled: &enabled,
+		Experiments: []abtest.Experiment{{
+			ID:             "exp",
+			AssignmentUnit: "stage",
+			Roles:          []string{"implementation"},
+			Variants: []abtest.Variant{
+				{ID: "codex-a", Provider: "codex", Model: "gpt-5.5", Weight: 1},
+				{ID: "codex-b", Provider: "codex", Model: "gpt-5.5-mini", Weight: 1},
+			},
+		}},
+	})
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	step := &Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Prompt: "test prompt"}}
+	wfExec := &Execution{WorkflowID: "test-simple", State: ExecRunning, Variables: make(map[string]string)}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1"}, Step: *step, Vars: wfExec.Variables}
+
+	// Must not error the whole dispatch — falls back to normal selection.
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var shutouts []slog.Record
+	for _, r := range records {
+		if r.Message == "workflow.ab.provider_shutout" {
+			shutouts = append(shutouts, r)
+		}
+	}
+	if len(shutouts) != 1 {
+		t.Fatalf("got %d shutout records, want 1: %+v", len(shutouts), shutouts)
+	}
+	first := shutouts[0]
+	if first.Level != slog.LevelError {
+		t.Fatalf("shutout level = %v, want Error", first.Level)
+	}
+	if got := recordAttr(first, "wanted_provider"); got != "codex" {
+		t.Fatalf("wanted_provider = %q, want codex", got)
+	}
+	if got := recordAttr(first, "reason"); got != "rate_limited" {
+		t.Fatalf("reason = %q, want rate_limited", got)
+	}
+	if got := recordAttr(first, "experiment_id"); got != "exp" {
+		t.Fatalf("experiment_id = %q, want exp", got)
+	}
+}
+
 func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -3235,17 +3904,17 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-// TestHandleAgentComplete_DispatchingStepDropsStaleCompletion reproduces the
+// TestHandleAgentComplete_PendingStepStartDropsStaleCompletion reproduces the
 // core of the simple-task-pr cascade bug: a stale/untracked agent completion
 // (e.g. a reattached agent from a step that already advanced) arrives while
 // the CURRENT step's real agent is still being started — StartAgent hasn't
-// returned yet, so agentSteps has no entry for it. Before the
-// dispatchingStep guard, HandleAgentComplete's untracked fallback credited
+// returned yet, so agentRoutes has no entry for it. Before the
+// pendingStepStart guard, HandleAgentComplete's untracked fallback credited
 // this to the current step (nothing tracked yet → not a phantom) and
 // advanced the workflow without the real agent ever having run. The guard
-// closes that window: a step marked dispatching is treated as "claimed" even
+// closes that window: a step marked as starting is treated as "claimed" even
 // before its agent ID exists.
-func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
+func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -3262,18 +3931,18 @@ func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
 
 	// Workflow is now parked on "implement" with its real agent tracked. Drop
 	// the tracking entry to simulate the real agent's StartAgent call still
-	// being in flight (agentSteps not yet populated) — but mark the step as
-	// dispatching, as execRunAgent now does before calling StartAgent.
+	// being in flight (agentRoutes not yet populated) — but mark the step as
+	// starting, as execRunAgent now does before calling StartAgent.
 	ti, _ := tasks.GetTask("t1")
 	if ti.Workflow.CurrentStep != "implement" {
 		t.Fatalf("precondition: current step = %q, want implement", ti.Workflow.CurrentStep)
 	}
 	realAgentID := agents.LastID()
 	engine.clearAgentStep(realAgentID)
-	engine.markStepDispatching("t1", "implement")
+	engine.markStepStarting("t1", "implement")
 
 	// A stale, untracked completion (e.g. a reattached agent from an earlier
-	// step) lands mid-dispatch.
+	// step) lands while the replacement start is underway.
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
 	tiAfter, _ := tasks.GetTask("t1")
@@ -3286,19 +3955,19 @@ func TestHandleAgentComplete_DispatchingStepDropsStaleCompletion(t *testing.T) {
 			tiAfter.Workflow.StepHistory)
 	}
 
-	// Once dispatching clears (StartAgent returned and registered the real
+	// Once the pending start clears (StartAgent returned and registered the real
 	// agent), a genuinely untracked completion for THIS step still falls back
 	// to crediting the current step, as designed for manual/recovery agents.
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
 	if tiFinal.Workflow.CurrentStep == "implement" {
-		t.Fatalf("CurrentStep still implement — untracked completion should advance once dispatching cleared")
+		t.Fatalf("CurrentStep still implement — untracked completion should advance once pending start cleared")
 	}
 }
 
-func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
+func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -3322,9 +3991,9 @@ func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
 
 	// Two concurrent dispatchers race for the same step: the eventual loser
 	// must not clear the winner's in-flight claim.
-	engine.markStepDispatching("t1", "implement")
-	engine.markStepDispatching("t1", "implement")
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.markStepStarting("t1", "implement")
+	engine.markStepStarting("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-reattached-agent", Result: "late", Success: true})
 
@@ -3334,7 +4003,7 @@ func TestDispatchingStepRefcountKeepsWinnerClaimed(t *testing.T) {
 			tiAfter.Workflow.CurrentStep)
 	}
 
-	engine.unmarkStepDispatching("t1", "implement")
+	engine.unmarkStepStarting("t1", "implement")
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "manual-recovery-agent", Result: "done", Success: true})
 
 	tiFinal, _ := tasks.GetTask("t1")
@@ -4397,7 +5066,7 @@ func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
 // "task X is not waiting for human action".
 //
 // The fix: HandleAgentComplete uses the step the agent was actually spawned
-// for (tracked in engine.agentSteps), and AdvanceStep drops completions whose
+// for (tracked in engine.agentRoutes), and AdvanceStep drops completions whose
 // StepID doesn't match the workflow's current step.
 func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	store := newTestStore(t)
@@ -4424,7 +5093,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 
 	// Inject a duplicate plan agent as if a ResumeStalled ticker fired
 	// during the interactive-spawn window and raced the first agent. The
-	// engine.agentSteps mapping records what execRunAgent would have set.
+	// engine.agentRoutes mapping records what execRunAgent would have set.
 	agents.mu.Lock()
 	agents.counter++
 	planAgent2 := fmt.Sprintf("agent-%d", agents.counter)
@@ -4433,7 +5102,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	agents.roles["t1/plan"] = planAgent2
 	agents.mu.Unlock()
 	engine.mu.Lock()
-	engine.agentSteps[planAgent2] = agentEntry{taskID: "t1", stepID: "plan"}
+	engine.agentRoutes[planAgent2] = agentRoute{taskID: "t1", stepID: "plan"}
 	engine.mu.Unlock()
 
 	// Agent 1 completes first → workflow advances to review_plan/wait_human.
@@ -4570,6 +5239,126 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher verifies ResumeStalled
+// consults the shared agent.Manager dispatch-claim coordinator (IsDispatching)
+// in addition to workflow completion-routing bookkeeping. A claim
+// held by a dispatcher the engine has no local visibility into — e.g.
+// recovery.RestartStaleInProgress launching via agentorch.Orchestrator
+// outside the workflow engine entirely — must still block a concurrent
+// ResumeStalled redispatch, closing the exact split-ownership race the
+// engine-local route tracking alone cannot see.
+func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "planning",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// Simulate an out-of-band dispatcher (recovery.RestartStaleInProgress)
+	// holding the shared agent.Manager claim for t1 — invisible to the
+	// engine's own completion-routing state.
+	agents.SetDispatchClaimed("t1", true)
+
+	before := agents.CallCount()
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before {
+		t.Errorf("ResumeStalled spawned a duplicate agent while the shared claim was held elsewhere: calls %d → %d",
+			before, got)
+	}
+
+	// Once the out-of-band dispatcher releases its claim, ResumeStalled may
+	// proceed as normal.
+	agents.SetDispatchClaimed("t1", false)
+	engine.ResumeStalled()
+	if got := agents.CallCount(); got != before+1 {
+		t.Errorf("ResumeStalled after shared claim released: calls %d → %d (want +1)", before, got)
+	}
+}
+
+// TestResumeStalled_ConcurrentCallsReserveDispatchWindow verifies the engine
+// still keeps its own short-lived per-task reservation between ResumeStalled's
+// preflight and the eventual StartAgent call. The shared agent.Manager claim is
+// only acquired inside StartAgent, so without this earlier reservation two
+// concurrent ResumeStalled loops can both enter executeSteps before any claim
+// exists and race a duplicate start.
+func TestResumeStalled_ConcurrentCallsReserveDispatchWindow(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.startGate = make(chan struct{})
+	agents.startEntered = make(chan struct{}, 2)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "planning",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "plan",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			engine.ResumeStalled()
+		}()
+	}
+
+	select {
+	case <-agents.startEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ResumeStalled never reached StartAgent")
+	}
+
+	select {
+	case <-agents.startEntered:
+		t.Fatal("second ResumeStalled reached StartAgent while the first dispatch window was still reserved")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(agents.startGate)
+	wg.Wait()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("StartAgent call count = %d, want 1", got)
+	}
+}
+
+// TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher verifies DispatchEvent
+// also treats a shared agent.Manager dispatch claim held for the task as busy,
+// even when the workflow engine has no active local route for the task.
+func TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
+	agents.SetDispatchClaimed("t1", true)
+
+	_, err := engine.DispatchEvent("t1", "task.created", nil, nil)
+	if !errors.Is(err, ErrWorkflowAlreadyActive) {
+		t.Fatalf("DispatchEvent with shared claim held elsewhere: err = %v, want ErrWorkflowAlreadyActive", err)
+	}
+}
+
 // TestExecRunAgent_ConsumesSupervisorSteer verifies the workflow half of a
 // watchdog headless nudge: when a step is (re-)dispatched and a steer is
 // pending, execRunAgent prepends the correction to the agent's prompt and the
@@ -4612,7 +5401,7 @@ func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
 }
 
 // TestExecRunAgent_TracksSpawnedStep verifies that execRunAgent populates
-// the engine.agentSteps map so HandleAgentComplete can route completions
+// the engine.agentRoutes map so HandleAgentComplete can route completions
 // back to the right step. Without this mapping, a delayed completion from
 // a duplicate agent would be credited to whatever CurrentStep happens to
 // be at the moment — the exact bug that corrupted review_plan.
@@ -4646,13 +5435,13 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 
 	agentID := agents.LastID()
 	engine.mu.Lock()
-	gotEntry, tracked := engine.agentSteps[agentID]
+	gotEntry, tracked := engine.agentRoutes[agentID]
 	engine.mu.Unlock()
 	if !tracked {
-		t.Fatalf("agentSteps missing entry for agent %s", agentID)
+		t.Fatalf("agentRoutes missing entry for agent %s", agentID)
 	}
 	if gotEntry.stepID != "plan" {
-		t.Errorf("agentSteps[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
+		t.Errorf("agentRoutes[%s].stepID = %q, want plan", agentID, gotEntry.stepID)
 	}
 
 	// Completing the agent must clear its mapping so the map doesn't grow
@@ -4662,10 +5451,10 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: agentID, Result: "done", Success: true})
 
 	engine.mu.Lock()
-	_, stillThere := engine.agentSteps[agentID]
+	_, stillThere := engine.agentRoutes[agentID]
 	engine.mu.Unlock()
 	if stillThere {
-		t.Errorf("agentSteps still has %s after completion — mapping leaked", agentID)
+		t.Errorf("agentRoutes still has %s after completion — mapping leaked", agentID)
 	}
 }
 
@@ -4800,9 +5589,10 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 
 	if recovered == nil {
 		t.Fatal("expected StartWorkflow to panic when StartAgent panics")
+		return
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
-		t.Fatal("dispatching claim leaked after panic")
+		t.Fatal("pending step start leaked after panic")
 	}
 }
 
@@ -4818,6 +5608,66 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
 		t.Fatal("StartWorkflow should propagate a real spawn error")
+	}
+}
+
+// TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError guards
+// against the workflow.external-create.failed gap: a permanent dispatch
+// error (e.g. ErrNoProjectAssigned) on the very FIRST execution of a
+// workflow — StartWorkflow/DispatchEvent, not a ResumeStalled retry — must
+// classify and escalate exactly like ResumeStalled already does. Before the
+// fix, startWorkflowCore returned the raw error to its caller (who only logs
+// it) and left the task's Workflow live/non-terminal, so the task silently
+// sat in limbo until some later resume attempt happened to escalate it.
+func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	agents := newMockAgents()
+	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
+		t.Fatal("StartWorkflow should propagate the spawn error")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required on the very first dispatch attempt", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no project could be assigned") {
+		t.Errorf("status reason = %q, want it to mention the classified no-project reason", got.StatusReason)
+	}
+}
+
+// TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus covers
+// the joint-failure edge: a store hiccup makes the current-status read fail at
+// the same moment a dispatch fails. Without the read guard, a non-permanent
+// classification would fall through with an empty target and push
+// UpdateTaskStatus(id, "", reason) — rejected and swallowed under a misleading
+// resume-stalled log while corrupting the task's status. The guard must skip
+// the surface entirely and leave the task's status untouched.
+func TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	tasks.SetFailGet(true)
+	wf := &Execution{WorkflowID: "x", CurrentStep: "run_agent", State: ExecRunning}
+	// A non-permanent error would target the (now unreadable) current status.
+	engine.surfaceInitialDispatchFailure("t1", wf, "run_agent", fmt.Errorf("git fetch: timeout"))
+
+	tasks.SetFailGet(false)
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want unchanged in-progress (no empty-status write)", got.Status)
 	}
 }
 
@@ -4911,6 +5761,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin not found")
+		return
 	}
 
 	store := newTestStore(t)
@@ -4932,6 +5783,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	verifyStep := impl.StepByID("verify_commits")
 	if verifyStep == nil {
 		t.Fatal("verify_commits step not found in simple-task-implement")
+		return
 	}
 	comp, err := engine.executeSteps("t1", impl, verifyStep, wf)
 	if err != nil {
@@ -5500,6 +6352,63 @@ func newEvaluateStep() *Step {
 	return &Step{ID: "evaluate", Type: StepEvaluate}
 }
 
+func TestLooksLikeTransientGitHub(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"connection refused", "dial tcp: connection refused", true},
+		{"dns failure", "could not resolve host: api.github.com", true},
+		{"name resolution failure", "temporary failure in name resolution", true},
+		{"i/o timeout", "context deadline exceeded (i/o timeout)", true},
+		{"bare context deadline exceeded", "gh pr create: : context deadline exceeded", true},
+		{"502", "502 Bad Gateway", true},
+		{"503", "503 Service Unavailable", true},
+		{"bare HTTP 502", "gh failed: HTTP 502", true},
+		{"bare HTTP 503", "gh failed: HTTP 503", true},
+		{"tls handshake", "remote error: tls: handshake failure", true},
+		{"unrelated failure", "PR title does not follow conventional commit format", false},
+		{"empty", "", false},
+		{"rate limit alone handled elsewhere", "API rate limit exceeded", false},
+		{"auth failure handled elsewhere", "gh: Bad credentials (HTTP 401)", false},
+		{"bare dns mention is not a network error", "cannot title DNS cache fix", false},
+		{"5-digit numeral containing 502 is not a gateway status", "task 150290 failed validation", false},
+		{"letters around 502 are not a gateway status", "abc502def", false},
+		{"status glued to HTTP token is not a gateway status", "gh failed: http502", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeTransientGitHub(tt.output); got != tt.want {
+				t.Errorf("looksLikeTransientGitHub(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeAuthFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"bad credentials", "gh: Bad credentials (HTTP 401)", true},
+		{"auth failed", "authentication failed for repository", true},
+		{"gh auth hint", "run gh auth login to authenticate", true},
+		{"401", "401 Unauthorized", true},
+		{"unrelated failure", "PR title does not follow conventional commit format", false},
+		{"empty", "", false},
+		{"network failure handled elsewhere", "dial tcp: connection refused", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeAuthFailure(tt.output); got != tt.want {
+				t.Errorf("looksLikeAuthFailure(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {
 	t.Helper()
 	store := newTestStore(t)
@@ -5616,6 +6525,158 @@ func TestExecEvaluate_PRCreateRateLimitParksForRetry(t *testing.T) {
 	}
 	if got := tasks.Reason("t1"); got != prCreateRetryStatusReason {
 		t.Errorf("reason = %q, want %q", got, prCreateRetryStatusReason)
+	}
+}
+
+func TestExecEvaluate_PRCreateTransientOutageParksForRetry(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	wfExec := &Execution{
+		WorkflowID:  "simple-task-pr",
+		CurrentStep: "evaluate",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+		StepHistory: []StepRecord{
+			{
+				StepID:  "create_pr",
+				Status:  "completed",
+				AgentID: "a1",
+				Output:  "Network/auth is broken: connection refused to api.github.com. Please check connectivity.",
+			},
+		},
+	}
+
+	_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if wfExec.CurrentStep != "create_pr" {
+		t.Errorf("CurrentStep = %q, want create_pr", wfExec.CurrentStep)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", wfExec.State)
+	}
+	if _, ok := workflowRetryAfter(wfExec); !ok {
+		t.Errorf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "ready-pr" {
+		t.Errorf("task status = %q, want ready-pr", ti.Status)
+	}
+	if got := tasks.Reason("t1"); got != prCreateTransientStatusReason {
+		t.Errorf("reason = %q, want %q", got, prCreateTransientStatusReason)
+	}
+}
+
+func TestExecEvaluate_PRCreateAuthFailureRetriesThenEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	newWfExec := func(attempts string) *Execution {
+		vars := map[string]string{}
+		if attempts != "" {
+			vars[prCreateAuthAttemptsVar] = attempts
+		}
+		return &Execution{
+			WorkflowID:  "simple-task-pr",
+			CurrentStep: "evaluate",
+			State:       ExecRunning,
+			Variables:   vars,
+			StepHistory: []StepRecord{
+				{
+					StepID:  "create_pr",
+					Status:  "completed",
+					AgentID: "a1",
+					Output:  "gh: Bad credentials (HTTP 401)",
+				},
+			},
+		}
+	}
+
+	// First three attempts (0, 1, 2) park for retry and increment the counter.
+	for i := range maxPRCreateAuthRetries {
+		wfExec := newWfExec(strconv.Itoa(i))
+		_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d: err = %v, want errStepParked", i, err)
+		}
+		if wfExec.Variables[prCreateAuthAttemptsVar] != strconv.Itoa(i+1) {
+			t.Errorf("attempt %d: %s = %q, want %q", i, prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar], strconv.Itoa(i+1))
+		}
+		if got := tasks.Reason("t1"); got != prCreateAuthRetryReason {
+			t.Errorf("attempt %d: reason = %q, want %q", i, got, prCreateAuthRetryReason)
+		}
+	}
+
+	// After exhausting the budget, it escalates to human-required instead of
+	// retrying a broken credential forever.
+	wfExec := newWfExec(strconv.Itoa(maxPRCreateAuthRetries))
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	wantReason := fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", maxPRCreateAuthRetries)
+	if got := tasks.Reason("t1"); got != wantReason {
+		t.Errorf("reason = %q, want %q", got, wantReason)
+	}
+}
+
+func TestExecEvaluate_PRCreatePushedNoPRRetriesThenEscalates(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
+	engine := newEngineForEval(t, tasks)
+	newWfExec := func(attempts string) *Execution {
+		vars := map[string]string{}
+		if attempts != "" {
+			vars[prCreateAttemptsVar] = attempts
+		}
+		return &Execution{
+			WorkflowID:  "simple-task-pr",
+			CurrentStep: "evaluate",
+			State:       ExecRunning,
+			Variables:   vars,
+			StepHistory: []StepRecord{
+				{
+					StepID:  "create_pr",
+					Status:  "completed",
+					AgentID: "a1",
+					Output:  "I was unable to create the PR due to an unexpected issue.",
+				},
+			},
+		}
+	}
+
+	// First three attempts (0, 1, 2) park for retry and increment the counter.
+	for i := range maxPRCreatePushedNoPRRetries {
+		wfExec := newWfExec(strconv.Itoa(i))
+		_, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"})
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d: err = %v, want errStepParked", i, err)
+		}
+		if wfExec.Variables[prCreateAttemptsVar] != strconv.Itoa(i+1) {
+			t.Errorf("attempt %d: %s = %q, want %q", i, prCreateAttemptsVar, wfExec.Variables[prCreateAttemptsVar], strconv.Itoa(i+1))
+		}
+		if got := tasks.Reason("t1"); got != prCreatePushedNoPRReason {
+			t.Errorf("attempt %d: reason = %q, want %q", i, got, prCreatePushedNoPRReason)
+		}
+	}
+
+	// After exhausting the budget, it escalates to human-required.
+	wfExec := newWfExec(strconv.Itoa(maxPRCreatePushedNoPRRetries))
+	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	wantReason := fmt.Sprintf("commits pushed but no PR created after %d retries", maxPRCreatePushedNoPRRetries)
+	if got := tasks.Reason("t1"); got != wantReason {
+		t.Errorf("reason = %q, want %q", got, wantReason)
 	}
 }
 

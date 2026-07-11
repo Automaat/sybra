@@ -140,6 +140,154 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	}
 }
 
+func TestTaskService_ListTaskArtifactsIncludesContent(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:    artifact.KindPlan,
+		Name:    "plan.md",
+		Content: []byte("# Plan\n\ndo it"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Name != "plan.md" || got[0].Content != "# Plan\n\ndo it" {
+		t.Fatalf("artifact = %+v", got[0])
+	}
+}
+
+func TestTaskService_ListTaskArtifactsStripsSourcePath(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
+		Kind:       artifact.KindPlan,
+		Name:       "plan.md",
+		SourcePath: "/Users/operator/.sybra/worktrees/t1/agent-out.log",
+		Content:    []byte("# Plan"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].SourcePath != "" {
+		t.Fatalf("SourcePath = %q, want stripped", got[0].SourcePath)
+	}
+}
+
+func TestTaskService_ListTaskArtifactsTruncatesStreamFromTail(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Artifacts", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := strings.Repeat("a", 1024)
+	for range taskDiagnosticReadLimit/1024 + 2 {
+		if err := svc.artifacts.Append(created.ID, artifact.KindTrace, map[string]string{"pad": padding}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.artifacts.Append(created.ID, artifact.KindTrace, map[string]string{"marker": "TAIL_MARKER"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskArtifacts(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if !got[0].Stream {
+		t.Fatalf("expected trace.jsonl to be a stream artifact")
+	}
+	if !strings.Contains(got[0].Content, "TAIL_MARKER") {
+		t.Fatalf("expected truncated content to keep the tail, got suffix %q", got[0].Content[len(got[0].Content)-40:])
+	}
+}
+
+func TestTaskService_GetTaskSetupLog(t *testing.T) {
+	t.Parallel()
+	logDir := t.TempDir()
+	svc := &TaskService{cfg: &config.Config{}}
+	svc.cfg.Logging.Dir = logDir
+	taskID := "task-setup"
+	logPath := filepath.Join(logDir, "worktrees", taskID+"-setup.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("setup failed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTaskSetupLog(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Exists || got.Content != "setup failed\n" || got.Path != logPath {
+		t.Fatalf("setup log = %+v", got)
+	}
+}
+
+func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
+	t.Parallel()
+	logDir := t.TempDir()
+	svc := &TaskService{cfg: &config.Config{}}
+	svc.cfg.Logging.Dir = logDir
+	al, err := audit.NewLogger(svc.cfg.AuditDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	if err := al.Log(audit.Event{Type: audit.EventTaskCreated, TaskID: "task-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := al.Log(audit.Event{Type: audit.EventAgentStarted, TaskID: "task-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := al.Log(audit.Event{Type: audit.EventAgentCompleted, TaskID: "task-a", AgentID: "agent-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.ListTaskAuditEvents("task-a", 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Type != audit.EventAgentCompleted || got[0].AgentID != "agent-1" {
+		t.Fatalf("newest event = %+v", got[0])
+	}
+	if got[1].Type != audit.EventTaskCreated {
+		t.Fatalf("oldest event = %+v", got[1])
+	}
+}
+
 func TestTaskService_GetTamperReport(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupTaskService(t)
@@ -188,6 +336,45 @@ func TestTaskService_GetTamperReport(t *testing.T) {
 	}
 	if f := got.Findings[0]; f.File != "internal/foo_test.go" || f.Category != "test" || f.Severity != "high" || f.Rule != "removed-test" || f.Detail != "func TestFoo" {
 		t.Fatalf("Finding = %+v", f)
+	}
+}
+
+func TestTaskService_ListTaskProgress(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	created, err := svc.tasks.Create("Progress task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := svc.ListTaskProgress(created.ID); err != nil || len(got) != 0 {
+		t.Fatalf("empty log = %v, %v; want [], nil", got, err)
+	}
+
+	for _, m := range []string{"first", "second"} {
+		if err := svc.artifacts.AppendProgress(created.ID, artifact.ProgressEntry{
+			Kind: artifact.ProgressKindProgress, Message: m,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := svc.ListTaskProgress(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Message != "second" || got[1].Message != "first" {
+		t.Fatalf("ListTaskProgress = %+v, want newest-first [second, first]", got)
+	}
+}
+
+func TestTaskService_ListTaskProgressNoStore(t *testing.T) {
+	t.Parallel()
+	svc := &TaskService{}
+	got, err := svc.ListTaskProgress("any")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("nil store = %v, %v; want [], nil", got, err)
 	}
 }
 
@@ -566,6 +753,124 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a failed umbrella expansion", got.Workflow)
 	}
+	// TaskType must be set durably — the enrich write above clears
+	// enrich-pending, and that write re-fires the emit-path task.created
+	// dispatch (fsnotify watcher). TaskType is the only guard left standing,
+	// so skipTaskCreatedWorkflow must still hold on the persisted task.
+	if got.TaskType != task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want %q so a re-fired task:created dispatch is skipped", got.TaskType, task.TaskTypeUmbrella)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the inert stub must be skipped, want no flat workflow")
+	}
+}
+
+// TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDuplicate
+// guards #1570's follow-on fix: when a planner failure already produced a
+// durable failure tracker (internal/umbrella.recordExpandFailure creates or
+// updates one inside Expand), the manually-created stub must not also claim
+// TaskTypeUmbrella — that would leave two tracker tasks for the same issue,
+// confusing scanExisting/the gate about which one is authoritative.
+func TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDuplicate(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
+	const issueURL = "https://github.com/owner/repo/issues/1151"
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     1151,
+			Title:      "☂️ already has a failure tracker",
+			URL:        issueURL,
+			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
+		}, nil
+	}
+	// Simulate a prior Expand call's recordExpandFailure having already
+	// materialized the umbrella's durable failure tracker.
+	if _, err := svc.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
+		Issue:        task.Ptr(issueURL),
+		TaskType:     task.Ptr(task.TaskTypeUmbrella),
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("umbrella expansion failed (attempt 1): planner boom"),
+		Tags:         task.Ptr([]string{"umbrella", umbrella.ExpandFailTag(1)}),
+	}); err != nil {
+		t.Fatalf("seed failure tracker: %v", err)
+	}
+	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+		return umbrella.Result{}, errors.New("planner boom")
+	}
+
+	created, err := svc.CreateTask(issueURL, "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("duplicate stub should survive a failed expansion: %v", err)
+	}
+	if got.TaskType == task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want non-umbrella duplicate since a failure tracker already exists for this issue", got.TaskType)
+	}
+	if !slices.Contains(got.Tags, umbrellaDuplicateTag) {
+		t.Fatalf("Tags = %v, want to contain %q", got.Tags, umbrellaDuplicateTag)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
+	}
+}
+
+func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTracker(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	svc.cfg = &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     1151,
+			Title:      "☂️ duplicate cleanup failed",
+			URL:        "https://github.com/owner/repo/issues/1151",
+			Repository: "owner/repo",
+			Labels:     []string{"umbrella", "backend"},
+		}, nil
+	}
+	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+		return umbrella.Result{UmbrellaURL: "https://github.com/owner/repo/issues/1151", Created: 6}, nil
+	}
+	svc.deleteTask = func(string) error {
+		return errors.New("delete boom")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatalf("duplicate stub should remain when cleanup delete fails: %v", err)
+	}
+	if got.Title != "☂️ duplicate cleanup failed" {
+		t.Fatalf("Title = %q, want enriched duplicate title", got.Title)
+	}
+	if !slices.Equal(got.Tags, []string{"umbrella", "backend", umbrellaDuplicateTag}) {
+		t.Fatalf("Tags = %v, want issue labels plus the durable duplicate-dispatch guard", got.Tags)
+	}
+	if got.StatusReason == "" {
+		t.Fatal("StatusReason is empty, want an explanation for the duplicate stub")
+	}
+	if got.TaskType == task.TaskTypeUmbrella {
+		t.Fatalf("TaskType = %q, want non-umbrella duplicate so gate/scanExisting cannot treat it as the live tracker", got.TaskType)
+	}
+	// TaskType alone no longer guards dispatch for this duplicate (by design,
+	// to avoid the tracker-identity collision above), so the belt-and-braces
+	// umbrellaDuplicateTag check in skipTaskCreatedWorkflow must hold instead —
+	// a re-fired task:created dispatch (fsnotify watcher) must still be skipped.
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil for a duplicate umbrella stub", got.Workflow)
+	}
+	if !skipTaskCreatedWorkflow(got) {
+		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
+	}
 }
 
 func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
@@ -656,6 +961,50 @@ func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
 	}
 }
 
+func TestTaskService_CreateTaskWithInit_IssueURLStubPreservesCallerTags(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	releaseFetch := make(chan struct{})
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		<-releaseFetch
+		return github.Issue{
+			Number:     13,
+			Title:      "plain issue",
+			URL:        "https://github.com/owner/repo/issues/13",
+			Repository: "owner/repo",
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
+	svc.viewerLogin = func() string { return "me" }
+
+	initTags := []string{"backend", "todoist"}
+	created, err := svc.CreateTaskWithInit(
+		"https://github.com/owner/repo/issues/13",
+		"",
+		"headless",
+		task.Update{Tags: task.Ptr(initTags)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
+	}
+	for _, tag := range initTags {
+		if !slices.Contains(got.Tags, tag) {
+			t.Fatalf("Tags = %v, want caller tag %q preserved on create", got.Tags, tag)
+		}
+	}
+
+	close(releaseFetch)
+	svc.wg.Wait()
+}
+
 func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	svc.fetchIssue = func(string, int) (github.Issue, error) {
@@ -737,6 +1086,147 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesOrphanedStub(t *testing.T
 	}
 }
 
+// TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker is a
+// regression test for the case where the issue fetch itself succeeds (title,
+// body, and Issue URL are persisted) but the secondary, warn-only linked-PRs
+// fetch fails. Previously the enrich-pending marker was cleared regardless,
+// leaving the task in todo with no marker, no workflow dispatch, and no way
+// for ReconcilePendingEnrichment to find and retry it — inert forever.
+func TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+			Labels:     []string{"bug"},
+		}, nil
+	}
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		return nil, errors.New("gh api: linked PRs lookup failed")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker retained after a linked-PRs fetch failure", got.Tags)
+	}
+	if got.Title != "flaky linked-prs issue" {
+		t.Fatalf("Title = %q, want the real issue title even though the marker was kept", got.Title)
+	}
+	if got.Issue != "https://github.com/owner/repo/issues/42" {
+		t.Fatalf("Issue = %q, want the issue URL persisted for reconcile fallback", got.Issue)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("Workflow = %+v, want none while the stub is still enrich-pending", got.Workflow)
+	}
+}
+
+// TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure
+// covers the recovery half of the above: once the title has already been
+// rewritten to the real issue title (so it no longer parses as a GitHub
+// URL), the reconcile pass must fall back to the persisted Issue URL to
+// re-derive the repo/number and retry.
+func TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	var succeed atomic.Bool
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		if !succeed.Load() {
+			return nil, errors.New("gh api: linked PRs lookup failed")
+		}
+		return nil, nil
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, want enrich-pending marker before reconcile", got.Tags)
+	}
+
+	succeed.Store(true)
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+
+	got = waitForWorkflow(t, svc, created.ID)
+	if slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should clear once the linked-PRs fetch succeeds", got.Tags)
+	}
+}
+
+func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	svc.fetchIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{
+			Number:     42,
+			Title:      "permanently flaky linked-prs issue",
+			URL:        "https://github.com/owner/repo/issues/42",
+			Repository: "owner/repo",
+		}, nil
+	}
+	var linkedPRCalls atomic.Int32
+	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
+		linkedPRCalls.Add(1)
+		return nil, errors.New("gh api: linked PRs lookup failed")
+	}
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	if got := linkedPRCalls.Load(); got != 1 {
+		t.Fatalf("linked PR calls after initial enrichment = %d, want 1", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after first reconcile = %d, want 2", got)
+	}
+
+	svc.ReconcilePendingEnrichment()
+	svc.wg.Wait()
+	if got := linkedPRCalls.Load(); got != 2 {
+		t.Fatalf("linked PR calls after cooldown-gated reconcile = %d, want still 2", got)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Fatalf("Tags = %v, marker should remain while linked-PRs fetch keeps failing", got.Tags)
+	}
+}
 func TestTaskService_ReconcilePendingEnrichment_SkipsTerminalStatus(t *testing.T) {
 	svc, _ := setupTaskService(t)
 

@@ -86,6 +86,16 @@ func cmdTriageClassify(
 		if getErr != nil {
 			return fatal(jsonOut, "get %s: %v", id, getErr)
 		}
+		// Mirror the --all path (restricted to status=new above) and the
+		// poll-based auto-triage handler (internal/poll/triage.go), which both
+		// only ever classify fresh tasks. Without this guard, classifying an
+		// arbitrary id can reclassify a task another subsystem owns outside the
+		// triage pipeline — e.g. a human-required Prompt Lab proposal, whose
+		// gating tags/status Apply must not touch (see internal/triage/apply.go).
+		if t.Status != task.StatusNew {
+			return fatal(jsonOut, "task %s has status %q, not %q — triage classify only reclassifies fresh tasks",
+				id, t.Status, task.StatusNew)
+		}
 		targets = append(targets, t)
 	default:
 		return fatal(jsonOut, "usage: triage classify <id> | triage classify --all")
@@ -154,31 +164,15 @@ func classifyOne(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	v, err := classifier.Classify(ctx, t, projects)
+	v, updated, err := triage.ClassifyAndApply(ctx, classifier, store, al, t, projects)
 	if err != nil {
+		// A triage failure is retryable — stamp a magic StatusReason the
+		// workflow engine's triage retry-coercion path recognises so the
+		// task is re-run rather than parked.
 		if markErr := markTriageRetryable(store, t, err); markErr != nil {
 			return triageResult{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
 		}
 		return triageResult{}, err
-	}
-	updated, err := triage.Apply(store, t, v, projects)
-	if err != nil {
-		return triageResult{}, err
-	}
-	if al != nil {
-		_ = al.Log(audit.Event{
-			Type:   audit.EventTriageClassified,
-			TaskID: t.ID,
-			Data: map[string]any{
-				"title":      v.Title,
-				"tags":       v.Tags,
-				"size":       v.Size,
-				"type":       v.Type,
-				"mode":       v.Mode,
-				"project_id": updated.ProjectID,
-				"status":     string(updated.Status),
-			},
-		})
 	}
 	return triageResult{Verdict: v, Task: updated}, nil
 }

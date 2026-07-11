@@ -23,6 +23,7 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.wireWorkflowService()
 	a.wireBrowserService()
 	a.wireLearningService(emit)
+	a.wirePromptLabService()
 	// MUST be last: completion handlers read fully-wired service dependencies.
 	a.wireCompletionHandlers(emit)
 }
@@ -31,7 +32,7 @@ func (a *App) wireServices(emit func(string, any)) {
 // Each service carries an explicit method allowlist — only listed methods are
 // reachable; all other exported methods return 404.
 func ServiceRegistry(a *App) map[string]httpapi.Service {
-	out := make(map[string]httpapi.Service, 14)
+	out := make(map[string]httpapi.Service, 15)
 	maps.Copy(out, a.coreHTTPServices())
 	maps.Copy(out, a.planningHTTPServices())
 	maps.Copy(out, a.projectHTTPServices())
@@ -84,11 +85,16 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		"TaskService": httpapi.NewService(a.taskSvc,
 			"BlessTampering",
 			"ListTasks",
+			"ListTaskArtifacts",
+			"GetTaskSetupLog",
+			"ListTaskAuditEvents",
 			"GetTamperReport",
 			"GetTask",
 			"CreateTask",
 			"UpdateTask",
 			"DeleteTask",
+			"DispatchFromHumanRequired",
+			"ListTaskProgress",
 		),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",
@@ -136,6 +142,10 @@ func (a *App) planningHTTPServices() map[string]httpapi.Service {
 			"ResetBuiltin",
 			"StartWorkflow",
 			"HandleHumanAction",
+		),
+		"PromptLabService": httpapi.NewService(a.promptLabSvc,
+			"ApproveProposal",
+			"RejectProposal",
 		),
 	}
 }

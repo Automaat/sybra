@@ -2,13 +2,17 @@ package umbrella
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
@@ -21,21 +25,80 @@ import (
 // writing (and without firing a task:updated event).
 var errSkipUpdate = errors.New("skip update")
 
-// PlannerTimeout bounds the whole Generate call — every attemptPlan retry
+// PlannerAttemptTimeout is the floor of the per-attempt planner budget. It is
+// passed to llmjob.Run as Spec.AttemptTimeout so every repair attempt gets its
+// budget fresh, instead of splitting a single shared deadline across them
+// (see #1555). The effective budget scales with prompt size via
+// plannerAttemptTimeout: a fixed cap starves large umbrellas — a 38-child
+// umbrella's decompose was deadline-killed on every attempt at a fixed 4m,
+// looping the expansion forever (see #1570).
+const PlannerAttemptTimeout = 4 * time.Minute
+
+// plannerAttemptTimeoutMax caps the scaled per-attempt budget so one attempt
+// on a pathologically large umbrella cannot hold the expansion slot for an
+// hour.
+const plannerAttemptTimeoutMax = 30 * time.Minute
+
+// plannerAttemptPromptChunk is how much prompt buys one extra minute of
+// per-attempt budget on top of the PlannerAttemptTimeout floor.
+const plannerAttemptPromptChunk = 2 << 10
+
+// plannerAttemptTimeout returns the per-attempt planner budget for a prompt of
+// promptLen bytes. Model time grows with both the prompt to read and the
+// answer to emit, and the answer (one change-surface JSON entry per sub-issue)
+// grows with the prompt listing them — so the budget scales with input size
+// rather than sub-issue count, which FallbackPlannerRunner cannot see.
+func plannerAttemptTimeout(promptLen int) time.Duration {
+	d := PlannerAttemptTimeout + time.Duration(promptLen/plannerAttemptPromptChunk)*time.Minute
+	return min(d, plannerAttemptTimeoutMax)
+}
+
+// plannerJobSpec is the llmjob.Spec FallbackPlannerRunner runs the
+// "umbrella-order" job with. It is shared with plannerTimeout below via
+// Attempts() so the two can never drift out of sync the way a
+// hand-maintained attempt-count constant could.
+var plannerJobSpec = llmjob.Spec[Plan]{
+	Name:           "umbrella-order",
+	Tier:           llmjob.Standard,
+	AttemptTimeout: PlannerAttemptTimeout,
+}
+
+// plannerJobAttempts mirrors llmjob's 1+maxRepairs attempts for plannerJobSpec
+// — used only to size plannerTimeout below.
+var plannerJobAttempts = plannerJobSpec.Attempts()
+
+// plannerGenerateSamples is the maximum number of planner samples Generate can
+// request: plannerAttempts for the initial attemptPlan plus another
+// plannerAttempts for the critic re-ask path when the first valid plan looks
+// suspiciously flat.
+const plannerGenerateSamples = plannerAttempts * 2
+
+// plannerTimeout bounds the whole Generate call — every attemptPlan retry
 // plus the zero-edge-floor critic re-ask — so a hung process cannot wedge an
-// expansion indefinitely.
-const PlannerTimeout = 5 * time.Minute
+// expansion indefinitely. It covers plannerGenerateSamples each getting
+// plannerJobAttempts full PlannerAttemptTimeout floor slices, plus per-sub
+// headroom sized so the prompt-scaled attempt budgets of a large umbrella
+// (see plannerAttemptTimeout) still fit: a bigger umbrella means a longer
+// prompt and legitimately more model time, and a bigger expansion is more
+// expensive to have starved.
+func plannerTimeout(subCount int) time.Duration {
+	return PlannerAttemptTimeout*time.Duration(plannerJobAttempts*plannerGenerateSamples) +
+		time.Duration(subCount*plannerGenerateSamples)*15*time.Second
+}
 
 // FetchTimeout bounds the GitHub sub-issue fetch so a stalled gh call cannot
 // wedge the caller (notably the issue poll loop).
 const FetchTimeout = 60 * time.Second
+
+// fetchUmbrella is a test seam over the GitHub umbrella fetch.
+var fetchUmbrella = github.FetchUmbrella
 
 // fetchUmbrellaBounded fetches the umbrella under FetchTimeout, releasing the
 // timer as soon as the fetch returns (defer right after WithTimeout).
 func fetchUmbrellaBounded(ctx context.Context, repo string, number int) (umbrella github.Issue, subs []github.Issue, err error) {
 	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
-	return github.FetchUmbrella(fctx, repo, number)
+	return fetchUmbrella(fctx, repo, number)
 }
 
 // expandConfig holds the optional settings ExpandOption values apply.
@@ -63,6 +126,8 @@ type Result struct {
 	Created     int  // child tasks created this run
 	Skipped     int  // sub-issues already materialized or done
 	Degraded    bool // true when the DAG came from linearChainFallback, not the model
+	ChildCount  int  // total sub-issues in the umbrella (Created + Skipped)
+	MaxParallel int  // effective expansion cap the plan materialized with; 0 on the all-materialized short-circuit, where no plan runs
 }
 
 // Expand fetches a GitHub umbrella issue's native sub-issues, runs the planner
@@ -70,8 +135,8 @@ type Result struct {
 // plus one `blocked`+gated child per open sub-issue. It is idempotent: only
 // sub-issues without an existing task are created, and a fully-materialized
 // re-run skips the planner entirely. The planner run is bounded by
-// PlannerTimeout. Shared by the `sybra-cli umbrella` command and the GitHub
-// issue fetcher's auto-detect path.
+// plannerTimeout, scaled to the sub-issue count. Shared by the `sybra-cli
+// umbrella` command and the GitHub issue fetcher's auto-detect path.
 func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
 	var cfg expandConfig
 	for _, opt := range opts {
@@ -81,6 +146,15 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 	if !ok {
 		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
 	}
+	unlock, err := lockExpandIssue(tasks, issueURL)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			slog.Warn("umbrella.expand.unlock_failed", "issue", issueURL, "err", err)
+		}
+	}()
 	umb, subs, err := fetchUmbrellaBounded(ctx, repo, number)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch umbrella: %w", err)
@@ -102,14 +176,30 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		byRef[NormalizeIssueRef(subs[i].URL)] = subs[i]
 	}
 
-	existing, trackerExists, trackerID, err := scanExisting(tasks, umb.URL)
+	existing, tracker, err := scanExisting(tasks, umb.URL)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan existing tasks: %w", err)
 	}
 	// Short-circuit a full re-run: nothing to create means no (costly,
-	// stochastic) planner call.
-	if trackerExists && allMaterialized(planSubs, existing) {
-		return Result{UmbrellaURL: umb.URL, Skipped: len(subs)}, nil
+	// stochastic) planner call. Children can also materialize between failed
+	// planner runs (manual CLI expansion, another instance), so drop any
+	// recorded failure state here too — otherwise the tracker reads as
+	// expand-failing forever and trackerRollup never closes the umbrella.
+	if tracker.exists && allMaterialized(planSubs, existing) {
+		if err := clearExpandFailure(tasks, tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+		}
+		return Result{UmbrellaURL: umb.URL, Skipped: len(subs), ChildCount: len(subs)}, nil
+	}
+	// A tracker parked human-required after ExpandFailThreshold consecutive
+	// planner failures stops calling the planner entirely — the incident this
+	// guards against (#1570) burned a killed sonnet call every ~5 minutes
+	// indefinitely because nothing remembered prior failures across calls. A
+	// human must move the tracker off human-required (or clear the tag) to
+	// resume retrying.
+	if tracker.exists && tracker.status == task.StatusHumanRequired &&
+		ParseExpandFailCount(tracker.tags) >= ExpandFailThreshold {
+		return Result{}, fmt.Errorf("umbrella expansion parked human-required after %d consecutive planner failures", ParseExpandFailCount(tracker.tags))
 	}
 
 	var genOpts []GenerateOption
@@ -117,19 +207,44 @@ func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL strin
 		genOpts = append(genOpts, WithGrounder(cfg.lister, cfg.minSubs))
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, PlannerTimeout)
+	pctx, cancel := context.WithTimeout(ctx, plannerTimeout(len(subs)))
 	defer cancel()
 	plan, err := Generate(pctx, run, umb.URL, umb.Body, planSubs, genOpts...)
 	if err != nil {
+		if recErr := recordExpandFailure(tasks, umb, tracker, err); recErr != nil {
+			slog.Error("umbrella.expand.record-failure", "issue", umb.URL, "err", recErr)
+		}
 		return Result{}, fmt.Errorf("plan umbrella: %w", err)
 	}
 
 	specs := ChildSpecs(plan, planSubs, existing)
-	created, err := materialize(tasks, umb, specs, byRef, trackerExists, trackerID, plan.MaxParallel, plan.Fallback)
+	created, err := materialize(tasks, umb, specs, byRef, tracker.exists, tracker.id, plan.MaxParallel, plan.Fallback)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{UmbrellaURL: umb.URL, Created: created, Skipped: len(subs) - created, Degraded: plan.Fallback}, nil
+	if tracker.exists {
+		if err := clearExpandFailure(tasks, tracker.id); err != nil {
+			slog.Error("umbrella.expand.clear-failure", "issue", umb.URL, "err", err)
+		}
+	}
+	return Result{
+		UmbrellaURL: umb.URL,
+		Created:     created,
+		Skipped:     len(subs) - created,
+		Degraded:    plan.Fallback,
+		ChildCount:  len(subs),
+		MaxParallel: plan.MaxParallel,
+	}, nil
+}
+
+func lockExpandIssue(tasks *task.Manager, issueURL string) (func() error, error) {
+	sum := sha256.Sum256([]byte(NormalizeIssueRef(issueURL)))
+	lockPath := filepath.Join(tasks.Store().Dir(), fmt.Sprintf(".umbrella-expand-%x", sum[:8]))
+	unlock, err := fsutil.LockFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("lock umbrella expand %s: %w", issueURL, err)
+	}
+	return unlock, nil
 }
 
 // allMaterialized reports whether every open sub-issue already has a task.
@@ -145,14 +260,24 @@ func allMaterialized(subs []SubIssue, existing map[string]bool) bool {
 	return true
 }
 
+// existingTracker describes the umbrella tracker task scanExisting found for
+// a given umbrella URL, if any. Bundled into one struct (rather than four
+// scanExisting return values) to stay under gocritic's result-count limit.
+type existingTracker struct {
+	exists bool
+	id     string
+	tags   []string
+	status task.Status
+}
+
 // scanExisting returns the set of normalized issue refs that already have a
-// task, whether the umbrella tracker exists, and its task id when it does. A
-// List failure is propagated so the caller aborts rather than treating an
-// unreadable store as empty and creating a duplicate DAG.
-func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, trackerExists bool, trackerID string, err error) {
+// task, plus the umbrella tracker's own state when it exists. A List failure
+// is propagated so the caller aborts rather than treating an unreadable store
+// as empty and creating a duplicate DAG.
+func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool, tracker existingTracker, err error) {
 	all, err := tasks.List()
 	if err != nil {
-		return nil, false, "", err
+		return nil, existingTracker{}, err
 	}
 	refs = make(map[string]bool, len(all))
 	umbKey := NormalizeIssueRef(umbrellaURL)
@@ -162,11 +287,15 @@ func scanExisting(tasks *task.Manager, umbrellaURL string) (refs map[string]bool
 			refs[NormalizeIssueRef(t.Issue)] = true
 		}
 		if t.TaskType == task.TaskTypeUmbrella && NormalizeIssueRef(t.Issue) == umbKey {
-			trackerExists = true
-			trackerID = t.ID
+			tracker = existingTracker{exists: true, id: t.ID, tags: t.Tags, status: t.Status}
 		}
 	}
-	return refs, trackerExists, trackerID, nil
+	return refs, tracker, nil
+}
+
+func findTracker(tasks *task.Manager, umbrellaURL string) (existingTracker, error) {
+	_, tracker, err := scanExisting(tasks, umbrellaURL)
+	return tracker, err
 }
 
 // materialize creates the tracker (when absent) and one gated todo child per
@@ -191,9 +320,19 @@ func materialize(tasks *task.Manager, umb github.Issue, specs []ChildSpec, byRef
 		}); err != nil {
 			return 0, fmt.Errorf("create tracker: %w", err)
 		}
-	} else if degraded {
-		if err := tagTrackerDegraded(tasks, trackerID); err != nil {
+	} else {
+		// A tracker can already exist without a MaxParallelTag: recordExpandFailure
+		// creates a placeholder tracker on a planner failure that never reaches
+		// this function's tag-setting branch above. Backfill it on the first
+		// successful materialize so the cap reflects this plan's judgment instead
+		// of silently defaulting to DefaultMaxParallel forever.
+		if err := ensureMaxParallelTag(tasks, trackerID, maxParallel); err != nil {
 			return 0, err
+		}
+		if degraded {
+			if err := tagTrackerDegraded(tasks, trackerID); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -234,6 +373,115 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 		return fmt.Errorf("tag tracker degraded: %w", err)
 	}
 	return nil
+}
+
+// ensureMaxParallelTag backfills a MaxParallelTag onto an already-materialized
+// tracker if it doesn't have one yet — the case for a tracker that started
+// life as a recordExpandFailure placeholder. Read-then-write, so a tracker
+// that already carries the tag (the common case) is left untouched.
+func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if HasMaxParallelTag(cur.Tags) {
+			return task.Update{}, errSkipUpdate
+		}
+		return task.Update{
+			Tags: task.Ptr(append(slices.Clone(cur.Tags), MaxParallelTag(n))),
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errSkipUpdate) {
+			return nil
+		}
+		return fmt.Errorf("backfill tracker max-parallel: %w", err)
+	}
+	return nil
+}
+
+// recordExpandFailure durably records a failed planner run against the
+// umbrella's tracker, so the failure survives restarts and is visible on the
+// board (see #1570: previously a failure was only a log line, and nothing
+// stopped the same doomed planner call from re-running every ~5 minutes
+// indefinitely). When no tracker exists yet (the umbrella has never
+// successfully expanded even once), one is created here purely to hold the
+// failure state — a later successful materialize reuses it as the tracker,
+// backfilling only tags (max-parallel, degraded marker). The placeholder's
+// title/body persist, which is fine: they mirror the umbrella issue.
+func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existingTracker, cause error) error {
+	if !tracker.exists {
+		var err error
+		tracker, err = findTracker(tasks, umb.URL)
+		if err != nil {
+			return fmt.Errorf("refresh tracker before failure record: %w", err)
+		}
+	}
+	if !tracker.exists {
+		count := 1
+		_, err := tasks.CreateFull(umb.Title, umb.Body, task.AgentModeHeadless, task.Update{
+			Issue:        task.Ptr(umb.URL),
+			TaskType:     task.Ptr(task.TaskTypeUmbrella),
+			ProjectID:    task.Ptr(umb.Repository),
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+			Tags:         task.Ptr([]string{"umbrella", ExpandFailTag(count)}),
+		})
+		if err != nil {
+			return fmt.Errorf("create failure tracker: %w", err)
+		}
+		return nil
+	}
+
+	_, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+		count := ParseExpandFailCount(cur.Tags) + 1
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return strings.HasPrefix(t, ExpandFailTagPrefix)
+		})
+		newTags = append(newTags, ExpandFailTag(count))
+		upd := task.Update{
+			Tags:         task.Ptr(newTags),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+		}
+		if count >= ExpandFailThreshold {
+			upd.Status = task.Ptr(task.StatusHumanRequired)
+		}
+		return upd, nil
+	})
+	if err != nil {
+		return fmt.Errorf("tag tracker expand-failed: %w", err)
+	}
+	return nil
+}
+
+// clearExpandFailure strips the failure-count tag from a tracker once
+// expansion succeeds again, so a transient blip doesn't keep counting toward
+// ExpandFailThreshold on the next genuine failure.
+func clearExpandFailure(tasks *task.Manager, trackerID string) error {
+	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+		if ParseExpandFailCount(cur.Tags) == 0 {
+			return task.Update{}, errSkipUpdate
+		}
+		newTags := slices.DeleteFunc(slices.Clone(cur.Tags), func(t string) bool {
+			return strings.HasPrefix(t, ExpandFailTagPrefix)
+		})
+		upd := task.Update{Tags: task.Ptr(newTags)}
+		if strings.HasPrefix(cur.StatusReason, "umbrella expansion failed (attempt ") {
+			upd.StatusReason = task.Ptr("")
+		}
+		return upd, nil
+	})
+	if err != nil && !errors.Is(err, errSkipUpdate) {
+		return fmt.Errorf("clear tracker expand-failed: %w", err)
+	}
+	return nil
+}
+
+func formatExpandFailureReason(count int, cause error) string {
+	reason := fmt.Sprintf("umbrella expansion failed (attempt %d): %v", count, cause)
+	const maxLen = 200
+	if len(reason) <= maxLen {
+		return reason
+	}
+	const tail = "..."
+	return reason[:maxLen-len(tail)] + tail
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's
@@ -286,11 +534,11 @@ func FallbackPlannerRunner(model string, gates ...provider.HealthGate) Runner {
 	if len(gates) > 0 {
 		gate = gates[0]
 	}
-	return func(ctx context.Context, prompt string) (string, error) {
-		plan, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Plan]{
-			Name: "umbrella-order",
-			Tier: llmjob.Standard,
-		}, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
+	return func(ctx context.Context, prompt, schema string) (string, error) {
+		spec := plannerJobSpec
+		spec.AttemptTimeout = plannerAttemptTimeout(len(prompt))
+		spec.Schema = schema
+		plan, _, err := llmjob.Run(ctx, prompt, spec, llmexec.Options{Gate: gate, Models: claudeModelOverride(model)})
 		if err != nil {
 			return "", err
 		}

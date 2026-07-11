@@ -3,6 +3,7 @@ package abtest
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,23 +86,65 @@ func TestSelectSkipsNonMatchingRole(t *testing.T) {
 
 func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 	cfg := DefaultConfig()
-	for _, role := range []string{"implementation", "test-runner", "fix-review", "pr-fix"} {
-		t.Run(role, func(t *testing.T) {
+	cases := []struct {
+		role         string
+		experimentID string
+		variantIDs   []string
+	}{
+		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
+		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4"}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.role, func(t *testing.T) {
 			for i := range 100 {
-				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), role, "step")
+				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), tt.role, "step")
 				if err != nil || !ok {
 					t.Fatalf("Select ok=%v err=%v", ok, err)
 				}
-				if a.ExperimentID != "code-author-cheap" {
-					t.Fatalf("ExperimentID = %q, want code-author-cheap", a.ExperimentID)
+				if a.ExperimentID != tt.experimentID {
+					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, tt.experimentID)
 				}
-				switch a.VariantID {
-				case "claude-sonnet", "codex-gpt-5.4", "copilot-sonnet":
-				default:
-					t.Fatalf("VariantID = %q, want cheap variant", a.VariantID)
+				if !slices.Contains(tt.variantIDs, a.VariantID) {
+					t.Fatalf("VariantID = %q, want one of %v", a.VariantID, tt.variantIDs)
 				}
 			}
 		})
+	}
+}
+
+// TestDefaultConfigScopesCopilotToImplementation locks the "capped, not
+// blanket" copilot requirement: the maintenance-role experiment
+// (fix-review/pr-fix/test-runner) must never surface a copilot variant, only
+// the implementation-scoped experiment may.
+func TestDefaultConfigScopesCopilotToImplementation(t *testing.T) {
+	cfg := DefaultConfig()
+	for _, exp := range cfg.Experiments {
+		if exp.ID == "code-author-maintenance-cheap" {
+			for _, v := range exp.Variants {
+				if v.Provider == "copilot" {
+					t.Fatalf("code-author-maintenance-cheap must not include a copilot variant, got %+v", v)
+				}
+			}
+		}
+	}
+}
+
+func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
+	cfg := DefaultConfig()
+	for i := range 100 {
+		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "fix-review", "step")
+		if err != nil || !ok {
+			t.Fatalf("Select ok=%v err=%v", ok, err)
+		}
+		if a.ExperimentID != "fix-review-expensive" {
+			t.Fatalf("ExperimentID = %q, want fix-review-expensive", a.ExperimentID)
+		}
+		switch a.VariantID {
+		case "claude-opus", "codex-gpt-5.5":
+		default:
+			t.Fatalf("VariantID = %q, want claude-opus or codex-gpt-5.5", a.VariantID)
+		}
 	}
 }
 
@@ -235,6 +278,50 @@ func TestSelectEligibleSkipsUnavailableProvider(t *testing.T) {
 	}
 	if a.VariantID != "available" {
 		t.Fatalf("VariantID = %q, want available", a.VariantID)
+	}
+}
+
+func TestSelectEligibleFallsBackWhenAllVariantsShareUnhealthyProvider(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "single-provider-exp",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "opus", Weight: 50},
+			{ID: "b", Provider: "claude", Model: "sonnet", Weight: 50},
+		},
+	}}}
+	a, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", func(provider string) bool {
+		return provider != "claude"
+	})
+	if err != nil {
+		t.Fatalf("SelectEligible err = %v, want nil (should defer to normal provider failover)", err)
+	}
+	if ok {
+		t.Fatalf("SelectEligible ok = true, want false so callers fall back to non-AB dispatch; got %+v", a)
+	}
+}
+
+func TestSelectEligibleStillErrorsWhenAllWeightsAreZero(t *testing.T) {
+	enabled := true
+	cfg := Config{Enabled: &enabled, Experiments: []Experiment{{
+		ID:             "zero-weight-exp",
+		AssignmentUnit: "task",
+		Roles:          []string{"implementation"},
+		Variants: []Variant{
+			{ID: "a", Provider: "claude", Model: "opus", Weight: 0},
+			{ID: "b", Provider: "codex", Model: "gpt-5.5", Weight: 0},
+		},
+	}}}
+	_, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", func(provider string) bool {
+		return true
+	})
+	if err == nil {
+		t.Fatalf("SelectEligible err = nil, want config error for all-zero-weight experiment")
+	}
+	if ok {
+		t.Fatalf("SelectEligible ok = true, want false")
 	}
 }
 

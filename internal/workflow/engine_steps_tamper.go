@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -13,7 +14,7 @@ import (
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
 // flagged diff and accepted it adds this tag, then moves the task back into the
-// flow. Without it, re-dispatching a flagged task would re-scan the same
+// flow. Without it, relaunching a flagged task would re-scan the same
 // committed diff and re-flag forever (livelock).
 const TamperBlessedTag = "tamper-blessed"
 
@@ -111,6 +112,8 @@ type tamperPatchResult struct {
 	Findings  []tamperFinding
 	AddAssert int
 	DelAssert int
+	AddDecl   int
+	DelDecl   int
 }
 
 var (
@@ -156,6 +159,10 @@ var (
 			`\b(it|describe|test|context)\.skip\s*\(|\bx(it|describe|test)\s*\(|` + // jest/mocha/vitest
 			`\b(test|it)\.todo\s*\(|@(Ignore|Disabled)\b`) // todo / JUnit
 	// tamperAddedExitRe matches an added forced success exit.
+	tamperCapabilityGuardRe = regexp.MustCompile(
+		`\b(os\.Symlink|os\.Link|os\.Readlink|filepath\.EvalSymlinks|` +
+			`exec\.LookPath|LookPath|user\.Current|user\.Lookup|` +
+			`net\.Listen|net\.Dial)\b|testing\.Short\s*\(\s*\)`)
 	tamperAddedExitRe = regexp.MustCompile(
 		`\bos\.Exit\s*\(\s*0\s*\)|\bsys\.exit\s*\(\s*0\s*\)|\bprocess\.exit\s*\(\s*0\s*\)|(^|[^.\w])exit\s*\(\s*0\s*\)`)
 	// tamperBuildIgnoreRe matches an added Go build-ignore tag (excludes the
@@ -324,7 +331,10 @@ type tamperScan struct {
 	delDecl     int
 	addRun      int
 	delRun      int
+	guardWindow int
 }
+
+const tamperGuardWindowLines = 3
 
 func (s *tamperScan) add(rule, detail string) {
 	if s.seen[rule] {
@@ -346,7 +356,14 @@ func (s *tamperScan) feedAdded(content string) {
 	if looksLikeComment(content) {
 		return
 	}
-	if tamperAddedSkipRe.MatchString(content) && !isEstablishedSkipIdiom(content, s.baseContent) {
+	isGuard := tamperCapabilityGuardRe.MatchString(content)
+	guarded := isGuard || s.guardWindow > 0
+	if isGuard {
+		s.guardWindow = tamperGuardWindowLines
+	} else if s.guardWindow > 0 {
+		s.guardWindow--
+	}
+	if tamperAddedSkipRe.MatchString(content) && !guarded && !isEstablishedSkipIdiom(content, s.baseContent) {
 		s.add("added-skip", trimDiffLine(content))
 	}
 	if tamperAddedExitRe.MatchString(content) {
@@ -407,7 +424,10 @@ func (s *tamperScan) finalize() tamperPatchResult {
 	}
 	netFinding("removed-assertions", "assertion line(s)", s.delAssert, s.addAssert)
 	netFinding("removed-test-cases", "test declaration(s)", s.delDecl, s.addDecl)
-	return tamperPatchResult{Findings: s.findings, AddAssert: s.addAssert, DelAssert: s.delAssert}
+	return tamperPatchResult{
+		Findings: s.findings, AddAssert: s.addAssert, DelAssert: s.delAssert,
+		AddDecl: s.addDecl, DelDecl: s.delDecl,
+	}
 }
 
 // buildTamperReport assembles the report from the parsed diff. Pure function:
@@ -416,6 +436,9 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 	report := tamperReport{TaskID: taskID, Base: base}
 	scanned := 0
 	totalAddedAssertions := 0
+	totalDeletedAssertions := 0
+	totalAddedDecl := 0
+	totalDeletedDecl := 0
 	for i := range changes {
 		c := changes[i]
 		cat := classifyTamperPath(c.Path)
@@ -438,10 +461,22 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 		scanned++
 		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent)
 		totalAddedAssertions += res.AddAssert
+		totalDeletedAssertions += res.DelAssert
+		totalAddedDecl += res.AddDecl
+		totalDeletedDecl += res.DelDecl
 		report.Findings = append(report.Findings, res.Findings...)
 	}
-	if totalAddedAssertions > 0 {
-		report.Findings = downgradeRemovedAssertionOnlyFindings(report.Findings)
+	// An assertion or test declaration deleted in one file and re-added
+	// (moved/renamed/consolidated) in another nets to zero across the diff
+	// even though each file's own scan sees only its half — so the pass/fail
+	// decision is based on the diff-wide net, not the per-file net computed
+	// in finalize(). Both rules use the same strict net-offset formula so
+	// they downgrade consistently.
+	if totalDeletedAssertions-totalAddedAssertions <= 0 {
+		report.Findings = downgradeFindingsByRule(report.Findings, "removed-assertions")
+	}
+	if totalDeletedDecl-totalAddedDecl <= 0 {
+		report.Findings = downgradeFindingsByRule(report.Findings, "removed-test-cases")
 	}
 
 	// Verification files changed but nothing high fired: record one medium
@@ -458,10 +493,13 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 	return report
 }
 
-func downgradeRemovedAssertionOnlyFindings(findings []tamperFinding) []tamperFinding {
+// downgradeFindingsByRule lowers the severity of every finding matching rule
+// to medium (non-blocking) — used once the diff-wide net for that rule shows
+// the apparent removal was offset elsewhere in the same diff.
+func downgradeFindingsByRule(findings []tamperFinding, rule string) []tamperFinding {
 	out := findings[:0]
 	for _, f := range findings {
-		if f.Rule == "removed-assertions" {
+		if f.Rule == rule {
 			f.Severity = tamperMedium
 		}
 		out = append(out, f)
@@ -546,7 +584,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperReport, error) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
-	base, rangeSpec := resolveTamperRange(ctx, wtPath, t)
+	base, rangeSpec := resolveTamperRange(ctx, wtPath, t, taskID, e.logger)
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
@@ -625,14 +663,28 @@ func tamperBaselineVar(stepID string) string {
 	return "step." + stepID + ".tamper_base"
 }
 
-func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo) (base, rangeSpec string) {
+func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID string, logger *slog.Logger) (base, rangeSpec string) {
 	if t.Workflow != nil {
 		if stepID := t.Workflow.LastAgentStepID(); stepID != "" {
 			if sha := strings.TrimSpace(t.Workflow.Variables[tamperBaselineVar(stepID)]); sha != "" {
-				cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
-				cmd.Dir = wtPath
-				if cmd.Run() == nil {
-					return sha, sha + "..HEAD"
+				verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", sha+"^{commit}")
+				verify.Dir = wtPath
+				if verify.Run() == nil {
+					// A stored baseline can go stale (e.g. the underlying branch
+					// was force-pushed after the baseline was captured) and stay
+					// git-resolvable while no longer being an ancestor of HEAD.
+					// Diffing against such an orphaned base with two dots spans
+					// the entire divergent history instead of the agent's actual
+					// change, so require ancestry before trusting it.
+					ancestor := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", sha, "HEAD")
+					ancestor.Dir = wtPath
+					if ancestor.Run() == nil {
+						return sha, sha + "..HEAD"
+					}
+					if logger != nil {
+						logger.Warn("workflow.detect-tampering.baseline-orphaned",
+							"task_id", taskID, "baseline", sha)
+					}
 				}
 			}
 		}

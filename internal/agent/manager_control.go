@@ -164,6 +164,27 @@ func (m *Manager) StopAgent(agentID string) error {
 	return nil
 }
 
+// StopCompletedAgent force-stops a headless agent whose stream already ended
+// in a clean terminal result but whose process never exited (e.g. a
+// non-detached run, or a detached run whose tailer goroutine died before it
+// could finalize). Unlike StopAgent, it marks the agent as completed-by-result
+// first, so the runner's own exit-status handling (runHeadlessAttemptPipe,
+// tailHeadlessFile) derives completion from the terminal result event instead
+// of misreading the kill signal in cmd.Wait()'s error as a failed/stopped run.
+func (m *Manager) StopCompletedAgent(agentID string) error {
+	m.mu.Lock()
+	a, ok := m.agents[agentID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+	if a.Mode != "headless" || !a.CompletedSuccessfully() {
+		return fmt.Errorf("agent %s is not a completed headless agent", agentID)
+	}
+	a.setCompletedByResult(true)
+	return m.StopAgent(agentID)
+}
+
 func (m *Manager) GetAgent(agentID string) (*Agent, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -199,6 +220,53 @@ func (m *Manager) HasRunningAgentForTask(taskID string) bool {
 	if _, held := m.dispatchClaims[taskID]; held {
 		return true
 	}
+	return m.hasLiveRegisteredAgent(taskID)
+}
+
+// HasLiveRegisteredAgentForTask reports whether a genuinely registered Agent
+// (already past dispatch setup) is live for taskID — unlike
+// HasRunningAgentForTask, it does NOT treat an in-flight dispatch claim as
+// "running". Used to gate worktree mutation (worktree.AgentChecker) from
+// inside the very dispatch call that holds the claim: that caller already IS
+// the in-flight dispatch, so checking dispatchClaims there would always see
+// its own claim and deadlock against itself. It must instead ask "is some
+// OTHER, already-started agent process still using this worktree?".
+func (m *Manager) HasLiveRegisteredAgentForTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.hasLiveRegisteredAgent(taskID)
+}
+
+// HasLiveHeadlessAgentForTask reports whether a registered headless agent is
+// still live for taskID. It intentionally ignores dispatch claims and
+// conversational agents: the headless watchdog is the only alternate stall
+// detector that can replace dwell escalation for a stale task file.
+func (m *Manager) HasLiveHeadlessAgentForTask(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.Mode != "headless" {
+			continue
+		}
+		if a.done == nil {
+			if a.GetState() == StateRunning {
+				return true
+			}
+			continue
+		}
+		select {
+		case <-a.done:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// hasLiveRegisteredAgent is the shared core of HasRunningAgentForTask and
+// HasLiveRegisteredAgentForTask. Callers must hold m.mu (read lock is
+// sufficient).
+func (m *Manager) hasLiveRegisteredAgent(taskID string) bool {
 	for _, a := range m.agents {
 		if a.TaskID != taskID {
 			continue
@@ -268,7 +336,7 @@ func (m *Manager) Shutdown() {
 func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	m.mu.RLock()
 	count := len(m.agents)
-	dones := make([]chan struct{}, 0, count)
+	cancelled := make([]*Agent, 0, count)
 	survived := 0
 	for _, a := range m.agents {
 		// Detached agents are meant to outlive the app: do not cancel
@@ -281,25 +349,49 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 			a.cancel()
 		}
 		if a.done != nil {
-			dones = append(dones, a.done)
+			cancelled = append(cancelled, a)
 		}
 	}
 	m.mu.RUnlock()
 
-	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(dones), "survived", survived)
-	if len(dones) == 0 || grace <= 0 {
+	m.logger.Info("agent.shutdown", "count", count, "grace", grace, "wait", len(cancelled), "survived", survived)
+	if len(cancelled) == 0 || grace <= 0 {
 		return
 	}
 
 	deadline := time.After(grace)
-	for i, done := range dones {
+	exited := 0
+	for i, a := range cancelled {
 		select {
-		case <-done:
+		case <-a.done:
+			exited++
 		case <-deadline:
 			m.logger.Warn("agent.shutdown.timeout",
-				"exited", i, "remaining", len(dones)-i, "grace", grace)
+				"exited", i, "remaining", len(cancelled)-i, "grace", grace)
+			m.evictShutdownAgents(cancelled[:i])
 			return
 		}
 	}
-	m.logger.Info("agent.shutdown.done", "exited", len(dones))
+	m.logger.Info("agent.shutdown.done", "exited", exited)
+
+	// The process is going away: markAgentDone already scheduled a delayed
+	// eviction for each agent (deadAgentRetention), but there is no reader
+	// left to benefit from that window once Shutdown returns, so evict
+	// synchronously rather than leaking every agent that ever ran into a
+	// registry no one will read again.
+	m.evictShutdownAgents(cancelled)
+}
+
+// evictShutdownAgents removes the given agents from the live registry,
+// guarding against an ID being reused by a new registration in the
+// (vanishingly unlikely, shutdown-path) window between cancellation and
+// eviction.
+func (m *Manager) evictShutdownAgents(agents []*Agent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range agents {
+		if cur, ok := m.agents[a.ID]; ok && cur == a {
+			delete(m.agents, a.ID)
+		}
+	}
 }

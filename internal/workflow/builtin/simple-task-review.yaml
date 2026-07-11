@@ -9,8 +9,10 @@ trigger:
       operator: equals
       value: ready-review
 steps:
-  # Skip review when tagged noreview or already reviewed in a prior run.
-  # On skip, jump straight to done_review so the task still advances to testing.
+  # Skip review when tagged noreview/trivial or already reviewed in a prior
+  # run. On skip, jump straight to done_review so the task still advances to
+  # testing — trivial-tagged tasks then also skip testing (see
+  # testing-task.yaml's maybe_test), landing directly on ready-pr.
   - id: maybe_review
     name: Review Decision
     type: condition
@@ -24,6 +26,11 @@ steps:
           field: task.reviewed
           operator: equals
           value: "true"
+        goto: done_review
+      - when:
+          field: task.tags
+          operator: contains
+          value: trivial
         goto: done_review
       - when:
           field: task.tags
@@ -90,6 +97,18 @@ steps:
           2. Run /pr-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        verdict marker:
+          - `Review Verdict: CLEAN` when /pr-review found no bug-risk,
+            correctness, reliability, security, data-loss, test-breaking,
+            or otherwise actionable implementation issue that should be fixed
+            before PR creation. Style-only comments, simplification ideas,
+            unused-code observations that do not affect behavior, and optional
+            consistency suggestions stay CLEAN.
+          - `Review Verdict: NEEDS_FIXES` when any /pr-review finding should
+            trigger code changes before PR creation.
+        This line gates whether a fix-review agent runs next — get it right.
+
         Do NOT submit anything to GitHub. Sybra will ingest
         .sybra-review-{{.Task.ID}}.md as the code_review sidecar
         after you exit — you do not need to call sybra-cli yourself.
@@ -110,7 +129,10 @@ steps:
     config:
       role: review
       mode: headless
-      provider: cross
+      # High-risk/staff review is pinned to claude, not routed by "cross" or
+      # the A/B suite — codex review fails ~2x more often than claude review
+      # (scorecard: 17% vs 9%) on the diffs that reach staff-level scrutiny.
+      provider: claude
       needs_worktree: true
       max_retries: 2
       prompt: >-
@@ -121,6 +143,16 @@ steps:
           1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
           2. Run /staff-code-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
+
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        verdict marker, mapped from /staff-code-review's native verdict:
+          - `Review Verdict: CLEAN` for APPROVE, and for
+            APPROVE_WITH_COMMENTS only when every comment is low-severity,
+            style-only, optional, or non-actionable before PR creation.
+          - `Review Verdict: NEEDS_FIXES` for REQUEST_CHANGES, or for
+            APPROVE_WITH_COMMENTS when any critical/high/medium severity
+            finding should trigger code changes before PR creation.
+        This line gates whether a fix-review agent runs next — get it right.
 
         Do NOT submit anything to GitHub. Sybra will ingest
         .sybra-review-{{.Task.ID}}.md as the code_review sidecar
@@ -149,6 +181,27 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: route_review_verdict
+
+  # Mirrors route_critique_verdict in simple-task-plan: a clean review (zero
+  # actionable findings) skips the fix_review agent entirely — the exact
+  # analog of #1490, which gated address_critique on the plan-critique
+  # verdict but left review ungated (#1524). Saves ~1 wasted agent run per
+  # clean-review task, which is nearly every landing.
+  - id: route_review_verdict
+    name: Route on Review Verdict
+    type: condition
+    config:
+      check:
+        field: task.code_review
+        operator: starts_with
+        value: 'Review Verdict: CLEAN'
+    next:
+      - when:
+          field: task.code_review
+          operator: starts_with
+          value: 'Review Verdict: CLEAN'
+        goto: done_review
       - goto: fix_review
 
   - id: fix_review

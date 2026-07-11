@@ -31,7 +31,11 @@ steps:
 
   # Mechanical check (no LLM): if the pr-fix agent deliberately stopped and
   # requested human review (for example too many merge conflicts), preserve that
-  # escalation before PR relinking can move the task back to in-review.
+  # escalation before PR relinking can move the task back to in-review. Before
+  # parking, re-probes the live PR: a stale/diverged local worktree can cause a
+  # false human-required when an external bot already pushed a green fix
+  # remotely — in that case the step sets in-review itself and ends the
+  # workflow here too.
   - id: route_pr_fix_result
     name: Route PR Fix Result
     type: route_pr_fix_result
@@ -40,6 +44,11 @@ steps:
           field: task.status
           operator: equals
           value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
         goto: ""
       - goto: verify_commits
 

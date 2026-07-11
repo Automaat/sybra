@@ -7,6 +7,8 @@ import {
   awaitsHuman,
   awaitsHumanLabel,
   coreStatus,
+  isPromptLabProposal,
+  needsPlanApproval,
   statusLabel,
   statusOptionsFor,
   BOARD_COLUMNS,
@@ -18,9 +20,9 @@ describe('CORE_STATUSES', () => {
     expect(CORE_STATUSES).toEqual([...BOARD_COLUMNS.map((c) => c.status), 'done', 'cancelled'])
   })
 
-  it('is a small set (<= 9) and excludes granular states', () => {
-    expect(CORE_STATUSES.length).toBeLessThanOrEqual(9)
-    for (const granular of ['new', 'plan-review', 'ready-pr', 'blocked']) {
+  it('is a small set (<= 10) and excludes granular states', () => {
+    expect(CORE_STATUSES.length).toBeLessThanOrEqual(10)
+    for (const granular of ['new', 'plan-review', 'ready-pr']) {
       expect(CORE_STATUSES).not.toContain(granular)
     }
   })
@@ -38,7 +40,7 @@ describe('coreStatus', () => {
     expect(coreStatus('plan-review')).toBe('planning')
     expect(coreStatus('ready-review')).toBe('ready-review')
     expect(coreStatus('ready-pr')).toBe('in-review')
-    expect(coreStatus('blocked')).toBe('human-required')
+    expect(coreStatus('blocked')).toBe('blocked')
   })
 
   it('maps a column status to itself', () => {
@@ -112,5 +114,91 @@ describe('awaitsHumanLabel — canonical, never a divergent name', () => {
       if (AWAITS_HUMAN.has(meta.value)) continue
       expect(awaitsHumanLabel(meta.value)).toBe('')
     }
+  })
+})
+
+describe('needsPlanApproval — keyed off workflow, not stale status (issue #1642)', () => {
+  it('is true when status is plan-review and no workflow is attached', () => {
+    expect(needsPlanApproval({ status: 'plan-review' })).toBe(true)
+  })
+
+  it('is false when status is anything else and no workflow is attached', () => {
+    expect(needsPlanApproval({ status: 'planning' })).toBe(false)
+  })
+
+  it('is true when the workflow is waiting on review_plan, even if status desynced away from plan-review', () => {
+    expect(
+      needsPlanApproval({
+        status: 'planning',
+        workflow: { currentStep: 'review_plan', state: 'waiting' },
+      }),
+    ).toBe(true)
+  })
+
+  it('is false when the workflow has moved past review_plan, even if status is stale plan-review', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'implement', state: 'running' },
+      }),
+    ).toBe(false)
+  })
+
+  it('is false when review_plan is reached but not yet waiting (still running)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'review_plan', state: 'running' },
+      }),
+    ).toBe(false)
+  })
+
+  it('falls back to status when only currentStep is populated (state missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { currentStep: 'review_plan' },
+      }),
+    ).toBe(true)
+  })
+
+  it('falls back to status when only state is populated (currentStep missing)', () => {
+    expect(
+      needsPlanApproval({
+        status: 'plan-review',
+        workflow: { state: 'waiting' },
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('isPromptLabProposal', () => {
+  it('is true when human-required and tagged prompt-lab-proposal', () => {
+    expect(isPromptLabProposal({ status: 'human-required', tags: ['prompt-lab-proposal'] })).toBe(true)
+  })
+
+  it('is true when other tags are also present', () => {
+    expect(
+      isPromptLabProposal({ status: 'human-required', tags: ['requires-human', 'prompt-lab-proposal'] }),
+    ).toBe(true)
+  })
+
+  it('is false when status is not human-required, even if tagged', () => {
+    expect(isPromptLabProposal({ status: 'todo', tags: ['prompt-lab-proposal'] })).toBe(false)
+    expect(isPromptLabProposal({ status: 'cancelled', tags: ['prompt-lab-proposal'] })).toBe(false)
+  })
+
+  it('is false when human-required but missing the tag', () => {
+    expect(isPromptLabProposal({ status: 'human-required', tags: ['requires-human'] })).toBe(false)
+    expect(isPromptLabProposal({ status: 'human-required', tags: [] })).toBe(false)
+  })
+
+  it('is false when tags is null/undefined', () => {
+    expect(isPromptLabProposal({ status: 'human-required', tags: null })).toBe(false)
+    expect(isPromptLabProposal({ status: 'human-required' })).toBe(false)
+  })
+
+  it('is false when status is missing', () => {
+    expect(isPromptLabProposal({ tags: ['prompt-lab-proposal'] })).toBe(false)
   })
 })

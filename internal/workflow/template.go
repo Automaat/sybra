@@ -31,10 +31,22 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 }
 
 var templateFuncs = template.FuncMap{
-	"shellquote":       shellQuote,
-	"getvar":           getVar,
-	"recoveredorprev":  recoveredOrPrev,
-	"plancontractjson": PlanContractPromptJSON,
+	"shellquote":          shellQuote,
+	"getvar":              getVar,
+	"recoveredorprev":     recoveredOrPrev,
+	"plancontractjson":    PlanContractPromptJSON,
+	"currenttestfailures": currentTestFailures,
+}
+
+// currentTestFailures returns the current "## Test Failures" section from a
+// task body, trimmed, or "" if none is present. Inlined directly into the
+// reimplementation prompt (rather than pointing the agent at a CLI fetch it
+// must parse correctly) so the current failure survives an agent truncating
+// or misreading its own `sybra-cli get` output. At most one such section is
+// ever live in a body (see stripTestFailuresSections), so the first match is
+// unambiguously current.
+func currentTestFailures(body string) string {
+	return strings.TrimSpace(testFailSectionOf(body))
 }
 
 // getVar safely retrieves a variable from a map, returning "" if absent.

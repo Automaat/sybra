@@ -189,6 +189,16 @@ func ValidateAgentProvider(s string) (string, error) {
 	return s, nil
 }
 
+// RunOutcomeSuccess and RunOutcomeFailure are the values AgentRun.Outcome
+// takes once a run reaches a definitive terminal result. Left empty for runs
+// that are still in flight or ended in an inconclusive stall (signal kill,
+// stop-before-result, provider rate limit) that is eligible for retry rather
+// than a real success or failure.
+const (
+	RunOutcomeSuccess = "success"
+	RunOutcomeFailure = "failure"
+)
+
 // AgentRun records one dispatch of an agent process against a task: what was
 // asked, which provider/model ran it, how it concluded, and the metadata
 // downstream deterministic routing (test outcome, tamper detection, A/B
@@ -202,18 +212,29 @@ type AgentRun struct {
 	Model    string `json:"model,omitempty"`
 	// ExperimentID/VariantID capture deterministic A/B assignment selected
 	// before the run started.
-	ExperimentID    string    `json:"experimentId,omitempty"`
-	VariantID       string    `json:"variantId,omitempty"`
-	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey   string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
-	State           string    `json:"state"`
-	StartedAt       time.Time `json:"startedAt"`
-	CostUSD         float64   `json:"costUsd"`
-	PremiumRequests float64   `json:"premiumRequests,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
-	Result          string    `json:"result"`
-	OneShot         bool      `json:"oneShot,omitempty"`
+	ExperimentID    string `json:"experimentId,omitempty"`
+	VariantID       string `json:"variantId,omitempty"`
+	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
+	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	State           string `json:"state"`
+	// Outcome records the terminal result the completion handler actually
+	// observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
+	// ("stopped" covers both a clean finish and a failed one) and independent
+	// of Result (truncated to maxResultLen, so its presence/absence cannot
+	// tell success from failure either). Empty means the run never reached a
+	// definitive terminal outcome (still running, or stalled/rate-limited and
+	// due for retry) — callers must not infer success from Outcome == "".
+	Outcome string `json:"outcome,omitempty"`
+	// EscalationReason records the guardrail reason that stopped the run
+	// ("cost" or "turns"). Empty for ordinary completions.
+	EscalationReason string    `json:"escalationReason,omitempty"`
+	StartedAt        time.Time `json:"startedAt"`
+	CostUSD          float64   `json:"costUsd"`
+	PremiumRequests  float64   `json:"premiumRequests,omitempty"`
+	Prompt           string    `json:"prompt,omitempty"`
+	Result           string    `json:"result"`
+	OneShot          bool      `json:"oneShot,omitempty"`
 	// Verdict holds the parsed decision for human-review runs ("human" or
 	// "sybra_bug"). Extracted from live agent output at completion time so
 	// it survives Result truncation.
@@ -347,6 +368,13 @@ type Task struct {
 	// agent, allowing a single prompt to spawn parallel subagent runs. Trades
 	// higher token cost for reduced wall-clock time on multi-part prompts.
 	ForkSubagent bool `json:"forkSubagent,omitempty"`
+	// Sandbox is an escape hatch for the system default OS-level sandbox
+	// posture (see config.AgentDefaults.SandboxMode) for this task's agent
+	// processes. nil or true = use system default. false = disable the
+	// sandbox-exec wrap entirely for this task's agents. Setting true does
+	// NOT tighten posture beyond the system default (ResolveSandboxMode only
+	// treats Sandbox=false as meaningful).
+	Sandbox *bool `json:"sandbox,omitempty"`
 	// ReasoningEffort sets the reasoning level for this task's agents
 	// (low/medium/high/xhigh). Empty = model default. Applied across providers:
 	// codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -362,6 +390,13 @@ type Task struct {
 	Workflow              *workflow.Execution `json:"workflow,omitempty"`
 	CreatedAt             time.Time           `json:"createdAt"`
 	UpdatedAt             time.Time           `json:"updatedAt"`
+	// StatusChangedAt marks the last time Status actually transitioned, as
+	// opposed to UpdatedAt which is bumped by any field write (tags, audit
+	// sidecars, status_reason, ...). Detectors that need to know "how long
+	// has this task been in its current status" (e.g. detectLostAgents'
+	// dispatch-latency grace window) must key off this field, not UpdatedAt —
+	// see internal/monitor/detector.go.
+	StatusChangedAt time.Time `json:"statusChangedAt"`
 
 	Body         string `json:"body"`
 	Plan         string `json:"plan,omitempty"`

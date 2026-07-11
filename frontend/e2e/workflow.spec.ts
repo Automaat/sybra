@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
-import { readdir, unlink, readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+import { cleanupStrayTasks, isolatedSybraHome } from './lib/sybra-home'
+
+const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 
 const FIXTURE_FILES = new Set([
@@ -14,12 +15,7 @@ const FIXTURE_FILES = new Set([
 ])
 
 async function cleanupCreatedTasks() {
-  const files = await readdir(TASKS_DIR)
-  for (const f of files) {
-    if (!FIXTURE_FILES.has(f) && f.endsWith('.md')) {
-      await unlink(join(TASKS_DIR, f))
-    }
-  }
+  await cleanupStrayTasks(SYBRA_HOME, TASKS_DIR, FIXTURE_FILES)
 }
 
 async function ensurePlanFixture() {

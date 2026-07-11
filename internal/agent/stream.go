@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/limits"
@@ -53,6 +54,15 @@ type ClaudeEvent struct {
 	Raw          json.RawMessage // independent copy, never aliased to scanner buffer
 	Message      *ClaudeMessage
 	Result       *ClaudeResult
+	// ParentToolUseID is Claude Code's `parent_tool_use_id` field, non-empty
+	// when the event belongs to a forked subagent's turn (CLAUDE_CODE_FORK_SUBAGENT)
+	// rather than the top-level conversation.
+	ParentToolUseID string
+	// BackgroundTaskIDs is populated (possibly to an empty, non-nil slice) for
+	// a "system"/"background_tasks_changed" event: REPLACE-semantics snapshot
+	// of every CLI background bash task (e.g. a `run_in_background` Bash call)
+	// still live after the change.
+	BackgroundTaskIDs []string
 }
 
 // CodexEvent is the shared envelope for all Codex stream-json events.
@@ -82,16 +92,17 @@ type CopilotEvent struct {
 }
 
 type claudeEnvelope struct {
-	Type         string                `json:"type"`
-	Subtype      string                `json:"subtype"`
-	SessionID    string                `json:"session_id"`
-	PluginErrors []string              `json:"plugin_errors,omitempty"`
-	Message      *claudeMessagePayload `json:"message"`
-	Result       string                `json:"result"`
-	TotalCostUSD float64               `json:"total_cost_usd"`
-	IsError      bool                  `json:"is_error"`
-	APIStatus    int                   `json:"api_error_status"`
-	Error        string                `json:"error"`
+	Type            string                `json:"type"`
+	Subtype         string                `json:"subtype"`
+	SessionID       string                `json:"session_id"`
+	PluginErrors    []string              `json:"plugin_errors,omitempty"`
+	ParentToolUseID string                `json:"parent_tool_use_id,omitempty"`
+	Message         *claudeMessagePayload `json:"message"`
+	Result          string                `json:"result"`
+	TotalCostUSD    float64               `json:"total_cost_usd"`
+	IsError         bool                  `json:"is_error"`
+	APIStatus       int                   `json:"api_error_status"`
+	Error           string                `json:"error"`
 	// Real Claude Code result events nest token counts under `usage` (per
 	// platform.claude.com/docs/en/agent-sdk/headless and verified against
 	// captured agent NDJSON). Earlier root-level `total_*_tokens` fields are
@@ -99,6 +110,19 @@ type claudeEnvelope struct {
 	Usage             *claudeUsage `json:"usage"`
 	TotalInputTokens  int          `json:"total_input_tokens"`
 	TotalOutputTokens int          `json:"total_output_tokens"`
+	// Tasks is populated on a "system"/"background_tasks_changed" event: the
+	// full set of currently-live background bash tasks (REPLACE semantics).
+	Tasks []claudeBackgroundTaskRef `json:"tasks,omitempty"`
+}
+
+// claudeBackgroundTaskRef is one entry of a "background_tasks_changed"
+// event's `tasks` array — a live CLI background bash task (e.g. a
+// `run_in_background` Bash call). Only TaskID is consumed today;
+// TaskType/Description are kept for future diagnostics.
+type claudeBackgroundTaskRef struct {
+	TaskID      string `json:"task_id"`
+	TaskType    string `json:"task_type"`
+	Description string `json:"description"`
 }
 
 type claudeUsage struct {
@@ -369,15 +393,23 @@ func ParseClaudeLine(line []byte) (ClaudeEvent, error) {
 	}
 
 	event := ClaudeEvent{
-		Type:    raw.Type,
-		Subtype: raw.Subtype,
-		Raw:     copyRaw(line),
+		Type:            raw.Type,
+		Subtype:         raw.Subtype,
+		Raw:             copyRaw(line),
+		ParentToolUseID: raw.ParentToolUseID,
 	}
 
 	switch raw.Type {
 	case "system", "init":
 		event.SessionID = raw.SessionID
 		event.PluginErrors = raw.PluginErrors
+		if raw.Subtype == "background_tasks_changed" {
+			ids := make([]string, len(raw.Tasks))
+			for i, t := range raw.Tasks {
+				ids[i] = t.TaskID
+			}
+			event.BackgroundTaskIDs = ids
+		}
 
 	case "assistant":
 		if raw.Message != nil {
@@ -718,7 +750,7 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		Subtype:      raw.Subtype,
 		Text:         raw.Result,
 		SessionID:    raw.SessionID,
-		CostUSD:      raw.TotalCostUSD,
+		CostUSD:      sanitizeCostUSD(raw.TotalCostUSD),
 		InputTokens:  raw.TotalInputTokens,
 		OutputTokens: raw.TotalOutputTokens,
 	}
@@ -743,6 +775,13 @@ func extractResultFieldsTyped(raw claudeEnvelope) ClaudeResult {
 		r.ErrorStatus = raw.APIStatus
 	}
 	return r
+}
+
+func sanitizeCostUSD(cost float64) float64 {
+	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
+		return 0
+	}
+	return cost
 }
 
 // copyRaw returns an independent copy of line as json.RawMessage.

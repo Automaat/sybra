@@ -39,6 +39,20 @@ type WorkflowRestarter interface {
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
 }
 
+// PRResolver resolves the GitHub PR a task lost track of when its pr_number was
+// cleared, so recovery can reconcile it. Implemented by the App over the repo's
+// github abstraction; kept a narrow interface so recovery stays a leaf package.
+type PRResolver interface {
+	ResolvePRForTask(ctx context.Context, repo, branch, issue string) (PRRef, error)
+}
+
+// PRRef is the PR a PRResolver matched to a task. State is "OPEN" or "MERGED";
+// a zero Number with an empty State means no unambiguous PR was found.
+type PRRef struct {
+	Number int
+	State  string
+}
+
 // Recovery owns the dependencies needed by the boot-time cleanup pass and
 // the periodic restart-stale sweep. Construct once during App.Startup,
 // reuse from the orchestrator loop.
@@ -49,12 +63,27 @@ type Recovery struct {
 	WorkflowEngine WorkflowRestarter // optional; nil-safe
 	Orchestrator   Orchestrator
 	Projects       ProjectGetter
+	PRs            PRResolver
 	Logger         *slog.Logger
 	Throttle       *logging.ErrorThrottle
 	WG             *sync.WaitGroup
 
 	LogDir       string
 	LogRetention time.Duration // 0 disables age-based pruning
+
+	// TrashRetentionDays bounds how long a soft-deleted task (see
+	// task.Store.Delete) survives under the trash dir before
+	// pruneTrash permanently removes it. A negative value disables
+	// pruning.
+	TrashRetentionDays int
+
+	// CommitBeforePrune, when set, is invoked at the top of pruneTrash so a
+	// git snapshot of the tasks dir (see internal/tasksnapshot) is taken
+	// immediately before the bulk-delete sweep — covering both the
+	// boot-time RunStartupCleanup pass and the periodic PruneTrash loop.
+	// nil-safe: recovery deliberately does not import internal/tasksnapshot
+	// so it stays a leaf package; this func field is the only coupling.
+	CommitBeforePrune func(context.Context)
 }
 
 // RunStartupCleanup sequences boot-time maintenance in the order that lets
@@ -66,16 +95,12 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// which all key off HasRunningAgentForTask — see them as live and do
 	// not remove their worktrees, gc their chat tasks, mark their runs
 	// stale, or restart them.
-	// ReattachAll derives its per-agent contexts from agent.Manager's own
-	// m.ctx field (bound once at Manager construction from this same App
-	// root context), not from a threaded parameter — see the Engine.SetContext
-	// / e.ctx pattern for why re-plumbing that across ReattachAll's whole
-	// reattach fan-out is out of scope here.
-	if reattached := r.Agents.ReattachAll(); len(reattached) > 0 { //nolint:contextcheck // agent.Manager uses its own m.ctx field, see comment above
+	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
 	r.Worktrees.RepairAll(ctx)
 	r.gcOrphanChats(ctx)
+	r.pruneTrash(ctx)
 	r.Worktrees.CleanupOrphaned(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
@@ -87,4 +112,43 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 func (r *Recovery) pruneAgentLogs() {
 	rep := logging.PruneAgentLogs(r.LogDir, r.LogRetention, time.Now())
 	logging.LogPruneReport(r.Logger, rep)
+}
+
+// PruneTrash is the periodic entry point for a background ticker (see
+// LifecycleManager.startTrashPruneLoop) that keeps the trash dir bounded
+// between restarts on long-lived server deployments — RunStartupCleanup's
+// call only covers the boot-time pass.
+func (r *Recovery) PruneTrash(ctx context.Context) {
+	r.pruneTrash(ctx)
+}
+
+func (r *Recovery) effectiveTrashRetentionDays() int {
+	if r.TrashRetentionDays == 0 {
+		return 14
+	}
+	return r.TrashRetentionDays
+}
+
+// pruneTrash permanently removes trash generations older than
+// TrashRetentionDays, run right after gcOrphanChats (whose Delete calls just
+// trashed any orphaned chat tasks) and before Worktrees.CleanupOrphaned.
+// Logs the resulting count and every generation removed. Fires
+// CommitBeforePrune first (nil-safe) so a git snapshot exists immediately
+// before this bulk-delete sweep.
+func (r *Recovery) pruneTrash(ctx context.Context) {
+	if r.CommitBeforePrune != nil {
+		r.CommitBeforePrune(ctx)
+	}
+	rep, err := r.Tasks.PruneTrash(r.effectiveTrashRetentionDays())
+	if err != nil {
+		r.Logger.Warn("recovery.trash.prune_failed", "err", err)
+		return
+	}
+	for _, entry := range rep.Entries {
+		r.Logger.Info("recovery.trash.pruned", "id", entry.ID, "generation", entry.Generation, "deleted_date", entry.DeletedDate, "title", entry.Title)
+	}
+	for _, err := range rep.Errors {
+		r.Logger.Warn("recovery.trash.prune_error", "err", err)
+	}
+	r.Logger.Info("recovery.trash.prune", "scanned", rep.Scanned, "removed", rep.Removed, "errors", len(rep.Errors))
 }

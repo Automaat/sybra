@@ -482,6 +482,87 @@ func TestRunWithRepoDirAndOrchestrator(t *testing.T) {
 	}
 }
 
+func TestRunDowngradesCommitFlags(t *testing.T) {
+	repoDir := t.TempDir()
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	dirSkillSrc := filepath.Join(skillsSrc, "dirskill")
+	if err := os.MkdirAll(dirSkillSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flatSkill := []byte("---\nname: flat\ndescription: test\n---\n\nCommit with `git commit -s -S -m msg`.")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "flat.md"), flatSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirSkill := []byte("---\nname: dirskill\ndescription: test\n---\n\nRun `git commit -sS -m msg`.")
+	if err := os.WriteFile(filepath.Join(dirSkillSrc, "SKILL.md"), dirSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orchDir := filepath.Join(repoDir, "orchestrator")
+	if err := os.MkdirAll(orchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claude := []byte("# orchestrator\n\n```bash\ngit commit -s -S -m \"type(scope): desc\"\n```")
+	if err := os.WriteFile(filepath.Join(orchDir, "CLAUDE.md"), claude, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	primaryDst := filepath.Join(t.TempDir(), "app-skills")
+	sybraHome := t.TempDir()
+	newSyncer().Run(skillsync.Options{
+		RepoDir:              repoDir,
+		PrimaryDst:           primaryDst,
+		SybraHomeDir:         sybraHome,
+		DowngradeCommitFlags: true,
+	})
+
+	read := func(p string) string {
+		t.Helper()
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		return string(b)
+	}
+	for _, p := range []string{
+		filepath.Join(sybraHome, "CLAUDE.md"),
+		filepath.Join(primaryDst, "flat", "SKILL.md"),
+		filepath.Join(primaryDst, "dirskill", "SKILL.md"),
+	} {
+		got := read(p)
+		if strings.Contains(got, "-S") {
+			t.Errorf("%s still contains -S after downgrade:\n%s", p, got)
+		}
+		if !strings.Contains(got, "git commit -s") {
+			t.Errorf("%s lost the -s sign-off flag:\n%s", p, got)
+		}
+	}
+}
+
+func TestRunKeepsCommitFlagsWhenSigningAvailable(t *testing.T) {
+	repoDir := t.TempDir()
+	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flatSkill := []byte("---\nname: flat\ndescription: test\n---\n\nCommit with `git commit -s -S -m msg`.")
+	if err := os.WriteFile(filepath.Join(skillsSrc, "flat.md"), flatSkill, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	primaryDst := filepath.Join(t.TempDir(), "app-skills")
+	newSyncer().Run(skillsync.Options{
+		RepoDir:              repoDir,
+		PrimaryDst:           primaryDst,
+		DowngradeCommitFlags: false,
+	})
+	b, err := os.ReadFile(filepath.Join(primaryDst, "flat", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "git commit -s -S") {
+		t.Errorf("expected -s -S preserved, got:\n%s", b)
+	}
+}
+
 func TestHasYAMLFrontmatter(t *testing.T) {
 	cases := []struct {
 		name string

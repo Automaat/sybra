@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { CircleDot, Copy, FolderGit2, GitBranch, Bot, Tag, Calendar, Clock, CalendarClock, Wrench } from '@lucide/svelte'
+  import { CircleDot, Copy, FolderGit2, GitBranch, Bot, Tag, Calendar, Clock, CalendarClock, Wrench, Hash, DollarSign } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../../stores/tasks.svelte.js'
   import { notificationStore } from '../../stores/notifications.svelte.js'
   import { openLink } from '$lib/browser.svelte.js'
   import { formatDateTime, formatShortDate, timeAgo } from '../../lib/dates.js'
+  import { taskTotalCost, taskRunCount, formatCost } from '../../lib/cost.js'
   import { fallbackReasoningEffortOptions, loadReasoningEffortOptions } from '../../lib/codex-reasoning.js'
   import AssignProjectDialog from '../AssignProjectDialog.svelte'
   import TaskTagEditor from './TaskTagEditor.svelte'
@@ -19,6 +20,7 @@
   const { task }: Props = $props()
 
   let error = $state('')
+  let copiedId = $state(false)
   let copiedBranch = $state(false)
   let projectDialogOpen = $state(false)
 
@@ -35,6 +37,9 @@
   const taskBranchName = $derived(
     task ? 'sybra/' + (task.slug ? task.slug + '-' + task.id : task.id) : '',
   )
+
+  const totalCost = $derived(taskTotalCost(task))
+  const runCount = $derived(taskRunCount(task))
 
   $effect(() => {
     function onEditTags() { tagEditor?.start() }
@@ -54,6 +59,16 @@
       error = ''
     } catch (e) {
       error = String(e)
+    }
+  }
+
+  async function copyId() {
+    try {
+      await navigator.clipboard.writeText(task.id)
+      copiedId = true
+      setTimeout(() => { copiedId = false }, 1500)
+    } catch (e) {
+      notificationStore.pushLocal('error', 'Copy failed', String(e))
     }
   }
 
@@ -79,6 +94,20 @@
      value column with leading type icons, so the eye scans one edge. The row
      order runs primary → secondary (identity, then timestamps). -->
 <dl class="grid grid-cols-[auto_1fr] items-center gap-x-5 gap-y-2.5 text-sm">
+  <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Task ID</dt>
+  <dd>
+    <button
+      type="button"
+      class="-mx-1.5 inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-left font-mono text-surface-700 transition-colors hover:bg-surface-200 dark:text-surface-300 dark:hover:bg-surface-700"
+      onclick={copyId}
+      title="Copy task ID (⌘.)"
+    >
+      <Hash size={13} class="shrink-0 text-surface-400" />
+      {copiedId ? 'Copied!' : task.id}
+      <Copy size={12} class="shrink-0 text-surface-400" />
+    </button>
+  </dd>
+
   <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Project</dt>
   <dd>
     <button
@@ -111,6 +140,12 @@
       </button>
     </dd>
   {/if}
+
+  <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Cost</dt>
+  <dd class="flex items-center gap-1.5 text-surface-700 dark:text-surface-300">
+    <DollarSign size={13} class="shrink-0 text-surface-400" />
+    {formatCost(totalCost)} · {runCount} {runCount === 1 ? 'run' : 'runs'}
+  </dd>
 
   <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Mode</dt>
   <dd class="flex items-center gap-1.5 text-surface-700 dark:text-surface-300">

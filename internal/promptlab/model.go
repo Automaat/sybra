@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// ProposalTag marks local Sybra tasks filed from Prompt Lab proposals. These
+// tasks are reviewed and advanced by PromptLabService, not by normal triage or
+// task.created workflow dispatch.
+const ProposalTag = "prompt-lab-proposal"
+
 // Subject identifies a role/workflow-step slice of the fleet whose
 // prompt/skill may be underperforming.
 type Subject struct {
@@ -103,12 +108,8 @@ type RunResult struct {
 	Dropped      int           `json:"dropped,omitempty"`
 }
 
-// proposalID is content-addressed on the subject, evidence window (sample
-// count + effect size), and variant intent — stable across runs over
-// unchanged evidence, with no wall-clock input, so re-running the loop before
-// new data lands never re-proposes the same idea under a new ID.
 func proposalID(s WeakSubject, intent string) string {
-	raw := fmt.Sprintf("%s|%s|%d|%.3f|%s", s.Role, s.WorkflowStep, s.Samples, s.EffectSize, intent)
+	raw := fmt.Sprintf("%s|%s|%s", s.Role, s.WorkflowStep, intent)
 	sum := sha256.Sum256([]byte(raw))
 	return "pl-" + hex.EncodeToString(sum[:])[:12]
 }

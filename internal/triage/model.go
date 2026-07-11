@@ -21,6 +21,16 @@ type Verdict struct {
 	OriginalTitle string   `json:"original_title,omitempty"`
 }
 
+// Schema is the JSON Schema passed as llmjob.Spec.Schema for FallbackClassifier
+// runs — embedded in the prompt for claude/copilot, delivered via codex's
+// --output-schema temp file for codex (see llmexec.RunJSON) — mirroring
+// internal/verdict.Schema's pattern. Optional fields (description,
+// project_id, original_title) are modeled as nullable and listed as required
+// so Codex's strict additionalProperties:false rule is satisfied — the model
+// emits null for them when unset, which json.Unmarshal decodes into the zero
+// value, matching the `omitempty` prose-parsing path's behavior.
+const Schema = `{"type":"object","properties":{"title":{"type":"string"},"description":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"size":{"type":"string","enum":["small","medium","large"]},"type":{"type":"string","enum":["bug","feature","refactor","review","chore","docs"]},"mode":{"type":"string","enum":["headless","interactive"]},"project_id":{"type":["string","null"]},"original_title":{"type":["string","null"]}},"required":["title","description","tags","size","type","mode","project_id","original_title"],"additionalProperties":false}`
+
 var (
 	validSizes = []string{"small", "medium", "large"}
 	validTypes = []string{"bug", "feature", "refactor", "review", "chore", "docs"}
@@ -37,8 +47,22 @@ var (
 	// classifier-emittable — the triage prompt instructs the model to assign it
 	// for trivially mechanical small tasks, bounded by the deterministic floor
 	// in ValidateVerdict (small + non-feature). `nocritic` skips the plan
-	// critique and remains human/orchestrator-set only.
-	escapeHatchTags = []string{"noplan", "nocritic"}
+	// critique and remains human/orchestrator-set only. `trivial` skips both
+	// the review and testing phases (see simple-task-review.yaml and
+	// testing-task.yaml) for the same trivially-mechanical class of task as
+	// noplan; it is classifier-emittable and bounded by the same floor, plus a
+	// stricter carve-out excluding type=bug (see ValidateVerdict) since
+	// trivial has a materially larger blast radius than noplan — a false
+	// positive skips the only two verification gates (review + test) before a
+	// PR opens, and a "small" bug fix is exactly the case where a subtle
+	// regression is likely to slip past both. `notest` is deliberately not in
+	// this list — it only downgrades evidence requirements (app-start
+	// exemption); it never skips the tester. `notumbrella` opts a task out of
+	// the ☂️-title umbrella guard (see Apply) for the rare genuine case where a
+	// task legitimately keeps task_type=normal despite an umbrella-shaped title
+	// or "umbrella" tag. It is accepted/preserved when already present on the
+	// task, but the classifier prompt never emits it.
+	escapeHatchTags = []string{"noplan", "nocritic", "trivial", "notumbrella"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
 	tagAliases = map[string]string{
@@ -126,7 +150,14 @@ func ValidateVerdict(v *Verdict) error {
 	// and type actually qualify. Human/orchestrator-set noplan is unaffected:
 	// it lives on the task, not the verdict, and is preserved in Apply.
 	if v.Size != "small" || v.Type == "feature" {
-		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "noplan" })
+		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "noplan" || tag == "trivial" })
+	}
+	// trivial carries a stricter floor than noplan: it also skips review and
+	// testing, so a "small" bug fix (the case most likely to hide a subtle
+	// regression past a self-review-skipping classifier and a no-op test
+	// phase) must not qualify, even though it's allowed for noplan alone.
+	if v.Type == "bug" {
+		v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "trivial" })
 	}
 	return nil
 }

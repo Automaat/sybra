@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -68,6 +70,7 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 	if hasMiseConfig(wtPath) {
 		trustCmd := exec.CommandContext(ctx, m.misePath, "trust", "--yes")
 		trustCmd.Dir = wtPath
+		setProcessGroupKill(trustCmd)
 		if logFile != nil {
 			trustCmd.Stdout = logFile
 			trustCmd.Stderr = logFile
@@ -96,6 +99,7 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 
 		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
 		cmd.Dir = wtPath
+		setProcessGroupKill(cmd)
 		if logFile != nil {
 			cmd.Stdout = logFile
 			cmd.Stderr = logFile
@@ -127,6 +131,33 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 	m.logger.Info("worktree.setup-complete",
 		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
 	return nil
+}
+
+// setProcessGroupKill puts cmd in its own process group and wires its
+// context-cancel to kill the whole group, not just the direct child. Setup
+// commands run via `sh -c` and frequently fork further children (npm
+// install, mise-managed toolchain daemons); the default exec.CommandContext
+// cancel behavior SIGKILLs only the shell, leaking grandchildren once the
+// batch timeout fires (issue #1538).
+func setProcessGroupKill(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative pid targets the whole process group (valid because
+		// Setpgid made this process its own group leader, so pgid == pid).
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
 }
 
 // runSetupNonGating runs a worktree's setup commands like runSetup, but never
@@ -220,6 +251,56 @@ func (m *Manager) resolveSetupCommands(wtPath string, proj project.Project) []st
 	return merged
 }
 
+// resolveTrustedSetupCommands loads .sybra.yaml from the project's default
+// branch in the bare clone — never the checked-out worktree — and merges its
+// `setup:` block with the project's app-level SetupCommands. Use this instead
+// of resolveSetupCommands whenever the worktree's checked-out ref is
+// untrusted (PrepareForReview/PrepareForFix check out a PR head, which may be
+// a fork or a Renovate branch): that ref's own .sybra.yaml is
+// attacker-controlled, and its setup commands run via `sh -c` outside the
+// agent permission model (issue #1519).
+func (m *Manager) resolveTrustedSetupCommands(ctx context.Context, proj project.Project) []string {
+	repoCfg, err := project.LoadRepoConfigAtDefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		m.logger.Warn("worktree.repo-config-setup-trusted",
+			"project", proj.ID, "err", err)
+		return proj.SetupCommands
+	}
+	var repoSetup []string
+	if repoCfg != nil {
+		repoSetup = repoCfg.Setup
+	}
+	merged := project.MergeSetup(repoSetup, proj.SetupCommands)
+	if len(merged) > 0 {
+		m.logger.Info("worktree.setup-resolved-trusted",
+			"project", proj.ID,
+			"repo_cmds", len(repoSetup), "app_cmds", len(proj.SetupCommands),
+			"total", len(merged))
+	}
+	return merged
+}
+
+// desktopBuildSetupMarker matches the actual desktop production build
+// invocation (`npm run build:desktop`) that .sybra.yaml setup blocks use so
+// `go build` has something to //go:embed. A code-authoring role needs it; a
+// read-only PR review worktree never builds anything, so running it there is
+// pure waste (issue #1527).
+const desktopBuildSetupMarker = "npm run build:desktop"
+
+// filterNonAuthoringSetup drops setup commands that exist only to prepare a
+// worktree for building/embedding, for roles that never build — currently
+// just PrepareForReview's detached-HEAD, read-only checkout.
+func filterNonAuthoringSetup(commands []string) []string {
+	filtered := make([]string, 0, len(commands))
+	for _, c := range commands {
+		if strings.Contains(c, desktopBuildSetupMarker) {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
+}
+
 func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project.Project) {
 	repoCfg, err := project.LoadRepoConfig(wtPath)
 	if err != nil {
@@ -233,7 +314,13 @@ func (m *Manager) installChecks(ctx context.Context, wtPath string, proj project
 	if err := project.InstallHooks(ctx, wtPath, checks); err != nil {
 		m.logger.Warn("worktree.hooks", "path", wtPath, "err", err)
 	}
+	if err := project.InstallSignoffHook(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.signoff-hook", "path", wtPath, "err", err)
+	}
 	if err := project.EnforceForkOnlyPush(ctx, wtPath); err != nil {
 		m.logger.Warn("worktree.fork-only-push", "path", wtPath, "err", err)
+	}
+	if err := project.ConfigureGitHubAuth(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.github-auth", "path", wtPath, "err", err)
 	}
 }

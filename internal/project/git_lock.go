@@ -67,3 +67,40 @@ func withLockRetry(fn func() error) error {
 	}
 	return err
 }
+
+// FetchTTL bounds how often FetchOrigin performs a real network fetch
+// against a given bare clone. Fix/review/pr-fix dispatch flows call
+// FetchOrigin unconditionally on every prepare, so at hundreds of pr-fix
+// runs/month against the same handful of repos most of those fetches land
+// within seconds of the previous one and pull nothing new. Zero (the
+// default) disables caching, so tests that push a commit to a bare clone's
+// origin and immediately re-prepare still observe it; production wiring
+// (App.Startup) sets a real interval.
+var FetchTTL time.Duration
+
+// lastFetchAt records, per cleaned bare-clone path, the last time
+// FetchOrigin actually ran `git fetch`. Combined with withBareRepoLock (which
+// already serializes same-process callers against one bare repo), checking
+// this under the lock makes repeat FetchOrigin calls within FetchTTL both
+// single-flighted and cache-skipped: only the first caller in a burst pays
+// for the network round trip.
+var lastFetchAt sync.Map // map[string]time.Time
+
+// fetchTTLNow is indirected so tests can control freshness without sleeping.
+var fetchTTLNow = time.Now
+
+func fetchIsFresh(barePath string) bool {
+	if FetchTTL <= 0 {
+		return false
+	}
+	v, ok := lastFetchAt.Load(filepath.Clean(barePath))
+	if !ok {
+		return false
+	}
+	t, ok := v.(time.Time)
+	return ok && fetchTTLNow().Sub(t) < FetchTTL
+}
+
+func markFetched(barePath string) {
+	lastFetchAt.Store(filepath.Clean(barePath), fetchTTLNow())
+}

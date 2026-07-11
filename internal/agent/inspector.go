@@ -29,6 +29,12 @@ type InspectorVerdict struct {
 	ReasonKind string `json:"reason_kind,omitempty"` // "rate_limit" | "generic_stall" | "reward_hacking" | ""
 }
 
+// inspectorVerdictSchema is a hand-written strict JSON Schema for
+// InspectorVerdict: root object, additionalProperties:false, and every field
+// listed as required (including the omitempty ones) — codex's strict mode
+// rejects schemas that omit a struct field from "required".
+const inspectorVerdictSchema = `{"type":"object","properties":{"stuck":{"type":"boolean"},"reason":{"type":"string"},"recommendation":{"type":"string","enum":["stop","continue","escalate","nudge"]},"nudge":{"type":"string"},"reason_kind":{"type":"string","enum":["rate_limit","generic_stall","reward_hacking",""]}},"required":["stuck","reason","recommendation","nudge","reason_kind"],"additionalProperties":false}`
+
 // InspectInput holds the context handed to the inspector about the target agent.
 type InspectInput struct {
 	AgentID   string
@@ -58,6 +64,7 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[InspectorVerdict]{
 		Name:     "inspect",
 		Tier:     llmjob.Cheap,
+		Schema:   inspectorVerdictSchema,
 		Validate: validateInspectorVerdict,
 	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model)})
 	if err != nil {
@@ -112,6 +119,14 @@ limit rather than because it is genuinely confused or looping pointlessly:
 repeated tool calls returning empty results, very short assistant messages
 (a handful of tokens), high cache_read_input_tokens with no forward
 progress, or explicit rate-limit/quota/overage text in the log.
+
+Repeated short polling calls (e.g. TaskOutput, ScheduleWakeup) waiting on a
+backgrounded long-running command such as a test suite or verify/build gate
+are NOT a stall by themselves — check whether the polling is waiting on a
+command that legitimately takes many minutes (verify gates, e2e suites,
+builds) before concluding the agent is stuck. Only treat it as a stall if
+the backgrounded command has already finished or errored and the agent
+keeps polling anyway, or if there is no backgrounded command at all.
 
 Output ONLY a single JSON object on the final line, nothing else:
 {"stuck": bool, "reason": "short explanation", "recommendation": "stop"|"continue"|"escalate"|"nudge", "nudge": "corrective steer (only when recommendation is nudge)", "reason_kind": "rate_limit"|"generic_stall"|"reward_hacking"|""}

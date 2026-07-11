@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
 )
 
@@ -19,13 +20,18 @@ type ReviewComment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// CommentStore persists review comments as a JSON sidecar next to the task file.
+// CommentStore persists review comments as a JSON sidecar next to the task
+// file. Every mutation is a List (read) → modify → write sequence, so a
+// per-task lock guards the whole critical section — otherwise a concurrent
+// reader can catch the sidecar mid-truncation (JSON parse error) and two
+// racing writers can silently drop one another's update.
 type CommentStore struct {
-	dir string
+	dir    string
+	locker *fsutil.KeyedLocker
 }
 
 func NewCommentStore(dir string) *CommentStore {
-	return &CommentStore{dir: dir}
+	return &CommentStore{dir: dir, locker: fsutil.NewKeyedLocker()}
 }
 
 func (s *CommentStore) sidecarPath(taskID string) string {
@@ -48,6 +54,12 @@ func (s *CommentStore) List(taskID string) ([]ReviewComment, error) {
 }
 
 func (s *CommentStore) Add(taskID string, line int, body string) (ReviewComment, error) {
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return ReviewComment{}, err
+	}
+	defer unlock()
+
 	comments, err := s.List(taskID)
 	if err != nil {
 		return ReviewComment{}, err
@@ -67,6 +79,12 @@ func (s *CommentStore) Add(taskID string, line int, body string) (ReviewComment,
 }
 
 func (s *CommentStore) Resolve(taskID, commentID string) error {
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	comments, err := s.List(taskID)
 	if err != nil {
 		return err
@@ -86,6 +104,12 @@ func (s *CommentStore) Resolve(taskID, commentID string) error {
 }
 
 func (s *CommentStore) Delete(taskID, commentID string) error {
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	comments, err := s.List(taskID)
 	if err != nil {
 		return err
@@ -104,6 +128,12 @@ func (s *CommentStore) Delete(taskID, commentID string) error {
 
 // ResolveAll marks every unresolved comment for a task as resolved.
 func (s *CommentStore) ResolveAll(taskID string) error {
+	unlock, err := s.lock(taskID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	comments, err := s.List(taskID)
 	if err != nil {
 		return err
@@ -114,13 +144,14 @@ func (s *CommentStore) ResolveAll(taskID string) error {
 	return s.write(taskID, comments)
 }
 
-// DeleteAll removes the sidecar file for a task (called on task deletion).
-func (s *CommentStore) DeleteAll(taskID string) error {
-	path := s.sidecarPath(taskID)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("delete comments: %w", err)
+// lock acquires the per-task write lock for the full List-modify-write
+// critical section of taskID's comment sidecar.
+func (s *CommentStore) lock(taskID string) (func(), error) {
+	unlock, err := s.locker.Lock(taskID, s.sidecarPath(taskID))
+	if err != nil {
+		return nil, fmt.Errorf("lock comments %s: %w", taskID, err)
 	}
-	return nil
+	return unlock, nil
 }
 
 func (s *CommentStore) write(taskID string, comments []ReviewComment) error {
@@ -128,7 +159,7 @@ func (s *CommentStore) write(taskID string, comments []ReviewComment) error {
 	if err != nil {
 		return fmt.Errorf("marshal comments: %w", err)
 	}
-	if err := os.WriteFile(s.sidecarPath(taskID), data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(s.sidecarPath(taskID), data); err != nil {
 		return fmt.Errorf("write comments: %w", err)
 	}
 	return nil

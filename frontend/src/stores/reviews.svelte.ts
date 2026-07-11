@@ -83,8 +83,11 @@ class ReviewStore {
 
 export const reviewStore = new ReviewStore()
 if (typeof window !== 'undefined') {
-  // Desktop mode needs window.runtime (Wails IPC); web mode uses SSE directly.
-  if (import.meta.env.VITE_MODE === 'web' || window.runtime) {
+  // Guard against a synchronous throw (e.g. web-mode token prompt cancelled)
+  // poisoning the import chunk this module lives in.
+  try {
     reviewStore.listen()
+  } catch (e) {
+    console.warn('reviewStore.listen() failed to attach:', e)
   }
 }

@@ -19,6 +19,8 @@ machine.
 |---|---|---|---|
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
+| `trash` | `TrashConfig` | _(see below)_ |  |
+| `task_snapshot` | `TaskSnapshotConfig` | _(see below)_ |  |
 | `agent` | `AgentDefaults` | _(see below)_ |  |
 | `testing` | `TestingConfig` | _(see below)_ |  |
 | `notification` | `NotificationConfig` | _(see below)_ |  |
@@ -41,6 +43,7 @@ machine.
 | `ab_testing` | `abtest.Config` |  |  |
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
+| `server` | `ServerConfig` | _(see below)_ |  |
 | `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
 | `browser` | `BrowserConfig` | _(see below)_ |  |
 | `project_types` | `[]string` |  |  |
@@ -68,6 +71,28 @@ machine.
 | `audit.enabled` | `bool` | `true` |  |
 | `audit.retention_days` | `int` | `30` |  |
 
+## TrashConfig (`trash`)
+
+TrashConfig controls the retention of soft-deleted tasks under
+~/.sybra/trash (see internal/task.Store.Delete).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `trash.retention_days` | `int` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
+
+## TaskSnapshotConfig (`task_snapshot`)
+
+TaskSnapshotConfig controls the background git snapshotter that versions
+the tasks dir (see internal/tasksnapshot.Snapshotter), giving recovery a
+`git checkout` path for external deleters that bypass task.Store's
+trash-based soft delete (the case #1576's forensics-only recovery
+couldn't catch).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `task_snapshot.enabled` | `*bool` | _(nil)_ | Enabled toggles the background snapshotter. nil means not configured (defaults to true — safe default, matches RequirePermissions' nil-means-on convention). Set to false to disable entirely. |
+| `task_snapshot.interval_seconds` | `int` |  | IntervalSeconds is the fixed interval between commit attempts. 0 or negative falls back to DefaultTaskSnapshotInterval (30s). |
+
 ## AgentDefaults (`agent`)
 
 | YAML key | Type | Default | Description |
@@ -75,10 +100,11 @@ machine.
 | `agent.provider` | `string` | `claude` |  |
 | `agent.model` | `string` |  |  |
 | `agent.mode` | `string` |  |  |
-| `agent.max_concurrent` | `int` | `100` |  |
+| `agent.max_concurrent` | `int` | `25` |  |
 | `agent.research_machine_dir` | `string` |  |  |
 | `agent.max_cost_usd` | `float64` | `5` |  |
 | `agent.max_turns` | `int` | `150` |  |
+| `agent.max_task_cost_usd` | `float64` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike MaxCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
 | `agent.turn_cost_fraction` | `float64` |  | TurnCostFraction is the fraction of MaxCostUSD below which a turns escalation is auto-continued. Default 0.8 when unset. |
 | `agent.turn_multiplier` | `float64` |  | TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset. |
 | `agent.require_permissions` | `*bool` | _(nil)_ | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
@@ -90,7 +116,24 @@ machine.
 | `agent.survive_restart` | `*bool` | _(nil)_ | SurviveRestart keeps agent subprocesses running across an app restart (detached, output streamed to their log files) and reattaches to them on the next startup. nil means not configured (defaults to true). Set false to revert to the legacy behaviour where agents are killed on shutdown and recovered via restart-stale. |
 | `agent.approval_port` | `int` |  | ApprovalPort pins the localhost port of the PreToolUse approval server. The hook URL is baked into a permission-gated agent's --settings at spawn, so a fixed port lets a detached agent's approval requests still resolve after a restart. 0 (default) binds a random port (no cross-restart approval survival). |
 | `agent.headless_permission_mode` | `string` |  | HeadlessPermissionMode sets the default permission posture for unattended headless claude runs. "bypass" (default) keeps the current --dangerously-skip-permissions behavior. "auto" emits --permission-mode auto which activates the Claude Code auto-mode classifier (blocks destructive ops such as rm -rf $HOME, force-push, terraform destroy). Empty treated as "bypass". |
-| `agent.dispatch_jitter_ms` | `int` |  | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 0 (opt-in). |
+| `agent.dispatch_jitter_ms` | `int` | `1000` | DispatchJitterMs bounds a uniform random delay applied before headless agent dispatch, so a wave of concurrently ready tasks does not all probe the provider health gate in the same tick. 0 disables jitter. Never applied to interactive/chat dispatch. Default 1000 — set 0 to disable. |
+| `agent.sandbox_mode` | `string` |  | SandboxMode sets the default OS-level process-sandbox posture for agent subprocesses (darwin: sandbox-exec seatbelt). "off" spawns unwrapped with no validation. "report" (default) validates and logs the resolved write allowlist (worktree/sandbox-home/tmp) without ever wrapping the spawn, so a profile/wrapper defect can only affect an explicit "enforce" posture, never the default rollout posture. "enforce" actually wraps the spawn and blocks writes outside that allowlist, failing the spawn closed if the wrapper is unavailable. Empty treated as "report". |
+| `agent.headless_steerable` | `*bool` | _(nil)_ | HeadlessSteerable controls whether headless claude runs launch with the stdin/stream-json shape that accepts mid-run steer messages (instead of the legacy one-shot `-p <prompt>` invocation). nil means not configured (defaults to true). Set false to restore the legacy launch shape with no stdin transport — a config-only rollback with no code revert. |
+| `agent.default_project_id` | `string` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
+| `agent.role_effort` | `map[string]string` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
+| `agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
+
+## PlaywrightMCPConfig (`agent.playwright_mcp`)
+
+PlaywrightMCPConfig opts test-runner runs into a headless Playwright MCP
+server for visual/console verification. Default-off: Manager.prepareRunConfig
+only attaches it for headless test-runner runs that resolve to the Claude
+provider and pass a launcher preflight (see internal/agent/mcp.go).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.playwright_mcp.enabled` | `bool` |  | Enabled opts this machine into attaching the Playwright MCP server. |
+| `agent.playwright_mcp.extra_args` | `[]string` |  | ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest --headless --output-dir <dir>` launch command. |
 
 ## TestingConfig (`testing`)
 
@@ -116,8 +159,6 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `orchestrator.auto_triage` | `bool` |  |  |
-| `orchestrator.auto_plan` | `bool` |  |  |
 | `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
 | `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
 
@@ -142,7 +183,9 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `github.enabled` | `bool` | `true` |  |
+| `github.enabled` | `bool` | `true` | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below, so existing configs need no migration. true defers to IssuesEnabled/ReviewsEnabled. |
+| `github.issues_enabled` | `bool` | `true` | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
+| `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
 | `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
 | `github.reviews_slow_seconds` | `int` |  |  |
@@ -205,7 +248,7 @@ checkout, leave disabled on the server.
 | `human_review.enabled` | `bool` |  |  |
 | `human_review.sybra_repo_dir` | `string` |  |  |
 | `human_review.repo` | `string` |  | Repo is the owner/name where bug issues are filed. Defaults to "Automaat/sybra" when empty. |
-| `human_review.model` | `string` |  | Model is the Claude model alias (e.g. "sonnet", "opus"). Defaults to "sonnet" when empty. |
+| `human_review.model` | `string` |  | Model is the Claude model name or alias (e.g. "sonnet", "claude-haiku-4-5-20251001"). Defaults to "claude-haiku-4-5-20251001" when empty — diagnosis, not authoring. |
 | `human_review.max_per_hour` | `int` |  | MaxPerHour caps how many review agents may be spawned in any rolling 60-minute window across all tasks on this machine. Zero falls back to DefaultHumanReviewMaxPerHour. |
 | `human_review.issue_label` | `string` |  | IssueLabel is the label applied to filed issues (in addition to "bug"). Defaults to "sybra-bug". |
 | `human_review.sybra_bug_action` | `string` |  | SybraBugAction controls the side-effect for sybra_bug verdicts: file_issue (default), local_task, block_only, or note_only. |
@@ -381,6 +424,7 @@ must not start filing tasks before an operator opts in.
 |---|---|---|---|
 | `experience.enabled` | `bool` |  |  |
 | `experience.max_records` | `int` |  |  |
+| `experience.ttl_days` | `int` |  | TTLDays expires records older than this many days out of injection — a stale record can otherwise poison a prompt with advice that no longer matches the current codebase. 0 (default) disables expiry, so existing deployments are unaffected until an operator opts in. |
 
 ## ProvidersConfig (`providers`)
 
@@ -448,6 +492,21 @@ Prometheus-format output for external scrapers.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `metrics.enabled` | `bool` |  |  |
+
+## ServerConfig (`server`)
+
+ServerConfig controls sybra-server's HTTP control-plane authentication and
+CORS policy. AuthToken gates every request except GET /health behind a
+shared-secret bearer token: callers must send
+`Authorization: Bearer <token>`, or, for the SSE endpoints only (browser
+EventSource cannot set request headers), a `?token=<token>` query param.
+AuthToken is auto-generated and persisted to config.yaml on first run if
+left empty — see applyServerDefaults.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `server.auth_token` | `string` | `[redacted]` |  |
+| `server.allowed_origins` | `[]string` |  |  |
 
 ## AutoUpdateConfig (`auto_update`)
 

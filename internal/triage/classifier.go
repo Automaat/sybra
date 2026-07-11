@@ -2,10 +2,8 @@ package triage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/Automaat/sybra/internal/llmexec"
@@ -15,17 +13,10 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// Classifier wraps the claude -p invocation. Exposed as an interface so
-// tests can inject a canned verdict without shelling out.
+// Classifier produces a triage verdict for a task. Exposed as an interface so
+// tests can inject a canned verdict without a live provider call.
 type Classifier interface {
 	Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error)
-}
-
-// ClaudeClassifier is the production implementation. It spawns `claude -p`
-// with a strict JSON schema prompt and parses the envelope.
-type ClaudeClassifier struct {
-	Model  string       // default: "sonnet"
-	Logger *slog.Logger // required
 }
 
 // FallbackClassifier runs triage through the shared provider-fallback executor.
@@ -35,42 +26,13 @@ type FallbackClassifier struct {
 	Gate   provider.HealthGate
 }
 
-// Classify shells out to claude -p and returns a validated verdict.
-func (c *ClaudeClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
-	model := c.Model
-	if model == "" {
-		model = "sonnet"
-	}
-
-	prompt := buildPrompt(t, projects)
-
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return Verdict{}, fmt.Errorf("claude -p: %w", err)
-	}
-
-	v, err := parseVerdict(out)
-	if err != nil {
-		return Verdict{}, fmt.Errorf("parse verdict: %w", err)
-	}
-	if err := ValidateVerdict(&v); err != nil {
-		return Verdict{}, fmt.Errorf("validate verdict: %w", err)
-	}
-	return v, nil
-}
-
 // Classify shells out to the first available provider and falls back when it is
 // rate-limited/logged-out/unavailable.
 func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
 	v, _, err := llmjob.Run(ctx, buildPrompt(t, projects), llmjob.Spec[Verdict]{
 		Name:     "triage",
 		Tier:     llmjob.Cheap,
+		Schema:   Schema,
 		Validate: ValidateVerdict,
 	}, llmexec.Options{
 		Logger: c.Logger,
@@ -99,11 +61,11 @@ Rules:
 - title: ALWAYS rewrite into a clean, human-readable, imperative conventional-commit-style title (e.g. "feat(auth): add JWT middleware", "fix(api): handle nil pointer on empty body"). Even if the input title already looks fine, produce your best version. Max 80 chars.
 - original_title: copy the input title verbatim so the user can recover it later.
 - description: ONLY set if the input body is empty/just-a-URL. 2-3 sentences describing what the task is about and what "done" looks like. Otherwise leave empty string.
-- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tag "noplan" when the task qualifies (see the noplan guide below): it is the only tag outside the lists above you may emit, and it does NOT count toward the 2-5 — never drop a deserved "noplan" to stay under the cap.
+- tags: pick from: backend, frontend, infra, docs, ci, auth, db, test. Also include one of small|medium|large and one of bug|feature|refactor|review|chore|docs — 2-5 of these vocabulary tags. Separately, add the routing tags "noplan" and/or "trivial" when the task qualifies (see the noplan/trivial guide below): these are the only tags outside the lists above you may emit, and they do NOT count toward the 2-5 — never drop a deserved "noplan"/"trivial" to stay under the cap.
 - size: small|medium|large
 - type: bug|feature|refactor|review|chore|docs
 - mode: headless (automated, no human-in-the-loop needed) or interactive (needs human judgment during execution)
-- project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string.
+- project_id: if the task title or body contains a github.com URL matching one of the registered projects below, set this to that project's "owner/repo". Otherwise empty string. If the "System metadata" section below already shows an existing_project_id or issue_url resolving to a registered project, leave project_id empty — the system already knows the answer and will not use your guess to override it. Only ever set this from a clear github.com URL, never from topical/vocabulary similarity to a project's name.
 
 Decision guide for mode:
 - PR review, simple fix, test writing, refactor → headless
@@ -114,15 +76,24 @@ Decision guide for size:
 - medium: multiple files, clear scope, design mostly known
 - large: cross-cutting, new subsystem, or unclear scope
 
-Decision guide for noplan (skip the planning phase — go straight to implementation):
-- Add "noplan" ONLY when the task is small AND trivially mechanical: the fix is
-  obvious and needs no design decisions or up-front scoping.
-- Good fits: dependency/version bumps, lockfile regeneration, CI/lint/config
-  tweaks, fixing a red CI check on a Renovate PR, typo/comment/docstring fixes,
-  a small mechanical rename.
-- Do NOT add "noplan" when the approach is non-obvious, scope is unclear, type is
-  feature, or the change touches a public API, data model, auth, or concurrency.
-- When in doubt, omit it — planning is the safe default.
+Decision guide for noplan (skip the planning phase — go straight to implementation)
+and trivial (also skip agentic code review AND adversarial manual testing —
+straight to opening the PR after implementation):
+- Add "noplan" and/or "trivial" ONLY when the task is small AND trivially
+  mechanical: the fix is obvious and needs no design decisions or up-front
+  scoping. They are independent — add both when the task qualifies for both,
+  or just "noplan" if you want a human/reviewer to still see the diff.
+- Good fits for either: dependency/version bumps, lockfile regeneration,
+  CI/lint/config tweaks, fixing a red CI check on a Renovate PR, typo/comment/
+  docstring fixes, a small mechanical rename.
+- Do NOT add "noplan" or "trivial" when the approach is non-obvious, scope is
+  unclear, type is feature, or the change touches a public API, data model,
+  auth, or concurrency.
+- Never add "trivial" when type is bug — trivial skips both review and
+  testing, and a "small" bug fix is exactly the case where a subtle regression
+  can slip past both. "noplan" alone is still fine for a trivial bug fix.
+- When in doubt, omit both — planning, review, and testing are the safe
+  default.
 
 Output schema (single JSON object):
 {"title":"...","original_title":"...","description":"","tags":["..."],"size":"small","type":"feature","mode":"headless","project_id":""}
@@ -142,8 +113,10 @@ Output schema (single JSON object):
 	}
 
 	// Expose system metadata so the classifier can recognise pr-fix tasks and
-	// emit "noplan" without depending solely on title/body heuristics.
-	if t.RunRole != "" || t.PRNumber > 0 {
+	// emit "noplan" without depending solely on title/body heuristics, and so
+	// it has an anchor for project_id instead of guessing from vocabulary
+	// overlap with a registered project's domain.
+	if t.RunRole != "" || t.PRNumber > 0 || t.ProjectID != "" || t.Issue != "" {
 		b.WriteString("System metadata (do not include in output):\n")
 		if t.RunRole != "" {
 			b.WriteString("- run_role: " + t.RunRole + "\n")
@@ -151,8 +124,22 @@ Output schema (single JSON object):
 		if t.PRNumber > 0 {
 			fmt.Fprintf(&b, "- pr_number: %d\n", t.PRNumber)
 		}
-		b.WriteString("IMPORTANT: when run_role=pr-fix or pr_number>0 this is a system task " +
-			"fixing an existing PR. Always emit \"noplan\" in tags.\n\n")
+		if t.ProjectID != "" {
+			b.WriteString("- existing_project_id: " + t.ProjectID + "\n")
+		}
+		if t.Issue != "" {
+			b.WriteString("- issue_url: " + t.Issue + "\n")
+		}
+		if t.RunRole != "" || t.PRNumber > 0 {
+			b.WriteString("IMPORTANT: when run_role=pr-fix or pr_number>0 this is a system task " +
+				"fixing an existing PR. Always emit \"noplan\" in tags.\n")
+		}
+		if t.ProjectID != "" || t.Issue != "" {
+			b.WriteString("IMPORTANT: existing_project_id and/or issue_url above are already " +
+				"authoritative for this task's project. Leave project_id empty in your output — " +
+				"the system resolves it from these fields, not your guess.\n")
+		}
+		b.WriteString("\n")
 	}
 
 	b.WriteString("Task to classify:\n")
@@ -166,83 +153,4 @@ Output schema (single JSON object):
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// parseVerdict extracts the verdict from `claude -p --output-format json` stdout.
-// The top-level response has a `result` string field containing the model's
-// final message, from which we extract the last JSON object.
-func parseVerdict(raw []byte) (Verdict, error) {
-	text := string(raw)
-	var envelope struct {
-		Result *string `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != nil {
-		if *envelope.Result == "" {
-			return Verdict{}, fmt.Errorf("empty result field")
-		}
-		text = *envelope.Result
-	}
-	jsonStr := extractLastJSONObject(text)
-	if jsonStr == "" {
-		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
-	}
-	var v Verdict
-	if err := json.Unmarshal([]byte(jsonStr), &v); err != nil {
-		return Verdict{}, fmt.Errorf("unmarshal verdict: %w", err)
-	}
-	return v, nil
-}
-
-// extractLastJSONObject returns the last balanced {...} substring in s, or "".
-// Mirrors internal/agent/inspector.go's helper. Tracks string-literal state
-// so braces inside string values don't count toward depth.
-func extractLastJSONObject(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }

@@ -37,12 +37,35 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	args := []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	var args []string
+	if cfg.HeadlessSteerable {
+		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the
+		// first user message) rather than as a positional argument, so a
+		// running turn can accept further steer messages the same way.
+		args = []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	} else {
+		args = []string{"-p", cfg.Prompt, "--output-format", "stream-json", "--verbose"}
+	}
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)
 	}
 	args = append(args, claudePermissionArgs(cfg.AllowedTools, cfg.RequirePermissions, cfg.HeadlessPermissionMode)...)
-	if hookSettings := buildClaudeHookSettings("", false); hookSettings != "" {
+	if cfg.OutputSchema != "" {
+		args = append(args, "--json-schema", cfg.OutputSchema)
+	}
+	if cfg.MCPConfigJSON != "" {
+		// --strict-mcp-config always pairs with --mcp-config: without it Claude
+		// also loads any project/user-level MCP servers, which would leak an
+		// operator's unrelated MCP tools into an unattended test-runner run.
+		args = append(args, "--mcp-config", cfg.MCPConfigJSON, "--strict-mcp-config")
+	}
+	// Wire the same PreToolUse approval hook the conversational runner uses
+	// whenever this run requires permission gating. Without this, a headless
+	// agent under require_permissions:true has no path to approve a tool
+	// call (the CLI has no TTY to prompt), forcing operators to
+	// require_permissions:false — which collapses to
+	// --dangerously-skip-permissions (see claudePermissionArgs).
+	if hookSettings := buildClaudeHookSettings(cfg.approvalAddr, cfg.needsApprovalHook()); hookSettings != "" {
 		args = append(args, "--settings", hookSettings)
 	}
 	args = append(args, effortArgs(a.ReasoningEffort)...)

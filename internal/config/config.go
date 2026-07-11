@@ -13,6 +13,8 @@ import "github.com/Automaat/sybra/internal/abtest"
 type Config struct {
 	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
 	Audit          AuditConfig          `yaml:"audit" json:"audit"`
+	Trash          TrashConfig          `yaml:"trash" json:"trash"`
+	TaskSnapshot   TaskSnapshotConfig   `yaml:"task_snapshot" json:"taskSnapshot"`
 	Agent          AgentDefaults        `yaml:"agent" json:"agent"`
 	Testing        TestingConfig        `yaml:"testing" json:"testing"`
 	Notification   NotificationConfig   `yaml:"notification" json:"notification"`
@@ -35,6 +37,7 @@ type Config struct {
 	ABTesting      abtest.Config        `yaml:"ab_testing" json:"abTesting"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
+	Server         ServerConfig         `yaml:"server" json:"server"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`
 	Browser        BrowserConfig        `yaml:"browser" json:"browser"`
 	ProjectTypes   []string             `yaml:"project_types" json:"projectTypes"`

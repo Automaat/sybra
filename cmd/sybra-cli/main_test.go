@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 )
 
 func mustUnmarshal(t *testing.T, data string, v any) {
@@ -26,6 +27,7 @@ func setupStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv("SYBRA_TASKS_DIR", filepath.Join(dir, "tasks"))
 	return dir
 }
@@ -250,6 +252,173 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestTrashListAndRestore(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "trash me")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list exit %d: %s", code, out)
+	}
+	var entries []task.TrashEntry
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 1 || entries[0].ID != created.ID {
+		t.Fatalf("trash list = %+v, want the trashed task", entries)
+	}
+
+	code, tableOut := runCLI(t, "trash", "list")
+	if code != 0 {
+		t.Fatalf("trash list (table) exit %d", code)
+	}
+	if !strings.Contains(tableOut, created.ID) || !strings.Contains(tableOut, created.Title) {
+		t.Errorf("table output = %q, want it to contain id and title", tableOut)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "restore", created.ID)
+	if code != 0 {
+		t.Fatalf("trash restore exit %d: %s", code, out)
+	}
+	var restored task.Task
+	mustUnmarshal(t, out, &restored)
+	if restored.ID != created.ID {
+		t.Fatalf("restored.ID = %q, want %q", restored.ID, created.ID)
+	}
+
+	code, out = runCLI(t, "--json", "list")
+	if code != 0 {
+		t.Fatalf("list exit %d", code)
+	}
+	var tasks []task.Task
+	mustUnmarshal(t, out, &tasks)
+	if len(tasks) != 1 || tasks[0].ID != created.ID {
+		t.Fatalf("expected restored task back in list, got %+v", tasks)
+	}
+}
+
+func TestTrashRestoreRefusesLiveCollision(t *testing.T) {
+	home := setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "collide")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	// Simulate a live task reappearing at the same id (e.g. an external
+	// tool wrote the file directly) so restore must refuse to overwrite it.
+	tasksDir := filepath.Join(home, "tasks")
+	livePath := filepath.Join(tasksDir, created.ID+".md")
+	if err := os.WriteFile(livePath, []byte("---\nid: "+created.ID+"\n---\nlive again"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _ = runCLI(t, "--json", "trash", "restore", created.ID)
+	if code == 0 {
+		t.Error("expected non-zero exit when restore would overwrite a live task")
+	}
+}
+
+func TestTrashListEmpty(t *testing.T) {
+	setupStore(t)
+	code, out := runCLI(t, "--json", "trash", "list")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var entries []task.TrashEntry
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 trash entries, got %d", len(entries))
+	}
+}
+
+func TestTrashRestoreNotFound(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "restore", "nonexistent")
+	if code == 0 {
+		t.Error("expected non-zero exit for restoring nonexistent trash entry")
+	}
+}
+
+func TestTrashRestoreNoID(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "restore")
+	if code == 0 {
+		t.Error("expected non-zero exit for trash restore without ID")
+	}
+}
+
+func TestTrashUnknownSubcommand(t *testing.T) {
+	setupStore(t)
+	code, _ := runCLI(t, "--json", "trash", "bogus")
+	if code == 0 {
+		t.Error("expected non-zero exit for unknown trash subcommand")
+	}
+}
+
+func TestTrashDeleteMessage(t *testing.T) {
+	if got := trashDeleteMessage("task-1", true); got != "Purged trashed task task-1\n" {
+		t.Fatalf("removed=true message = %q", got)
+	}
+	if got := trashDeleteMessage("task-1", false); got != "Trashed task task-1 was already purged\n" {
+		t.Fatalf("removed=false message = %q", got)
+	}
+}
+
+func TestTrashEmptyJSONUsesStableDTO(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "trash me")
+	if code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	code, _ = runCLI(t, "--json", "delete", created.ID)
+	if code != 0 {
+		t.Fatalf("delete exit %d", code)
+	}
+
+	code, out = runCLI(t, "--json", "trash", "empty")
+	if code != 0 {
+		t.Fatalf("trash empty exit %d: %s", code, out)
+	}
+
+	var rep struct {
+		Scanned int               `json:"scanned"`
+		Removed int               `json:"removed"`
+		Entries []task.TrashEntry `json:"entries"`
+		Errors  []string          `json:"errors"`
+	}
+	mustUnmarshal(t, out, &rep)
+	if rep.Scanned != 1 || rep.Removed != 1 {
+		t.Fatalf("trash empty report = %+v, want scanned=1 removed=1", rep)
+	}
+	if len(rep.Entries) != 1 || rep.Entries[0].ID != created.ID {
+		t.Fatalf("trash empty entries = %+v, want one entry for %s", rep.Entries, created.ID)
+	}
+	if len(rep.Errors) != 0 {
+		t.Fatalf("trash empty errors = %+v, want empty", rep.Errors)
+	}
+}
+
 func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	setupStore(t)
 
@@ -269,6 +438,86 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 		return f.Severity == "error" && strings.Contains(f.Message, "agent.provider")
 	}) {
 		t.Fatalf("expected agent.provider error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.SandboxMode = "definitely-not-valid"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "agent.sandbox_mode")
+	}) {
+		t.Fatalf("expected agent.sandbox_mode error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
+	dir := setupStore(t)
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.DefaultConfig()
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	for _, want := range []string{"config home permissions", "config file permissions"} {
+		if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+			return f.Severity == "warning" && strings.Contains(f.Message, want)
+		}) {
+			t.Fatalf("expected %q warning in report: %+v", want, report.Findings)
+		}
+	}
+}
+
+func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
+	dir := setupStore(t)
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	cfg := config.DefaultConfig()
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "config home permissions") ||
+			strings.Contains(f.Message, "config file permissions")
+	}) {
+		t.Fatalf("did not expect config permission warnings for stricter modes: %+v", report.Findings)
 	}
 }
 
@@ -1318,6 +1567,133 @@ func TestHookCmd_ExactLimitAccepted(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// setupSnapshotHome behaves like setupStore and exists to name tests that need
+// config.TaskSnapshotGitDir() lookups pointed at the isolated home.
+func setupSnapshotHome(t *testing.T) string {
+	t.Helper()
+	return setupStore(t)
+}
+
+func TestTasksHistory_MissingRepo(t *testing.T) {
+	setupSnapshotHome(t)
+
+	code, out := runCLI(t, "tasks-history")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for a missing snapshot repo, got 0 (output: %q)", out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for a missing snapshot repo (json), got 0 (output: %q)", out)
+	}
+}
+
+func TestTasksHistory_HumanAndJSONOutput(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	ctx := t.Context()
+	if !snap.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "task-1.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	committed, err := snap.Commit(ctx)
+	if err != nil || !committed {
+		t.Fatalf("baseline commit: committed=%v err=%v", committed, err)
+	}
+
+	code, out := runCLI(t, "tasks-history")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	if !strings.Contains(out, "snapshot:") {
+		t.Errorf("expected human output to contain the commit subject, got %q", out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code != 0 {
+		t.Fatalf("--json tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []struct {
+		SHA     string `json:"sha"`
+		Date    string `json:"date"`
+		Subject string `json:"subject"`
+	}
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 history entry, got %d (%q)", len(entries), out)
+	}
+	if entries[0].SHA == "" || entries[0].Date == "" || entries[0].Subject == "" {
+		t.Errorf("expected all fields populated, got %+v", entries[0])
+	}
+}
+
+func TestTasksHistory_EmptyRepoIsNotAnError(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	if !snap.EnsureRepo(t.Context()) {
+		t.Fatal("EnsureRepo failed")
+	}
+
+	code, out := runCLI(t, "tasks-history")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 for an initialized-but-empty repo (output: %q)", code, out)
+	}
+
+	code, out = runCLI(t, "--json", "tasks-history")
+	if code != 0 {
+		t.Fatalf("--json tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []any
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 0 {
+		t.Fatalf("expected an empty array for a fresh repo, got %v", entries)
+	}
+}
+
+func TestTasksHistory_LimitFlag(t *testing.T) {
+	home := setupSnapshotHome(t)
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks dir: %v", err)
+	}
+
+	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
+	ctx := t.Context()
+	if !snap.EnsureRepo(ctx) {
+		t.Fatal("EnsureRepo failed")
+	}
+	for i := range 3 {
+		if err := os.WriteFile(filepath.Join(tasksDir, fmt.Sprintf("task-%d.md", i)), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write task file: %v", err)
+		}
+		if committed, err := snap.Commit(ctx); err != nil || !committed {
+			t.Fatalf("commit %d: committed=%v err=%v", i, committed, err)
+		}
+	}
+
+	code, out := runCLI(t, "--json", "tasks-history", "--limit", "2")
+	if code != 0 {
+		t.Fatalf("tasks-history exit = %d, want 0 (output: %q)", code, out)
+	}
+	var entries []any
+	mustUnmarshal(t, out, &entries)
+	if len(entries) != 2 {
+		t.Fatalf("expected --limit 2 to cap the result to 2 entries, got %d", len(entries))
 	}
 }
 

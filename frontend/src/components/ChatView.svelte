@@ -28,9 +28,7 @@
 
   const isRunning = $derived(agentState === 'running')
   const isPaused = $derived(agentState === 'paused')
-  const approvals = $derived(
-    [...convoStore.pendingApprovals.values()],
-  )
+  const approvals = $derived(convoStore.approvalsFor(agentId))
   const hasApproval = $derived(approvals.length > 0)
   const isWaitingForApproval = $derived(isPaused && hasApproval)
   const isWaitingForInput = $derived(isPaused && !hasApproval)
@@ -102,7 +100,7 @@
   }
 
   async function handleApproval(toolUseId: string, approved: boolean) {
-    await convoStore.respondApproval(toolUseId, approved)
+    await convoStore.respondApproval(agentId, toolUseId, approved)
   }
 </script>
 

@@ -5,10 +5,9 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -28,7 +27,9 @@ var errReattachedResultError = errors.New("agent: reattached run completed with 
 // reattachPIDPoll is how often a reattached agent's PID is checked for
 // liveness (there is no *exec.Cmd to Wait on). Var, not const, so tests
 // can shorten it.
-var reattachPIDPoll = time.Second
+var reattachPIDPoll atomic.Int64
+
+func init() { reattachPIDPoll.Store(time.Second.Nanoseconds()) }
 
 // ReattachAll rebuilds in-memory agents for subprocesses recorded in the
 // registry that are still alive, and resumes streaming their output by
@@ -42,6 +43,10 @@ var reattachPIDPoll = time.Second
 // HasRunningAgentForTask sees the reattached agents and does not dispatch
 // duplicates.
 func (m *Manager) ReattachAll() []*Agent {
+	return m.ReattachAllContext(m.ctx)
+}
+
+func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	reg := m.registry()
 	if reg == nil {
 		return nil
@@ -58,18 +63,24 @@ func (m *Manager) ReattachAll() []*Agent {
 		if r.Mode == "interactive" {
 			// codex and copilot are per-turn conversational agents recreated
 			// on restart; claude interactive reattaches to its live process.
+			if strings.TrimSpace(r.TaskID) != "" {
+				if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
+					m.reapStaleSurvivor(r, reg, reason)
+					continue
+				}
+			}
 			prov, providerErr := lookupProvider(r.Provider)
 			if providerErr != nil {
 				m.logger.Warn("agent.reattach.provider", "id", r.ID, "provider", r.Provider, "err", providerErr)
 				continue
 			}
 			if prov.UsesPerTurnConvo() {
-				if a := m.reattachPerTurnConvo(r, reg); a != nil {
+				if a := m.reattachPerTurnConvo(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
 					out = append(out, a)
 				}
 				continue
 			}
-			if a := m.reattachInteractive(r, reg); a != nil {
+			if a := m.reattachInteractive(r, reg); a != nil { //nolint:contextcheck // reattach helpers rebuild from persisted manager state, not caller ctx
 				out = append(out, a)
 			}
 			continue
@@ -77,7 +88,7 @@ func (m *Manager) ReattachAll() []*Agent {
 		if r.Mode != "headless" {
 			continue
 		}
-		if !reattachAlive(r) {
+		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
 			// Process gone. If it finished its work before vanishing,
 			// finalize so the workflow advances instead of re-running it.
 			// Otherwise (a genuine crash), bridge its captured session id to
@@ -93,6 +104,11 @@ func (m *Manager) ReattachAll() []*Agent {
 			continue
 		}
 
+		if reason := m.reattachStaleReason(r, time.Now().UTC()); reason != "" {
+			m.reapStaleSurvivor(r, reg, reason)
+			continue
+		}
+
 		a := fromRecord(r)
 		// Rehydrate the buffer and capture the exact byte offset consumed, so
 		// the tailer resumes from there with no gap (a line appended between
@@ -103,7 +119,7 @@ func (m *Manager) ReattachAll() []*Agent {
 			startOffset = rehydrateFromLog(a, r.LogPath)
 		}
 
-		ctx, cancel := context.WithCancel(m.ctx)
+		ctx, cancel := context.WithCancel(ctx)
 		a.cancel = cancel
 		a.done = make(chan struct{})
 
@@ -140,6 +156,9 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	}
 	a := fromRecord(r)
 	rehydrateFromLog(a, r.LogPath)
+	if mt, ok := logActivityTime(r.LogPath); ok {
+		a.SetLastEventAt(mt)
+	}
 	found, isError := a.lastHeadlessResult()
 	if !found {
 		return false
@@ -260,6 +279,15 @@ func convoResumeState(evs []ConvoEvent) State {
 // rehydrate its chat from the log, and restart the loop in resume-wait mode
 // (waiting for the next prompt). Liveness is not checked — the agent is
 // recreated regardless. Returns nil only on a duplicate.
+//
+// r.Provider is authoritative even when a mid-run regateForTurn switch
+// happened before the restart: regateForTurn persists the switched provider
+// (and clears the old session id) via saveRegistry, so the record already
+// reflects the peer the agent moved to, not the one it started on. The next
+// prompt is dispatched via runPerTurnConversational(..., RunConfig{Dir:...},
+// true), whose regate call reads the live current provider from a.Provider —
+// not from this (mostly empty) RunConfig — so a stale/zero-value cfg.Provider
+// here can never resurrect the pre-switch provider.
 func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 	// Per-turn recreate is unconditional (no live process to gate on), so guard
 	// against resurrecting an agent for a task that was deleted while the app
@@ -277,6 +305,9 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 		rehydratePerTurnConvoFromLog(a, r.LogPath)
 	}
 	if r.OneShot {
+		if mt, ok := logActivityTime(r.LogPath); ok {
+			a.SetLastEventAt(mt)
+		}
 		m.finalizePerTurnOneShot(r, a, reg)
 		return nil
 	}
@@ -302,11 +333,19 @@ func (m *Manager) reattachPerTurnConvo(r Record, reg survivalRegistry) *Agent {
 
 	m.logger.Info("agent.reattach", "id", a.ID, "task", a.TaskID, "mode", "interactive", "provider", a.Provider, "events", len(a.ConvoOutput()))
 	// Resume idle: skip the first turn, wait for the next prompt. CWD/model
-	// come from the rebuilt agent; the sandbox/approval choice is restored
-	// from the record so a sandboxed chat stays sandboxed.
-	go m.runPerTurnConversational(ctx, a, RunConfig{Dir: a.sessionCWD, RequirePermissions: a.requirePermissions}, true)
+	// come from the rebuilt agent; the sandbox/approval choices are restored
+	// from the record so a sandboxed chat stays sandboxed across restart.
+	go m.runPerTurnConversational(ctx, a, perTurnReattachConfig(a), true)
 	m.emit(events.AgentState(a.ID), a)
 	return a
+}
+
+func perTurnReattachConfig(a *Agent) RunConfig {
+	return RunConfig{
+		Dir:                a.sessionCWD,
+		RequirePermissions: a.requirePermissions,
+		SandboxMode:        a.sandboxMode,
+	}
 }
 
 func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistry) {
@@ -340,8 +379,35 @@ func (m *Manager) finalizePerTurnOneShot(r Record, a *Agent, reg survivalRegistr
 // reattachHeadless tails a reattached subprocess's log file from
 // startOffset until the process exits (or the app shuts down), then
 // finalizes the agent through the same completion path as a freshly run
-// one.
+// one. A steerable headless run's stdin FIFO (see runHeadlessAttemptSurvive)
+// is reopened first so a steer message sent after this reattach still
+// reaches the child, mirroring reattachConvo.
 func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset int64, procStart string) {
+	if sp := a.GetStdinPath(); sp != "" {
+		if fifo, err := os.OpenFile(sp, os.O_RDWR, 0); err == nil {
+			if installErr := a.convo.installStdinPipe(fifo); installErr != nil {
+				_ = fifo.Close()
+				m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", installErr)
+			} else {
+				// Steer transport restored — surface the capability to the UI.
+				a.refreshCanSteer()
+			}
+		} else {
+			m.logger.Warn("agent.reattach.fifo", "id", a.ID, "path", sp, "err", err)
+		}
+	}
+
+	// If the run already emitted its terminal result while the app was down, it
+	// is parked at a steer turn boundary that no live tailer ever processed —
+	// rehydrateFromLog replays the result's stats but not the drain/close
+	// boundary that handleHeadlessResult runs live. Replicate that boundary now,
+	// before tailing: with nothing queued at reattach, drainOrCloseHeadlessSteer
+	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
+	// instead of hanging (or accepting a post-reattach steer that would queue
+	// forever with no further result to flush it).
+	if found, _ := a.lastHeadlessResult(); found {
+		m.drainOrCloseHeadlessSteer(a)
+	}
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 
@@ -382,7 +448,7 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 		close(done)
 		return
 	}
-	t := time.NewTicker(reattachPIDPoll)
+	t := time.NewTicker(time.Duration(reattachPIDPoll.Load()))
 	defer t.Stop()
 	for {
 		select {
@@ -464,6 +530,25 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 	return offset
 }
 
+// logActivityTime returns the log file's mtime: the last time the (now-dead)
+// process actually wrote to it, and the only faithful proxy for "when did
+// this run actually finish" available on the dead-process recovery path.
+// Every event replayed by rehydrateFromLog/rehydratePerTurnConvoFromLog is
+// re-stamped at replay time, so without this a run finalized long after an
+// app-downtime gap would report the full idle time as its duration. Returns
+// false if the file cannot be statted (missing path, deleted log, etc.), in
+// which case the caller falls back to the pre-fix behavior.
+func logActivityTime(path string) (time.Time, bool) {
+	if path == "" {
+		return time.Time{}, false
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
+}
+
 // reattachAlive reports whether the recorded process is still the agent we
 // spawned: alive, and (when we captured a start time) not a different
 // process that reused the PID.
@@ -482,16 +567,39 @@ func reattachAlive(r Record) bool {
 	return true
 }
 
-// processStartString returns the OS-reported start time of a process as an
-// opaque string, used only for equality comparison to detect PID reuse.
-// Best-effort: an empty result disables the guard for that record.
-func processStartString(ctx context.Context, pid int) string {
-	if pid <= 0 {
-		return ""
+const reattachMaxAge = 6 * time.Hour
+
+func (m *Manager) reattachStaleReason(r Record, now time.Time) string {
+	if strings.TrimSpace(r.TaskID) == "" {
+		return "no_task"
 	}
-	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return ""
+	if existsFn := m.taskExistsFn(); existsFn != nil && !existsFn(r.TaskID) {
+		return "task_gone"
 	}
-	return strings.TrimSpace(string(out))
+	if !r.StartedAt.IsZero() && now.Sub(r.StartedAt) > reattachMaxAge {
+		return "deadline"
+	}
+	if statusFn := m.taskStatusFn(); statusFn != nil {
+		if status, ok := statusFn(r.TaskID); ok && staleForLiveAgent(status) {
+			return "task_status_" + status
+		}
+	}
+	return ""
+}
+
+func staleForLiveAgent(status string) bool {
+	switch status {
+	case "todo", "new":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) reapStaleSurvivor(r Record, reg survivalRegistry, reason string) {
+	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
+	signalPID(r.PID, stopSIGINTGrace)
+	if err := reg.Delete(r.ID); err != nil {
+		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
+	}
 }

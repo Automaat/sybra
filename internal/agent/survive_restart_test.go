@@ -69,6 +69,9 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.setStdinPath("/tmp/sybra/agents/a-map.stdin")
 	a.oneShot = true
 	a.requirePermissions = true
+	a.sandboxMode = "enforce"
+	a.EnqueuePrompt("queued turn 1")
+	a.EnqueuePrompt("queued turn 2")
 
 	want := recordMappingRecord(started)
 	assertRecordFixtureCoversFields(t, want, "ProcStartedAt")
@@ -201,9 +204,11 @@ func recordMappingRecord(started time.Time) Record {
 		CWD:                "/tmp/sybra/worktrees/task-map",
 		StartedAt:          started,
 		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
+		PendingPrompts:     []string{"queued turn 1", "queued turn 2"},
 		OneShot:            true,
 		MaxTurns:           7,
 		RequirePermissions: true,
+		SandboxMode:        "enforce",
 		ReasoningEffort:    "high",
 	}
 }
@@ -279,9 +284,9 @@ func TestReattachAlive_PIDReuseGuard(t *testing.T) {
 // asserts ReattachAll rebuilds the agent, rehydrates its buffer, streams
 // the new result, and finalizes via onComplete when the process exits.
 func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	logDir := t.TempDir()
 	regDir := t.TempDir()
@@ -367,18 +372,15 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	if found, isError := a.lastHeadlessResult(); !found || isError {
 		t.Fatal("expected terminal result in buffer")
 	}
-	// Registry record is removed on completion.
-	if list, _ := m.reg.List(); len(list) != 0 {
-		t.Fatalf("expected registry empty after completion, got %d", len(list))
-	}
+	waitForRegistryEmpty(t, m, 5*time.Second)
 }
 
 func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
 	// Exercises the full Run -> persisted registry record -> fresh manager
 	// ReattachAll path; sibling reattach tests start from injected records.
-	prev := reattachPIDPoll
-	reattachPIDPoll = 50 * time.Millisecond
-	t.Cleanup(func() { reattachPIDPoll = prev })
+	prev := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((50 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	binDir := t.TempDir()
 	fakeClaude := filepath.Join(binDir, "claude")
@@ -586,6 +588,54 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 	}
 }
 
+// TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration
+// guards the dead-process recovery path against the duration bug the fix
+// targets: replaying the log stamps every event at replay time, so without
+// the fix LastEventAt collapses to the reattach wall-clock moment and a run
+// finalized after an app-downtime gap reports the full idle time as its
+// duration. The log file's mtime is the last real signal of when the
+// process actually finished, so it must win instead.
+func TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration(t *testing.T) {
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "agents", "comp2.ndjson")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"result","result":"done","session_id":"sess-9","total_cost_usd":0.2}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	// Simulate the process having actually finished writing well before this
+	// reattach runs (the app-downtime gap).
+	finishedAt := time.Now().Add(-2 * time.Hour).UTC()
+	if err := os.Chtimes(logPath, finishedAt, finishedAt); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	var completed atomic.Value
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+		SurviveRestartDir: t.TempDir(),
+		OnComplete:        func(ag *Agent) { completed.Store(ag) },
+	})
+
+	startedAt := finishedAt.Add(-time.Minute)
+	if err := m.reg.Save(Record{ID: "comp2", TaskID: "t", Mode: "headless", Provider: "claude", PID: 0, LogPath: logPath, StartedAt: startedAt}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if got := m.ReattachAll(); len(got) != 0 {
+		t.Fatalf("expected dead record not reattached as live, got %d", len(got))
+	}
+	ag, _ := completed.Load().(*Agent)
+	if ag == nil {
+		t.Fatal("expected onComplete to fire for comp2")
+	}
+	if got := ag.GetLastEventAt(); got.Sub(finishedAt).Abs() > time.Second {
+		t.Fatalf("LastEventAt = %s, want ~%s (log mtime, not reattach wall-clock)", got, finishedAt)
+	}
+}
+
 // TestProcessHeadlessLine_CapturesSessionOnInit is the real regression
 // guard for Phase 2: the session id must be captured (and persisted to the
 // registry) on the init/system event, not only on the terminal result —
@@ -676,6 +726,25 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for registry record for %s; records=%+v", agentID, recs)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func waitForRegistryEmpty(t *testing.T, m *Manager, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		list, err := m.reg.List()
+		if err != nil {
+			t.Fatalf("registry list: %v", err)
+		}
+		if len(list) == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected registry empty after completion, got %d", len(list))
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

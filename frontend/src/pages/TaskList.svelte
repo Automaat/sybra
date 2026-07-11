@@ -4,9 +4,10 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { projectStore } from '../stores/projects.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
-  import { BOARD_LANES, awaitsHuman, type BoardColumn } from '../lib/statuses.js'
-  import { isInboundReview, reviewPhaseNeedsYou, reviewPhaseRank } from '../lib/review-phase.js'
-  import { prPhaseRank, prPhaseNeedsYou } from '../lib/pr-phase.js'
+  import { BOARD_LANES, type BoardColumn } from '../lib/statuses.js'
+  import { isInboundReview, reviewPhaseRank } from '../lib/review-phase.js'
+  import { prPhaseRank } from '../lib/pr-phase.js'
+  import { activeTaskNeedsUserAttention } from '../lib/task-attention.js'
   import {
     buildUmbrellaProgress,
     progressForUmbrellaTracker,
@@ -287,7 +288,7 @@
   const statusOrder: Record<string, number> = {
     'new': 0, 'todo': 1, 'planning': 2, 'plan-review': 3,
     'in-progress': 4, 'in-review': 5, 'testing': 6, 'ready-pr': 7,
-    'human-required': 8, 'done': 9,
+    'human-required': 8, 'blocked': 9, 'done': 10,
   }
   const priorityOrder: Record<string, number> = {
     'urgent': 0, 'high': 1, 'medium': 2, 'low': 3, '': 4,
@@ -320,7 +321,7 @@
   // Tasks awaiting the user across all columns (same set as the per-card red
   // attention border) — surfaced as a persistent board-toolbar counter so an
   // awaiting task is never missed when its column scrolls off-screen.
-  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => awaitsHuman(t.status) || prPhaseNeedsYou(t) || reviewPhaseNeedsYou(t)).length)
+  const needYouCount = $derived(allFilteredTasks.filter((t: Task) => activeTaskNeedsUserAttention(t)).length)
 
   const hasActiveFilters = $derived(
     Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)

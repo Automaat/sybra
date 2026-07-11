@@ -67,7 +67,7 @@ type Trigger struct {
 // Condition is a field-operator-value check.
 type Condition struct {
 	Field    string `yaml:"field" json:"field"`       // "task.tags", "task.status", "task.agent_mode"
-	Operator string `yaml:"operator" json:"operator"` // "equals", "not_equals", "contains", "not_contains", "exists", "in", "not_in"
+	Operator string `yaml:"operator" json:"operator"` // "equals", "not_equals", "contains", "not_contains", "starts_with", "exists", "in", "not_in"
 	Value    string `yaml:"value" json:"value"`
 }
 
@@ -127,9 +127,45 @@ const (
 	// resume_status vars captured before the recovery workflow was started;
 	// a missing resume_workflow_id is a no-op (the workflow simply ends, and
 	// normal status-driven cascade dispatch — see
-	// AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+	// completion.Handler.OnWorkflowComplete — picks up whatever workflow
 	// matches the restored task status).
 	StepResumeWorkflow StepType = "resume_workflow"
+	// StepBestOfN runs Config.Attempts implementation agents concurrently,
+	// each in its OWN isolated worktree/branch (unlike StepParallel, whose
+	// children share one checkout) — see internal/worktree.Manager.PrepareAttempt.
+	// The parent step advances only once every attempt has terminated;
+	// zero or exactly one successful attempt fails closed to human-required
+	// instead of proceeding to judging (see engine_advance.go).
+	StepBestOfN StepType = "best_of_n"
+	// StepPromoteBestOfN is the mechanical (no-LLM) step that reads the
+	// mandatory JudgeStep's output, mechanically validates the winner JSON,
+	// and fast-forwards the canonical task branch/worktree onto the winning
+	// attempt via internal/worktree.Manager.PromoteAttempt. Malformed/
+	// ambiguous/unknown judge output and unsafe promotion each fail closed to
+	// human-required with a distinct reason (see engine_steps_bestofn.go).
+	StepPromoteBestOfN StepType = "promote_best_of_n"
+	// StepPushBranch deterministically pushes the task's worktree branch to
+	// its existing PR (git plumbing only — internal/project.PushSync). No
+	// LLM/agent involved; replaces the push-branch agent role.
+	StepPushBranch StepType = "push_branch"
+	// StepCreatePR deterministically pushes the task's worktree branch and
+	// opens a GitHub PR for it (git plumbing + `gh pr create`), drafting the
+	// title/body via a single cheap LLM job (internal/prcontent). No agent
+	// session involved; replaces the create-pr agent role.
+	StepCreatePR StepType = "create_pr"
+	// StepClassifyTask deterministically runs the Go triage classifier
+	// (internal/triage) against the task and applies its verdict — no agent
+	// session involved. Replaces a run_agent step that wrapped a full Sonnet
+	// agent invoking the /sybra-triage skill around this same classifier.
+	StepClassifyTask StepType = "classify_task"
+)
+
+// Best-of-N attempt count bounds enforced by Definition.Validate. A floor of
+// 2 makes "best-of-N" meaningful (a single attempt has nothing to judge); the
+// cap bounds worst-case fan-out cost/dispatch time per task.
+const (
+	bestOfNMinAttempts = 2
+	bestOfNMaxAttempts = 6
 )
 
 // Step is one node in the workflow graph.
@@ -213,6 +249,31 @@ type StepConfig struct {
 	// message via `codex exec --output-schema`. Ignored by claude/copilot, which
 	// use prompt-driven structured output. Empty = no enforcement.
 	OutputSchema string `yaml:"output_schema,omitempty" json:"outputSchema,omitempty"`
+
+	// best_of_n: number of implementation attempts to fan out, each in its
+	// own isolated worktree. Must be within [bestOfNMinAttempts, bestOfNMaxAttempts].
+	Attempts int `yaml:"attempts,omitempty" json:"attempts,omitempty"`
+	// best_of_n: providers assigned to attempts in index order, cycling if
+	// there are fewer entries than Attempts. An empty list (or an empty
+	// entry) uses the engine's default provider resolution for that attempt,
+	// same as an unset run_agent Provider.
+	AttemptProviders []string `yaml:"attempt_providers,omitempty" json:"attemptProviders,omitempty"`
+
+	// promote_best_of_n: step ID of the prior run_agent judge step whose
+	// output carries the mechanically-validated winner JSON
+	// (`{winner_attempt_id, scores[], rationale}`). Required.
+	JudgeStep string `yaml:"judge_step,omitempty" json:"judgeStep,omitempty"`
+	// promote_best_of_n: step ID of the prior best_of_n step whose attempts
+	// the judge scored. Required — resolves the attempt worktree/branch the
+	// winner_attempt_id names.
+	BestOfNStep string `yaml:"best_of_n_step,omitempty" json:"bestOfNStep,omitempty"`
+
+	// run_agent: enforce the cumulative task cost budget before launch.
+	// Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
+	// pre-staged dir and so bypasses StartAgentWithAssignment's own budget
+	// enforcement) so the run fails closed to human-required instead of
+	// spending on the step when the task is already over budget.
+	BudgetPreflight bool `yaml:"budget_preflight,omitempty" json:"budgetPreflight,omitempty"`
 }
 
 // ImportSidecar describes a sidecar file the engine should ingest after a
@@ -237,10 +298,19 @@ func (d *Definition) Validate() error {
 	seenIDs := make(map[string]bool, len(d.Steps))
 	for i := range d.Steps {
 		s := &d.Steps[i]
+		if strings.Contains(s.ID, bestOfNAttemptSep) {
+			return fmt.Errorf("step %q: step ids must not contain %q", s.ID, bestOfNAttemptSep)
+		}
 		if s.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: max_retries %d exceeds limit %d", s.ID, s.Config.MaxRetries, maxRetries)
 		}
 		if err := validateParallelStep(s, seenIDs); err != nil {
+			return err
+		}
+		if err := validateBestOfNStep(s); err != nil {
+			return err
+		}
+		if err := validatePromoteBestOfNStep(d, s); err != nil {
 			return err
 		}
 		if seenIDs[s.ID] {
@@ -256,7 +326,7 @@ func (d *Definition) Validate() error {
 
 // validateParallelStep enforces that a `parallel` step has at least two
 // run_agent children, no nested parallels, and globally-unique child IDs.
-// The constraints exist because the engine's step bookkeeping (agentSteps
+// The constraints exist because the engine's step bookkeeping (agentRoutes
 // map, ImportSidecar lookup, retry counter) is keyed by step ID — duplicates
 // would cause cross-step state to clobber each other.
 func validateParallelStep(s *Step, seenIDs map[string]bool) error {
@@ -288,6 +358,67 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 			return fmt.Errorf("step %q: parallel child id %q already used elsewhere in workflow", s.ID, c.ID)
 		}
 		seenIDs[c.ID] = true
+	}
+	return nil
+}
+
+// validAttemptProviders lists the providers a best_of_n step may pin an
+// attempt to. Matches the set run_agent's Provider field accepts, minus
+// "cross" and "ab" — both require inspecting the workflow's own prior step
+// history/A-B config, which is meaningless when picked per-attempt before any
+// attempt has run.
+var validAttemptProviders = map[string]bool{
+	"":        true,
+	"claude":  true,
+	"codex":   true,
+	"copilot": true,
+}
+
+// validateBestOfNStep enforces the best_of_n step's attempt-count bounds and
+// attempt-provider values. No-op for every other step type.
+func validateBestOfNStep(s *Step) error {
+	if s.Type != StepBestOfN {
+		return nil
+	}
+	if s.Config.Attempts < bestOfNMinAttempts || s.Config.Attempts > bestOfNMaxAttempts {
+		return fmt.Errorf("step %q: best_of_n attempts %d out of range [%d, %d]",
+			s.ID, s.Config.Attempts, bestOfNMinAttempts, bestOfNMaxAttempts)
+	}
+	for _, p := range s.Config.AttemptProviders {
+		if !validAttemptProviders[p] {
+			return fmt.Errorf("step %q: invalid attempt provider %q", s.ID, p)
+		}
+	}
+	return nil
+}
+
+// validatePromoteBestOfNStep enforces that a promote_best_of_n step names a
+// judge_step that exists and is itself a run_agent step (the one that emits
+// the winner JSON promoteBestOfN mechanically validates). No-op for every
+// other step type.
+func validatePromoteBestOfNStep(d *Definition, s *Step) error {
+	if s.Type != StepPromoteBestOfN {
+		return nil
+	}
+	if s.Config.JudgeStep == "" {
+		return fmt.Errorf("step %q: promote_best_of_n requires judge_step", s.ID)
+	}
+	judge := d.StepByID(s.Config.JudgeStep)
+	if judge == nil {
+		return fmt.Errorf("step %q: judge_step %q not found", s.ID, s.Config.JudgeStep)
+	}
+	if judge.Type != StepRunAgent {
+		return fmt.Errorf("step %q: judge_step %q must be a run_agent step (got %q)", s.ID, s.Config.JudgeStep, judge.Type)
+	}
+	if s.Config.BestOfNStep == "" {
+		return fmt.Errorf("step %q: promote_best_of_n requires best_of_n_step", s.ID)
+	}
+	bestOfN := d.StepByID(s.Config.BestOfNStep)
+	if bestOfN == nil {
+		return fmt.Errorf("step %q: best_of_n_step %q not found", s.ID, s.Config.BestOfNStep)
+	}
+	if bestOfN.Type != StepBestOfN {
+		return fmt.Errorf("step %q: best_of_n_step %q must be a best_of_n step (got %q)", s.ID, s.Config.BestOfNStep, bestOfN.Type)
 	}
 	return nil
 }

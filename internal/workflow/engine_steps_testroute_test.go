@@ -70,8 +70,8 @@ func TestExtractTestVerdict(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := extractTestVerdict(tc.output); got != tc.want {
-				t.Errorf("extractTestVerdict(%q) = %q, want %q", tc.output, got, tc.want)
+			if got := ExtractTestVerdict(tc.output); got != tc.want {
+				t.Errorf("ExtractTestVerdict(%q) = %q, want %q", tc.output, got, tc.want)
 			}
 		})
 	}
@@ -541,6 +541,75 @@ func TestTestFailureSectionIgnoresStaleLookingHeading(t *testing.T) {
 
 	if got := testFailSectionOf("## Test Failures are stale\n\nnot current"); got != "" {
 		t.Fatalf("stale-looking heading produced section %q, want empty", got)
+	}
+}
+
+func TestStripTestFailuresSectionsRemovesAllMatchingHeadings(t *testing.T) {
+	t.Parallel()
+
+	body := "## Problem\nDo the thing.\n\n" +
+		"## Test Failures\n\nOldest defect, already fixed.\n\n" +
+		"## Test Failures\n\nNewest defect, still open.\n\n" +
+		"## Test Failures are stale\n\nnot a real heading match.\n"
+
+	remaining, removed := stripTestFailuresSections(body)
+
+	if strings.Contains(remaining, "Oldest defect") || strings.Contains(remaining, "Newest defect") {
+		t.Fatalf("remaining body should have both matching sections stripped, got:\n%s", remaining)
+	}
+	if !strings.Contains(remaining, "## Test Failures are stale") {
+		t.Fatalf("remaining body should preserve a non-matching heading, got:\n%s", remaining)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed sections = %d, want 2: %v", len(removed), removed)
+	}
+	if !strings.Contains(removed[0], "Oldest defect") {
+		t.Fatalf("removed[0] should be the oldest section, got %q", removed[0])
+	}
+	if !strings.Contains(removed[1], "Newest defect") {
+		t.Fatalf("removed[1] should be the newest section, got %q", removed[1])
+	}
+}
+
+func TestStripTestFailuresSectionsNoOpWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	body := "## Problem\nNothing to strip here."
+	remaining, removed := stripTestFailuresSections(body)
+	if remaining != body {
+		t.Fatalf("remaining = %q, want unchanged %q", remaining, body)
+	}
+	if removed != nil {
+		t.Fatalf("removed = %v, want nil", removed)
+	}
+}
+
+func TestArchiveTestFailuresSectionRenamesHeadingOnly(t *testing.T) {
+	t.Parallel()
+
+	section := "## Test Failures\n\nSome defect details."
+	got := archiveTestFailuresSection(section)
+	if strings.HasPrefix(got, testFailuresHeading) {
+		t.Fatalf("archived section still starts with the live heading: %q", got)
+	}
+	if !strings.HasPrefix(got, resolvedTestFailuresHeading) {
+		t.Fatalf("archived section = %q, want prefix %q", got, resolvedTestFailuresHeading)
+	}
+	if !strings.Contains(got, "Some defect details.") {
+		t.Fatalf("archived section dropped content: %q", got)
+	}
+}
+
+func TestCurrentTestFailuresTemplateFunc(t *testing.T) {
+	t.Parallel()
+
+	if got := currentTestFailures("## Problem\nno failures here."); got != "" {
+		t.Fatalf("currentTestFailures = %q, want empty", got)
+	}
+
+	body := "## Problem\ntext\n\n## Test Failures\n\ndefect details\n"
+	if got := currentTestFailures(body); got != "## Test Failures\n\ndefect details" {
+		t.Fatalf("currentTestFailures = %q", got)
 	}
 }
 
@@ -1273,6 +1342,97 @@ func TestApplyTestVerdictCompletion_ClassifiesOutcomes(t *testing.T) {
 	}
 }
 
+func TestTestFailureFingerprint_ToleratesWordingDriftOnSameEvidence(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nI reran the same probe and observed the identical failure again — " +
+		"hitting curl /status still returns HTTP 500 instead of the required HTTP 200. " +
+		"Code evidence: internal/server.go:42"
+
+	if testFailureFingerprint(a) != testFailureFingerprint(b) {
+		t.Fatalf("fingerprints differ for reworded reports describing the same defect:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_DistinguishesDifferentEvidence(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /health\nActual: HTTP 404\nExpected: HTTP 200\n" +
+		"Code evidence: internal/health.go:17"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports describing different defects:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_DistinguishesSharedBoilerplateFileCitation(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /foo\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /bar\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports that share only boilerplate file/status evidence:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_IgnoresRepeatedEvidenceTokens(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42"
+	b := "## Test Failures\n\nCommand: curl /status\nActual: HTTP 500\nExpected: HTTP 200\n" +
+		"Code evidence: internal/server.go:42\nObserved again: curl /status still returns HTTP 500. internal/server.go:42"
+
+	if testFailureFingerprint(a) != testFailureFingerprint(b) {
+		t.Fatalf("fingerprints differ when the same evidence is repeated:\na=%q\nb=%q", a, b)
+	}
+}
+
+func TestTestFailureFingerprint_DistinguishesSharedStatusPairWithoutStrongTokens(t *testing.T) {
+	t.Parallel()
+
+	a := "## Test Failures\n\nThe login form rejects valid credentials.\nActual: 500\nExpected: 200"
+	b := "## Test Failures\n\nThe dashboard export crashes during download.\nActual: 500\nExpected: 200"
+
+	if testFailureFingerprint(a) == testFailureFingerprint(b) {
+		t.Fatalf("fingerprints matched for reports that share only status numbers:\na=%q\nb=%q", a, b)
+	}
+}
+
+// TestTestFailureFingerprint_FallsBackOnSparseReport guards the fallback path:
+// a report too short to yield enough discriminating tokens must still hash
+// deterministically and distinguish from an unrelated sparse report, rather
+// than collapsing to an empty-token hash shared by every terse report.
+func TestTestFailureFingerprint_FallsBackOnSparseReport(t *testing.T) {
+	t.Parallel()
+
+	a := "the button does nothing when clicked"
+	b := "the page never loads at all"
+
+	fa := testFailureFingerprint(a)
+	fb := testFailureFingerprint(b)
+	if fa == "" || fb == "" {
+		t.Fatalf("fingerprints must be non-empty even for sparse reports: a=%q b=%q", fa, fb)
+	}
+	if fa == fb {
+		t.Fatalf("fingerprints matched for different sparse reports:\na=%q\nb=%q", a, b)
+	}
+	// The sparse fallback hashes full lowercased, whitespace-normalized prose,
+	// so it is NOT guaranteed to tolerate synonym drift the way the
+	// token-based path does — but it must still be stable across repeated
+	// calls on byte-identical input.
+	if again := testFailureFingerprint(a); again != fa {
+		t.Fatalf("fingerprint is not deterministic for identical input: %q vs %q", fa, again)
+	}
+}
+
 func TestHasRawReadinessProbeEvidenceRejectsHypotheticalText(t *testing.T) {
 	t.Parallel()
 
@@ -1614,6 +1774,188 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-archive",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-archive", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: a different, still-open defect.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	err := engine.AdvanceStep("t-archive", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-archive",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
+		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	}
+	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
+		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
+		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "still-open defect") {
+		t.Fatalf("body should contain the new failure report:\n%s", got.Body)
+	}
+	if strings.Index(got.Body, "## Resolved Test Failures") > strings.Index(got.Body, "still-open defect") {
+		t.Fatalf("archived section should precede the current failure report:\n%s", got.Body)
+	}
+}
+
+func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	currentReport := "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		"Requirement tested: the status endpoint returns HTTP 200.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	currentBody := initialBody + "\n\n" + currentReport
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-archive-delta",
+		Status:    "testing",
+		Body:      currentBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-archive-delta", Role: testRunnerRole}},
+	})
+
+	err := engine.AdvanceStep("t-archive-delta", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  `{"verdict":"FAIL","outcome":"product_bug"}`,
+		AgentID: "agent-archive-delta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-archive-delta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
+		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	}
+	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
+		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	}
+	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
+		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
+	}
+	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+		strings.Contains(current, "Old defect from cycle 1") {
+		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+	}
+	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
+		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+}
+
+func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
+	t.Parallel()
+	engine, tasks, _ := makeTestingTaskEngine(t)
+
+	initialBody := "## Problem\nExercise the testing gate.\n\n" +
+		"## Test Failures\n\nOld defect from cycle 1, already fixed.\n"
+	wf := &Execution{
+		WorkflowID:  "testing-task",
+		CurrentStep: testVerdictSourceStep,
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	prepareTestVerdictAttemptVars(wf, testVerdictSourceStep, initialBody)
+	tasks.Put(TaskInfo{
+		ID:        "t-body-start-reset",
+		Status:    "testing",
+		Body:      initialBody,
+		AgentMode: "headless",
+		Workflow:  wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "agent-body-start-reset", Role: testRunnerRole}},
+	})
+
+	report := "Requirement tested: a different, still-open defect.\n\n" +
+		"Command run:\n```sh\ncurl -i http://localhost/status\n```\n\n" +
+		"Observed output:\n```text\nHTTP/1.1 500 Internal Server Error\n```\n\n" +
+		"Expected: HTTP 200.\n\n" +
+		"Code evidence:\n```text\ninternal/server.go:42: return http.StatusInternalServerError\n```\n"
+	payload := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":` + strconv.Quote(report) + `}`
+
+	if err := engine.AdvanceStep("t-body-start-reset", StepOutput{
+		StepID:  testVerdictSourceStep,
+		Status:  "completed",
+		Output:  payload,
+		AgentID: "agent-body-start-reset",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tasks.GetTask("t-body-start-reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, ok := testFailureBodyDelta(got.Body, got.Workflow, testVerdictSourceStep)
+	if !ok {
+		t.Fatal("testFailureBodyDelta should remain available after archiving prior failures")
+	}
+	if current := currentTestFailures(delta); !strings.Contains(current, "still-open defect") {
+		t.Fatalf("delta should start at the live rewritten failure report, got:\n%s\n\nbody:\n%s", delta, got.Body)
+	}
+	if strings.Contains(delta, "Old defect from cycle 1") {
+		t.Fatalf("delta should not include archived historical failures, got:\n%s", delta)
 	}
 }
 
@@ -2171,8 +2513,485 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
 	}
-	if reason := tasks.Reason("t-dup"); !strings.Contains(reason, "same grounded test failure") {
-		t.Errorf("reason = %q, want duplicate failure", reason)
+	if reason := tasks.Reason("t-dup"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	for _, forbidden := range []string{"proven contradiction", "found contradiction", "requirements are contradictory"} {
+		if reason := tasks.Reason("t-dup"); strings.Contains(strings.ToLower(reason), forbidden) {
+			t.Errorf("reason = %q, must not assert a proven contradiction", reason)
+		}
+	}
+	ti, _ = tasks.GetTask("t-dup")
+	if !strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	}
+	if !strings.Contains(ti.Body, fp) {
+		t.Errorf("body = %q, want the recurring fingerprint referenced", ti.Body)
+	}
+}
+
+func TestRouteTestResult_DuplicateFailureEscalatesWhenSpecDecisionAppendFails(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.appendErr = errors.New("append unavailable")
+	now := time.Now().UTC()
+	fp := "same-repro"
+	tasks.Put(TaskInfo{
+		ID:     "t-dup-append-fails",
+		Status: "testing",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+			{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+			{AgentID: "second", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		},
+	})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+		},
+	}
+
+	out, err := e.execRouteTestResult("t-dup-append-fails", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-append-fails"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "duplicate failure" {
+		t.Errorf("output = %q, want duplicate failure", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t-dup-append-fails")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-dup-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	}
+}
+
+// TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent guards against a
+// second call re-appending the spec-decision section when the recurring
+// fingerprint set hasn't changed — the marker must make the append a no-op.
+func TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	fp := "same-repro"
+	runs := []AgentRunInfo{
+		{AgentID: "first", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+		{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		{AgentID: "second", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeProductBug, TestFailureFingerprint: fp},
+	}
+	tasks.Put(TaskInfo{ID: "t-dup-idem", Status: "testing", AgentRuns: runs})
+	route := func() {
+		wf := &Execution{
+			WorkflowID: "testing-task",
+			StartedAt:  now,
+			Variables: map[string]string{
+				"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+				"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+				"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: fp,
+			},
+		}
+		if _, err := e.execRouteTestResult("t-dup-idem", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-idem")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route()
+	ti := mustGetTaskInfo(t, tasks, "t-dup-idem")
+	first := ti.Body
+	if strings.Count(first, specDecisionHeading) != 1 {
+		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+	}
+	route()
+	ti = mustGetTaskInfo(t, tasks, "t-dup-idem")
+	if ti.Body != first {
+		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision
+// verifies the cap-escalation path also reframes as a spec-decision when the
+// attempts that exhausted the cap include a recurring failure class, per the
+// acceptance criteria ("a single recurring class at cap" still gets the
+// spec-decision framing, not the generic distinct-defects cap message).
+func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	// A recurs at i0/i2 (intervening author at i1) — that pair would have
+	// escalated as an immediate "duplicate" if route_test_result had been
+	// called right after i2 in a real run. This fixture instead reaches cap
+	// without that earlier call (e.g. the recurrence only becomes visible in
+	// hindsight), so the cap branch itself must recognize the recurring
+	// class rather than treating three distinct-looking attempts generically.
+	// The current (last) attempt's own fingerprint ("current") is distinct
+	// from A, so the immediate-duplicate check does not fire here either.
+	runs := []AgentRunInfo{
+		productBugRun(now, "A"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "A"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "current"),
+	}
+	tasks.Put(TaskInfo{ID: "t-cap-recur", Status: "testing", AgentRuns: runs})
+	wf := &Execution{
+		WorkflowID: "testing-task",
+		StartedAt:  now,
+		Variables: map[string]string{
+			"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+			"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+			"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "current",
+		},
+	}
+	out, err := e.execRouteTestResult("t-cap-recur", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-cap-recur"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-recur")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-cap-recur"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if !strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	}
+}
+
+// TestNonConvergingProductBugLoop exercises nonConvergingProductBugLoop
+// directly against the filtering rules it must share with
+// recurringProductBugFingerprints, but without requiring fingerprint
+// equality between the paired attempts.
+func TestNonConvergingProductBugLoop(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name string
+		t    TaskInfo
+		want bool
+	}{
+		{
+			name: "distinct fingerprints separated by implementation run",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				productBugRun(now.Add(2*time.Minute), "B"),
+			}},
+			want: true,
+		},
+		{
+			name: "no author gap between adjacent product-bug attempts",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				productBugRun(now.Add(time.Minute), "B"),
+			}},
+			want: false,
+		},
+		{
+			name: "protocol-violation run ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "bad", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), ProtocolViolation: testProtocolFixSuggestions, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "B"},
+			}},
+			want: false,
+		},
+		{
+			name: "infra-failure outcome ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "infra", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeInfraFailure},
+			}},
+			want: false,
+		},
+		{
+			name: "missing-evidence outcome ignored",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+				{AgentID: "missing", Role: testRunnerRole, StartedAt: now.Add(2 * time.Minute), TestOutcome: testOutcomeMissingEvidence},
+			}},
+			want: false,
+		},
+		{
+			name: "prior-cycle runs before TestingCycleStartedAt ignored",
+			t: func() TaskInfo {
+				cycleStart := now.Add(10 * time.Minute)
+				return TaskInfo{
+					TestingCycleStartedAt: &cycleStart,
+					AgentRuns: []AgentRunInfo{
+						productBugRun(now, "A"),
+						{AgentID: "impl", Role: "implementation", StartedAt: now.Add(time.Minute)},
+						productBugRun(cycleStart.Add(time.Minute), "B"),
+					},
+				}
+			}(),
+			want: false,
+		},
+		{
+			name: "non-author run between product-bug attempts does not count as a gap",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "reviewer", Role: "review", StartedAt: now.Add(time.Minute)},
+				productBugRun(now.Add(2*time.Minute), "B"),
+			}},
+			want: false,
+		},
+		{
+			name: "noise runs between filtered pairs still resolve via original indices",
+			t: TaskInfo{AgentRuns: []AgentRunInfo{
+				productBugRun(now, "A"),
+				{AgentID: "infra-noise", Role: testRunnerRole, StartedAt: now.Add(time.Minute), TestOutcome: testOutcomeInfraFailure},
+				{AgentID: "impl", Role: "implementation", StartedAt: now.Add(2 * time.Minute)},
+				productBugRun(now.Add(3*time.Minute), "B"),
+			}},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nonConvergingProductBugLoop(tc.t); got != tc.want {
+				t.Errorf("nonConvergingProductBugLoop() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframesAsSpecDecision
+// is the regression test for the recurring-fingerprint narrowing gap: a
+// live adversarial test-runner naturally exercises different concrete repro
+// evidence (different fixture ids/literals) each attempt while describing
+// the SAME conceptual failure mode, so an exact-fingerprint recurrence check
+// never fires even though the loop is genuinely ping-ponging. The cap must
+// still reframe as a suspected acceptance-criteria conflict.
+func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframesAsSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-distinct", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-distinct")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	reason := tasks.Reason("t-cap-distinct")
+	if !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing", reason)
+	}
+	if !strings.Contains(reason, "contradictory spec") || !strings.Contains(reason, "hard defect") {
+		t.Errorf("reason = %q, want it to name both a contradictory spec and a hard defect", reason)
+	}
+	for _, forbidden := range []string{"proven contradiction", "found contradiction", "requirements are contradictory"} {
+		if strings.Contains(strings.ToLower(reason), forbidden) {
+			t.Errorf("reason = %q, must not assert a proven contradiction", reason)
+		}
+	}
+	if strings.Contains(reason, "recurring class") || strings.Contains(reason, "recurring product-bug failure class(es)") {
+		t.Errorf("reason = %q, must not report a count of recurring classes", reason)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason
+// verifies the generic cap-time floor is preserved when the product-bug
+// attempts that exhausted the cap were never separated by a code-author run
+// (e.g. the test-runner retried without a fix in between) — this is not a
+// non-converging implement/test loop, so no spec-decision section belongs
+// on the body.
+func TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		productBugRun(now.Add(time.Minute), "fp-2"),
+		productBugRun(now.Add(2*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-no-author-gap", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-cap-no-author-gap")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	reason := tasks.Reason("t-cap-no-author-gap")
+	if strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, must not use spec-decision reframing without an author gap", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, must not gain a spec-decision section without an author gap", ti.Body)
+	}
+}
+
+// TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails verifies
+// that a body-append failure during the non-convergence cap reframe still
+// leaves the task in human-required with the softened suspected-spec reason,
+// and does not propagate the append error out of the route step.
+func TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	tasks.appendErr = errors.New("append unavailable")
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	out, err := runRouteTestResult(e, tasks, "t-cap-append-fails", "FAIL", now, runs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "escalated" {
+		t.Errorf("output = %q, want escalated", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t-cap-append-fails")
+	if ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t-cap-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, want spec-decision reframing despite append failure", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	}
+}
+
+// TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent verifies
+// the empty-recurring-evidence spec-decision section (no exact fingerprint
+// recurred, only non-convergence) uses a stable marker, renders no blank
+// "Recurring fingerprint(s):" list, and does not duplicate on a second call
+// with the same empty evidence set.
+func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testing.T) {
+	t.Parallel()
+	section1 := buildSpecDecisionSection(nil, 3, 3)
+	section2 := buildSpecDecisionSection([]string{}, 3, 3)
+	if section1 != section2 {
+		t.Errorf("empty-recurring sections differ:\n%q\n%q", section1, section2)
+	}
+	if !strings.Contains(section1, specDecisionMarker(nil)) {
+		t.Errorf("section = %q, want the stable empty-set marker", section1)
+	}
+	if strings.Contains(section1, "Recurring fingerprint(s): .") || strings.Contains(section1, "Recurring fingerprint(s): \n") {
+		t.Errorf("section = %q, must not render a blank fingerprint list", section1)
+	}
+	if !strings.Contains(section1, testFailuresHeading) {
+		t.Errorf("section = %q, want a pointer to the latest %q section", section1, testFailuresHeading)
+	}
+
+	e, tasks := makeTestEngine(t)
+	now := time.Now().UTC()
+	runs := []AgentRunInfo{
+		productBugRun(now, "fp-1"),
+		{AgentID: "impl-1", Role: "implementation", StartedAt: now.Add(time.Minute)},
+		productBugRun(now.Add(2*time.Minute), "fp-2"),
+		{AgentID: "impl-2", Role: "implementation", StartedAt: now.Add(3 * time.Minute)},
+		productBugRun(now.Add(4*time.Minute), "fp-3"),
+	}
+	tasks.Put(TaskInfo{ID: "t-cap-empty-idem", Status: "testing", AgentRuns: runs})
+	route := func() {
+		wf := &Execution{
+			WorkflowID: "testing-task",
+			StartedAt:  now,
+			Variables: map[string]string{
+				"step." + testVerdictSourceStep + ".verdict":                      "FAIL",
+				"step." + testVerdictSourceStep + "." + testVerdictOutcomeKey:     testOutcomeProductBug,
+				"step." + testVerdictSourceStep + "." + testFailureFingerprintKey: "fp-3",
+			},
+		}
+		if _, err := e.execRouteTestResult("t-cap-empty-idem", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-cap-empty-idem")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route()
+	ti := mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
+	first := ti.Body
+	if strings.Count(first, specDecisionHeading) != 1 {
+		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+	}
+	route()
+	ti = mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
+	if ti.Body != first {
+		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	}
+	if strings.Count(ti.Body, specDecisionHeading) != 1 {
+		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	}
+}
+
+// TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision verifies
+// prior-cycle product-bug runs and their author gaps do not bleed into a new
+// testing cycle's non-convergence check — only runs at/after
+// TestingCycleStartedAt may drive a spec-decision reframe.
+func TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+
+	priorCycleEnd := time.Now().UTC().Add(-time.Hour)
+	newCycleStart := time.Now().UTC()
+
+	// Prior cycle already ping-ponged (author gap between distinct
+	// fingerprints) and hit human-required — that history must not count
+	// toward the new cycle's non-convergence check. Single new run in the
+	// current cycle — no new author gap yet.
+	runs := []AgentRunInfo{
+		productBugRun(priorCycleEnd.Add(-2*time.Minute), "old-1"),
+		{AgentID: "impl-old", Role: "implementation", StartedAt: priorCycleEnd.Add(-time.Minute)},
+		productBugRun(priorCycleEnd, "old-2"),
+		productBugRun(newCycleStart.Add(time.Minute), "new-1"),
+	}
+
+	out, err := runRouteTestResult(e, tasks, "t-redispatch-spec", "FAIL", newCycleStart, runs, &newCycleStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Output != "reimplement" {
+		t.Errorf("output = %q, want reimplement (prior-cycle runs must not drive a spec-decision reframe)", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-redispatch-spec")
+	if ti.Status != "in-progress" {
+		t.Errorf("status = %q, want in-progress", ti.Status)
+	}
+	if reason := tasks.Reason("t-redispatch-spec"); strings.Contains(reason, "suspected acceptance-criteria conflict") {
+		t.Errorf("reason = %q, must not reframe as spec-decision from prior-cycle evidence", reason)
+	}
+	if strings.Contains(ti.Body, specDecisionHeading) {
+		t.Errorf("body = %q, must not gain a spec-decision section from prior-cycle evidence", ti.Body)
 	}
 }
 

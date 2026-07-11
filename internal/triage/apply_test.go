@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -84,6 +85,32 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("trivial typo fix", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A human/orchestrator set trivial on the task before triage runs.
+	created.Tags = []string{"trivial"}
+
+	// This verdict omits trivial; Apply must preserve the pre-set escape hatch.
+	v := Verdict{
+		Title: "fix(docs): typo",
+		Tags:  []string{"docs", "small", "docs"},
+		Size:  "small",
+		Type:  "docs",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, "trivial") {
+		t.Errorf("trivial escape-hatch tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
 func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("gated child task", "", task.AgentModeHeadless)
@@ -107,6 +134,211 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	}
 	if !slices.Contains(updated.Tags, umbrella.GatedTag) {
 		t.Errorf("umbrella-gated tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
+func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeInteractive)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// PromptLabService.fileScrubbedProposals sets these before any triage
+	// pass runs. Proposals may be todo or human-required, but their routing
+	// fields stay owned by PromptLabService until approval/rejection.
+	todo := task.StatusTodo
+	projectID := ""
+	tags := []string{promptlab.ProposalTag, "role:review"}
+	created, err = mgr.Update(created.ID, task.Update{Status: &todo, ProjectID: &projectID, Tags: &tags})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// A reclassify pass (e.g. an ungated `sybra-cli triage classify <id>`)
+	// returns a verdict from the classifier's controlled vocabulary, which
+	// knows nothing about the prompt-lab gating tags.
+	v := Verdict{
+		Title:       "chore(prompt): rewritten by classifier",
+		Description: "classifier-generated replacement body",
+		Tags:        []string{"backend", "docs", "medium", "chore"},
+		Size:        "medium",
+		Type:        "chore",
+		Mode:        "headless",
+		ProjectID:   "example-org/example-repo",
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypePet},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Equal(updated.Tags, created.Tags) {
+		t.Errorf("tags: got %v, want unchanged %v", updated.Tags, created.Tags)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want unchanged todo", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty (untouched)", updated.StatusReason)
+	}
+	if updated.AgentMode != task.AgentModeInteractive {
+		t.Errorf("agent_mode: got %q, want unchanged interactive", updated.AgentMode)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want unchanged empty", updated.ProjectID)
+	}
+	if updated.Title != created.Title {
+		t.Errorf("title: got %q, want unchanged %q", updated.Title, created.Title)
+	}
+	if updated.Body != created.Body {
+		t.Errorf("body: got %q, want unchanged %q", updated.Body, created.Body)
+	}
+}
+
+func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ refactor(orchestrator): converge implement→test loop under retry cap", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.TaskType != task.TaskTypeNormal {
+		t.Fatalf("precondition: want task_type=normal, got %s", created.TaskType)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "infra", "large", "refactor"},
+		Size:  "large",
+		Type:  "refactor",
+		Mode:  "interactive",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status: got %s, want human-required", updated.Status)
+	}
+	if updated.StatusReason == "" {
+		t.Errorf("status_reason: want non-empty guard explanation")
+	}
+}
+
+func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ tracker for expanded work", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"task_type": string(task.TaskTypeUmbrella)}); err != nil {
+		t.Fatalf("UpdateMap task_type: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: task already umbrella-typed should not be guarded into human-required")
+	}
+}
+
+func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ deliberately-normal task with umbrella-shaped title", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := mgr.UpdateMap(created.ID, map[string]any{"tags": []string{umbrellaGuardOptOutTag}}); err != nil {
+		t.Fatalf("UpdateMap tags: %v", err)
+	}
+	created, err = mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"backend", "medium"},
+		Size:  "medium",
+		Type:  "feature",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status == task.StatusHumanRequired {
+		t.Errorf("status: opt-out tag should exempt the task from the umbrella guard, got %s", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+	if !slices.Contains(updated.Tags, umbrellaGuardOptOutTag) {
+		t.Errorf("tags: opt-out tag %q must survive triage, got %v", umbrellaGuardOptOutTag, updated.Tags)
+	}
+}
+
+func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.RunRole = "pr-fix"
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
+	}
+}
+
+func TestApplyDoesNotGuardPRNumberWithUmbrellaTitle(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created.PRNumber = 42
+
+	v := Verdict{
+		Title: created.Title,
+		Tags:  []string{"ci", "large", "bug"},
+		Size:  "large",
+		Type:  "bug",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.Status != task.StatusTodo {
+		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
+	}
+	if updated.StatusReason != "" {
+		t.Errorf("status_reason: got %q, want empty", updated.StatusReason)
 	}
 }
 
@@ -232,6 +464,169 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	}
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)
+	}
+}
+
+func TestApplyExistingProjectIDNotOverriddenByClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("correct-org/correct-repo")})
+	if err != nil {
+		t.Fatalf("Update project: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
+		{ID: "wrong-org/wrong-repo", Owner: "wrong-org", Repo: "wrong-repo"},
+	}
+	// Simulate the classifier misfiring: it guesses an unrelated registered
+	// project from vocabulary overlap in the title/body.
+	v := Verdict{
+		Title:     "fix(workflow): handle completion race",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "wrong-org/wrong-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "correct-org/correct-repo" {
+		t.Errorf("project_id: got %q, want correct-org/correct-repo (existing project_id must be sticky)", updated.ProjectID)
+	}
+}
+
+func TestApplyIssueURLOutranksClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	created, err = mgr.Update(created.ID, task.Update{Issue: task.Ptr("https://github.com/correct-org/correct-repo/issues/9")})
+	if err != nil {
+		t.Fatalf("Update issue: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
+		{ID: "wrong-org/wrong-repo", Owner: "wrong-org", Repo: "wrong-repo"},
+	}
+	v := Verdict{
+		Title:     "fix(workflow): handle completion race",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "wrong-org/wrong-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "correct-org/correct-repo" {
+		t.Errorf("project_id: got %q, want correct-org/correct-repo (issue URL must outrank classifier guess)", updated.ProjectID)
+	}
+}
+
+func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A project_id set under a prior name that is no longer registered (renamed
+	// or deleted). It must not lock the task to an empty project type.
+	created, err = mgr.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("old-org/renamed-repo"),
+		Issue:     task.Ptr("https://github.com/example-org/example-repo/issues/1"),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "refactor(ingestion): split pipeline stages",
+		Size:  "small",
+		Type:  "refactor",
+		Mode:  "headless",
+		Tags:  []string{"backend", "small", "refactor"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "example-org/example-repo" {
+		t.Errorf("project_id: got %q, want example-org/example-repo (stale ID must re-resolve)", updated.ProjectID)
+	}
+	// Re-resolution must recover the work project type so its forced routing applies.
+	if updated.AgentMode != task.AgentModeInteractive {
+		t.Errorf("mode: got %q, want interactive (work-typed routing must apply after re-resolve)", updated.AgentMode)
+	}
+	if updated.Status != task.StatusPlanning {
+		t.Errorf("status: got %s, want planning", updated.Status)
+	}
+}
+
+func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("investigate flaky retry loop", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo"},
+	}
+	// Classifier hallucinates/typos a project id that isn't registered.
+	v := Verdict{
+		Title:     "fix(retry): stop flaky retry loop",
+		Size:      "small",
+		Type:      "bug",
+		Mode:      "headless",
+		Tags:      []string{"backend", "small", "bug"},
+		ProjectID: "unregistered-org/unregistered-repo",
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want empty (unregistered classifier guess must not be persisted)", updated.ProjectID)
+	}
+}
+
+func TestApplyClearsStaleProjectIDWhenReResolutionFails(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// project_id from a project that has since been renamed/deleted, with no
+	// Issue URL and no classifier/title-body match available to re-resolve it.
+	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("old-org/renamed-repo")})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	projects := []project.Project{
+		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
+	}
+	v := Verdict{
+		Title: "refactor(ingestion): split pipeline stages",
+		Size:  "small",
+		Type:  "refactor",
+		Mode:  "headless",
+		Tags:  []string{"backend", "small", "refactor"},
+	}
+	updated, err := Apply(mgr, created, v, projects)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if updated.ProjectID != "" {
+		t.Errorf("project_id: got %q, want empty (stale id must be cleared, not left dangling)", updated.ProjectID)
 	}
 }
 

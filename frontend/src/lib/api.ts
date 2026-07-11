@@ -13,6 +13,7 @@ import * as LearningSvc from '../../bindings/github.com/Automaat/sybra/internal/
 import * as LoopSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/loopagentservice.js'
 import * as OrchestratorSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/orchestratorservice.js'
 import * as PlanningSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/planningservice.js'
+import * as PromptLabSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/promptlabservice.js'
 import * as ProjectSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/projectservice.js'
 import * as ReviewSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/reviewservice.js'
 import * as StatsSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/statsservice.js'
@@ -118,6 +119,10 @@ export const RejectPlan = pick(PlanningSvc.RejectPlan, http.RejectPlan)
 export const SendPlanMessage = pick(PlanningSvc.SendPlanMessage, http.SendPlanMessage)
 export const TriageTask = pick(PlanningSvc.TriageTask, http.TriageTask)
 
+// PromptLabService
+export const ApproveProposal = pick(PromptLabSvc.ApproveProposal, http.ApproveProposal)
+export const RejectProposal = pick(PromptLabSvc.RejectProposal, http.RejectProposal)
+
 // ProjectService
 export const CreateProject = pick(ProjectSvc.CreateProject, http.CreateProject)
 export const DeleteProject = pick(ProjectSvc.DeleteProject, http.DeleteProject)
@@ -146,9 +151,14 @@ export const GetStats = pick(StatsSvc.GetStats, http.GetStats)
 export const BlessTampering = pick(TaskSvc.BlessTampering, http.BlessTampering)
 export const CreateTask = pick(TaskSvc.CreateTask, http.CreateTask)
 export const DeleteTask = pick(TaskSvc.DeleteTask, http.DeleteTask)
+export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)
+export const ListTaskArtifacts = pick(TaskSvc.ListTaskArtifacts, http.ListTaskArtifacts)
+export const GetTaskSetupLog = pick(TaskSvc.GetTaskSetupLog, http.GetTaskSetupLog)
+export const ListTaskAuditEvents = pick(TaskSvc.ListTaskAuditEvents, http.ListTaskAuditEvents)
 export const GetTamperReport = pick(TaskSvc.GetTamperReport, http.GetTamperReport)
 export const GetTask = pick(TaskSvc.GetTask, http.GetTask)
 export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
+export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
 
 // WorkflowService

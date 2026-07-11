@@ -157,12 +157,13 @@ func setupBootstrapE2E(t *testing.T, repoSetup, appSetup []string) *bootstrapE2E
 	})
 
 	wm := worktree.New(worktree.Config{
-		WorktreesDir: wtDir,
-		Projects:     projStore,
-		Tasks:        taskMgr,
-		Logger:       logger,
-		LogsDir:      logsDir,
-		AgentChecker: agentMgr.HasRunningAgentForTask,
+		WorktreesDir:     wtDir,
+		Projects:         projStore,
+		Tasks:            taskMgr,
+		Logger:           logger,
+		LogsDir:          logsDir,
+		AgentChecker:     agentMgr.HasRunningAgentForTask,
+		LiveAgentChecker: agentMgr.HasLiveRegisteredAgentForTask,
 	})
 	agentOrch := agentorch.New(taskMgr, projStore, agentMgr, nil, logger, wm, nil)
 

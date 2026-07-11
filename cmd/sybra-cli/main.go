@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,9 +25,11 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -46,15 +49,41 @@ func run(args []string) int {
 		return 1
 	}
 
-	// Extract global --json flag before subcommand.
+	// Extract global --json and --home flags before subcommand.
 	jsonOut := false
 	filtered := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--json" {
+	homeOverride := ""
+	homeErr := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
 			jsonOut = true
-		} else {
+		case a == "--home":
+			if i+1 >= len(args) {
+				homeErr = true
+				continue
+			}
+			i++
+			homeOverride = args[i]
+		case strings.HasPrefix(a, "--home="):
+			homeOverride = strings.TrimPrefix(a, "--home=")
+		default:
 			filtered = append(filtered, a)
 		}
+	}
+
+	// Detect the hook subcommand before config.Load can abort: codex lifecycle
+	// hooks must fail open (see cmdHook) — a malformed config must never make
+	// `sybra-cli hook` exit non-zero and stall an agent run.
+	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+
+	if homeErr {
+		if isHook {
+			fmt.Fprintln(os.Stderr, "hook: --home requires a value (continuing fail-open)")
+			return 0
+		}
+		return fatal(jsonOut, "--home requires a value")
 	}
 
 	if len(filtered) == 0 {
@@ -62,10 +91,40 @@ func run(args []string) int {
 		return 1
 	}
 
-	// Detect the hook subcommand before config.Load can abort: codex lifecycle
-	// hooks must fail open (see cmdHook) — a malformed config must never make
-	// `sybra-cli hook` exit non-zero and stall an agent run.
-	isHook := len(filtered) >= 1 && filtered[0] == "hook"
+	// Home precedence: --home > SYBRA_CONTROL_HOME (the real operator store,
+	// injected into task-scoped agent subprocesses) > SYBRA_HOME (ambient,
+	// e.g. the per-task sandbox) > config.Load's own default resolution.
+	// Bare `sybra-cli` calls from inside an agent land on SYBRA_CONTROL_HOME so
+	// task CRUD reaches the real board even though the agent's own SYBRA_HOME
+	// points at its sandbox; `--home` lets an agent explicitly inspect the
+	// sandbox/app-under-test store instead (see docs/manual-testing.md).
+	effectiveHome := homeOverride
+	if effectiveHome == "" {
+		effectiveHome = os.Getenv("SYBRA_CONTROL_HOME")
+	}
+	if effectiveHome == "" {
+		effectiveHome = os.Getenv("SYBRA_HOME")
+	}
+
+	restoreHome := func() {}
+	if effectiveHome != "" {
+		prevHome, hadHome := os.LookupEnv("SYBRA_HOME")
+		if err := os.Setenv("SYBRA_HOME", effectiveHome); err != nil {
+			if isHook {
+				fmt.Fprintf(os.Stderr, "hook: apply --home: %v (continuing fail-open)\n", err)
+				return 0
+			}
+			return fatal(jsonOut, "apply --home: %v", err)
+		}
+		restoreHome = func() {
+			if hadHome {
+				_ = os.Setenv("SYBRA_HOME", prevHome)
+			} else {
+				_ = os.Unsetenv("SYBRA_HOME")
+			}
+		}
+	}
+	defer restoreHome()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -112,6 +171,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdLinkPR(store, rest, jsonOut)
 	case "delete":
 		return cmdDelete(store, rest, jsonOut)
+	case "reopen":
+		return cmdReopen(store, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "audit":
@@ -138,8 +199,14 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
 		return cmdArtifact(rest, jsonOut)
+	case "progress":
+		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "trash":
+		return cmdTrash(store, rest, jsonOut)
+	case "tasks-history":
+		return cmdTasksHistory(cfg, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -814,11 +881,12 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
 	(&skillsync.Syncer{Logger: logger}).Run(skillsync.Options{
-		RepoDir:      repoDir,
-		SkillsFS:     skills.FS,
-		PrimaryDst:   cfg.SkillsDir,
-		SybraHomeDir: config.HomeDir(),
-		UserHomeDir:  home,
+		RepoDir:              repoDir,
+		SkillsFS:             skills.FS,
+		PrimaryDst:           cfg.SkillsDir,
+		SybraHomeDir:         config.HomeDir(),
+		UserHomeDir:          home,
+		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
 
 	dsts := []string{
@@ -1074,6 +1142,48 @@ func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
 		return printJSON(map[string]string{"deleted": args[0]})
 	}
 	fmt.Printf("Deleted task %s\n", args[0])
+	return 0
+}
+
+func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
+	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
+	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	ids := fs.Args()
+	if len(ids) == 0 {
+		return fatal(jsonOut, "usage: reopen [--force] [--project owner/repo] <id>...")
+	}
+	reopened := make([]string, 0, len(ids))
+	for _, id := range ids {
+		t, err := s.Get(id)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		if !*force && (t.Outcome == "merged" || t.Outcome == "merged_with_edits") {
+			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
+		}
+		u := task.Update{
+			Status:       task.Ptr(task.StatusTodo),
+			Workflow:     task.Ptr[*workflow.Execution](nil),
+			WorktreeDir:  task.Ptr(""),
+			StatusReason: task.Ptr(""),
+			Outcome:      task.Ptr(""),
+		}
+		if *projectID != "" {
+			u.ProjectID = task.Ptr(*projectID)
+		}
+		if _, err := s.Update(id, u); err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		reopened = append(reopened, id)
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"reopened": reopened})
+	}
+	fmt.Printf("Reopened %d task(s): %s\n", len(reopened), strings.Join(reopened, ", "))
 	return 0
 }
 
@@ -1776,7 +1886,13 @@ func statusListForUsage() string {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `Usage: sybra-cli [--json] <command> [flags]
+	fmt.Fprintf(os.Stderr, `Usage: sybra-cli [--json] [--home DIR] <command> [flags]
+
+--home DIR overrides which Sybra home this invocation reads/writes, taking
+precedence over SYBRA_CONTROL_HOME and SYBRA_HOME. Inside a task-scoped
+agent, bare sybra-cli reaches the real operator board via SYBRA_CONTROL_HOME;
+pass --home "$SYBRA_HOME" to inspect the agent's own sandbox/app-under-test
+store instead.
 
 Commands:
   list     [--status STATUS] [--tag TAG] [--project ID]
@@ -1805,6 +1921,23 @@ Commands:
            was opened outside of Sybra; the PR monitor will then auto-merge or
            advance the task to done once the PR lands.
   delete   <id>
+           Soft-deletes: moves the task file and its sidecars into the trash
+           dir instead of unlinking them. See trash list / trash restore.
+
+  trash list
+  trash restore <id>
+           Restore the newest trashed generation for id back into the tasks
+           dir. Refuses if a live task with that id already exists.
+  trash delete <id>
+           Permanently purge id's newest trashed generation right away,
+           bypassing the retention window.
+  trash empty
+           Permanently purge every trashed generation, regardless of age.
+
+  tasks-history [--limit N]
+           List commits from the tasks-dir git snapshot repo (see
+           internal/tasksnapshot). Recovery is a plain git checkout against
+           that repo — see docs/tasks-snapshots.md.
 
   project list
   project get <id>
@@ -1825,7 +1958,8 @@ Commands:
            waiting) for tasks that landed in the window — where time is spent.
   health   [--severity warning|critical] [--category CATEGORY]
 
-  triage classify <id>         Classify a single task via claude -p and apply the verdict.
+  triage classify <id>         Classify a single task (must have status=new) via claude -p
+                               and apply the verdict.
   triage classify --all        Classify every task with status=new.
 
   install-skills               Install/refresh Sybra's bundled skills into
@@ -1839,8 +1973,9 @@ Commands:
   config dump                  Print the resolved ~/.sybra/config.yaml (env
                                overrides applied, secrets redacted).
   config doctor                Sanity-check config: data dirs, agent.provider,
-                               agent.headless_permission_mode, and enabled
-                               integrations missing required credentials.
+                               agent.headless_permission_mode,
+                               agent.sandbox_mode, and enabled integrations
+                               missing required credentials.
 
 Global flags:
   --json   Output as JSON
@@ -1921,6 +2056,297 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
+func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "progress: subcommand required (add|list)")
+	}
+	sub, rest := args[0], args[1:]
+	store := artifact.New(config.ArtifactsDir())
+	switch sub {
+	case "add":
+		return cmdProgressAdd(s, projStore, store, rest, jsonOut)
+	case "list":
+		return cmdProgressList(store, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
+	}
+}
+
+func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "progress add: task-id required")
+	}
+	taskID := args[0]
+	fs := flag.NewFlagSet("progress add", flag.ContinueOnError)
+	kind := fs.String("kind", artifact.ProgressKindProgress, "entry kind: "+strings.Join(artifact.ProgressKinds(), "|"))
+	message := fs.String("message", "", "progress message (required)")
+	role := fs.String("role", "", "authoring agent role (optional)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if strings.TrimSpace(*message) == "" {
+		return fatal(jsonOut, "progress add: --message is required")
+	}
+	if !artifact.ValidProgressKind(*kind) {
+		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
+	}
+
+	t, err := s.Get(taskID)
+	if err != nil {
+		return fatal(jsonOut, "progress add: %v", err)
+	}
+
+	msg := *message
+	if t.ProjectID != "" && projStore != nil {
+		if p, pErr := projStore.Get(t.ProjectID); pErr == nil {
+			if bl := p.WorkBlocklist(); bl != nil {
+				msg, _ = scrub.Scrub(msg, bl)
+			}
+		}
+	}
+
+	entry := artifact.ProgressEntry{Ts: time.Now().UTC(), Kind: *kind, Role: *role, Message: msg}
+	if err := store.AppendProgress(taskID, entry); err != nil {
+		return fatal(jsonOut, "progress add: %v", err)
+	}
+	if _, tErr := s.Touch(taskID); tErr != nil {
+		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
+	}
+
+	if jsonOut {
+		return printJSON(entry)
+	}
+	fmt.Printf("Recorded %s on task %s\n", *kind, taskID)
+	return 0
+}
+
+func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "progress list: task-id required")
+	}
+	taskID := args[0]
+	entries, err := store.ReadProgress(taskID)
+	if err != nil {
+		return fatal(jsonOut, "progress list: %v", err)
+	}
+	if jsonOut {
+		return printJSON(entries)
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no progress entries)")
+		return 0
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tKIND\tROLE\tMESSAGE")
+	for i := range entries {
+		e := &entries[i]
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Ts.Format(time.RFC3339), e.Kind, e.Role, e.Message)
+	}
+	_ = w.Flush()
+	return 0
+}
+
+// cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —
+// recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
+// internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
+// PruneAllTrash).
+func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) == 0 {
+		return fatal(jsonOut, "usage: trash <list|restore|delete|empty>")
+	}
+	switch sub, rest := args[0], args[1:]; sub {
+	case "list":
+		return cmdTrashList(s, jsonOut)
+	case "restore":
+		return cmdTrashRestore(s, rest, jsonOut)
+	case "delete":
+		return cmdTrashDelete(s, rest, jsonOut)
+	case "empty":
+		return cmdTrashEmpty(s, jsonOut)
+	default:
+		return fatal(jsonOut, "unknown trash command: %s", sub)
+	}
+}
+
+func cmdTrashList(s *task.Manager, jsonOut bool) int {
+	entries, err := s.ListTrash()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		if entries == nil {
+			entries = []task.TrashEntry{}
+		}
+		return printJSON(entries)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "ID\tDELETED\tGENERATION\tTITLE")
+	for i := range entries {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", entries[i].ID, entries[i].DeletedDate, entries[i].Generation, entries[i].Title)
+	}
+	_ = w.Flush()
+	return 0
+}
+
+func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: trash restore <id>")
+	}
+	t, err := s.RestoreFromTrash(args[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(t)
+	}
+	fmt.Printf("Restored task %s\n", t.ID)
+	return 0
+}
+
+type trashPruneReportJSON struct {
+	Scanned int               `json:"scanned"`
+	Removed int               `json:"removed"`
+	Entries []task.TrashEntry `json:"entries"`
+	Errors  []string          `json:"errors"`
+}
+
+func newTrashPruneReportJSON(rep task.TrashPruneReport) trashPruneReportJSON {
+	out := trashPruneReportJSON{
+		Scanned: rep.Scanned,
+		Removed: rep.Removed,
+		Entries: rep.Entries,
+	}
+	if len(rep.Errors) > 0 {
+		out.Errors = make([]string, 0, len(rep.Errors))
+		for _, err := range rep.Errors {
+			out.Errors = append(out.Errors, err.Error())
+		}
+	}
+	return out
+}
+
+func trashDeleteMessage(id string, removed bool) string {
+	if removed {
+		return fmt.Sprintf("Purged trashed task %s\n", id)
+	}
+	return fmt.Sprintf("Trashed task %s was already purged\n", id)
+}
+
+// cmdTrashDelete permanently purges id's newest trashed generation right
+// away, bypassing the retention window — for a compliance request or a
+// leaked credential that needs the content gone now, not after
+// RetentionDays.
+func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
+	if len(args) < 1 {
+		return fatal(jsonOut, "usage: trash delete <id>")
+	}
+	removed, err := s.DeleteTrashedGeneration(args[0])
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"status": "ok", "id": args[0], "removed": removed})
+	}
+	fmt.Print(trashDeleteMessage(args[0], removed))
+	return 0
+}
+
+// cmdTrashEmpty permanently purges every trashed generation, regardless of
+// age.
+func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
+	rep, err := s.PruneAllTrash()
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(newTrashPruneReportJSON(rep))
+	}
+	fmt.Printf("Purged %d/%d trashed generations\n", rep.Removed, rep.Scanned)
+	return 0
+}
+
+// taskHistoryEntry is one commit from the tasks-dir git snapshot repo (see
+// internal/tasksnapshot).
+type taskHistoryEntry struct {
+	SHA     string `json:"sha"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
+}
+
+// cmdTasksHistory lists commits from the tasks-dir git snapshot repo — a
+// read-only convenience wrapper around `git log` against
+// config.TaskSnapshotGitDir(); plain git against that path suffices for
+// actual recovery (see docs/tasks-snapshots.md).
+func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
+	limit := fs.Int("limit", 20, "max number of commits to show")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "usage: tasks-history [--limit N]")
+	}
+	if *limit <= 0 {
+		*limit = 20
+	}
+
+	ctx := context.Background()
+	gitDir := config.TaskSnapshotGitDir()
+	// Reuse the snapshotter's env builder so an inherited GIT_WORK_TREE can't
+	// leak in and break git commands; the work-tree value itself is unused by
+	// the read-only commands below but must be set consistently.
+	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
+
+	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
+	verify.Env = env
+	if err := verify.Run(); err != nil {
+		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
+	}
+
+	// Detect an empty repo by HEAD resolvability, not a locale-dependent
+	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
+	// output when no commits exist yet, which is a valid empty history.
+	head := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
+	head.Env = env
+	hasCommits := head.Run() == nil
+
+	var entries []taskHistoryEntry
+	if hasCommits {
+		const sep = "\x1f"
+		logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
+		logCmd.Env = env
+		var stdout, stderr bytes.Buffer
+		logCmd.Stdout = &stdout
+		logCmd.Stderr = &stderr
+		if err := logCmd.Run(); err != nil {
+			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, sep, 3)
+			if len(parts) != 3 {
+				continue
+			}
+			entries = append(entries, taskHistoryEntry{SHA: parts[0], Date: parts[1], Subject: parts[2]})
+		}
+	}
+
+	if jsonOut {
+		if entries == nil {
+			entries = []taskHistoryEntry{}
+		}
+		return printJSON(entries)
+	}
+	if len(entries) == 0 {
+		fmt.Println("no snapshot commits yet")
+		return 0
+	}
+	for _, e := range entries {
+		fmt.Printf("%s %s %s\n", e.SHA, e.Date, e.Subject)
+	}
+	return 0
+}
+
 func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: config <dump|doctor>")
@@ -1943,6 +2369,9 @@ func redactedConfig(cfg *config.Config) config.Config {
 	out := *cfg
 	if out.Todoist.APIToken != "" {
 		out.Todoist.APIToken = "[redacted]"
+	}
+	if out.Server.AuthToken != "" {
+		out.Server.AuthToken = "[redacted]"
 	}
 	return out
 }
@@ -1974,6 +2403,8 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
+
+	addConfigPermFindings(add)
 
 	dirs := cfg.Directories()
 	names := make([]string, 0, len(dirs))
@@ -2007,6 +2438,14 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	if cfg.Agent.HeadlessPermissionMode != "" {
 		if _, err := config.NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
 			add("error", "agent.headless_permission_mode: %v", err)
+		}
+	}
+	if cfg.Agent.SandboxMode != "" {
+		mode, err := config.NormalizeSandboxMode(cfg.Agent.SandboxMode)
+		if err != nil {
+			add("error", "agent.sandbox_mode: %v", err)
+		} else if mode == "enforce" && runtime.GOOS != "darwin" {
+			add("error", "agent.sandbox_mode=enforce requires darwin; current host is %s", runtime.GOOS)
 		}
 	}
 
@@ -2049,4 +2488,28 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func addConfigPermFindings(add func(severity, format string, a ...any)) {
+	home := config.HomeDir()
+	addPathPermFinding(add, "config home", home, 0o700)
+	addPathPermFinding(add, "config file", filepath.Join(home, "config.yaml"), 0o600)
+}
+
+func addPathPermFinding(add func(severity, format string, a ...any), label, path string, target os.FileMode) {
+	info, err := os.Lstat(path)
+	switch {
+	case os.IsNotExist(err):
+		add("warning", "%s does not exist yet: %s", label, path)
+		return
+	case err != nil:
+		add("error", "%s: inspect permissions: %v", label, err)
+		return
+	case info.Mode()&os.ModeSymlink != 0:
+		add("warning", "%s is a symlink; Sybra will not chmod symlink targets: %s", label, path)
+		return
+	}
+	if perm := info.Mode().Perm(); perm&^target != 0 {
+		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
+	}
 }

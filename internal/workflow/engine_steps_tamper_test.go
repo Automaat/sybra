@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,31 @@ func TestScanTamperPatch(t *testing.T) {
 			patch:       "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestBar(t *testing.T) {\n}\n", // no prior occurrence in the base file
 			wantRules:   []string{"added-skip"},
+		},
+		{
+			name:      "capability_guarded_skip_same_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil { t.Skipf(\"symlink unsupported: %v\", err) }\n",
+			wantRules: nil,
+		},
+		{
+			name:      "capability_guarded_skip_next_line_not_flagged",
+			patch:     "@@ @@\n func TestSymlink(t *testing.T) {\n+\tif err := os.Symlink(a, b); err != nil {\n+\t\tt.Skipf(\"symlink unsupported: %v\", err)\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "testing_short_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestSlow(t *testing.T) {\n+\tif testing.Short() {\n+\t\tt.Skip(\"skipping slow test in -short\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "lookpath_guarded_skip_not_flagged",
+			patch:     "@@ @@\n func TestDocker(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\tt.Skip(\"docker not installed\")\n+\t}\n",
+			wantRules: nil,
+		},
+		{
+			name:      "unconditional_skip_after_guard_window_still_flags",
+			patch:     "@@ @@\n func TestX(t *testing.T) {\n+\tif _, err := exec.LookPath(\"docker\"); err != nil {\n+\t\treturn\n+\t}\n+\tsetup()\n+\tvalidate()\n+\tt.Skip(\"flaky\")\n",
+			wantRules: []string{"added-skip"},
 		},
 		{
 			name:  "two_new_identical_skips_same_commit_still_flags",
@@ -263,6 +289,66 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("test_case_moved_across_files_is_medium_not_blocking", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
+			{Status: "A", Path: "internal/foo/new_test.go", Patch: "@@ @@\n+func TestGone(t *testing.T) {\n+\tt.Errorf(\"x\")\n+}\n+func TestExtra(t *testing.T) {\n+\tt.Errorf(\"y\")\n+}\n"},
+		})
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (consolidation is diff-wide net-neutral): %v", r.highCount(), r.Findings)
+		}
+		foundDecl := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-test-cases" {
+				foundDecl = true
+				if f.Severity != tamperMedium {
+					t.Errorf("removed-test-cases severity = %q, want medium", f.Severity)
+				}
+			}
+		}
+		if !foundDecl {
+			t.Fatalf("want a removed-test-cases finding (downgraded), got %v", r.Findings)
+		}
+	})
+
+	t.Run("test_case_removed_with_no_offsetting_addition_stays_high", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-func TestGone(t *testing.T) {\n-\tt.Errorf(\"x\")\n-}\n"},
+			{Status: "M", Path: "internal/foo/other_test.go", Patch: "@@ @@\n+\tfoo := 1\n"},
+		})
+		found := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-test-cases" {
+				found = true
+				if f.Severity != tamperHigh {
+					t.Errorf("removed-test-cases severity = %q, want high (no offsetting addition anywhere in diff)", f.Severity)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("want a removed-test-cases finding, got %v", r.Findings)
+		}
+	})
+
+	t.Run("removed_assertions_with_unrelated_addition_stays_high", func(t *testing.T) {
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "M", Path: "internal/foo/old_test.go", Patch: "@@ @@\n-\tif err != nil { t.Fatalf(\"bad: %v\", err) }\n-\tif y != 2 { t.Fatalf(\"bad y\") }\n"},
+			{Status: "A", Path: "internal/foo/new_feature_test.go", Patch: "@@ @@\n+func TestUnrelated(t *testing.T) {\n+\trequire.NoError(t, err)\n+}\n"},
+		})
+		found := false
+		for _, f := range r.Findings {
+			if f.Rule == "removed-assertions" {
+				found = true
+				if f.Severity != tamperHigh {
+					t.Errorf("removed-assertions severity = %q, want high (only 1 of 2 removed assertions offset)", f.Severity)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("want a removed-assertions finding, got %v", r.Findings)
+		}
+	})
+
 	t.Run("tampering_mixes_high_and_skips_medium", func(t *testing.T) {
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
 			{Status: "M", Path: "a_test.go", Patch: "@@ @@\n+\tt.Skip(\"x\")\n"},
@@ -324,6 +410,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	tamper := impl.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-implement")
+		return
 	}
 	if tamper.Type != StepDetectTampering {
 		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
@@ -333,6 +420,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("verify_commits default goto = %q, want detect_tampering", got)
@@ -718,6 +806,58 @@ func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
 	}
 }
 
+// TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase reproduces the
+// force-push scenario from issue #1477: the stored tamper_base baseline stays
+// git-resolvable (rev-parse --verify succeeds) but is no longer an ancestor
+// of HEAD after the underlying branch was reset/force-pushed. A two-dot diff
+// against such an orphaned base would span the whole divergent history
+// instead of the agent's actual change; this test asserts the ancestry check
+// rejects the stale baseline and falls back to origin/main (three-dot),
+// scoping the report to only the real commit.
+func TestExecDetectTampering_OrphanedBaselineFallsBackToOriginBase(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md": "init\n",
+	})
+
+	// Simulate a prior run's captured baseline: a commit that will later be
+	// orphaned by a force-push/reset, but which still resolves via rev-parse.
+	writeRepoFile(t, wt, "internal/other/other.go", "package other\n\nfunc Other() int { return 1 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: unrelated prior work")
+	staleBaseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+
+	// Force-push equivalent: branch is reset back to origin/main, then the
+	// agent's real (small) change is committed on top — staleBaseline is now
+	// orphaned, resolvable but not an ancestor of the new HEAD.
+	gitRun(t, wt, "reset", "--hard", "origin/main")
+	writeRepoFile(t, wt, "internal/foo/foo.go", "package foo\n\nfunc Foo() int { return 1 }\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: add foo")
+
+	_, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): staleBaseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	base, rangeSpec := resolveTamperRange(context.Background(), wt, TaskInfo{ID: "t1", Workflow: wf}, "t1", nil)
+	if base == staleBaseline {
+		t.Fatalf("base = %q, want fallback to origin base; orphaned baseline must be rejected", base)
+	}
+	if rangeSpec == staleBaseline+"..HEAD" {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range, not the stale two-dot baseline range", rangeSpec)
+	}
+	if !strings.Contains(rangeSpec, "...HEAD") {
+		t.Fatalf("rangeSpec = %q, want three-dot fallback range", rangeSpec)
+	}
+}
+
 func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -740,6 +880,7 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	vc := prfix.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing from pr-fix")
+		return
 	}
 	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "detect_tampering" {
 		t.Errorf("pr-fix verify_commits default goto = %q, want detect_tampering", got)
@@ -765,10 +906,12 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 	tamper := rev.StepByID("detect_tampering")
 	if tamper == nil {
 		t.Fatal("detect_tampering step missing from simple-task-review")
+		return
 	}
 	fix := rev.StepByID("fix_review")
 	if fix == nil {
 		t.Fatal("fix_review step missing from simple-task-review")
+		return
 	}
 	if got, _ := ResolveTransition(fix.Next, map[string]string{"task.status": "ready-review"}); got != "detect_tampering" {
 		t.Errorf("fix_review goto = %q, want detect_tampering", got)

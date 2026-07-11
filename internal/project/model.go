@@ -1,6 +1,9 @@
 package project
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ProjectType classifies a Project for per-machine automation routing (see
 // Config.AllowsProjectType and the "Per-Machine Automations" section of
@@ -191,6 +194,27 @@ type Project struct {
 	WorktreeBaseRef string    `yaml:"worktree_base_ref,omitempty" json:"worktreeBaseRef,omitempty"`
 	CreatedAt       time.Time `yaml:"created_at" json:"createdAt"`
 	UpdatedAt       time.Time `yaml:"updated_at" json:"updatedAt"`
+}
+
+// IsSybraProject reports whether p is the Sybra repo itself (owner
+// "Automaat", repo "sybra", case-insensitive). Every task-scoped agent
+// subprocess now gets an isolated SYBRA_HOME regardless of project (see
+// agent.Manager.prepareRunConfig / ManagerConfig.SandboxHome), so this no
+// longer gates that isolation; kept for callers that still need to detect
+// Sybra-testing-Sybra specifically.
+func (p Project) IsSybraProject() bool {
+	return strings.EqualFold(p.Owner, "Automaat") && strings.EqualFold(p.Repo, "sybra")
+}
+
+func (p Project) WorkBlocklist() []string {
+	if p.Type != ProjectTypeWork {
+		return nil
+	}
+	bl := []string{p.ID, p.Owner, p.Repo}
+	if p.URL != "" {
+		bl = append(bl, p.URL)
+	}
+	return bl
 }
 
 // Worktree describes one `git worktree` checkout of a Project's bare clone,

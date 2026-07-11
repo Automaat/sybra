@@ -14,13 +14,32 @@ trigger:
       operator: equals
       value: testing
 steps:
-  # Every task reaches the tester. `notest`/docs/library scopes only exempt the
-  # app start; the test-runner still has to provide CLI/test-harness evidence.
+  # `notest`/docs/library scopes only exempt the app start; the test-runner
+  # still has to provide CLI/test-harness evidence and always runs. `trivial`
+  # is the one tag that skips the tester entirely — it marks the task as
+  # trivially mechanical (see simple-task-review's maybe_review, which skips
+  # review the same way for the same tag).
   - id: maybe_test
     name: Testing Decision
     type: condition
     next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: trivial
+        goto: skip_testing
       - goto: run_test
+
+  # Skip target for trivial: go straight to ready-pr, same terminus a PASS
+  # verdict reaches via route_test below.
+  - id: skip_testing
+    name: Skip Testing (trivial)
+    type: set_status
+    config:
+      status: ready-pr
+      status_reason: trivial mechanical task — skipped testing
+    next:
+      - goto: ""
 
   # A single headless adversarial test-runner. Its sandbox (Docker compose
   # project / k3d cluster, keyed by task id) is started on demand by the agent
@@ -73,6 +92,21 @@ steps:
         sandbox is already running for this task — use it. Bind only ephemeral
         ports and tear down anything you start.
 
+        SYBRA_HOME is always set to your per-task sandbox — test servers, e2e
+        suites, and scratch data all belong there by default.
+
+        If the project under test is Sybra itself, never point a second Sybra
+        process at the real ~/.sybra — two instances sharing one home fight
+        over task files, agent state, and pollers. Point the app-under-test at
+        your sandbox explicitly (e.g. SYBRA_HOME=$SYBRA_HOME go run
+        ./cmd/sybra-server). To inspect that app-under-test's own task/config
+        state from the CLI, pass --home "$SYBRA_HOME" explicitly — bare
+        sybra-cli calls with no --home are the control channel back to the
+        real operator board and will not see the sandboxed data. If SYBRA_HOME
+        is somehow unset, follow docs/manual-testing.md: point SYBRA_HOME at a
+        fresh temp directory with the fake-provider harness before starting
+        anything.
+
         Manual testing is mandatory by default. Before PASS, run at least one
         product-level probe that a user/operator would recognize: start the
         web/server surface and hit it with curl/browser/devtools; run the real
@@ -80,7 +114,12 @@ steps:
         against the sandbox; or drive the desktop task's headless HTTP/server
         equivalent. Automated tests, lint, builds, diff review, and grep are
         support evidence only — they do NOT count as manual testing by
-        themselves.
+        themselves. For a web surface, if mcp__playwright__* tools are
+        available, use them to load pages, click through the flow, and
+        capture screenshots/console errors as visual evidence — stronger than
+        curl/status-code checks alone for anything that renders. The MCP is
+        opt-in and not attached to every run; when unavailable, fall back to
+        curl/browser/devtools without treating its absence as a defect.
 
         Set surface_kind to exactly ONE canonical token: web, cli, server,
         desktop, k8s, library, docs, or none. Use library for internal

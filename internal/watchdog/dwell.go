@@ -18,7 +18,7 @@ const (
 )
 
 // dwellBudget returns how long a task may stay in an actionable status before
-// being escalated to human-required. Only applies to todo and in-progress.
+// being escalated to human-required. Only applies to in-progress.
 func dwellBudget(tags []string) time.Duration {
 	switch {
 	case slices.Contains(tags, "large"):
@@ -60,7 +60,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		if t.TaskType == task.TaskTypeChat {
 			continue
 		}
-		if t.Status != task.StatusTodo && t.Status != task.StatusInProgress {
+		if t.Status != task.StatusInProgress {
 			continue
 		}
 		if hasBlocker(t.Body) {
@@ -68,6 +68,14 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		}
 		budget := dwellBudget(t.Tags)
 		if now.Sub(t.UpdatedAt) <= budget {
+			continue
+		}
+		// A long-running headless agent that hasn't touched the task file (no
+		// status/body update) is still covered by the headless stall/budget
+		// watchdog. Escalating here would flip a healthy in-flight agent to
+		// human-required mid-run.
+		if w.hasLiveHeadlessAgent != nil && w.hasLiveHeadlessAgent(t.ID) {
+			w.logger.Debug("watchdog.dwell.skip_live_headless_agent", "task_id", t.ID)
 			continue
 		}
 		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)

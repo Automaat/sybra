@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,12 +49,21 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	// deleteTask allows tests to force DeleteTask failures on cleanup branches
+	// without mutating the real task store or broadening the public API.
+	deleteTask func(id string) error
 	// enrichReconciling holds task IDs with an in-flight enrichment goroutine —
 	// either the original CreateTask async fetch or a reconcile-pass retry — so
 	// a maintenance tick never stacks a second concurrent gh fetch on the same
 	// stub. Zero value ready.
 	enrichReconciling sync.Map
+	// enrichRetryCooldown holds the next maintenance retry time per task ID.
+	// Initial async enrichment is not gated; this only prevents a permanently
+	// broken stub from spending GitHub calls on every reconcile tick.
+	enrichRetryCooldown sync.Map
 }
+
+const enrichPendingRetryCooldown = time.Hour
 
 type TamperReportDTO struct {
 	TaskID          string             `json:"taskId"`
@@ -70,6 +81,30 @@ type TamperFindingDTO struct {
 	Rule     string `json:"rule"`
 	Detail   string `json:"detail"`
 }
+
+type TaskArtifactDTO struct {
+	artifact.Meta
+	Content string `json:"content,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type TaskSetupLogDTO struct {
+	TaskID    string `json:"taskId"`
+	Path      string `json:"path,omitempty"`
+	Exists    bool   `json:"exists"`
+	Content   string `json:"content,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type TaskAuditEventDTO struct {
+	Timestamp time.Time      `json:"ts"`
+	Type      string         `json:"type"`
+	TaskID    string         `json:"taskId,omitempty"`
+	AgentID   string         `json:"agentId,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+const taskDiagnosticReadLimit = 256 * 1024
 
 // ListTasks returns all tasks from the store, excluding ephemeral chat tasks.
 // Chat tasks are surfaced exclusively through the Chats view.
@@ -97,6 +132,99 @@ func (s *TaskService) GetTask(id string) (task.Task, error) {
 	return s.withEstimatedAgentRunCosts(t), nil
 }
 
+func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error) {
+	if s.artifacts == nil {
+		return []TaskArtifactDTO{}, nil
+	}
+	metas, err := s.artifacts.List(taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskArtifactDTO, 0, len(metas))
+	for i := range metas {
+		meta := metas[i]
+		meta.SourcePath = ""
+		dto := TaskArtifactDTO{Meta: meta}
+		data, _, readErr := s.artifacts.Read(taskID, meta.Name)
+		if readErr != nil {
+			dto.Error = readErr.Error()
+			out = append(out, dto)
+			continue
+		}
+		if len(data) > taskDiagnosticReadLimit {
+			if meta.Stream {
+				data = data[len(data)-taskDiagnosticReadLimit:]
+			} else {
+				data = data[:taskDiagnosticReadLimit]
+			}
+			dto.Error = fmt.Sprintf("truncated to %d bytes", taskDiagnosticReadLimit)
+		}
+		dto.Content = string(data)
+		out = append(out, dto)
+	}
+	return out, nil
+}
+
+func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
+	dto := TaskSetupLogDTO{TaskID: taskID}
+	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+		return dto, nil
+	}
+	path := filepath.Join(s.cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
+	root := filepath.Join(s.cfg.Logging.Dir, "worktrees")
+	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, cleanRoot) {
+		return dto, fmt.Errorf("setup log path escapes log root")
+	}
+	dto.Path = cleanPath
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return dto, nil
+		}
+		return dto, fmt.Errorf("read setup log: %w", err)
+	}
+	dto.Exists = true
+	if len(data) > taskDiagnosticReadLimit {
+		data = data[len(data)-taskDiagnosticReadLimit:]
+		dto.Truncated = true
+	}
+	dto.Content = string(data)
+	return dto, nil
+}
+
+func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditEventDTO, error) {
+	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+		return []TaskAuditEventDTO{}, nil
+	}
+	if days <= 0 || days > 90 {
+		days = 14
+	}
+	until := time.Now().UTC().Add(time.Minute)
+	since := until.AddDate(0, 0, -days)
+	events, err := audit.Read(s.cfg.AuditDir(), audit.Query{
+		Since:  since,
+		Until:  until,
+		TaskID: taskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TaskAuditEventDTO, 0, len(events))
+	for _, ev := range events {
+		out = append(out, TaskAuditEventDTO{
+			Timestamp: ev.Timestamp,
+			Type:      ev.Type,
+			TaskID:    ev.TaskID,
+			AgentID:   ev.AgentID,
+			Data:      ev.Data,
+		})
+	}
+	slices.Reverse(out)
+	return out, nil
+}
+
 // GetTamperReport returns the detector report artifact for a tamper-flagged task.
 func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 	if s.artifacts == nil {
@@ -122,6 +250,22 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 		report.Findings = []TamperFindingDTO{}
 	}
 	return report, nil
+}
+
+// ListTaskProgress returns the agent-authored progress entries for a task.
+// Empty (not an error) when the task has no progress log yet.
+func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry, error) {
+	if s.artifacts == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	entries, err := s.artifacts.ReadProgress(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		return []artifact.ProgressEntry{}, nil
+	}
+	return entries, nil
 }
 
 func emptyTamperReport(taskID string) TamperReportDTO {
@@ -329,6 +473,16 @@ func providerForRun(run task.AgentRun) string {
 // CreateTask creates a new task and starts a matching workflow.
 // If the title is a GitHub issue URL, fetches real title/body from GitHub.
 func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
+	return s.CreateTaskWithInit(title, body, mode, task.Update{})
+}
+
+// CreateTaskWithInit is CreateTask plus caller-supplied initial field
+// overrides (e.g. TodoistID) applied atomically in the same first-write as
+// task creation. Callers that need a dedupe key persisted alongside the task
+// — so a crash between create and a second update can never re-import the
+// same source item — should use this instead of CreateTask followed by a
+// separate Update.
+func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Update) (task.Task, error) {
 	prRepo, prNumber := github.ParsePRURL(title)
 	issueRepo, issueNumber := github.ParseIssueURL(title)
 	isURLStub := prRepo != "" || issueRepo != ""
@@ -337,13 +491,15 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	// task.created dispatch can't race async enrichment and start a flat
 	// workflow on the un-enriched stub (CreateFull persists the tag before
 	// emitting TaskCreated). Non-URL tasks take the plain create path.
-	var t task.Task
-	var err error
+	createInit := init
 	if isURLStub {
-		t, err = s.tasks.CreateFull(title, body, mode, task.Update{Tags: task.Ptr([]string{enrichPendingTag})})
-	} else {
-		t, err = s.tasks.Create(title, body, mode)
+		tags := []string{enrichPendingTag}
+		if init.Tags != nil {
+			tags = append(tags, (*init.Tags)...)
+		}
+		createInit.Tags = task.Ptr(tags)
 	}
+	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
 		return t, err
 	}
@@ -463,12 +619,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			!s.agents.HasRunningAgentForTask(id) {
 			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
 			s.wg.Go(func() {
-				dispatched, wfErr := s.workflowEngine.DispatchEvent(
-					id,
-					"task.status_changed",
-					map[string]string{"task.status": newStatus},
-					nil,
-				)
+				dispatched, wfErr := s.redispatchStatusChanged(id, newStatus)
 				if wfErr != nil {
 					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
 					return
@@ -481,6 +632,172 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	return t, nil
+}
+
+// redispatchStatusChanged dispatches task.status_changed for the given task
+// and status, so trigger conditions in workflow YAML select the workflow
+// matching the new status rather than replaying a stale saved workflow ID.
+// Shared by UpdateTask's async in-progress restart goroutine and
+// DispatchFromHumanRequired's synchronous dispatch.
+func (s *TaskService) redispatchStatusChanged(id, status string) (string, error) {
+	if s.workflowEngine == nil {
+		return "", errors.New("workflow engine not initialized")
+	}
+	return s.workflowEngine.DispatchEvent(
+		id,
+		"task.status_changed",
+		map[string]string{"task.status": status},
+		nil,
+	)
+}
+
+// dispatchTargetSpec describes one status an operator can dispatch a
+// human-required task to.
+type dispatchTargetSpec struct {
+	// requiresPR gates the target on the task already having a linked PR
+	// (only in-review needs this — dispatching in-review without a PR would
+	// flip the task into PR-monitoring with nothing to monitor).
+	requiresPR bool
+	// dispatches selects whether redispatchStatusChanged runs after the
+	// status write. in-review has no task.status_changed trigger — it is a
+	// plain PR-guarded status flip into the existing PR-monitoring state.
+	dispatches bool
+}
+
+var dispatchTargets = map[string]dispatchTargetSpec{
+	string(task.StatusInProgress): {dispatches: true},
+	string(task.StatusTesting):    {dispatches: true},
+	string(task.StatusReadyPR):    {dispatches: true},
+	string(task.StatusInReview):   {requiresPR: true, dispatches: false},
+}
+
+// DispatchFromHumanRequired flips a task parked in human-required to target
+// (one of in-progress/testing/ready-pr/in-review), recording reason as the
+// audit-visible status_reason. For dispatching targets it synchronously
+// re-enters the workflow via task.status_changed; on any failure to do so it
+// fails closed, reverting the task to human-required with an explanatory
+// status_reason so the operator is never left with a task silently stuck in
+// a target status with no workflow driving it.
+//
+// The whole check-then-write sequence runs under the workflow engine's
+// per-task human-action lock (shared with plan-review's
+// HandleHumanActionRecovering), so a double-click or a second operator cannot
+// race the same stuck task between the guard reads and the status write.
+func (s *TaskService) DispatchFromHumanRequired(id, target, reason string) (task.Task, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return task.Task{}, conflictError("a decision reason is required")
+	}
+	if _, ok := dispatchTargets[target]; !ok {
+		return task.Task{}, conflictError(fmt.Sprintf("unsupported dispatch target %q", target))
+	}
+
+	var result task.Task
+	run := func() error {
+		out, err := s.dispatchFromHumanRequiredLocked(id, target, reason)
+		result = out
+		return err
+	}
+	// s.workflowEngine is only nil in narrow tests; fall back to running
+	// unlocked there. dispatchFromHumanRequiredLocked's dispatching targets
+	// still go through redispatchStatusChanged, which itself guards against
+	// a nil engine and fails closed rather than nil-panicking.
+	if s.workflowEngine != nil {
+		if err := s.workflowEngine.WithHumanActionLock(id, run); err != nil {
+			return task.Task{}, err
+		}
+		return result, nil
+	}
+	if err := run(); err != nil {
+		return task.Task{}, err
+	}
+	return result, nil
+}
+
+func (s *TaskService) dispatchFromHumanRequiredLocked(id, target, reason string) (task.Task, error) {
+	cur, err := s.tasks.Get(id)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if cur.Status != task.StatusHumanRequired {
+		return task.Task{}, conflictError(fmt.Sprintf("task is not human-required (status=%q)", cur.Status))
+	}
+	spec := dispatchTargets[target]
+	if spec.requiresPR && cur.PRNumber == 0 {
+		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
+	}
+	if s.agents.HasRunningAgentForTask(id) {
+		return task.Task{}, conflictError("cannot dispatch: an agent is already running for this task")
+	}
+	if cur.Workflow != nil && cur.Workflow.State != workflow.ExecCompleted && cur.Workflow.State != workflow.ExecFailed {
+		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch: task has active workflow %q (state=%s)",
+			cur.Workflow.WorkflowID, cur.Workflow.State))
+	}
+
+	if _, err := s.tasks.UpdateMap(id, map[string]any{
+		"status":        target,
+		"status_reason": reason,
+	}); err != nil {
+		return task.Task{}, err
+	}
+
+	if spec.dispatches {
+		matched, dispatchErr := s.redispatchStatusChanged(id, target)
+		// The status write above synchronously fires App.initStatusHook, which
+		// for testing/ready-pr already dispatches the workflow via
+		// dispatchStatusWorkflow before UpdateMap returns. Our own dispatch then
+		// observes that active workflow and returns ErrWorkflowAlreadyActive —
+		// that is the hook having succeeded, not a conflict. Mirror
+		// dispatchStatusWorkflow and treat it as benign; a genuine agent-start
+		// failure surfaces as a different error and still fails closed.
+		hookAlreadyStarted := errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive)
+		dispatchStarted := dispatchErr == nil && matched != ""
+		if !dispatchStarted && !hookAlreadyStarted {
+			failure := "no workflow matched"
+			if dispatchErr != nil {
+				failure = dispatchErr.Error()
+			}
+			s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
+			revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
+			if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
+				"status":        string(task.StatusHumanRequired),
+				"status_reason": revertReason,
+			}); revertErr != nil {
+				s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
+				return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+			}
+			// The bounce back to human-required is the event an operator most
+			// needs a durable record of — log it, not just the success path.
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+			return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
+		}
+	}
+
+	s.logDispatchAudit(id, target, string(cur.Status), reason, "dispatched")
+	return s.tasks.Get(id)
+}
+
+// logDispatchAudit records a human-required dispatch attempt and its outcome
+// ("dispatched"/"reverted"/"revert-failed"). The operator's reason is included
+// so the durable audit record carries the rationale even after status_reason is
+// later overwritten.
+func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outcome string) {
+	if s.audit == nil {
+		return
+	}
+	if logErr := s.audit.Log(audit.Event{
+		Type:   audit.EventTaskDispatched,
+		TaskID: id,
+		Data: map[string]any{
+			"target":         target,
+			"previousStatus": previousStatus,
+			"reason":         reason,
+			"outcome":        outcome,
+		},
+	}); logErr != nil && s.logger != nil {
+		s.logger.Warn("task.dispatch.audit", "task_id", id, "err", logErr)
+	}
 }
 
 // DeleteTask removes a task file from disk and cleans up its worktree.
@@ -536,6 +853,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 			s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 			return
 		}
+		s.enrichRetryCooldown.Delete(taskID)
 		s.logger.Info("enrich-pr.my-pr", "task_id", taskID, "pr", number, "title", pr.Title)
 		return
 	}
@@ -554,7 +872,9 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	}
 	if err := s.startPRReviewAgent(t); err != nil {
 		s.logger.Error("enrich-pr.review-agent", "task_id", taskID, "err", err)
+		return
 	}
+	s.enrichRetryCooldown.Delete(taskID)
 }
 
 // startPRReviewAgent starts a headless agent that runs /staff-code-review on the PR.
@@ -631,10 +951,14 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 	// Replace tags with the issue's labels (possibly empty), which also clears
 	// the enrich-pending marker so startCreatedWorkflow below can dispatch.
 	labels := issue.Labels
-	u.Tags = &labels
 	linkedPRs, linkedErr := s.fetchIssueLinkedPRsFunc()(repo, number)
 	if linkedErr != nil {
 		s.logger.Warn("enrich-issue.linked-prs", "task_id", taskID, "repo", repo, "number", number, "err", linkedErr)
+		// Keep the enrich-pending marker on a warn-only linked-PR fetch
+		// failure. Clearing it here would leave the task in todo with no
+		// marker, no workflow dispatch, and no way for
+		// ReconcilePendingEnrichment to find and retry it — inert forever.
+		labels = append(labels, enrichPendingTag)
 	} else if linked, ok := s.singleViewerLinkedPR(linkedPRs); ok {
 		u.PRNumber = task.Ptr(linked.Number)
 		u.Branch = task.Ptr(linked.HeadRefName)
@@ -644,13 +968,17 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 			s.logger.Warn("enrich-issue.linked-prs.ambiguous", "task_id", taskID, "count", viewerPRs)
 		}
 	}
+	u.Tags = &labels
 	updated, err := s.tasks.Update(taskID, u)
 	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
 		return
 	}
 	if linkedErr == nil && len(linkedPRs) == 0 {
+		s.enrichRetryCooldown.Delete(taskID)
 		s.startCreatedWorkflow(updated)
+	} else if linkedErr == nil {
+		s.enrichRetryCooldown.Delete(taskID)
 	}
 	s.logger.Info("enrich-issue.done", "task_id", taskID, "title", issue.Title)
 }
@@ -690,11 +1018,21 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 		// The stub still carries its raw URL as the title; re-derive the target.
 		prRepo, prNumber := github.ParsePRURL(t.Title)
 		issueRepo, issueNumber := github.ParseIssueURL(t.Title)
+		if prRepo == "" && issueRepo == "" && t.Issue != "" {
+			// Title was already rewritten to the real issue title by a prior
+			// enrich attempt that got the content but failed the linked-PR
+			// fetch (marker deliberately kept — see enrichFromIssue). Fall
+			// back to the persisted issue URL so the retry isn't stranded.
+			issueRepo, issueNumber = github.ParseIssueURL(t.Issue)
+		}
 		if prRepo == "" && issueRepo == "" {
 			// Title no longer parses as a GitHub URL (manually edited) yet the
 			// marker lingers — nothing to fetch. Warn once per tick; leave the
 			// task for the user to resolve.
 			s.logger.Warn("enrich-reconcile.unparseable", "task_id", t.ID, "title", t.Title)
+			continue
+		}
+		if s.enrichPendingRetryCoolingDown(t.ID) {
 			continue
 		}
 		// Dedupe across ticks: skip if a reconcile enrichment is already running
@@ -703,6 +1041,7 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 			continue
 		}
 		id := t.ID
+		s.enrichRetryCooldown.Store(id, time.Now().Add(enrichPendingRetryCooldown))
 		s.logger.Info("enrich-reconcile.retry", "task_id", id, "title", t.Title)
 		if prRepo != "" {
 			repo, number := prRepo, prNumber
@@ -720,6 +1059,23 @@ func (s *TaskService) ReconcilePendingEnrichment() {
 	}
 }
 
+func (s *TaskService) enrichPendingRetryCoolingDown(taskID string) bool {
+	untilValue, ok := s.enrichRetryCooldown.Load(taskID)
+	if !ok {
+		return false
+	}
+	until, ok := untilValue.(time.Time)
+	if !ok || until.IsZero() {
+		s.enrichRetryCooldown.Delete(taskID)
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	s.enrichRetryCooldown.Delete(taskID)
+	return false
+}
+
 // umbrellaExpansionEnabled reports whether a detected umbrella issue should be
 // auto-expanded on the manual-create path. Read live (not wired-once) so a
 // config reload toggling umbrella.enabled takes effect without re-wiring.
@@ -730,31 +1086,64 @@ func (s *TaskService) umbrellaExpansionEnabled() bool {
 // expandUmbrellaStub expands a manually-created stub whose URL resolved to a
 // ☂️ umbrella issue into a gated child DAG, then deletes the stub — the
 // expander creates its own umbrella-typed tracker, so keeping the stub would
-// leave a duplicate flat task for the same issue. On expansion failure the stub
-// is enriched into an identifiable (but inert) task so the user is not left
-// empty-handed and can retry with `sybra-cli umbrella <url>`; crucially no flat
-// workflow is started on a known umbrella, which is the bug this path fixes.
+// leave a duplicate flat task for the same issue. On expansion failure, a
+// planner failure (internal/umbrella.recordExpandFailure, see #1570) already
+// created or updated a separate, durable tracker task carrying the failure
+// detail — in that case the stub is marked a duplicate (mirroring the success
+// path) rather than also claiming TaskTypeUmbrella, which would leave two
+// tracker tasks for the same issue. A failure before any tracker existed
+// (bad URL, GitHub fetch failure) has nothing else to defer to, so the stub
+// itself becomes the identifiable (but inert) record instead.
 func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
 	res, err := s.umbrellaExpand(issue.URL)
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
-		s.enrichInertUmbrellaStub(taskID, repo, issue,
-			"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
+		if s.umbrellaTrackerExistsElsewhere(taskID, issue.URL) {
+			s.enrichDuplicateUmbrellaStub(taskID, repo, issue,
+				"umbrella expansion failed; see the umbrella tracker task for details")
+		} else {
+			s.enrichInertUmbrellaStub(taskID, repo, issue,
+				"umbrella expansion failed; retry with `sybra-cli umbrella <url>`")
+		}
 		return
 	}
 	// Expand created the real tracker + children; the stub is now a duplicate.
 	// Use DeleteTask (not the raw store Delete) so any agent/sandbox/worktree
 	// that started on the stub — e.g. if a flat workflow won the create race
 	// before the enrich-pending marker took effect — is torn down, not leaked.
-	if delErr := s.DeleteTask(taskID); delErr != nil {
+	if delErr := s.deleteTaskFunc()(taskID); delErr != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-delete", "task_id", taskID, "err", delErr)
 		// Cleanup failed: enrich the stub so it is an identifiable,
 		// user-deletable duplicate rather than a raw-URL task with no metadata.
-		s.enrichInertUmbrellaStub(taskID, repo, issue,
+		s.enrichDuplicateUmbrellaStub(taskID, repo, issue,
 			"umbrella expanded to a separate tracker; this duplicate can be deleted")
 		return
 	}
 	s.logger.Info("enrich-issue.umbrella-expanded", "issue", issue.URL, "created", res.Created, "stub", taskID)
+}
+
+// umbrellaTrackerExistsElsewhere reports whether some other task already
+// carries TaskTypeUmbrella for issueURL. Used to decide, after a failed
+// expandUmbrellaStub, whether that failure already has a durable tracker to
+// point at (see recordExpandFailure) or whether this stub is the only record.
+func (s *TaskService) umbrellaTrackerExistsElsewhere(taskID, issueURL string) bool {
+	all, err := s.tasks.List()
+	if err != nil {
+		// Unreadable store: assume a tracker exists. Claiming this stub as the
+		// only record would mint a second TaskTypeUmbrella task for the same
+		// issue — the exact duplication this helper prevents; a mislabeled
+		// duplicate stub is the cheaper failure.
+		s.logger.Error("enrich-issue.umbrella-tracker-scan", "task_id", taskID, "err", err)
+		return true
+	}
+	key := umbrella.NormalizeIssueRef(issueURL)
+	for i := range all {
+		t := &all[i]
+		if t.ID != taskID && t.TaskType == task.TaskTypeUmbrella && umbrella.NormalizeIssueRef(t.Issue) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // enrichInertUmbrellaStub turns the stub into an identifiable, inert task: real
@@ -762,7 +1151,22 @@ func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue
 // enrichFromIssue path so tag-driven routing and the UI still recognize it),
 // and a StatusReason explaining why no workflow started. No flat workflow is
 // started — the task is a known umbrella.
+//
+// On the true expansion-failure path, TaskType is set to umbrella so the fix
+// holds durably: every write to the task file re-fires the emit-path
+// task.created dispatch, and the enrich-pending tag this call clears was the
+// only guard skipTaskCreatedWorkflow had left to skip on. Duplicate-stub
+// cleanup failures must not set TaskTypeUmbrella because a real tracker
+// already exists for the same issue.
 func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	s.enrichUmbrellaStub(taskID, repo, issue, reason, true)
+}
+
+func (s *TaskService) enrichDuplicateUmbrellaStub(taskID, repo string, issue github.Issue, reason string) {
+	s.enrichUmbrellaStub(taskID, repo, issue, reason, false)
+}
+
+func (s *TaskService) enrichUmbrellaStub(taskID, repo string, issue github.Issue, reason string, markUmbrella bool) {
 	u := task.Update{
 		Title:        task.Ptr(issue.Title),
 		Issue:        task.Ptr(issue.URL),
@@ -770,16 +1174,31 @@ func (s *TaskService) enrichInertUmbrellaStub(taskID, repo string, issue github.
 		Slug:         task.Ptr(task.Slugify(issue.Title)),
 		StatusReason: task.Ptr(reason),
 	}
+	// Replace tags with the issue's labels (possibly empty), preserving them for
+	// identification/routing while clearing the enrich-pending marker.
+	labels := slices.Clone(issue.Labels)
+	if markUmbrella {
+		u.TaskType = task.Ptr(task.TaskTypeUmbrella)
+	} else {
+		// Not the tracker (a real one already exists elsewhere) — mark this
+		// duplicate durably so skipTaskCreatedWorkflow keeps blocking dispatch
+		// on it without also claiming TaskTypeUmbrella.
+		labels = append(labels, umbrellaDuplicateTag)
+	}
 	if issue.Body != "" {
 		u.Body = task.Ptr(issue.Body)
 	}
-	// Replace tags with the issue's labels (possibly empty), preserving them for
-	// identification/routing while clearing the enrich-pending marker.
-	labels := issue.Labels
 	u.Tags = &labels
 	if _, err := s.tasks.Update(taskID, u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
 	}
+}
+
+func (s *TaskService) deleteTaskFunc() func(id string) error {
+	if s.deleteTask != nil {
+		return s.deleteTask
+	}
+	return s.DeleteTask
 }
 
 func (s *TaskService) fetchPRFunc() func(string, int) (github.PullRequest, error) {

@@ -14,13 +14,15 @@ import (
 // by subcommand ("label", "issue list", "issue comment", "issue create").
 // Tests mutate the response table per scenario.
 type fakeExecer struct {
-	mu         sync.Mutex
-	calls      [][]string
-	listResp   []byte
-	listErr    error
-	createErr  error
-	commentErr error
-	labelErr   error
+	mu          sync.Mutex
+	calls       [][]string
+	listResp    []byte
+	listErr     error
+	createResp  []byte
+	createErr   error
+	commentResp []byte
+	commentErr  error
+	labelErr    error
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -41,9 +43,9 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 		case "list":
 			return f.listResp, f.listErr
 		case "comment":
-			return nil, f.commentErr
+			return f.commentResp, f.commentErr
 		case "create":
-			return nil, f.createErr
+			return f.createResp, f.createErr
 		}
 	}
 	return nil, nil
@@ -102,8 +104,8 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	if !containsPair(got, "--body", attribution.Append("body")) {
 		t.Errorf("missing body: %v", got)
 	}
-	if !containsPair(got, "--label", "monitor,bug") {
-		t.Errorf("missing label pair: %v", got)
+	if !containsLabelArgs(got, "monitor", "bug") {
+		t.Errorf("missing label args: %v", got)
 	}
 	if len(fe.callsMatching("issue", "comment")) != 0 {
 		t.Errorf("should not comment on dedup miss")
@@ -164,10 +166,113 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 	}
 }
 
+func TestGHIssueSink_EnsuresExtraLabelsBeforeCreate(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate", "bug", "  ", "monitor"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	// monitor + bug (ensureLabels, once) + duplicate-candidate (ensureExtraLabels).
+	// "bug" and "monitor" from extraLabels are skipped since ensureLabels
+	// already covers them.
+	if len(labelCreates) != 3 {
+		t.Fatalf("want 3 label create calls, got %d: %v", len(labelCreates), labelCreates)
+	}
+	found := false
+	for _, c := range labelCreates {
+		if len(c) >= 4 && c[2] == "--" && c[3] == "duplicate-candidate" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a label create call for duplicate-candidate, got %v", labelCreates)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsLabelArgs(creates[0], "monitor", "duplicate-candidate", "bug") {
+		t.Errorf("wrong label args: %v", creates[0])
+	}
+}
+
+func TestGHIssueSink_ExtraLabelStartingWithDashIsNotParsedAsFlag(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"-1-of-3"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	found := false
+	for _, c := range labelCreates {
+		if len(c) >= 4 && c[2] == "--" && c[3] == "-1-of-3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a `--` separated label create call for -1-of-3, got %v", labelCreates)
+	}
+}
+
+func TestGHIssueSink_CreatePreservesCommaContainingLabelAsSingleArg(t *testing.T) {
+	fe := &fakeExecer{listResp: []byte(`[]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"ops,infra"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 {
+		t.Fatalf("want 1 issue create call, got %d", len(creates))
+	}
+	if !containsLabelArgs(creates[0], "monitor", "ops,infra") {
+		t.Fatalf("expected comma-containing label to stay a single argv token, got %v", creates[0])
+	}
+}
+
+func TestGHIssueSink_ExtraLabelsNotEnsuredOnCommentPath(t *testing.T) {
+	fe := &fakeExecer{
+		listResp: []byte(`[{"number":87,"title":"title"}]`),
+	}
+	s := newTestSink(fe)
+
+	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate"})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	labelCreates := fe.callsMatching("label", "create")
+	// Only monitor + bug (ensureLabels, once) — extraLabels are only attached
+	// on the create branch, so they must not be ensured on a dedup hit.
+	if len(labelCreates) != 2 {
+		t.Fatalf("want 2 label create calls (ensureLabels only), got %d: %v", len(labelCreates), labelCreates)
+	}
+	for _, c := range labelCreates {
+		if len(c) >= 3 && c[2] == "duplicate-candidate" {
+			t.Fatalf("extra label should not be created on comment path, got %v", labelCreates)
+		}
+	}
+
+	if len(fe.callsMatching("issue", "create")) != 0 {
+		t.Errorf("should not create on dedup hit")
+	}
+}
+
 func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	fe := &fakeExecer{
-		listResp:  []byte(`[]`),
-		createErr: errors.New("HTTP 403: API rate limit exceeded for 1.2.3.4"),
+		listResp:   []byte(`[]`),
+		createErr:  errors.New("exit status 1"),
+		createResp: []byte("gh: API rate limit exceeded for 1.2.3.4"),
 	}
 	s := newTestSink(fe)
 
@@ -175,6 +280,59 @@ func TestGHIssueSink_ClassifiesRateLimit(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if !errors.Is(err, ErrGHRateLimit) {
 		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_ClassifiesRateLimitFromOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("GraphQL: API rate limit exceeded\n"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if !errors.Is(err, ErrGHRateLimit) {
+		t.Fatalf("want ErrGHRateLimit, got %v", err)
+	}
+}
+
+func TestGHIssueSink_CreateErrorIncludesSanitizedOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:   []byte(`[]`),
+		createResp: []byte("first line\nsecond line\nthird line\nfourth line\nfifth line\nsixth line"),
+		createErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindOverDispatchLimit, Fingerprint: "over_dispatch_limit"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected create error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gh issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
+		t.Fatalf("error did not include sanitized output: %q", msg)
+	}
+}
+
+func TestGHIssueSink_CommentErrorIncludesOutput(t *testing.T) {
+	fe := &fakeExecer{
+		listResp:    []byte(`[{"number":87,"title":"[monitor] failure_spike"}]`),
+		commentResp: []byte("GraphQL: Could not resolve to an Issue with the number of 87"),
+		commentErr:  errors.New("exit status 1"),
+	}
+	s := newTestSink(fe)
+
+	a := Anomaly{Kind: KindFailureSpike, Fingerprint: "failure_spike"}
+	_, err := s.Submit(context.Background(), a, "body")
+	if err == nil {
+		t.Fatal("expected comment error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "gh issue comment") || !strings.Contains(msg, "Could not resolve") {
+		t.Fatalf("error did not include operation and gh output: %v", err)
 	}
 }
 
@@ -220,6 +378,36 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 	}
 }
 
+func TestSanitizeGHOutput_CaseInsensitiveHTML(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "uppercase doctype collapses to status line",
+			in:   "<!DOCTYPE HTML>\n<html><body>Unicorn</body></html>\ngh: HTTP 504",
+			want: "gh: HTTP 504",
+		},
+		{
+			name: "mixed-case html with no trailing gh line",
+			in:   "<!DoCtYpE hTmL><HtMl><body>Unicorn</body></HtMl>",
+			want: "GitHub returned an HTML error page",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeGHOutput([]byte(tt.in)); got != tt.want {
+				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // containsPair returns true if args contains key followed immediately by val.
 func containsPair(args []string, key, val string) bool {
 	for i := range len(args) - 1 {
@@ -228,6 +416,15 @@ func containsPair(args []string, key, val string) bool {
 		}
 	}
 	return false
+}
+
+func containsLabelArgs(args []string, labels ...string) bool {
+	for _, label := range labels {
+		if !containsPair(args, "--label", label) {
+			return false
+		}
+	}
+	return true
 }
 
 // verify the fakeExecer actually satisfies the ghExecer interface at compile

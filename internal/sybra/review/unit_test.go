@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -75,6 +76,47 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildConflictPrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+		BaseRefName: "master",
+	}, "")
+
+	if !strings.Contains(prompt, "git merge refs/remotes/origin/master") {
+		t.Fatalf("conflict prompt did not merge the PR base ref (master):\n%s", prompt)
+	}
+	if strings.Contains(prompt, "origin/main") {
+		t.Fatalf("conflict prompt still references origin/main for a master-based PR:\n%s", prompt)
+	}
+}
+
+func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
+	t.Parallel()
+
+	prompt := branchConflictPrompt(task.Task{Branch: "fix/example"}, "main")
+
+	for _, forbidden := range []string{
+		"git push origin HEAD",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("branch conflict prompt still hardcodes origin push (%q):\n%s", forbidden, prompt)
+		}
+	}
+	for _, want := range []string{
+		"PUSH_REMOTE=origin",
+		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
+		"git push \"$PUSH_REMOTE\" HEAD:fix/example",
+		"Push to `fork` (not `origin`) when a `fork` remote exists",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("branch conflict prompt missing %q:\n%s", want, prompt)
 		}
 	}
 }
@@ -1297,6 +1339,70 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	}
 }
 
+func TestPrepareWorktree_AgentRunningDoesNotTripCircuitBreaker(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projID := "owner/repo"
+	tk, err = tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(projID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projStore, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := worktree.New(worktree.Config{
+		WorktreesDir: filepath.Join(tmp, "worktrees"),
+		Projects:     projStore,
+		Tasks:        tasks,
+		Logger:       slog.New(slog.DiscardHandler),
+		LogsDir:      filepath.Join(tmp, "logs"),
+		LiveAgentChecker: func(string) bool {
+			return true
+		},
+	})
+
+	r := &Handler{
+		logger:     slog.New(slog.DiscardHandler),
+		tasks:      tasks,
+		worktrees:  wt,
+		wtFailures: make(map[string]int),
+	}
+
+	issue := github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: tk.ID,
+		PR:     github.PullRequest{Number: 1, HeadRefName: "feat/x"},
+	}
+
+	for i := range wtFailureLimit + 1 {
+		_, ok := r.prepareWorktree(context.Background(), tk, issue)
+		if ok {
+			t.Fatalf("call %d: want ok=false while a live agent blocks worktree reuse", i+1)
+		}
+		got, err := tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == task.StatusHumanRequired {
+			t.Fatalf("call %d: agent-running collision must not escalate to human-required", i+1)
+		}
+		if n := r.wtFailures[tk.ID]; n != 0 {
+			t.Fatalf("call %d: wtFailures[%s] = %d, want 0 for transient live-agent collisions", i+1, tk.ID, n)
+		}
+	}
+}
+
 // TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker verifies the
 // non-fatal fix-role setup-failure path still contributes to the same
 // per-task circuit breaker as hard worktree-prepare errors.
@@ -1718,6 +1824,95 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 	}
 }
 
+func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	r := New(tasks, projects, nil, nil, logger, nil, func(string, any) {}, nil, nil, nil, nil)
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{}, errors.New("gh: HTTP 401: Bad credentials")
+	}
+
+	ctx := context.Background()
+	for i := range poll.AuthFailureThreshold - 1 {
+		r.pollAndMonitorPRs(ctx)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d polls, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	next := r.pollAndMonitorPRs(ctx)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+	if next != poll.AuthCircuitBackoff {
+		t.Errorf("pollAndMonitorPRs() interval = %v, want AuthCircuitBackoff (%v)", next, poll.AuthCircuitBackoff)
+	}
+
+	r.fetchReviewsFn = func() (github.ReviewSummary, error) { return github.ReviewSummary{}, nil }
+	r.pollAndMonitorPRs(ctx)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful poll")
+	}
+}
+
+// TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure covers the
+// poller_role: secondary path (Poll -> pollKnownTaskPRs -> fetchKnownTaskPRs),
+// which fetches per-PR and must feed the same auth circuit as the search
+// path — otherwise a dead token re-hammers and floods forever (#1516) on the
+// exact deployment shape documented to run unattended.
+func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	authErr := errors.New("gh: HTTP 401: Bad credentials")
+	perPRFetches := 0
+	r := &Handler{
+		logger:      logger,
+		authCircuit: poll.NewAuthCircuit("reviews", logger),
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			perPRFetches++
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Err: authErr}
+			}
+			return results
+		},
+	}
+	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
+
+	for i := range poll.AuthFailureThreshold - 1 {
+		r.fetchKnownTaskPRs(matchers)
+		if r.AuthCircuitOpen() {
+			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
+		}
+	}
+
+	r.fetchKnownTaskPRs(matchers)
+	if !r.AuthCircuitOpen() {
+		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
+	}
+
+	// A recovered token (clean fetch) closes the breaker again.
+	r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+		results := make([]github.MonitorPRResult, len(refs))
+		for i, ref := range refs {
+			results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: false}
+		}
+		return results
+	}
+	r.fetchKnownTaskPRs(matchers)
+	if r.AuthCircuitOpen() {
+		t.Error("circuit stayed open after a successful fetch")
+	}
+}
+
 func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
@@ -1844,6 +2039,51 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	}
 	if got.Workflow != nil && got.Workflow.CurrentStep != "" {
 		t.Errorf("workflow CurrentStep = %q, want empty", got.Workflow.CurrentStep)
+	}
+}
+
+func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("Task whose PR was closed unmerged", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(1444),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		tasks:     tasks,
+		agents:    agentMgr,
+		prTracker: github.NewIssueTracker(time.Minute),
+	}
+	closedMatchers := []github.TaskMatcher{{ID: created.ID, PRNumber: 1444, ProjectID: "o/r"}}
+	fetchFn := func(string, int) (github.PRState, error) {
+		return github.PRState{State: "CLOSED"}, nil
+	}
+
+	r.advanceClosedTaskPRsWithFetch(context.Background(), []github.PullRequest{}, closedMatchers, fetchFn)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusCancelled {
+		t.Errorf("status = %q, want cancelled (a PR closed without merging did not ship its work)", got.Status)
+	}
+	if got.Outcome != "closed" {
+		t.Errorf("outcome = %q, want closed", got.Outcome)
 	}
 }
 

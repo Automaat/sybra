@@ -6,11 +6,14 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
@@ -29,19 +32,23 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
+	return m.RunContext(m.ctx, cfg)
+}
+
+func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error) {
 	if cfg.Mode == "headless" {
-		if err := m.jitterDispatch(); err != nil {
+		if err := m.jitterDispatchContext(ctx); err != nil {
 			return nil, err
 		}
 	}
 
-	cfg, prov, err := m.prepareRunConfig(cfg)
+	cfg, prov, err := m.prepareRunConfig(cfg) //nolint:contextcheck // provider gating emits via manager-owned app lifecycle, not per-run ctx
 	if err != nil {
 		return nil, err
 	}
 
 	id := uuid.NewString()[:8]
-	ctx, cancel := context.WithCancel(m.ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
@@ -51,7 +58,7 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 		return nil, err
 	}
 
-	metrics.AgentStarted(a.Provider, a.Mode)
+	metrics.AgentStarted(a.Provider, a.Mode) //nolint:contextcheck // metrics are process-global accounting, not tied to per-run ctx
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
@@ -67,6 +74,10 @@ func (m *Manager) Run(cfg RunConfig) (*Agent, error) {
 // gate in the same tick. Returns the context error if the manager shuts down
 // mid-sleep, so the caller aborts the dispatch instead of racing shutdown.
 func (m *Manager) jitterDispatch() error {
+	return m.jitterDispatchContext(m.ctx)
+}
+
+func (m *Manager) jitterDispatchContext(ctx context.Context) error {
 	m.mu.RLock()
 	ms := m.dispatchJitterMs
 	m.mu.RUnlock()
@@ -82,8 +93,8 @@ func (m *Manager) jitterDispatch() error {
 	select {
 	case <-time.After(d):
 		return nil
-	case <-m.ctx.Done():
-		return m.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -94,6 +105,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.SeedWorkingMemory {
 		cfg.Prompt = notes.SeedPrompt(cfg.Prompt, cfg.Dir)
 	}
+	cfg.Prompt = withBackgroundTaskGuardrail(cfg.Prompt, cfg)
 	resolvedProvider, gateErr := m.gateProvider(cfg)
 	if gateErr != nil {
 		return cfg, nil, gateErr
@@ -104,6 +116,50 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
+	if cfg.Mode == "headless" {
+		m.mu.RLock()
+		cfg.HeadlessSteerable = m.headlessSteerable
+		m.mu.RUnlock()
+	}
+	cfg.approvalAddr = m.approvalAddr
+	// Headless Claude runs with require_permissions:true rely on Sybra's
+	// approval hook to gate each tool call. If the approval server never
+	// started (approvalAddr empty) the hook is silently omitted and the run
+	// falls back to CLI defaults — neither the gating the operator asked for
+	// nor an explicit bypass. Fail closed rather than degrading quietly.
+	//
+	// Scope this to the exact vulnerable shape:
+	// - claude provider
+	// - headless mode
+	// - no explicit AllowedTools allowlist
+	// - not using Claude's own auto classifier
+	//
+	// Other providers do not depend on this hook for headless execution.
+	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+		cfg.RequirePermissions && cfg.approvalAddr == "" &&
+		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
+		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
+	}
+
+	if err := m.injectSandboxHome(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
+	if err := m.injectGolangciCache(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
+	if err := m.injectSharedBuildCache(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
+	m.injectGitHubToken(&cfg)
+
+	if err := m.injectProcessSandbox(&cfg); err != nil {
+		return cfg, nil, err
+	}
+
+	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
 	if cfg.BashTimeoutMs == 0 {
@@ -117,6 +173,251 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	}
 	m.mu.RUnlock()
 	return cfg, prov, nil
+}
+
+// injectSandboxHome routes every task-scoped agent subprocess's default
+// SYBRA_HOME through the per-task sandbox home, so no fresh agent (any
+// provider, any role) can resolve the operator's real ~/.sybra by default —
+// see #1576. System/probe runs with an empty TaskID (health checks,
+// orchestrator-internal probes) are the only ones allowed to skip this: they
+// have no task-scoped worktree/sandbox to isolate into.
+//
+// cfg.ExtraEnv is normalized before the trusted values are appended: any
+// existing SYBRA_HOME/SYBRA_CONTROL_HOME entries (caller-supplied or
+// otherwise) are stripped first, then the sandbox home and (if configured) the
+// control home are appended last, so they always win regardless of duplicate
+// env var resolution order in the target process.
+func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
+	if cfg.TaskID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	resolve := m.sandboxHome
+	controlHome := m.controlHome
+	m.mu.RUnlock()
+	if resolve == nil {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "no sandbox home resolver configured")
+		return fmt.Errorf("agent.Run: no sandbox home resolver configured for task-scoped run %q", cfg.TaskID)
+	}
+	dir, err := resolve(cfg.TaskID)
+	if err != nil {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: resolve sandbox home for task %q: %w", cfg.TaskID, err)
+	}
+	if strings.TrimSpace(dir) == "" {
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", "resolver returned empty path")
+		return fmt.Errorf("agent.Run: sandbox home resolver returned empty path for task %q", cfg.TaskID)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		if statErr == nil {
+			statErr = fmt.Errorf("%q is not a directory", dir)
+		}
+		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "err", statErr)
+		return fmt.Errorf("agent.Run: sandbox home %q for task %q is not accessible: %w", dir, cfg.TaskID, statErr)
+	}
+
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_HOME="+dir)
+	if controlHome != "" {
+		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
+	}
+	cfg.resolvedSandboxHome = dir
+	return nil
+}
+
+func (m *Manager) injectGitHubToken(cfg *RunConfig) {
+	m.mu.RLock()
+	tokenFn := m.ghAppToken
+	m.mu.RUnlock()
+	if tokenFn == nil {
+		return
+	}
+	token := tokenFn()
+	if token == "" {
+		return
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+}
+
+func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	dir := filepath.Join(cfg.resolvedSandboxHome, "golangci-lint-cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("agent.Run: create golangci-lint cache for task %q: %w", cfg.TaskID, err)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GOLANGCI_LINT_CACHE="+dir)
+	return nil
+}
+
+func sharedBuildCacheDir() string {
+	return filepath.Join(config.HomeDir(), "shared-cache")
+}
+
+func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
+	if cfg.resolvedSandboxHome == "" {
+		return nil
+	}
+	base := sharedBuildCacheDir()
+	goBuild := filepath.Join(base, "go-build")
+	goMod := filepath.Join(base, "go-mod")
+	npm := filepath.Join(base, "npm")
+	for _, d := range []string{goBuild, goMod, npm} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("agent.Run: create shared build cache %q: %w", d, err)
+		}
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GOCACHE", "GOMODCACHE", "npm_config_cache")
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"GOCACHE="+goBuild,
+		"GOMODCACHE="+goMod,
+		"npm_config_cache="+npm,
+	)
+	return nil
+}
+
+// injectProcessSandbox resolves this run's OS-level process-sandbox posture
+// and allowed write roots (worktree, per-task sandbox home, tmp) into
+// cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
+//
+// enforce fails closed — mirroring injectSandboxHome's discipline — when
+// sandbox-exec is unavailable, the embedded profile cannot be materialized,
+// or a root cannot be canonicalized: the error aborts the run before any
+// subprocess spawns. report never blocks: the same failures are logged and
+// this run's spec falls back to "off" (unwrapped) instead of erroring, so a
+// misconfigured or unsupported host cannot break the default posture.
+func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
+	mode, err := config.NormalizeSandboxMode(cfg.SandboxMode)
+	if err != nil {
+		return fmt.Errorf("agent.Run: sandbox mode: %w", err)
+	}
+	cfg.SandboxMode = mode
+	if mode == "off" {
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	worktree := cfg.Dir
+	sandboxHome := cfg.resolvedSandboxHome
+	if sandboxHome == "" {
+		sandboxHome = worktree
+	}
+	tmp := os.TempDir()
+	sharedCache := sharedBuildCacheDir()
+
+	if !sandboxExecAvailable() {
+		if mode == "enforce" {
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires sandbox-exec, which is unavailable on this host")
+			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+			return err
+		}
+		m.logger.Warn("agent.sandbox.report.unavailable", "task_id", cfg.TaskID)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	if mode != "enforce" {
+		// report: log the resolved allowlist without wrapping the spawn, so
+		// the opaque provider CLI's would-be write footprint is visible from
+		// live runs before flipping this task/fleet to enforce. Canonicalize
+		// the roots the same way enforce mode would, so the report output is
+		// representative of what enforce would allow — but never fail the
+		// run closed on a canonicalization error; fall back to logging the
+		// raw (unresolved) roots instead.
+		logWorktree, logSandboxHome, logTmp, logShared := worktree, sandboxHome, tmp, sharedCache
+		if canon, err := canonicalizeRoot(worktree); err == nil {
+			logWorktree = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "worktree", "err", err)
+		}
+		if canon, err := canonicalizeRoot(sandboxHome); err == nil {
+			logSandboxHome = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "sandbox_home", "err", err)
+		}
+		if canon, err := canonicalizeRoot(tmp); err == nil {
+			logTmp = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "tmp", "err", err)
+		}
+		if canon, err := canonicalizeRoot(sharedCache); err == nil {
+			logShared = canon
+		} else {
+			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "shared_cache", "err", err)
+		}
+		m.logger.Info("agent.sandbox.report", "task_id", cfg.TaskID,
+			"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
+		cfg.sandbox = sandboxSpec{mode: "off"}
+		return nil
+	}
+
+	canonWorktree, err := canonicalizeRoot(worktree)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox worktree root: %w", err)
+	}
+	canonSandboxHome, err := canonicalizeRoot(sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox home root: %w", err)
+	}
+	canonTmp, err := canonicalizeRoot(tmp)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
+	}
+	if err := os.MkdirAll(sharedCache, 0o755); err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: create sandbox shared-cache root: %w", err)
+	}
+	canonSharedCache, err := canonicalizeRoot(sharedCache)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
+	}
+	profilePath, err := materializeSandboxProfile()
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
+	}
+
+	cfg.sandbox = sandboxSpec{
+		mode:        "enforce",
+		worktree:    canonWorktree,
+		sandboxHome: canonSandboxHome,
+		tmp:         canonTmp,
+		sharedCache: canonSharedCache,
+		profilePath: profilePath,
+	}
+	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
+		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"shared_cache", canonSharedCache, "profile", profilePath)
+	return nil
+}
+
+// stripEnvKeys returns env with any "KEY=..." entries for the given keys
+// removed, preserving the relative order of the remaining entries.
+func stripEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		drop := false
+		for _, k := range keys {
+			if strings.HasPrefix(kv, k+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func defaultReasoningEffort(effort string) string {
@@ -157,6 +458,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,
 		requirePermissions:     cfg.RequirePermissions,
+		sandboxMode:            cfg.SandboxMode,
 		headlessPermissionMode: cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
@@ -177,7 +479,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	if !cfg.IgnoreConcurrencyLimit && m.maxConcurrent > 0 && m.liveCount >= m.maxConcurrent {
 		m.mu.Unlock()
 		cancel()
-		return fmt.Errorf("max concurrent agents reached (%d)", m.maxConcurrent)
+		return fmt.Errorf("%w (%d)", ErrMaxConcurrentReached, m.maxConcurrent)
 	}
 	m.agents[a.ID] = a
 	if a.done != nil {
@@ -237,7 +539,34 @@ func (m *Manager) markAgentDone(a *Agent) {
 				}
 			}
 		}
+		retention := m.deadAgentRetention
 		m.mu.Unlock()
+
+		// Evict the finished agent from the live registry so its output
+		// buffer and prompt do not accumulate forever on a long-lived
+		// server. All completion side effects (recordCompletion/fireComplete,
+		// task-status advancement, stats persistence) already ran before
+		// markAgentDone was called. Eviction is delayed by deadAgentRetention
+		// rather than immediate, since callers routinely read final state
+		// (GetAgent/GetConvoOutput/Output) in the seconds right after a
+		// terminal transition (e.g. StopAgent's caller polling for
+		// StateStopped) — evicting synchronously here would race that
+		// read and turn a normal completion into a "not found" error.
+		evict := func() {
+			m.mu.Lock()
+			// Only delete the entry we scheduled eviction for, i.e. do not
+			// remove an agent whose id was reused by a still-live
+			// registration in the meantime.
+			if cur, ok := m.agents[a.ID]; ok && cur == a {
+				delete(m.agents, a.ID)
+			}
+			m.mu.Unlock()
+		}
+		if retention <= 0 {
+			evict()
+		} else {
+			time.AfterFunc(retention, evict)
+		}
 	})
 }
 
@@ -311,6 +640,8 @@ func (m *Manager) emitProviderGateEvents(gateEvents []providerGateEvent) {
 		switch e.kind {
 		case "gated":
 			metrics.AgentGated(e.provider, e.reason)
+		case "soft_limit":
+			m.logger.Info(e.logKey, "provider", e.provider, "reason", e.reason, "task", e.taskID)
 		case "failover":
 			metrics.AgentFailover(e.from, e.to)
 			fields := []any{"from", e.from, "to", e.to, "task", e.taskID}
@@ -360,10 +691,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 		alt := g.Failover(resolved)
 		if alt != "" && !underCap(alt) {
@@ -388,10 +716,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		} else {
 			reason := g.Reason(resolved)
 			gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-			return "", gateEvents, &provider.UnhealthyError{
-				Provider: resolved,
-				Reason:   reason,
-			}
+			return "", gateEvents, newProviderUnhealthy(resolved, reason)
 		}
 	}
 	if lg == nil {
@@ -431,17 +756,44 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 			})
 			return alt, gateEvents, nil
 		}
-		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-		return "", gateEvents, &provider.UnhealthyError{
-			Provider: resolved,
-			Reason:   reason,
+		// No fully available peer exists. Before failing closed, check
+		// whether a peer is only soft-threshold limited (e.g. near its
+		// session cap but still dispatching, the same leniency
+		// softLimitLastResort grants the resolved provider itself) — that
+		// peer is only a safe last-resort failover target when resolved is
+		// hard-blocked (e.g. rate limit actually reached). If resolved is
+		// itself only soft-threshold limited, keep it so the remaining
+		// budget is not stranded behind another soft-limited peer.
+		if !limits.IsSoftThresholdReason(reason) {
+			if alt, altReason := lg.ChooseSoftLimitedPeer(resolved, candidateProviders, healthy, lp); alt != "" {
+				gateEvents = append(gateEvents, providerGateEvent{
+					kind: "failover", from: resolved, to: alt, reason: reason, altReason: altReason, logKey: "agent.run.soft_limit_peer_failover", logLevel: "warn", taskID: cfg.TaskID,
+				})
+				return alt, gateEvents, nil
+			}
 		}
+		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
 	} else {
-		gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
-		return "", gateEvents, &provider.UnhealthyError{
-			Provider: resolved,
-			Reason:   reason,
-		}
+		return m.softLimitLastResort(resolved, reason, gateEvents, cfg.TaskID)
+	}
+}
+
+func (m *Manager) softLimitLastResort(resolved, reason string, gateEvents []providerGateEvent, taskID string) (string, []providerGateEvent, error) {
+	if limits.IsSoftThresholdReason(reason) {
+		gateEvents = append(gateEvents, providerGateEvent{
+			kind: "soft_limit", provider: resolved, reason: reason, logKey: "agent.run.soft_limit_last_resort", taskID: taskID,
+		})
+		return resolved, gateEvents, nil
+	}
+	gateEvents = append(gateEvents, providerGateEvent{kind: "gated", provider: resolved, reason: reason})
+	return "", gateEvents, newProviderUnhealthy(resolved, reason)
+}
+
+func newProviderUnhealthy(prov, reason string) *provider.UnhealthyError {
+	return &provider.UnhealthyError{
+		Provider:    prov,
+		Reason:      reason,
+		RateLimited: reason == provider.RateLimitReason || limits.IsRateLimitReachedReason(reason),
 	}
 }
 

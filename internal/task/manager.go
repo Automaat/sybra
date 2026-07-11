@@ -298,9 +298,9 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return Task{}, err
 	}
 	body := strings.TrimRight(t.Body, "\n")
@@ -309,34 +309,92 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	body += content + "\n"
 	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
+	mu.Unlock()
 	if err != nil {
 		return t, err
 	}
+	// Emit after releasing the lock — see UpdateFn/AddRunWithStatus for why:
+	// this Manager is its own emitter's target (app.go routes task:updated
+	// back into OnExternalUpdate), so firing while still holding the lock
+	// self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	return t, nil
+}
+
+// Touch bumps a task's updated_at and emits task:updated without changing any
+// field. Used to wake the file watcher so out-of-process writers (e.g. a CLI
+// appending a progress entry) can signal the desktop app to refetch.
+func (m *Manager) Touch(id string) (Task, error) {
+	return m.Update(id, Update{})
 }
 
 // Delete removes a task and emits task:deleted.
 func (m *Manager) Delete(id string) error {
 	mu := m.lockFor(id)
 	mu.Lock()
-	defer mu.Unlock()
 	t, err := m.store.Get(id)
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
+		mu.Unlock()
 		return err
 	}
 	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
+	mu.Unlock()
+	// Emit/hook after releasing the lock — see UpdateFn/AddRunWithStatus for
+	// why: this Manager is its own emitter's target (app.go routes
+	// task:updated back into OnExternalUpdate), so firing while still holding
+	// the lock self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskDeleted()
 	m.emitter.Emit(events.TaskDeleted, t.FilePath)
 	if m.onDeleteHook != nil {
 		m.onDeleteHook(id)
 	}
 	return nil
+}
+
+// RestoreFromTrash restores id's newest trash generation and emits
+// task:created — restored tasks re-enter the system the same way a fresh
+// Create does, so watchers (file watcher, workflow engine) treat it as a
+// new task rather than an update to one that "already existed".
+func (m *Manager) RestoreFromTrash(id string) (Task, error) {
+	mu := m.lockFor(id)
+	mu.Lock()
+	t, err := m.store.RestoreFromTrash(id)
+	mu.Unlock()
+	if err != nil {
+		return Task{}, err
+	}
+	m.recordFiredStatus(t.ID, string(t.Status))
+	m.emitter.Emit(events.TaskCreated, t.FilePath)
+	return t, nil
+}
+
+// ListTrash returns every trashed task generation, newest first.
+func (m *Manager) ListTrash() ([]TrashEntry, error) {
+	return m.store.ListTrash()
+}
+
+// PruneTrash permanently removes trash generations older than
+// retentionDays. A negative retentionDays disables pruning.
+func (m *Manager) PruneTrash(retentionDays int) (TrashPruneReport, error) {
+	return m.store.PruneTrash(retentionDays)
+}
+
+// DeleteTrashedGeneration permanently removes id's newest trashed
+// generation immediately, bypassing the retention window.
+func (m *Manager) DeleteTrashedGeneration(id string) (bool, error) {
+	return m.store.DeleteTrashedGeneration(id)
+}
+
+// PruneAllTrash permanently removes every trashed generation regardless of
+// age.
+func (m *Manager) PruneAllTrash() (TrashPruneReport, error) {
+	return m.store.PruneAllTrash()
 }
 
 // AddRun appends an agent run to the task and emits task:updated.

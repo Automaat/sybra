@@ -93,6 +93,11 @@ func (a *taskAdapter) AppendTaskBody(id, content string) error {
 	return err
 }
 
+func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
+	_, err := a.tasks.Update(id, task.Update{Body: &body})
+	return err
+}
+
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
@@ -222,6 +227,10 @@ func (a *agentAdapter) DefaultProvider() string {
 	return a.agents.DefaultProvider()
 }
 
+func (a *agentAdapter) TryClaimDispatch(taskID string) (workflow.DispatchClaim, bool) {
+	return a.agents.TryClaimDispatch(taskID)
+}
+
 func (a *agentAdapter) ProviderRateLimited(provider string) bool {
 	return a.agents.ProviderRateLimited(provider)
 }
@@ -232,4 +241,8 @@ func (a *agentAdapter) ProviderCanFailover(provider string) bool {
 
 func (a *agentAdapter) ProviderHealthy(provider string) bool {
 	return a.agents.ProviderHealthy(provider)
+}
+
+func (a *agentAdapter) IsDispatching(taskID string) bool {
+	return a.agents.IsDispatching(taskID)
 }

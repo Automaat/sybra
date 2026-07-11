@@ -2,9 +2,11 @@ package umbrella
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,10 +29,119 @@ func TestBuildPrompt_SerializesSameFileSubIssues(t *testing.T) {
 		"SAME files", "merge one at a time", "false overlap",
 		"touches", "produces", "requires", "derived automatically",
 		"almost always share code", "dependency exists between any two",
-		"safe, zero-cost default", "parallelJustification",
+		"safe, zero-cost default", "parallelJustification", "SAME ORDER",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing metadata guidance %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildPlanSchema(t *testing.T) {
+	t.Parallel()
+	schema := buildPlanSchema(subs("o/r#1", "o/r#2", "o/r#3"))
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(schema), &decoded); err != nil {
+		t.Fatalf("schema is not valid JSON: %v\n%s", err, schema)
+	}
+
+	children, ok := decoded["properties"].(map[string]any)["children"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing properties.children: %s", schema)
+	}
+	if got := children["minItems"]; got != float64(3) {
+		t.Errorf("children.minItems = %v, want 3", got)
+	}
+	if got := children["maxItems"]; got != float64(3) {
+		t.Errorf("children.maxItems = %v, want 3", got)
+	}
+
+	if got := children["uniqueItems"]; got != true {
+		t.Errorf("children.uniqueItems = %v, want true", got)
+	}
+	if got := children["additionalItems"]; got != false {
+		t.Errorf("children.additionalItems = %v, want false", got)
+	}
+
+	items, ok := children["items"].([]any)
+	if !ok {
+		t.Fatalf("schema missing tuple children.items: %s", schema)
+	}
+	wantRefs := []string{"o/r#1", "o/r#2", "o/r#3"}
+	if len(items) != len(wantRefs) {
+		t.Fatalf("len(children.items) = %d, want %d: %s", len(items), len(wantRefs), schema)
+	}
+	for i, item := range items {
+		item, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("children.items[%d] is %T, want object schema", i, item)
+		}
+		issueEnum, ok := item["properties"].(map[string]any)["issue"].(map[string]any)["enum"].([]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].properties.issue.enum: %s", i, schema)
+		}
+		gotRefs := make([]string, len(issueEnum))
+		for j, r := range issueEnum {
+			gotRefs[j] = r.(string)
+		}
+		if !slices.Equal(gotRefs, []string{wantRefs[i]}) {
+			t.Errorf("children.items[%d].issue.enum = %v, want [%s]", i, gotRefs, wantRefs[i])
+		}
+		if item["additionalProperties"] != false {
+			t.Errorf("children.items[%d].additionalProperties = %v, want false", i, item["additionalProperties"])
+		}
+		parallelJustification, ok := item["properties"].(map[string]any)["parallelJustification"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].properties.parallelJustification: %s", i, schema)
+		}
+		valueSchema, ok := parallelJustification["additionalProperties"].(map[string]any)
+		if !ok {
+			t.Fatalf("schema missing children.items[%d].parallelJustification.additionalProperties: %s", i, schema)
+		}
+		if valueSchema["type"] != "string" {
+			t.Errorf("children.items[%d].parallelJustification.additionalProperties.type = %v, want string", i, valueSchema["type"])
+		}
+	}
+}
+
+func TestAdversarialSchemaRejectsDuplicateCoverage(t *testing.T) {
+	t.Parallel()
+	schema := buildPlanSchema(subs("o/r#1", "o/r#2", "o/r#3"))
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(schema), &decoded); err != nil {
+		t.Fatalf("schema is not valid JSON: %v\n%s", err, schema)
+	}
+	children, ok := decoded["properties"].(map[string]any)["children"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing properties.children: %s", schema)
+	}
+	if got := children["uniqueItems"]; got != true {
+		t.Fatalf("children has no uniqueItems: %#v", children)
+	}
+	if got := children["additionalItems"]; got != false {
+		t.Fatalf("children allows tuple overflow: %#v", children)
+	}
+	items, ok := children["items"].([]any)
+	if !ok {
+		t.Fatalf("children.items is not a tuple schema: %#v", children["items"])
+	}
+	wantRefs := []string{"o/r#1", "o/r#2", "o/r#3"}
+	if len(items) != len(wantRefs) {
+		t.Fatalf("children tuple length = %d, want %d", len(items), len(wantRefs))
+	}
+	for i, item := range items {
+		item, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("children.items[%d] is %T, want object schema", i, item)
+		}
+		issueEnum, ok := item["properties"].(map[string]any)["issue"].(map[string]any)["enum"].([]any)
+		if !ok {
+			t.Fatalf("children.items[%d] does not constrain issue: %#v", i, item)
+		}
+		if got := len(issueEnum); got != 1 || issueEnum[0] != wantRefs[i] {
+			t.Fatalf("children.items[%d].issue.enum = %#v, want exactly [%s]", i, issueEnum, wantRefs[i])
 		}
 	}
 }
@@ -208,6 +319,14 @@ func TestPlanValidate(t *testing.T) {
 			wantErr: "covered 1 of 2",
 		},
 		{
+			// The corrective retry (see correctivePrompt) needs the exact
+			// omitted ref, not just a count, to target the fix.
+			name:    "incomplete coverage names the missing ref",
+			plan:    Plan{Children: []PlannedChild{{Ref: "o/r#1"}}},
+			subs:    subs("o/r#1", "o/r#2"),
+			wantErr: "missing: o/r#2",
+		},
+		{
 			name: "duplicate child",
 			plan: Plan{Children: []PlannedChild{
 				{Ref: "o/r#1"},
@@ -215,6 +334,15 @@ func TestPlanValidate(t *testing.T) {
 			}},
 			subs:    subs("o/r#1", "o/r#2"),
 			wantErr: "more than once",
+		},
+		{
+			name: "duplicate child names the offending ref",
+			plan: Plan{Children: []PlannedChild{
+				{Ref: "o/r#1"},
+				{Ref: "o/r#1"},
+			}},
+			subs:    subs("o/r#1", "o/r#2"),
+			wantErr: "o/r#1 more than once",
 		},
 		{
 			name: "cycle",
@@ -516,7 +644,7 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("happy path", func(t *testing.T) {
 		t.Parallel()
-		run := func(_ context.Context, prompt string) (string, error) {
+		run := func(_ context.Context, prompt, _ string) (string, error) {
 			// Prompt must carry the sub-issue refs so the model can use them.
 			if !strings.Contains(prompt, "o/r#1") || !strings.Contains(prompt, "o/r#2") {
 				t.Errorf("prompt missing sub-issue refs:\n%s", prompt)
@@ -541,12 +669,55 @@ func TestGenerate(t *testing.T) {
 		}
 	})
 
+	t.Run("schema constrains issue refs and children count", func(t *testing.T) {
+		t.Parallel()
+		var gotSchema string
+		run := func(_ context.Context, _, schema string) (string, error) {
+			gotSchema = schema
+			return good, nil
+		}
+		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if !strings.Contains(gotSchema, `"o/r#1"`) || !strings.Contains(gotSchema, `"o/r#2"`) {
+			t.Fatalf("schema missing sub-issue refs: %s", gotSchema)
+		}
+		if !strings.Contains(gotSchema, `"minItems":2`) || !strings.Contains(gotSchema, `"maxItems":2`) {
+			t.Fatalf("schema missing children count bounds: %s", gotSchema)
+		}
+	})
+
+	t.Run("corrective retry names the missing ref and recovers on the next attempt", func(t *testing.T) {
+		t.Parallel()
+		incomplete := `{"children":[{"issue":"o/r#1"}],"maxParallel":1}`
+		calls := 0
+		var secondPrompt string
+		run := func(_ context.Context, prompt, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return incomplete, nil
+			}
+			secondPrompt = prompt
+			return good, nil
+		}
+		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if len(plan.Children) != 2 {
+			t.Fatalf("expected the corrective retry to recover a full plan: %+v", plan)
+		}
+		if !strings.Contains(secondPrompt, "missing: o/r#2") {
+			t.Fatalf("retry prompt did not name the missing ref, was a blind re-roll: %s", secondPrompt)
+		}
+	})
+
 	t.Run("shorthand deps resolve end to end", func(t *testing.T) {
 		t.Parallel()
 		// Model emits the dependency in bare "#1" shorthand — the natural form
 		// given the prompt's "← #N" markers. Must resolve, not silently drop.
 		shorthand := `{"children":[{"issue":"o/r#1","dependsOn":[]},{"issue":"o/r#2","dependsOn":["#1"]}],"maxParallel":2}`
-		run := func(_ context.Context, _ string) (string, error) { return shorthand, nil }
+		run := func(_ context.Context, _, _ string) (string, error) { return shorthand, nil }
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
@@ -564,7 +735,7 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("runner error stays fatal, fallback does not fire", func(t *testing.T) {
 		t.Parallel()
-		run := func(_ context.Context, _ string) (string, error) { return "", errors.New("boom") }
+		run := func(_ context.Context, _, _ string) (string, error) { return "", errors.New("boom") }
 		_, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1"))
 		if err == nil {
 			t.Fatal("expected runner error to propagate")
@@ -576,7 +747,7 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("exhausted retries fall back to a linear chain instead of erroring", func(t *testing.T) {
 		t.Parallel()
-		run := func(_ context.Context, _ string) (string, error) { return "not json", nil }
+		run := func(_ context.Context, _, _ string) (string, error) { return "not json", nil }
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
@@ -612,7 +783,7 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("no sub-issues", func(t *testing.T) {
 		t.Parallel()
-		run := func(_ context.Context, _ string) (string, error) { return good, nil }
+		run := func(_ context.Context, _, _ string) (string, error) { return good, nil }
 		if _, err := Generate(context.Background(), run, "o/r#100", "body", nil); err == nil {
 			t.Error("expected error when umbrella has no sub-issues")
 		}
@@ -624,7 +795,7 @@ func TestGenerate(t *testing.T) {
 		// exhausts its retries and Generate falls back to a linear chain
 		// rather than committing the cyclic plan or hard-erroring.
 		cyclic := `{"children":[{"issue":"o/r#1","dependsOn":["o/r#2"]},{"issue":"o/r#2","dependsOn":["o/r#1"]}],"maxParallel":2}`
-		run := func(_ context.Context, _ string) (string, error) { return cyclic, nil }
+		run := func(_ context.Context, _, _ string) (string, error) { return cyclic, nil }
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
@@ -643,7 +814,7 @@ func TestGenerate(t *testing.T) {
 			`{"issue":"o/r#1","produces":["A"],"requires":["B"]},` +
 			`{"issue":"o/r#2","produces":["B"],"requires":["A"]}` +
 			`],"maxParallel":2}`
-		run := func(_ context.Context, _ string) (string, error) { return cyclic, nil }
+		run := func(_ context.Context, _, _ string) (string, error) { return cyclic, nil }
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
@@ -667,7 +838,7 @@ func TestGenerate(t *testing.T) {
 	t.Run("re-ask fires and returns edged plan", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
-		run := func(_ context.Context, prompt string) (string, error) {
+		run := func(_ context.Context, prompt, _ string) (string, error) {
 			calls++
 			if strings.Contains(prompt, criticSuffix) {
 				return edged, nil
@@ -695,7 +866,7 @@ func TestGenerate(t *testing.T) {
 	t.Run("re-ask still flat is accepted", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
-		run := func(_ context.Context, _ string) (string, error) {
+		run := func(_ context.Context, _, _ string) (string, error) {
 			calls++
 			return flat, nil
 		}
@@ -716,7 +887,7 @@ func TestGenerate(t *testing.T) {
 	t.Run("re-ask parse error falls back to original plan", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
-		run := func(_ context.Context, prompt string) (string, error) {
+		run := func(_ context.Context, prompt, _ string) (string, error) {
 			calls++
 			if strings.Contains(prompt, criticSuffix) {
 				return "not json", nil
@@ -740,7 +911,7 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("re-ask context deadline falls back to original plan", func(t *testing.T) {
 		t.Parallel()
-		run := func(_ context.Context, prompt string) (string, error) {
+		run := func(_ context.Context, prompt, _ string) (string, error) {
 			if strings.Contains(prompt, criticSuffix) {
 				return "", context.DeadlineExceeded
 			}
@@ -761,7 +932,7 @@ func TestGenerate(t *testing.T) {
 	t.Run("no re-ask when fewer than three non-done children", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
-		run := func(_ context.Context, _ string) (string, error) {
+		run := func(_ context.Context, _, _ string) (string, error) {
 			calls++
 			return good, nil
 		}
@@ -782,7 +953,7 @@ func TestGenerateGroundedEdge(t *testing.T) {
 		`{"issue":"o/r#1","parallelJustification":{"o/r#2":"disjoint"}},` +
 		`{"issue":"o/r#2","parallelJustification":{"o/r#1":"disjoint"}}` +
 		`],"maxParallel":2}`
-	run := func(_ context.Context, _ string) (string, error) { return plainPlan, nil }
+	run := func(_ context.Context, _, _ string) (string, error) { return plainPlan, nil }
 
 	body1 := "This change edits `internal/foo/bar.go`."
 	body2 := "This change also edits `internal/foo/bar.go`."
@@ -1016,11 +1187,19 @@ func depsMap(specs []ChildSpec) map[string][]string {
 // reachableFrom walks deps transitively from `from`, reporting whether
 // `target` is reachable.
 func reachableFrom(deps map[string][]string, from, target string) bool {
+	return reachableFromSeen(deps, from, target, make(map[string]bool))
+}
+
+func reachableFromSeen(deps map[string][]string, from, target string, seen map[string]bool) bool {
 	if from == target {
 		return true
 	}
+	if seen[from] {
+		return false
+	}
+	seen[from] = true
 	for _, d := range deps[from] {
-		if reachableFrom(deps, d, target) {
+		if reachableFromSeen(deps, d, target, seen) {
 			return true
 		}
 	}
@@ -1121,7 +1300,7 @@ printf '%s\n' '{"result":"{\"children\":[{\"issue\":\"o/r#1\",\"dependsOn\":[]}]
 `)
 	t.Setenv("PATH", dir)
 
-	out, err := FallbackPlannerRunner("opus")(context.Background(), "prompt")
+	out, err := FallbackPlannerRunner("opus")(context.Background(), "prompt", "")
 	if err != nil {
 		t.Fatalf("runner: %v", err)
 	}

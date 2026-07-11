@@ -1,10 +1,16 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrLockUnsupported marks platforms where fsutil cannot provide a
+// cross-process file lock primitive. Callers can degrade to a warning/no-op
+// instead of turning platform support gaps into startup failures.
+var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not supported on this platform")
 
 // AtomicWrite writes data to path via a temp file + rename to prevent
 // partial reads from concurrent goroutines. The temp file is removed on

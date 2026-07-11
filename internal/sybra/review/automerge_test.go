@@ -3,7 +3,9 @@ package review
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestReadyForCopilotAutoMerge(t *testing.T) {
@@ -594,6 +597,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	}
 	if merged == nil {
 		t.Fatalf("no %s audit event; events=%+v", audit.EventPRAutoMerged, events)
+		return
 	}
 	if merged.Data["sourced_via_rest"] != true {
 		t.Errorf("sourced_via_rest = %v, want true", merged.Data["sourced_via_rest"])
@@ -843,6 +847,229 @@ func TestResolveCopilotThreads_emptyAgentLoginFallsBackToAuthor(t *testing.T) {
 	}
 }
 
+// TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable locks
+// the priority order in handleTaskPRIssues: escalating to human-required must
+// never strand a still-fixable sibling issue on the same push. A ci_failure
+// issue that has spent its retry budget (DispatchExhausted) alongside a fresh,
+// handleable comments issue on the same PR must dispatch the coalesced fix
+// agent, not park the task.
+func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusInReview),
+		PRNumber: task.Ptr(9001),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prTracker := github.NewIssueTracker(time.Minute)
+	// Spend the ci_failure retry budget for this task. ci_failure carries no
+	// feedback signature, so Decide caps permanently once retries >= MaxRetries
+	// regardless of head SHA (see debounce.go), matching a fix agent that kept
+	// failing against the same still-red CI.
+	for range github.MaxRetries {
+		prTracker.MarkHandled(created.ID, github.PRIssueCIFailure, "sha-exhausted")
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		agents:         agentMgr,
+		prTracker:      prTracker,
+		WorkflowEngine: engine,
+	}
+
+	pr := github.PullRequest{
+		Number: 9001, Repository: "o/r", HeadRefName: "feat", HeadSHA: "sha-exhausted",
+		URL: "https://github.com/o/r/pull/9001", FeedbackSig: "sig-fresh",
+	}
+	issues := []github.PRIssue{
+		{Kind: github.PRIssueCIFailure, TaskID: created.ID, PR: pr},
+		{Kind: github.PRIssueComments, TaskID: created.ID, PR: pr},
+	}
+
+	r.handleTaskPRIssues(context.Background(), created.ID, issues)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want NOT human-required: the handleable comments sibling must dispatch a fix instead of being stranded by ci_failure's exhaustion", got.Status)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched; the handleable comments issue should have triggered a coalesced fix")
+	}
+	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueComments) {
+		t.Errorf("pr_issue_kind = %q, want %q (only the handleable issue drives dispatch)", k, github.PRIssueComments)
+	}
+	if got, want := got.Workflow.Variables["pr_issue_kinds"], string(github.PRIssueComments); got != want {
+		t.Errorf("pr_issue_kinds = %q, want %q (exhausted ci_failure must not ride along in the dispatched fix)", got, want)
+	}
+}
+
+// TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData locks
+// the REST-degraded fallback's kind filter: when GraphQL budget is exhausted and
+// the monitor falls back to REST-sourced PR fetches (no thread-resolution data),
+// a comments issue must never reach dispatch — alone, or riding alongside a
+// fixable ci_failure/conflict issue from the same PR — and must never leak into
+// the dispatched workflow's kind vars.
+func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *testing.T) {
+	newHarness := func(t *testing.T, prNumber int) (*Handler, *task.Manager, string) {
+		t.Helper()
+		tmp := t.TempDir()
+		store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks := task.NewManager(store, nil)
+		logger := slog.New(slog.DiscardHandler)
+		wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
+			[]byte(mechanicalPRFixYAML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+		engine := workflow.NewEngine(
+			wfStore,
+			&taskAdapter{tasks: tasks},
+			&agentAdapter{agents: agentMgr, tasks: tasks},
+			logger,
+		)
+
+		created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tasks.Update(created.ID, task.Update{
+			Status:    task.Ptr(task.StatusInReview),
+			PRNumber:  task.Ptr(prNumber),
+			ProjectID: task.Ptr("o/r"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r := &Handler{
+			logger:         logger,
+			tasks:          tasks,
+			agents:         agentMgr,
+			prTracker:      github.NewIssueTracker(time.Minute),
+			WorkflowEngine: engine,
+		}
+		return r, tasks, created.ID
+	}
+
+	t.Run("comments dropped alongside a fixable conflict", func(t *testing.T) {
+		// Reuses the real project/worktree-backed harness (autoresolve_test.go)
+		// since the conflict kind's fix dispatch checks out the PR branch for
+		// real (PrepareForFix) — unlike ready_to_merge, it can't be exercised
+		// against a bare in-memory Handler.
+		h := newAutoResolveHarness(t, false) // auto-resolve off: force through to the agent workflow
+		tk, pr := h.newConflictTask(t)
+		pr.Mergeable = "CONFLICTING"
+		pr.ActionableCount = 1 // draws a comments issue alongside the conflict
+		pr.SourcedViaREST = true
+
+		h.r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{Repo: ref.Repo, Number: ref.Number, Open: true, PR: pr}
+			}
+			return results
+		}
+
+		got, err := h.tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.r.handleKnownPRConflictsViaREST(context.Background(), got)
+
+		gotTask, err := h.tasks.Get(tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotTask.Workflow == nil {
+			t.Fatal("no workflow dispatched; the fixable conflict issue should have routed through")
+		}
+		if k := gotTask.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueConflict) {
+			t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueConflict)
+		}
+		if kinds := gotTask.Workflow.Variables["pr_issue_kinds"]; strings.Contains(kinds, string(github.PRIssueComments)) {
+			t.Errorf("pr_issue_kinds = %q, must not carry %q (no GraphQL thread data in REST fallback)", kinds, github.PRIssueComments)
+		}
+		if prompt := gotTask.Workflow.Variables["prompt"]; strings.Contains(prompt, "/fix-review") {
+			t.Errorf("dispatched prompt must not address review comments in the REST fallback:\n%s", prompt)
+		}
+	})
+
+	t.Run("comments-only PR dispatches nothing", func(t *testing.T) {
+		const prNumber = 9102
+		r, tasks, taskID := newHarness(t, prNumber)
+		r.fetchKnownPRsFn = func(refs []github.PRRef) []github.MonitorPRResult {
+			results := make([]github.MonitorPRResult, len(refs))
+			for i, ref := range refs {
+				results[i] = github.MonitorPRResult{
+					Repo: ref.Repo, Number: ref.Number, Open: true,
+					PR: github.PullRequest{
+						Number: ref.Number, Repository: ref.Repo, HeadSHA: "sha-rest-2",
+						HeadRefName: "feat", URL: "https://github.com/o/r/pull/9102",
+						// PENDING CI keeps this off both ci_failure and ready_to_merge,
+						// isolating the comments-only case.
+						Mergeable: "MERGEABLE", CIStatus: "PENDING", ActionableCount: 1,
+						SourcedViaREST: true,
+					},
+				}
+			}
+			return results
+		}
+
+		got, err := tasks.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.handleKnownPRConflictsViaREST(context.Background(), got)
+
+		gotTask, err := tasks.Get(taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotTask.Workflow != nil {
+			t.Fatalf("workflow dispatched = %+v, want none: a comments-only REST issue must never dispatch", gotTask.Workflow)
+		}
+		if n := r.prTracker.Retries(taskID, github.PRIssueComments); n != 0 {
+			t.Errorf("comments retries = %d, want 0 (never marked handled)", n)
+		}
+	})
+}
+
 // TestEscalateExhaustedFix locks the scope of escalation: every fixable kind
 // (conflict, ci_failure, comments) parks a task to human-required once its
 // durable retry budget is spent — leaving a capped kind un-escalated would
@@ -889,6 +1116,25 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		got, _ := tasks.Get(id)
 		if got.Status != task.StatusHumanRequired {
 			t.Fatalf("ci_failure: status = %q, want human-required", got.Status)
+		}
+	})
+
+	t.Run("fresh escalation clears prior reconciliation latch", func(t *testing.T) {
+		r, tasks, id := newHandler(t)
+		if _, err := tasks.Update(id, task.Update{
+			Tags: task.Ptr([]string{reconciledLatchTag, "keep"}),
+		}); err != nil {
+			t.Fatalf("pre-set tags: %v", err)
+		}
+		r.escalateExhaustedFix(github.PRIssue{Kind: github.PRIssueConflict, TaskID: id, PR: github.PullRequest{Number: 9}})
+		got, _ := tasks.Get(id)
+		for _, tag := range got.Tags {
+			if tag == reconciledLatchTag {
+				t.Fatalf("reconciliation latch still present after fresh escalation: tags=%v", got.Tags)
+			}
+		}
+		if len(got.Tags) != 1 || got.Tags[0] != "keep" {
+			t.Fatalf("tags = %v, want only preserved non-latch tag", got.Tags)
 		}
 	})
 

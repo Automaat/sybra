@@ -20,6 +20,42 @@ const (
 	InspectTimeout = 2 * time.Minute
 )
 
+// completedHangGrace bounds how long a headless agent may sit
+// completed-but-alive (a terminal result observed, process not yet exited)
+// before the watchdog force-stops it directly, bypassing the LLM judge. The
+// runner's own post-result reaper (90s, internal/agent/runner_headless.go)
+// already handles this for a live tailer, but that tailer only runs for a
+// detached/reattached process — a non-detached run (agent.survive_restart:
+// false) and a lost tailer goroutine leave nothing watching a finished run
+// otherwise, so this is a hard backstop rather than the primary mechanism.
+const completedHangGrace = 5 * time.Minute
+
+const hardDeadlineMultiplier = 2
+
+const (
+	minHardWallClock = time.Hour
+	minHardIdle      = 30 * time.Minute
+)
+
+func hardWallClockLimit(budget time.Duration) time.Duration {
+	return max(hardDeadlineMultiplier*budget, minHardWallClock)
+}
+
+func hardIdleLimit(stallLim time.Duration) time.Duration {
+	return max(hardDeadlineMultiplier*stallLim, minHardIdle)
+}
+
+func hardDeadlineBreach(ag *agent.Agent, stall, total, stallLim, budget time.Duration) string {
+	switch {
+	case total > hardWallClockLimit(budget):
+		return "wall_clock"
+	case stall > ag.EffectiveHangGrace(hardIdleLimit(stallLim)):
+		return "idle"
+	default:
+		return ""
+	}
+}
+
 // stallLimit returns the max event-gap before triggering inspection.
 func stallLimit(tags []string) time.Duration {
 	switch {
@@ -83,6 +119,12 @@ type Watchdog struct {
 
 	inspectAgent func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error)
 	stopAgent    func(string) error
+	// stopCompletedAgent stops a headless agent that already produced a clean
+	// terminal result, marking it completed-by-result first so the runner
+	// finalizes it as a success rather than treating the kill signal as a
+	// failure or stall. Used only by checkCompletedHang — every other
+	// judge-driven verdict path uses the generic stopAgent.
+	stopCompletedAgent func(string) error
 	// nudgeAgent delivers a corrective steer to a live agent. Returns an error
 	// for agents with no live transport (headless has no mid-stream stdin), in
 	// which case applyVerdict degrades the nudge to an escalate.
@@ -91,6 +133,13 @@ type Watchdog struct {
 	// the same agent-manager helper the runner uses, so the agent error kind and
 	// provider health gate stay in sync across both paths.
 	recordProviderSignal func(*agent.Agent, provider.Signal, string, time.Duration)
+	// hasLiveHeadlessAgent reports whether a task has a registered live
+	// headless agent. checkDwell uses it to skip escalating a task whose
+	// headless run is mid-flight but hasn't touched the task file recently —
+	// only the task-file timestamp is stale, not the agent itself. Dispatch
+	// claims and conversational agents stay in dwell scope because the headless
+	// stall watchdog cannot inspect them.
+	hasLiveHeadlessAgent func(taskID string) bool
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -113,8 +162,10 @@ func New(
 		loopThreshold:        cfg.LoopThreshold,
 		inspectAgent:         agent.Inspect,
 		stopAgent:            agents.StopAgent,
+		stopCompletedAgent:   agents.StopCompletedAgent,
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
+		hasLiveHeadlessAgent: agents.HasLiveHeadlessAgentForTask,
 	}
 }
 
@@ -146,14 +197,14 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 		// A headless agent whose stream already ended in a successful terminal
 		// result is logically complete; its process just has not exited yet (a
 		// skill that spawns subagents can leave CC alive after the final
-		// result). The runner's post-result guard finalizes it shortly. Never
-		// inspect or escalate such an agent — doing so flips a finished run to
-		// human-required on a false stall (task c4a0fda0).
+		// result). The runner's post-result guard usually finalizes it within
+		// seconds, so never inspect or escalate such an agent — doing so flips
+		// a finished run to human-required on a false stall (task c4a0fda0).
+		// If it is still alive well past that grace, the runner's reaper isn't
+		// covering it (e.g. non-detached run, lost tailer); hard-stop it
+		// directly instead of leaving it to linger indefinitely.
 		if ag.CompletedSuccessfully() {
-			continue
-		}
-		logPath := ag.GetLogPath()
-		if logPath == "" {
+			w.checkCompletedHang(ag, now)
 			continue
 		}
 
@@ -170,6 +221,16 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 			sl = stallLimit(nil)
 		}
 
+		if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
+			w.hardStop(ag, reason, stall, total)
+			continue
+		}
+
+		logPath := ag.GetLogPath()
+		if logPath == "" {
+			continue
+		}
+
 		trigger := decideTrigger(ag.ToolLoopStreak(), w.loopThreshold, ag.ToolLoopAcknowledged(), stall, sl, total, budget)
 		if trigger == "" {
 			continue
@@ -184,6 +245,51 @@ func (w *Watchdog) tick(ctx context.Context, s *state, now time.Time) {
 			"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
 
 		w.wg.Go(func() { w.inspect(ctx, ag, t, trigger, int(stall.Seconds()), int(total.Seconds())) })
+	}
+}
+
+// checkCompletedHang force-stops a headless agent that finished its work (a
+// non-error terminal result) but has sat idle beyond completedHangGrace
+// without its process exiting. No judge inspection is involved — a finished
+// run has nothing left to inspect, it just needs its orphaned process killed.
+func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
+	// EffectiveHangGrace extends the idle window while the CLI still reports
+	// a live `run_in_background` task (e.g. npm ci), so this backstop doesn't
+	// force-stop a process mid-write just because it produced no NDJSON
+	// activity after its terminal result.
+	if !ag.TerminalResultIdle(ag.EffectiveHangGrace(completedHangGrace)) {
+		return
+	}
+	w.logger.Warn("agent.watchdog.completed_hang", "id", ag.ID,
+		"idle_sec", int(now.Sub(ag.GetLastEventAt()).Seconds()),
+		"background_tasks_pending", ag.HasBackgroundTasks())
+	stop := w.stopCompletedAgent
+	if stop == nil {
+		stop = w.stopAgent
+	}
+	if stop == nil {
+		w.logger.Error("agent.watchdog.completed_hang.no_stop_fn", "id", ag.ID)
+		return
+	}
+	if err := stop(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.completed_hang.stop_failed", "id", ag.ID, "err", err)
+	}
+}
+
+func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Duration) {
+	w.logger.Warn("agent.watchdog.hard_deadline",
+		"id", ag.ID, "task_id", ag.TaskID, "reason", reason,
+		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
+	if ag.TaskID != "" {
+		if _, err := w.tasks.Update(ag.TaskID, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr("watchdog hang: " + reason + " deadline exceeded"),
+		}); err != nil {
+			w.logger.Error("agent.watchdog.hard_deadline.task.update", "task_id", ag.TaskID, "err", err)
+		}
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.hard_deadline.stop.failed", "id", ag.ID, "err", err)
 	}
 }
 
@@ -251,19 +357,21 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 			return
 		}
 		// Set the task state before stopping so the completion callback sees the
-		// intended recovery path. A stall stop is a retryable hang; the workflow
-		// engine consumes the marker from ResumeStalled. A loop stop whose judge
-		// reason is "generic_stall" (a benign command-repetition flake, not
-		// reward-hacking) gets the same retryable treatment — see #1456. Budget
-		// stops and reward-hacking loops remain immediate human-required
-		// escalations.
+		// intended recovery path. rate_limit is already handled above regardless
+		// of trigger. Of what remains: a stall stop is a retryable hang; the
+		// workflow engine consumes the marker from ResumeStalled. A loop or
+		// budget stop whose judge reason is "generic_stall" (a benign
+		// command-repetition or long-running-verify-poll flake, not
+		// reward-hacking) gets the same retryable treatment — see #1456.
+		// Reward-hacking loops (and any other non-rate_limit reason_kind on a
+		// budget trigger) remain immediate human-required escalations.
 		if ag.TaskID != "" {
 			reason := "watchdog stop"
 			if verdict.Reason != "" {
 				reason = "watchdog: " + verdict.Reason
 			}
 			status := task.StatusHumanRequired
-			if trigger == "stall" || (trigger == "loop" && verdict.ReasonKind == "generic_stall") {
+			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
 				reason = "watchdog hang"
 				if verdict.Reason != "" {

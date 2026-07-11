@@ -42,10 +42,13 @@ func toolSignature(toolUses []ToolUseBlock) string {
 // for the headless runner. Tool uses are formatted as "[name] cmd/desc" strings.
 // Tool results are truncated to 500 chars.
 func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
-	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID, parentToolUseID: e.ParentToolUseID}
 	switch e.Type {
 	case "system", "init":
 		ev.PluginErrors = e.PluginErrors
+		if e.Subtype == "background_tasks_changed" {
+			ev.BackgroundTaskIDs = e.BackgroundTaskIDs
+		}
 	case "assistant":
 		if e.Message != nil {
 			ev.Content = formatHeadlessAssistant(e.Message)

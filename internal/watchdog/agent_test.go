@@ -201,6 +201,84 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang covers the
+// gap left by #1456: a "stop" verdict on the "budget" trigger whose
+// ReasonKind is "generic_stall" (e.g. an agent legitimately polling
+// TaskOutput/ScheduleWakeup for a long-running backgrounded verify/test gate)
+// must route through the same retryable watchdog-hang path as a "stall" stop
+// or a "loop"+generic_stall stop, not straight to human-required.
+func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+	}
+
+	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "polling for backgrounded verify command to complete",
+		Recommendation: "stop",
+		ReasonKind:     "generic_stall",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "watchdog hang: polling for backgrounded verify command to complete" {
+		t.Fatalf("status_reason = %q, want retryable watchdog hang marker", got.StatusReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on generic_stall budget stop verdict")
+	}
+}
+
+// TestApplyVerdict_BudgetStopWithoutGenericStallEscalates ensures a "budget"
+// trigger stop whose ReasonKind is anything other than "generic_stall"
+// (including empty, for older judges) still escalates straight to
+// human-required — only the explicit generic_stall reason gets the retry.
+func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
+	for _, kind := range []string{"", "reward_hacking"} {
+		t.Run(kind, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			stopped := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { stopped = true; return nil },
+			}
+
+			w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "burned through budget with no forward progress",
+				Recommendation: "stop",
+				ReasonKind:     kind,
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusHumanRequired {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+			}
+			if got.StatusReason != "watchdog: burned through budget with no forward progress" {
+				t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
+			}
+			if !stopped {
+				t.Fatal("stopAgent not called on budget stop verdict")
+			}
+		})
+	}
+}
+
 // TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating covers #1428:
 // a "stop" verdict with ReasonKind "rate_limit" must route through the
 // provider-health signal path and leave the task in-progress, regardless of
@@ -327,6 +405,75 @@ func TestDecideTrigger(t *testing.T) {
 	}
 }
 
+// TestCheckCompletedHang_StopsAfterGrace covers the watchdog's hard backstop
+// for a headless agent whose stream ended in a clean terminal result but
+// whose process never exited — no live tailer catches this outside the
+// detached/reattached path, so the watchdog must force-stop it directly once
+// it has sat idle past completedHangGrace.
+func TestCheckCompletedHang_StopsAfterGrace(t *testing.T) {
+	stopped := ""
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now().Add(-10 * time.Minute))
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped != "a1" {
+		t.Fatalf("stopCompletedAgent called with %q, want a1", stopped)
+	}
+}
+
+// TestCheckCompletedHang_WithinGraceLeavesAgentRunning ensures a completed
+// agent still within the grace window is left alone — the runner's own
+// post-result reaper gets first crack at it.
+func TestCheckCompletedHang_WithinGraceLeavesAgentRunning(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now())
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped {
+		t.Fatal("stopCompletedAgent called within grace window, want no-op")
+	}
+}
+
+// TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace locks in the fix for
+// task 3aeabb65: a completed agent with a still-live CLI
+// `run_in_background` task (e.g. npm ci) must not be force-stopped at the
+// base completedHangGrace merely because it produced no further NDJSON
+// activity — killing it mid-write corrupted node_modules in the original
+// incident.
+func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:             slog.New(slog.DiscardHandler),
+		stopCompletedAgent: func(string) error { stopped = true; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done"})
+	ag.SetLastEventAt(time.Now().Add(-10 * time.Minute))
+	ag.SetBackgroundTaskIDs([]string{"bpzdm25og"})
+
+	w.checkCompletedHang(ag, time.Now())
+
+	if stopped {
+		t.Fatal("stopCompletedAgent called while a background task is still live, want no-op")
+	}
+}
+
 // TestApplyVerdict_NudgeLiveTransportDeliversInPlace covers the live-transport
 // path: an agent with a working SendPromptToAgent (interactive/conversational)
 // is steered in place and left running — no stop, no persisted steer.
@@ -427,6 +574,89 @@ func TestInspect_LoopAckOnlyWhenLeftRunning(t *testing.T) {
 				t.Fatalf("ToolLoopAcknowledged after %q = %v, want %v", tc.verdict, got, tc.wantAck)
 			}
 		})
+	}
+}
+
+func TestHardDeadlineBreach(t *testing.T) {
+	const (
+		sl     = 15 * time.Minute
+		budget = 45 * time.Minute
+	)
+	tests := []struct {
+		name         string
+		stall, total time.Duration
+		background   bool
+		want         string
+	}{
+		{"within bounds", 5 * time.Minute, 10 * time.Minute, false, ""},
+		{"idle over ceiling", 40 * time.Minute, 10 * time.Minute, false, "idle"},
+		{"wall clock over ceiling", 5 * time.Minute, 2 * time.Hour, false, "wall_clock"},
+		{"idle within background grace", 40 * time.Minute, 10 * time.Minute, true, ""},
+		{"idle over even with background grace", 60 * time.Minute, 10 * time.Minute, true, "idle"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ag := &agent.Agent{}
+			if tc.background {
+				ag.SetBackgroundTaskIDs([]string{"bg1"})
+			}
+			got := hardDeadlineBreach(ag, tc.stall, tc.total, sl, budget)
+			if got != tc.want {
+				t.Fatalf("hardDeadlineBreach = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHardStop_MarksRetryableHangAndStops(t *testing.T) {
+	tests := []struct {
+		name       string
+		reason     string
+		wantReason string
+	}{
+		{"idle", "idle", "watchdog hang: idle deadline exceeded"},
+		{"wall_clock", "wall_clock", "watchdog hang: wall_clock deadline exceeded"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+			stopped := ""
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(id string) error { stopped = id; return nil },
+			}
+
+			w.hardStop(&agent.Agent{ID: "a1", TaskID: tk.ID}, tc.reason, 40*time.Minute, time.Hour)
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != task.StatusInProgress {
+				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+			}
+			if got.StatusReason != tc.wantReason {
+				t.Fatalf("status_reason = %q, want %q", got.StatusReason, tc.wantReason)
+			}
+			if stopped != "a1" {
+				t.Fatalf("stopAgent called with %q, want a1", stopped)
+			}
+		})
+	}
+}
+
+func TestHardStop_NoTaskStillFreesSlot(t *testing.T) {
+	stopped := ""
+	w := &Watchdog{
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	w.hardStop(&agent.Agent{ID: "a1"}, "wall_clock", 0, 10*time.Hour)
+
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
 	}
 }
 

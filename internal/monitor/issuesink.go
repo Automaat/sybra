@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -87,28 +88,24 @@ func (s *GHIssueSink) SubmitIssue(ctx context.Context, title, body string, extra
 		return false, "", err
 	}
 	if num > 0 {
-		if _, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...); runErr != nil {
-			return false, foundURL, classifyGHError(runErr)
+		out, runErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(num), "--body", attribution.Append(body))...)
+		if runErr != nil {
+			return false, foundURL, classifyGHError("gh issue comment", out, runErr)
 		}
 		return false, foundURL, nil
 	}
-	var lb strings.Builder
-	lb.WriteString(s.label)
-	for _, extra := range extraLabels {
-		extra = strings.TrimSpace(extra)
-		if extra == "" || extra == s.label {
-			continue
-		}
-		lb.WriteString(",")
-		lb.WriteString(extra)
-	}
-	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "create",
+	labels := issueCreateLabels(s.label, extraLabels)
+	s.ensureExtraLabels(ctx, labels[1:])
+	args := append(s.repoArgs(), "issue", "create",
 		"--title", title,
 		"--body", attribution.Append(body),
-		"--label", lb.String(),
-	)...)
+	)
+	for _, label := range labels {
+		args = append(args, "--label", label)
+	}
+	out, err := s.exec.run(ctx, args...)
 	if err != nil {
-		return false, "", classifyGHError(err)
+		return false, "", classifyGHError("gh issue create", out, err)
 	}
 	return true, parseIssueCreateURL(out), nil
 }
@@ -142,6 +139,52 @@ func (s *GHIssueSink) ensureLabels(ctx context.Context) {
 	_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "bug", "--color", "D73A4A", "--description", "Something isn't working")...)
 }
 
+// ensureExtraLabels best-effort creates caller-supplied labels (e.g. an
+// issue_labels array from a human-review LLM verdict) that ensureLabels
+// doesn't already cover. Without this, gh issue create hard-fails outright
+// when a caller names a label that doesn't exist on the repo yet, discarding
+// an otherwise-valid issue and forcing the filing path down its fallback
+// task/issue route. Same best-effort discipline as ensureLabels: an
+// already-exists error is fine, and any other error is swallowed so the
+// create call below still surfaces label problems if the label genuinely
+// can't be used.
+//
+// Only called on the create path (num == 0 in SubmitIssue) since labels are
+// only attached there, not on the comment path — this also avoids spending a
+// gh call per extra label on the far more common dedup-hit path.
+//
+// The "--" before extra stops gh from parsing a caller-supplied label that
+// happens to start with "-" (e.g. LLM output like "-1-of-3") as a flag; without
+// it gh fails with "unknown shorthand flag", the create is silently swallowed,
+// and the later issue-create call reproduces the same "label not found"
+// failure this fix targets, just for a dash-prefixed label.
+func (s *GHIssueSink) ensureExtraLabels(ctx context.Context, extraLabels []string) {
+	for _, extra := range extraLabels {
+		extra = strings.TrimSpace(extra)
+		if extra == "" || extra == s.label || extra == "bug" {
+			continue
+		}
+		_, _ = s.exec.run(ctx, append(s.repoArgs(), "label", "create", "--", extra)...)
+	}
+}
+
+func issueCreateLabels(primary string, extraLabels []string) []string {
+	labels := []string{primary}
+	seen := map[string]struct{}{primary: {}}
+	for _, extra := range extraLabels {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		if _, dup := seen[extra]; dup {
+			continue
+		}
+		labels = append(labels, extra)
+		seen[extra] = struct{}{}
+	}
+	return labels
+}
+
 func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number int, url string, err error) {
 	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list",
 		"--state", "open",
@@ -151,7 +194,7 @@ func (s *GHIssueSink) findOpenIssue(ctx context.Context, title string) (number i
 		"--limit", "5",
 	)...)
 	if err != nil {
-		return 0, "", classifyGHError(err)
+		return 0, "", classifyGHError("gh issue list", out, err)
 	}
 	num, url := parseFirstMatchingIssue(out, title)
 	return num, url, nil
@@ -220,13 +263,41 @@ func parseFirstMatchingIssue(raw []byte, want string) (number int, url string) {
 	}
 }
 
-func classifyGHError(err error) error {
+func classifyGHError(op string, out []byte, err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
+	msg := err.Error() + "\n" + string(out)
 	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
 		return ErrGHRateLimit
 	}
-	return err
+	if detail := sanitizeGHOutput(out); detail != "" {
+		return fmt.Errorf("%s: %s: %w", op, detail, err)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func sanitizeGHOutput(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "<!doctype html") || strings.Contains(lower, "<html") {
+		for i := len(s) - 1; i >= 0; i-- {
+			if s[i] != '\n' {
+				continue
+			}
+			if line := strings.TrimSpace(s[i+1:]); strings.HasPrefix(line, "gh:") {
+				return line
+			}
+		}
+		return "GitHub returned an HTML error page"
+	}
+	lines := strings.Split(s, "\n")
+	const maxLines = 5
+	if len(lines) > maxLines {
+		lines = append(lines[:maxLines], "...")
+	}
+	return strings.Join(lines, "\n")
 }

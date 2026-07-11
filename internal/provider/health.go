@@ -293,7 +293,7 @@ func (c *Checker) clearExpiredRateLimitsLocked(now time.Time) []Status {
 	for _, s := range c.statuses {
 		if !s.RateLimitedUntil.IsZero() && now.After(s.RateLimitedUntil) {
 			s.RateLimitedUntil = time.Time{}
-			if s.Reason == "rate_limited" {
+			if s.Reason == RateLimitReason {
 				s.Healthy = true
 				s.Reason = "ok"
 				s.Detail = "rate_limit_window_expired"
@@ -341,7 +341,7 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 		// should be cleared by clearExpiredRateLimits or a newer passive signal.
 		if next.Healthy && !prev.RateLimitedUntil.IsZero() && c.now().Before(prev.RateLimitedUntil) {
 			next.Healthy = false
-			next.Reason = "rate_limited"
+			next.Reason = RateLimitReason
 			next.RateLimitedUntil = prev.RateLimitedUntil
 		}
 		flip = statusChanged(prev, &next)
@@ -520,13 +520,13 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		c.mu.RUnlock()
 	}
 	if reason == "" {
-		reason = "rate_limited"
+		reason = RateLimitReason
 	}
 	until := c.now().Add(cooldown)
 	c.setStatus(provider, Status{
 		Provider:         provider,
 		Healthy:          false,
-		Reason:           "rate_limited",
+		Reason:           RateLimitReason,
 		Detail:           reason,
 		LastCheck:        c.now(),
 		RateLimitedUntil: until,

@@ -5,9 +5,86 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
+/**
+ * AttemptStatus is one best-of-N attempt's persisted slot.
+ */
+export class AttemptStatus {
+    "attemptId": string;
+    "provider"?: string;
+    "model"?: string;
+    "agentId"?: string;
+
+    /**
+     * Dir/Branch locate the attempt's isolated worktree so
+     * promoteBestOfN can promote the winner without depending on any live
+     * agent/registry state.
+     */
+    "dir"?: string;
+    "branch"?: string;
+
+    /**
+     * Status: "pending" | "completed" | "failed".
+     */
+    "status": string;
+    "output"?: string;
+    "retries"?: number;
+
+    /** Creates a new AttemptStatus instance. */
+    constructor($$source: Partial<AttemptStatus> = {}) {
+        if (!("attemptId" in $$source)) {
+            this["attemptId"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AttemptStatus instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AttemptStatus {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AttemptStatus($$parsedSource as Partial<AttemptStatus>);
+    }
+}
+
+/**
+ * BestOfNInflight is the in-flight bookkeeping for one `best_of_n` parent.
+ */
+export class BestOfNInflight {
+    "parentStepId": string;
+    "startedAt": string;
+    "attempts": { [_ in string]?: AttemptStatus | null };
+
+    /** Creates a new BestOfNInflight instance. */
+    constructor($$source: Partial<BestOfNInflight> = {}) {
+        if (!("parentStepId" in $$source)) {
+            this["parentStepId"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("attempts" in $$source)) {
+            this["attempts"] = {};
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BestOfNInflight instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BestOfNInflight {
+        const $$createField2_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("attempts" in $$parsedSource) {
+            $$parsedSource["attempts"] = $$createField2_0($$parsedSource["attempts"]);
+        }
+        return new BestOfNInflight($$parsedSource as Partial<BestOfNInflight>);
+    }
+}
 
 /**
  * ChildStatus is one child step's slot inside a ParallelChildren record.
@@ -51,7 +128,7 @@ export class Condition {
     "field": string;
 
     /**
-     * "equals", "not_equals", "contains", "not_contains", "exists", "in", "not_in"
+     * "equals", "not_equals", "contains", "not_contains", "starts_with", "exists", "in", "not_in"
      */
     "operator": string;
     "value": string;
@@ -90,8 +167,8 @@ export class Definition {
     "trigger": Trigger;
     "steps": Step[];
     "builtin": boolean;
-    "createdAt": time$0.Time;
-    "updatedAt": time$0.Time;
+    "createdAt": string;
+    "updatedAt": string;
 
     /** Creates a new Definition instance. */
     constructor($$source: Partial<Definition> = {}) {
@@ -114,10 +191,10 @@ export class Definition {
             this["builtin"] = false;
         }
         if (!("createdAt" in $$source)) {
-            this["createdAt"] = null;
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("updatedAt" in $$source)) {
-            this["updatedAt"] = null;
+            this["updatedAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -127,8 +204,8 @@ export class Definition {
      * Creates a new Definition instance from a string or object.
      */
     static createFrom($$source: any = {}): Definition {
-        const $$createField3_0 = $$createType0;
-        const $$createField4_0 = $$createType2;
+        const $$createField3_0 = $$createType3;
+        const $$createField4_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trigger" in $$parsedSource) {
             $$parsedSource["trigger"] = $$createField3_0($$parsedSource["trigger"]);
@@ -164,8 +241,8 @@ export class Execution {
     "state": ExecState;
     "stepHistory": StepRecord[];
     "variables": { [_ in string]?: string };
-    "startedAt": time$0.Time;
-    "completedAt": time$0.Time | null;
+    "startedAt": string;
+    "completedAt": string | null;
 
     /**
      * Recovered is set when the execution was advanced by a stale-session
@@ -183,6 +260,28 @@ export class Execution {
      * stranding half-completed forks.
      */
     "parallelInflight"?: { [_ in string]?: ParallelChildren | null };
+
+    /**
+     * StepCounts tracks, per step ID, how many times RecordStep has recorded
+     * that step — independent of StepHistory, which RecordStep trims to
+     * maxStepHistory. Replan/retry budgets (CountStep) read from this map so
+     * history eviction can never silently reset a cap. ClearStepRecords resets
+     * a step's count deliberately, for the re-arm case (a fresh attempt cycle
+     * that should not inherit a prior cycle's budget).
+     */
+    "stepCounts"?: { [_ in string]?: number };
+
+    /**
+     * BestOfNInflight tracks per-parent-step state for in-flight `best_of_n`
+     * blocks. Keyed by the parent (best_of_n) step ID. Unlike ParallelInflight,
+     * each attempt's slot also records its own worktree dir/branch,
+     * since — unlike a parallel child — a best-of-N attempt has no worktree the
+     * engine can otherwise rediscover (it is not the task's canonical
+     * worktree). Persisted so a process restart can resume the fan-out and so
+     * promoteBestOfN can locate the winning attempt's worktree without
+     * depending on live agent state.
+     */
+    "bestOfNInflight"?: { [_ in string]?: BestOfNInflight | null };
 
     /** Creates a new Execution instance. */
     constructor($$source: Partial<Execution> = {}) {
@@ -202,7 +301,7 @@ export class Execution {
             this["variables"] = {};
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("completedAt" in $$source)) {
             this["completedAt"] = null;
@@ -215,9 +314,11 @@ export class Execution {
      * Creates a new Execution instance from a string or object.
      */
     static createFrom($$source: any = {}): Execution {
-        const $$createField3_0 = $$createType4;
-        const $$createField4_0 = $$createType5;
-        const $$createField8_0 = $$createType8;
+        const $$createField3_0 = $$createType7;
+        const $$createField4_0 = $$createType8;
+        const $$createField8_0 = $$createType11;
+        const $$createField9_0 = $$createType12;
+        const $$createField10_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stepHistory" in $$parsedSource) {
             $$parsedSource["stepHistory"] = $$createField3_0($$parsedSource["stepHistory"]);
@@ -227,6 +328,12 @@ export class Execution {
         }
         if ("parallelInflight" in $$parsedSource) {
             $$parsedSource["parallelInflight"] = $$createField8_0($$parsedSource["parallelInflight"]);
+        }
+        if ("stepCounts" in $$parsedSource) {
+            $$parsedSource["stepCounts"] = $$createField9_0($$parsedSource["stepCounts"]);
+        }
+        if ("bestOfNInflight" in $$parsedSource) {
+            $$parsedSource["bestOfNInflight"] = $$createField10_0($$parsedSource["bestOfNInflight"]);
         }
         return new Execution($$parsedSource as Partial<Execution>);
     }
@@ -282,7 +389,7 @@ export class ImportSidecar {
  */
 export class ParallelChildren {
     "parentStepId": string;
-    "startedAt": time$0.Time;
+    "startedAt": string;
     "children": { [_ in string]?: ChildStatus | null };
 
     /** Creates a new ParallelChildren instance. */
@@ -291,7 +398,7 @@ export class ParallelChildren {
             this["parentStepId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("children" in $$source)) {
             this["children"] = {};
@@ -304,7 +411,7 @@ export class ParallelChildren {
      * Creates a new ParallelChildren instance from a string or object.
      */
     static createFrom($$source: any = {}): ParallelChildren {
-        const $$createField2_0 = $$createType11;
+        const $$createField2_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField2_0($$parsedSource["children"]);
@@ -388,10 +495,10 @@ export class Step {
      * Creates a new Step instance from a string or object.
      */
     static createFrom($$source: any = {}): Step {
-        const $$createField3_0 = $$createType12;
-        const $$createField4_0 = $$createType14;
-        const $$createField5_0 = $$createType2;
-        const $$createField6_0 = $$createType16;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType21;
+        const $$createField5_0 = $$createType5;
+        const $$createField6_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("config" in $$parsedSource) {
             $$parsedSource["config"] = $$createField3_0($$parsedSource["config"]);
@@ -504,6 +611,43 @@ export class StepConfig {
      */
     "outputSchema"?: string;
 
+    /**
+     * best_of_n: number of implementation attempts to fan out, each in its
+     * own isolated worktree. Must be within [bestOfNMinAttempts, bestOfNMaxAttempts].
+     */
+    "attempts"?: number;
+
+    /**
+     * best_of_n: providers assigned to attempts in index order, cycling if
+     * there are fewer entries than Attempts. An empty list (or an empty
+     * entry) uses the engine's default provider resolution for that attempt,
+     * same as an unset run_agent Provider.
+     */
+    "attemptProviders"?: string[];
+
+    /**
+     * promote_best_of_n: step ID of the prior run_agent judge step whose
+     * output carries the mechanically-validated winner JSON
+     * (`{winner_attempt_id, scores[], rationale}`). Required.
+     */
+    "judgeStep"?: string;
+
+    /**
+     * promote_best_of_n: step ID of the prior best_of_n step whose attempts
+     * the judge scored. Required — resolves the attempt worktree/branch the
+     * winner_attempt_id names.
+     */
+    "bestOfNStep"?: string;
+
+    /**
+     * run_agent: enforce the cumulative task cost budget before launch.
+     * Set on direct-dispatch steps (e.g. the best-of-N judge, which passes a
+     * pre-staged dir and so bypasses StartAgentWithAssignment's own budget
+     * enforcement) so the run fails closed to human-required instead of
+     * spending on the step when the task is already over budget.
+     */
+    "budgetPreflight"?: boolean;
+
     /** Creates a new StepConfig instance. */
     constructor($$source: Partial<StepConfig> = {}) {
         if (!("role" in $$source)) {
@@ -571,11 +715,12 @@ export class StepConfig {
      * Creates a new StepConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): StepConfig {
-        const $$createField5_0 = $$createType17;
-        const $$createField7_0 = $$createType17;
-        const $$createField10_0 = $$createType19;
-        const $$createField18_0 = $$createType21;
-        const $$createField19_0 = $$createType22;
+        const $$createField5_0 = $$createType24;
+        const $$createField7_0 = $$createType24;
+        const $$createField10_0 = $$createType26;
+        const $$createField18_0 = $$createType28;
+        const $$createField19_0 = $$createType29;
+        const $$createField22_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -591,6 +736,9 @@ export class StepConfig {
         }
         if ("importSidecars" in $$parsedSource) {
             $$parsedSource["importSidecars"] = $$createField19_0($$parsedSource["importSidecars"]);
+        }
+        if ("attemptProviders" in $$parsedSource) {
+            $$parsedSource["attemptProviders"] = $$createField22_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }
@@ -609,8 +757,8 @@ export class StepRecord {
     "output": string;
     "agentId": string;
     "provider"?: string;
-    "startedAt": time$0.Time;
-    "endedAt": time$0.Time;
+    "startedAt": string;
+    "endedAt": string;
 
     /** Creates a new StepRecord instance. */
     constructor($$source: Partial<StepRecord> = {}) {
@@ -627,10 +775,10 @@ export class StepRecord {
             this["agentId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("endedAt" in $$source)) {
-            this["endedAt"] = null;
+            this["endedAt"] = "0001-01-01T00:00:00.000Z";
         }
 
         Object.assign(this, $$source);
@@ -726,10 +874,53 @@ export enum StepType {
      * resume_status vars captured before the recovery workflow was started;
      * a missing resume_workflow_id is a no-op (the workflow simply ends, and
      * normal status-driven cascade dispatch — see
-     * AgentCompletionHandler.OnWorkflowComplete — picks up whatever workflow
+     * completion.Handler.OnWorkflowComplete — picks up whatever workflow
      * matches the restored task status).
      */
     StepResumeWorkflow = "resume_workflow",
+
+    /**
+     * StepBestOfN runs Config.Attempts implementation agents concurrently,
+     * each in its OWN isolated worktree/branch (unlike StepParallel, whose
+     * children share one checkout) — see internal/worktree.Manager.PrepareAttempt.
+     * The parent step advances only once every attempt has terminated;
+     * zero or exactly one successful attempt fails closed to human-required
+     * instead of proceeding to judging (see engine_advance.go).
+     */
+    StepBestOfN = "best_of_n",
+
+    /**
+     * StepPromoteBestOfN is the mechanical (no-LLM) step that reads the
+     * mandatory JudgeStep's output, mechanically validates the winner JSON,
+     * and fast-forwards the canonical task branch/worktree onto the winning
+     * attempt via internal/worktree.Manager.PromoteAttempt. Malformed/
+     * ambiguous/unknown judge output and unsafe promotion each fail closed to
+     * human-required with a distinct reason (see engine_steps_bestofn.go).
+     */
+    StepPromoteBestOfN = "promote_best_of_n",
+
+    /**
+     * StepPushBranch deterministically pushes the task's worktree branch to
+     * its existing PR (git plumbing only — internal/project.PushSync). No
+     * LLM/agent involved; replaces the push-branch agent role.
+     */
+    StepPushBranch = "push_branch",
+
+    /**
+     * StepCreatePR deterministically pushes the task's worktree branch and
+     * opens a GitHub PR for it (git plumbing + `gh pr create`), drafting the
+     * title/body via a single cheap LLM job (internal/prcontent). No agent
+     * session involved; replaces the create-pr agent role.
+     */
+    StepCreatePR = "create_pr",
+
+    /**
+     * StepClassifyTask deterministically runs the Go triage classifier
+     * (internal/triage) against the task and applies its verdict — no agent
+     * session involved. Replaces a run_agent step that wrapped a full Sonnet
+     * agent invoking the /sybra-triage skill around this same classifier.
+     */
+    StepClassifyTask = "classify_task",
 };
 
 /**
@@ -762,7 +953,7 @@ export class Transition {
      * Creates a new Transition instance from a string or object.
      */
     static createFrom($$source: any = {}): Transition {
-        const $$createField0_0 = $$createType19;
+        const $$createField0_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("when" in $$parsedSource) {
             $$parsedSource["when"] = $$createField0_0($$parsedSource["when"]);
@@ -812,8 +1003,8 @@ export class Trigger {
      * Creates a new Trigger instance from a string or object.
      */
     static createFrom($$source: any = {}): Trigger {
-        const $$createField2_0 = $$createType23;
-        const $$createField3_0 = $$createType16;
+        const $$createField2_0 = $$createType30;
+        const $$createField3_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("conditions" in $$parsedSource) {
             $$parsedSource["conditions"] = $$createField2_0($$parsedSource["conditions"]);
@@ -826,27 +1017,34 @@ export class Trigger {
 }
 
 // Private type creation functions
-const $$createType0 = Trigger.createFrom;
-const $$createType1 = Step.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = StepRecord.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = $Create.Map($Create.Any, $Create.Any);
-const $$createType6 = ParallelChildren.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = $Create.Map($Create.Any, $$createType7);
-const $$createType9 = ChildStatus.createFrom;
+const $$createType0 = AttemptStatus.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = $Create.Map($Create.Any, $$createType1);
+const $$createType3 = Trigger.createFrom;
+const $$createType4 = Step.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = StepRecord.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = ParallelChildren.createFrom;
 const $$createType10 = $Create.Nullable($$createType9);
 const $$createType11 = $Create.Map($Create.Any, $$createType10);
-const $$createType12 = StepConfig.createFrom;
-const $$createType13 = Transition.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = Position.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = $Create.Array($Create.Any);
-const $$createType18 = Condition.createFrom;
-const $$createType19 = $Create.Nullable($$createType18);
-const $$createType20 = ImportSidecar.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = $Create.Array($$createType20);
-const $$createType23 = $Create.Array($$createType18);
+const $$createType12 = $Create.Map($Create.Any, $Create.Any);
+const $$createType13 = BestOfNInflight.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $Create.Map($Create.Any, $$createType14);
+const $$createType16 = ChildStatus.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = $Create.Map($Create.Any, $$createType17);
+const $$createType19 = StepConfig.createFrom;
+const $$createType20 = Transition.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = Position.createFrom;
+const $$createType23 = $Create.Nullable($$createType22);
+const $$createType24 = $Create.Array($Create.Any);
+const $$createType25 = Condition.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = ImportSidecar.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = $Create.Array($$createType27);
+const $$createType30 = $Create.Array($$createType25);

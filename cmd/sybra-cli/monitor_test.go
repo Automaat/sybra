@@ -31,6 +31,28 @@ func backdateCreatedAt(t *testing.T, home, id string, age time.Duration) {
 	}
 }
 
+// backdateStatusChangedAt rewrites a task file's status_changed_at so
+// detectLostAgents' dispatch-latency grace window does not exempt it — used
+// by tests that assert lost_agent detection on a task that flipped status
+// moments ago (as every task created by this test suite does) rather than the
+// grace window itself.
+func backdateStatusChangedAt(t *testing.T, home, id string, age time.Duration) {
+	t.Helper()
+	p := filepath.Join(home, "tasks", id+".md")
+	tk, err := task.Parse(p)
+	if err != nil {
+		t.Fatalf("parse %s: %v", id, err)
+	}
+	tk.StatusChangedAt = time.Now().Add(-age).UTC()
+	data, err := task.Marshal(tk)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", id, err)
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", id, err)
+	}
+}
+
 func TestMonitorScanEmptyBoard(t *testing.T) {
 	setupStore(t)
 
@@ -89,16 +111,24 @@ func TestMonitorScanDetectsUntriagedAndOverDispatch(t *testing.T) {
 		return t0.ID
 	}
 
-	createHeadless("in-progress a", task.StatusInProgress, []string{"medium"})
-	createHeadless("in-progress b", task.StatusInProgress, []string{"medium"})
-	createHeadless("in-progress c", task.StatusInProgress, []string{"medium"})
-	createHeadless("in-progress d", task.StatusInProgress, []string{"medium"})
+	inProgressIDs := []string{
+		createHeadless("in-progress a", task.StatusInProgress, []string{"medium"}),
+		createHeadless("in-progress b", task.StatusInProgress, []string{"medium"}),
+		createHeadless("in-progress c", task.StatusInProgress, []string{"medium"}),
+		createHeadless("in-progress d", task.StatusInProgress, []string{"medium"}),
+	}
 	untriagedID := createHeadless("untriaged todo", task.StatusTodo, nil)
 	createHeadless("triaged todo", task.StatusTodo, []string{"medium"})
 
 	// detectUntriaged exempts freshly created tasks; backdate this one past
 	// the grace window so it is still flagged (this test asserts detection).
 	backdateCreatedAt(t, dir, untriagedID, 30*time.Minute)
+	// detectLostAgents exempts tasks that just transitioned to in-progress;
+	// backdate the status flip past the grace window so these are still
+	// flagged (this test asserts lost_agent detection, not the grace window).
+	for _, id := range inProgressIDs {
+		backdateStatusChangedAt(t, dir, id, 30*time.Minute)
+	}
 
 	code, out := runCLI(t, "--json", "monitor", "scan")
 	if code != 0 {

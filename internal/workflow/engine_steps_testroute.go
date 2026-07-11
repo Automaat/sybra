@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,12 @@ const (
 	testVerdictOutcomeKey      = "outcome"
 	testFailureFingerprintKey  = "failure_fingerprint"
 	testFailuresHeading        = "## Test Failures"
+	// resolvedTestFailuresHeading is what a stale "## Test Failures" section
+	// is renamed to when a newer cycle supersedes it (see
+	// stripTestFailuresSections). Deliberately distinct from testFailuresHeading
+	// so agents pattern-matching for the live heading never mistake archived,
+	// already-superseded reports for the current blocking failure.
+	resolvedTestFailuresHeading = "## Resolved Test Failures (historical)"
 
 	testOutcomePass                 = "pass"
 	testOutcomeProductBug           = "product_bug"
@@ -461,24 +468,130 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 	}
 
 	report := ""
+	isFail := false
 	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
 		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
 			return false, body, nil
 		}
+		isFail = true
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
-	} else if extractTestVerdict(output.Output) == "FAIL" {
+	} else if ExtractTestVerdict(output.Output) == "FAIL" {
+		isFail = true
 		report = plainTestFailureReport(output.Output)
+	}
+	if !isFail {
+		return false, body, nil
+	}
+	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
+		var currentStart int
+		nextBody, currentStart = normalizeTestFailureDeltaBody(body, delta)
+		wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
+		if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
+			return false, body, fmt.Errorf("normalize test failure report: %w", err)
+		}
+		return true, nextBody, nil
 	}
 	if report == "" {
 		return false, body, nil
 	}
-	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
-		return false, body, nil
+
+	// Strip any prior "## Test Failures" section(s) before appending the new
+	// one, so at most one is ever live in the body — it is then unambiguously
+	// the current, blocking failure. Priors are archived under a distinctly
+	// different heading rather than dropped, preserving audit history without
+	// reintroducing the ambiguity.
+	strippedBody, priorSections := stripTestFailuresSections(body)
+	nextBody = strippedBody
+	for _, prior := range priorSections {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
 	}
-	if err := e.tasks.AppendTaskBody(taskID, report); err != nil {
+	currentStart := len(nextBody)
+	nextBody = appendRawBody(nextBody, report)
+	wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
+	if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
 		return false, body, fmt.Errorf("append test failure report: %w", err)
 	}
-	return true, appendRawBody(body, report), nil
+	return true, nextBody, nil
+}
+
+func normalizeTestFailureDeltaBody(body, delta string) (nextBody string, currentStart int) {
+	preAttemptBody := body[:len(body)-len(delta)]
+	strippedPreAttemptBody, priorSections := stripTestFailuresSections(preAttemptBody)
+	strippedDelta, deltaSections := stripTestFailuresSections(delta)
+	if len(deltaSections) == 0 {
+		return body, len(body)
+	}
+
+	nextBody = strippedPreAttemptBody
+	nextBody = appendRawBody(nextBody, strippedDelta)
+	for _, prior := range priorSections {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	for _, prior := range deltaSections[:len(deltaSections)-1] {
+		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	}
+	currentSection := deltaSections[len(deltaSections)-1]
+	nextBody = appendRawBody(nextBody, currentSection)
+	currentStart = strings.LastIndex(nextBody, currentSection)
+	if currentStart < 0 {
+		currentStart = len(nextBody)
+	}
+	return nextBody, currentStart
+}
+
+// stripTestFailuresSections removes every "## Test Failures" section from
+// body (heading line through the line before the next top-level "## "
+// heading, or end of body) and returns the remaining body plus the removed
+// section contents in document order. Headings inside fenced code blocks are
+// ignored, matching testFailSectionOf's fence handling.
+func stripTestFailuresSections(body string) (remaining string, removed []string) {
+	lines := strings.Split(body, "\n")
+	var out []string
+	inFence := false
+	for i := 0; i < len(lines); {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+		if !inFence && isTestFailuresHeading(trimmed) {
+			start := i
+			j := i + 1
+			sectionInFence := false
+			for j < len(lines) {
+				jTrimmed := strings.TrimSpace(lines[j])
+				if strings.HasPrefix(jTrimmed, "```") || strings.HasPrefix(jTrimmed, "~~~") {
+					sectionInFence = !sectionInFence
+					j++
+					continue
+				}
+				if !sectionInFence && strings.HasPrefix(jTrimmed, "## ") {
+					break
+				}
+				j++
+			}
+			removed = append(removed, strings.TrimSpace(strings.Join(lines[start:j], "\n")))
+			i = j
+			continue
+		}
+		out = append(out, lines[i])
+		i++
+	}
+	remaining = strings.TrimSpace(strings.Join(out, "\n"))
+	return remaining, removed
+}
+
+// archiveTestFailuresSection renames a removed section's heading line from
+// "## Test Failures" to resolvedTestFailuresHeading, preserving the rest of
+// its content for audit.
+func archiveTestFailuresSection(section string) string {
+	lines := strings.SplitN(section, "\n", 2)
+	if len(lines) == 1 {
+		return resolvedTestFailuresHeading
+	}
+	return resolvedTestFailuresHeading + "\n" + lines[1]
 }
 
 func plainTestFailureReport(output string) string {
@@ -1118,7 +1231,7 @@ func applyTestVerdictCompletion(wfExec *Execution, output *StepOutput, body stri
 	if output.Status != "completed" && output.Status != "failed" {
 		return "", "", ""
 	}
-	v := extractTestVerdict(output.Output)
+	v := ExtractTestVerdict(output.Output)
 	outcome, fingerprint = classifyTestOutcome(output.Status, output.Output, body, wfExec, output.StepID)
 	if outcome != "" {
 		wfExec.SetVar("step."+output.StepID+"."+testVerdictOutcomeKey, outcome)
@@ -1178,7 +1291,7 @@ func appendTestInfrastructureFailure(output string) string {
 }
 
 func classifyTestOutcome(status, output, body string, wfExec *Execution, stepID string) (outcome, fingerprint string) {
-	v := extractTestVerdict(output)
+	v := ExtractTestVerdict(output)
 	if status == "failed" {
 		return testOutcomeInfraFailure, ""
 	}
@@ -1643,10 +1756,101 @@ func hasReportLinePrefix(report string, prefixes ...string) bool {
 	return false
 }
 
+// fingerprintQuotedRe captures quoted error/value strings a test-runner cites
+// verbatim (command output, error messages, expected/actual literals).
+var fingerprintQuotedRe = regexp.MustCompile("\"[^\"\n]{1,200}\"|'[^'\n]{1,200}'|`[^`\n]{1,200}`")
+
+// fingerprintNumberRe captures counts, HTTP statuses, and other numeric
+// tokens that distinguish otherwise-similar failure prose (e.g. "reappears
+// after 2 occurrences" vs "after 3 occurrences").
+var fingerprintNumberRe = regexp.MustCompile(`-?\d+(?:\.\d+)?%?`)
+
+// fingerprintEnumTokenRe captures enum-like identifiers (SCREAMING_SNAKE,
+// snake_case, dotted paths) that carry semantic meaning independent of
+// surrounding wording — statuses, outcome names, field names.
+var fingerprintEnumTokenRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+\b`)
+
+// fingerprintPathTokenRe captures endpoint/route-shaped literals such as
+// "/login" or "/api/export". These are often the stable part of a test report
+// when prose drifts between runner attempts.
+var fingerprintPathTokenRe = regexp.MustCompile(`/(?:[A-Za-z0-9][A-Za-z0-9._~-]*)(?:/[A-Za-z0-9][A-Za-z0-9._~-]*)*`)
+
+var fingerprintFilePathTokenRe = regexp.MustCompile(`(?i)\.(?:go|ts|tsx|js|jsx|svelte)$`)
+
+// fingerprintMinTokens is the minimum count of unique discriminating tokens
+// required before the token-based fingerprint is trusted, alongside at least
+// one strong token (quoted strings, endpoint paths, or non-filepath enum-like
+// identifiers). Below this, the report is too sparse or too boilerplate-heavy
+// to distinguish reliably, and testFailureFingerprint falls back to the
+// original whole-prose hash.
+const fingerprintMinTokens = 2
+
+// testFailureFingerprint derives a stable identifier for a test-runner
+// failure report, used to detect when the SAME failure class recurs across
+// reimplementation attempts. Reports describing genuinely different defects
+// must hash differently; reports describing the same defect with minor LLM
+// wording drift (synonyms, reordered sentences, rephrased summaries) must
+// hash the same.
+//
+// The report is reduced to its semantically load-bearing tokens — quoted
+// error/value strings, endpoint paths, file:line citations, numeric
+// counts/statuses, and enum-like identifiers — sorted for order-independence
+// and hashed. Prose glue words carry no signal for this purpose and are
+// dropped. When a report is too sparse or contains only boilerplate-shaped
+// tokens (for example, a shared file:line and HTTP 500/200 pair), this falls
+// back to the original lowercased, whitespace-normalized full-prose hash so
+// unrelated bugs do not collapse into the same recurrence class.
+//
+// NOTE: this is NOT the same hash as the original exact-prose fingerprint.
+// Fingerprints persisted by older runs (AgentRunInfo.TestFailureFingerprint)
+// are not migrated or recomputed — they simply will not match a fingerprint
+// computed by this hardened function until a new test-runner attempt
+// records one. This only delays recurrence detection for tasks whose
+// testing cycle straddles the deploy of this change; it never produces
+// a false recurrence match.
 func testFailureFingerprint(report string) string {
-	normalized := strings.Join(strings.Fields(strings.ToLower(report)), " ")
-	sum := sha256.Sum256([]byte(normalized))
+	basis := fingerprintNormalizedBasis(report)
+	sum := sha256.Sum256([]byte(basis))
 	return hex.EncodeToString(sum[:8])
+}
+
+func fingerprintNormalizedBasis(report string) string {
+	var tokens []string
+	strongTokens := 0
+	quoted := fingerprintQuotedRe.FindAllString(report, -1)
+	paths := fingerprintPathTokenRe.FindAllString(report, -1)
+	enums := fingerprintEnumTokenRe.FindAllString(report, -1)
+
+	tokens = append(tokens, quoted...)
+	tokens = append(tokens, paths...)
+	tokens = append(tokens, fileLineCitationRe.FindAllString(report, -1)...)
+	tokens = append(tokens, fingerprintNumberRe.FindAllString(report, -1)...)
+	tokens = append(tokens, enums...)
+	strongTokens += len(quoted) + len(paths)
+
+	seen := make(map[string]struct{}, len(tokens))
+	normalized := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" {
+			if _, ok := seen[tok]; ok {
+				continue
+			}
+			seen[tok] = struct{}{}
+			normalized = append(normalized, tok)
+		}
+	}
+	for _, tok := range enums {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" && !fingerprintFilePathTokenRe.MatchString(tok) {
+			strongTokens++
+		}
+	}
+	if len(normalized) < fingerprintMinTokens || strongTokens == 0 {
+		return strings.Join(strings.Fields(strings.ToLower(report)), " ")
+	}
+	sort.Strings(normalized)
+	return strings.Join(normalized, "|")
 }
 
 // containsFixSuggestionsInCurrentTestReport scans the agent result and the task
@@ -1839,19 +2043,20 @@ var fixSuggestionEvidencePrefixes = []string{
 	"temporary test body",
 }
 
-// extractTestVerdict returns "PASS"/"FAIL"/"" from agent output.
+// ExtractTestVerdict returns "PASS"/"FAIL"/"" from agent output.
 //
 // Object-shaped output (leading `{` after trimming BOM/whitespace) is treated
 // as authoritative JSON: the `verdict` field is parsed and the marker scan is
-// skipped entirely. A malformed or unexpected object yields "" → FAIL without
-// falling through to the marker, so a JSON body that incidentally contains a
-// marker-shaped substring cannot misroute. This is the path codex takes when
+// skipped entirely. A malformed or unexpected object yields "", and callers
+// interpret that empty verdict in the fail-safe direction, without falling
+// through to the marker. That prevents a JSON body that incidentally contains
+// a marker-shaped substring from misrouting. This is the path codex takes when
 // --output-schema enforces a structured response.
 //
 // Non-object-shaped output (claude plain text) falls to the exact-line marker
-// scan. The last matching line wins; missing/ambiguous output yields "" → FAIL,
-// which is the safe direction.
-func extractTestVerdict(output string) string {
+// scan. The last matching line wins; missing/ambiguous output yields "", which
+// callers treat as a non-pass/failing-safe verdict.
+func ExtractTestVerdict(output string) string {
 	// Strip a leading UTF-8 BOM, then trim whitespace before shape detection.
 	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
 	if strings.HasPrefix(s, "{") {
@@ -1973,15 +2178,48 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if duplicate {
-		reason := "same grounded test failure reproduced twice — needs targeted local reproduction/fix from latest ## Test Failures"
+		recurring := recurringProductBugFingerprints(t)
+		if len(recurring) == 0 {
+			// Defensive: countValidProductTestAttempts already confirmed the
+			// current fingerprint recurred with an intervening code-author
+			// run, so this should always be non-empty. Fall back to the
+			// just-finished attempt's own fingerprint so the section still
+			// carries evidence rather than an empty class list.
+			if cf := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]; cf != "" {
+				recurring = []string{cf}
+			}
+		}
+		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
 		}
-		e.logger.Warn("workflow.test.duplicate-failure", "task_id", taskID)
+		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+			e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
+		}
+		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, false)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "duplicate failure"}, nil
 	}
 
 	if attempts >= limit {
+		if nonConvergingProductBugLoop(t) {
+			// Evidence only — the reframe below fires on non-convergence
+			// (ping-ponging product-bug attempts with an intervening
+			// code-author run) even when concrete repro evidence differs
+			// across attempts and no exact fingerprint recurred, so
+			// `recurring` may legitimately be empty here.
+			recurring := recurringProductBugFingerprints(t)
+			reason := fmt.Sprintf(
+				"suspected acceptance-criteria conflict: the implement/test loop failed to converge over %d product-bug attempt(s) (cap %d) — could be a contradictory spec or a hard defect the fixes keep missing; human spec decision needed; see ## Test Failures",
+				attempts, limit)
+			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+				return StepOutput{}, err
+			}
+			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+				e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
+			}
+			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, true)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
+		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
 		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 			return StepOutput{}, err
@@ -2003,6 +2241,168 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "reimplement"}, nil
+}
+
+// recurringProductBugFingerprints returns the distinct product-bug failure
+// fingerprints (sorted) that recurred at least twice within the current
+// testing cycle, with an intervening code-author run between two of their
+// occurrences — the same "the implementer fixed something and the SAME
+// failure class came back" signal countValidProductTestAttempts uses for its
+// immediate-duplicate check, but surfaced here as a set. This lets cap-time
+// escalation reframe as a spec-decision on ANY recurring class among the
+// attempts that exhausted the cap, not only the just-finished attempt's
+// fingerprint.
+func recurringProductBugFingerprints(t TaskInfo) []string {
+	type fingerprintOccurrence struct {
+		fingerprint string
+		runIndex    int
+	}
+	var occurrences []fingerprintOccurrence
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole || run.ProtocolViolation != "" ||
+			run.TestOutcome != testOutcomeProductBug || run.TestFailureFingerprint == "" {
+			continue
+		}
+		occurrences = append(occurrences, fingerprintOccurrence{
+			fingerprint: run.TestFailureFingerprint,
+			runIndex:    i,
+		})
+	}
+	seen := make(map[string]bool)
+	var recurring []string
+	for a := range occurrences {
+		if seen[occurrences[a].fingerprint] {
+			continue
+		}
+		for b := a + 1; b < len(occurrences); b++ {
+			if occurrences[b].fingerprint != occurrences[a].fingerprint {
+				continue
+			}
+			if hasInterveningCodeAuthorRun(t.AgentRuns, occurrences[a].runIndex, occurrences[b].runIndex) {
+				seen[occurrences[a].fingerprint] = true
+				recurring = append(recurring, occurrences[a].fingerprint)
+				break
+			}
+		}
+	}
+	sort.Strings(recurring)
+	return recurring
+}
+
+// nonConvergingProductBugLoop reports whether the implement/test loop has
+// ping-ponged between valid product-bug test-runner attempts within the
+// current testing cycle, regardless of whether their fingerprints match.
+// Unlike recurringProductBugFingerprints (which requires the SAME failure
+// class to reappear byte-for-byte), this only requires two valid product-bug
+// attempts separated by a code-author run — the realistic shape when a live
+// tester re-probes the same conceptual defect but picks different concrete
+// repro evidence (fixture values, ids, quoted literals) each time, which
+// would otherwise fingerprint differently and hide the recurrence.
+func nonConvergingProductBugLoop(t TaskInfo) bool {
+	var indices []int
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if t.TestingCycleStartedAt != nil && run.StartedAt.Before(*t.TestingCycleStartedAt) {
+			continue
+		}
+		if run.Role != testRunnerRole || run.ProtocolViolation != "" ||
+			run.TestOutcome != testOutcomeProductBug || run.TestFailureFingerprint == "" {
+			continue
+		}
+		indices = append(indices, i)
+	}
+	for i := 1; i < len(indices); i++ {
+		if hasInterveningCodeAuthorRun(t.AgentRuns, indices[i-1], indices[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// specDecisionHeading marks the section appended to a task body when
+// escalating on recurring product-bug failure classes. A distinct heading
+// (not "## Test Failures") keeps it out of testFailSectionOf's scan.
+const specDecisionHeading = "## Spec Decision Needed"
+
+// specDecisionMarker returns a stable HTML-comment marker keyed by the sorted
+// set of recurring fingerprints driving an escalation. appendSpecDecisionSection
+// uses it to skip re-appending an identical section on a rerun (idempotency),
+// while a genuinely new recurring set still gets its own section appended.
+func specDecisionMarker(fingerprints []string) string {
+	sorted := append([]string(nil), fingerprints...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, "|")))
+	return "<!-- sybra:spec-decision:" + hex.EncodeToString(sum[:6]) + " -->"
+}
+
+// buildSpecDecisionSection renders the task-body evidence for a spec-decision
+// escalation. It deliberately avoids asserting a proven contradiction —
+// the same recurrence shape can also be produced by two independent
+// sequential bugs — and points at the latest "## Test Failures" section
+// for repros rather than claiming an exact section-to-fingerprint mapping,
+// since AgentRunInfo does not persist historical report text or offsets.
+func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string {
+	sorted := append([]string(nil), fingerprints...)
+	sort.Strings(sorted)
+	var b strings.Builder
+	b.WriteString(specDecisionHeading + "\n\n")
+	b.WriteString(specDecisionMarker(sorted) + "\n\n")
+	if len(sorted) == 0 {
+		fmt.Fprintf(&b,
+			"The implement/test loop failed to converge over %d product-bug test attempt(s) (cap %d), but "+
+				"the concrete repro evidence differed across attempts — a fresh test-runner agent can pick a "+
+				"different repro (fixture values, ids, quoted literals) to demonstrate the same conceptual "+
+				"defect each time, so no exact fingerprint recurred. This is evidence of a suspected "+
+				"acceptance-criteria conflict — not a confirmed one, since a hard defect the fixes keep "+
+				"missing can look the same. A human spec decision is needed; inspect the latest %q section "+
+				"of this task body for the most recent repro.\n",
+			attempts, limit, testFailuresHeading)
+		return b.String()
+	}
+	fmt.Fprintf(&b,
+		"Manual testing reproduced %d recurring product-bug failure class(es) across an intervening "+
+			"reimplementation attempt (%d test attempt(s), cap %d). This is evidence of a suspected "+
+			"acceptance-criteria conflict — not a confirmed one, since two independent sequential bugs "+
+			"can produce the same recurrence shape. A human spec decision is needed.\n\n",
+		len(sorted), attempts, limit)
+	fmt.Fprintf(&b,
+		"Recurring fingerprint(s): %s. Repros for these failure classes are identifiable in the latest "+
+			"%q section of this task body.\n",
+		strings.Join(sorted, ", "), testFailuresHeading)
+	return b.String()
+}
+
+// appendSpecDecisionSection appends the spec-decision evidence section to the
+// task body, unless a section with an identical marker (same recurring
+// fingerprint set) is already present — reruns then skip instead of
+// duplicating. A new/different recurring set still gets appended, since
+// AppendTaskBody has no in-place replace and the older section remains valid
+// historical evidence.
+func (e *Engine) appendSpecDecisionSection(taskID, body string, fingerprints []string, attempts, limit int) error {
+	if strings.Contains(body, specDecisionMarker(fingerprints)) {
+		return nil
+	}
+	if err := e.tasks.AppendTaskBody(taskID, buildSpecDecisionSection(fingerprints, attempts, limit)); err != nil {
+		return fmt.Errorf("append spec-decision section: %w", err)
+	}
+	return nil
+}
+
+// logSpecDecisionEscalation emits a bounded structured event for a
+// spec-decision escalation: task id, attempt/cap counters, the distinct
+// recurring-class count and fingerprints, and whether the escalation fired
+// via the cap-time non-convergence path (nonConvergingProductBugLoop) rather
+// than the pre-cap exact-fingerprint duplicate shortcut. Raw test reports are
+// never logged.
+func (e *Engine) logSpecDecisionEscalation(taskID string, attempts, limit int, fingerprints []string, nonConvergingCap bool) {
+	e.logger.Warn("workflow.test.spec-decision",
+		"task_id", taskID, "attempts", attempts, "cap", limit,
+		"recurring_classes", len(fingerprints), "fingerprints", fingerprints,
+		"non_converging_cap", nonConvergingCap)
 }
 
 func (e *Engine) countValidProductTestAttempts(t TaskInfo, wfExec *Execution) (int, bool) {

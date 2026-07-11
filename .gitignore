@@ -38,7 +38,6 @@ frontend/coverage/
 /sybra-perf
 /fake-claude
 /synapse-server
-sybra-server
 core.*
 /fake-codex
 
@@ -47,6 +46,8 @@ core.*
 
 # Manual testing artifacts
 .sybra-manual-test-port*
+.sybra-bad-*
+.sybra-manual-*
 
 # Web-mode dev mock backend home + fake CLIs
 .dev-mock/

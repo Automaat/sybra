@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { SvelteMap } from 'svelte/reactivity'
 
+const mockTasksMap = new SvelteMap<string, any>()
 const mockGet = vi.fn()
 const mockUpdate = vi.fn()
 const mockRemove = vi.fn()
+const mockDispatchFromHumanRequired = vi.fn()
 const mockStart = vi.fn()
 const mockStop = vi.fn()
 const mockByTask = vi.fn()
@@ -11,12 +14,26 @@ const mockByState = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
 const mockPushLocal = vi.fn()
+const mockListTaskProgress = vi.fn()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
-    get: (...args: unknown[]) => mockGet(...args),
+    tasks: mockTasksMap,
+    get list() {
+      return [...mockTasksMap.values()]
+    },
+    get: async (id: string) => {
+      const result = await mockGet(id)
+      mockTasksMap.set(id, result)
+      return result
+    },
     update: (...args: unknown[]) => mockUpdate(...args),
     remove: (...args: unknown[]) => mockRemove(...args),
+    dispatchFromHumanRequired: async (...args: [string, string, string]) => {
+      const result = await mockDispatchFromHumanRequired(...args)
+      mockTasksMap.set(result.id, result)
+      return result
+    },
   },
 }))
 
@@ -66,6 +83,10 @@ vi.mock('$lib/api', () => ({
   StartReview: vi.fn(),
   GetAgentRunLog: vi.fn(),
   GetAgentRunConvoLog: vi.fn(),
+  ListTaskArtifacts: vi.fn(async () => []),
+  GetTaskSetupLog: vi.fn(async () => ({ taskId: 'task-1', exists: false })),
+  ListTaskAuditEvents: vi.fn(async () => []),
+  ListTaskProgress: (...args: unknown[]) => mockListTaskProgress(...args),
 }))
 
 vi.mock('@skeletonlabs/skeleton-svelte', () => ({
@@ -101,9 +122,11 @@ const mockTask = {
 
 describe('TaskDetail', () => {
   beforeEach(() => {
+    mockTasksMap.clear()
     mockGet.mockReset()
     mockUpdate.mockReset()
     mockRemove.mockReset()
+    mockDispatchFromHumanRequired.mockReset()
     mockStart.mockReset()
     mockStop.mockReset()
     mockByTask.mockReturnValue(null)
@@ -111,6 +134,9 @@ describe('TaskDetail', () => {
     mockUpdateAgent.mockReset()
     mockEventsOn.mockReturnValue(vi.fn())
     mockPushLocal.mockReset()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mockListTaskProgress.mockReset()
+    mockListTaskProgress.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -329,6 +355,97 @@ describe('TaskDetail', () => {
       await vi.waitFor(() => {
         expect(screen.getByText('Approve Plan')).toBeDefined()
         expect(screen.getByText('Reject Plan')).toBeDefined()
+      })
+    })
+
+    it('shows no Children panel for a task with no umbrella/dependsOn relationships', async () => {
+      mockGet.mockResolvedValue(mockTask)
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByText('Test Task')).toBeDefined()
+      })
+      expect(screen.queryByText('No child tasks linked yet.')).toBeNull()
+    })
+
+    it('shows Children with its own prerequisite rows for a normal task with dependsOn', async () => {
+      mockGet.mockResolvedValue({
+        ...mockTask,
+        taskType: 'normal',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/10'],
+      })
+      mockTasksMap.set('prereq-1', {
+        id: 'prereq-1',
+        title: 'Prerequisite task',
+        status: 'todo',
+        agentMode: 'headless',
+        tags: [],
+        issue: 'https://github.com/Automaat/sybra/issues/10',
+        createdAt: '2026-04-01T00:00:00Z',
+        updatedAt: '2026-04-01T00:00:00Z',
+      })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).toContain('Children · 1')
+        expect(screen.getByText('Prerequisite task')).toBeDefined()
+      })
+    })
+
+    it('renders the Children panel with materialized children plus unresolved refs for an umbrella', async () => {
+      // Production shape: the umbrella tracker itself never carries
+      // dependsOn (internal/umbrella/expand.go's materialize() only sets it
+      // on per-child CreateFull calls) -- the declared-but-unmaterialized ref
+      // (#99) is declared on the materialized sibling child instead.
+      mockGet.mockResolvedValue({
+        ...mockTask,
+        taskType: 'umbrella',
+        issue: 'https://github.com/Automaat/sybra/issues/1213',
+      })
+      mockTasksMap.set('child-1', {
+        id: 'child-1',
+        title: 'Child task',
+        status: 'todo',
+        agentMode: 'headless',
+        tags: [],
+        issue: 'https://github.com/Automaat/sybra/issues/10',
+        umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213',
+        dependsOn: ['https://github.com/Automaat/sybra/issues/99'],
+        createdAt: '2026-04-01T00:00:00Z',
+        updatedAt: '2026-04-01T00:00:00Z',
+      })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByTestId('task-detail-tabs').getAttribute('data-tab-labels')).toContain('Children · 2')
+        expect(screen.getByText('Child task')).toBeDefined()
+        expect(screen.getByText('automaat/sybra#99')).toBeDefined()
+      })
+    })
+
+  })
+
+  describe('human-required dispatch', () => {
+    it('reflects the new status after a successful dispatch', async () => {
+      mockGet.mockResolvedValue({ ...mockTask, status: 'human-required', statusReason: 'needs a decision' })
+      mockDispatchFromHumanRequired.mockResolvedValue({ ...mockTask, status: 'testing', statusReason: '' })
+      render(TaskDetail, {
+        props: { taskId: 'task-1', onback: vi.fn(), onviewagent: vi.fn(), ondelete: vi.fn() },
+      })
+      await vi.waitFor(() => {
+        expect(screen.getByPlaceholderText('Decision reason (required)...')).toBeDefined()
+      })
+      const textarea = screen.getByPlaceholderText('Decision reason (required)...')
+      await fireEvent.input(textarea, { target: { value: 'looks fine, proceed' } })
+      await fireEvent.click(screen.getByText('Send to testing'))
+      await vi.waitFor(() => {
+        expect(mockDispatchFromHumanRequired).toHaveBeenCalledWith('task-1', 'testing', 'looks fine, proceed')
+      })
+      await vi.waitFor(() => {
+        expect(screen.queryByPlaceholderText('Decision reason (required)...')).toBeNull()
       })
     })
   })

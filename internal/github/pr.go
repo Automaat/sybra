@@ -27,12 +27,18 @@ type PRStats struct {
 
 // PRState holds the current state of a specific PR.
 type PRState struct {
-	State             string `json:"state"`     // OPEN, CLOSED, MERGED
-	MergedAt          string `json:"mergedAt"`  // non-empty if merged
-	Mergeable         string `json:"mergeable"` // MERGEABLE, CONFLICTING, UNKNOWN
-	StatusCheckRollup []struct {
-		State string `json:"state"` // SUCCESS, FAILURE, PENDING, ERROR, etc.
-	} `json:"statusCheckRollup"`
+	State     string `json:"state"`     // OPEN, CLOSED, MERGED
+	MergedAt  string `json:"mergedAt"`  // non-empty if merged
+	Mergeable string `json:"mergeable"` // MERGEABLE, CONFLICTING, UNKNOWN
+	// StatusCheckRollup entries come back as one of two shapes depending on
+	// whether the check is a legacy commit status (StatusContext, carries
+	// `state`) or a GitHub Actions/App check run (CheckRun, carries
+	// `status`/`conclusion` instead — CheckRun never sets `state`).
+	// gqlCheckContext (shared with the GraphQL search path in client.go) and
+	// effectiveCheckState/rollupFromContexts already normalize both shapes
+	// and filter non-gating reporters (codecov, sonarcloud); reuse them here
+	// instead of re-deriving the dispatch logic.
+	StatusCheckRollup []gqlCheckContext `json:"statusCheckRollup"`
 	// BaseRefName is the PR's target branch.
 	BaseRefName string `json:"baseRefName"`
 	// AutoMergeEnabled reports whether GitHub's native auto-merge is armed,
@@ -41,24 +47,18 @@ type PRState struct {
 }
 
 // CIStatus returns a simplified CI status: SUCCESS, FAILURE, PENDING, or "".
-// FAILURE takes precedence over PENDING.
+// FAILURE takes precedence over PENDING. Delegates to rollupFromContexts so
+// CheckRun-shaped entries (status/conclusion, no state) classify the same
+// way here as they do for the GraphQL search/monitor path in client.go.
 func (s PRState) CIStatus() string {
-	if len(s.StatusCheckRollup) == 0 {
-		return ""
-	}
-	hasPending := false
-	for _, c := range s.StatusCheckRollup {
-		switch c.State {
-		case "FAILURE", "ERROR":
-			return "FAILURE"
-		case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "STALE":
-			hasPending = true
-		}
-	}
-	if hasPending {
-		return "PENDING"
-	}
-	return "SUCCESS"
+	status, _ := rollupFromContexts(s.StatusCheckRollup)
+	return status
+}
+
+// HasPendingChecks reports whether any gating check is still running.
+func (s PRState) HasPendingChecks() bool {
+	_, pending := rollupFromContexts(s.StatusCheckRollup)
+	return pending
 }
 
 // ReadyToMerge reports whether the PR is open, has no conflicts, and CI passes.
@@ -66,6 +66,17 @@ func (s PRState) ReadyToMerge() bool {
 	return s.State == "OPEN" &&
 		s.Mergeable == "MERGEABLE" &&
 		(s.CIStatus() == "SUCCESS" || s.CIStatus() == "")
+}
+
+// Resolved reports whether this PR needs no further pr-fix action: it
+// merged, or it's open with green CI and no merge conflicts. An abandoned
+// (unmerged) close is NOT resolved — unlike a stale-worktree-vs-green-remote
+// false positive, a human genuinely needs to decide what happens to the task
+// now. Callers use this to re-probe the live PR before parking a task
+// human-required on a stale/diverged local worktree — an external bot may
+// have force-pushed a fix since the last poll, leaving nothing left to do.
+func (s PRState) Resolved() bool {
+	return s.State == "MERGED" || s.ReadyToMerge()
 }
 
 // PRFiles holds the list of files changed by a PR.
@@ -252,10 +263,10 @@ func fetchPRFilesWith(e execer, repo string, number int) ([]string, error) {
 // FetchPRHeadSHA returns the head commit SHA of a PR. Used to detect a fresh
 // push by the PR author after a review was submitted.
 func FetchPRHeadSHA(repo string, number int) (string, error) {
-	return fetchPRHeadSHAWith(defaultExecer, repo, number)
+	return fetchPRHeadSHAWith(context.TODO(), defaultExecer, repo, number)
 }
 
-func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
+func fetchPRHeadSHAWith(ctx context.Context, e execer, repo string, number int) (string, error) {
 	key := prCacheKey(repo, number)
 	if runtimeCacheEnabled(e) {
 		if cached, ok := prHeadSHACache.Get(key); ok {
@@ -263,7 +274,7 @@ func fetchPRHeadSHAWith(e execer, repo string, number int) (string, error) {
 		}
 	}
 
-	out, err := e.run("pr", "view", strconv.Itoa(number),
+	out, err := runE(ctx, e, "pr", "view", strconv.Itoa(number),
 		"--repo", repo, "--json", "headRefOid")
 	if err != nil {
 		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, strings.TrimSpace(string(out)), err)
@@ -483,19 +494,12 @@ func fetchPRHeadStateWith(ctx context.Context, e execer, repo string, number int
 	return raw.HeadRefOid, raw.State == "OPEN", raw.UpdatedAt, nil
 }
 
-// FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA for the poll path.
+// FetchPRHeadSHAContext is a context-bounded FetchPRHeadSHA, so a stalled gh
+// call releases the global ghGate instead of blocking the caller's shell
+// timeout for the kernel TCP timeout. Used by the create_pr/push_branch
+// workflow steps, whose callers already bound the context via shellTimeout.
 func FetchPRHeadSHAContext(ctx context.Context, repo string, number int) (string, error) {
-	out, err := ghRunCtx(ctx, "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", "headRefOid")
-	if err != nil {
-		return "", fmt.Errorf("gh pr view %d head: %s: %w", number, sanitizeGHOutput(out), err)
-	}
-	var raw struct {
-		HeadRefOid string `json:"headRefOid"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return "", fmt.Errorf("parse pr head: %w", err)
-	}
-	return raw.HeadRefOid, nil
+	return fetchPRHeadSHAWith(ctx, defaultExecer, repo, number)
 }
 
 // FetchPRMergeCommitContext returns the default-branch commit SHA a merged PR

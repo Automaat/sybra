@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,13 +22,59 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"gopkg.in/yaml.v3"
 )
+
+// e2eFakeClassifier is a deterministic, test-tunable stand-in for
+// triage.Classifier — no LLM/agent involved, matching how a real
+// classify_task step behaves without spending a scenario slot in the fake
+// provider's scenario queue. Default verdict mirrors the old fake-claude
+// "triage" scenario (status=todo, tags=small); tests that need triage to
+// route into planning call setVerdict/setErr before starting the workflow.
+type e2eFakeClassifier struct {
+	mu      sync.Mutex
+	verdict triage.Verdict
+	err     error
+}
+
+func newE2EFakeClassifier() *e2eFakeClassifier {
+	return &e2eFakeClassifier{
+		verdict: triage.Verdict{Tags: []string{"small"}, Size: "small", Type: "chore", Mode: "headless"},
+	}
+}
+
+func (c *e2eFakeClassifier) setVerdict(v triage.Verdict) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.verdict = v
+}
+
+func (c *e2eFakeClassifier) setErr(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
+}
+
+func (c *e2eFakeClassifier) Classify(_ context.Context, t task.Task, _ []project.Project) (triage.Verdict, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return triage.Verdict{}, c.err
+	}
+	v := c.verdict
+	if v.Title == "" {
+		v.Title = t.Title
+	}
+	return v, nil
+}
 
 var (
 	testBinDir    string
@@ -105,6 +153,9 @@ type e2eEnv struct {
 	// and HandleAgentComplete finishing its AdvanceStep/executeSteps chain.
 	pendingCompletions atomic.Int64
 	onAgentComplete    func(*agent.Agent)
+	// classifier backs the builtin simple-task-plan workflow's deterministic
+	// classify_task (triage) step — see e2eFakeClassifier.
+	classifier *e2eFakeClassifier
 }
 
 // startWorkflow seeds the reserved _dir variable so that run_agent steps have
@@ -199,7 +250,8 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	var env *e2eEnv
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		ControlHome: taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			env.pendingCompletions.Add(1)
 			defer env.pendingCompletions.Add(-1)
@@ -242,6 +294,8 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
 	engine = workflow.NewEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
+	classifier := newE2EFakeClassifier()
+	engine.SetTaskClassifier(&taskClassifierAdapter{tasks: taskMgr, classifier: classifier})
 
 	// Pre-create a working directory so run_agent steps can satisfy the
 	// Manager.Run guard that rejects empty Dir.
@@ -261,6 +315,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		worktreesDir: wtDir,
 		provider:     provider,
 		cancel:       cancel,
+		classifier:   classifier,
 	}
 	env.onAgentComplete = func(ag *agent.Agent) {
 		var result string
@@ -288,7 +343,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	}
 
 	// Mirror production cascade wiring (sybra/services.go →
-	// AgentCompletionHandler.OnWorkflowComplete) so tests that span multiple
+	// completion.Handler.OnWorkflowComplete) so tests that span multiple
 	// chained workflows (simple-task-plan → simple-task-implement →
 	// simple-task-review) advance through the cascade exactly like the
 	// desktop app does.
@@ -355,16 +410,54 @@ func e2eTimeoutScale() int64 {
 	return e2eTimeoutScaleCached.value
 }
 
+const e2eTimeoutScaleCeiling = 16
+
 func e2eTimeoutScaleResolve() int64 {
 	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			return n
 		}
 	}
-	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
-		return 4
+	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
+		return 1
 	}
-	return 1
+	base := int64(8)
+	scaled := base * hostOversubscriptionFactor()
+	if scaled < base {
+		return base
+	}
+	if scaled > e2eTimeoutScaleCeiling {
+		return e2eTimeoutScaleCeiling
+	}
+	return scaled
+}
+
+func hostOversubscriptionFactor() int64 {
+	load, ok := hostLoadPerCPU()
+	if !ok || load <= 1 {
+		return 1
+	}
+	return int64(math.Ceil(load))
+}
+
+func hostLoadPerCPU() (float64, bool) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, false
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	load1, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, false
+	}
+	cpus := runtime.NumCPU()
+	if cpus <= 0 {
+		return 0, false
+	}
+	return load1 / float64(cpus), true
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {
@@ -545,13 +638,13 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 	// First call: agent dies with SIGTERM. Second call (via ResumeStalled): success.
 	env := setupE2EMulti(t, []string{"signal_kill", "triage"})
 
-	// Wire production AgentCompletionHandler so the signal kill guard fires.
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	// Wire production completion.Handler so the signal kill guard fires.
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("signal kill task", "", "headless")
@@ -604,13 +697,13 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	// principle advance if the guard didn't fire.
 	env := setupE2EMulti(t, []string{"hang", "triage"})
 
-	// Wire production AgentCompletionHandler so the signal kill guard fires.
-	h := &AgentCompletionHandler{
-		DomainHandler:  DomainHandler{logger: e2eLogger()},
-		tasks:          env.tasks,
-		worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
-		workflowEngine: env.engine,
-	}
+	// Wire production completion.Handler so the signal kill guard fires.
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
 	env.onAgentComplete = h.OnComplete
 
 	created, err := env.tasks.Create("stop agent task", "", "headless")
@@ -651,6 +744,100 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	}
 	if tk.Workflow.CurrentStep != "triage" {
 		t.Errorf("workflow advanced to %q after StopAgent (WasStopped=true); want stalled at triage", tk.Workflow.CurrentStep)
+	}
+}
+
+// TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath verifies that a cost
+// guardrail stop is a normal failed agent completion, not an infra stall.
+// If notifyWorkflowEngine routes it through ClearAgentStep, the second
+// scenario below is never dispatched until ResumeStalled runs and the
+// workflow remains stuck at triage.
+func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
+	env := setupE2EMulti(t, []string{"high_cost", "triage"})
+	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 10.0})
+
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("cost hard-stop task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "cost-stopped triage retries through failed-completion path", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage"
+	})
+}
+
+// TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that
+// when the watchdog reaps a finished-but-alive agent via StopCompletedAgent
+// (clean terminal result emitted, process never exited), the workflow still
+// advances instead of stalling. Regression test for the follow-up defect
+// found in task d8896edb: StopCompletedAgent marks the agent both
+// completed-by-result AND stopped (via StopAgent, to actually kill the
+// orphaned process), and notifyWorkflowEngine's blanket WasStopped() check
+// misread that as a Sybra-initiated stall, silently re-queuing already
+// -completed work instead of finalizing it.
+func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
+	env := setupE2EMulti(t, []string{"success_then_hang", "triage"})
+
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("stop completed agent task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the triage agent to emit its terminal result and go idle
+	// (process still alive, simulating a finished-but-orphaned run).
+	var triageAgentID string
+	waitFor(t, 10*time.Second, "triage agent completed but alive", func() bool {
+		ag := env.agents.FindRunningAgentForTask(created.ID, agent.RoleTriage)
+		if ag == nil {
+			return false
+		}
+		triageAgentID = ag.ID
+		return ag.CompletedSuccessfully()
+	})
+
+	if err := env.agents.StopCompletedAgent(triageAgentID); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "completed agent finalizes", func() bool {
+		return !env.agents.HasRunningAgentForTask(created.ID) && env.pendingCompletions.Load() == 0
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("no workflow on task")
+	}
+	if tk.Workflow.CurrentStep == "triage" {
+		t.Errorf("workflow stalled at triage after StopCompletedAgent; want advanced past triage (already-completed work must finalize, not stall)")
 	}
 }
 
@@ -1995,12 +2182,14 @@ func TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement(t *testing.T) {
 }
 
 // TestE2E_TestingTaskWorkflow_FailEscalatesAtCap verifies that once the task has
-// failed testing TestingMaxAttempts times (engine default 3 — here pre-seeded
-// with 2 prior test-runner runs plus this one), it escalates to human-required
+// failed testing TestingMaxAttempts times (pinned to 3 here via
+// SetTestingMaxAttempts, independent of the engine default — pre-seeded with
+// 2 prior test-runner runs plus this one), it escalates to human-required
 // instead of looping back to implement.
 func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 	env := setupE2EMulti(t, []string{"test_fail"})
 	installTestingTaskWorkflow(t, env)
+	env.engine.SetTestingMaxAttempts(3)
 
 	created, err := env.tasks.Create("manual test cap", "", "headless")
 	if err != nil {
@@ -2579,12 +2768,16 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	//   triage → plan → require_plan → validate_plan_refs → maybe_critique →
 	//   critique_plan → require_plan_critique → reset_for_address →
 	//   address_critique → review_plan.
+	// triage is a deterministic classify_task step (no agent dispatch, so it
+	// consumes no scenario) — env.classifier.setVerdict below drives it to
+	// status=planning, tags=large the way the old "triage_to_planning"
+	// fake-claude scenario used to.
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
 		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
 		"revise_plan_sidecars",  // address_critique — rewrites all plan artifacts and flips plan-review
 	})
+	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("plan critic e2e", "", "headless")
@@ -2651,12 +2844,13 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	// Single-opus plan flow: triage → plan → require_plan → validate_plan_refs
 	// → maybe_critique → critique_plan (no_save) → require_plan_critique
-	// (soft skip) → review_plan.
+	// (soft skip) → review_plan. triage is deterministic (no scenario slot);
+	// env.classifier.setVerdict drives it to status=planning, tags=large.
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning",    // triage: status=planning, tags=large
 		"write_sidecar_success", // plan — writes the plan sidecar
 		"plan_critic_no_save",   // critic exits without writing sidecar
 	})
+	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("missing critique e2e", "", "headless")
@@ -2714,11 +2908,13 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 // condition step and reach review_plan with no plan-critic agent ever spawned.
 func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	// Single-opus plan flow: triage → plan → require_plan → validate_plan_refs
-	// → maybe_critique (skipped via nocritic) → review_plan.
+	// → maybe_critique (skipped via nocritic) → review_plan. triage is
+	// deterministic (no scenario slot); env.classifier.setVerdict drives it
+	// to status=planning, tags=large,nocritic.
 	env := setupE2EMulti(t, []string{
-		"triage_to_planning_nocritic", // triage sets status=planning, tags=large,nocritic
-		"write_sidecar_success",       // plan — writes the plan sidecar
+		"write_sidecar_success", // plan — writes the plan sidecar
 	})
+	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large", "nocritic"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("nocritic e2e", "", "headless")
@@ -2764,9 +2960,11 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 // pipeline and hands straight off to implementation, even though triage set
 // status=planning.
 func TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning(t *testing.T) {
-	env := setupE2EMulti(t, []string{
-		"triage_to_planning_noplan", // triage: status=planning, tags=large,noplan
-	})
+	// triage is deterministic (no scenario slot, no agent dispatched at all
+	// once noplan short-circuits the pipeline); env.classifier.setVerdict
+	// drives it to status=planning, tags=large,noplan.
+	env := setupE2EMulti(t, []string{})
+	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large", "noplan"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 
 	created, err := env.tasks.Create("noplan fast-path", "", "headless")
@@ -2800,59 +2998,56 @@ func TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning(t *testing.T) {
 	}
 }
 
-// TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits verifies triage can
-// terminate simple-task directly on terminal statuses without running plan or
-// implementation.
+// TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits verifies a triage
+// classifier failure terminates simple-task directly on human-required
+// without running plan or implementation.
+//
+// Before triage became a deterministic classify_task step, it was a
+// run_agent step whose free-form agent could call `sybra-cli update` to move
+// the task straight to any terminal status (done, in-review, human-required)
+// — this test used to cover all three. triage.RouteStatus only ever routes
+// to "planning" or "todo" (see internal/triage/routing.go), so a classifier
+// can no longer land a task on done/in-review directly; the only terminal
+// short-circuit left is human-required on classifier failure, which this
+// test now covers exclusively. The done/in-review cases are gone, not
+// weakened — that capability was intentionally removed with the agent step.
 func TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits(t *testing.T) {
-	cases := []struct {
-		name       string
-		scenario   string
-		wantStatus task.Status
-	}{
-		{name: "done", scenario: "triage_to_done", wantStatus: task.StatusDone},
-		{name: "in_review", scenario: "triage_to_in_review", wantStatus: task.StatusInReview},
-		{name: "human_required", scenario: "triage_to_human_required", wantStatus: task.StatusHumanRequired},
-	}
+	forEachProvider(t, func(t *testing.T, p providerSpec) {
+		env := setupE2EMultiProvider(t, p.provider, []string{})
+		env.classifier.setErr(errors.New("classifier unavailable"))
+		loadBuiltinWorkflow(t, env, "simple-task-plan")
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			forEachProvider(t, func(t *testing.T, p providerSpec) {
-				env := setupE2EMultiProvider(t, p.provider, []string{tc.scenario})
-				loadBuiltinWorkflow(t, env, "simple-task-plan")
+		created, err := env.tasks.Create("terminal triage human_required", "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
+			t.Fatal(err)
+		}
 
-				created, err := env.tasks.Create("terminal triage "+tc.name, "", "headless")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
-					t.Fatal(err)
-				}
-
-				waitFor(t, 30*time.Second, "workflow completes after triage terminal short-circuit", func() bool {
-					tk, gErr := env.tasks.Get(created.ID)
-					if gErr != nil {
-						return false
-					}
-					return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
-				})
-
-				tk, _ := env.tasks.Get(created.ID)
-				if tk.Status != tc.wantStatus {
-					t.Errorf("status = %q, want %q", tk.Status, tc.wantStatus)
-				}
-
-				stepIDs := stepIDsFromHistory(tk.Workflow)
-				if !slices.Contains(stepIDs, "triage") {
-					t.Errorf("triage missing from step history: %v", stepIDs)
-				}
-				for _, forbidden := range []string{"plan", "set_in_progress", "implement", "verify_commits", "link_pr_and_review", "evaluate"} {
-					if slices.Contains(stepIDs, forbidden) {
-						t.Errorf("forbidden step %q executed on terminal short-circuit: %v", forbidden, stepIDs)
-					}
-				}
-			})
+		waitFor(t, 30*time.Second, "workflow completes after triage terminal short-circuit", func() bool {
+			tk, gErr := env.tasks.Get(created.ID)
+			if gErr != nil {
+				return false
+			}
+			return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
 		})
-	}
+
+		tk, _ := env.tasks.Get(created.ID)
+		if tk.Status != task.StatusHumanRequired {
+			t.Errorf("status = %q, want %q", tk.Status, task.StatusHumanRequired)
+		}
+
+		stepIDs := stepIDsFromHistory(tk.Workflow)
+		if !slices.Contains(stepIDs, "triage") {
+			t.Errorf("triage missing from step history: %v", stepIDs)
+		}
+		for _, forbidden := range []string{"plan", "set_in_progress", "implement", "verify_commits", "link_pr_and_review", "evaluate"} {
+			if slices.Contains(stepIDs, forbidden) {
+				t.Errorf("forbidden step %q executed on terminal short-circuit: %v", forbidden, stepIDs)
+			}
+		}
+	})
 }
 
 const testWaitForStatusWorkflowYAML = `id: test-wait-status
@@ -3162,7 +3357,8 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	logDir := t.TempDir()
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
-		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		ControlHome: env.taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			var result string
 			output := ag.Output()
@@ -3193,6 +3389,9 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger())
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
+	if env.classifier != nil {
+		engine.SetTaskClassifier(&taskClassifierAdapter{tasks: taskMgr, classifier: env.classifier})
+	}
 
 	return engine
 }
@@ -3567,7 +3766,11 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 // set_ready_review (which would otherwise loop forever via the auto-restart
 // in svc_tasks.UpdateTask).
 func TestE2E_VerifyCommits_BranchAtBaseMarksDone(t *testing.T) {
-	env := setupE2EMultiProvider(t, "claude", []string{"triage", "success"})
+	// triage is a deterministic classify_task step now — no scenario slot —
+	// so only "success" (implement) remains in the queue. The default
+	// classifier verdict (env.classifier) already routes to status=todo,
+	// matching the old "triage" fake-claude scenario.
+	env := setupE2EMultiProvider(t, "claude", []string{"success"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 

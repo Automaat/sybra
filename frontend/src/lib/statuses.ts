@@ -125,6 +125,44 @@ export function awaitsHuman(status: string): boolean {
 }
 
 /**
+ * True when a task has a plan sitting at the review_plan workflow step,
+ * waiting on a human approve/reject decision.
+ *
+ * Checks the workflow engine's own currentStep/state first, falling back to
+ * the top-level status only when no workflow is attached. This is what keeps
+ * the plan-approval affordance visible even if a manual `sybra-cli update
+ * --status` desyncs the task's outer status from its active workflow (see
+ * issue #1642) — the workflow, not the possibly-stale status string, is the
+ * source of truth for whether a human decision is actually pending.
+ *
+ * Requires *both* currentStep and state to be non-empty before trusting the
+ * workflow — a workflow with only one populated (e.g. an older serialized
+ * execution, or ExecState's zero value) is not a reliable signal either way,
+ * so falls back to status rather than risk a false negative that hides the
+ * approval UI.
+ */
+export function needsPlanApproval(task: {
+  status?: string
+  workflow?: { currentStep?: string; state?: string } | null
+}): boolean {
+  const wf = task.workflow
+  if (wf?.currentStep && wf?.state) {
+    return wf.currentStep === 'review_plan' && wf.state === 'waiting'
+  }
+  return task.status === 'plan-review'
+}
+
+/**
+ * True when a task is a pending Prompt Lab proposal: tagged
+ * "prompt-lab-proposal" and sitting in human-required. Gates the dedicated
+ * PromptLabProposalPanel and suppresses the generic HumanRequiredPanel for
+ * these tasks, so a proposal has exactly one action panel.
+ */
+export function isPromptLabProposal(task: { status?: string; tags?: string[] | null }): boolean {
+  return task.status === 'human-required' && (task.tags ?? []).includes('prompt-lab-proposal')
+}
+
+/**
  * Canonical, human-facing label for a status — the label every status surface
  * (board pill, list cell, move popover) should resolve through so one state
  * reads the same wherever it appears. Unknown values pass through verbatim so
@@ -173,7 +211,8 @@ export const BOARD_COLUMNS: BoardColumn[] = [
   { status: 'ready-review', label: 'Agentic Review', border: 'border-t-success-500 dark:border-t-success-400', includes: [] },
   { status: 'testing', label: 'Testing', border: 'border-t-secondary-500 dark:border-t-secondary-400', includes: ['testing'] },
   { status: 'in-review', label: 'In Review', border: 'border-t-warning-500 dark:border-t-warning-400', includes: ['in-review', 'ready-pr'] },
-  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required', 'blocked'] },
+  { status: 'human-required', label: 'Human Required', border: 'border-t-error-500 dark:border-t-error-400', includes: ['human-required'] },
+  { status: 'blocked', label: 'Failed', border: 'border-t-error-600 dark:border-t-error-500', includes: ['blocked'] },
 ]
 
 /**
@@ -217,7 +256,7 @@ export const BOARD_LANES: BoardColumn[] = [
 /**
  * Core user-facing status set: the active board columns plus the terminal
  * states (`done`, `cancelled`). Granular states (new, plan-review,
- * ready-pr, blocked) are internal/derived — set by automations, not
+ * ready-pr) are internal/derived — set by automations, not
  * picked by hand. Users choose from this small set so a task's status always
  * lines up with a board column.
  */

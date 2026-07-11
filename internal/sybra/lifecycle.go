@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -59,6 +60,8 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	lm.startPromptLabService(ctx, emit)
 	lm.startAutoUpdate(ctx)
 	lm.startAgentLogPruneLoop(ctx)
+	lm.startTrashPruneLoop(ctx)
+	lm.startTaskSnapshotLoop(ctx)
 	lm.registerMetricsObservers()
 }
 
@@ -101,6 +104,9 @@ func (lm *LifecycleManager) startAppAuthLoop(ctx context.Context) {
 		for {
 			if err := github.RefreshAppToken(ctx); err != nil {
 				a.logger.Warn("github.app.token.refresh", "err", err)
+			} else if tok := github.CurrentAppToken(); tok != "" {
+				_ = os.Setenv("GH_TOKEN", tok)
+				_ = os.Setenv("GITHUB_TOKEN", tok)
 			}
 			select {
 			case <-ctx.Done():
@@ -122,7 +128,7 @@ const rateBudgetRefreshInterval = 60 * time.Second
 // observe directly.
 func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
 	a := lm.app
-	if !a.cfg.GitHub.Enabled {
+	if !runsGitHubRateBudgetLoop(a.cfg) {
 		return
 	}
 	a.wg.Go(func() {
@@ -139,6 +145,19 @@ func (lm *LifecycleManager) startRateBudgetLoop(ctx context.Context) {
 			}
 		}
 	})
+}
+
+func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.GitHub.RunsReviewer() {
+		return true
+	}
+	if !cfg.GitHub.RunsSearchPollers() {
+		return false
+	}
+	return cfg.GitHub.RunsIssuesFetcher() || cfg.Renovate.Enabled
 }
 
 // StartWatchers launches the config-file hot-reload watcher.
@@ -209,6 +228,52 @@ func (lm *LifecycleManager) startAgentLogPruneLoop(ctx context.Context) {
 			}
 		}
 	})
+}
+
+// startTrashPruneLoop sweeps expired soft-deleted task generations once a
+// day. The startup call inside Recovery.RunStartupCleanup handles the first
+// pass; this goroutine bounds trash growth between restarts on long-lived
+// server deployments, mirroring startAgentLogPruneLoop.
+func (lm *LifecycleManager) startTrashPruneLoop(ctx context.Context) {
+	a := lm.app
+	a.wg.Go(func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.recovery.PruneTrash(ctx)
+			}
+		}
+	})
+}
+
+// startTaskSnapshotLoop ensures the tasks-dir git snapshot repo exists,
+// takes a baseline commit attempt so a fresh, non-empty tasks dir is
+// captured immediately rather than waiting for the first ticker fire (a
+// clean/empty tasks dir makes CommitNow a no-op, same as any other
+// already-clean commit attempt), then launches the fixed-interval commit
+// loop. Skips (with a warning) when TaskSnapshotEnabled is false or
+// EnsureRepo could not make the snapshotter usable (git missing,
+// corrupt/mismatched repo).
+func (lm *LifecycleManager) startTaskSnapshotLoop(ctx context.Context) {
+	a := lm.app
+	if !a.cfg.TaskSnapshotEnabled() {
+		a.logger.Info("tasksnapshot.disabled")
+		return
+	}
+	if a.snapshotter == nil {
+		a.logger.Warn("tasksnapshot.unavailable", "reason", "snapshotter not constructed")
+		return
+	}
+	if !a.snapshotter.EnsureRepo(ctx) {
+		a.logger.Warn("tasksnapshot.ensure_repo_failed")
+		return
+	}
+	a.snapshotter.CommitNow(ctx)
+	a.wg.Go(func() { a.snapshotter.Run(ctx) })
 }
 
 // prune is the periodic body of startAgentLogPruneLoop. Mirrors the
@@ -355,6 +420,16 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 			return a.workScrubContextForTask(t.ProjectID) != nil
 		},
+		RecoverLostAgent: func(ctx context.Context) {
+			if a.recovery == nil {
+				return
+			}
+			// Keep the monitor tick responsive: the stale-agent sweep can scan
+			// all in-progress tasks and spawn recovery work.
+			a.wg.Go(func() {
+				a.recovery.RestartStaleInProgress(ctx)
+			})
+		},
 	})
 	a.monitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
@@ -474,10 +549,17 @@ func (lm *LifecycleManager) startPromptLabService(ctx context.Context, _ func(st
 	a.wg.Go(func() { a.promptLab.run(ctx) })
 }
 
-// startPollHub registers all enabled poll handlers and starts the hub.
-func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
-	a := lm.app
-	hub := poll.NewHub()
+// pollRegistrar is the subset of *poll.Hub used by registerPollHandlers,
+// extracted so tests can substitute a fake and assert on which fetchers were
+// registered without inspecting poll.Hub's private fields.
+type pollRegistrar interface {
+	Register(f poll.Fetcher, initialWait time.Duration)
+}
+
+// registerPollHandlers registers all enabled poll handlers onto reg. Split
+// out of startPollHub so tests can exercise the registration logic (e.g.
+// reviewer gating) directly against a fake pollRegistrar.
+func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesFetcher) {
 	// Periodic GitHub search pollers (reviews/issues/renovate) only run on the
 	// primary instance — a "secondary" machine sharing the same token skips them
 	// so the shared rate budget isn't billed twice. Triage is local (no GitHub
@@ -487,18 +569,33 @@ func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *pol
 		a.logger.Info("github.pollers.secondary", "reason", "poller_role=secondary; skipping reviews/issues/renovate searches")
 	}
 	if a.reviewer != nil {
-		hub.Register(a.reviewer, 10*time.Second)
+		if a.cfg.GitHub.RunsReviewer() {
+			reg.Register(a.reviewer, 10*time.Second)
+		} else {
+			a.logger.Info("github.reviews.disabled",
+				"github_enabled", a.cfg.GitHub.Enabled,
+				"reviews_enabled", a.cfg.GitHub.ReviewsEnabled,
+			)
+		}
 	}
 	if runSearch {
 		if issuesFetcher != nil {
-			hub.Register(issuesFetcher, 20*time.Second)
+			reg.Register(issuesFetcher, 20*time.Second)
 		}
 		if renovatePoller := a.renovate.poller(); renovatePoller != nil {
-			hub.Register(renovatePoller, 15*time.Second)
+			reg.Register(renovatePoller, 15*time.Second)
 		}
 	}
 	if triagePoller := a.triage.poller(); triagePoller != nil {
-		hub.Register(triagePoller, 30*time.Second)
+		reg.Register(triagePoller, 30*time.Second)
 	}
+}
+
+// startPollHub registers all enabled poll handlers and starts the hub.
+func (lm *LifecycleManager) startPollHub(ctx context.Context, issuesFetcher *poll.IssuesFetcher) {
+	a := lm.app
+	hub := poll.NewHub()
+	registerPollHandlers(a, hub, issuesFetcher)
+	metrics.RegisterPollerAuthHealth(hub.AuthHealthSnapshot)
 	hub.Start(ctx, &a.wg, a.logger)
 }

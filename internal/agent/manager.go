@@ -19,6 +19,21 @@ type EmitFunc func(event string, data any)
 // ErrSurvivalRegistry marks failures initializing restart-survival persistence.
 var ErrSurvivalRegistry = errors.New("agent survival registry")
 
+// defaultDeadAgentRetention is how long a completed agent's registry entry
+// (output buffer, prompt, convo buffer) survives after markAgentDone runs,
+// before Manager.deadAgentRetention evicts it. Bounds long-run memory growth
+// (#1532) while leaving a window for callers to read final state
+// (GetAgent/GetConvoOutput/Output) right after a terminal transition.
+const defaultDeadAgentRetention = 10 * time.Minute
+
+// ErrMaxConcurrentReached is returned by registerRunningAgent when the live
+// agent count is already at MaxConcurrent. It is a transient, self-healing
+// capacity condition (a slot frees when any running agent completes), so
+// callers must park-and-retry rather than escalate — the workflow layer maps
+// it to workflow.ErrAgentPoolBusy. Kept a sentinel (not a bare fmt.Errorf) so
+// that mapping is errors.Is-based, not string-matched.
+var ErrMaxConcurrentReached = errors.New("max concurrent agents reached")
+
 // Guardrails defines per-agent execution limits.
 type Guardrails struct {
 	MaxCostUSD float64
@@ -48,10 +63,14 @@ type Manager struct {
 	bashTimeoutMs int
 	retryWatchdog int
 	fallbackModel string
-	gate          provider.HealthGate
-	limitGate     LimitGate
-	limitPolicy   limits.Policy
-	limitSink     func(limits.Snapshot)
+	// headlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	headlessSteerable bool
+	gate              provider.HealthGate
+	limitGate         LimitGate
+	limitPolicy       limits.Policy
+	limitSink         func(limits.Snapshot)
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -65,6 +84,12 @@ type Manager struct {
 	// dispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
 	dispatchJitterMs int
+	// playwrightMCPEnabled mirrors config.PlaywrightMCPEnabled. Default-off:
+	// see Manager.preparePlaywrightMCP for the full attach decision.
+	playwrightMCPEnabled bool
+	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
+	// verbatim to the Playwright MCP launch command.
+	playwrightMCPExtraArgs []string
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
 	// lifetime.
@@ -89,6 +114,25 @@ type Manager struct {
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
 
+	taskStatus func(taskID string) (string, bool)
+
+	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
+	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
+	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
+	// system/probe run with an empty TaskID (tests, health checks).
+	sandboxHome func(taskID string) (string, error)
+	// controlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into every
+	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
+	// real operator store even though SYBRA_HOME points at the task's sandbox.
+	controlHome string
+
+	ghAppToken func() string
+
+	// deadAgentRetention bounds how long a completed agent stays in agents
+	// after markAgentDone before being evicted. <= 0 evicts synchronously
+	// (used by tests that need deterministic immediate eviction).
+	deadAgentRetention time.Duration
+
 	// dispatchClaims serializes agent dispatch per task. A claim is held for
 	// the full duration of a StartAgent call — across the (multi-second)
 	// worktree-preparation window during which the agent is not yet registered
@@ -104,6 +148,7 @@ type Manager struct {
 type LimitGate interface {
 	ProviderAvailable(provider string, policy limits.Policy) (bool, string)
 	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
+	ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
 }
 
 // LimitGateOrNil wraps store as a LimitGate, returning a genuine nil
@@ -127,7 +172,19 @@ type ManagerConfig struct {
 	SurviveRestartDir string
 	SessionSink       func(taskID, agentID, sessionID string) error
 	TaskExists        func(taskID string) bool
+	TaskStatus        func(taskID string) (string, bool)
 	LimitSink         func(limits.Snapshot)
+
+	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
+	// task-scoped run. Required for every fresh agent subprocess so it never
+	// inherits an unset or operator SYBRA_HOME by default — see
+	// Manager.prepareRunConfig. May be nil only when the manager is used
+	// exclusively for system/probe runs with an empty TaskID.
+	SandboxHome func(taskID string) (string, error)
+	// ControlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into
+	// every task-scoped agent subprocess so sybra-cli task commands reach the
+	// real operator store (typically config.HomeDir()).
+	ControlHome string
 }
 
 // ManagerRuntimeConfig holds settings that affect future runs and may change
@@ -146,6 +203,14 @@ type ManagerRuntimeConfig struct {
 	// DispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch. 0 disables jitter.
 	DispatchJitterMs int
+	// HeadlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	HeadlessSteerable bool
+	// PlaywrightMCPEnabled mirrors config.PlaywrightMCPEnabled(). Default-off.
+	PlaywrightMCPEnabled bool
+	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
+	PlaywrightMCPExtraArgs []string
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -173,8 +238,15 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitSink:              cfg.LimitSink,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
+		taskStatus:             cfg.TaskStatus,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
+		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
+		sandboxHome:            cfg.SandboxHome,
+		controlHome:            cfg.ControlHome,
+		deadAgentRetention:     defaultDeadAgentRetention,
+		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
+		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
@@ -216,6 +288,60 @@ func (m *Manager) ReleaseTaskDispatch(taskID string) {
 	m.mu.Unlock()
 }
 
+// IsDispatching reports whether a dispatch claim is currently held for
+// taskID, by any caller of ClaimTaskDispatch/TryClaimDispatch — the workflow
+// engine's execRunAgent, recovery.RestartStaleInProgress (via
+// agentorch.Orchestrator), or a direct non-workflow StartAgent call. This is
+// the single ground-truth answer to "is this task's next run already
+// owned?" that every dispatcher can consult before deciding to redispatch,
+// instead of each maintaining its own separate view of dispatch-in-flight
+// state.
+func (m *Manager) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, held := m.dispatchClaims[taskID]
+	return held
+}
+
+// DispatchClaim is a held per-task dispatch claim returned by
+// TryClaimDispatch. It centralizes the release-at-most-once bookkeeping every
+// dispatch call site used to hand-roll individually (a local `released bool`
+// guarding a deferred delete): releasing early to unblock a nested
+// same-task dispatch (e.g. branch-conflict recovery) can never race a
+// deferred second release into clobbering a claim a different dispatcher has
+// since acquired.
+type DispatchClaim struct {
+	manager  *Manager
+	taskID   string
+	released bool
+}
+
+// TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
+// true ok, the caller MUST release the returned claim exactly once dispatch
+// finishes (success or failure) — typically via `defer claim.Release()` —
+// and MAY call Release earlier to unblock a nested same-task dispatch before
+// the deferred call runs, since Release is idempotent. On ok=false a dispatch
+// is already in flight for the same task and the caller MUST NOT start an
+// agent.
+func (m *Manager) TryClaimDispatch(taskID string) (claim *DispatchClaim, ok bool) {
+	if !m.ClaimTaskDispatch(taskID) {
+		return nil, false
+	}
+	return &DispatchClaim{manager: m, taskID: taskID}, true
+}
+
+// Release releases the claim. Idempotent and nil-safe: a second call (or a
+// call on a nil claim) is a no-op, so an early manual release followed by a
+// deferred Release never double-deletes a claim a different dispatcher has
+// since acquired.
+func (c *DispatchClaim) Release() {
+	if c == nil || c.released {
+		return
+	}
+	c.released = true
+	c.manager.ReleaseTaskDispatch(c.taskID)
+}
+
 // ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
 // affect future Run calls and config reloads without mutating startup-only callbacks.
 func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
@@ -233,6 +359,9 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
+	m.headlessSteerable = cfg.HeadlessSteerable
+	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
+	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()
 	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil
@@ -269,6 +398,12 @@ func (m *Manager) taskExistsFn() func(taskID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.taskExists
+}
+
+func (m *Manager) taskStatusFn() func(taskID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskStatus
 }
 
 // survives reports whether restart survival is active.
@@ -345,6 +480,12 @@ func (m *Manager) signalKill(a *Agent) {
 func (m *Manager) SetHealthGate(g provider.HealthGate) {
 	m.mu.Lock()
 	m.gate = g
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghAppToken = fn
 	m.mu.Unlock()
 }
 
@@ -445,7 +586,18 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 	if lg == nil {
 		return false
 	}
-	alt, _ := lg.ChooseProvider(resolved, []string{"claude", "codex", "copilot"}, healthy, lp)
+	candidates := []string{"claude", "codex", "copilot"}
+	if alt, _ := lg.ChooseProvider(resolved, candidates, healthy, lp); alt != "" {
+		return true
+	}
+	available, reason := lg.ProviderAvailable(resolved, lp)
+	if available || limits.IsSoftThresholdReason(reason) {
+		return false
+	}
+	// Mirror resolveProviderDecision's last-resort path: when no fully
+	// available peer exists, a soft-threshold-limited peer is still a usable
+	// failover target for a hard-blocked provider (e.g. rate limit reached).
+	alt, _ := lg.ChooseSoftLimitedPeer(resolved, candidates, healthy, lp)
 	return alt != ""
 }
 
@@ -493,7 +645,14 @@ func (m *Manager) Guardrails() Guardrails {
 // TurnCostFraction * MaxCostUSD, meaning there is still meaningful budget left
 // and the turns limit can be auto-bumped without human approval.
 // If MaxCostUSD == 0, auto-continue is always allowed (cost is unlimited).
+// Verifier roles (review/test-runner/eval, see Role.IsVerifier) never
+// auto-continue: cost only updates on "result" events, so a fan-out can hold
+// it at a stale $0 for the whole run, and a verifier stuck in a loop should
+// escalate rather than silently get 2x/4x/8x the turn budget.
 func (m *Manager) canAutoContinueTurns(a *Agent) bool {
+	if RoleFromName(a.Name).IsVerifier() {
+		return false
+	}
 	m.mu.RLock()
 	maxCost := m.guardrails.MaxCostUSD
 	fraction := m.guardrails.TurnCostFraction
@@ -538,8 +697,14 @@ func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
 
 // recordCompletion records duration + result into the metrics pipeline.
 // Call through fireComplete — do not call directly from runner terminal sites.
+//
+// Duration is measured against the last observed stream activity, not against
+// this call's own wall-clock time: fireComplete can run long after the
+// process actually finished (reattach/stop recovering a run the app missed
+// while it was down), and time.Since(a.StartedAt) would then count that idle
+// gap as run time.
 func (m *Manager) recordCompletion(ctx context.Context, a *Agent, ok bool) {
-	dur := time.Since(a.StartedAt)
+	dur := max(a.GetLastEventAt().Sub(a.StartedAt), 0)
 	result := "ok"
 	if !ok {
 		result = "error"

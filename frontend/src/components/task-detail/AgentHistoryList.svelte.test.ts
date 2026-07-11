@@ -3,10 +3,17 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/sv
 
 const mockGetRunLog = vi.fn()
 const mockGetRunConvoLog = vi.fn()
+const mockPushLocal = vi.fn()
 
 vi.mock('$lib/api', () => ({
   GetAgentRunLog: (...args: unknown[]) => mockGetRunLog(...args),
   GetAgentRunConvoLog: (...args: unknown[]) => mockGetRunConvoLog(...args),
+}))
+
+vi.mock('../../stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    pushLocal: (...args: unknown[]) => mockPushLocal(...args),
+  },
 }))
 
 vi.mock('../StreamOutput.svelte', () => ({ default: () => {} }))
@@ -53,6 +60,7 @@ describe('AgentHistoryList', () => {
   beforeEach(() => {
     mockGetRunLog.mockReset()
     mockGetRunConvoLog.mockReset()
+    mockPushLocal.mockReset()
   })
   afterEach(cleanup)
 
@@ -143,6 +151,59 @@ describe('AgentHistoryList', () => {
     await waitFor(() => {
       // Still 1 call — cached
       expect(mockGetRunLog).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('disables the Copy output button while the log is loading', async () => {
+    let resolveLog: (v: unknown[]) => void = () => {}
+    mockGetRunLog.mockReturnValue(new Promise((resolve) => { resolveLog = resolve }))
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByText('a-old-1'))
+    await waitFor(() => {
+      const button = screen.getByText('Copy output').closest('button') as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+    })
+    resolveLog([{ type: 'assistant', content: 'hello' }])
+    await waitFor(() => {
+      const button = screen.getByText('Copy output').closest('button') as HTMLButtonElement
+      expect(button.disabled).toBe(false)
+    })
+  })
+
+  it('copies assembled stream output to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    mockGetRunLog.mockResolvedValue([{ type: 'assistant', content: 'hello' }, { type: 'assistant', content: 'world' }])
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByText('a-old-1'))
+    await waitFor(() => expect(mockGetRunLog).toHaveBeenCalled())
+    await fireEvent.click(screen.getByText('Copy output'))
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('hello\nworld')
+    })
+  })
+
+  it('copies assembled convo output to the clipboard, fetching the log first if needed', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    mockGetRunConvoLog.mockResolvedValue([{ text: 'hi there' }])
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByText('a-old-2'))
+    await waitFor(() => expect(mockGetRunConvoLog).toHaveBeenCalled())
+    await fireEvent.click(screen.getByText('Copy output'))
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('hi there')
+    })
+  })
+
+  it('shows "Nothing to copy" when the log and result are both empty', async () => {
+    mockGetRunLog.mockResolvedValue([])
+    render(AgentHistoryList, { props: { task: baseTask as never } })
+    await fireEvent.click(screen.getByText('a-old-1'))
+    await waitFor(() => expect(mockGetRunLog).toHaveBeenCalled())
+    await fireEvent.click(screen.getByText('Copy output'))
+    await waitFor(() => {
+      expect(mockPushLocal).toHaveBeenCalledWith('error', 'Nothing to copy', 'This run has no output.')
     })
   })
 })

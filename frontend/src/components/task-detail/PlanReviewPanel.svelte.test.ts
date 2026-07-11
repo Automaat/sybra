@@ -66,4 +66,31 @@ describe('PlanReviewPanel', () => {
     render(PlanReviewPanel, { props: { task: baseTask as never, onreviewplan } })
     expect(screen.getByText('Review Plan →')).toBeDefined()
   })
+
+  it('renders when workflow is waiting on review_plan even if status desynced to planning', () => {
+    render(PlanReviewPanel, {
+      props: {
+        task: {
+          ...baseTask,
+          status: 'planning',
+          workflow: { currentStep: 'review_plan', state: 'waiting' },
+        } as never,
+      },
+    })
+    expect(screen.getByText('Approve Plan')).toBeDefined()
+    expect(screen.getByText('Reject Plan')).toBeDefined()
+  })
+
+  it('does not render when workflow has moved past review_plan even if status is stale plan-review', () => {
+    const { container } = render(PlanReviewPanel, {
+      props: {
+        task: {
+          ...baseTask,
+          status: 'plan-review',
+          workflow: { currentStep: 'implement', state: 'running' },
+        } as never,
+      },
+    })
+    expect(container.querySelector('button')).toBeNull()
+  })
 })

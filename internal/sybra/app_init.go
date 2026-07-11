@@ -17,12 +17,14 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
@@ -31,6 +33,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -105,12 +108,9 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 	if err != nil {
 		return nil
 	}
-	if p.Type != project.ProjectTypeWork {
+	bl := p.WorkBlocklist()
+	if bl == nil {
 		return nil
-	}
-	bl := []string{p.ID, p.Owner, p.Repo}
-	if p.URL != "" {
-		bl = append(bl, p.URL)
 	}
 	return &WorkScrubContext{ProjectID: p.ID, Blocklist: bl}
 }
@@ -118,8 +118,11 @@ func (a *App) workScrubContextForTask(projectID string) *WorkScrubContext {
 // initIssuesFetcher constructs the GitHub Issues fetcher if enabled, returning
 // nil otherwise. Kept separate so Startup stays under the funlen limit.
 func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
-	if !a.cfg.GitHub.Enabled {
-		a.logger.Info("github.disabled")
+	if !a.cfg.GitHub.RunsIssuesFetcher() {
+		a.logger.Info("github.issues.disabled",
+			"github_enabled", a.cfg.GitHub.Enabled,
+			"issues_enabled", a.cfg.GitHub.IssuesEnabled,
+		)
 		return nil
 	}
 	f := poll.NewIssuesFetcher(a.tasks, a.projects, emit, a.logger, a.allowsProjectType)
@@ -161,6 +164,8 @@ func (a *App) logAutomationsSummary() {
 	a.logger.Info("app.automations",
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
+		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
+		"github_reviews", a.cfg.GitHub.RunsReviewer(),
 		"renovate", a.cfg.Renovate.Enabled,
 		"triage", a.cfg.Triage.Enabled,
 		"human_review", a.humanReview != nil,
@@ -252,8 +257,11 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		SessionSink: func(taskID, agentID, sessionID string) error {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
-		TaskExists: a.taskExistsForAgent,
-		LimitSink:  a.recordLimitSnapshot,
+		TaskExists:  a.taskExistsForAgent,
+		TaskStatus:  a.taskStatusForAgent,
+		LimitSink:   a.recordLimitSnapshot,
+		SandboxHome: a.sandboxes.SybraHomeDir,
+		ControlHome: config.HomeDir(),
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
@@ -286,6 +294,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		a.logger.Error("agent.manager.init", "err", err)
 		return fmt.Errorf("agent manager: %w", err)
 	}
+	a.agents.SetGHAppToken(github.CurrentAppToken)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
@@ -311,6 +320,9 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		LimitPolicy:            policy,
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
 }
 
@@ -341,6 +353,17 @@ func (a *App) taskExistsForAgent(taskID string) bool {
 	}
 	a.logger.Warn("agent.task-exists.error", "task_id", taskID, "err", err)
 	return true
+}
+
+func (a *App) taskStatusForAgent(taskID string) (string, bool) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			a.logger.Warn("agent.reattach.task-status", "task_id", taskID, "err", err)
+		}
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
@@ -658,17 +681,31 @@ func (a *App) initWorkflowEngine() {
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
+	agentLauncher := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience}
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience},
+		agentLauncher,
 		a.logger,
 	)
 	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
+	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
+	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
+	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
+	a.workflowEngine.SetPRFinder(prFinderAdapter{})
+	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		projects:   a.projects,
+		classifier: &triage.FallbackClassifier{Model: a.cfg.Triage.Model, Logger: a.logger, Gate: a.providerHealth},
+		audit:      a.audit,
+	})
 	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
+	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
@@ -681,12 +718,27 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetContext(a.ctx)
 	// Recover worktree-prep rebase conflicts via the conflict pr-fix instead of
 	// escalating to a human. Wired here (not at construction) because the
-	// orchestrator is built before the reviewer.
-	if a.agentOrch != nil && a.reviewer != nil {
-		a.agentOrch.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
+	// orchestrator is built before the reviewer. Routed through
+	// workflowEngine.TryConflictRecovery (not reviewer.RecoverStaleBranchConflict
+	// directly): a rebase conflict discovered here can be reached from deep
+	// inside a still-executing StartWorkflow call (e.g. restart-stale's raw
+	// StartWorkflow(implement) hitting the conflict during execRunAgent's own
+	// worktree prep), and calling the reviewer directly in that case re-enters
+	// StartWorkflowWithVars while this task's starting marker is still held —
+	// ErrWorkflowAlreadyActive, silently dropped, straight to human-required.
+	// TryConflictRecovery detects the held marker and queues the retry instead.
+	if a.agentOrch != nil && a.workflowEngine != nil {
+		a.agentOrch.SetConflictRecovery(a.workflowEngine.TryConflictRecovery)
+	}
+	// Same recovery for a push-time divergence surfaced by push_branch/create_pr
+	// (e.g. a reused worktree rebased out from under an earlier merge-based
+	// push) — otherwise it flips straight to human-required with no attempt
+	// at the autonomous fix other divergence sources already get.
+	if a.workflowEngine != nil && a.reviewer != nil {
+		a.workflowEngine.SetConflictRecovery(a.reviewer.RecoverStaleBranchConflict)
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
-	// to the AgentCompletionHandler constructed there.
+	// to the completion.Handler constructed there.
 }
 
 func (a *App) initAgentConfig() {
@@ -738,10 +790,7 @@ func (a *App) initLoopAgents() error {
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
 	a.seedDefaultLoopAgents()
-	// loopagent.Scheduler.Sync spawns loop-agent goroutines derived from its
-	// own s.ctx field, bound once from the ctx passed to NewScheduler above
-	// (this same Startup ctx) rather than an explicit per-call parameter.
-	a.loopSched.Sync() //nolint:contextcheck // Scheduler uses its own s.ctx field, see comment above
+	a.loopSched.SyncContext(ctx)
 }
 
 func (a *App) seedDefaultLoopAgents() {
@@ -777,19 +826,28 @@ func (a *App) newRecovery() *recovery.Recovery {
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		retention = time.Duration(days) * 24 * time.Hour
 	}
-	return &recovery.Recovery{
-		Tasks:          a.tasks,
-		Agents:         a.agents,
-		Worktrees:      a.worktrees,
-		WorkflowEngine: a.workflowEngine,
-		Orchestrator:   a.agentOrch,
-		Projects:       a.projects,
-		Logger:         a.logger,
-		Throttle:       a.restartStaleErr,
-		WG:             &a.wg,
-		LogDir:         a.logDir,
-		LogRetention:   retention,
+	r := &recovery.Recovery{
+		Tasks:              a.tasks,
+		Agents:             a.agents,
+		Worktrees:          a.worktrees,
+		WorkflowEngine:     a.workflowEngine,
+		Orchestrator:       a.agentOrch,
+		Projects:           a.projects,
+		PRs:                newRecoveryPRResolver(),
+		Logger:             a.logger,
+		Throttle:           a.restartStaleErr,
+		WG:                 &a.wg,
+		LogDir:             a.logDir,
+		LogRetention:       retention,
+		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 	}
+	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
+	// always constructed, but when the feature is disabled its repo is never
+	// created, so a pre-prune commit would fail on every sweep forever.
+	if a.snapshotter != nil && a.cfg.TaskSnapshotEnabled() {
+		r.CommitBeforePrune = a.snapshotter.CommitNow
+	}
+	return r
 }
 
 // syncSkillsBundle drives the skillsync package with the App's source/dst
@@ -803,10 +861,11 @@ func (a *App) syncSkillsBundle() {
 		userHome = ""
 	}
 	(&skillsync.Syncer{Logger: a.logger}).Run(skillsync.Options{
-		RepoDir:      a.repoDir,
-		SkillsFS:     a.skillsFS,
-		PrimaryDst:   a.skillsDir,
-		SybraHomeDir: config.HomeDir(),
-		UserHomeDir:  userHome,
+		RepoDir:              a.repoDir,
+		SkillsFS:             a.skillsFS,
+		PrimaryDst:           a.skillsDir,
+		SybraHomeDir:         config.HomeDir(),
+		UserHomeDir:          userHome,
+		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
 	})
 }

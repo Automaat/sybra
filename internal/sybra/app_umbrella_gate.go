@@ -33,7 +33,8 @@ type umbrellaState struct {
 	active       int // children occupying a parallelism slot
 	anyHR        bool
 	anyCancelled bool
-	released     int // children released so far this tick (counts toward the cap)
+	anyBlocked   bool // non-gated child stuck in `blocked` (e.g. human-review flip)
+	released     int  // children released so far this tick (counts toward the cap)
 	children     []umbrellaProgressChild
 }
 
@@ -140,6 +141,19 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 		st.anyCancelled = true
 	case task.StatusHumanRequired:
 		st.anyHR = true
+		st.active++ // a stuck child still occupies a slot until resolved
+	case task.StatusBlocked:
+		if slices.Contains(t.Tags, umbrellaGatedTag) {
+			// Gate-blocked, awaiting its dependencies — not stuck, handled by
+			// ReadyToRelease/depsSatisfied.
+			return
+		}
+		// Blocked without the gating tag: not the umbrella gate's own hold (e.g.
+		// a human-review flip for a contained Sybra bug). depsSatisfied requires
+		// a dependency to reach Done, so a dependent chain waiting on this child
+		// would otherwise stall forever with no escalation. Surface it like any
+		// other stuck child.
+		st.anyBlocked = true
 		st.active++ // a stuck child still occupies a slot until resolved
 	default:
 		if isRunningChild(t.Status) && !slices.Contains(t.Tags, umbrellaGatedTag) {
@@ -315,19 +329,34 @@ func umbrellaProgressIssueSuffix(ref string) string {
 }
 
 // trackerRollup decides an umbrella tracker's status from its children. A
-// cycle, a stuck (human-required) child, or a cancelled child surfaces as
-// human-required (halting only that chain); all-done closes the umbrella. A
+// cycle, a stuck (human-required) child, a non-gated blocked child, or a
+// cancelled child surfaces as human-required (halting only that chain);
+// all-done closes the umbrella. A
 // tracker with no children (every sub-issue was already closed at expansion)
-// is vacuously complete, but only once `settled` so a tracker observed while
-// its children are still being materialized is not closed prematurely.
+// is vacuously complete, but only once `settled` (so a tracker observed while
+// its children are still being materialized is not closed prematurely) and
+// only when expansion isn't currently failing — a tracker carrying
+// umbrella.ExpandFailTagPrefix (see internal/umbrella.recordExpandFailure)
+// never had a chance to materialize its children in the first place, and
+// closing it would silently drop the umbrella issue while sub-issues remain
+// open on GitHub (#1570).
 func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status, reason string, doClose bool) {
+	expandFailing := st.tracker != nil && umbrella.ParseExpandFailCount(st.tracker.Tags) > 0
 	switch {
 	case cyclic:
 		return task.StatusHumanRequired, "umbrella dependency cycle detected", false
 	case st.anyHR:
 		return task.StatusHumanRequired, "umbrella child needs attention", false
+	case st.anyBlocked:
+		return task.StatusHumanRequired, "umbrella child is blocked", false
 	case st.anyCancelled:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
+	case expandFailing:
+		// Defer entirely to internal/umbrella.recordExpandFailure, which owns
+		// this tracker's status/reason while expansion keeps failing. Rollup
+		// must not overwrite that state just because the tracker already has
+		// children or all currently-materialized children happen to be done.
+		return st.tracker.Status, st.tracker.StatusReason, false
 	case st.total > 0 && st.doneCount == st.total:
 		return task.StatusDone, "all umbrella children complete", true
 	case st.total == 0 && settled:

@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { ChevronLeft } from '@lucide/svelte'
   import { SegmentedControl } from '@skeletonlabs/skeleton-svelte'
-  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import TaskHeaderBar from '../components/task-detail/TaskHeaderBar.svelte'
   import TaskStatusBanner from '../components/task-detail/TaskStatusBanner.svelte'
+  import HumanRequiredPanel from '../components/task-detail/HumanRequiredPanel.svelte'
+  import PromptLabProposalPanel from '../components/task-detail/PromptLabProposalPanel.svelte'
   import TaskMetadataRow from '../components/task-detail/TaskMetadataRow.svelte'
   import TaskPullRequestsPanel from '../components/task-detail/TaskPullRequestsPanel.svelte'
   import TaskDescriptionEditor from '../components/task-detail/TaskDescriptionEditor.svelte'
@@ -14,6 +16,12 @@
   import LiveAgentPanel from '../components/task-detail/LiveAgentPanel.svelte'
   import AgentLauncher from '../components/task-detail/AgentLauncher.svelte'
   import AgentHistoryList from '../components/task-detail/AgentHistoryList.svelte'
+  import TaskDiagnosticsPanel from '../components/task-detail/TaskDiagnosticsPanel.svelte'
+  import { needsPlanApproval } from '../lib/statuses.js'
+  import TaskProgressPanel from '../components/task-detail/TaskProgressPanel.svelte'
+  import TaskChildrenPanel from '../components/task-detail/TaskChildrenPanel.svelte'
+  import { childrenForUmbrella } from '../lib/umbrella-progress.js'
+  import { ListTaskProgress } from '$lib/api'
 
   interface Props {
     taskId: string
@@ -21,11 +29,12 @@
     onviewagent: (agentId: string) => void
     ondelete: () => void
     onreviewplan?: (taskId: string) => void
+    onselecttask?: (id: string) => void
   }
 
-  const { taskId, onback, onviewagent, ondelete, onreviewplan }: Props = $props()
+  const { taskId, onback, onviewagent, ondelete, onreviewplan, onselecttask }: Props = $props()
 
-  let t = $state<Task | null>(null)
+  const t = $derived(taskStore.tasks.get(taskId) ?? null)
   let error = $state('')
   // The detail body is split into tabs so a big task (plan + review + many runs)
   // is scannable instead of a single long scroll. Default is always Overview.
@@ -37,17 +46,29 @@
   )
   // A plan-review task always needs a Plan tab to host the approve/reject
   // decision, even when its plan lives in the body rather than a sidecar.
-  const showPlanTab = $derived(hasPlan || t?.status === 'plan-review')
+  const pendingApproval = $derived(!!t && needsPlanApproval(t))
+  const showPlanTab = $derived(hasPlan || pendingApproval)
   const hasReview = $derived(
     !!(t && (t.codeReview || (t.agentRuns ?? []).some((r) => REVIEW_ROLES.has(r.role)))),
   )
   const runsCount = $derived((t?.agentRuns ?? []).filter((r) => r.state !== 'running').length)
+  let progressCount = $state(0)
+  let progressLoadSeq = 0
+  const hasProgress = $derived(progressCount > 0)
+
+  const childData = $derived(t ? childrenForUmbrella(t, taskStore.list) : { children: [], unresolved: [], displayTotal: 0 })
+  const hasChildren = $derived(
+    !!t && (t.taskType === 'umbrella' || (t.dependsOn?.length ?? 0) > 0 || childData.displayTotal > 0),
+  )
 
   const tabs = $derived([
     { value: 'overview', label: 'Overview' },
-    ...(showPlanTab ? [{ value: 'plan', label: t?.status === 'plan-review' ? 'Plan ●' : 'Plan' }] : []),
+    ...(showPlanTab ? [{ value: 'plan', label: pendingApproval ? 'Plan ●' : 'Plan' }] : []),
     ...(hasReview ? [{ value: 'review', label: 'Review' }] : []),
+    ...(hasProgress ? [{ value: 'progress', label: 'Progress' }] : []),
+    ...(hasChildren ? [{ value: 'children', label: `Children · ${childData.displayTotal}` }] : []),
     { value: 'runs', label: runsCount > 0 ? `Runs · ${runsCount}` : 'Runs' },
+    { value: 'diagnostics', label: 'Diagnostics' },
   ])
 
   // If the active tab disappears (e.g. its data was cleared), fall back to Overview.
@@ -72,11 +93,35 @@
 
   async function loadTask() {
     try {
-      t = await taskStore.get(taskId)
+      await taskStore.get(taskId)
+      error = ''
     } catch (e) {
       error = String(e)
     }
   }
+
+  async function loadProgressCount(taskID: string) {
+    const seq = ++progressLoadSeq
+    try {
+      const entries = (await ListTaskProgress(taskID)) ?? []
+      if (seq === progressLoadSeq) progressCount = entries.length
+    } catch {
+      // Keep the last known count so a transient progress API failure does not
+      // hide the tab for tasks that already have progress.
+      if (seq !== progressLoadSeq) return
+    }
+  }
+
+  $effect(() => {
+    if (!t?.id) {
+      progressCount = 0
+      return
+    }
+    void t.updatedAt
+    untrack(() => {
+      void loadProgressCount(t.id)
+    })
+  })
 
   // Translate page-level keyboard shortcuts into CustomEvents that the
   // sub-components listen for. Mirrors the existing `open-due-date` pattern.
@@ -153,7 +198,9 @@
       <!-- Persistent header: always visible above the tabs. -->
       <TaskHeaderBar task={t} {ondelete} />
       <TaskStatusBanner task={t} />
-      {#if t.status === 'plan-review' && activeTab !== 'plan'}
+      <HumanRequiredPanel task={t} />
+      <PromptLabProposalPanel task={t} />
+      {#if pendingApproval && activeTab !== 'plan'}
         <!-- Default is Overview, so nudge the pending approve/reject to the fore. -->
         <button
           type="button"
@@ -164,17 +211,19 @@
       <!-- Pinned outside the tabs so a live SSE stream never unmounts on a switch. -->
       <LiveAgentPanel task={t} {onviewagent} />
 
-      <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
-        <SegmentedControl.Control>
-          <SegmentedControl.Indicator />
-          {#each tabs as tab}
-            <SegmentedControl.Item value={tab.value}>
-              <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
-              <SegmentedControl.ItemHiddenInput />
-            </SegmentedControl.Item>
-          {/each}
-        </SegmentedControl.Control>
-      </SegmentedControl>
+      <div data-testid="task-detail-tabs" data-tab-labels={tabs.map((tab) => tab.label).join('|')}>
+        <SegmentedControl orientation="horizontal" value={activeTab} onValueChange={(details) => (activeTab = details.value ?? 'overview')}>
+          <SegmentedControl.Control>
+            <SegmentedControl.Indicator />
+            {#each tabs as tab}
+              <SegmentedControl.Item value={tab.value}>
+                <SegmentedControl.ItemText>{tab.label}</SegmentedControl.ItemText>
+                <SegmentedControl.ItemHiddenInput />
+              </SegmentedControl.Item>
+            {/each}
+          </SegmentedControl.Control>
+        </SegmentedControl>
+      </div>
 
       <!-- Two-column: a wide main content column + a persistent properties rail,
            so the page uses its width instead of stranding a narrow column on the
@@ -187,7 +236,7 @@
 
           {#if showPlanTab}
             <section class={panelClass('plan', 'flex flex-col gap-4')}>
-              {#if t.status === 'plan-review'}
+              {#if pendingApproval}
                 <PlanReviewPanel task={t} {onreviewplan} />
               {:else}
                 <TaskPlanPanel task={t} />
@@ -201,9 +250,25 @@
             </section>
           {/if}
 
+          {#if hasProgress}
+            <section class={panelClass('progress', 'flex flex-col gap-4')}>
+              <TaskProgressPanel task={t} />
+            </section>
+          {/if}
+
+          {#if hasChildren}
+            <section class={panelClass('children', 'flex flex-col gap-4')}>
+              <TaskChildrenPanel task={t} onselecttask={onselecttask ?? (() => {})} />
+            </section>
+          {/if}
+
           <section class={panelClass('runs')}>
             <AgentLauncher task={t} />
             <AgentHistoryList task={t} />
+          </section>
+
+          <section class={panelClass('diagnostics')}>
+            <TaskDiagnosticsPanel task={t} />
           </section>
         </div>
 

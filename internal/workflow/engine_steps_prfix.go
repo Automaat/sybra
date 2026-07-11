@@ -20,16 +20,30 @@ const ReviewHoldParkVar = "review_hold_park"
 
 const reviewHoldParkReason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
 
-func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
+func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	requiresHuman, reason := prFixRequiresHuman(wfExec)
 	// Deterministic park wins over the sentinel: in push mode the agent pushed
 	// and its own sentinel says `continue`, which must NOT release the hold.
+	reviewHoldForced := false
 	if !requiresHuman && wfExec != nil && wfExec.Variables[ReviewHoldParkVar] == "true" {
 		requiresHuman = true
 		reason = reviewHoldParkReason
+		reviewHoldForced = true
 	}
 	if !requiresHuman {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
+	}
+	// The review-hold park exists because a pending review draft needs a human
+	// to submit it — that's true regardless of the remote PR's CI/mergeable
+	// state, so it must never be waved through by the re-probe below.
+	if !reviewHoldForced {
+		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
+			if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
+			}
+			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
+			return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
+		}
 	}
 	if reason == "" {
 		reason = "pr-fix agent requested human review"
@@ -39,6 +53,30 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
+}
+
+// checkPRAlreadyResolved re-probes the live PR when the pr-fix agent (or a
+// pre-agent rebase-block) requested human review — the agent may have
+// correctly declined to push because its local worktree was stale/diverged
+// from a remote branch an external bot already force-fixed. A pending run
+// must never count as resolved, so any fetch error falls through to the
+// normal human-required park.
+func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason string) (msg string, resolved bool) {
+	if e.prStates == nil || t.ProjectID == "" || t.PRNumber <= 0 {
+		return "", false
+	}
+	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.resolved-probe-failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
+		return "", false
+	}
+	if !state.Resolved() {
+		return "", false
+	}
+	if agentReason == "" {
+		agentReason = "pr-fix agent requested human review"
+	}
+	return fmt.Sprintf("pr-fix skipped park: PR #%d already resolved on remote (agent reported: %s)", t.PRNumber, agentReason), true
 }
 
 func prFixRequiresHuman(wfExec *Execution) (requiresHuman bool, reason string) {

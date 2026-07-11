@@ -29,12 +29,11 @@ vi.mock('../ChatView.svelte', () => ({ default: () => {} }))
 vi.mock('../StreamOutput.svelte', () => ({ default: () => {} }))
 vi.mock('../ActionTimeline.svelte', () => ({ default: () => {} }))
 vi.mock('../ToolApproval.svelte', () => ({ default: () => {} }))
-vi.mock('../ChatInput.svelte', () => ({ default: () => {} }))
-vi.mock('./ThreePanelLayout.svelte', () => ({
-  default: vi.fn().mockImplementation(() => {}),
-}))
 vi.mock('./SessionWorkspace.svelte', () => ({ default: () => {} }))
 vi.mock('./AgentSidebarList.svelte', () => ({ default: () => {} }))
+// ThreePanelLayout and ChatInput are left real (not mocked): RunningLayout's
+// steer box renders through them, and the steer tests below exercise the
+// actual DOM they produce (textarea, send button, error text).
 
 const mockConvoStore = {
   pendingApprovals: new Map<string, any>(),
@@ -49,9 +48,10 @@ vi.mock('../../stores/convo.svelte.js', () => ({
 const QueuedLayout = (await import('./QueuedLayout.svelte')).default
 const DoneLayout = (await import('./DoneLayout.svelte')).default
 const ReviewingLayout = (await import('./ReviewingLayout.svelte')).default
+const RunningLayout = (await import('./RunningLayout.svelte')).default
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
-  return Agent.createFrom({
+  return {
     id: 'agent-1',
     taskId: 'task-1',
     mode: 'headless',
@@ -62,7 +62,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     lastEventAt: '2026-01-01T10:05:00Z',
     external: false,
     ...overrides,
-  })
+  }
 }
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -308,5 +308,74 @@ describe('ReviewingLayout', () => {
     expect(screen.getByText('Show full activity')).toBeDefined()
     await fireEvent.click(screen.getByText('Show full activity'))
     expect(screen.getByText('Hide activity')).toBeDefined()
+  })
+})
+
+describe('RunningLayout steer box', () => {
+  beforeEach(() => {
+    mockConvoStore.sendMessage.mockReset()
+  })
+
+  afterEach(() => { cleanup() })
+
+  function runningLayoutProps(overrides: Partial<Agent> = {}) {
+    return {
+      a: makeAgent({ mode: 'headless', provider: 'claude', state: 'running', canSteer: true, ...overrides }),
+      planSteps: [],
+      timelineEntries: [],
+      selectedIndex: null,
+      onselect: vi.fn(),
+      streamOutputs: [],
+      convoEvents: [],
+      allAgents: [],
+      latestToolUse: undefined,
+      onnavigate: vi.fn(),
+    }
+  }
+
+  it('shows the steer box for a running Claude headless agent', () => {
+    render(RunningLayout, { props: runningLayoutProps() })
+    expect(screen.getByText('Steer agent')).toBeDefined()
+    expect(screen.getByPlaceholderText('Send guidance to the running agent...')).toBeDefined()
+    expect(screen.getByText('Pause')).toBeDefined()
+  })
+
+  it('hides the steer box for a non-Claude headless agent', () => {
+    render(RunningLayout, { props: runningLayoutProps({ provider: 'codex', canSteer: false }) })
+    expect(screen.queryByText('Steer agent')).toBeNull()
+  })
+
+  it('hides the steer box once the agent is no longer running', () => {
+    render(RunningLayout, { props: runningLayoutProps({ state: 'paused', canSteer: false }) })
+    expect(screen.queryByText('Steer agent')).toBeNull()
+  })
+
+  it('sends guidance through convoStore.sendMessage', async () => {
+    mockConvoStore.sendMessage.mockResolvedValue(undefined)
+    const props = runningLayoutProps()
+    render(RunningLayout, { props })
+
+    const textarea = screen.getByPlaceholderText('Send guidance to the running agent...')
+    await fireEvent.input(textarea, { target: { value: 'focus on the auth bug' } })
+    await fireEvent.click(screen.getByTitle('Send message'))
+
+    await vi.waitFor(() => {
+      expect(mockConvoStore.sendMessage).toHaveBeenCalledWith(props.a.id, 'focus on the auth bug')
+    })
+  })
+
+  it('surfaces a rejected send instead of silently clearing the text', async () => {
+    mockConvoStore.sendMessage.mockRejectedValue(new Error('agent is finalizing'))
+    const props = runningLayoutProps()
+    render(RunningLayout, { props })
+
+    const textarea = screen.getByPlaceholderText('Send guidance to the running agent...') as HTMLTextAreaElement
+    await fireEvent.input(textarea, { target: { value: 'one more thing' } })
+    await fireEvent.click(screen.getByTitle('Send message'))
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('agent is finalizing')).toBeDefined()
+    })
+    expect(textarea.value).toBe('one more thing')
   })
 })

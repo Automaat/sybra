@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"slices"
 	"sync"
@@ -87,6 +88,15 @@ type Agent struct {
 	// --resume to continue the conversation.
 	Resumable bool `json:"resumable,omitempty"`
 
+	// CanSteer reports whether SendMessage will currently be accepted for this
+	// agent — i.e. it has a live stdin transport and is not finalizing. It is a
+	// backend-authoritative capability so the UI does not have to re-derive
+	// steerability from mode/provider/state heuristics (which are wrong for a
+	// rollback-disabled or legacy-reattached run that has no stdin transport).
+	// The stored value is ignored: MarshalJSON always overrides it with the
+	// live computation, so it is never stale on the wire.
+	CanSteer bool `json:"canSteer"`
+
 	ExitErr         error `json:"-"`
 	outputBuffer    []StreamEvent
 	convoBuffer     []ConvoEvent
@@ -105,6 +115,14 @@ type Agent struct {
 	// runner_convo and runner_convo_survive both firing when the process exits
 	// while a reattach tail is still live) only advance the workflow once.
 	completedOnce sync.Once
+	// costSessionID and costBaseUSD back AddResultStats' per-session cost
+	// bookkeeping. Providers report CostUSD as a cumulative total for the
+	// current session (not a per-turn delta), so a repeated session id must
+	// replace the running total rather than add to it; costBaseUSD banks the
+	// last cumulative snapshot of any prior session once a new session id
+	// appears (e.g. across a --resume segment boundary).
+	costSessionID string
+	costBaseUSD   float64
 
 	// escalationCh receives the human's decision when a guardrail is hit.
 	// true = continue, false = kill.
@@ -125,6 +143,23 @@ type Agent struct {
 	// status from the result event rather than the kill signal.
 	completedByResult bool
 
+	// finalizing marks a steerable headless run whose stdin was closed after
+	// its terminal result event because no further steer message was queued
+	// (see processHeadlessLine). Once set, SendMessage rejects rather than
+	// queuing a message that would never be delivered — the child is on its
+	// way out.
+	finalizing bool
+
+	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
+	// system event (REPLACE semantics: the full set of currently-live
+	// background bash tasks, e.g. a `run_in_background` Bash call). A CC
+	// process can legitimately emit its terminal result while a task like
+	// `npm ci` is still running in the background, producing no further
+	// NDJSON activity — the post-result-hang guards must not mistake that
+	// silence for a hung/orphaned process and kill it mid-write (task
+	// 3aeabb65: a killed `npm ci` left a corrupted, zero-byte node_modules).
+	backgroundTaskIDs []string
+
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
 	// kill). ShutdownWithGrace leaves detached agents running instead of
@@ -136,6 +171,12 @@ type Agent struct {
 	// choice across a restart instead of silently becoming permissive.
 	requirePermissions bool
 
+	// sandboxMode mirrors the resolved RunConfig.SandboxMode. Persisted to the
+	// registry so a recreated per-turn conversational chat preserves its OS
+	// process-sandbox posture across restart instead of silently dropping an
+	// enforce-mode seatbelt.
+	sandboxMode string
+
 	// headlessPermissionMode is the resolved posture passed via RunConfig
 	// ("bypass" or "auto"). Stored for OnComplete so the denial audit events
 	// can record the posture without re-resolving it.
@@ -145,9 +186,155 @@ type Agent struct {
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
 
+	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
+	// Claude interactive agent's provider is switched at a turn boundary. The
+	// still-idle Claude process is torn down (closeStdinPipe/signalKill); once
+	// runConversational's goroutine observes the process actually exit, it
+	// consumes this instead of finalizing, and hands the same *Agent off to
+	// runPerTurnConversational on the new provider.
+	handoff *pendingConvoHandoff
+
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+// View is a point-in-time, concurrency-safe snapshot of an Agent's exported
+// state, mirroring Agent's JSON shape field-for-field. Every path that
+// serializes an *Agent for a consumer outside its own runner goroutine
+// (Wails bindings, SSE/broker emit, the HTTP API shim) must serialize a View,
+// never the live *Agent — reading Agent's fields directly races the runner,
+// watchdog, and approval-server goroutines that mutate them under a.mu.
+// MarshalJSON builds and encodes a View so every existing json.Marshal(agent)
+// call site gets this for free without having to be individually rewritten.
+type View struct {
+	ID                       string    `json:"id"`
+	TaskID                   string    `json:"taskId"`
+	Mode                     string    `json:"mode"`
+	State                    State     `json:"state"`
+	SessionID                string    `json:"sessionId"`
+	CostUSD                  float64   `json:"costUsd"`
+	InputTokens              int       `json:"inputTokens,omitempty"`
+	OutputTokens             int       `json:"outputTokens,omitempty"`
+	CacheCreationInputTokens int       `json:"cacheCreationInputTokens,omitempty"`
+	CacheReadInputTokens     int       `json:"cacheReadInputTokens,omitempty"`
+	ReasoningTokens          int       `json:"reasoningTokens,omitempty"`
+	PremiumRequests          float64   `json:"premiumRequests,omitempty"`
+	StartedAt                time.Time `json:"startedAt"`
+	LastEventAt              time.Time `json:"lastEventAt"`
+	LogPath                  string    `json:"logPath,omitempty"`
+	External                 bool      `json:"external"`
+	PID                      int       `json:"pid,omitempty"`
+	Command                  string    `json:"command,omitempty"`
+	Name                     string    `json:"name,omitempty"`
+	Project                  string    `json:"project,omitempty"`
+	Provider                 string    `json:"provider,omitempty"`
+	Model                    string    `json:"model,omitempty"`
+	ExperimentID             string    `json:"experimentId,omitempty"`
+	VariantID                string    `json:"variantId,omitempty"`
+	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey            string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	Prompt                   string    `json:"prompt,omitempty"`
+	TurnCount                int       `json:"turnCount,omitempty"`
+	ToolCalls                int       `json:"toolCalls,omitempty"`
+	MaxTurns                 int       `json:"maxTurns,omitempty"`
+	PluginErrors             []string  `json:"pluginErrors,omitempty"`
+	EscalationReason         string    `json:"escalationReason,omitempty"`
+	ErrorKind                string    `json:"errorKind,omitempty"`
+	ErrorMsg                 string    `json:"errorMsg,omitempty"`
+	AwaitingApproval         bool      `json:"awaitingApproval,omitempty"`
+	CanSteer                 bool      `json:"canSteer"`
+	Resumable                bool      `json:"resumable,omitempty"`
+}
+
+// View returns a snapshot of the agent's exported state, safe to read or
+// serialize without holding a.mu. Built under a single RLock so concurrent
+// writers (runner, watchdog, approval server) cannot produce a torn read.
+func (a *Agent) View() View {
+	hasStdinPipe := a.convo.hasStdinPipe()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.viewLocked(hasStdinPipe)
+}
+
+func (a *Agent) viewLocked(hasStdinPipe bool) View {
+	return View{
+		ID:                       a.ID,
+		TaskID:                   a.TaskID,
+		Mode:                     a.Mode,
+		State:                    a.State,
+		SessionID:                a.SessionID,
+		CostUSD:                  a.CostUSD,
+		InputTokens:              a.InputTokens,
+		OutputTokens:             a.OutputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens,
+		ReasoningTokens:          a.ReasoningTokens,
+		PremiumRequests:          a.PremiumRequests,
+		StartedAt:                a.StartedAt,
+		LastEventAt:              a.LastEventAt,
+		LogPath:                  a.LogPath,
+		External:                 a.External,
+		PID:                      a.PID,
+		Command:                  a.Command,
+		Name:                     a.Name,
+		Project:                  a.Project,
+		Provider:                 a.Provider,
+		Model:                    a.Model,
+		ExperimentID:             a.ExperimentID,
+		VariantID:                a.VariantID,
+		AssignmentUnit:           a.AssignmentUnit,
+		AssignmentKey:            a.AssignmentKey,
+		ReasoningEffort:          a.ReasoningEffort,
+		Prompt:                   a.Prompt,
+		TurnCount:                a.TurnCount,
+		ToolCalls:                a.ToolCalls,
+		MaxTurns:                 a.MaxTurns,
+		PluginErrors:             slices.Clone(a.PluginErrors),
+		EscalationReason:         a.EscalationReason,
+		ErrorKind:                a.ErrorKind,
+		ErrorMsg:                 a.ErrorMsg,
+		AwaitingApproval:         a.AwaitingApproval,
+		CanSteer:                 a.computeCanSteerLocked(hasStdinPipe),
+		Resumable:                a.Resumable,
+	}
+}
+
+// MarshalJSON encodes a point-in-time View instead of the live struct, so
+// every existing json.Marshal(agent)/json.Marshal([]*Agent) call site —
+// Wails bindings, the SSE broker, the HTTP API shim — becomes race-safe
+// without having to be rewritten to call View() explicitly.
+func (a *Agent) MarshalJSON() ([]byte, error) {
+	return json.Marshal(a.View())
+}
+
+// pendingConvoHandoff carries the RunConfig and next prompt for a mid-run
+// persistent-Claude -> per-turn provider switch. See Agent.handoff.
+type pendingConvoHandoff struct {
+	cfg    RunConfig
+	prompt string
+}
+
+// SetPendingHandoff records a same-agent provider switch to be picked up by
+// runConversational's finalize path once its (now-doomed) process exits.
+func (a *Agent) SetPendingHandoff(cfg RunConfig, prompt string) {
+	a.mu.Lock()
+	a.handoff = &pendingConvoHandoff{cfg: cfg, prompt: prompt}
+	a.mu.Unlock()
+}
+
+// ConsumePendingHandoff returns and clears any pending handoff recorded by
+// SetPendingHandoff.
+func (a *Agent) ConsumePendingHandoff() (RunConfig, string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.handoff == nil {
+		return RunConfig{}, "", false
+	}
+	h := a.handoff
+	a.handoff = nil
+	return h.cfg, h.prompt, true
 }
 
 // toRecord snapshots only the fields persisted for restart survival.
@@ -156,6 +343,7 @@ type Agent struct {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
 		ID:                 a.ID,
 		TaskID:             a.TaskID,
@@ -173,9 +361,11 @@ func (a *Agent) toRecord() Record {
 		CWD:                a.sessionCWD,
 		StartedAt:          a.StartedAt,
 		StdinPath:          a.convo.stdinPath,
+		PendingPrompts:     pendingPrompts,
 		OneShot:            a.oneShot,
 		MaxTurns:           a.MaxTurns,
 		RequirePermissions: a.requirePermissions,
+		SandboxMode:        a.sandboxMode,
 		ReasoningEffort:    a.ReasoningEffort,
 	}
 }
@@ -203,8 +393,9 @@ func fromRecord(r Record) *Agent {
 		State:              StateRunning,
 		MaxTurns:           r.MaxTurns,
 		oneShot:            r.OneShot,
-		convo:              convoIO{stdinPath: r.StdinPath},
+		convo:              convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
 		requirePermissions: r.RequirePermissions,
+		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
 		detached:           true,
 	}
@@ -215,6 +406,7 @@ func (a *Agent) SetState(s State) {
 	a.mu.Lock()
 	a.State = s
 	a.mu.Unlock()
+	a.refreshCanSteer()
 }
 
 // SetAwaitingApproval marks whether the agent is paused pending tool approval.
@@ -328,6 +520,35 @@ func (a *Agent) GetSessionID() string {
 	return a.SessionID
 }
 
+// GetStartedAt returns the agent's recorded start time.
+func (a *Agent) GetStartedAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.StartedAt
+}
+
+// SetProviderAndModel updates the agent's provider and (already-normalized)
+// model. Used when a mid-run per-turn provider re-gate fails the agent's
+// current provider over to a healthy peer; Provider/Model are otherwise fixed
+// for the lifetime of the agent (set once at construction).
+func (a *Agent) SetProviderAndModel(prov, model string) {
+	a.mu.Lock()
+	a.Provider = prov
+	a.Model = model
+	a.mu.Unlock()
+}
+
+// GetProvider returns the agent's current provider name. Safe to call
+// concurrently with a mid-run SetProviderAndModel switch; code within the
+// single-threaded runner loop (which owns all writes) may keep reading
+// a.Provider directly since it's the same goroutine, but any external
+// reader must go through this to avoid racing the switch.
+func (a *Agent) GetProvider() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.Provider
+}
+
 // SetSessionFilePath records the path to the provider session file.
 func (a *Agent) SetSessionFilePath(p string) {
 	a.mu.Lock()
@@ -342,14 +563,26 @@ func (a *Agent) GetSessionFilePath() string {
 	return a.sessionFilePath
 }
 
-// AddResultStats merges a result-event's stats into the running totals
-// and returns the new cumulative CostUSD.
+// AddResultStats merges a result-event's stats into the running totals and
+// returns the new cumulative CostUSD. Token counts are genuine per-turn
+// deltas and accumulate normally. Cost is not: providers report CostUSD as
+// the cumulative total for the whole session (including every prior turn,
+// and — across a --resume segment boundary — every prior segment too), so
+// summing it turn over turn multiplies the true spend several times over.
+// A same-session event therefore replaces the running total instead of
+// adding to it; only a change in session id banks the previous session's
+// final snapshot and starts counting the new one from there.
 func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasoning int) float64 {
+	cost = sanitizeCostUSD(cost)
 	a.mu.Lock()
 	if sessionID != "" {
 		a.SessionID = sessionID
 	}
-	a.CostUSD += cost
+	if sessionID != "" && sessionID != a.costSessionID {
+		a.costBaseUSD = a.CostUSD
+		a.costSessionID = sessionID
+	}
+	a.CostUSD = a.costBaseUSD + cost
 	a.InputTokens += in
 	a.OutputTokens += out
 	a.ReasoningTokens += reasoning
@@ -421,6 +654,17 @@ func (a *Agent) PendingPromptCount() int {
 	return len(a.convo.pendingPrompts)
 }
 
+// RestorePendingPrompt pushes text back onto the front of the pending queue.
+// Used by the turn-boundary chokepoint (advanceClaudeTurn) to put a
+// just-reserved prompt back where it came from when the turn cannot proceed
+// (no healthy peer, write failure, cancellation), so it is retried in order
+// rather than lost or reordered behind prompts queued afterward.
+func (a *Agent) RestorePendingPrompt(text string) {
+	a.mu.Lock()
+	a.convo.pendingPrompts = append([]string{text}, a.convo.pendingPrompts...)
+	a.mu.Unlock()
+}
+
 // IncTurnCount increments the turn counter and returns the new value.
 func (a *Agent) IncTurnCount() int {
 	a.mu.Lock()
@@ -489,6 +733,13 @@ func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Lock()
 	a.EscalationReason = reason
 	a.mu.Unlock()
+}
+
+// GetEscalationReason returns the current guardrail escalation reason.
+func (a *Agent) GetEscalationReason() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.EscalationReason
 }
 
 // NotePermissionDenial records an auto-mode classifier denial observed during the run.
@@ -643,6 +894,58 @@ func (a *Agent) hasPromptChannel() bool {
 	return a.convo.promptCh != nil
 }
 
+// setFinalizing marks a steerable headless run as closing its stdin down for
+// good (no further steer message can be delivered).
+func (a *Agent) setFinalizing(v bool) {
+	a.mu.Lock()
+	a.finalizing = v
+	a.mu.Unlock()
+	a.refreshCanSteer()
+}
+
+// isFinalizing reports whether the agent's stdin has been closed for good.
+func (a *Agent) isFinalizing() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.finalizing
+}
+
+// computeCanSteer reports whether SendMessage would currently be accepted for
+// this agent: a live stdin transport, not finalizing, and a steerable
+// mode/provider (interactive, or headless claude). Mirrors the SendMessage
+// gate so the UI capability never disagrees with the backend.
+func (a *Agent) computeCanSteer() bool {
+	hasStdinPipe := a.convo.hasStdinPipe()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.computeCanSteerLocked(hasStdinPipe)
+}
+
+func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
+	if !hasStdinPipe || a.finalizing {
+		return false
+	}
+	switch a.Mode {
+	case "interactive":
+		return true
+	case "headless":
+		return a.Provider == "claude"
+	default:
+		return false
+	}
+}
+
+// refreshCanSteer recomputes and stores the CanSteer capability. Called from
+// the state/finalizing/stdin-transport transitions that can change it, so the
+// value serialized on the next AgentState emit is current. Must be called
+// without a.mu held (computeCanSteer takes a.mu.RLock).
+func (a *Agent) refreshCanSteer() {
+	v := a.computeCanSteer()
+	a.mu.Lock()
+	a.CanSteer = v
+	a.mu.Unlock()
+}
+
 // setDetached marks whether the agent's subprocess is detached for
 // restart survival.
 func (a *Agent) setDetached(v bool) {
@@ -723,6 +1026,51 @@ func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 	return time.Since(a.LastEventAt) >= grace
 }
 
+// backgroundTaskGrace is the extra idle time granted to a post-result-hang
+// guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
+// while the agent has outstanding CLI background bash tasks. Bounded rather
+// than unlimited so a task that never reports completion (e.g. the CLI
+// process dies without emitting a final background_tasks_changed) can't hang
+// a run forever — the guard still fires, just later, once this is exhausted.
+const backgroundTaskGrace = 15 * time.Minute
+
+// SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
+// background bash tasks, mirroring the REPLACE semantics of the CLI's
+// "background_tasks_changed" system event.
+func (a *Agent) SetBackgroundTaskIDs(ids []string) {
+	// Defensive copy, mirroring SetPluginErrors, so a caller that later mutates
+	// or reuses the passed slice can't race the reader in HasBackgroundTasks.
+	// Preserve nil-ness: a nil "no event seen" snapshot must stay distinct from
+	// an empty non-nil "all tasks cleared" one (REPLACE semantics).
+	var cp []string
+	if ids != nil {
+		cp = make([]string, len(ids))
+		copy(cp, ids)
+	}
+	a.mu.Lock()
+	a.backgroundTaskIDs = cp
+	a.mu.Unlock()
+}
+
+// HasBackgroundTasks reports whether the CLI last reported any live
+// background bash tasks still running.
+func (a *Agent) HasBackgroundTasks() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.backgroundTaskIDs) > 0
+}
+
+// EffectiveHangGrace extends base by backgroundTaskGrace while the agent has
+// outstanding background bash tasks, so a post-result-hang guard idle-timing
+// out on silence doesn't kill a process that's still legitimately waiting on
+// a `run_in_background` command (e.g. npm ci) — see backgroundTaskIDs.
+func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
+	if a.HasBackgroundTasks() {
+		return base + backgroundTaskGrace
+	}
+	return base
+}
+
 func (a *Agent) setCompletedByResult(v bool) {
 	a.mu.Lock()
 	a.completedByResult = v
@@ -733,6 +1081,16 @@ func (a *Agent) wasCompletedByResult() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.completedByResult
+}
+
+// WasCompletedByResult reports whether the agent's completion was derived
+// from a clean terminal result event (via StopCompletedAgent or the runner's
+// own post-result-hang reaper) rather than an intentional mid-run stop. A
+// caller must not treat such an agent as stalled merely because WasStopped()
+// is also true — StopCompletedAgent marks both flags, since force-stopping
+// the now-orphaned process is still implemented via StopAgent.
+func (a *Agent) WasCompletedByResult() bool {
+	return a.wasCompletedByResult()
 }
 
 // GetLastEventAt returns the most recent event timestamp.
@@ -748,6 +1106,16 @@ func (a *Agent) GetLastEventAt() time.Time {
 func (a *Agent) TouchLastEvent() {
 	a.mu.Lock()
 	a.LastEventAt = time.Now().UTC()
+	a.mu.Unlock()
+}
+
+// SetLastEventAt overrides the last-activity timestamp directly. Used by
+// dead-process reattach recovery, where every replayed event is stamped at
+// replay time (not history), so AppendOutput/AppendConvo would otherwise
+// collapse LastEventAt to the wall-clock moment finalization happens to run.
+func (a *Agent) SetLastEventAt(t time.Time) {
+	a.mu.Lock()
+	a.LastEventAt = t
 	a.mu.Unlock()
 }
 
@@ -801,7 +1169,11 @@ type RunConfig struct {
 	// Populated from the task's last AgentRun.SessionID on restart.
 	ResumeSessionID string
 	// ExtraEnv is a list of "KEY=VALUE" strings appended to the subprocess
-	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG).
+	// environment. Used to inject sandbox credentials (SANDBOX_URL, KUBECONFIG)
+	// and, for every task-scoped run, the trusted SYBRA_HOME/SYBRA_CONTROL_HOME
+	// pair that Manager.prepareRunConfig appends last (see ManagerConfig.SandboxHome) —
+	// any caller-supplied entry for those two keys is stripped before the
+	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".
@@ -838,24 +1210,85 @@ type RunConfig struct {
 	// implementation worktree, so seeding them would feed an independent
 	// reviewer/tester the implementer's notes. No-op if the dir has no NOTES.md.
 	SeedWorkingMemory bool
-	// OutputSchema is an inline JSON Schema (codex only). The runner writes it
-	// to a temp file and passes --output-schema <path> to codex exec. Empty =
-	// no schema enforcement. Ignored by claude/copilot.
+	// OutputSchema is a JSON Schema string enforcing the shape of the agent's
+	// final response. Empty = no schema enforcement. Delivery differs by
+	// provider (see Provider.OutputSchemaAsFile): codex receives it as a temp
+	// file path via --output-schema <path> (the runner writes OutputSchema to
+	// disk before invocation); claude receives it inline via
+	// --json-schema <schema>. Ignored by copilot.
 	OutputSchema string
-	// outputSchemaPath is the temp file path the runner wrote OutputSchema to.
-	// Set intra-package before buildHeadlessInvocation; cleared by defer after
-	// the subprocess exits. Never set by callers.
+	// outputSchemaPath is the temp file path the runner wrote OutputSchema to,
+	// for providers where Provider.OutputSchemaAsFile() is true. Set
+	// intra-package before buildHeadlessInvocation; cleared by defer after the
+	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// HeadlessSteerable, when true, launches a claude headless run with the
+	// stdin/stream-json shape (mirroring the conversational invocation)
+	// instead of the legacy one-shot `-p <prompt>` invocation, so the running
+	// agent can accept mid-run steer messages over stdin. Resolved from
+	// agent.headless_steerable by Manager.prepareRunConfig; only Claude
+	// currently honors it (see claudeProvider.BuildHeadlessInvocation).
+	HeadlessSteerable bool
 	// HeadlessPermissionMode overrides the permission posture for this run.
 	// "auto" emits --permission-mode auto (Claude Code auto-mode classifier).
 	// "bypass" (or empty) keeps --dangerously-skip-permissions.
 	// Only effective for claude headless runs when AllowedTools is empty and
 	// RequirePermissions is false.
 	HeadlessPermissionMode string
+	// SandboxMode overrides the OS-level process-sandbox posture ("off",
+	// "report", or "enforce") for this run. Set by the dispatcher
+	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
+	// with config.DefaultSandboxMode(). Empty is treated as "report" by
+	// Manager.injectProcessSandbox.
+	SandboxMode string
+	// PlaywrightMCPEligible marks a run as a candidate for the headless
+	// Playwright MCP server (set by the workflow dispatcher for RoleTestRunner
+	// runs only; see agentAdapter.StartAgent). Actually attaching MCP
+	// additionally requires config.PlaywrightMCPEnabled, a headless run, and a
+	// final-resolved Claude provider — decided by
+	// Manager.preparePlaywrightMCP, never by the raw requested provider.
+	PlaywrightMCPEligible bool
+	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
+	// server writes screenshots/console logs to. Set by the workflow
+	// dispatcher alongside PlaywrightMCPEligible; empty falls back to
+	// <Dir>/.sybra-evidence.
+	PlaywrightMCPOutputDir string
+	// MCPConfigJSON is the Claude --mcp-config JSON payload for the headless
+	// Playwright MCP server. Set only by Manager.preparePlaywrightMCP after
+	// the final provider resolves to claude and the launcher preflight
+	// succeeds. Claude-only: every other provider ignores this field.
+	MCPConfigJSON string
 	// provider is the implementation selected once at run start after health
 	// gates and failover. Replay paths that do not have RunConfig resolve from
 	// the persisted provider string instead.
 	provider Provider
+	// resolvedSandboxHome is the per-task sandbox home directory resolved by
+	// injectSandboxHome, reused by injectProcessSandbox as one of the
+	// sandbox's allowed write roots. Never set by callers.
+	resolvedSandboxHome string
+	// sandbox is the resolved OS-level process-sandbox spec for this run,
+	// computed once by injectProcessSandbox and consumed by wrapInvocation
+	// at each provider spawn site. Never set by callers.
+	sandbox sandboxSpec
+	// approvalAddr is the manager's HTTP approval-server address
+	// ("127.0.0.1:port"), set by prepareRunConfig for every run. Consumed by
+	// claudeProvider.BuildHeadlessInvocation to wire the PreToolUse approval
+	// hook when RequirePermissions is true — without it, a headless run under
+	// require_permissions:true has no path to grant a tool call and
+	// operators are forced to require_permissions:false, which collapses to
+	// --dangerously-skip-permissions. Never set by callers.
+	approvalAddr string
+}
+
+// needsApprovalHook reports whether a run should wire the PreToolUse approval
+// hook. True when permissions are required or an interactive permission-mode is
+// set. Both the headless (provider_claude.go) and conversational
+// (runner_convo.go) call sites gate on this so a future change can't silently
+// desync them: headless runs never set PermissionMode (they use
+// HeadlessPermissionMode for the auto classifier), so for them it collapses to
+// RequirePermissions alone.
+func (cfg RunConfig) needsApprovalHook() bool {
+	return cfg.RequirePermissions || cfg.PermissionMode != ""
 }
 
 // ConvoOutput returns a snapshot of the conversation event buffer.

@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -49,6 +50,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -119,14 +121,14 @@ func run(o options) error {
 	}
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	srv, err := startServer(o, home, fakeDir, port)
 	if err != nil {
 		return fmt.Errorf("start server: %w", err)
 	}
 	defer srv.stop()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if err := waitHealthy(ctx, baseURL, 30*time.Second); err != nil {
 		return fmt.Errorf("server never became healthy: %w", err)
@@ -329,7 +331,8 @@ func (s *serverProc) stop() {
 	if s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
-	_ = s.cmd.Process.Signal(os.Interrupt)
+	pgid := s.cmd.Process.Pid
+	_ = syscall.Kill(-pgid, syscall.SIGINT)
 	done := make(chan struct{})
 	go func() {
 		_ = s.cmd.Wait()
@@ -338,7 +341,7 @@ func (s *serverProc) stop() {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		_ = s.cmd.Process.Kill()
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		<-done
 	}
 }
@@ -349,6 +352,7 @@ func startServer(o options, home, fakeDir string, port int) (*serverProc, error)
 	// pre-built binary masking recent server changes. Go build caching
 	// makes repeat runs of the same scenario pay the compile cost only once.
 	cmd := exec.CommandContext(context.Background(), "go", "run", "./cmd/sybra-server")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	perfPath := fakeDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	env := os.Environ()

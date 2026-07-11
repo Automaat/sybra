@@ -13,6 +13,19 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func signoffHookPath(t *testing.T, wtPath string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-common-dir").CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve git common dir: %v: %s", err, out)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	return filepath.Join(gitDir, "hooks", "prepare-commit-msg")
+}
+
 // TestPrepareForTask_AdoptsExternalWorktree verifies that a task carrying an
 // explicit WorktreeDir is run in that directory verbatim: PrepareForTask
 // returns the external path, records its branch, drops the identity beacon,
@@ -204,6 +217,109 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
 		t.Errorf("worktree HEAD = %q, want PR head %q", got, prSHA)
+	}
+}
+
+// TestPrepareForFix_ReusesHealthyWorktree is the regression for issue #1527:
+// PrepareForFix used to unconditionally RemoveWorktreeReconcile + recreate
+// the fix worktree on every dispatch, re-running setup (mise install, npm
+// ci, npm run build:desktop) even when nothing about the worktree needed to
+// change. A second dispatch against a healthy worktree already on the fix
+// branch must reuse it — skipping setup entirely — while still picking up
+// any commit pushed to the branch since the first dispatch.
+func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
+	h := prepareHarness(t, []string{"sh -c 'echo run >> setup-count.txt'"}, 0)
+
+	const prNumber = 11
+	const branch = "fix/reuse-me"
+	srcGit := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	// setup-count.txt is a byproduct of the setup command, not agent work —
+	// gitignore it so SanitizeWorktree's auto-commit-uncommitted-work step
+	// doesn't turn it into a local-only commit that diverges from the next
+	// remote push and defeats reuse.
+	if err := os.WriteFile(filepath.Join(h.src, ".gitignore"), []byte("setup-count.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "gitignore setup byproduct")
+	srcGit("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "initial fix commit")
+	srcGit("checkout", "main")
+
+	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
+
+	tk, err := h.tasks.Create("reuse fix worktree", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (initial): %v", err)
+	}
+	setupCountPath := filepath.Join(wtPath, "setup-count.txt")
+	countAfterFirst, err := os.ReadFile(setupCountPath)
+	if err != nil {
+		t.Fatalf("read setup-count.txt: %v", err)
+	}
+	if got := strings.Count(string(countAfterFirst), "run"); got != 1 {
+		t.Fatalf("setup ran %d times on initial prepare, want 1", got)
+	}
+	hookPath := signoffHookPath(t, wtPath)
+	if err := os.Remove(hookPath); err != nil {
+		t.Fatalf("remove signoff hook: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
+		t.Fatalf("unset core.hooksPath: %v: %s", err, out)
+	}
+
+	// A second commit lands on the fix branch (e.g. pushed from another
+	// clone) before the next dispatch.
+	srcGit("checkout", branch)
+	if err := os.WriteFile(filepath.Join(h.src, "feature2.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", ".")
+	srcGit("commit", "-m", "second fix commit")
+	srcGit("checkout", "main")
+
+	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
+	if err != nil {
+		t.Fatalf("PrepareForFix (reuse): %v", err)
+	}
+	if got != wtPath {
+		t.Fatalf("reused path = %q, want the same worktree %q", got, wtPath)
+	}
+
+	// Setup must not have re-run.
+	countAfterSecond, err := os.ReadFile(setupCountPath)
+	if err != nil {
+		t.Fatalf("read setup-count.txt after reuse: %v", err)
+	}
+	if got := strings.Count(string(countAfterSecond), "run"); got != 1 {
+		t.Fatalf("setup ran %d times across both prepares, want 1 (setup must be skipped on reuse)", got)
+	}
+
+	// The worktree must be fast-forwarded to the new remote commit.
+	if _, err := os.Stat(filepath.Join(got, "feature2.txt")); err != nil {
+		t.Errorf("reused worktree missing feature2.txt from the second remote commit: %v", err)
+	}
+	if _, err := os.Stat(hookPath); err != nil {
+		t.Errorf("signoff hook was not restored on reuse: %v", err)
 	}
 }
 

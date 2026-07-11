@@ -7,13 +7,13 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as artifact$0 from "../artifact/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as config$0 from "../config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as monitor$0 from "../monitor/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AppSettings is the shape of data exchanged with the frontend for the config view.
@@ -303,8 +303,8 @@ export class LoggingSettings {
  */
 export class LoopAgentRun {
     "agentId": string;
-    "startedAt": time$0.Time;
-    "finishedAt": time$0.Time;
+    "startedAt": string;
+    "finishedAt": string;
     "costUsd": number;
     "state": string;
     "durationS": number;
@@ -315,10 +315,10 @@ export class LoopAgentRun {
             this["agentId"] = "";
         }
         if (!("startedAt" in $$source)) {
-            this["startedAt"] = null;
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("finishedAt" in $$source)) {
-            this["finishedAt"] = null;
+            this["finishedAt"] = "0001-01-01T00:00:00.000Z";
         }
         if (!("costUsd" in $$source)) {
             this["costUsd"] = 0;
@@ -467,6 +467,121 @@ export class TamperReportDTO {
     }
 }
 
+export class TaskArtifactDTO {
+    "name": string;
+    "kind": artifact$0.Kind;
+    "producerRole"?: string;
+
+    /**
+     * TaskID is the containing task's ID (redundant with the dir name, kept for AC).
+     */
+    "taskId": string;
+    "stepId"?: string;
+    "createdAt": string;
+
+    /**
+     * SourcePath is the agent-output file that was imported (forensic only).
+     */
+    "sourcePath"?: string;
+    "size": number;
+
+    /**
+     * Stream is true for append-only artifacts (trace.jsonl).
+     */
+    "stream"?: boolean;
+    "content"?: string;
+    "error"?: string;
+
+    /** Creates a new TaskArtifactDTO instance. */
+    constructor($$source: Partial<TaskArtifactDTO> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = artifact$0.Kind.$zero;
+        }
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TaskArtifactDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TaskArtifactDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TaskArtifactDTO($$parsedSource as Partial<TaskArtifactDTO>);
+    }
+}
+
+export class TaskAuditEventDTO {
+    "ts": string;
+    "type": string;
+    "taskId"?: string;
+    "agentId"?: string;
+    "data"?: { [_ in string]?: any };
+
+    /** Creates a new TaskAuditEventDTO instance. */
+    constructor($$source: Partial<TaskAuditEventDTO> = {}) {
+        if (!("ts" in $$source)) {
+            this["ts"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TaskAuditEventDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TaskAuditEventDTO {
+        const $$createField4_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("data" in $$parsedSource) {
+            $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
+        }
+        return new TaskAuditEventDTO($$parsedSource as Partial<TaskAuditEventDTO>);
+    }
+}
+
+export class TaskSetupLogDTO {
+    "taskId": string;
+    "path"?: string;
+    "exists": boolean;
+    "content"?: string;
+    "truncated"?: boolean;
+
+    /** Creates a new TaskSetupLogDTO instance. */
+    constructor($$source: Partial<TaskSetupLogDTO> = {}) {
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("exists" in $$source)) {
+            this["exists"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TaskSetupLogDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TaskSetupLogDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TaskSetupLogDTO($$parsedSource as Partial<TaskSetupLogDTO>);
+    }
+}
+
 /**
  * VersionInfo holds version strings for the server and client.
  */
@@ -514,3 +629,4 @@ const $$createType18 = $Create.Map($Create.Any, $Create.Any);
 const $$createType19 = monitor$0.Report.createFrom;
 const $$createType20 = TamperFindingDTO.createFrom;
 const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = $Create.Map($Create.Any, $Create.Any);

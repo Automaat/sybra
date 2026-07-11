@@ -1,20 +1,16 @@
 import { test, expect, type Page } from '@playwright/test'
-import { readdir, unlink, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 
-const SYBRA_HOME = process.env.SYBRA_HOME ?? join(homedir(), '.sybra')
+import { cleanupStrayTasks, isolatedSybraHome } from './lib/sybra-home'
+
+const SYBRA_HOME = isolatedSybraHome()
 const TASKS_DIR = join(SYBRA_HOME, 'tasks')
 
 const FIXTURE_FILES = new Set(['auth0001.md', 'test0001.md', 'db0001.md', 'plan0001.md'])
 
 async function cleanupCreatedTasks() {
-  const files = await readdir(TASKS_DIR)
-  for (const f of files) {
-    if (!FIXTURE_FILES.has(f) && f.endsWith('.md')) {
-      await unlink(join(TASKS_DIR, f))
-    }
-  }
+  await cleanupStrayTasks(SYBRA_HOME, TASKS_DIR, FIXTURE_FILES)
 }
 
 async function goToTaskList(page: Page) {
@@ -27,6 +23,14 @@ async function goToTaskList(page: Page) {
 
 async function waitForTasks(page: Page) {
   await page.waitForSelector('button:has(h3), :text("No tasks")', { timeout: 10_000 })
+}
+
+function taskHeading(page: Page, title: string) {
+  return page.getByRole('heading', { name: title, exact: true })
+}
+
+function taskCard(page: Page, title: string) {
+  return taskHeading(page, title).locator('xpath=ancestor::button[1]')
 }
 
 async function createExternalTaskFile(title: string): Promise<string> {
@@ -62,9 +66,9 @@ test.describe('Task List', () => {
   test('displays sample tasks on load', async ({ page }) => {
     await goToTaskList(page)
 
-    await expect(page.getByText('Implement auth middleware')).toBeVisible()
-    await expect(page.getByText('Write API integration tests')).toBeVisible()
-    await expect(page.getByText('Design database migration strategy')).toBeVisible()
+    await expect(taskHeading(page, 'Implement auth middleware')).toBeVisible()
+    await expect(taskHeading(page, 'Write API integration tests')).toBeVisible()
+    await expect(taskHeading(page, 'Design database migration strategy')).toBeVisible()
   })
 
   test('shows kanban columns (Done hidden by default)', async ({ page }) => {
@@ -88,15 +92,15 @@ test.describe('Task List', () => {
 
     // Todo column contains auth middleware task
     const todoCol = page.locator('div', { has: page.getByRole('heading', { name: 'Todo' }) })
-    await expect(todoCol.getByText('Implement auth middleware')).toBeVisible()
+    await expect(todoCol.getByRole('heading', { name: 'Implement auth middleware', exact: true })).toBeVisible()
 
     // In Progress column contains API tests task
     const inProgressCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Progress' }) })
-    await expect(inProgressCol.getByText('Write API integration tests')).toBeVisible()
+    await expect(inProgressCol.getByRole('heading', { name: 'Write API integration tests', exact: true })).toBeVisible()
 
     // In Review column contains db migration task
     const inReviewCol = page.locator('div', { has: page.getByRole('heading', { name: 'In Review' }) })
-    await expect(inReviewCol.getByText('Design database migration strategy')).toBeVisible()
+    await expect(inReviewCol.getByRole('heading', { name: 'Design database migration strategy', exact: true })).toBeVisible()
   })
 })
 
@@ -104,7 +108,7 @@ test.describe('Task Detail', () => {
   test('navigates to task detail on card click', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
 
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await expect(page.getByText('Back to tasks')).toBeVisible()
@@ -116,7 +120,7 @@ test.describe('Task Detail', () => {
   test('shows task metadata', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     const main = page.getByRole('main')
@@ -142,19 +146,19 @@ test.describe('Task Detail', () => {
   test('navigates back to list', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     await page.getByText('Back to tasks').click()
 
     await expect(page.locator('h2', { hasText: 'Board' })).toBeVisible()
-    await expect(page.getByText('Implement auth middleware')).toBeVisible()
+    await expect(taskHeading(page, 'Implement auth middleware')).toBeVisible()
   })
 
   test('changes task status via dropdown', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     // Change status to In Progress
@@ -171,7 +175,7 @@ test.describe('Task Detail', () => {
     await expect(inProgressCol.getByRole('heading', { name: 'Implement auth middleware' })).toBeVisible()
 
     // Restore original status
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
     await selectStatus(page, 'todo')
   })
@@ -245,7 +249,7 @@ test.describe('Navigation Rail', () => {
   test('clicking tasks nav returns to task list from detail', async ({ page }) => {
     await goToTaskList(page)
 
-    await page.getByRole('button', { name: 'Implement auth middleware' }).click()
+    await taskCard(page, 'Implement auth middleware').click()
     await expect(page.locator('h1', { hasText: 'Implement auth middleware' })).toBeVisible()
 
     const navTrigger = page.locator('[data-part="trigger"]', { hasText: /Board/ })

@@ -84,6 +84,52 @@ func TestSyncTaskBranch_AdoptedWorktreeSkipped(t *testing.T) {
 	}
 }
 
+// TestSyncTaskBranch_LiveAgentSkipped proves the opportunistic branch sync
+// never rebases a worktree a tracked agent is still live in — sync_branch
+// is best-effort and must not risk corrupting an in-flight run.
+func TestSyncTaskBranch_LiveAgentSkipped(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("live agent sync task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mWithLiveAgent := New(Config{
+		WorktreesDir: h.wtDir,
+		Projects:     h.store,
+		Tasks:        h.tasks,
+		Logger:       discardLogger(),
+		LogsDir:      h.logsDir,
+		AgentChecker: func(taskID string) bool { return taskID == tk.ID },
+	})
+
+	result, err := mWithLiveAgent.SyncTaskBranch(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != SyncSkipped {
+		t.Errorf("result = %q, want %q", result, SyncSkipped)
+	}
+	assertWorktreeClean(t, wtPath)
+}
+
 func TestSyncTaskBranch_Noop(t *testing.T) {
 	h := prepareHarness(t, nil, 30*time.Second)
 

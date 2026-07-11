@@ -2,16 +2,26 @@ package poll
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
+
+// degradedWarningEvent mirrors the frontend's DegradedWarning shape
+// (frontend/src/lib/app-lifecycle.ts) so umbrella degradation renders through
+// the same startup:degraded warning banner as other subsystem warnings.
+type degradedWarningEvent struct {
+	Subsystem string `json:"subsystem"`
+	Reason    string `json:"reason"`
+}
 
 const IssuesPollInterval = 5 * time.Minute
 
@@ -34,6 +44,7 @@ type IssuesFetcher struct {
 	viewerLogin           func() string
 	transientFetchFails   int
 	transientLabeledFails int
+	authCircuit           *AuthCircuit
 	// umbrellaExpand, when set, auto-expands a detected ☂️ umbrella issue into a
 	// gated task DAG instead of creating a flat task. nil = feature disabled.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
@@ -95,34 +106,53 @@ func NewIssuesFetcher(
 		fetchIssueLinkedPRs: github.FetchIssueLinkedPRs,
 		viewerLogin:         github.ViewerLogin,
 		umbrellaCooldown:    map[string]time.Time{},
+		authCircuit:         NewAuthCircuit("issues", logger),
 	}
 }
 
 func (f *IssuesFetcher) Name() string { return "issues" }
 
+// AuthCircuitOpen reports whether repeated GitHub auth failures have
+// tripped this poller's circuit breaker (see poll.AuthCircuit).
+func (f *IssuesFetcher) AuthCircuitOpen() bool { return f.authCircuit.Open() }
+
 func (f *IssuesFetcher) Poll(ctx context.Context) time.Duration {
 	if f.fetchSnapshot != nil {
 		f.pollSnapshot(ctx)
+		if f.authCircuit.Open() {
+			return AuthCircuitBackoff
+		}
 		return f.interval()
 	}
 
 	issues, err := f.fetchAssigned()
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		if github.IsTransientError(err) {
+		switch {
+		case github.IsAuthError(err):
+			f.transientFetchFails = 0
+			f.authCircuit.RecordFailure(err)
+			if f.authCircuit.Open() {
+				return AuthCircuitBackoff
+			}
+			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
+			// flood before the circuit's single trip line.
+			f.logger.Info("issues.fetch", "err", err)
+		case github.IsTransientError(err):
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
 			} else {
 				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
 			}
-		} else {
+		default:
 			f.transientFetchFails = 0
 			f.logger.Warn("issues.fetch", "err", err)
 		}
 		return f.interval()
 	}
 	f.transientFetchFails = 0
+	f.authCircuit.RecordSuccess()
 	f.emit("issues:updated", issues)
 	f.logger.Debug("issues.poll", "count", len(issues))
 	metrics.GitHubIssuesImported(ctx, len(issues))
@@ -136,20 +166,29 @@ func (f *IssuesFetcher) pollSnapshot(ctx context.Context) {
 	snapshot, err := f.fetchSnapshot(repos, synapseIssueLabel)
 	metrics.GitHubFetch(ctx, err == nil)
 	if err != nil {
-		if github.IsTransientError(err) {
+		switch {
+		case github.IsAuthError(err):
+			f.transientFetchFails = 0
+			f.authCircuit.RecordFailure(err)
+			if !f.authCircuit.Open() {
+				// Pre-trip: Info, not Warn (see Poll's auth branch).
+				f.logger.Info("issues.fetch", "err", err)
+			}
+		case github.IsTransientError(err):
 			f.transientFetchFails++
 			if f.transientFetchFails < issuesTransientWarnThreshold {
 				f.logger.Info("issues.fetch", "err", err)
 			} else {
 				f.logger.Warn("issues.fetch", "err", err, "consecutive", f.transientFetchFails)
 			}
-		} else {
+		default:
 			f.transientFetchFails = 0
 			f.logger.Warn("issues.fetch", "err", err)
 		}
 		return
 	}
 	f.transientFetchFails = 0
+	f.authCircuit.RecordSuccess()
 
 	f.emit("issues:updated", snapshot.Assigned)
 	f.logger.Debug("issues.poll", "count", len(snapshot.Assigned))
@@ -276,6 +315,19 @@ func (f *IssuesFetcher) expandUmbrellaIssue(issue *github.Issue) {
 	}
 	if res.Degraded {
 		f.logger.Warn("issue-sync.umbrella-degraded", "issue", issue.URL, "created", res.Created)
+		if f.emit != nil && res.ChildCount > 0 && res.MaxParallel > 0 {
+			url := res.UmbrellaURL
+			if url == "" {
+				url = issue.URL
+			}
+			f.emit(events.StartupDegraded, degradedWarningEvent{
+				Subsystem: "umbrella",
+				Reason: fmt.Sprintf(
+					"%s expanded via linear-chain fallback: %d sub-issues, %d created, max-parallel reduced to %d",
+					url, res.ChildCount, res.Created, res.MaxParallel,
+				),
+			})
+		}
 	}
 }
 
@@ -314,12 +366,6 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		return
 	}
 
-	t, err := f.tasks.Create(issue.Title, issue.Body, "headless")
-	if err != nil {
-		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
-		return
-	}
-
 	u := task.Update{
 		Issue:     task.Ptr(issue.URL),
 		Status:    task.Ptr(task.StatusTodo),
@@ -330,8 +376,14 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 		labels := issue.Labels
 		u.Tags = &labels
 	}
-	if _, err := f.tasks.Update(t.ID, u); err != nil {
-		f.logger.Error("issue-sync.update", "task_id", t.ID, "err", err)
+	// The dedupe key (Issue URL) is written atomically in the same op as task
+	// creation — a crash between create and a second update would otherwise
+	// leave the task without its dedupe key, and the next poll would
+	// re-import the same GitHub issue as a duplicate.
+	t, err := f.tasks.CreateFull(issue.Title, issue.Body, "headless", u)
+	if err != nil {
+		f.logger.Error("issue-sync.create", "issue", issue.URL, "err", err)
+		return
 	}
 	f.logger.Info("issue-sync.created", "task_id", t.ID, "issue", issue.URL)
 }

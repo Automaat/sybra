@@ -82,8 +82,113 @@ func TestTriageVerdict(t *testing.T) {
 		},
 		{
 			name:       "many_files_is_staff",
-			files:      []string{"a.md", "b.md", "c.md", "d.md"},
+			files:      []string{"a.go", "b.go", "c.go", "d.go"},
 			insertions: 4,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "dep_bump_is_simple",
+			files:      []string{"go.mod", "go.sum"},
+			insertions: 30,
+			deletions:  10,
+			want:       "simple",
+		},
+		{
+			name:       "generated_bindings_is_simple",
+			files:      []string{"frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts"},
+			insertions: 20,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "generated_pb_go_is_simple",
+			files:      []string{"internal/proto/task.pb.go"},
+			insertions: 20,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "generated_suffix_gen_go_is_simple",
+			files:      []string{"pkg/generated/client_gen.go"},
+			insertions: 10,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "generated_suffix_dot_gen_go_is_simple",
+			files:      []string{"pkg/generated/client.gen.go"},
+			insertions: 10,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "large_docs_only_is_simple",
+			files:      []string{"docs/CONFIG.md"},
+			insertions: triageReviewLineLimit + 100,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "many_docs_only_is_simple",
+			files:      []string{"a.md", "b.md", "c.md", "d.md", "e.md"},
+			insertions: 5,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "docs_under_risky_internal_path_is_simple",
+			files:      []string{"internal/workflow/README.md"},
+			insertions: 5,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "skill_md_carve_out_is_staff",
+			files:      []string{".claude/skills/sybra-tasks/SKILL.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "claude_skills_dotmd_carve_out_precedence_over_docs_ext",
+			files:      []string{".claude/skills/foo.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "claude_md_carve_out_is_staff",
+			files:      []string{"CLAUDE.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "mixed_trivial_and_source_is_staff",
+			files:      []string{"README.md", "internal/agent/x.go"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "generated_file_under_risky_path_is_staff",
+			files:      []string{"internal/workflow/ast_gen.go"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "uppercase_extension_large_diff_bypasses_fast_path_stays_staff",
+			files:      []string{"BIG.MD"},
+			insertions: triageReviewLineLimit + 50,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "no_extension_risky_dockerfile_is_staff",
+			files:      []string{"Dockerfile"},
+			insertions: 1,
 			deletions:  0,
 			want:       "staff",
 		},
@@ -137,10 +242,59 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "simple",
 		},
 		{
+			name:       "large_dep_bump_now_stays_staff",
+			files:      []string{"go.mod", "go.sum"},
+			insertions: triageReviewLineLimit + 1,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "large_generated_diff_now_stays_staff",
+			files:      []string{"frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts"},
+			insertions: triageReviewLineLimit + 1,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
 			name:       "non_internal_go_outside_risky_paths_simple",
 			files:      []string{"pkg/util/strings.go"},
 			insertions: 10,
 			deletions:  2,
+			want:       "simple",
+		},
+		{
+			name:       "package_json_dep_bump_is_simple",
+			files:      []string{"package.json"},
+			insertions: 4,
+			deletions:  1,
+			want:       "simple",
+		},
+		{
+			name:       "package_lock_dep_bump_is_simple",
+			files:      []string{"package-lock.json"},
+			insertions: 4,
+			deletions:  1,
+			want:       "simple",
+		},
+		{
+			name:       "yarn_lock_dep_bump_is_simple",
+			files:      []string{"yarn.lock"},
+			insertions: 4,
+			deletions:  1,
+			want:       "simple",
+		},
+		{
+			name:       "pnpm_lock_dep_bump_is_simple",
+			files:      []string{"pnpm-lock.yaml"},
+			insertions: 4,
+			deletions:  1,
+			want:       "simple",
+		},
+		{
+			name:       "renovate_policy_file_small_diff_is_simple_without_trivial_fast_path",
+			files:      []string{"renovate.json"},
+			insertions: 4,
+			deletions:  1,
 			want:       "simple",
 		},
 	}
@@ -329,16 +483,18 @@ func TestExecTriageReview_LargeChangeReturnsStaff(t *testing.T) {
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
 	wt := makeGitRepo(t, false)
-	// Write a single non-risky file but with > line limit insertions.
+	// Write a single non-risky, non-trivial file but with > line limit
+	// insertions. Must not be a docs/dep/generated file, or the all-trivial
+	// fast-path would deliberately bypass this cap.
 	var big strings.Builder
 	for range triageReviewLineLimit + 5 {
 		big.WriteString("line\n")
 	}
-	if err := os.WriteFile(filepath.Join(wt, "big.md"), []byte(big.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wt, "big.sql"), []byte(big.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitRun(t, wt, "add", "big.md")
-	gitRun(t, wt, "commit", "-m", "docs: big")
+	gitRun(t, wt, "add", "big.sql")
+	gitRun(t, wt, "commit", "-m", "chore: big")
 
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 
@@ -443,6 +599,32 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 				t.Errorf("goto = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuiltinPRReview_StaffPassUsesSonnet(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var pr *Definition
+	for i := range defs {
+		if defs[i].ID == "pr-review" {
+			pr = &defs[i]
+			break
+		}
+	}
+	if pr == nil {
+		t.Fatal("pr-review builtin definition not found")
+	}
+	step := pr.StepByID("review_staff")
+	if step == nil {
+		t.Fatal("review_staff step not found in pr-review")
+	}
+	if step.Config.Model != "sonnet" {
+		t.Fatalf("review_staff model = %q, want %q (aligned to simple-task-review's staff pass)", step.Config.Model, "sonnet")
 	}
 }
 

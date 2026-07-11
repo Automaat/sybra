@@ -136,9 +136,7 @@ export function Shutdown(): $CancellablePromise<void> {
  * steps that expect a single turn.
  */
 export function StartAgent(taskID: string, mode: string, prompt: string, includeTaskDescription: boolean): $CancellablePromise<agent$0.Agent | null> {
-    return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription).then(($result: any) => {
-        return $$createType10($result);
-    });
+    return $Call.ByID(2345014098, taskID, mode, prompt, includeTaskDescription);
 }
 
 /**
@@ -147,9 +145,7 @@ export function StartAgent(taskID: string, mode: string, prompt: string, include
  * local-only worktree that is cleaned up when StopChat is called.
  */
 export function StartChat(projectID: string, providerName: string, prompt: string): $CancellablePromise<agent$0.Agent | null> {
-    return $Call.ByID(4013768999, projectID, providerName, prompt).then(($result: any) => {
-        return $$createType10($result);
-    });
+    return $Call.ByID(4013768999, projectID, providerName, prompt);
 }
 
 /**
@@ -183,13 +179,13 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
 }
 
 /**
- * V3Services exposes the App and its 14 services as v3 application.Service
+ * V3Services exposes the App and its 15 services as v3 application.Service
  * values. Order matches the historical v2 BindTargets so generated bindings
  * keep stable IDs across migrations — new services must only be appended.
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType10($result);
     });
 }
 
@@ -203,7 +199,5 @@ const $$createType5 = $Create.Array($$createType4);
 const $$createType6 = notification$0.Notification.createFrom;
 const $$createType7 = $Create.Array($$createType6);
 const $$createType8 = learning$0.Digest.createFrom;
-const $$createType9 = agent$0.Agent.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
-const $$createType11 = application$0.Service.createFrom;
-const $$createType12 = $Create.Array($$createType11);
+const $$createType9 = application$0.Service.createFrom;
+const $$createType10 = $Create.Array($$createType9);
