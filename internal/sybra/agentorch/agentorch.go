@@ -614,6 +614,21 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 	if !errors.Is(err, worktree.ErrRebaseFailed) {
 		return false
 	}
+	// A disk-space-caused rebase failure is not a content conflict — skip
+	// conflict recovery and the PR re-probe (both assume a genuine merge
+	// conflict) and park directly with the real root cause. Routing this
+	// through recovery would waste an agent run before falling back to the
+	// same human-required park anyway. See #1856.
+	if worktreeerr.IsDiskSpaceError(err) {
+		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
+		if _, uerr := tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+		}); uerr != nil {
+			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
+		}
+		return true
+	}
 	if recoverConflict != nil {
 		if recoverConflict(taskID) {
 			logger.Info("worktree.rebase-block.handled", "task_id", taskID)
@@ -643,10 +658,9 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 			return true
 		}
 	}
-	reason := worktreeerr.RebaseBlockedReason
 	if _, uerr := tasks.Update(taskID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+		StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
 	}

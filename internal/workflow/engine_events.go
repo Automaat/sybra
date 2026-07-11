@@ -1170,8 +1170,13 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	// try the same autonomous branch-conflict-fix recovery before parking the
 	// task on a human. currentStatus != "human-required" mirrors the sticky
 	// guard below: don't re-trigger recovery for a task a concurrent handler
-	// already parked.
-	if currentStatus != "human-required" && e.conflictRecovery != nil && errors.Is(err, worktreeerr.ErrRebaseFailed) {
+	// already parked. A disk-space-caused rebase failure skips recovery
+	// entirely — a full host disk is not a content conflict a conflict-fix
+	// agent can resolve, so routing it through recovery would just waste an
+	// agent run before falling back to the same human-required park anyway.
+	// See #1856.
+	if currentStatus != "human-required" && e.conflictRecovery != nil &&
+		errors.Is(err, worktreeerr.ErrRebaseFailed) && !worktreeerr.IsDiskSpaceError(err) {
 		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
 		if e.tryConflictRecoveryWithFallback(taskID, func() {
 			e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)

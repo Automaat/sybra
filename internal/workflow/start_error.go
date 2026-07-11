@@ -87,6 +87,19 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		// ResumeStalled tick once it's genuinely idle) drives the workflow
 		// forward — no reason, no escalation.
 		return "", false
+	case worktreeerr.IsDiskSpaceError(err):
+		// Checked ahead of every other case (including ErrRebaseFailed and
+		// the generic default below) because ENOSPC surfaces through many
+		// different wrapping errors (raw fetch/rebase/task-write failures)
+		// and must never be swallowed into a more specific-looking but wrong
+		// classification. Permanent: retrying while the disk is full only
+		// worsens it (more failed writes/fetches) and can corrupt worktree
+		// state into a derived symptom (e.g. branch divergence) that no
+		// longer mentions disk space at all — see #1856. Escalating
+		// immediately with the real cause also stops the resume loop from
+		// hammering a full disk.
+		permanent = true
+		reason = worktreeerr.DiskSpaceExhaustedReason
 	case errors.Is(err, project.ErrProjectNotRegistered):
 		permanent = true
 		reason = "agent start blocked: project not registered locally — create the project to resume"
