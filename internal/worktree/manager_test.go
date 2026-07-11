@@ -1265,6 +1265,54 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	}
 }
 
+// TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail proves
+// recreate still succeeds when the configured push remote is transiently
+// unreachable but there is no fetched tracking ref for the task branch yet.
+// In that shape there is no evidence of a published stale branch to clean up,
+// so failing the entire recreate path would strand the task on a local-only
+// cleanup problem.
+func TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("recreate without reachable remote", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	if out, err := exec.Command(
+		"git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath,
+		"remote", "add", "fork", "ssh://127.0.0.1:1/unreachable.git",
+	).CombinedOutput(); err != nil {
+		t.Fatalf("add unreachable fork remote: %v: %s", err, out)
+	}
+
+	if err := h.m.RecreateFromBase(context.Background(), tk); err != nil {
+		t.Fatalf("RecreateFromBase with unreachable fork: %v", err)
+	}
+	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("local branch %s still exists after recreate", branch)
+	}
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree path %s still exists after recreate: %v", wtPath, statErr)
+	}
+	if _, ok := project.ResolveBareRef(context.Background(), h.proj.ClonePath, "refs/sybra-backup/"+branch); !ok {
+		t.Fatalf("backup ref for %s missing after recreate", branch)
+	}
+}
+
 // TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed proves the fix for
 // the bug where a network blip during reconcileAndRebase's remote fetch was
 // indistinguishable from a genuine content conflict: both wrapped
