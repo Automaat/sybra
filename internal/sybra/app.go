@@ -529,7 +529,9 @@ func (a *App) Shutdown(_ context.Context) {
 	if a.cancel != nil {
 		a.cancel()
 	}
-	a.wg.Wait()
+	if !waitGroupTimeout(&a.wg, appShutdownWaitGrace) {
+		a.logger.Warn("app.shutdown.wait_timeout", "grace", appShutdownWaitGrace)
+	}
 	if a.agents != nil {
 		a.agents.Shutdown()
 	}
@@ -543,6 +545,22 @@ func (a *App) Shutdown(_ context.Context) {
 		a.homeUnlock = nil
 	}
 	a.logger.Info("app.stopped")
+}
+
+const appShutdownWaitGrace = 15 * time.Second
+
+func waitGroupTimeout(wg *sync.WaitGroup, grace time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		return false
+	}
 }
 
 // StartAgent delegates to agentorch.Orchestrator and is exposed as a Wails-bound method.
