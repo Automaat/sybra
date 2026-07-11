@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // findPRRunner runs `gh pr list` for FindPRForBranch. A package var so tests
@@ -19,22 +20,32 @@ var findPRRunner = ghRunCtx
 // when no PR matches; a non-nil err signals the lookup itself failed and the
 // caller cannot distinguish "no PR" from "could not check".
 func FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
+	owner, branch := splitHead(head)
 	out, runErr := findPRRunner(ctx, "pr", "list",
-		"--repo", repo, "--head", head, "--state", "open",
-		"--json", "number", "--limit", "1")
+		"--repo", repo, "--head", branch, "--state", "open",
+		"--json", "number,headRepositoryOwner", "--limit", "20")
 	if runErr != nil {
-		return 0, false, fmt.Errorf("gh pr list --head %s: %s: %w", head, sanitizeGHOutput(out), runErr)
+		return 0, false, fmt.Errorf("gh pr list --head %s: %s: %w", branch, sanitizeGHOutput(out), runErr)
 	}
 	var prs []struct {
-		Number int `json:"number"`
+		Number              int `json:"number"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
 	}
 	if jsonErr := json.Unmarshal(out, &prs); jsonErr != nil {
 		return 0, false, fmt.Errorf("parse pr list: %w", jsonErr)
 	}
-	if len(prs) == 0 || prs[0].Number <= 0 {
-		return 0, false, nil
+	for _, pr := range prs {
+		if pr.Number <= 0 {
+			continue
+		}
+		if owner != "" && !strings.EqualFold(pr.HeadRepositoryOwner.Login, owner) {
+			continue
+		}
+		return pr.Number, true, nil
 	}
-	return prs[0].Number, true, nil
+	return 0, false, nil
 }
 
 // FindPRForBranchAnyState resolves the PR for a branch across every state so a
@@ -44,15 +55,19 @@ func FindPRForBranch(ctx context.Context, repo, head string) (number int, found 
 // when no unambiguous PR matches — several open PRs, or only closed-unmerged
 // ones, leave the caller to make no change.
 func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
+	owner, branch := splitHead(head)
 	out, runErr := findPRRunner(ctx, "pr", "list",
-		"--repo", repo, "--head", head, "--state", "all",
-		"--json", "number,state", "--limit", "20")
+		"--repo", repo, "--head", branch, "--state", "all",
+		"--json", "number,state,headRepositoryOwner", "--limit", "20")
 	if runErr != nil {
-		return 0, "", false, fmt.Errorf("gh pr list --head %s --state all: %s: %w", head, sanitizeGHOutput(out), runErr)
+		return 0, "", false, fmt.Errorf("gh pr list --head %s --state all: %s: %w", branch, sanitizeGHOutput(out), runErr)
 	}
 	var prs []struct {
-		Number int    `json:"number"`
-		State  string `json:"state"`
+		Number              int    `json:"number"`
+		State               string `json:"state"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
 	}
 	if jsonErr := json.Unmarshal(out, &prs); jsonErr != nil {
 		return 0, "", false, fmt.Errorf("parse pr list: %w", jsonErr)
@@ -60,6 +75,9 @@ func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int
 	var mergedNum, openNum, openCount int
 	for _, pr := range prs {
 		if pr.Number <= 0 {
+			continue
+		}
+		if owner != "" && !strings.EqualFold(pr.HeadRepositoryOwner.Login, owner) {
 			continue
 		}
 		switch pr.State {
@@ -79,4 +97,11 @@ func FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int
 		return openNum, "OPEN", true, nil
 	}
 	return 0, "", false, nil
+}
+
+func splitHead(head string) (owner, branch string) {
+	if o, b, found := strings.Cut(head, ":"); found {
+		return o, b
+	}
+	return "", head
 }

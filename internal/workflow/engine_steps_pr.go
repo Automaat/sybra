@@ -92,6 +92,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		Body:  body,
 	})
 	if createErr != nil {
+		if num, ok := e.adoptExistingPROnConflict(taskID, t.ProjectID, headArg, createErr); ok {
+			return stepDone(step, fmt.Sprintf("pr #%d already existed, adopted", num))
+		}
 		return e.classifyPRGitError(taskID, step, wfExec, t, createErr, "create_pr")
 	}
 
@@ -103,6 +106,22 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 	}
 	e.logger.Info("workflow.create-pr.created", "task_id", taskID, "pr", number)
 	return stepDone(step, fmt.Sprintf("created pr #%d", number))
+}
+
+func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createErr error) (int, bool) {
+	if createErr == nil || !strings.Contains(strings.ToLower(createErr.Error()), "already exists") {
+		return 0, false
+	}
+	existing, ok := e.findExistingPRForBranch(repo, headArg)
+	if !ok {
+		return 0, false
+	}
+	if err := e.tasks.UpdateTaskPR(taskID, existing); err != nil {
+		e.logger.Warn("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing, "err", err)
+		return 0, false
+	}
+	e.logger.Info("workflow.create-pr.adopt-existing", "task_id", taskID, "pr", existing)
+	return existing, true
 }
 
 // prWorktreeAndBranch resolves the on-disk worktree and branch used by

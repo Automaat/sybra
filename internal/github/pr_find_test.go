@@ -14,7 +14,7 @@ func TestFindPRForBranch_Found(t *testing.T) {
 	var gotArgs []string
 	findPRRunner = func(_ context.Context, args ...string) ([]byte, error) {
 		gotArgs = args
-		return []byte(`[{"number":77}]`), nil
+		return []byte(`[{"number":77,"headRepositoryOwner":{"login":"myfork"}}]`), nil
 	}
 
 	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "myfork:my-branch")
@@ -25,10 +25,45 @@ func TestFindPRForBranch_Found(t *testing.T) {
 		t.Fatalf("got (%d, %v), want (77, true)", number, found)
 	}
 	joined := strings.Join(gotArgs, " ")
-	for _, want := range []string{"pr list", "--repo acme/widgets", "--head myfork:my-branch", "--state open"} {
+	for _, want := range []string{"pr list", "--repo acme/widgets", "--head my-branch", "--state open"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args %q missing %q", joined, want)
 		}
+	}
+	if strings.Contains(joined, "--head myfork:my-branch") {
+		t.Errorf("gh pr list --head must use the bare branch, got %q", joined)
+	}
+}
+
+func TestFindPRForBranch_ForkOwnerMismatchSkipped(t *testing.T) {
+	orig := findPRRunner
+	t.Cleanup(func() { findPRRunner = orig })
+	findPRRunner = func(context.Context, ...string) ([]byte, error) {
+		return []byte(`[{"number":88,"headRepositoryOwner":{"login":"someone-else"}}]`), nil
+	}
+
+	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "myfork:shared-branch")
+	if err != nil {
+		t.Fatalf("FindPRForBranch: %v", err)
+	}
+	if found || number != 0 {
+		t.Fatalf("got (%d, %v), want (0, false) — a PR from a different fork owner must not match", number, found)
+	}
+}
+
+func TestFindPRForBranch_BareBranchMatchesAnyOwner(t *testing.T) {
+	orig := findPRRunner
+	t.Cleanup(func() { findPRRunner = orig })
+	findPRRunner = func(context.Context, ...string) ([]byte, error) {
+		return []byte(`[{"number":91,"headRepositoryOwner":{"login":"acme"}}]`), nil
+	}
+
+	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "same-repo-branch")
+	if err != nil {
+		t.Fatalf("FindPRForBranch: %v", err)
+	}
+	if !found || number != 91 {
+		t.Fatalf("got (%d, %v), want (91, true)", number, found)
 	}
 }
 
@@ -92,6 +127,27 @@ func TestFindPRForBranchAnyState(t *testing.T) {
 				t.Errorf("args %q missing --state all", joined)
 			}
 		})
+	}
+}
+
+func TestFindPRForBranchAnyState_ForkOwnerFilter(t *testing.T) {
+	orig := findPRRunner
+	t.Cleanup(func() { findPRRunner = orig })
+	var gotArgs []string
+	findPRRunner = func(_ context.Context, args ...string) ([]byte, error) {
+		gotArgs = args
+		return []byte(`[{"number":5,"state":"OPEN","headRepositoryOwner":{"login":"other"}},{"number":6,"state":"OPEN","headRepositoryOwner":{"login":"myfork"}}]`), nil
+	}
+
+	number, state, found, err := FindPRForBranchAnyState(context.Background(), "acme/widgets", "myfork:b")
+	if err != nil {
+		t.Fatalf("FindPRForBranchAnyState: %v", err)
+	}
+	if !found || number != 6 || state != "OPEN" {
+		t.Fatalf("got (%d, %q, %v), want (6, OPEN, true) — owner filter must ignore the other fork", number, state, found)
+	}
+	if joined := strings.Join(gotArgs, " "); strings.Contains(joined, "--head myfork:b") {
+		t.Errorf("gh pr list --head must use the bare branch, got %q", joined)
 	}
 }
 
