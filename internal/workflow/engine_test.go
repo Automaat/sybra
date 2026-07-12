@@ -6645,8 +6645,10 @@ func TestLooksLikeTransientGitHub(t *testing.T) {
 		want   bool
 	}{
 		{"connection refused", "dial tcp: connection refused", true},
+		{"connection reset", "read: connection reset by peer", true},
 		{"dns failure", "could not resolve host: api.github.com", true},
 		{"name resolution failure", "temporary failure in name resolution", true},
+		{"network unreachable", "network is unreachable", true},
 		{"i/o timeout", "context deadline exceeded (i/o timeout)", true},
 		{"bare context deadline exceeded", "gh pr create: : context deadline exceeded", true},
 		{"502", "502 Bad Gateway", true},
@@ -6680,6 +6682,8 @@ func TestLooksLikeAuthFailure(t *testing.T) {
 	}{
 		{"bad credentials", "gh: Bad credentials (HTTP 401)", true},
 		{"auth failed", "authentication failed for repository", true},
+		{"github app token invalid", "X Failed to log in to github.com using token (GH_TOKEN)\n- The token in GH_TOKEN is invalid.", true},
+		{"expired token", "fatal: token has expired", true},
 		{"gh auth hint", "run gh auth login to authenticate", true},
 		{"401", "401 Unauthorized", true},
 		{"unrelated failure", "PR title does not follow conventional commit format", false},
@@ -6693,6 +6697,168 @@ func TestLooksLikeAuthFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAdvanceStep_ImplementHumanRequiredGitHubAuthParksForRetry(t *testing.T) {
+	store := newStoreWithBuiltin(t, "simple-task-implement")
+	tasks := newMemTasks()
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+	}
+	reason := "push failed: X Failed to log in to github.com using token (GH_TOKEN)\n- The token in GH_TOKEN is invalid."
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: reason,
+		AgentMode:    "headless",
+		Workflow:     wf,
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "completed",
+		Output:  reason,
+		AgentID: "a1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.StatusReason != implementPushRetryStatusReason {
+		t.Fatalf("status_reason = %q, want %q", got.StatusReason, implementPushRetryStatusReason)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow missing")
+	}
+	if got.Workflow.CurrentStep != "implement" {
+		t.Errorf("CurrentStep = %q, want implement", got.Workflow.CurrentStep)
+	}
+	if got.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", got.Workflow.State)
+	}
+	if got.Workflow.Variables[implementPushAttemptsVar] != "1" {
+		t.Errorf("%s = %q, want 1", implementPushAttemptsVar, got.Workflow.Variables[implementPushAttemptsVar])
+	}
+	if _, ok := workflowRetryAfter(got.Workflow); !ok {
+		t.Errorf("%s not set to a valid retry timestamp", workflowRetryAfterVar)
+	}
+}
+
+func TestAdvanceStep_ImplementGitHubAuthRetryCapFallsThroughToHumanRequired(t *testing.T) {
+	store := newStoreWithBuiltin(t, "simple-task-implement")
+	tasks := newMemTasks()
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			implementPushAttemptsVar: strconv.Itoa(maxImplementPushRetries),
+		},
+	}
+	reason := "push failed: gh auth status: token is invalid"
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: reason,
+		AgentMode:    "headless",
+		Workflow:     wf,
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "completed",
+		Output:  reason,
+		AgentID: "a1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.StatusReason != reason {
+		t.Fatalf("status_reason = %q, want original reason %q", got.StatusReason, reason)
+	}
+	if got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", got.Workflow)
+	}
+}
+
+func TestAdvanceStep_ImplementNonGitHubAuthHumanRequiredFallsThrough(t *testing.T) {
+	store := newStoreWithBuiltin(t, "simple-task-implement")
+	tasks := newMemTasks()
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+	}
+	reason := "application auth provider rejected invalid token fixture"
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: reason,
+		AgentMode:    "headless",
+		Workflow:     wf,
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		Status:  "completed",
+		Output:  reason,
+		AgentID: "a1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.State != ExecCompleted || got.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want completed terminal workflow", got.Workflow)
+	}
+}
+
+func newStoreWithBuiltin(t *testing.T, id string) *Store {
+	t.Helper()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	for i := range defs {
+		if defs[i].ID == id {
+			if err := store.Save(defs[i]); err != nil {
+				t.Fatalf("Save(%s): %v", id, err)
+			}
+			return store
+		}
+	}
+	t.Fatalf("builtin %s not found", id)
+	return nil
 }
 
 func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {

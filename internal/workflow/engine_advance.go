@@ -122,13 +122,10 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		}
 	}
 
-	// Re-read task for latest state (agent may have changed tags/status).
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil {
+	t, parked, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
+	if err != nil || parked {
 		return err
 	}
-	t = e.withManualTestConfig(t)
-	t.Workflow = wfExec
 
 	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
 	if err != nil {
@@ -145,6 +142,28 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
 	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
+}
+
+// reloadTaskAndCheckImplementRetry re-reads task state after a step
+// completion (the agent may have changed tags/status directly, e.g.
+// self-escalating to human-required) and gives maybeParkImplementGitHubRetry
+// a chance to reclassify a transient GitHub push/auth failure as a parked
+// retry before the caller resolves the next workflow edge. When parked is
+// true the caller must return immediately (err may be nil).
+func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *Step, wfExec *Execution, output StepOutput, release func()) (t TaskInfo, parked bool, err error) {
+	t, err = e.tasks.GetTask(taskID)
+	if err != nil {
+		return TaskInfo{}, false, err
+	}
+	t = e.withManualTestConfig(t)
+	t.Workflow = wfExec
+
+	parked, err = e.maybeParkImplementGitHubRetry(taskID, currentStep, wfExec, t, output)
+	if parked || err != nil {
+		release()
+		return t, parked, err
+	}
+	return t, false, nil
 }
 
 // handleFanOutCompletion routes a parallel-child or best-of-N-attempt
