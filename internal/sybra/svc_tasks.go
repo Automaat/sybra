@@ -578,6 +578,9 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
+	if s.cfg != nil && !s.cfg.HomeNodeFor(t.ProjectID).Local {
+		return
+	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
 	// Explicit handoff entry points are the exception: they intentionally route
 	// through task.created even when a PR number is already known.

@@ -52,6 +52,9 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 func (a *App) dispatchPass(ctx context.Context) {
 	a.maybeStartOrchestrator(ctx)
 	a.releaseUnblockedChildren()
+	if a.assigner != nil {
+		a.assigner.Tick(ctx)
+	}
 }
 
 // maintenancePass runs the expensive, git/agent-touching recovery and cleanup.

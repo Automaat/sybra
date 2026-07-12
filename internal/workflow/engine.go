@@ -301,6 +301,7 @@ type Engine struct {
 	costBudget       CostBudgetChecker
 	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
+	dispatchGate     func(TaskInfo) bool
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -370,6 +371,12 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 // context.WithTimeout(parent, shellTimeout) so they are cancelled when
 // the parent context is cancelled (e.g. on app shutdown).
 func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
+
+// SetDispatchGate installs a predicate that reports whether a task should run
+// its workflow on this node. ResumeStalled skips any task the gate rejects — in
+// leader-follower mode a task homed on a remote follower executes there, and the
+// leader only mirrors its state. A nil gate (the default) runs every task.
+func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = gate }
 
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }

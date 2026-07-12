@@ -46,6 +46,7 @@ import (
 	"github.com/Automaat/sybra/internal/spotlight"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
@@ -92,6 +93,8 @@ type App struct {
 	learningDigestSvc *learning.Service
 	agentOrch         *agentorch.Orchestrator
 	reviewer          *review.Handler
+	assigner          *clusterlead.Assigner
+	mirror            *clusterlead.Mirror
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
 	todoist           *todoistCoordinator
@@ -434,6 +437,8 @@ func (a *App) Startup(ctx context.Context) error {
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 
 	a.initWorkflowEngine()
+
+	a.initCluster()
 
 	a.initAgentConfig()
 

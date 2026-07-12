@@ -884,6 +884,9 @@ func (e *Engine) ResumeStalled() {
 		if t.Workflow == nil || t.Workflow.CurrentStep == "" {
 			continue
 		}
+		if e.dispatchGate != nil && !e.dispatchGate(*t) {
+			continue
+		}
 		switch t.Workflow.State {
 		case ExecCompleted, ExecFailed:
 			continue

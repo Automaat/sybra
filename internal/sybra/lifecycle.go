@@ -69,6 +69,9 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, any), issuesFetcher *poll.IssuesFetcher) {
 	a := lm.app
 	a.wg.Go(func() { a.orchestratorLoop(ctx) })
+	if a.mirror != nil {
+		a.wg.Go(func() { a.mirror.Run(ctx) })
+	}
 	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)
