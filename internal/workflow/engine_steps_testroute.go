@@ -204,7 +204,6 @@ func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfEx
 		return StepOutput{}, false, nil
 	}
 }
-
 func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
