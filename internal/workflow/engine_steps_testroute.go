@@ -177,6 +177,34 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 	return StepOutput{StepID: stepID, Status: "completed", Output: "infra failure — opened pr"}, nil
 }
 
+func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
+	switch outcome {
+	case testOutcomeInfraFailure:
+		if e.openPROnUnrunnableGate {
+			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
+			return out, true, err
+		}
+		out, err := e.retryOrEscalateTransient(taskID, stepID, testOutcomeInfraFailure, "",
+			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
+			"infra failure", "workflow.test.infra-failure", wfExec, t)
+		return out, true, err
+	case testOutcomeMissingEvidence:
+		out, err := e.retryOrEscalateTransient(taskID, stepID, testOutcomeMissingEvidence, missingEvidenceReask,
+			"test-runner failed without grounded evidence after auto-retries — needs local reproduction before implementation retries",
+			"missing evidence", "workflow.test.missing-evidence", wfExec, t)
+		return out, true, err
+	case testOutcomeAmbiguousRequirement:
+		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, true, err
+		}
+		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
+		return StepOutput{StepID: stepID, Status: "completed", Output: "ambiguous requirement"}, true, nil
+	default:
+		return StepOutput{}, false, nil
+	}
+}
+
 func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
@@ -2355,25 +2383,8 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
 	}
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
-	switch outcome {
-	case testOutcomeInfraFailure:
-		if e.openPROnUnrunnableGate {
-			return e.retryOrOpenPRForUnrunnableGate(taskID, step.ID, wfExec, t)
-		}
-		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeInfraFailure, "",
-			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
-			"infra failure", "workflow.test.infra-failure", wfExec, t)
-	case testOutcomeMissingEvidence:
-		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
-			"test-runner failed without grounded evidence after auto-retries — needs local reproduction before implementation retries",
-			"missing evidence", "workflow.test.missing-evidence", wfExec, t)
-	case testOutcomeAmbiguousRequirement:
-		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "ambiguous requirement"}, nil
+	if out, handled, err := e.routeNonProductTestOutcome(taskID, step.ID, outcome, wfExec, t); handled || err != nil {
+		return out, err
 	}
 
 	// Count test-runner runs that belong to the current testing cycle.
