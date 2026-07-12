@@ -26,6 +26,10 @@ func rewriteSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.RewriteInvocations(prompt, skillNames)
 }
 
+func stripSkillInvocations(prompt string, skillNames []string) string {
+	return skillinvoke.StripInvocations(prompt, skillNames)
+}
+
 // discoverCodexSkills returns the union of skill names sybra knows about for
 // the codex skill rewriter. A "known" skill is one whose name shows up in
 // any of: ~/.codex/skills/, ~/.claude/skills/, `codex plugin list --json`,

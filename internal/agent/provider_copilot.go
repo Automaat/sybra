@@ -44,7 +44,8 @@ func (copilotProvider) BuildCommand(cfg RunConfig, model string) string {
 func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	// --allow-all-tools is required for non-interactive mode; --no-ask-user
 	// stops the agent blocking on questions (no TTY/UI to answer them).
-	args := []string{"-p", cfg.Prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	prompt := stripSkillInvocations(cfg.Prompt, discoverCodexSkills())
+	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)

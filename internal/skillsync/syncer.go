@@ -130,6 +130,7 @@ func (s *Syncer) destinations(primary, userHome string) []string {
 	for _, agentDir := range []string{
 		filepath.Join(userHome, ".claude", "skills"),
 		filepath.Join(userHome, ".codex", "skills"),
+		filepath.Join(userHome, ".copilot", "skills"),
 		filepath.Join(userHome, ".agents", "skills"),
 	} {
 		if filepath.Clean(primary) != filepath.Clean(agentDir) {

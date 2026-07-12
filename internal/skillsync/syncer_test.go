@@ -424,6 +424,7 @@ func TestRunEmbeddedSkillsLandInAllDirsWhenGoModPresent(t *testing.T) {
 		primaryDst,
 		filepath.Join(userHome, ".claude", "skills"),
 		filepath.Join(userHome, ".codex", "skills"),
+		filepath.Join(userHome, ".copilot", "skills"),
 		filepath.Join(userHome, ".agents", "skills"),
 	}
 	for _, dir := range allDsts {
@@ -435,6 +436,44 @@ func TestRunEmbeddedSkillsLandInAllDirsWhenGoModPresent(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "repo-only", "SKILL.md")); err != nil {
 			t.Errorf("repo-only/SKILL.md missing from %s: %v", dir, err)
 		}
+	}
+}
+
+func TestRunPreservesUserCopilotSkillsPrunesSybraOrphans(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	primaryDst := filepath.Join(t.TempDir(), "app-skills")
+	userHome := t.TempDir()
+
+	copilotSkills := filepath.Join(userHome, ".copilot", "skills")
+	vendor := filepath.Join(copilotSkills, "vendor-skill")
+	stale := filepath.Join(copilotSkills, "sybra-stale")
+	for _, d := range []string{vendor, stale} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("---\nname: x\ndescription: t\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newSyncer().Run(skillsync.Options{
+		RepoDir:     repoDir,
+		SkillsFS:    skills.FS,
+		PrimaryDst:  primaryDst,
+		UserHomeDir: userHome,
+	})
+
+	if _, err := os.Stat(filepath.Join(vendor, "SKILL.md")); err != nil {
+		t.Errorf("user copilot skill without sybra- prefix must survive sync: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("sybra- orphan in ~/.copilot/skills must be pruned; stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(copilotSkills, "sybra-test", "SKILL.md")); err != nil {
+		t.Errorf("bundled skill should land in ~/.copilot/skills: %v", err)
 	}
 }
 
