@@ -115,6 +115,11 @@ func buildTestBinaries(t *testing.T) string {
 			testBuildErr = "build fake-codex: " + err.Error() + "\n" + string(out)
 			return
 		}
+		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "copilot"), "../../cmd/fake-copilot")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			testBuildErr = "build fake-copilot: " + err.Error() + "\n" + string(out)
+			return
+		}
 		// Build real sybra-cli.
 		cmd = exec.Command("go", "build", "-o", filepath.Join(dir, "sybra-cli"), "../../cmd/sybra-cli")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -837,9 +842,11 @@ func setupE2EMultiProvider(t *testing.T, provider string, scenarios []string) *e
 	env := setupE2EProvider(t, provider, "")
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", sf)
 	t.Setenv("FAKE_CODEX_SCENARIO_FILE", sf)
+	t.Setenv("FAKE_COPILOT_SCENARIO_FILE", sf)
 	// Clear static scenario so file takes priority.
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "")
 	t.Setenv("FAKE_CODEX_SCENARIO", "")
+	t.Setenv("FAKE_COPILOT_SCENARIO", "")
 	env.scenarioFile = sf
 	return env
 }
@@ -4201,8 +4208,8 @@ func TestE2E_CrossProvider_FlipsFromLatestMixedHistory(t *testing.T) {
 	if providerByStep["second"] != "codex" {
 		t.Fatalf("second provider = %q, want codex", providerByStep["second"])
 	}
-	if providerByStep["third"] != "claude" {
-		t.Fatalf("third provider = %q, want claude (cross flip from codex)", providerByStep["third"])
+	if providerByStep["third"] != "copilot" {
+		t.Fatalf("third provider = %q, want copilot (cross rotates codex->copilot)", providerByStep["third"])
 	}
 }
 
@@ -4504,8 +4511,9 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "first" && tk.Workflow.State == workflow.ExecWaiting
 	})
 
-	// Remove claude binary before second step starts; cross from codex wants
-	// claude and must deterministically fall back to default codex.
+	// Only codex + sybra-cli on PATH: cross from codex rotates to copilot then
+	// claude, but neither is installed, so it deterministically falls back to
+	// default codex.
 	subset := stageProviderPath(t, "codex", "sybra-cli")
 	t.Setenv("PATH", subset)
 
