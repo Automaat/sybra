@@ -152,6 +152,31 @@ func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanR
 	return StepOutput{StepID: stepID, Status: "completed", Output: doneOutput}, nil
 }
 
+// retryOrOpenPRForUnrunnableGate auto-retries an infra_failure testing outcome
+// while retry budget remains (same re-arm as retryOrEscalateTransient), but
+// once the budget is exhausted it opens a PR (ready-pr) instead of parking at
+// human-required. infra_failure means the tester found no evidence either way
+// (see classifyTestOutcome): the manual gate itself — not the implementation —
+// is what could not run. Routing through ready-pr reuses the exact same
+// simple-task-pr.yaml → create_pr → in-review path a PASS verdict already
+// takes, so CI and a human PR reviewer see the real diff instead of the task
+// dead-ending at human-required with no PR for anyone to act on (#1928).
+func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	parked, err := e.parkTestingRetryOrEscalate(taskID, testOutcomeInfraFailure, "", wfExec, t)
+	if err != nil {
+		return StepOutput{}, err
+	}
+	if parked {
+		return StepOutput{}, errStepParked
+	}
+	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
+	if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", reason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.test.infra-failure.open-pr", "task_id", taskID)
+	return StepOutput{StepID: stepID, Status: "completed", Output: "infra failure — opened pr"}, nil
+}
+
 func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
@@ -2285,6 +2310,12 @@ func ExtractTestVerdict(output string) string {
 //     for distinct-defect loops that never converge.
 //   - tester/provisioning failures and ambiguous specs do not consume the
 //     implementation retry budget.
+//   - infra failure (the manual gate itself could not be run) → auto-retries,
+//     then — when openPROnUnrunnableGate is set (the default) — ready-pr, on
+//     the theory that a harness/tooling limitation is not evidence of a
+//     product defect and CI plus a human PR reviewer are better positioned to
+//     judge the diff than a task stuck with no PR at all. Set false to
+//     restore the legacy human-required escalation.
 //
 // Counting prior test-runner runs (which persist on the task across the
 // implement→review→test loop) gives a natural, stateless attempt counter:
@@ -2326,6 +2357,9 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
 	switch outcome {
 	case testOutcomeInfraFailure:
+		if e.openPROnUnrunnableGate {
+			return e.retryOrOpenPRForUnrunnableGate(taskID, step.ID, wfExec, t)
+		}
 		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeInfraFailure, "",
 			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
 			"infra failure", "workflow.test.infra-failure", wfExec, t)
