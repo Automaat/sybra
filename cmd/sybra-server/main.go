@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -117,7 +118,7 @@ func run() (int, error) {
 	if port == "" {
 		port = "8080"
 	}
-	addr := os.Getenv("SYBRA_HOST") + ":" + port
+	addr := net.JoinHostPort(strings.TrimSpace(os.Getenv("SYBRA_HOST")), port)
 
 	srv := &http.Server{
 		Addr:              addr,
