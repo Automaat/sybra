@@ -157,18 +157,13 @@ func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
 }
 
 // TestAppStartup_QueueInitFailureFailsWorkflowEngineClosed pins the
-// fail-closed contract in initWorkflowEngine: when agentqueue.New fails
-// (e.g. its dir is blocked by a regular file), both the queue and the
-// workflow engine must stay nil — a partially-initialized queue must never
-// be wired into a live workflow engine. Startup itself is unaffected since
-// workflow wiring failures were already non-fatal before this feature.
-func TestAppStartup_QueueInitFailureFailsWorkflowEngineClosed(t *testing.T) {
+func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 	preventFetchTTLLeak(t)
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
 
-	if err := os.WriteFile(filepath.Join(home, "queue"), []byte("blocks mkdir"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "agentqueue"), []byte("blocks mkdir"), 0o644); err != nil {
 		t.Fatalf("seed queue path as file: %v", err)
 	}
 
@@ -189,8 +184,8 @@ func TestAppStartup_QueueInitFailureFailsWorkflowEngineClosed(t *testing.T) {
 	if app.agentQueue != nil {
 		t.Fatal("agentQueue must stay nil when agentqueue.New fails")
 	}
-	if app.workflowEngine != nil {
-		t.Fatal("workflowEngine must stay nil when the admission queue failed to construct (fail closed)")
+	if app.workflowEngine == nil {
+		t.Fatal("workflowEngine must still be created when the queue degrades — admission gating is optional, not fail-closed")
 	}
 }
 

@@ -91,26 +91,21 @@ type App struct {
 	evaluationSvc     *evaluation.Service
 	learningDigestSvc *learning.Service
 	agentOrch         *agentorch.Orchestrator
-	// agentQueue is the admission queue a workflow implementation dispatch
-	// falls back to when the agent pool is saturated. Constructed in
-	// initWorkflowEngine; nil when construction fails (fail-closed — the
-	// workflow engine is then never created either) or workflows are disabled.
-	agentQueue      *agentqueue.Queue
-	reviewer        *review.Handler
-	workflowEngine  *workflow.Engine
-	workflowStore   *workflow.Store
-	todoist         *todoistCoordinator
-	renovate        *renovateCoordinator
-	promptLab       *promptLabCoordinator
-	triage          *triageCoordinator
-	humanReview     *humanReviewHandler
-	cfg             *config.Config
-	logLevel        *slog.LevelVar
-	emit            func(string, any)
-	emitFactory     func(context.Context) func(string, any)
-	openBrowser     func(string)
-	requestRestart  func()
-	restartStaleErr *logging.ErrorThrottle
+	reviewer          *review.Handler
+	workflowEngine    *workflow.Engine
+	workflowStore     *workflow.Store
+	todoist           *todoistCoordinator
+	renovate          *renovateCoordinator
+	promptLab         *promptLabCoordinator
+	triage            *triageCoordinator
+	humanReview       *humanReviewHandler
+	cfg               *config.Config
+	logLevel          *slog.LevelVar
+	emit              func(string, any)
+	emitFactory       func(context.Context) func(string, any)
+	openBrowser       func(string)
+	requestRestart    func()
+	restartStaleErr   *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.

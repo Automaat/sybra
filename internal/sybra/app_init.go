@@ -221,7 +221,7 @@ func (a *App) initLearning() {
 }
 
 func (a *App) initAgentQueue() {
-	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{}, a.logger)
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
 		return
@@ -728,19 +728,8 @@ func (a *App) initWorkflowEngine() {
 		a.logger.Info("workflow.disabled")
 		return
 	}
-	// Construct the admission queue before the workflow engine so a failure
-	// here fails closed: no partially-initialized queue is ever wired into a
-	// live workflow engine. A construction failure (e.g. AgentQueueDir()
-	// unwritable) is logged and this function returns without creating the
-	// engine at all — matching the pre-existing behavior for a failed
-	// workflow.NewStore below.
-	q, qErr := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
-	if qErr != nil {
-		a.logger.Error("agentqueue.init", "err", qErr)
-		return
-	}
-	a.agentQueue = q
-	if a.agentOrch != nil {
+	q := a.agentQueue
+	if q != nil && a.agentOrch != nil {
 		a.agentOrch.SetQueue(q)
 	}
 
@@ -821,38 +810,40 @@ func (a *App) initWorkflowEngine() {
 	// manual, dispatch-status, age), and prune stale queue entries first.
 	// Wired here (not inside internal/workflow) so the engine package never
 	// imports internal/agentqueue — see TaskInfo.Priority's doc comment.
-	a.workflowEngine.SetDispatchComparator(func() func(x, y workflow.TaskInfo) int {
-		snap := q.Snapshot()
-		queued := make(map[string]agentqueue.Item, len(snap))
-		for _, it := range snap {
-			queued[it.TaskID] = it
-		}
-		toItem := func(t workflow.TaskInfo) agentqueue.Item {
-			it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
-			if qit, ok := queued[t.ID]; ok {
-				it.Manual = qit.Manual
-				it.Enqueued = qit.Enqueued
+	if q != nil {
+		a.workflowEngine.SetDispatchComparator(func() func(x, y workflow.TaskInfo) int {
+			snap := q.Snapshot()
+			queued := make(map[string]agentqueue.Item, len(snap))
+			for _, it := range snap {
+				queued[it.TaskID] = it
 			}
-			return it
-		}
-		return func(x, y workflow.TaskInfo) int {
-			ai, bi := toItem(x), toItem(y)
-			switch {
-			case agentqueue.Less(ai, bi):
-				return -1
-			case agentqueue.Less(bi, ai):
-				return 1
-			default:
-				return 0
+			toItem := func(t workflow.TaskInfo) agentqueue.Item {
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				if qit, ok := queued[t.ID]; ok {
+					it.Manual = qit.Manual
+					it.Enqueued = qit.Enqueued
+				}
+				return it
 			}
-		}
-	})
-	a.workflowEngine.SetQueueReconciler(func() {
-		q.Reconcile(func(id string) (task.Task, bool) {
-			t, err := a.tasks.Get(id)
-			return t, err == nil
+			return func(x, y workflow.TaskInfo) int {
+				ai, bi := toItem(x), toItem(y)
+				switch {
+				case agentqueue.Less(ai, bi):
+					return -1
+				case agentqueue.Less(bi, ai):
+					return 1
+				default:
+					return 0
+				}
+			}
 		})
-	})
+		a.workflowEngine.SetQueueReconciler(func() {
+			q.Reconcile(func(id string) (task.Task, bool) {
+				t, err := a.tasks.Get(id)
+				return t, err == nil
+			})
+		})
+	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
 }
