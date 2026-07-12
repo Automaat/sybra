@@ -57,6 +57,10 @@ func (c *todoistCoordinator) init() {
 }
 
 func (c *todoistCoordinator) initLocked() {
+	if c.cfg.IsFollower() {
+		c.logger.Info("cluster.follower.todoist.disabled", "reason", "role=follower; leader owns task-source polling")
+		return
+	}
 	if !c.cfg.Todoist.Enabled || c.cfg.Todoist.APIToken == "" {
 		return
 	}

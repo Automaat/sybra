@@ -91,9 +91,12 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 			CompletedAt: &completedAt,
 			Variables:   map[string]string{"k": "v"},
 		},
-		CreatedAt: now.Add(-time.Hour),
-		UpdatedAt: now,
-		Body:      "body",
+		CreatedAt:       now.Add(-time.Hour),
+		UpdatedAt:       now,
+		AssignedNode:    "pet-box",
+		MirrorRev:       7,
+		MirrorUpdatedAt: &completedAt,
+		Body:            "body",
 	}
 
 	got := taskFromFrontmatter(frontmatterFromTask(original), original.Body)
@@ -306,6 +309,12 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.UpdatedAt = later
 	case "StatusChangedAt":
 		task.StatusChangedAt = later
+	case "AssignedNode":
+		task.AssignedNode = "pet-box"
+	case "MirrorRev":
+		task.MirrorRev = 7
+	case "MirrorUpdatedAt":
+		task.MirrorUpdatedAt = &later
 	default:
 		t.Fatalf("no persistence test value for Task.%s", name)
 	}

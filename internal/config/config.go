@@ -38,6 +38,7 @@ type Config struct {
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
 	Server         ServerConfig         `yaml:"server" json:"server"`
+	Cluster        ClusterConfig        `yaml:"cluster" json:"cluster"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`
 	Browser        BrowserConfig        `yaml:"browser" json:"browser"`
 	ProjectTypes   []string             `yaml:"project_types" json:"projectTypes"`
