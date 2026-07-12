@@ -178,6 +178,46 @@ func TestRecoverStaleBranchConflict_LeavesParkedFixWorkflowWithoutBurningBudget(
 	}
 }
 
+// TestRecoverStaleBranchConflict_LeavesParkedPRFixWorkflowWithoutBurningBudget
+// is the PR-numbered sibling of
+// TestRecoverStaleBranchConflict_LeavesParkedFixWorkflowWithoutBurningBudget:
+// a prior call already dispatched the pr-fix conflict workflow and it is
+// merely parked waiting for a dispatch/pool slot (agent-pool-busy), not
+// stuck or failed. A re-entrant call (e.g. a CI-fix worktree prep re-hitting
+// the same unresolved divergence) must leave it alone instead of cancelling
+// and redispatching — the exact livelock reported for task da7f6f3d/PR 1885,
+// where every re-probe burned a full worktree rebuild+setup cycle without
+// ever attempting real conflict resolution.
+func TestRecoverStaleBranchConflict_LeavesParkedPRFixWorkflowWithoutBurningBudget(t *testing.T) {
+	r, tk := setupRebaseRecoveryHandler(t, false)
+	parked := &workflow.Execution{
+		WorkflowID:  prFixWorkflowID,
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+	}
+	if _, err := r.tasks.Update(tk.ID, task.Update{Workflow: &parked}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("RecoverStaleBranchConflict returned false while its pr-fix workflow was parked waiting")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want the task left parked, not escalated to human-required", got.Status)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != prFixWorkflowID || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "fix" {
+		t.Fatalf("workflow = %+v, want the parked pr-fix workflow untouched", got.Workflow)
+	}
+	if n := r.prTracker.Retries(tk.ID, github.PRIssueConflict); n != 0 {
+		t.Fatalf("conflict retry budget = %d, want 0 (no agent ran, so nothing to charge)", n)
+	}
+}
+
 func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handler, task.Task) {
 	t.Helper()
 

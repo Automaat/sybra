@@ -27,6 +27,14 @@ import (
 // never reached via DispatchEvent/trigger matching — see
 // internal/workflow/builtin/branch-conflict-fix.yaml.
 const branchConflictFixWorkflowID = "branch-conflict-fix"
+
+// prFixWorkflowID is the workflow handlePRIssueReplacingWorkflow dispatches
+// for a PR-numbered conflict recovery (RecoverStaleBranchConflict's
+// t.PRNumber != 0 branch). Used the same way as branchConflictFixWorkflowID:
+// to detect a recovery that already dispatched and is merely waiting on a
+// pool/dispatch slot, so a re-entrant caller doesn't cancel and restart it.
+const prFixWorkflowID = "pr-fix"
+
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 const branchRecreateKind = github.PRIssueBranchRecreate
 
@@ -740,6 +748,17 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 // already spent. handlePRIssueReplacingWorkflow's conflict branch prepares via
 // PrepareForFix (no rebase), so this never re-enters the rebasing path that
 // called it.
+//
+// Guards against the pool-exhaustion livelock: when a prior call already
+// dispatched pr-fix's conflict fix and it is merely parked waiting for a
+// dispatch/pool slot (ErrAgentPoolBusy et al — see WorkflowParkedWaiting), a
+// re-entrant caller must leave it alone rather than cancel and restart it.
+// Without this, every rebase-block re-probe (e.g. a CI-fix worktree prep
+// re-hitting the same unresolved divergence) cancels the in-flight pr-fix
+// workflow and redispatches a fresh one that immediately re-parks on the
+// still-exhausted pool, burning a full worktree rebuild+setup per cycle
+// without ever actually attempting conflict resolution. ResumeStalled is the
+// only thing that should re-drive a parked step once a slot frees.
 func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	if r == nil || r.WorkflowEngine == nil || r.prTracker == nil {
 		return false
@@ -748,7 +767,8 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	if err != nil || t.ProjectID == "" {
 		return false
 	}
-	if r.WorkflowEngine.WorkflowParkedWaiting(taskID, branchConflictFixWorkflowID) {
+	if r.WorkflowEngine.WorkflowParkedWaiting(taskID, branchConflictFixWorkflowID) ||
+		r.WorkflowEngine.WorkflowParkedWaiting(taskID, prFixWorkflowID) {
 		r.logger.Info("pr-monitor.branch-conflict.already-parked-waiting", "task_id", taskID)
 		return true
 	}
