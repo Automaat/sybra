@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -368,6 +369,165 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 	}
 	if signaledName != "claude" || signaledKind != provider.SignalRateLimit {
 		t.Fatalf("recordProviderSignal(provider=%q, sig=%v), want (claude, SignalRateLimit)", signaledName, signaledKind)
+	}
+}
+
+// TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating
+// covers #1913: a headless agent that never produced a single byte of
+// output (NDJSON or stderr) since launch must be treated as a provider
+// startup failure — provider-health signal + retryable in-progress status —
+// not a generic watchdog hang that would exhaust its same-provider retry
+// budget and strand the task (and its umbrella parent) in human-required.
+func TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	var signaledName, signaledReason string
+	var signaledKind provider.Signal
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+			ag.SetError("rate_limit", reason)
+			signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
+		},
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
+	w.handleZeroOutputStall(ag, 20*time.Minute, 20*time.Minute)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q (zero output at startup is recoverable, not human-required)", got.Status, task.StatusInProgress)
+	}
+	if !strings.Contains(got.StatusReason, zeroOutputReason) {
+		t.Fatalf("status_reason = %q, want it to include %q", got.StatusReason, zeroOutputReason)
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on zero-output stall")
+	}
+	if ag.GetErrorKind() != "rate_limit" {
+		t.Fatalf("agent error kind = %q, want %q (so the completion handler reschedules it)", ag.GetErrorKind(), "rate_limit")
+	}
+	if signaledName != "claude" || signaledKind != provider.SignalRateLimit {
+		t.Fatalf("recordProviderSignal(provider=%q, sig=%v), want (claude, SignalRateLimit)", signaledName, signaledKind)
+	}
+	if signaledReason != zeroOutputReason {
+		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
+	}
+}
+
+func TestHandleZeroOutputStall_NoTaskStillSignalsAndStops(t *testing.T) {
+	stopped := false
+	w := &Watchdog{
+		logger:               slog.New(slog.DiscardHandler),
+		stopAgent:            func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Signal, string, time.Duration) {},
+	}
+
+	w.handleZeroOutputStall(&agent.Agent{ID: "a1", Provider: "claude"}, time.Hour, time.Hour)
+
+	if !stopped {
+		t.Fatal("stopAgent not called on taskless zero-output stall")
+	}
+}
+
+// TestInspectHeadless_ZeroOutputStallSkipsJudge covers #1913 end to end
+// through the real trigger path: a "stall" trigger on an agent that never
+// emitted an event must route straight to handleZeroOutputStall and must
+// NOT invoke the (pointless, since the log is empty) LLM judge.
+func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	judgeCalled := false
+	stopped := false
+	var signaledReason string
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		emit:   func(string, any) {},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			judgeCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+			ag.SetError("rate_limit", reason)
+			signaledReason = reason
+		},
+	}
+
+	started := time.Now().Add(-20 * time.Minute)
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		Provider:    "claude",
+		Mode:        "headless",
+		StartedAt:   started,
+		LastEventAt: started,
+		LogPath:     "/tmp/does-not-matter.ndjson",
+	}
+
+	w.inspectHeadless(context.Background(), newState(), time.Now(), ag)
+
+	if judgeCalled {
+		t.Fatal("LLM judge invoked for a zero-output stall; should be skipped")
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on zero-output stall")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if signaledReason != zeroOutputReason {
+		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
+	}
+}
+
+// TestInspectHeadless_MidRunStallStillUsesJudge ensures an agent that DID
+// produce output before stalling (LastEventAt after StartedAt) keeps using
+// the normal LLM-judge path — the zero-output fast path must not swallow a
+// genuine mid-task hang.
+func TestInspectHeadless_MidRunStallStillUsesJudge(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	judgeCalled := false
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		emit:   func(string, any) {},
+		wg:     &sync.WaitGroup{},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			judgeCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+		stopAgent: func(string) error { return nil },
+	}
+
+	started := time.Now().Add(-20 * time.Minute)
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		Provider:    "claude",
+		Mode:        "headless",
+		StartedAt:   started,
+		LastEventAt: started.Add(5 * time.Minute),
+		LogPath:     "/tmp/does-not-matter.ndjson",
+	}
+
+	w.inspectHeadless(context.Background(), newState(), time.Now(), ag)
+	w.wg.Wait()
+
+	if !judgeCalled {
+		t.Fatal("LLM judge not invoked for a genuine mid-run stall")
 	}
 }
 

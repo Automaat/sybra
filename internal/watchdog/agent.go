@@ -256,6 +256,25 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	if trigger == "" {
 		return
 	}
+
+	// A "stall" trigger on an agent that has never produced a single byte of
+	// output since launch (LastEventAt untouched since StartedAt — see
+	// AppendOutput/TouchLastEvent, the only writers) is not a mid-task hang;
+	// the judge would have nothing to read from an empty log either. It is
+	// the signature of a broken provider CLI invocation (auth hang, spawn
+	// failure, wedged handshake) — #1913 saw the same claude process produce
+	// zero NDJSON and zero stderr across three consecutive clean re-dispatches,
+	// each burning the same-provider "watchdog hang" retry budget for nothing
+	// before landing the task (and its umbrella parent) in human-required.
+	// Route it through the provider-health signal path instead, exactly like
+	// stopForRateLimit: this marks the provider unhealthy for its cooldown
+	// window so the reschedule can fail over to a working peer, rather than
+	// retrying the identical broken provider.
+	if trigger == "stall" && ag.GetLastEventAt().Equal(ag.StartedAt) {
+		w.handleZeroOutputStall(ag, stall, total)
+		return
+	}
+
 	if !s.shouldInspect(ag.ID, now) {
 		return
 	}
@@ -540,6 +559,43 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 	}
 	w.logger.Info("agent.watchdog.rate_limit.stop",
 		"id", ag.ID, "task_id", ag.TaskID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
+}
+
+// zeroOutputReason is the provider-health detail recorded for a zero-output
+// startup hang (see inspectHeadless). Kept distinct from the generic
+// "rate_limited" reason so provider health status/logs can tell the two
+// apart even though both share the SignalRateLimit health-gate bucket.
+const zeroOutputReason = "zero output before startup timeout"
+
+// handleZeroOutputStall handles a "stall" trigger on a headless agent that
+// never produced any output at all. This reuses stopForRateLimit's recovery
+// machinery: mark the task retryable (not human-required), report a
+// provider-health signal so the health gate parks this provider for its
+// cooldown and the next dispatch can fail over to a healthy peer, and stop
+// the hung process. Reusing the "rate_limit" signal/error-kind is what makes
+// the completion handler's isRateLimitedRun check reschedule the run
+// immediately (RescheduleRateLimitedAgent) instead of leaving it for the
+// same-provider "watchdog hang" retry budget that #1913 exhausted for
+// nothing.
+func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Duration) {
+	w.logger.Warn("agent.watchdog.zero_output_stall",
+		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
+		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
+	reason := "watchdog: rate limit: " + zeroOutputReason
+	if ag.TaskID == "" {
+		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
+	} else if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	if w.recordProviderSignal != nil {
+		w.recordProviderSignal(ag, provider.SignalRateLimit, zeroOutputReason, 0)
+	}
+	if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
 }
 
 // supervisorNudgePrefix tags a watchdog steer delivered to a live agent so the
