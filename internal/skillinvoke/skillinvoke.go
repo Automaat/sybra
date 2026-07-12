@@ -28,6 +28,18 @@ func NormalizeName(name string) (normalized string, ok bool) {
 // RewriteInvocations converts known slash skill invocations to Codex's
 // dollar-prefixed syntax.
 func RewriteInvocations(prompt string, skillNames []string) string {
+	return rewriteWithPrefix(prompt, skillNames, "$")
+}
+
+// StripInvocations converts known slash skill invocations to a bare skill name.
+// Copilot has no invocation prefix — skills are discovered from SKILL.md and
+// triggered by name/description — so a leading slash would name a command
+// Copilot cannot run; the bare name is the strongest trigger signal.
+func StripInvocations(prompt string, skillNames []string) string {
+	return rewriteWithPrefix(prompt, skillNames, "")
+}
+
+func rewriteWithPrefix(prompt string, skillNames []string, prefix string) string {
 	if prompt == "" || len(skillNames) == 0 {
 		return prompt
 	}
@@ -44,7 +56,7 @@ func RewriteInvocations(prompt string, skillNames []string) string {
 	last := 0
 	for _, m := range matches {
 		out.WriteString(prompt[last:m.start])
-		out.WriteByte('$')
+		out.WriteString(prefix)
 		out.WriteString(m.name)
 		last = m.end
 	}

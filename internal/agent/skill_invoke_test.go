@@ -206,6 +206,19 @@ func TestDiscoverCodexSkillsUsesPluginListAndSkipsCodexCache(t *testing.T) {
 	}
 }
 
+func TestDiscoverCopilotSkillsScansCopilotAndAgentsDirs(t *testing.T) {
+	home := t.TempDir()
+	mkLocalSkill(t, filepath.Join(home, ".copilot", "skills"), "copilot-only")
+	mkLocalSkill(t, filepath.Join(home, ".agents", "skills"), "agents-shared")
+	mkLocalSkill(t, filepath.Join(home, ".claude", "skills"), "claude-shared")
+
+	got := discoverCopilotSkillsInHome(home)
+	want := []string{"agents-shared", "claude-shared", "copilot-only"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestListCodexPluginSourceSkillsRejectsInvalidFrontmatterName(t *testing.T) {
 	pluginRoot := t.TempDir()
 	singleSkillRoot := filepath.Join(pluginRoot, "opaque-dir")
