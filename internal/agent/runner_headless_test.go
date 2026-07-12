@@ -2172,10 +2172,10 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 	})
 }
 
-// TestBuildHeadlessInvocation_PlaywrightMCP verifies --mcp-config and
-// --strict-mcp-config are always paired, only appear for claude, and never
-// appear when MCPConfigJSON is empty (the disabled/preflight-failed/non-claude
-// state Manager.preparePlaywrightMCP leaves cfg in).
+// TestBuildHeadlessInvocation_PlaywrightMCP verifies each provider renders the
+// canonical MCPConfigJSON into its own flag form (claude --mcp-config, codex -c
+// mcp_servers overrides, copilot --additional-mcp-config) and that all are a
+// no-op when MCPConfigJSON is empty.
 func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 	t.Parallel()
 
@@ -2212,19 +2212,52 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		}
 	})
 
-	t.Run("codex_ignores_mcp_config_json", func(t *testing.T) {
-		// MCPConfigJSON is a Claude-only field; a non-claude provider must never
-		// see it, even if some upstream bug leaves it set on the RunConfig.
+	t.Run("codex_renders_mcp_config_as_c_overrides", func(t *testing.T) {
 		a := &Agent{ID: "a", Provider: "codex"}
-		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{
-			Prompt:        "test",
-			MCPConfigJSON: `{"mcpServers":{}}`,
-		})
+		mcpJSON := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test", MCPConfigJSON: mcpJSON})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
 		}
-		if slices.Contains(args, "--mcp-config") || slices.Contains(args, "--strict-mcp-config") {
-			t.Fatalf("mcp flags must not appear for codex; got %v", args)
+		if slices.Contains(args, "--mcp-config") {
+			t.Fatalf("codex must not use claude's --mcp-config flag; got %v", args)
+		}
+		if !slices.Contains(args, `mcp_servers.playwright.command="npx"`) {
+			t.Fatalf("codex missing mcp_servers command override; got %v", args)
+		}
+		if !slices.Contains(args, `mcp_servers.playwright.args=["-y","@playwright/mcp@latest"]`) {
+			t.Fatalf("codex missing mcp_servers args override; got %v", args)
+		}
+	})
+
+	t.Run("codex_empty_mcp_config_is_noop", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "codex"}
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "mcp_servers.") }) {
+			t.Fatalf("codex must not emit mcp_servers overrides when MCPConfigJSON empty; got %v", args)
+		}
+	})
+
+	t.Run("copilot_renders_additional_mcp_config", func(t *testing.T) {
+		a := &Agent{ID: "a", Provider: "copilot"}
+		mcpJSON := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}`
+		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test", MCPConfigJSON: mcpJSON})
+		if err != nil {
+			t.Fatalf("buildHeadlessInvocation: %v", err)
+		}
+		idx := slices.Index(args, "--additional-mcp-config")
+		if idx < 0 || idx+1 >= len(args) {
+			t.Fatalf("copilot missing --additional-mcp-config; got %v", args)
+		}
+		payload := args[idx+1]
+		if !strings.Contains(payload, `"type":"local"`) || !strings.Contains(payload, `"tools":["*"]`) {
+			t.Fatalf("copilot mcp config must carry type/tools; got %s", payload)
+		}
+		if !strings.Contains(payload, `"command":"npx"`) {
+			t.Fatalf("copilot mcp config missing command; got %s", payload)
 		}
 	})
 }

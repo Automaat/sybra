@@ -49,6 +49,15 @@ func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
+	if cfg.MCPConfigJSON != "" {
+		mcpConfig, err := renderCopilotMCPConfig(cfg.MCPConfigJSON)
+		if err != nil {
+			return headlessInvocation{}, err
+		}
+		if mcpConfig != "" {
+			args = append(args, "--additional-mcp-config", mcpConfig)
+		}
+	}
 	// Copilot only reports its session id on the terminal result event, so
 	// a resume id is available only for an intentional stop/restart. Use
 	// --session-id (unambiguous required-value flag) over --resume[=value].

@@ -36,19 +36,6 @@ func buildPlaywrightMCPConfig(outputDir string, extraArgs []string) (string, err
 	return string(data), nil
 }
 
-// preparePlaywrightMCP attaches a headless Playwright MCP server to cfg when
-// every gate passes: the run is headless, the workflow dispatcher marked it
-// eligible (RoleTestRunner only — see agentAdapter.StartAgent),
-// config.PlaywrightMCPEnabled is true, and the FINAL resolved provider (after
-// health-gate failover) is claude. Keying off cfg.provider rather than the
-// raw requested provider is load-bearing: a test-runner run requested as
-// claude but failed over to codex must not spawn a claude-only MCP flag on a
-// codex invocation.
-//
-// A launcher preflight failure (evidence dir exclude, mkdir, missing npx) is
-// logged and swallowed — cfg.MCPConfigJSON stays empty and the run proceeds
-// exactly as it would with the feature off, so a broken preflight never blocks
-// dispatch of the underlying test-runner agent.
 func (m *Manager) preparePlaywrightMCP(cfg *RunConfig) {
 	if cfg.Mode != "headless" || !cfg.PlaywrightMCPEligible {
 		return
@@ -60,7 +47,7 @@ func (m *Manager) preparePlaywrightMCP(cfg *RunConfig) {
 	if !enabled {
 		return
 	}
-	if cfg.provider == nil || cfg.provider.Name() != "claude" {
+	if cfg.provider == nil {
 		return
 	}
 
