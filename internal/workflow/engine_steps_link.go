@@ -16,19 +16,22 @@ var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
 var prShortRe = regexp.MustCompile(`\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#(\d+)`)
 
 const (
-	workflowRetryAfterVar         = "workflow.retry_after"
-	prCreateRetryBackoff          = 15 * time.Minute
-	prCreateRetryStatusReason     = "GitHub rate limit during PR creation — retrying later"
-	prCreateTransientStatusReason = "GitHub connectivity issue during PR creation — retrying later"
-	prCreateAuthRetryReason       = "GitHub authentication issue during PR creation — retrying later"
-	prCreatePushedNoPRReason      = "commits pushed but no PR created — retrying"
-	prCreateAttemptsVar           = "workflow.pr_create_attempts"
-	maxPRCreatePushedNoPRRetries  = 3
-	prCreateAuthAttemptsVar       = "workflow.pr_create_auth_attempts"
-	maxPRCreateAuthRetries        = 3
-	prPushRetryStatusReason       = "push failed — retrying once before ruling out a flake"
-	prPushAttemptsVar             = "workflow.pr_push_attempts"
-	maxPRPushRetries              = 1
+	workflowRetryAfterVar          = "workflow.retry_after"
+	prCreateRetryBackoff           = 15 * time.Minute
+	prCreateRetryStatusReason      = "GitHub rate limit during PR creation — retrying later"
+	prCreateTransientStatusReason  = "GitHub connectivity issue during PR creation — retrying later"
+	prCreateAuthRetryReason        = "GitHub authentication issue during PR creation — retrying later"
+	prCreatePushedNoPRReason       = "commits pushed but no PR created — retrying"
+	prCreateAttemptsVar            = "workflow.pr_create_attempts"
+	maxPRCreatePushedNoPRRetries   = 3
+	prCreateAuthAttemptsVar        = "workflow.pr_create_auth_attempts"
+	maxPRCreateAuthRetries         = 3
+	prPushRetryStatusReason        = "push failed — retrying once before ruling out a flake"
+	prPushAttemptsVar              = "workflow.pr_push_attempts"
+	maxPRPushRetries               = 1
+	implementPushRetryStatusReason = "GitHub push/auth issue during implementation — retrying later"
+	implementPushAttemptsVar       = "workflow.implement_push_attempts"
+	maxImplementPushRetries        = 3
 )
 
 // execLinkPRAndReview is a non-LLM mechanical step that tries to recover the
@@ -219,6 +222,61 @@ func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, 
 	return StepOutput{}, errStepParked
 }
 
+// maybeParkImplementGitHubRetry catches the one failure class the implement
+// agent can hide from the workflow engine: it commits, hits a transient
+// GitHub push/auth failure, then self-escalates the task to human-required
+// before its run_agent completion is advanced. Re-arm only the canonical
+// implementation step and only for GitHub-shaped reasons; all other
+// human-required parks still follow the workflow's terminal next edge.
+func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec *Execution, t TaskInfo, output StepOutput) (bool, error) {
+	if step == nil || step.Type != StepRunAgent || step.ID != "implement" || step.Config.Role != "implementation" {
+		return false, nil
+	}
+	if t.Status != "human-required" {
+		return false, nil
+	}
+	msg := strings.TrimSpace(t.StatusReason + "\n" + output.Output)
+	if msg == "" || !looksLikeImplementGitHubRetry(msg) {
+		return false, nil
+	}
+	attempts := parseWorkflowInt(wfExec.Variables[implementPushAttemptsVar])
+	if attempts >= maxImplementPushRetries {
+		e.logger.Warn("workflow.implement-push-retry.exhausted",
+			"task_id", taskID, "step", step.ID, "attempts", attempts)
+		return false, nil
+	}
+	wfExec.CurrentStep = step.ID
+	wfExec.State = ExecWaiting
+	wfExec.SetVar(implementPushAttemptsVar, strconv.Itoa(attempts+1))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return false, err
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", implementPushRetryStatusReason); err != nil {
+		return false, err
+	}
+	e.logger.Warn("workflow.implement-push-retry.parked",
+		"task_id", taskID, "step", step.ID, "attempt", attempts+1, "max", maxImplementPushRetries)
+	return true, nil
+}
+
+func looksLikeImplementGitHubRetry(output string) bool {
+	lower := strings.ToLower(output)
+	githubish := strings.Contains(lower, "github") ||
+		strings.Contains(lower, "gh ") ||
+		strings.Contains(lower, "gh:") ||
+		strings.Contains(lower, "gh_") ||
+		strings.Contains(lower, "github_") ||
+		strings.Contains(lower, "git push") ||
+		strings.Contains(lower, "push failed")
+	if !githubish {
+		return false
+	}
+	return looksLikeGitHubRateLimit(output) ||
+		looksLikeTransientGitHub(output) ||
+		looksLikeAuthFailure(output)
+}
+
 func isPRCreationStep(stepID string) bool {
 	return stepID == "create_pr" || stepID == "push_existing_pr"
 }
@@ -245,8 +303,11 @@ func looksLikeTransientGitHub(output string) bool {
 	lower := strings.ToLower(output)
 	patterns := []string{
 		"connection refused",
+		"connection reset",
 		"could not resolve host",
 		"no such host",
+		"no route to host",
+		"network is unreachable",
 		"temporary failure in name resolution",
 		"i/o timeout",
 		"timed out",
@@ -306,7 +367,11 @@ func looksLikeAuthFailure(output string) bool {
 	patterns := []string{
 		"bad credentials",
 		"authentication failed",
+		"failed to log in",
 		"gh auth",
+		"gh_token is invalid",
+		"github_token is invalid",
+		"token has expired",
 		"401 unauthorized",
 	}
 	for _, p := range patterns {
