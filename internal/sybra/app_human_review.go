@@ -250,7 +250,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	v, source, parseErr := verdict.Parse(final)
 
 	if parseErr == nil && v.Decision == "unblocked" {
-		h.recordUnblocked(taskID, ag.ID, v, source)
+		h.recordUnblocked(current, ag.ID, v, source)
 		return
 	}
 
@@ -286,8 +286,8 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 
 	switch v.Decision {
 	case "human":
-		h.fileAutonomyIssue(taskID, ag.ID, v, h.workCtxForTask(taskID))
-		if h.appendNote(taskID, "Auto-review verdict: needs human", v.Summary) {
+		h.fileAutonomyIssue(taskID, current.ProjectID, ag.ID, v)
+		if h.appendNote(taskID, "Auto-review verdict: needs human", h.scrubForTask(current.ProjectID, v.Summary)) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	case "sybra_bug":
@@ -508,35 +508,38 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (scrubbed)", summary, newTask.ID, "")
 }
 
-func (h *humanReviewHandler) recordUnblocked(taskID, agentID string, v verdictDecision, source verdict.Source) {
-	h.logAudit(audit.EventHumanReviewVerdict, taskID, agentID, map[string]any{
+func (h *humanReviewHandler) recordUnblocked(current task.Task, agentID string, v verdictDecision, source verdict.Source) {
+	h.logAudit(audit.EventHumanReviewVerdict, current.ID, agentID, map[string]any{
 		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
 	})
-	h.fileAutonomyIssue(taskID, agentID, v, h.workCtxForTask(taskID))
-	if h.appendNote(taskID, "Auto-review: unblocked", v.Summary) {
-		h.markVerdictRendered(taskID, agentID)
+	h.fileAutonomyIssue(current.ID, current.ProjectID, agentID, v)
+	if h.appendNote(current.ID, "Auto-review: unblocked", h.scrubForTask(current.ProjectID, v.Summary)) {
+		h.markVerdictRendered(current.ID, agentID)
 	}
 }
 
-func (h *humanReviewHandler) workCtxForTask(taskID string) *WorkScrubContext {
+func (h *humanReviewHandler) workCtxFor(projectID string) *WorkScrubContext {
 	if h.workCtx == nil {
 		return nil
 	}
-	t, err := h.tasks.Get(taskID)
-	if err != nil {
-		return nil
-	}
-	return h.workCtx(t.ProjectID)
+	return h.workCtx(projectID)
 }
 
-func (h *humanReviewHandler) fileAutonomyIssue(taskID, agentID string, v verdictDecision, wctx *WorkScrubContext) {
+func (h *humanReviewHandler) fileAutonomyIssue(taskID, projectID, agentID string, v verdictDecision) {
 	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
 		return
 	}
-	if wctx != nil {
+	if wctx := h.workCtxFor(projectID); wctx != nil {
 		sv := scrubVerdict(v, wctx)
+		if _, ok := h.findExistingLocalBugTask(sv.IssueTitle); ok {
+			return
+		}
 		tags := append([]string{"sybra-bug", "scrubbed", "autonomy"}, sv.IssueLabels...)
-		if _, err := h.tasks.CreateFull(sv.IssueTitle, sv.IssueBody, task.AgentModeHeadless, task.Update{Tags: &tags}); err != nil {
+		init := task.Update{Tags: &tags}
+		if repo := strings.TrimSpace(h.cfg.HumanReviewRepo()); repo != "" {
+			init.ProjectID = &repo
+		}
+		if _, err := h.tasks.CreateFull(sv.IssueTitle, sv.IssueBody, task.AgentModeHeadless, init); err != nil {
 			h.logger.Warn("human-review.autonomy.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
 		}
 		return
