@@ -94,9 +94,30 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 describe('QueuedLayout', () => {
   afterEach(() => { cleanup() })
 
-  it('shows "Agent starting…" badge', () => {
+  it('shows "Waiting for a slot" badge', () => {
     render(QueuedLayout, { props: { linkedTask: null } })
-    expect(screen.getByText('Agent starting…')).toBeDefined()
+    expect(screen.getByText('Waiting for a slot')).toBeDefined()
+  })
+
+  it('shows queue position/depth when queue metadata is provided', () => {
+    render(QueuedLayout, {
+      props: {
+        linkedTask: null,
+        queueInfo: {
+          taskId: 'task-1',
+          role: 'implementation',
+          position: 2,
+          depth: 4,
+          priority: 'medium',
+          effectivePriority: 'medium',
+          status: 'todo',
+          manual: true,
+          mode: 'headless',
+          enqueued: '2026-07-11T12:00:00Z',
+        },
+      },
+    })
+    expect(screen.getByText('Queue 2 of 4')).toBeDefined()
   })
 
   it('shows task title when linkedTask provided', () => {
@@ -119,7 +140,7 @@ describe('QueuedLayout', () => {
 
   it('shows waiting message when no linkedTask', () => {
     render(QueuedLayout, { props: { linkedTask: null } })
-    expect(screen.getByText("Agent hasn't started producing output yet.")).toBeDefined()
+    expect(screen.getByText('Agent is waiting for a slot before it starts producing output.')).toBeDefined()
   })
 })
 

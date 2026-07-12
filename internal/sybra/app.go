@@ -592,6 +592,14 @@ func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription boo
 	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
 }
 
+// AgentQueueSnapshot exposes the read-only queue snapshot to Wails/web clients.
+func (a *App) AgentQueueSnapshot() AgentQueueSnapshot {
+	if a == nil || a.queueSvc == nil {
+		return AgentQueueSnapshot{Items: []AgentQueueSnapshotItem{}}
+	}
+	return a.queueSvc.AgentQueueSnapshot()
+}
+
 // StartChat creates a new interactive chat bound to projectID using the
 // requested provider ("claude" or "codex"). Each chat gets a dedicated
 // local-only worktree that is cleaned up when StopChat is called.

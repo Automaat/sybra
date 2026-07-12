@@ -75,8 +75,55 @@ func TestQueueServiceHTTPAllowlist(t *testing.T) {
 	if status := post("SnapshotDepth"); status == http.StatusNotFound {
 		t.Errorf("SnapshotDepth should be reachable over HTTP, got %d", status)
 	}
+	if status := post("AgentQueueSnapshot"); status != http.StatusNotFound {
+		t.Errorf("QueueService.AgentQueueSnapshot must stay off the QueueService HTTP surface, got %d (want 404)", status)
+	}
 	if status := post("Snapshot"); status != http.StatusNotFound {
 		t.Errorf("Snapshot must NOT be reachable over HTTP, got %d (want 404)", status)
+	}
+}
+
+func TestAppHTTPAllowlist(t *testing.T) {
+	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, slog.Default())
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+	if added := queue.Offer(agentqueue.Item{
+		TaskID:   "queued-task",
+		Priority: task.PriorityNone,
+		Status:   task.StatusInReview,
+		Mode:     "headless",
+	}); !added {
+		t.Fatal("Offer(queued-task) returned false, want true")
+	}
+	a := &App{queueSvc: &QueueService{queue: queue}}
+
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/api/App/AgentQueueSnapshot", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST AgentQueueSnapshot: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("AgentQueueSnapshot status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var got AgentQueueSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode AgentQueueSnapshot response: %v", err)
+	}
+	if got.Depth != 1 || len(got.Items) != 1 {
+		t.Fatalf("AgentQueueSnapshot response = %+v, want single queued item", got)
+	}
+	if got.Items[0].TaskID != "queued-task" {
+		t.Fatalf("AgentQueueSnapshot item task = %q, want queued-task", got.Items[0].TaskID)
+	}
+	if got.Items[0].EffectivePriority != string(task.PriorityHigh) {
+		t.Fatalf("AgentQueueSnapshot effective priority = %q, want %q", got.Items[0].EffectivePriority, task.PriorityHigh)
 	}
 }
 

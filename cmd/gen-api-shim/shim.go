@@ -131,12 +131,24 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 	lines := strings.Split(src, "\n")
 
 	existing := map[string]bool{}
+	reservedMethodNames := map[string]bool{}
+	for _, svc := range services {
+		for _, method := range svc.methods {
+			reservedMethodNames[method] = true
+		}
+	}
 	for _, line := range lines {
 		if m := apiHTTPFuncRe.FindStringSubmatch(line); m != nil {
 			existing[m[1]] = true
 		}
 	}
 	imports, localByModuleType, lastImportIdx := parseAPIHTTPImports(lines)
+	usedImportLocals := map[string]bool{}
+	for _, mi := range imports {
+		for _, entry := range mi.entries {
+			usedImportLocals[entry.local] = true
+		}
+	}
 
 	lastCallLine := map[string]int{}
 	for i, line := range lines {
@@ -148,18 +160,32 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 	}
 
 	var addedModules []string
-	pending := map[string][]string{}
+	pending := map[string][]importEntry{}
+	uniqueLocal := func(base string) string {
+		local := base
+		for i := 2; reservedMethodNames[local] || usedImportLocals[local]; i++ {
+			local = fmt.Sprintf("%s%d", base, i)
+		}
+		usedImportLocals[local] = true
+		return local
+	}
 	addImport := func(module, typeName string) string {
 		key := module + "." + typeName
 		if local, ok := localByModuleType[key]; ok {
 			return local
 		}
-		localByModuleType[key] = typeName
+		local := typeName
+		if reservedMethodNames[local] {
+			local = uniqueLocal(typeName + "Data")
+		} else {
+			usedImportLocals[local] = true
+		}
+		localByModuleType[key] = local
 		if _, seen := pending[module]; !seen {
 			addedModules = append(addedModules, module)
 		}
-		pending[module] = append(pending[module], typeName)
-		return typeName
+		pending[module] = append(pending[module], importEntry{name: typeName, local: local})
+		return local
 	}
 
 	funcInserts := map[int][]string{}
@@ -199,17 +225,11 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 	for _, module := range addedModules {
 		mi, ok := imports[module]
 		if ok {
-			for _, name := range pending[module] {
-				mi.entries = append(mi.entries, importEntry{name: name, local: name})
-			}
+			mi.entries = append(mi.entries, pending[module]...)
 			lines[mi.lineIndex] = renderImportLine(module, mi.entries)
 			continue
 		}
-		var entries []importEntry
-		for _, name := range pending[module] {
-			entries = append(entries, importEntry{name: name, local: name})
-		}
-		importInserts[lastImportIdx] = append(importInserts[lastImportIdx], renderImportLine(module, entries))
+		importInserts[lastImportIdx] = append(importInserts[lastImportIdx], renderImportLine(module, pending[module]))
 	}
 
 	merged := map[int][]string{}

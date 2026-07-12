@@ -16,6 +16,98 @@ import * as config$0 from "../config/models.js";
 import * as monitor$0 from "../monitor/models.js";
 
 /**
+ * AgentQueueSnapshot is the read-only queued-agent view exposed to the GUI.
+ */
+export class AgentQueueSnapshot {
+    "depth": number;
+    "items": AgentQueueSnapshotItem[];
+
+    /** Creates a new AgentQueueSnapshot instance. */
+    constructor($$source: Partial<AgentQueueSnapshot> = {}) {
+        if (!("depth" in $$source)) {
+            this["depth"] = 0;
+        }
+        if (!("items" in $$source)) {
+            this["items"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentQueueSnapshot instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentQueueSnapshot {
+        const $$createField1_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("items" in $$parsedSource) {
+            $$parsedSource["items"] = $$createField1_0($$parsedSource["items"]);
+        }
+        return new AgentQueueSnapshot($$parsedSource as Partial<AgentQueueSnapshot>);
+    }
+}
+
+/**
+ * AgentQueueSnapshotItem is one queue row, ordered by Queue.Snapshot().
+ */
+export class AgentQueueSnapshotItem {
+    "taskId": string;
+    "role": string;
+    "position": number;
+    "depth": number;
+    "priority": string;
+    "effectivePriority": string;
+    "status": string;
+    "manual": boolean;
+    "mode": string;
+    "enqueued": string;
+
+    /** Creates a new AgentQueueSnapshotItem instance. */
+    constructor($$source: Partial<AgentQueueSnapshotItem> = {}) {
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("role" in $$source)) {
+            this["role"] = "";
+        }
+        if (!("position" in $$source)) {
+            this["position"] = 0;
+        }
+        if (!("depth" in $$source)) {
+            this["depth"] = 0;
+        }
+        if (!("priority" in $$source)) {
+            this["priority"] = "";
+        }
+        if (!("effectivePriority" in $$source)) {
+            this["effectivePriority"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("manual" in $$source)) {
+            this["manual"] = false;
+        }
+        if (!("mode" in $$source)) {
+            this["mode"] = "";
+        }
+        if (!("enqueued" in $$source)) {
+            this["enqueued"] = "0001-01-01T00:00:00.000Z";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentQueueSnapshotItem instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentQueueSnapshotItem {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentQueueSnapshotItem($$parsedSource as Partial<AgentQueueSnapshotItem>);
+    }
+}
+
+/**
  * AppSettings is the shape of data exchanged with the frontend for the config view.
  * 
  * Every section here is round-tripped by GetSettings → UpdateSettings. Adding a
@@ -122,25 +214,25 @@ export class AppSettings {
      * Creates a new AppSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): AppSettings {
-        const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType1;
-        const $$createField2_0 = $$createType2;
-        const $$createField3_0 = $$createType3;
-        const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType5;
-        const $$createField6_0 = $$createType6;
-        const $$createField7_0 = $$createType7;
-        const $$createField8_0 = $$createType8;
-        const $$createField9_0 = $$createType9;
-        const $$createField10_0 = $$createType10;
-        const $$createField11_0 = $$createType11;
-        const $$createField12_0 = $$createType12;
-        const $$createField13_0 = $$createType13;
-        const $$createField14_0 = $$createType14;
-        const $$createField15_0 = $$createType15;
-        const $$createField16_0 = $$createType16;
-        const $$createField17_0 = $$createType17;
-        const $$createField18_0 = $$createType18;
+        const $$createField0_0 = $$createType2;
+        const $$createField1_0 = $$createType3;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType5;
+        const $$createField4_0 = $$createType6;
+        const $$createField5_0 = $$createType7;
+        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType9;
+        const $$createField8_0 = $$createType10;
+        const $$createField9_0 = $$createType11;
+        const $$createField10_0 = $$createType12;
+        const $$createField11_0 = $$createType13;
+        const $$createField12_0 = $$createType14;
+        const $$createField13_0 = $$createType15;
+        const $$createField14_0 = $$createType16;
+        const $$createField15_0 = $$createType17;
+        const $$createField16_0 = $$createType18;
+        const $$createField17_0 = $$createType19;
+        const $$createField18_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("agent" in $$parsedSource) {
             $$parsedSource["agent"] = $$createField0_0($$parsedSource["agent"]);
@@ -227,7 +319,7 @@ export class CodexModel {
      * Creates a new CodexModel instance from a string or object.
      */
     static createFrom($$source: any = {}): CodexModel {
-        const $$createField2_0 = $$createType17;
+        const $$createField2_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("supported_reasoning_levels" in $$parsedSource) {
             $$parsedSource["supported_reasoning_levels"] = $$createField2_0($$parsedSource["supported_reasoning_levels"]);
@@ -372,7 +464,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType19;
+        const $$createField2_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -454,8 +546,8 @@ export class TamperReportDTO {
      * Creates a new TamperReportDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TamperReportDTO {
-        const $$createField4_0 = $$createType17;
-        const $$createField5_0 = $$createType21;
+        const $$createField4_0 = $$createType19;
+        const $$createField5_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -545,7 +637,7 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType22;
+        const $$createField4_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
@@ -607,26 +699,28 @@ export class VersionInfo {
 }
 
 // Private type creation functions
-const $$createType0 = config$0.AgentDefaults.createFrom;
-const $$createType1 = config$0.NotificationConfig.createFrom;
-const $$createType2 = config$0.OrchestratorConfig.createFrom;
-const $$createType3 = LoggingSettings.createFrom;
-const $$createType4 = config$0.AuditConfig.createFrom;
-const $$createType5 = config$0.TodoistConfig.createFrom;
-const $$createType6 = config$0.RenovateConfig.createFrom;
-const $$createType7 = config$0.ProvidersConfig.createFrom;
-const $$createType8 = config$0.GitHubConfig.createFrom;
-const $$createType9 = config$0.MonitorConfig.createFrom;
-const $$createType10 = config$0.SelfMonitorConfig.createFrom;
-const $$createType11 = config$0.TriageConfig.createFrom;
-const $$createType12 = config$0.UmbrellaConfig.createFrom;
-const $$createType13 = config$0.TestingConfig.createFrom;
-const $$createType14 = config$0.ExperienceConfig.createFrom;
-const $$createType15 = config$0.MetricsConfig.createFrom;
-const $$createType16 = config$0.BrowserConfig.createFrom;
-const $$createType17 = $Create.Array($Create.Any);
-const $$createType18 = $Create.Map($Create.Any, $Create.Any);
-const $$createType19 = monitor$0.Report.createFrom;
-const $$createType20 = TamperFindingDTO.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = $Create.Map($Create.Any, $Create.Any);
+const $$createType0 = AgentQueueSnapshotItem.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = config$0.AgentDefaults.createFrom;
+const $$createType3 = config$0.NotificationConfig.createFrom;
+const $$createType4 = config$0.OrchestratorConfig.createFrom;
+const $$createType5 = LoggingSettings.createFrom;
+const $$createType6 = config$0.AuditConfig.createFrom;
+const $$createType7 = config$0.TodoistConfig.createFrom;
+const $$createType8 = config$0.RenovateConfig.createFrom;
+const $$createType9 = config$0.ProvidersConfig.createFrom;
+const $$createType10 = config$0.GitHubConfig.createFrom;
+const $$createType11 = config$0.MonitorConfig.createFrom;
+const $$createType12 = config$0.SelfMonitorConfig.createFrom;
+const $$createType13 = config$0.TriageConfig.createFrom;
+const $$createType14 = config$0.UmbrellaConfig.createFrom;
+const $$createType15 = config$0.TestingConfig.createFrom;
+const $$createType16 = config$0.ExperienceConfig.createFrom;
+const $$createType17 = config$0.MetricsConfig.createFrom;
+const $$createType18 = config$0.BrowserConfig.createFrom;
+const $$createType19 = $Create.Array($Create.Any);
+const $$createType20 = $Create.Map($Create.Any, $Create.Any);
+const $$createType21 = monitor$0.Report.createFrom;
+const $$createType22 = TamperFindingDTO.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = $Create.Map($Create.Any, $Create.Any);

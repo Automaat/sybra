@@ -59,6 +59,7 @@ describe('AgentCard', () => {
   afterEach(() => {
     cleanup()
     taskStore.tasks = new Map()
+    agentStore.queueByTask = new Map()
   })
 
   it('renders task title in heading when linked task is present', () => {
@@ -90,6 +91,23 @@ describe('AgentCard', () => {
   it('renders Queued label for idle state', () => {
     render(AgentCard, { props: { agent: makeAgent({ state: 'idle' }), onclick: () => {} } })
     expect(screen.getByText('Queued')).toBeDefined()
+  })
+
+  it('renders queued position/depth copy when queue metadata exists', () => {
+    agentStore.queueByTask = new Map([['task-1', {
+      taskId: 'task-1',
+      role: 'implementation',
+      position: 2,
+      depth: 5,
+      priority: 'medium',
+      effectivePriority: 'medium',
+      status: 'todo',
+      manual: true,
+      mode: 'headless',
+      enqueued: '2026-07-11T12:00:00Z',
+    }]])
+    render(AgentCard, { props: { agent: makeAgent({ state: 'queued' }), onclick: () => {} } })
+    expect(screen.getByText('Waiting for a slot · Queue 2 of 5')).toBeDefined()
   })
 
   it('renders Waiting state label for paused', () => {

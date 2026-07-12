@@ -6,6 +6,7 @@
   import type { TimestampedStreamEvent, TimelineEntry } from '$lib/timeline.js'
   import type { PlanStep } from '$lib/plan-steps.js'
   import type { ToolUseSignal } from '$lib/workspace-tabs.js'
+  import { agentStore } from '../../stores/agents.svelte.js'
   import QueuedLayout from './QueuedLayout.svelte'
   import RunningLayout from './RunningLayout.svelte'
   import BlockedLayout from './BlockedLayout.svelte'
@@ -43,13 +44,15 @@
     latestToolUse,
     onnavigate,
   }: Props = $props()
+
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask.get(a.taskId) : null)
 </script>
 
 <div class="min-h-[60vh]">
   {#key phase}
     <div in:fade={{ duration: 180 }} out:fade={{ duration: 120 }}>
       {#if phase === 'queued'}
-        <QueuedLayout {linkedTask} />
+        <QueuedLayout {linkedTask} {queueInfo} />
       {:else if phase === 'running'}
         <RunningLayout
           {a}

@@ -37,6 +37,8 @@ export {
 };
 
 export {
+    AgentQueueSnapshot,
+    AgentQueueSnapshotItem,
     AppSettings,
     CodexModel,
     CopilotModel,
