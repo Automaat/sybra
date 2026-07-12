@@ -249,7 +249,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		// onComplete callback, a fixed func(*Agent) signature with no ctx.
 		go h.worktrees.Remove(context.Background(), ag.TaskID)
 		if h.sandboxes != nil {
-			go h.sandboxes.Stop(ag.TaskID)
+			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
 }

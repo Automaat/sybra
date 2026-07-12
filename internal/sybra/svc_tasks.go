@@ -598,7 +598,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			// runs in a detached background goroutine with no ctx to thread.
 			s.worktrees.Remove(context.Background(), t.ID)
 			if s.sandboxes != nil {
-				s.sandboxes.Stop(t.ID)
+				s.sandboxes.Remove(t.ID)
 			}
 		})
 	}
@@ -805,7 +805,7 @@ func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {
-		s.sandboxes.Stop(id)
+		s.sandboxes.Remove(id)
 	}
 	// context.Background(): DeleteTask is a Wails-bound method with no ctx.
 	s.worktrees.Remove(context.Background(), id)

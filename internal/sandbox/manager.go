@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Instance is a running sandbox tied to a single task.
@@ -153,6 +155,12 @@ func (m *Manager) defaultStartSandbox(ctx context.Context, taskID, worktreePath 
 
 // Stop tears down the sandbox for a task. No-op if no sandbox is running.
 func (m *Manager) Stop(taskID string) {
+	m.StopContext(context.Background(), taskID)
+}
+
+// StopContext tears down the sandbox for a task using ctx for any external
+// teardown commands. No-op if no sandbox is running.
+func (m *Manager) StopContext(ctx context.Context, taskID string) {
 	m.mu.Lock()
 	inst, ok := m.instances[taskID]
 	if !ok {
@@ -164,11 +172,66 @@ func (m *Manager) Stop(taskID string) {
 
 	m.logger.Info("sandbox.stopping", "task_id", taskID)
 	if inst.clusterName != "" {
-		m.stopK8s(inst)
+		m.stopK8s(ctx, inst)
 	} else {
-		m.stopDocker(inst)
+		m.stopDocker(ctx, inst)
 	}
 	m.logger.Info("sandbox.stopped", "task_id", taskID)
+}
+
+// Remove tears down any running sandbox for taskID, then removes its per-task
+// data dir under Manager.dataDir. Safe to call when no sandbox is running.
+func (m *Manager) Remove(taskID string) {
+	m.RemoveContext(context.Background(), taskID)
+}
+
+// RemoveContext tears down any running sandbox for taskID using ctx for any
+// external teardown commands, then removes its per-task data dir under
+// Manager.dataDir. Safe to call when no sandbox is running.
+func (m *Manager) RemoveContext(ctx context.Context, taskID string) {
+	m.StopContext(ctx, taskID)
+	taskDir, err := m.taskDir(taskID)
+	if err != nil {
+		m.logger.Warn("sandbox.remove.path", "task_id", taskID, "err", err)
+		return
+	}
+	if err := os.RemoveAll(taskDir); err != nil {
+		m.logger.Warn("sandbox.remove", "task_id", taskID, "path", taskDir, "err", err)
+		return
+	}
+	m.logger.Info("sandbox.removed", "task_id", taskID, "path", taskDir)
+}
+
+// CleanupOrphaned removes per-task sandbox dirs for deleted or terminal tasks.
+// Non-terminal tasks keep their dirs. When hasAgent reports a live task agent,
+// the dir is preserved so cleanup never races an active run.
+func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent func(string) bool) {
+	entries, err := os.ReadDir(m.dataDir)
+	if err != nil {
+		return
+	}
+
+	active := make(map[string]task.Task, len(tasks))
+	for i := range tasks {
+		active[tasks[i].ID] = tasks[i]
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		taskID := e.Name()
+		t, exists := active[taskID]
+		switch {
+		case !exists:
+			// Deleted task — remove.
+		case !task.IsTerminalStatus(t.Status):
+			continue
+		case hasAgent != nil && hasAgent(taskID):
+			continue
+		}
+		m.RemoveContext(ctx, taskID)
+	}
 }
 
 // SybraHomeDir returns (creating on first call) an isolated, empty directory
@@ -179,9 +242,29 @@ func (m *Manager) Stop(taskID string) {
 // against a fresh home (see docs/manual-testing.md). Kept on Manager anyway
 // so per-task sandbox state lives under one dataDir regardless of kind.
 func (m *Manager) SybraHomeDir(taskID string) (string, error) {
-	dir := filepath.Join(m.dataDir, taskID, "sybra-home")
+	taskDir, err := m.taskDir(taskID)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(taskDir, "sybra-home")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir sybra home: %w", err)
+	}
+	return dir, nil
+}
+
+func (m *Manager) taskDir(taskID string) (string, error) {
+	root := filepath.Clean(m.dataDir)
+	dir := filepath.Clean(filepath.Join(root, taskID))
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return "", fmt.Errorf("task dir rel: %w", err)
+	}
+	if rel == ".." || filepath.IsAbs(rel) || rel == "." || rel == "" {
+		return "", fmt.Errorf("invalid task sandbox path for %q", taskID)
+	}
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("task sandbox path escapes root for %q", taskID)
 	}
 	return dir, nil
 }
