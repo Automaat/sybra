@@ -164,20 +164,14 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 		return nil
 	}
 	store := m.tasks.Store()
-	if t.Plan != "" {
-		if err := store.Plans().Write(t.ID, t.Plan); err != nil {
-			return err
-		}
+	if err := store.Plans().Write(t.ID, t.Plan); err != nil {
+		return err
 	}
-	if t.PlanContract != "" {
-		if err := store.PlanContracts().Write(t.ID, t.PlanContract); err != nil {
-			return err
-		}
+	if err := store.PlanContracts().Write(t.ID, t.PlanContract); err != nil {
+		return err
 	}
-	if t.CodeReview != "" {
-		if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
-			return err
-		}
+	if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
+		return err
 	}
 	return nil
 }

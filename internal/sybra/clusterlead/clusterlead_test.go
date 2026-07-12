@@ -197,6 +197,34 @@ func TestMirrorApplyConvergesAndDropsStale(t *testing.T) {
 	}
 }
 
+func TestMirrorClearsSidecarWhenFollowerClears(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Status: task.StatusTodo, AssignedNode: "pet-box", UpdatedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+
+	withPlan := task.Task{ID: "task-pet", Status: task.StatusPlanning, AssignedNode: "pet-box", Plan: "the plan", UpdatedAt: t0.Add(time.Hour)}
+	if !mirror.applyFollowerTask("pet-box", withPlan) {
+		t.Fatal("apply with plan")
+	}
+	if got, _ := mgr.Get("task-pet"); got.Plan != "the plan" {
+		t.Fatalf("plan not mirrored: %q", got.Plan)
+	}
+
+	cleared := task.Task{ID: "task-pet", Status: task.StatusInProgress, AssignedNode: "pet-box", Plan: "", UpdatedAt: t0.Add(2 * time.Hour)}
+	if !mirror.applyFollowerTask("pet-box", cleared) {
+		t.Fatal("apply with cleared plan")
+	}
+	if got, _ := mgr.Get("task-pet"); got.Plan != "" {
+		t.Errorf("follower cleared its plan but leader kept stale sidecar: %q", got.Plan)
+	}
+}
+
 func TestMirrorIgnoresUnownedTask(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
