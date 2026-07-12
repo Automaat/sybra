@@ -72,3 +72,26 @@ func TestAdoptTasklessPRs_SkipsAlreadyTracked(t *testing.T) {
 		t.Fatalf("created %d tasks, want 0 (both PRs already tracked)", len(all))
 	}
 }
+
+func TestAdoptTasklessPRs_SkipsOwnedBranchWithStaleProjectID(t *testing.T) {
+	r, tasks := newTasklessAdoptHandler(t)
+	// Task's ProjectID has gone stale relative to the live PR's repository
+	// (e.g. reassigned/mirrored elsewhere), so neither the ProjectID#PR nor
+	// ProjectID|Branch keys match — only the branch's task-ID suffix does.
+	existing := []task.Task{
+		{ID: "696bc049", ProjectID: "owner/stale-repo", PRNumber: 1869, Branch: "fix/fix-ingest-ensure-per-task-unique-696bc049"},
+	}
+	prs := []github.PullRequest{
+		{Number: 1869, Repository: "owner/repo", HeadRefName: "fix/fix-ingest-ensure-per-task-unique-696bc049", Title: "owned elsewhere", URL: "https://x/1869"},
+	}
+
+	r.adoptTasklessPRs(existing, prs)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("created %d tasks, want 0 (branch already owned by task 696bc049 despite stale ProjectID)", len(all))
+	}
+}

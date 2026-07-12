@@ -1400,6 +1400,7 @@ var sybraTaskBranchRe = regexp.MustCompile(`-[0-9a-f]{8}$`)
 
 func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) {
 	tracked := make(map[string]struct{}, len(tasks)*2)
+	taskIDs := make(map[string]struct{}, len(tasks))
 	for i := range tasks {
 		if tasks[i].PRNumber != 0 {
 			tracked[fmt.Sprintf("%s#%d", tasks[i].ProjectID, tasks[i].PRNumber)] = struct{}{}
@@ -1407,6 +1408,7 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 		if tasks[i].Branch != "" {
 			tracked[tasks[i].ProjectID+"|"+tasks[i].Branch] = struct{}{}
 		}
+		taskIDs[tasks[i].ID] = struct{}{}
 	}
 	for i := range prs {
 		pr := &prs[i]
@@ -1418,6 +1420,17 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 		}
 		if _, ok := tracked[pr.Repository+"|"+pr.HeadRefName]; ok {
 			continue
+		}
+		// Global dedupe by the task ID encoded in the Sybra branch suffix
+		// (e.g. ".../-696bc049"), independent of ProjectID. The ProjectID#PR
+		// and ProjectID|Branch keys above miss an owning task whose
+		// ProjectID has gone stale/mismatched relative to the live PR's
+		// repository, which otherwise creates a duplicate orphan task for
+		// work a task already owns (#1870).
+		if suffix := sybraTaskBranchRe.FindString(pr.HeadRefName); suffix != "" {
+			if _, ok := taskIDs[strings.TrimPrefix(suffix, "-")]; ok {
+				continue
+			}
 		}
 		tags := []string{"review"}
 		t, err := r.tasks.CreateFull(pr.Title, pr.URL+"\n\nAdopted orphaned Sybra PR (its tracking task was lost).", "headless", task.Update{
