@@ -1,8 +1,15 @@
 package providerid
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 var all = []string{"claude", "codex", "copilot"}
+
+// List returns the provider universe as a comma-separated string for use in
+// human-readable validation messages, so those messages stay single-sourced.
+func List() string { return strings.Join(all, ", ") }
 
 // All returns the ordered provider universe (failover priority: claude, codex,
 // copilot). Adding a fourth provider means appending it here plus registering

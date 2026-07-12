@@ -183,7 +183,7 @@ func ValidateAgentProvider(s string) (string, error) {
 		return "", nil
 	}
 	if !providerid.IsKnown(s) {
-		return "", fmt.Errorf("invalid provider %q (valid: claude, codex, copilot, or empty)", s)
+		return "", fmt.Errorf("invalid provider %q (valid: %s, or empty)", s, providerid.List())
 	}
 	return s, nil
 }

@@ -788,7 +788,7 @@ func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
 	prov := strings.ToLower(strings.TrimSpace(providerName))
 	if !providerid.IsKnown(prov) {
-		return nil, fmt.Errorf("invalid provider %q: must be claude, codex, or copilot", providerName)
+		return nil, fmt.Errorf("invalid provider %q: must be one of %s", providerName, providerid.List())
 	}
 	if strings.TrimSpace(projectID) == "" {
 		return nil, errors.New("project_id is required")
