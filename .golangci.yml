@@ -193,6 +193,15 @@ linters:
           - gosec
           - noctx
         path: _test\.go
+      # Cluster follower cert-pinning (internal/cluster/tls.go) trusts a leaf by
+      # its SHA-256 fingerprint over a plain LAN with no CA, so standard chain
+      # verification is deliberately disabled and replaced by a constant-time
+      # fingerprint check in VerifyConnection (runs every handshake). G402's
+      # InsecureSkipVerify warning is a false positive for this pinning idiom.
+      - linters:
+          - gosec
+        path: internal/cluster/tls\.go
+        text: "G402"
 
 formatters:
   enable:
