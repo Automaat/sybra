@@ -560,6 +560,10 @@ type pollRegistrar interface {
 // out of startPollHub so tests can exercise the registration logic (e.g.
 // reviewer gating) directly against a fake pollRegistrar.
 func registerPollHandlers(a *App, reg pollRegistrar, issuesFetcher *poll.IssuesFetcher) {
+	if a.cfg.IsFollower() {
+		a.logger.Info("cluster.follower.pollers.disabled", "reason", "role=follower; leader owns task-source polling")
+		return
+	}
 	// Periodic GitHub search pollers (reviews/issues/renovate) only run on the
 	// primary instance — a "secondary" machine sharing the same token skips them
 	// so the shared rate budget isn't billed twice. Triage is local (no GitHub

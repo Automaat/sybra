@@ -397,6 +397,10 @@ type Task struct {
 	// see internal/monitor/detector.go.
 	StatusChangedAt time.Time `json:"statusChangedAt"`
 
+	AssignedNode    string     `json:"assignedNode,omitempty"`
+	MirrorRev       int64      `json:"mirrorRev,omitempty"`
+	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
+
 	Body         string `json:"body"`
 	Plan         string `json:"plan,omitempty"`
 	PlanContract string `json:"planContract,omitempty"`
