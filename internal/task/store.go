@@ -1455,6 +1455,10 @@ func cloneTask(t Task) Task {
 		c := *t.ClosedAt
 		clone.ClosedAt = &c
 	}
+	if t.MirrorUpdatedAt != nil {
+		m := *t.MirrorUpdatedAt
+		clone.MirrorUpdatedAt = &m
+	}
 	if t.Workflow != nil {
 		wfClone := cloneWorkflow(*t.Workflow)
 		clone.Workflow = &wfClone

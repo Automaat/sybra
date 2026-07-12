@@ -115,8 +115,8 @@ func exprString(e ast.Expr) (display, localType string) {
 		d, l := exprString(t.X)
 		return "*" + d, l
 	case *ast.ArrayType:
-		d, _ := exprString(t.Elt)
-		return "[]" + d, ""
+		d, l := exprString(t.Elt)
+		return "[]" + d, l
 	case *ast.MapType:
 		k, _ := exprString(t.Key)
 		v, _ := exprString(t.Value)

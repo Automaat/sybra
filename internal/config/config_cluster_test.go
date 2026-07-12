@@ -74,10 +74,10 @@ func TestFollowerEncrypted(t *testing.T) {
 		{"no endpoints", Follower{}, false},
 		{"https", Follower{Endpoints: []string{"https://box.example:8443"}}, true},
 		{"tailnet magicdns", Follower{Endpoints: []string{"http://server.tailnet-1234.ts.net:8080"}}, true},
-		{"tailnet cgnat ip", Follower{Endpoints: []string{"http://100.101.102.103:8080"}}, true},
+		{"raw cgnat ip is ambiguous", Follower{Endpoints: []string{"http://100.101.102.103:8080"}}, false},
 		{"plain lan http", Follower{Endpoints: []string{"http://192.168.20.219:8080"}}, false},
 		{"mixed https+plain", Follower{Endpoints: []string{"https://box.ts.net", "http://192.168.20.219:8080"}}, false},
-		{"both encrypted", Follower{Endpoints: []string{"https://box.example", "http://100.64.0.1:8080"}}, true},
+		{"both encrypted", Follower{Endpoints: []string{"https://box.example", "http://node.corp.ts.net:8080"}}, true},
 		{"garbage", Follower{Endpoints: []string{"::not a url"}}, false},
 	}
 	for _, c := range cases {

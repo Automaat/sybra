@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -169,11 +168,6 @@ func (f Follower) Encrypted() bool {
 	return true
 }
 
-var tailscaleCGNAT = func() *net.IPNet {
-	_, n, _ := net.ParseCIDR("100.64.0.0/10")
-	return n
-}()
-
 func endpointEncrypted(endpoint string) bool {
 	u, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || u.Host == "" {
@@ -186,14 +180,5 @@ func endpointEncrypted(endpoint string) bool {
 }
 
 func isTailscaleHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	if strings.HasSuffix(strings.ToLower(host), ".ts.net") {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil && tailscaleCGNAT != nil {
-		return tailscaleCGNAT.Contains(ip)
-	}
-	return false
+	return host != "" && strings.HasSuffix(strings.ToLower(host), ".ts.net")
 }

@@ -1798,6 +1798,29 @@ func TestCloneTaskClosedAtNonAliased(t *testing.T) {
 	}
 }
 
+func TestCloneTaskMirrorUpdatedAtNonAliased(t *testing.T) {
+	t.Parallel()
+	ts := time.Now().UTC()
+	orig := Task{
+		ID:              "x",
+		MirrorUpdatedAt: &ts,
+		CreatedAt:       ts,
+		UpdatedAt:       ts,
+	}
+	clone := cloneTask(orig)
+	if clone.MirrorUpdatedAt == orig.MirrorUpdatedAt {
+		t.Error("clone.MirrorUpdatedAt shares pointer with original")
+	}
+	if !clone.MirrorUpdatedAt.Equal(*orig.MirrorUpdatedAt) {
+		t.Errorf("clone.MirrorUpdatedAt=%v, want %v", clone.MirrorUpdatedAt, orig.MirrorUpdatedAt)
+	}
+	newTs := ts.Add(time.Hour)
+	*clone.MirrorUpdatedAt = newTs
+	if orig.MirrorUpdatedAt.Equal(newTs) {
+		t.Error("mutating clone.MirrorUpdatedAt affected original")
+	}
+}
+
 func TestClosedAtYAMLRoundTrip(t *testing.T) {
 	t.Parallel()
 	store, err := NewStore(t.TempDir())

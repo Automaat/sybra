@@ -535,9 +535,29 @@ follower's server cert/key for the TLS + cert-pin transport tier.
 |---|---|---|---|
 | `cluster.role` | `string` | `standalone` |  |
 | `cluster.bind_addr` | `string` |  |  |
-| `cluster.followers` | `[]Follower` |  |  |
+| `cluster.followers` | `[]Follower` | _(see below)_ |  |
 | `cluster.local_homes` | `[]string` |  |  |
 | `cluster.tls` | `ClusterTLS` | _(see below)_ |  |
+
+## Follower (`cluster.followers`)
+
+Follower is one entry in the leader's roster: a node the leader may assign
+projects to over the control plane. Name is stamped into task.AssignedNode.
+Endpoints are ordered most-preferred-first (e.g. a tailnet URL then a LAN IP)
+so tailnet flakiness falls back to LAN; failover across them lands in P1.
+AuthTokenEnv names the env var holding the bearer token so the secret never
+lands in config.yaml. Trusted marks a node cleared for work-typed tasks;
+Homes pins project ids to this follower; TLSPin is the expected SHA-256
+fingerprint of its server certificate.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `cluster.followers.name` | `string` |  |  |
+| `cluster.followers.endpoints` | `[]string` |  |  |
+| `cluster.followers.auth_token_env` | `string` |  |  |
+| `cluster.followers.trusted` | `bool` |  |  |
+| `cluster.followers.homes` | `[]string` |  |  |
+| `cluster.followers.tls_pin` | `string` |  |  |
 
 ## ClusterTLS (`cluster.tls`)
 
