@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Agent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 
-// Mock Wails bindings
 const mockListAgents = vi.fn()
 const mockStartAgent = vi.fn()
 const mockStopAgent = vi.fn()
 const mockGetAgentOutput = vi.fn()
 const mockDiscoverAgents = vi.fn()
+const mockAgentQueueSnapshot = vi.fn()
 
 vi.mock('$lib/api', () => ({
   StartAgent: (...args: unknown[]) => mockStartAgent(...args),
@@ -14,9 +14,9 @@ vi.mock('$lib/api', () => ({
   StopAgent: (...args: unknown[]) => mockStopAgent(...args),
   GetAgentOutput: (...args: unknown[]) => mockGetAgentOutput(...args),
   DiscoverAgents: (...args: unknown[]) => mockDiscoverAgents(...args),
+  AgentQueueSnapshot: (...args: unknown[]) => mockAgentQueueSnapshot(...args),
 }))
 
-// Must import after mock setup
 const { agentStore } = await import('./agents.svelte.js')
 
 function makeAgent(overrides: Record<string, unknown> = {}): Agent {
@@ -33,16 +33,42 @@ function makeAgent(overrides: Record<string, unknown> = {}): Agent {
   }
 }
 
+function makeSnapshotItem(overrides: Record<string, unknown> = {}) {
+  return {
+    taskId: 'task-1',
+    role: 'implementation',
+    position: 1,
+    depth: 1,
+    priority: 'medium',
+    effectivePriority: 'medium',
+    status: 'todo',
+    manual: true,
+    mode: 'headless',
+    enqueued: '2026-07-11T12:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeSnapshot(items: Array<Record<string, unknown>> = []) {
+  return {
+    depth: items.length,
+    items,
+  }
+}
+
 describe('AgentStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset store state
     agentStore.agents = new Map()
     agentStore.outputs.clear()
     agentStore.stepTexts.clear()
+    agentStore.queueByTask = new Map()
     agentStore.error = ''
     agentStore.loading = false
     agentStore.stopPolling()
+    mockDiscoverAgents.mockResolvedValue([])
+    mockListAgents.mockResolvedValue([])
+    mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot())
   })
 
   afterEach(() => {
@@ -51,8 +77,7 @@ describe('AgentStore', () => {
 
   describe('load', () => {
     it('fetches agents from backend', async () => {
-      const agents = [makeAgent({ id: 'a1' }), makeAgent({ id: 'a2' })]
-      mockDiscoverAgents.mockResolvedValue([])
+      const agents = [makeAgent({ id: 'a1' }), makeAgent({ id: 'a2', taskId: 'task-2' })]
       mockListAgents.mockResolvedValue(agents)
 
       await agentStore.load()
@@ -62,6 +87,67 @@ describe('AgentStore', () => {
       expect(agentStore.agents.size).toBe(2)
       expect(agentStore.agents.get('a1')).toBeDefined()
       expect(agentStore.agents.get('a2')).toBeDefined()
+    })
+
+    it('hydrates queued agents from the supplemental snapshot', async () => {
+      mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot([
+        makeSnapshotItem({ taskId: 'task-queued', position: 2, depth: 3 }),
+      ]))
+
+      await agentStore.load()
+
+      const queued = agentStore.agents.get('queued-task-queued') as Record<string, unknown> | undefined
+      expect(queued).toBeDefined()
+      expect(queued?.state).toBe('queued')
+      expect(queued?.queuePosition).toBe(2)
+      expect(queued?.queueDepth).toBe(3)
+      expect(agentStore.queueByTask.get('task-queued')?.position).toBe(2)
+    })
+
+    it('prefers real agents over queued rows for the same task', async () => {
+      mockListAgents.mockResolvedValue([makeAgent({ id: 'real-1', taskId: 'task-1', state: 'running' })])
+      mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot([
+        makeSnapshotItem({ taskId: 'task-1', position: 1, depth: 2 }),
+        makeSnapshotItem({ taskId: 'task-2', position: 2, depth: 2 }),
+      ]))
+
+      await agentStore.load()
+
+      expect(agentStore.agents.get('queued-task-1')).toBeUndefined()
+      expect(agentStore.byTask('task-1')?.id).toBe('real-1')
+      expect(agentStore.agents.get('queued-task-2')).toBeDefined()
+      expect((agentStore.agents.get('real-1') as Record<string, unknown>).queuePosition).toBe(1)
+    })
+
+    it('drops stale synthetic queued agents after a successful snapshot omits the task', async () => {
+      vi.useFakeTimers()
+      mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot([
+        makeSnapshotItem({ taskId: 'task-stale' }),
+      ]))
+      await agentStore.load()
+      expect(agentStore.agents.get('queued-task-stale')).toBeDefined()
+
+      mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot())
+      await vi.advanceTimersByTimeAsync(600)
+      await agentStore.load()
+
+      expect(agentStore.agents.get('queued-task-stale')).toBeUndefined()
+      expect(agentStore.queueByTask.get('task-stale')).toBeUndefined()
+      vi.useRealTimers()
+    })
+
+    it('keeps queued rows and avoids a store error when the snapshot fetch fails', async () => {
+      mockAgentQueueSnapshot.mockResolvedValue(makeSnapshot([
+        makeSnapshotItem({ taskId: 'task-queued' }),
+      ]))
+      await agentStore.load()
+
+      mockAgentQueueSnapshot.mockRejectedValue(new Error('queue unavailable'))
+      await agentStore.load()
+
+      expect(agentStore.error).toBe('')
+      expect(agentStore.agents.get('queued-task-queued')).toBeDefined()
+      expect(agentStore.queueByTask.get('task-queued')?.position).toBe(1)
     })
 
     it('handles null result', async () => {
@@ -74,7 +160,7 @@ describe('AgentStore', () => {
       expect(agentStore.error).toBe('')
     })
 
-    it('sets error on failure', async () => {
+    it('sets error on primary load failure', async () => {
       mockDiscoverAgents.mockRejectedValue(new Error('network error'))
 
       await agentStore.load()
@@ -83,11 +169,7 @@ describe('AgentStore', () => {
     })
 
     it('sets loading flag', async () => {
-      mockDiscoverAgents.mockResolvedValue([])
-      mockListAgents.mockResolvedValue([])
-
       const promise = agentStore.load()
-      // loading is set synchronously before await
       expect(agentStore.loading).toBe(true)
       await promise
       expect(agentStore.loading).toBe(false)
@@ -105,6 +187,21 @@ describe('AgentStore', () => {
       expect(result.id).toBe('new-1')
       expect(agentStore.agents.get('new-1')).toBeDefined()
       expect(agentStore.outputs.get('new-1')).toEqual([])
+    })
+
+    it('keeps a queued start successful even when queue refresh fails', async () => {
+      const queued = makeAgent({ id: 'queued-task-1', taskId: 'task-1', state: 'queued' })
+      mockStartAgent.mockResolvedValue(queued)
+      mockAgentQueueSnapshot.mockRejectedValue(new Error('snapshot down'))
+
+      await expect(agentStore.start('task-1', 'headless', 'do stuff', false)).resolves.toMatchObject({
+        id: 'queued-task-1',
+        state: 'queued',
+      })
+
+      expect(agentStore.agents.get('queued-task-1')).toBeDefined()
+      expect(agentStore.outputs.get('queued-task-1')).toEqual([])
+      expect(agentStore.error).toBe('')
     })
   })
 
@@ -252,8 +349,6 @@ describe('AgentStore', () => {
   describe('polling', () => {
     it('starts and stops interval', async () => {
       vi.useFakeTimers()
-      mockDiscoverAgents.mockResolvedValue([])
-      mockListAgents.mockResolvedValue([])
 
       agentStore.startPolling(5000)
 
@@ -272,14 +367,12 @@ describe('AgentStore', () => {
 
     it('replaces existing timer on restart', async () => {
       vi.useFakeTimers()
-      mockDiscoverAgents.mockResolvedValue([])
-      mockListAgents.mockResolvedValue([])
 
       agentStore.startPolling(5000)
-      agentStore.startPolling(5000) // should not double up
+      agentStore.startPolling(5000)
 
       await vi.advanceTimersByTimeAsync(5000)
-      expect(mockDiscoverAgents).toHaveBeenCalledTimes(1) // not 2
+      expect(mockDiscoverAgents).toHaveBeenCalledTimes(1)
 
       agentStore.stopPolling()
       vi.useRealTimers()

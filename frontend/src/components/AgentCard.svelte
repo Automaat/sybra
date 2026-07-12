@@ -17,6 +17,7 @@
   const { agent: a, onclick }: Props = $props()
 
   const linkedTask = $derived(a.taskId ? taskStore.tasks.get(a.taskId) : null)
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask?.get(a.taskId) : undefined)
 
   const heading = $derived(agentDisplayName(a, linkedTask?.title))
   const subtitle = $derived(cleanAgentName(a.name))
@@ -62,6 +63,14 @@
       {:else if phase === 'blocked'}
         <span class="text-xs text-tertiary-600 dark:text-tertiary-400">
           Awaiting tool approval
+        </span>
+      {:else if phase === 'queued'}
+        <span class="text-xs text-surface-400">
+          {#if queueInfo}
+            Waiting for a slot · Queue {queueInfo.position} of {queueInfo.depth}
+          {:else}
+            Waiting for a slot
+          {/if}
         </span>
       {/if}
     </div>

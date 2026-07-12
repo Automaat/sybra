@@ -32,6 +32,15 @@ import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/mo
 import * as $models from "./models.js";
 
 /**
+ * AgentQueueSnapshot exposes the read-only queue snapshot to Wails/web clients.
+ */
+export function AgentQueueSnapshot(): $CancellablePromise<$models.AgentQueueSnapshot> {
+    return $Call.ByID(659722111).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * Context returns the app's running context.
  */
 export function Context(): $CancellablePromise<context$0.Context> {
@@ -44,7 +53,7 @@ export function Context(): $CancellablePromise<context$0.Context> {
  */
 export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> {
     return $Call.ByID(1201647697).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
@@ -55,7 +64,7 @@ export function GetEvaluationReport(): $CancellablePromise<evaluation$0.Report> 
  */
 export function GetLearningDigestStatus(): $CancellablePromise<learning$0.Status> {
     return $Call.ByID(3796704093).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -66,7 +75,7 @@ export function GetLearningDigestStatus(): $CancellablePromise<learning$0.Status
  */
 export function GetLifecyclePhases(): $CancellablePromise<evaluation$0.PhaseReport> {
     return $Call.ByID(842035659).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -78,7 +87,7 @@ export function GetLifecyclePhases(): $CancellablePromise<evaluation$0.PhaseRepo
  */
 export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBinding> {
     return $Call.ByID(936556103).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType4($result);
     });
 }
 
@@ -87,7 +96,7 @@ export function GetMonitorReport(): $CancellablePromise<$models.MonitorReportBin
  */
 export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
     return $Call.ByID(729571497).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
@@ -96,7 +105,7 @@ export function ListBackgroundOps(): $CancellablePromise<bgop$0.Operation[]> {
  */
 export function ListNotifications(): $CancellablePromise<notification$0.Notification[]> {
     return $Call.ByID(706012029).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -115,7 +124,7 @@ export function RegisterSpotlightHotkey(): $CancellablePromise<void> {
  */
 export function RunLearningDigestNow(): $CancellablePromise<learning$0.Digest> {
     return $Call.ByID(1773365246).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -185,19 +194,20 @@ export function StopChat(agentID: string): $CancellablePromise<void> {
  */
 export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType11($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = evaluation$0.Report.createFrom;
-const $$createType1 = learning$0.Status.createFrom;
-const $$createType2 = evaluation$0.PhaseReport.createFrom;
-const $$createType3 = $models.MonitorReportBinding.createFrom;
-const $$createType4 = bgop$0.Operation.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = notification$0.Notification.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = learning$0.Digest.createFrom;
-const $$createType9 = application$0.Service.createFrom;
-const $$createType10 = $Create.Array($$createType9);
+const $$createType0 = $models.AgentQueueSnapshot.createFrom;
+const $$createType1 = evaluation$0.Report.createFrom;
+const $$createType2 = learning$0.Status.createFrom;
+const $$createType3 = evaluation$0.PhaseReport.createFrom;
+const $$createType4 = $models.MonitorReportBinding.createFrom;
+const $$createType5 = bgop$0.Operation.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = notification$0.Notification.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = learning$0.Digest.createFrom;
+const $$createType10 = application$0.Service.createFrom;
+const $$createType11 = $Create.Array($$createType10);

@@ -63,6 +63,7 @@ export const SetDesktopNotifications = pick(AppSvc.SetDesktopNotifications, http
 export const StartAgent = pick(AppSvc.StartAgent, http.StartAgent)
 export const StartChat = pick(AppSvc.StartChat, http.StartChat)
 export const StopChat = pick(AppSvc.StopChat, http.StopChat)
+export const AgentQueueSnapshot = pick(AppSvc.AgentQueueSnapshot, http.AgentQueueSnapshot)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)

@@ -53,6 +53,12 @@ func effectivePriority(it Item) task.Priority {
 	return floor
 }
 
+// EffectivePriority reports the item's display/dispatch priority after the
+// status-imposed floor is applied.
+func (it Item) EffectivePriority() task.Priority {
+	return effectivePriority(it)
+}
+
 // bumpTier raises p by exactly one priority tier, capped at PriorityUrgent.
 // Unrecognized values fold to PriorityLow (a one-tier bump from the bottom),
 // mirroring priorityRank which ranks both PriorityNone and unknown values at 0

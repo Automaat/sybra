@@ -2,6 +2,7 @@
   import type { Agent } from '../../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import type { Task } from '../../../bindings/github.com/Automaat/sybra/internal/task/models.js'
   import type { AgentPhase } from '$lib/agent-phases.js'
+  import { agentStore } from '../../stores/agents.svelte.js'
   import AgentStateBadge from '../AgentStateBadge.svelte'
   import { formatDateTime } from '$lib/dates.js'
   import { agentDisplayName, cleanAgentName, shortId } from '$lib/agent-name.js'
@@ -22,6 +23,7 @@
   // Show the session name only when it adds something beyond the heading.
   const subtitle = $derived(cleanAgentName(a.name))
   const showSubtitle = $derived(subtitle.length > 0 && subtitle !== heading)
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask?.get(a.taskId) : undefined)
 </script>
 
 <div class="flex flex-col gap-6">
@@ -52,6 +54,14 @@
         <p class="mt-0.5 text-sm text-warning-600 dark:text-warning-400">
           Under review
         </p>
+      {:else if phase === 'queued'}
+        <p class="mt-0.5 text-sm text-surface-400">
+          {#if queueInfo}
+            Waiting for a slot · Queue {queueInfo.position} of {queueInfo.depth}
+          {:else}
+            Waiting for a slot
+          {/if}
+        </p>
       {/if}
     </div>
     <div class="flex items-center gap-2">
@@ -79,6 +89,12 @@
         >
           View task →
         </button>
+      </div>
+    {/if}
+    {#if queueInfo}
+      <div class="flex flex-col gap-1">
+        <span class="font-medium text-surface-500">Queue</span>
+        <span class="rounded bg-surface-200 px-2 py-0.5 dark:bg-surface-700">{queueInfo.position} of {queueInfo.depth}</span>
       </div>
     {/if}
     {#if linkedTask?.branch}

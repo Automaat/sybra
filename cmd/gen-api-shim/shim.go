@@ -127,17 +127,7 @@ type moduleImport struct {
 	lineIndex int
 }
 
-func fillAPIHTTP(src string, services []service, bindingDir string, skip map[string]bool) (out string, added []string, err error) {
-	lines := strings.Split(src, "\n")
-
-	existing := map[string]bool{}
-	for _, line := range lines {
-		if m := apiHTTPFuncRe.FindStringSubmatch(line); m != nil {
-			existing[m[1]] = true
-		}
-	}
-	imports, localByModuleType, lastImportIdx := parseAPIHTTPImports(lines)
-
+func lastAPIHTTPCallLineByService(lines []string, services []service) map[string]int {
 	lastCallLine := map[string]int{}
 	for i, line := range lines {
 		for _, svc := range services {
@@ -146,23 +136,11 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 			}
 		}
 	}
+	return lastCallLine
+}
 
-	var addedModules []string
-	pending := map[string][]string{}
-	addImport := func(module, typeName string) string {
-		key := module + "." + typeName
-		if local, ok := localByModuleType[key]; ok {
-			return local
-		}
-		localByModuleType[key] = typeName
-		if _, seen := pending[module]; !seen {
-			addedModules = append(addedModules, module)
-		}
-		pending[module] = append(pending[module], typeName)
-		return typeName
-	}
-
-	funcInserts := map[int][]string{}
+func buildAPIHTTPFunctionInserts(services []service, bindingDir string, skip, existing map[string]bool, lastCallLine map[string]int, addImport func(module, typeName string) string) (funcInserts map[int][]string, added []string, err error) {
+	funcInserts = map[int][]string{}
 	for _, svc := range services {
 		var bindingImports map[string]string
 		var bindingSrc string
@@ -173,18 +151,18 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 			if bindingSrc == "" {
 				data, err := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
 				if err != nil {
-					return "", nil, err
+					return nil, nil, err
 				}
 				bindingSrc = string(data)
 				bindingImports = parseBindingImports(bindingSrc)
 			}
 			params, ret, ok := parseBindingSig(bindingSrc, method)
 			if !ok {
-				return "", nil, fmt.Errorf("api-http.ts: no binding signature for %s.%s", svc.name, method)
+				return nil, nil, fmt.Errorf("api-http.ts: no binding signature for %s.%s", svc.name, method)
 			}
 			anchor, ok := lastCallLine[svc.name]
 			if !ok {
-				return "", nil, fmt.Errorf("api-http.ts: no existing block for service %q to place %q", svc.name, method)
+				return nil, nil, fmt.Errorf("api-http.ts: no existing block for service %q to place %q", svc.name, method)
 			}
 			sig, refs := renderParams(params, bindingImports, addImport)
 			retType := mapType(ret, bindingImports, addImport)
@@ -194,22 +172,77 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 			added = append(added, method)
 		}
 	}
+	return funcInserts, added, nil
+}
+
+func fillAPIHTTP(src string, services []service, bindingDir string, skip map[string]bool) (out string, added []string, err error) {
+	lines := strings.Split(src, "\n")
+
+	existing := map[string]bool{}
+	reservedMethodNames := map[string]bool{}
+	for _, svc := range services {
+		for _, method := range svc.methods {
+			reservedMethodNames[method] = true
+		}
+	}
+	for _, line := range lines {
+		if m := apiHTTPFuncRe.FindStringSubmatch(line); m != nil {
+			existing[m[1]] = true
+		}
+	}
+	imports, localByModuleType, lastImportIdx := parseAPIHTTPImports(lines)
+	usedImportLocals := map[string]bool{}
+	for _, mi := range imports {
+		for _, entry := range mi.entries {
+			usedImportLocals[entry.local] = true
+		}
+	}
+
+	lastCallLine := lastAPIHTTPCallLineByService(lines, services)
+
+	var addedModules []string
+	pending := map[string][]importEntry{}
+	uniqueLocal := func(base string) string {
+		local := base
+		for i := 2; reservedMethodNames[local] || usedImportLocals[local]; i++ {
+			local = fmt.Sprintf("%s%d", base, i)
+		}
+		usedImportLocals[local] = true
+		return local
+	}
+	addImport := func(module, typeName string) string {
+		key := module + "." + typeName
+		if local, ok := localByModuleType[key]; ok {
+			return local
+		}
+		local := typeName
+		if reservedMethodNames[local] || usedImportLocals[local] {
+			local = uniqueLocal(typeName + "Data")
+		} else {
+			usedImportLocals[local] = true
+		}
+		localByModuleType[key] = local
+		if _, seen := pending[module]; !seen {
+			addedModules = append(addedModules, module)
+		}
+		pending[module] = append(pending[module], importEntry{name: typeName, local: local})
+		return local
+	}
+
+	funcInserts, added, err := buildAPIHTTPFunctionInserts(services, bindingDir, skip, existing, lastCallLine, addImport)
+	if err != nil {
+		return "", nil, err
+	}
 
 	importInserts := map[int][]string{}
 	for _, module := range addedModules {
 		mi, ok := imports[module]
 		if ok {
-			for _, name := range pending[module] {
-				mi.entries = append(mi.entries, importEntry{name: name, local: name})
-			}
+			mi.entries = append(mi.entries, pending[module]...)
 			lines[mi.lineIndex] = renderImportLine(module, mi.entries)
 			continue
 		}
-		var entries []importEntry
-		for _, name := range pending[module] {
-			entries = append(entries, importEntry{name: name, local: name})
-		}
-		importInserts[lastImportIdx] = append(importInserts[lastImportIdx], renderImportLine(module, entries))
+		importInserts[lastImportIdx] = append(importInserts[lastImportIdx], renderImportLine(module, pending[module]))
 	}
 
 	merged := map[int][]string{}
