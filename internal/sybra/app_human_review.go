@@ -246,6 +246,14 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		h.logger.Error("human-review.task.get-on-complete", "task_id", taskID, "agent_id", ag.ID, "err", err)
 		return
 	}
+	final := finalAssistantText(ag)
+	v, source, parseErr := verdict.Parse(final)
+
+	if parseErr == nil && v.Decision == "unblocked" {
+		h.recordUnblocked(taskID, ag.ID, v, source)
+		return
+	}
+
 	if current.Status != task.StatusHumanRequired {
 		h.logger.Info("human-review.verdict.stale",
 			"task_id", taskID, "agent_id", ag.ID, "status", current.Status)
@@ -256,8 +264,6 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 		return
 	}
 
-	final := finalAssistantText(ag)
-	v, source, parseErr := verdict.Parse(final)
 	if parseErr != nil {
 		if ag.GetErrorKind() == "rate_limit" {
 			h.logger.Warn("human-review.verdict.deferred",
@@ -280,6 +286,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 
 	switch v.Decision {
 	case "human":
+		h.fileAutonomyIssue(taskID, ag.ID, v, h.workCtxForTask(taskID))
 		if h.appendNote(taskID, "Auto-review verdict: needs human", v.Summary) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
@@ -499,6 +506,51 @@ func (h *humanReviewHandler) fileLocalScrubbed(taskID, agentID string, v verdict
 	})
 
 	h.blockOriginOnLocalBug(taskID, agentID, "Auto-review verdict: blocked by Sybra bug (scrubbed)", summary, newTask.ID, "")
+}
+
+func (h *humanReviewHandler) recordUnblocked(taskID, agentID string, v verdictDecision, source verdict.Source) {
+	h.logAudit(audit.EventHumanReviewVerdict, taskID, agentID, map[string]any{
+		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
+	})
+	h.fileAutonomyIssue(taskID, agentID, v, h.workCtxForTask(taskID))
+	if h.appendNote(taskID, "Auto-review: unblocked", v.Summary) {
+		h.markVerdictRendered(taskID, agentID)
+	}
+}
+
+func (h *humanReviewHandler) workCtxForTask(taskID string) *WorkScrubContext {
+	if h.workCtx == nil {
+		return nil
+	}
+	t, err := h.tasks.Get(taskID)
+	if err != nil {
+		return nil
+	}
+	return h.workCtx(t.ProjectID)
+}
+
+func (h *humanReviewHandler) fileAutonomyIssue(taskID, agentID string, v verdictDecision, wctx *WorkScrubContext) {
+	if strings.TrimSpace(v.IssueTitle) == "" || strings.TrimSpace(v.IssueBody) == "" {
+		return
+	}
+	if wctx != nil {
+		sv := scrubVerdict(v, wctx)
+		tags := append([]string{"sybra-bug", "scrubbed", "autonomy"}, sv.IssueLabels...)
+		if _, err := h.tasks.CreateFull(sv.IssueTitle, sv.IssueBody, task.AgentModeHeadless, task.Update{Tags: &tags}); err != nil {
+			h.logger.Warn("human-review.autonomy.local.create", "task_id", taskID, "agent_id", agentID, "err", err)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	created, url, err := h.sink.SubmitIssue(ctx, v.IssueTitle, v.IssueBody, v.IssueLabels)
+	if err != nil {
+		h.logger.Warn("human-review.autonomy.file", "task_id", taskID, "agent_id", agentID, "err", err)
+		return
+	}
+	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+		"created": created, "url": url, "title": v.IssueTitle, "autonomy": true,
+	})
 }
 
 func (h *humanReviewHandler) fileIssue(taskID, agentID string, v verdictDecision) {
@@ -803,6 +855,17 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 // prompt is augmented with explicit redaction rules and the verdict will be
 // routed to a local sybra task instead of a public GH issue. The regex
 // scrubber is the floor — these instructions are the semantic ceiling.
+func writeAutonomyMandate(b *strings.Builder) {
+	b.WriteString("You are Sybra's autonomy agent (Sybra is a desktop task orchestrator). A user task just transitioned to status=human-required. Your job is NOT merely to diagnose — it is to get this task PROGRESSING again without a human wherever it is safe to do so, and to make Sybra more autonomous so this class of block never needs a human again. You run with full permissions and have git, gh, and sybra-cli. Work through three phases in order:\n\n")
+	b.WriteString("1. ROOT CAUSE — determine exactly why the task landed in human-required: a deterministic check failure (lint/test/build), a workflow misfire, an un-runnable gate (e.g. a manual smoke the harness cannot perform), an ambiguous spec, a missing credential, or an external system the agent cannot reach. Re-run the exact failing command in the task's worktree to confirm; never infer 'flaky/transient/infra' from reasoning alone.\n\n")
+	b.WriteString("2. UNBLOCK — do what you safely can to move the task forward:\n")
+	b.WriteString("   - Deterministic failures you can fix (lint/test/build): fix them in the task's worktree, re-run the exact check and SEE it pass, commit + push, then advance the task with sybra-cli (e.g. `sybra-cli update <id> --status ready-pr [--pr N]`) so it re-enters the pipeline.\n")
+	b.WriteString("   - Work is complete but stuck on a gate the harness genuinely cannot run: open or link a PR (`gh pr create` / `sybra-cli update <id> --pr N --status ready-pr`) and move it to review so CI + Copilot + a human reviewer verify it. Never fabricate or fake the verification you could not run.\n")
+	b.WriteString("   - A Sybra workflow bug: work around it to unblock the task if you safely can, and file an issue (phase 3).\n")
+	b.WriteString("   HARD LIMITS: never fabricate results, never force-merge a PR, never push code whose checks you did not run and see pass. Only LEAVE the task at human-required when a human genuinely must decide — scope, creative direction, missing credentials, or an unreachable external system.\n\n")
+	b.WriteString("3. AUTONOMY — for anything that needed a human, OR that you had to do by hand here, ask: 'how should Sybra have handled this itself?' If there is a real gap, prepare an issue (issue_* fields) describing the gap and the fix so the next occurrence is automatic. Every human-required transition is a bug in Sybra's autonomy until proven otherwise; this issue is often your most valuable output. Do NOT run `gh issue create` yourself — return the payload so the host files it (and scrubs it for work-typed projects).\n\n")
+}
+
 func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) string {
 	var b strings.Builder
 	b.WriteString("# Sybra auto-review of human-required transition\n\n")
@@ -814,7 +877,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 		b.WriteString("- NEVER include author emails, customer names, or internal hostnames.\n")
 		b.WriteString("- DO describe the sybra bug abstractly: which workflow step misfired, which sybra subsystem is implicated, what state was inconsistent.\n\n")
 	}
-	b.WriteString("You are a diagnostic agent for Sybra (the desktop task orchestrator). A user task just transitioned to status=human-required. Decide whether this is genuinely a human-input situation or whether Sybra itself misbehaved (workflow misfire, agent mis-config, infrastructure flakiness, code bug). If it's a Sybra bug, prepare an issue payload — the host process will route it (local sybra task for work-typed projects, public GH issue otherwise).\n\n")
+	writeAutonomyMandate(&b)
 	b.WriteString("## Task\n")
 	fmt.Fprintf(&b, "- ID: %s\n- Title: %s\n- Status: %s\n", t.ID, t.Title, t.Status)
 	if t.StatusReason != "" {
@@ -825,6 +888,12 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	}
 	if t.PRNumber > 0 {
 		fmt.Fprintf(&b, "- PR: #%d\n", t.PRNumber)
+	}
+	if t.WorktreeDir != "" {
+		fmt.Fprintf(&b, "- Worktree (cd here to fix/verify/push the task's code): %s\n", t.WorktreeDir)
+	}
+	if t.Branch != "" {
+		fmt.Fprintf(&b, "- Branch: %s\n", t.Branch)
 	}
 	b.WriteString("\n### Task body\n")
 	b.WriteString(strings.TrimSpace(t.Body))
@@ -889,12 +958,13 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 
 	b.WriteString("## Output protocol (REQUIRED)\n")
 	b.WriteString("Your final response is enforced to match a JSON schema. Return exactly these fields:\n\n")
-	b.WriteString("- `decision`: \"human\" | \"sybra_bug\"\n")
-	b.WriteString("- `summary`: one-sentence diagnosis\n")
-	b.WriteString("- `issue_title` (sybra_bug only): \"type(scope): short title\", must follow Sybra conventional commit format (e.g. fix(workflow): ...)\n")
-	b.WriteString("- `issue_body` (sybra_bug only): \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\"\n")
-	b.WriteString("- `issue_labels` (sybra_bug only): array of label strings\n\n")
-	b.WriteString("If decision=human, set every issue_* field to null (the schema requires the keys to be present).\n")
+	b.WriteString("- `decision`: \"unblocked\" | \"human\" | \"sybra_bug\"\n")
+	b.WriteString("  - \"unblocked\": you moved the task forward yourself (fixed + pushed, opened/linked a PR, advanced its status) — it is no longer waiting on you.\n")
+	b.WriteString("  - \"human\": a human genuinely must act (scope, creative decision, missing credential, unreachable system); the task stays human-required.\n")
+	b.WriteString("  - \"sybra_bug\": you could not unblock it and the cause is a Sybra defect; the host files the issue and blocks the task pending the fix.\n")
+	b.WriteString("- `summary`: one sentence — what you did to unblock it, what a human must decide, or the diagnosis.\n")
+	b.WriteString("- `issue_title` / `issue_body` / `issue_labels`: the issue payload. REQUIRED for sybra_bug. For unblocked or human, fill these when there is a real Sybra autonomy gap worth tracking (the host files it) — leave null only when there is genuinely nothing to file. `issue_title` must be conventional-commit format (e.g. fix(workflow): ...); `issue_body` = \"## What happened\\n...\\n\\n## Repro\\n...\\n\\n## Suspected cause\\n...\\n\\n## Autonomy fix\\n...\".\n\n")
+	b.WriteString("Set unused issue_* fields to null (the schema requires the keys to be present).\n")
 	return b.String()
 }
 

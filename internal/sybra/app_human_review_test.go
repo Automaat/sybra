@@ -295,6 +295,70 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Fix flaky test", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusReadyPR)}); err != nil {
+		t.Fatalf("advance to ready-pr: %v", err)
+	}
+
+	ag := &agent.Agent{TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type: "assistant",
+		Content: "```sybra-verdict\n" +
+			`{"decision":"unblocked","summary":"fixed lint, pushed, advanced to ready-pr"}` +
+			"\n```\n",
+	})
+	h.inflight[tk.ID] = "agent-1"
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Errorf("status: got %q want ready-pr (unblocked must not re-block or revert the agent's advance)", got.Status)
+	}
+	if got.BlockedByIssue != "" {
+		t.Errorf("BlockedByIssue: want empty, got %q", got.BlockedByIssue)
+	}
+	if !strings.Contains(got.Body, "Auto-review: unblocked") {
+		t.Errorf("expected unblocked note in body; got:\n%s", got.Body)
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called without an issue payload; calls=%d", sink.calls)
+	}
+	if _, busy := h.inflight[tk.ID]; busy {
+		t.Errorf("inflight should be cleared after onComplete")
+	}
+}
+
+func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
+	t.Parallel()
+	h, _, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk := task.Task{
+		ID: "t1", Title: "x", Status: task.StatusHumanRequired,
+		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
+	}
+	p := h.buildPrompt(tk, nil)
+	for _, want := range []string{
+		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
+		"never fabricate", "/data/worktrees/queue", "feat/queue",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
 // TestOnComplete_BareJSONVerdict_HumanDecision drives onComplete with a bare
 // structured-output JSON assistant turn (verdict.SourceJSON) instead of the
 // legacy fenced ```sybra-verdict``` block — the production path introduced
