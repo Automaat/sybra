@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 	"gopkg.in/yaml.v3"
 )
 
@@ -417,6 +418,73 @@ func TestManager_SybraHomeDir(t *testing.T) {
 	}
 	if dirAgain != dir {
 		t.Fatalf("expected stable path, got %q then %q", dir, dirAgain)
+	}
+}
+
+func TestManager_RemoveDeletesTaskDirWithoutRunningInstance(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-remove")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+	if _, err := os.Stat(taskDir); err != nil {
+		t.Fatalf("task dir missing before Remove: %v", err)
+	}
+
+	m.Remove("task-remove")
+
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task dir %q still exists after Remove: %v", taskDir, err)
+	}
+}
+
+func TestManager_CleanupOrphaned(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	keepDir, err := m.SybraHomeDir("task-active")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(active): %v", err)
+	}
+	doneDir, err := m.SybraHomeDir("task-done")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(done): %v", err)
+	}
+	liveDir, err := m.SybraHomeDir("task-live-terminal")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(live): %v", err)
+	}
+	missingRoot, err := m.taskDir("task-missing")
+	if err != nil {
+		t.Fatalf("taskDir(missing): %v", err)
+	}
+	if err := os.MkdirAll(missingRoot, 0o755); err != nil {
+		t.Fatalf("mkdir missing task dir: %v", err)
+	}
+
+	tasks := []task.Task{
+		{ID: "task-active", Status: task.StatusTesting},
+		{ID: "task-done", Status: task.StatusDone},
+		{ID: "task-live-terminal", Status: task.StatusCancelled},
+	}
+	m.CleanupOrphaned(context.Background(), tasks, func(taskID string) bool {
+		return taskID == "task-live-terminal"
+	})
+
+	if _, err := os.Stat(filepath.Dir(keepDir)); err != nil {
+		t.Fatalf("active task dir removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(doneDir)); !os.IsNotExist(err) {
+		t.Fatalf("terminal task dir still exists after cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(liveDir)); err != nil {
+		t.Fatalf("live terminal task dir removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(missingRoot); !os.IsNotExist(err) {
+		t.Fatalf("missing-task dir still exists after cleanup: %v", err)
 	}
 }
 

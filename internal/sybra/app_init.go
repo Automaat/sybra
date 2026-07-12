@@ -972,6 +972,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		Tasks:              a.tasks,
 		Agents:             a.agents,
 		Worktrees:          a.worktrees,
+		Sandboxes:          a.sandboxes,
 		WorkflowEngine:     a.workflowEngine,
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,

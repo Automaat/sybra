@@ -70,6 +70,15 @@ func (a *App) maintenancePass(ctx context.Context) {
 		a.taskSvc.ReconcilePendingEnrichment() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see comment above
 	}
 	a.worktrees.CleanupOrphaned(ctx)
+	if a.sandboxes != nil && a.tasks != nil {
+		if tasks, err := a.tasks.List(); err == nil {
+			var hasAgent func(string) bool
+			if a.agents != nil {
+				hasAgent = a.agents.HasRunningAgentForTask
+			}
+			a.sandboxes.CleanupOrphaned(ctx, tasks, hasAgent)
+		}
+	}
 }
 
 func (a *App) queueDrainPass(ctx context.Context) {

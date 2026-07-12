@@ -1,7 +1,8 @@
 package sybra
 
 import (
-	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestDeleteTask_StopsSandbox(t *testing.T) {
 
 	// Wire a real (empty) sandbox manager.
 	sbDir := t.TempDir()
-	sbMgr := sandbox.NewManager(sbDir, slog.New(slog.NewTextHandler(nil, nil)))
+	sbMgr := sandbox.NewManager(sbDir, discardLogger())
 	svc.sandboxes = sbMgr
 
 	// Create a task.
@@ -24,11 +25,14 @@ func TestDeleteTask_StopsSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+	sybraHome, err := sbMgr.SybraHomeDir(tsk.ID)
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(sybraHome)
 
-	// Manually register a fake instance so there's something to stop.
-	_ = sbMgr // nothing to inject directly — just verify Stop doesn't panic.
-
-	// Delete task — sandbox.Stop should be called (no-op since no real sandbox).
+	// Delete task — sandbox.Remove should clean the per-task dir even when no
+	// runtime sandbox instance is registered.
 	if err := svc.DeleteTask(tsk.ID); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
@@ -36,30 +40,41 @@ func TestDeleteTask_StopsSandbox(t *testing.T) {
 	if _, err := svc.tasks.Get(tsk.ID); err == nil {
 		t.Error("task still exists after DeleteTask")
 	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task sandbox dir %q still exists after DeleteTask: %v", taskDir, err)
+	}
 }
 
-// TestUpdateTask_Done_StopsSandbox verifies that moving task to done stops sandbox.
-func TestUpdateTask_Done_StopsSandbox(t *testing.T) {
+// TestUpdateTask_Done_RemovesSandbox verifies a terminal status cleans the
+// per-task sandbox dir, not just any running runtime sandbox instance.
+func TestUpdateTask_Done_RemovesSandbox(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupTaskService(t)
 	var wg sync.WaitGroup
 	svc.wg = &wg
 
 	sbDir := t.TempDir()
-	sbMgr := sandbox.NewManager(sbDir, slog.New(slog.NewTextHandler(nil, nil)))
+	sbMgr := sandbox.NewManager(sbDir, discardLogger())
 	svc.sandboxes = sbMgr
 
 	tsk, err := svc.tasks.Create("test done sandbox", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+	sybraHome, err := sbMgr.SybraHomeDir(tsk.ID)
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(sybraHome)
 
 	_, err = svc.UpdateTask(tsk.ID, map[string]any{"status": string(task.StatusDone)})
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
 	wg.Wait()
-	// No panic = pass. The sandbox manager had no running sandbox, so Stop is a no-op.
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task sandbox dir %q still exists after terminal status: %v", taskDir, err)
+	}
 }
 
 // TestUpdateTask_InProgress_NoStop verifies non-done status changes don't stop sandbox.
@@ -68,7 +83,7 @@ func TestUpdateTask_InProgress_NoStop(t *testing.T) {
 	svc, _ := setupTaskService(t)
 
 	sbDir := t.TempDir()
-	sbMgr := sandbox.NewManager(sbDir, slog.New(slog.NewTextHandler(nil, nil)))
+	sbMgr := sandbox.NewManager(sbDir, discardLogger())
 	svc.sandboxes = sbMgr
 
 	tsk, err := svc.tasks.Create("test inprogress sandbox", "", "headless")

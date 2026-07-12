@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -65,6 +66,7 @@ type Recovery struct {
 	Tasks          *task.Manager
 	Agents         *agent.Manager
 	Worktrees      *worktree.Manager
+	Sandboxes      *sandbox.Manager
 	WorkflowEngine WorkflowRestarter // optional; nil-safe
 	Orchestrator   Orchestrator
 	Projects       ProjectGetter
@@ -111,6 +113,7 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	r.gcOrphanChats(ctx)
 	r.pruneTrash(ctx)
 	r.Worktrees.CleanupOrphaned(ctx)
+	r.cleanupOrphanedSandboxes(ctx)
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
 	r.RestartStaleInProgress(ctx)
@@ -160,4 +163,20 @@ func (r *Recovery) pruneTrash(ctx context.Context) {
 		r.Logger.Warn("recovery.trash.prune_error", "err", err)
 	}
 	r.Logger.Info("recovery.trash.prune", "scanned", rep.Scanned, "removed", rep.Removed, "errors", len(rep.Errors))
+}
+
+func (r *Recovery) cleanupOrphanedSandboxes(ctx context.Context) {
+	if r.Sandboxes == nil || r.Tasks == nil {
+		return
+	}
+	tasks, err := r.Tasks.List()
+	if err != nil {
+		r.Logger.Warn("recovery.sandboxes.list", "err", err)
+		return
+	}
+	var hasAgent func(string) bool
+	if r.Agents != nil {
+		hasAgent = r.Agents.HasRunningAgentForTask
+	}
+	r.Sandboxes.CleanupOrphaned(ctx, tasks, hasAgent)
 }
