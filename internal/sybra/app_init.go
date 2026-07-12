@@ -563,14 +563,17 @@ func (a *App) runsTaskLocally(t task.Task) bool {
 }
 
 func (a *App) isWorkProject(projectID string) bool {
-	if projectID == "" || a.projects == nil {
+	if projectID == "" {
 		return false
+	}
+	if a.projects == nil {
+		return true
 	}
 	p, err := a.projects.Get(projectID)
 	if err != nil {
 		return true
 	}
-	return p.Type == project.ProjectTypeWork
+	return p.Type != project.ProjectTypePet
 }
 
 func (a *App) auditClusterBlock(taskID, node, reason string) {

@@ -128,6 +128,28 @@ func TestPetTaskRoutesRegardlessOfTrust(t *testing.T) {
 	}
 }
 
+func TestNilClassifierFailsSafe(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := workConfig(srv.URL, false, "")
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	assigner := NewAssigner(cfg, mgr, roster, nil, nil, nil)
+	if _, _, err := mgr.Put(task.Task{ID: "w1", Title: "t", Status: task.StatusTodo, ProjectID: "owner/work"}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := mgr.Get("w1")
+	if _, err := assigner.Route(context.Background(), cur); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stub.lastAssigned(); ok {
+		t.Fatal("a nil classifier must fail safe (treat all as work) — nothing may be pushed to an untrusted node")
+	}
+	if got, _ := mgr.Get("w1"); got.Status != task.StatusBlocked {
+		t.Errorf("nil classifier should block the task, got %s", got.Status)
+	}
+}
+
 func (f *followerStub) tlsServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

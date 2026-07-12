@@ -35,6 +35,9 @@ func NewAssigner(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if isWorkProject == nil {
+		isWorkProject = func(string) bool { return true }
+	}
 	return &Assigner{cfg: cfg, tasks: tasks, roster: roster, isWorkProject: isWorkProject, auditBlock: auditBlock, logger: logger}
 }
 
@@ -78,7 +81,7 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 	if home.Local {
 		return false, nil
 	}
-	if a.isWorkProject != nil && a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {
+	if a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {
 		return false, a.blockForConfidentiality(t, home)
 	}
 	client, ok := a.roster.Client(home.Name)
