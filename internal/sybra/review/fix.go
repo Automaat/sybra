@@ -768,7 +768,7 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 		return false
 	}
 	if r.WorkflowEngine.WorkflowParkedWaiting(taskID, branchConflictFixWorkflowID) ||
-		r.WorkflowEngine.WorkflowParkedWaiting(taskID, prFixWorkflowID) {
+		r.prFixParkedOnConflict(taskID) {
 		r.logger.Info("pr-monitor.branch-conflict.already-parked-waiting", "task_id", taskID)
 		return true
 	}
@@ -803,6 +803,22 @@ func (r *Handler) RecoverStaleBranchConflict(taskID string) bool {
 	return r.handlePRIssueReplacingWorkflow(context.Background(),
 		github.PRIssue{TaskID: taskID, Kind: github.PRIssueConflict, PR: pr},
 		"rebase conflict recovery")
+}
+
+// prFixParkedOnConflict reports whether the task's active workflow is a pr-fix
+// parked mid-run that was dispatched for a conflict. pr-fix is not
+// conflict-only — it also handles ci_failure and comments — so only a conflict
+// pr-fix means autonomous conflict recovery is already in flight and may
+// short-circuit RecoverStaleBranchConflict. A pr-fix parked on ci_failure or
+// comments must NOT suppress dispatching conflict recovery for a real rebase
+// conflict; treating it as in-flight would report success without ever
+// resolving the conflict, and the caller would skip human escalation.
+func (r *Handler) prFixParkedOnConflict(taskID string) bool {
+	vars, ok := r.WorkflowEngine.WorkflowParkedWaitingVars(taskID, prFixWorkflowID)
+	if !ok {
+		return false
+	}
+	return slices.Contains(coalescedWorkflowKinds(vars), string(github.PRIssueConflict))
 }
 
 // recoverBranchConflictNoPR is the no-PR sibling of RecoverStaleBranchConflict:
