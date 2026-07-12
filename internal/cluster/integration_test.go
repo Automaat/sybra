@@ -68,14 +68,23 @@ func realServer(t *testing.T, token string, svc *fakeTaskService) (*httptest.Ser
 	return srv, broker
 }
 
+func mustClient(t *testing.T, node cluster.Node) *cluster.Client {
+	t.Helper()
+	c, err := cluster.NewClient(node, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if c == nil {
+		t.Fatal("NewClient returned nil client")
+	}
+	return c
+}
+
 func TestClientAgainstRealHTTPAPI(t *testing.T) {
 	svc := &fakeTaskService{tasks: []task.Task{{ID: "t1", Title: "one"}, {ID: "t2"}}}
 	srv, _ := realServer(t, "tok", svc)
 
-	client, err := cluster.NewClient(cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"})
 
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
@@ -106,7 +115,7 @@ func TestClientAgainstRealHTTPAPI(t *testing.T) {
 func TestClientTokenRejectedByRealServer(t *testing.T) {
 	svc := &fakeTaskService{}
 	srv, _ := realServer(t, "right", svc)
-	client, _ := cluster.NewClient(cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"}, nil)
+	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"})
 	if _, err := client.ListTasks(context.Background()); err == nil {
 		t.Fatal("real server must reject a wrong token")
 	}
@@ -115,7 +124,7 @@ func TestClientTokenRejectedByRealServer(t *testing.T) {
 func TestSubscribeAgainstRealBroker(t *testing.T) {
 	svc := &fakeTaskService{}
 	srv, broker := realServer(t, "tok", svc)
-	client, _ := cluster.NewClient(cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"}, nil)
+	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"})
 
 	ch, err := client.Subscribe(t.Context())
 	if err != nil {

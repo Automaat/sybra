@@ -77,11 +77,20 @@ func TestRosterSetHealthFromEvent(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	roster.SetHealthFromEvent("n1", true, now)
-	if got := roster.Health()[0].Status; got != StatusOnline {
+	if got := statusOf(t, roster); got != StatusOnline {
 		t.Errorf("after online event status = %s, want online", got)
 	}
 	roster.SetHealthFromEvent("n1", false, now)
-	if got := roster.Health()[0].Status; got != StatusOffline {
+	if got := statusOf(t, roster); got != StatusOffline {
 		t.Errorf("after drop event status = %s, want offline", got)
 	}
+}
+
+func statusOf(t *testing.T, roster *Roster) Status {
+	t.Helper()
+	h := roster.Health()
+	if len(h) == 0 {
+		t.Fatal("roster has no health entries")
+	}
+	return h[0].Status
 }

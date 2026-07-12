@@ -114,7 +114,7 @@ func (r *Roster) ProbeAll(ctx context.Context, now time.Time) []NodeHealth {
 // ProbeNode health-probes a single follower and updates its health snapshot.
 func (r *Roster) ProbeNode(ctx context.Context, name string, now time.Time) NodeHealth {
 	client, ok := r.Client(name)
-	if !ok {
+	if !ok || client == nil {
 		return NodeHealth{Name: name, Status: StatusUnknown}
 	}
 	endpoint, degraded, err := client.ProbeHealth(ctx)

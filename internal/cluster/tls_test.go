@@ -55,10 +55,7 @@ func TestClientTLSPinAcceptAndReject(t *testing.T) {
 	sum := sha256.Sum256(srv.Certificate().Raw)
 	correctPin := hex.EncodeToString(sum[:])
 
-	accept, err := NewClient(Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: correctPin}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	accept := mustClient(t, Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: correctPin})
 	got, err := accept.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("correct pin should connect: %v", err)
@@ -68,10 +65,7 @@ func TestClientTLSPinAcceptAndReject(t *testing.T) {
 	}
 
 	wrongPin := strings.Repeat("00", 32)
-	reject, err := NewClient(Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: wrongPin}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reject := mustClient(t, Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: wrongPin})
 	if _, err := reject.ListTasks(context.Background()); err == nil {
 		t.Fatal("wrong pin must reject the connection")
 	}

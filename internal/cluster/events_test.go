@@ -36,7 +36,7 @@ func TestSubscribeDecodesFrames(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "tok"})
 	ch, err := client.Subscribe(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestSubscribeMultiLineAndCRLF(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}})
 	ch, err := client.Subscribe(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestSubscribeFailover(t *testing.T) {
 	live := httptest.NewServer(mux)
 	t.Cleanup(live.Close)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{deadURL, live.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{deadURL, live.URL}})
 	ch, err := client.Subscribe(t.Context())
 	if err != nil {
 		t.Fatalf("Subscribe should fail over to the live endpoint: %v", err)
@@ -126,7 +126,7 @@ func TestSubscribeOverPinnedTLS(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	sum := sha256.Sum256(srv.Certificate().Raw)
-	client, _ := NewClient(Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: hex.EncodeToString(sum[:])}, nil)
+	client := mustClient(t, Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: hex.EncodeToString(sum[:])})
 	ch, err := client.Subscribe(t.Context())
 	if err != nil {
 		t.Fatalf("SSE over correctly-pinned TLS should connect: %v", err)
@@ -135,7 +135,7 @@ func TestSubscribeOverPinnedTLS(t *testing.T) {
 		t.Fatalf("event = %+v", ev)
 	}
 
-	wrong, _ := NewClient(Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: strings.Repeat("00", 32)}, nil)
+	wrong := mustClient(t, Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: strings.Repeat("00", 32)})
 	if _, err := wrong.Subscribe(t.Context()); err == nil {
 		t.Fatal("SSE over a wrong pin must reject")
 	}
@@ -149,7 +149,7 @@ func TestSubscribeTokenRejected(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "bad"}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "bad"})
 	if _, err := client.Subscribe(context.Background()); err == nil {
 		t.Fatal("want error when /events rejects the token")
 	}

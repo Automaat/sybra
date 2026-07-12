@@ -37,7 +37,7 @@ func TestMutatingRPCNoRetryAfterPartialSend(t *testing.T) {
 	stub := &stubFollower{tasks: []task.Task{{ID: "ok"}}}
 	live := stub.server(t)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{reset.URL, live.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{reset.URL, live.URL}})
 
 	err := client.AssignTask(context.Background(), task.Task{ID: "z"})
 	if err == nil {
@@ -73,7 +73,7 @@ func TestGatewayDownFailsOverForIdempotent(t *testing.T) {
 	stub := &stubFollower{tasks: []task.Task{{ID: "ok"}}}
 	live := stub.server(t)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{down.URL, live.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{down.URL, live.URL}})
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("503 gateway-down should fail over for idempotent read: %v", err)
@@ -88,7 +88,7 @@ func TestGatewayDownReturnedForMutating(t *testing.T) {
 	stub := &stubFollower{}
 	live := stub.server(t)
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{down.URL, live.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{down.URL, live.URL}})
 	err := client.AssignTask(context.Background(), task.Task{ID: "z"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {

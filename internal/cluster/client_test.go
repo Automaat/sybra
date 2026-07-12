@@ -13,6 +13,18 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func mustClient(t *testing.T, node Node) *Client {
+	t.Helper()
+	c, err := NewClient(node, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if c == nil {
+		t.Fatal("NewClient returned nil client")
+	}
+	return c
+}
+
 type stubFollower struct {
 	token    string
 	tasks    []task.Task
@@ -64,10 +76,7 @@ func (s *stubFollower) server(t *testing.T) *httptest.Server {
 func TestClientListTasks(t *testing.T) {
 	stub := &stubFollower{token: "sekret", tasks: []task.Task{{ID: "a"}, {ID: "b"}}}
 	srv := stub.server(t)
-	client, err := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "sekret"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "sekret"})
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +92,7 @@ func TestClientListTasks(t *testing.T) {
 func TestClientAssignTaskEncodesArgs(t *testing.T) {
 	stub := &stubFollower{token: "sekret"}
 	srv := stub.server(t)
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "sekret"}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "sekret"})
 	if err := client.AssignTask(context.Background(), task.Task{ID: "z", Title: "hi"}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +107,7 @@ func TestClientAssignTaskEncodesArgs(t *testing.T) {
 func TestClientTokenRejection(t *testing.T) {
 	stub := &stubFollower{token: "right"}
 	srv := stub.server(t)
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"})
 	_, err := client.ListTasks(context.Background())
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -117,7 +126,7 @@ func TestClientEndpointFailover(t *testing.T) {
 	deadURL := dead.URL
 	dead.Close()
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{deadURL, live.URL}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{deadURL, live.URL}})
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("failover did not reach the live endpoint: %v", err)
@@ -138,7 +147,7 @@ func TestClientAllEndpointsUnreachable(t *testing.T) {
 	u2 := d2.URL
 	d2.Close()
 
-	client, _ := NewClient(Node{Name: "n1", Endpoints: []string{u1, u2}}, nil)
+	client := mustClient(t, Node{Name: "n1", Endpoints: []string{u1, u2}})
 	_, err := client.ListTasks(context.Background())
 	if err == nil {
 		t.Fatal("want error when all endpoints are unreachable")
@@ -149,7 +158,7 @@ func TestClientAllEndpointsUnreachable(t *testing.T) {
 }
 
 func TestClientNoEndpoints(t *testing.T) {
-	client, _ := NewClient(Node{Name: "empty", Endpoints: []string{"", "  "}}, nil)
+	client := mustClient(t, Node{Name: "empty", Endpoints: []string{"", "  "}})
 	if _, err := client.ListTasks(context.Background()); err == nil {
 		t.Fatal("want error for a node with no usable endpoints")
 	}
