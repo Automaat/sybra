@@ -44,6 +44,7 @@ machine.
 | `providers` | `ProvidersConfig` | _(see below)_ |  |
 | `metrics` | `MetricsConfig` | _(see below)_ |  |
 | `server` | `ServerConfig` | _(see below)_ |  |
+| `cluster` | `ClusterConfig` | _(see below)_ |  |
 | `auto_update` | `AutoUpdateConfig` | _(see below)_ |  |
 | `browser` | `BrowserConfig` | _(see below)_ |  |
 | `project_types` | `[]string` |  |  |
@@ -518,6 +519,55 @@ left empty — see applyServerDefaults.
 |---|---|---|---|
 | `server.auth_token` | `string` | `[redacted]` |  |
 | `server.allowed_origins` | `[]string` |  |  |
+
+## ClusterConfig (`cluster`)
+
+ClusterConfig configures leader-follower mode (umbrella #1803). The leader
+owns the canonical task store, polls Todoist/GitHub, and assigns work to
+followers by per-project homing; followers execute assigned tasks and stream
+state back. Default role "standalone" preserves single-node behavior, so the
+block requires zero migration. Role is "standalone", "leader", or "follower"
+(invalid falls back to standalone). BindAddr overrides a follower's
+control-plane bind. LocalHomes pins project ids to this node; TLS carries a
+follower's server cert/key for the TLS + cert-pin transport tier.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `cluster.role` | `string` | `standalone` |  |
+| `cluster.bind_addr` | `string` |  |  |
+| `cluster.followers` | `[]Follower` | _(see below)_ |  |
+| `cluster.local_homes` | `[]string` |  |  |
+| `cluster.tls` | `ClusterTLS` | _(see below)_ |  |
+
+## Follower (`cluster.followers`)
+
+Follower is one entry in the leader's roster: a node the leader may assign
+projects to over the control plane. Name is stamped into task.AssignedNode.
+Endpoints are ordered most-preferred-first (e.g. a tailnet URL then a LAN IP)
+so tailnet flakiness falls back to LAN; failover across them lands in P1.
+AuthTokenEnv names the env var holding the bearer token so the secret never
+lands in config.yaml. Trusted marks a node cleared for work-typed tasks;
+Homes pins project ids to this follower; TLSPin is the expected SHA-256
+fingerprint of its server certificate.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `cluster.followers.name` | `string` |  |  |
+| `cluster.followers.endpoints` | `[]string` |  |  |
+| `cluster.followers.auth_token_env` | `string` |  |  |
+| `cluster.followers.trusted` | `bool` |  |  |
+| `cluster.followers.homes` | `[]string` |  |  |
+| `cluster.followers.tls_pin` | `string` |  |  |
+
+## ClusterTLS (`cluster.tls`)
+
+ClusterTLS holds a follower's server certificate/key paths for the TLS +
+cert-pin transport tier (P7 provides cert-gen). Empty = plain HTTP.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `cluster.tls.cert_file` | `string` |  |  |
+| `cluster.tls.key_file` | `string` |  |  |
 
 ## AutoUpdateConfig (`auto_update`)
 

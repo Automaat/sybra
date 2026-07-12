@@ -27,6 +27,8 @@ func newTasklessAdoptHandler(t *testing.T) (*Handler, *task.Manager) {
 
 func TestAdoptTasklessPRs_ResurrectsSybraPROnly(t *testing.T) {
 	r, tasks := newTasklessAdoptHandler(t)
+	triaged := make(chan task.Task, 1)
+	r.triageReviewFn = func(t task.Task) { triaged <- t }
 	prs := []github.PullRequest{
 		{Number: 1677, Repository: "owner/repo", HeadRefName: "perf/bound-limits-1a2b3c4d", Title: "perf: bound", URL: "https://x/1677"},
 		{Number: 99, Repository: "owner/repo", HeadRefName: "external/random-branch", Title: "ext", URL: "https://x/99"},
@@ -43,11 +45,20 @@ func TestAdoptTasklessPRs_ResurrectsSybraPROnly(t *testing.T) {
 		t.Fatalf("created %d tasks, want 1 (only the non-draft Sybra-branch PR)", len(all))
 	}
 	got := all[0]
-	if got.PRNumber != 1677 || got.Status != task.StatusInReview || got.Branch != "perf/bound-limits-1a2b3c4d" {
-		t.Fatalf("adopted task = {pr:%d status:%q branch:%q}, want {1677 in-review perf/bound-limits-1a2b3c4d}", got.PRNumber, got.Status, got.Branch)
+	if got.PRNumber != 1677 || got.Branch != "perf/bound-limits-1a2b3c4d" {
+		t.Fatalf("adopted task = {pr:%d status:%q branch:%q}, want {1677 * perf/bound-limits-1a2b3c4d}", got.PRNumber, got.Status, got.Branch)
 	}
 	if !slices.Contains(got.Tags, "review") {
 		t.Error("adopted task missing the review tag — would let simple-task-plan claim task.created")
+	}
+
+	select {
+	case triagedTask := <-triaged:
+		if triagedTask.ID != got.ID {
+			t.Fatalf("triaged task ID = %q, want %q", triagedTask.ID, got.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triageReview was not dispatched for the taskless-adopted task")
 	}
 }
 
@@ -70,5 +81,28 @@ func TestAdoptTasklessPRs_SkipsAlreadyTracked(t *testing.T) {
 	}
 	if len(all) != 0 {
 		t.Fatalf("created %d tasks, want 0 (both PRs already tracked)", len(all))
+	}
+}
+
+func TestAdoptTasklessPRs_SkipsOwnedBranchWithStaleProjectID(t *testing.T) {
+	r, tasks := newTasklessAdoptHandler(t)
+	// Task's ProjectID has gone stale relative to the live PR's repository
+	// (e.g. reassigned/mirrored elsewhere), so neither the ProjectID#PR nor
+	// ProjectID|Branch keys match — only the branch's task-ID suffix does.
+	existing := []task.Task{
+		{ID: "696bc049", ProjectID: "owner/stale-repo", PRNumber: 1869, Branch: "fix/fix-ingest-ensure-per-task-unique-696bc049"},
+	}
+	prs := []github.PullRequest{
+		{Number: 1869, Repository: "owner/repo", HeadRefName: "fix/fix-ingest-ensure-per-task-unique-696bc049", Title: "owned elsewhere", URL: "https://x/1869"},
+	}
+
+	r.adoptTasklessPRs(existing, prs)
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("created %d tasks, want 0 (branch already owned by task 696bc049 despite stale ProjectID)", len(all))
 	}
 }

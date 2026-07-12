@@ -388,6 +388,33 @@ func (w *Watchdog) checkCompletedHang(ag *agent.Agent, now time.Time) {
 	}
 }
 
+// stopAlreadyCompleted handles a judge "stop" verdict for a headless agent
+// that has, in the meantime, produced a non-error terminal result (e.g. a
+// stall/budget trigger fired and the judge was invoked before
+// CompletedSuccessfully caught up, or the two raced). Routing through
+// stopCompletedAgent (instead of force-setting human-required and calling
+// the generic stopAgent) lets the normal completion path parse and act on
+// the already-produced result — e.g. route_test_result turning a buffered
+// PASS verdict into ready-pr — rather than silently discarding it (#1836).
+// Returns true if it handled the stop.
+func (w *Watchdog) stopAlreadyCompleted(ag *agent.Agent) bool {
+	if ag.Mode != "headless" || !ag.CompletedSuccessfully() {
+		return false
+	}
+	w.logger.Info("agent.watchdog.stop.completed_result", "id", ag.ID, "task_id", ag.TaskID)
+	stop := w.stopCompletedAgent
+	if stop == nil {
+		stop = w.stopAgent
+	}
+	if stop == nil {
+		return true
+	}
+	if err := stop(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.completed_result.failed", "id", ag.ID, "err", err)
+	}
+	return true
+}
+
 func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Duration) {
 	w.logger.Warn("agent.watchdog.hard_deadline",
 		"id", ag.ID, "task_id", ag.TaskID, "reason", reason,
@@ -466,6 +493,9 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 	case "stop":
 		if verdict.ReasonKind == "rate_limit" {
 			w.stopForRateLimit(ag, trigger, verdict)
+			return
+		}
+		if w.stopAlreadyCompleted(ag) {
 			return
 		}
 		// Set the task state before stopping so the completion callback sees the

@@ -486,6 +486,9 @@ func DefaultConfig() *Config {
 			},
 			AutoFailover: true,
 		},
+		Cluster: ClusterConfig{
+			Role: ClusterRoleStandalone,
+		},
 		TasksDir: defaultTasksDir(),
 	}
 }
