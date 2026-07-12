@@ -70,7 +70,7 @@ func TestFillAPITS(t *testing.T) {
 	}, "\n")
 	services := []service{{name: "TaskService", methods: []string{"GetTask", "DeleteTask"}}}
 
-	out, added, err := fillAPITS(src, services)
+	out, added, err := fillAPITS(src, services, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestFillAPITS(t *testing.T) {
 		t.Fatalf("clobbered existing GetTask:\n%s", out)
 	}
 
-	out2, added2, err := fillAPITS(out, services)
+	out2, added2, err := fillAPITS(out, services, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestFillAPIHTTP(t *testing.T) {
 	}, "\n")
 	services := []service{{name: "TaskService", methods: []string{"GetTask", "DeleteTask", "CreateTaskWithInit"}}}
 
-	out, added, err := fillAPIHTTP(src, services, bindingDir)
+	out, added, err := fillAPIHTTP(src, services, bindingDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestFillAPIHTTP(t *testing.T) {
 		t.Fatalf("duplicate task/models import:\n%s", out)
 	}
 
-	out2, added2, err := fillAPIHTTP(out, services, bindingDir)
+	out2, added2, err := fillAPIHTTP(out, services, bindingDir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,5 +173,64 @@ func TestParseServices(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].name != "TaskService" || len(got[0].methods) != 2 || got[1].name != "App" {
 		t.Fatalf("parseServices = %+v", got)
+	}
+}
+
+func TestUnresolvableMethods(t *testing.T) {
+	t.Parallel()
+	bindingDir := t.TempDir()
+	binding := strings.Join([]string{
+		`import { CancellablePromise as $CancellablePromise } from "@wailsio/runtime";`,
+		`export function GetTask(id: string): $CancellablePromise<string> {`,
+		`    return $Call.ByID(1, id);`,
+		`}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(bindingDir, "taskservice.ts"), []byte(binding), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	services := []service{
+		{name: "TaskService", methods: []string{"GetTask", "NewlyAdded"}},
+		{name: "QueueService", methods: []string{"SnapshotDepth"}},
+	}
+
+	skip, reasons, err := unresolvableMethods(services, bindingDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip["GetTask"] {
+		t.Error("GetTask has a binding signature and must not be skipped")
+	}
+	if !skip["NewlyAdded"] {
+		t.Error("NewlyAdded has no binding signature and must be skipped")
+	}
+	if !skip["SnapshotDepth"] {
+		t.Error("SnapshotDepth's service has no binding file and must be skipped")
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("reasons = %v, want 2", reasons)
+	}
+}
+
+func TestFillAPIHTTP_SkipsMissingBinding(t *testing.T) {
+	t.Parallel()
+	bindingDir := t.TempDir()
+	src := strings.Join([]string{
+		"async function call<T>(): Promise<T> { return undefined as T }",
+		"",
+		"// QueueService",
+		"export function Existing(): Promise<void> { return call('QueueService', 'Existing') }",
+	}, "\n")
+	services := []service{{name: "QueueService", methods: []string{"Existing", "SnapshotDepth"}}}
+	skip := map[string]bool{"SnapshotDepth": true}
+
+	out, added, err := fillAPIHTTP(src, services, bindingDir, skip)
+	if err != nil {
+		t.Fatalf("must not error on a skipped missing-binding method: %v", err)
+	}
+	if len(added) != 0 {
+		t.Fatalf("added = %v, want none (SnapshotDepth skipped, Existing already present)", added)
+	}
+	if strings.Contains(out, "SnapshotDepth") {
+		t.Fatalf("skipped method must not be emitted:\n%s", out)
 	}
 }

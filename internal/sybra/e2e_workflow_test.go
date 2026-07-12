@@ -382,25 +382,14 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	}
 }
 
-// e2eTimeoutScale returns the integer multiplier applied to every waitFor
-// deadline. Resolved per wait so later waits in the same package can absorb
-// higher live runner contention instead of freezing the first-observed scale
-// for the full suite. Resolution priority:
-//
-//  1. SYBRA_E2E_TIMEOUT_SCALE env var (positive integer) — explicit override.
-//  2. CI=true or GITHUB_ACTIONS=true — defaults to 4 (CI fork/exec variance).
-//  3. Local — 1.
-//
-// Scaling lets the suite absorb 5–10× CI slowdowns without each test
-// hand-picking a generous timeout (which would hide real regressions on
-// developer machines). 4× of a 30s local-comfortable budget gives a 2-minute
-// CI ceiling — long enough for the slowest observed runner, short enough that
-// a deadlocked test still fails the job within the per-job budget.
 func e2eTimeoutScale() int64 {
 	return e2eTimeoutScaleResolve()
 }
 
-const e2eTimeoutScaleCeiling = 16
+const (
+	e2eTimeoutScaleCeiling = 20
+	e2eCITimeoutScaleFloor = 12
+)
 
 func e2eTimeoutScaleResolve() int64 {
 	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
@@ -411,10 +400,9 @@ func e2eTimeoutScaleResolve() int64 {
 	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
 		return 1
 	}
-	base := int64(8)
-	scaled := base * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
-	if scaled < base {
-		return base
+	scaled := e2eCITimeoutScaleFloor * loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
+	if scaled < e2eCITimeoutScaleFloor {
+		return e2eCITimeoutScaleFloor
 	}
 	if scaled > e2eTimeoutScaleCeiling {
 		return e2eTimeoutScaleCeiling

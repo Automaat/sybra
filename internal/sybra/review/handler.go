@@ -32,8 +32,6 @@ const (
 	reviewSmallFiles     = 5
 )
 
-const staffCodeReviewProvider = "claude"
-
 const TransientFetchWarnThreshold = 3
 
 // readyPRState is a cached "confirmed ready to merge" snapshot for a task's

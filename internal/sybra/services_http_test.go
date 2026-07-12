@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/learning"
@@ -47,6 +48,35 @@ func TestLearningServiceHTTPAllowlist(t *testing.T) {
 	}
 	if status := post("StoreDigest"); status != http.StatusNotFound {
 		t.Errorf("StoreDigest must NOT be reachable over HTTP, got %d (want 404)", status)
+	}
+}
+
+func TestQueueServiceHTTPAllowlist(t *testing.T) {
+	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, slog.Default())
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+	a := &App{queueSvc: &QueueService{queue: queue}}
+
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, ServiceRegistry(a), slog.Default())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	post := func(method string) int {
+		resp, err := http.Post(srv.URL+"/api/QueueService/"+method, "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST %s: %v", method, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if status := post("SnapshotDepth"); status == http.StatusNotFound {
+		t.Errorf("SnapshotDepth should be reachable over HTTP, got %d", status)
+	}
+	if status := post("Snapshot"); status != http.StatusNotFound {
+		t.Errorf("Snapshot must NOT be reachable over HTTP, got %d (want 404)", status)
 	}
 }
 

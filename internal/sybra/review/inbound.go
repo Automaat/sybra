@@ -184,7 +184,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
-	ag, err := r.agents.Run(StaffCodeReviewRunConfig(current, prompt, dir, posture))
+	ag, err := r.agents.Run(r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview)))
 	if err != nil {
 		return err
 	}
@@ -203,19 +203,22 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	return nil
 }
 
+// StaffCodeReviewRunConfig builds the base run config for the GitHub-PR-triggered
+// staff review. Provider is left unset so the caller's Manager.ApplyABVariant
+// resolves it through the A/B suite (with failover on) or, when A/B is disabled,
+// the manager default. Model defaults to opus so the claude variant and any
+// A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
+// MaxTurns is intentionally not inherited: review agents need enough turns to
+// fetch the PR, run the skill, and write findings.
 func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
 	return agent.RunConfig{
-		TaskID:                  t.ID,
-		Name:                    agent.RoleReview.AgentName(t.Title),
-		Mode:                    "headless",
-		Prompt:                  prompt,
-		Dir:                     dir,
-		Provider:                staffCodeReviewProvider,
-		Model:                   "opus",
-		DisableProviderFailover: true,
-		HeadlessPermissionMode:  posture,
-		// MaxTurns intentionally not inherited: review agents need
-		// enough turns to fetch the PR, run the skill, and write findings.
+		TaskID:                 t.ID,
+		Name:                   agent.RoleReview.AgentName(t.Title),
+		Mode:                   "headless",
+		Prompt:                 prompt,
+		Dir:                    dir,
+		Model:                  "opus",
+		HeadlessPermissionMode: posture,
 	}
 }
 

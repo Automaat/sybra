@@ -902,7 +902,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
-	ag, err := s.agents.Run(review.StaffCodeReviewRunConfig(t, prompt, dir, posture))
+	ag, err := s.agents.Run(s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.cfg.ABTesting, t.ID, string(agent.RoleReview)))
 	if err != nil {
 		return err
 	}

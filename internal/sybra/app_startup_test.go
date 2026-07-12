@@ -242,6 +242,9 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	if app.notifier == nil || app.artifacts == nil || app.experience == nil || app.stats == nil || app.limits == nil {
 		t.Fatal("support stores were not initialized")
 	}
+	if app.agentQueue == nil {
+		t.Fatal("agent queue is nil")
+	}
 }
 
 func assertStartupServiceWiring(t *testing.T, app *App) {
@@ -258,6 +261,9 @@ func assertStartupServiceWiring(t *testing.T, app *App) {
 	}
 	if app.projectSvc.projects != app.projects || app.projectSvc.worktrees != app.worktrees || app.projectSvc.bgops != app.bgops {
 		t.Fatal("project service was not wired")
+	}
+	if app.queueSvc == nil || app.queueSvc.queue != app.agentQueue {
+		t.Fatal("queue service was not wired")
 	}
 	if app.loopAgentSvc.store != app.loopAgents || app.loopAgentSvc.sched != app.loopSched {
 		t.Fatal("loop-agent service was not wired")

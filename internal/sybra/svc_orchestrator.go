@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
@@ -15,6 +17,16 @@ import (
 // orchestratorAgentName is the stable Name assigned to the orchestrator agent
 // so the frontend and tests can identify it in agent listings.
 const orchestratorAgentName = "orchestrator"
+
+const orchestratorRole = "orchestrator"
+
+func orchestratorABKey() string {
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return host
+}
 
 // orchestratorKickoffPrompt is the first user message delivered to the
 // orchestrator brain so it actually takes a turn. The conversational runner
@@ -98,10 +110,11 @@ func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepI
 
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
-	agents *agent.Manager
-	audit  *audit.Logger
-	logger *slog.Logger
-	emit   func(string, any)
+	agents    *agent.Manager
+	audit     *audit.Logger
+	logger    *slog.Logger
+	emit      func(string, any)
+	abTesting abtest.Config
 
 	mu      sync.Mutex
 	agentID string
@@ -129,11 +142,12 @@ func (s *OrchestratorService) reconcileOrchestratorsLocked() string {
 }
 
 // StartOrchestrator launches the orchestrator as an in-app conversational
-// Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
-// The detector/dispatch loop runs in-process in the Go backend (see
+// agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live). The
+// detector/dispatch loop runs in-process in the Go backend (see
 // LifecycleManager.startMonitorService); this session handles the
-// judgment-driven work on top of it, so it stays pinned to Claude even when
-// generic task agents can fail over to another provider.
+// judgment-driven work on top of it. Provider is resolved through the A/B suite
+// (ApplyABVariant) like any other role, and health/limit failover stays on so
+// the brain is not stranded when its provider is unavailable.
 func (s *OrchestratorService) StartOrchestrator() error {
 	return s.StartOrchestratorContext(context.Background())
 }
@@ -151,15 +165,13 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 		return conflictError("orchestrator already running")
 	}
 
-	a, err := s.agents.RunContext(ctx, agent.RunConfig{
-		Name:                    orchestratorAgentName,
-		Mode:                    "interactive",
-		Dir:                     config.HomeDir(),
-		Provider:                "claude",
-		Prompt:                  orchestratorKickoffPrompt,
-		IgnoreConcurrencyLimit:  true,
-		DisableProviderFailover: true,
-	})
+	a, err := s.agents.RunContext(ctx, s.agents.ApplyABVariant(agent.RunConfig{
+		Name:                   orchestratorAgentName,
+		Mode:                   "interactive",
+		Dir:                    config.HomeDir(),
+		Prompt:                 orchestratorKickoffPrompt,
+		IgnoreConcurrencyLimit: true,
+	}, s.abTesting, orchestratorABKey(), orchestratorRole))
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)
 	}

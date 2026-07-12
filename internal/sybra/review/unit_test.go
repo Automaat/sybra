@@ -186,17 +186,17 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 }
 
-func TestStaffCodeReviewRunConfigPinsClaudeProvider(t *testing.T) {
+func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
 
-	if cfg.Provider != staffCodeReviewProvider {
-		t.Fatalf("Provider = %q, want %q", cfg.Provider, staffCodeReviewProvider)
+	if cfg.Provider != "" {
+		t.Fatalf("Provider = %q, want empty (resolved by Manager.ApplyABVariant / default)", cfg.Provider)
 	}
 	if cfg.Model != "opus" {
 		t.Fatalf("Model = %q, want opus", cfg.Model)
 	}
-	if !cfg.DisableProviderFailover {
-		t.Fatal("DisableProviderFailover = false, want true")
+	if cfg.DisableProviderFailover {
+		t.Fatal("DisableProviderFailover = true, want false (availability preferred)")
 	}
 }
 

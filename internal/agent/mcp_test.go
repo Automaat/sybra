@@ -173,22 +173,20 @@ func TestPreparePlaywrightMCP(t *testing.T) {
 		}
 	})
 
-	t.Run("non_claude_resolved_provider_leaves_mcp_config_json_empty", func(t *testing.T) {
-		// Eligibility/config enabled but the FINAL resolved provider is codex
-		// (e.g. this run failed over) — must not attach the claude-only flag.
+	t.Run("non_claude_resolved_provider_also_attaches_mcp_config", func(t *testing.T) {
 		m, _ := newTestManager(t)
 		m.playwrightMCPEnabled = true
 		wt := t.TempDir()
 		mustRunGit(t, wt, "init", "-b", "main")
 		cfg := RunConfig{Mode: "headless", Dir: wt, PlaywrightMCPEligible: true, provider: codexProvider{}}
 		m.preparePlaywrightMCP(&cfg)
-		if cfg.MCPConfigJSON != "" {
-			t.Errorf("expected empty MCPConfigJSON for non-claude resolved provider; got %q", cfg.MCPConfigJSON)
+		if cfg.MCPConfigJSON == "" {
+			t.Fatal("expected MCPConfigJSON to be set for a codex test-runner (provider parity)")
 		}
-		if slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool {
-			return strings.HasPrefix(kv, "PLAYWRIGHT_BROWSERS_PATH=") || strings.HasPrefix(kv, "npm_config_cache=")
-		}) {
-			t.Fatalf("non-claude provider must not inject playwright env, got %v", cfg.ExtraEnv)
+		for _, key := range []string{"PLAYWRIGHT_BROWSERS_PATH=", "npm_config_cache="} {
+			if !slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool { return strings.HasPrefix(kv, key) }) {
+				t.Fatalf("expected %s injected for codex provider, got %v", key, cfg.ExtraEnv)
+			}
 		}
 	})
 

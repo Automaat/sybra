@@ -27,7 +27,7 @@ jobs:
   test-go-e2e:
     name: Go E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -37,7 +37,7 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go e2e tests
-        run: go test -race -tags e2e -timeout 10m ./internal/sybra/...
+        run: go test -race -tags e2e -timeout 14m ./internal/sybra/...
 
   test-frontend:
     name: Frontend Tests

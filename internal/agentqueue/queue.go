@@ -81,6 +81,12 @@ type Queue struct {
 	opts  Options
 }
 
+// DepthSnapshot is the queue's current depth and top effective priority.
+type DepthSnapshot struct {
+	Depth                int
+	TopEffectivePriority task.Priority
+}
+
 // New builds a Queue backed by dir, loading any items previously persisted
 // there. dir is used as-is — the caller is responsible for resolving it
 // (this package never calls config.HomeDir()). The only error case is dir
@@ -182,6 +188,19 @@ func (q *Queue) Snapshot() []Item {
 		}
 	})
 	return out
+}
+
+// DepthSnapshot returns the queue's current depth and the top item's
+// effective priority without mutating queue state.
+func (q *Queue) DepthSnapshot() DepthSnapshot {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	snap := DepthSnapshot{Depth: len(q.h.items), TopEffectivePriority: task.PriorityNone}
+	if len(q.h.items) > 0 {
+		snap.TopEffectivePriority = effectivePriority(q.h.items[0])
+	}
+	return snap
 }
 
 // PopReady returns up to n of the most urgent items and removes them from
