@@ -92,15 +92,26 @@ func signalPID(pid int, grace time.Duration) {
 	if pid <= 0 {
 		return
 	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
-	_ = p.Signal(os.Interrupt)
+	target := signalTarget(pid)
+	_ = syscall.Kill(target, syscall.SIGINT)
 	go func() {
 		time.Sleep(grace)
 		if processAlive(pid) {
-			_ = p.Signal(syscall.SIGKILL)
+			_ = syscall.Kill(target, syscall.SIGKILL)
 		}
 	}()
+}
+
+func signalTarget(pid int) int {
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
+		return -pid
+	}
+	return pid
+}
+
+func reapProcessGroup(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
