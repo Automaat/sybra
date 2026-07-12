@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
-var providerOrder = []string{"claude", "codex", "copilot"}
+var providerOrder = providerid.All()
 
 const streamScannerBuffer = 4 * 1024 * 1024
 

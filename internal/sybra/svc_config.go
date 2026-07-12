@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -143,8 +144,7 @@ func (s *ConfigService) UpdateSettings(settings AppSettings) error {
 
 // validateSettings checks all editable fields for validity.
 func (s *ConfigService) validateSettings(settings AppSettings) error {
-	validProviders := map[string]bool{"": true, "claude": true, "codex": true, "copilot": true}
-	if !validProviders[settings.Agent.Provider] {
+	if settings.Agent.Provider != "" && !providerid.IsKnown(settings.Agent.Provider) {
 		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
 	}
 	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {

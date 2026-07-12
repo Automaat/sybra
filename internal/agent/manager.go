@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type EmitFunc func(event string, data any)
@@ -612,7 +613,7 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 	if lg == nil {
 		return false
 	}
-	candidates := []string{"claude", "codex", "copilot"}
+	candidates := providerid.All()
 	if alt, _ := lg.ChooseProvider(resolved, candidates, healthy, lp); alt != "" {
 		return true
 	}

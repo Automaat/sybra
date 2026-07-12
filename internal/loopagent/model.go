@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // minIntervalSec is the lower bound for a loop's tick. Anything tighter than
@@ -40,7 +42,7 @@ func (la *LoopAgent) Validate() error {
 	if la.IntervalSec < minIntervalSec {
 		return fmt.Errorf("loop agent interval_sec must be >= %d (got %d)", minIntervalSec, la.IntervalSec)
 	}
-	if la.Provider != "" && la.Provider != "claude" && la.Provider != "codex" && la.Provider != "copilot" {
+	if la.Provider != "" && !providerid.IsKnown(la.Provider) {
 		return fmt.Errorf("loop agent provider must be claude, codex, or copilot (got %q)", la.Provider)
 	}
 	return nil

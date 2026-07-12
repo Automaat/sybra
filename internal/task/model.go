@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -172,9 +173,7 @@ func ValidateReasoningEffort(s string) (string, error) {
 }
 
 // AllAgentProviders returns every supported CLI provider name in display order.
-func AllAgentProviders() []string { return []string{"claude", "codex", "copilot"} }
-
-var validAgentProviders = map[string]bool{"claude": true, "codex": true, "copilot": true}
+func AllAgentProviders() []string { return providerid.All() }
 
 // ValidateAgentProvider accepts the empty string (unset/default) or one of the
 // providers Sybra can dispatch. It is used for handoff provenance, not the
@@ -183,7 +182,7 @@ func ValidateAgentProvider(s string) (string, error) {
 	if s == "" {
 		return "", nil
 	}
-	if !validAgentProviders[s] {
+	if !providerid.IsKnown(s) {
 		return "", fmt.Errorf("invalid provider %q (valid: claude, codex, copilot, or empty)", s)
 	}
 	return s, nil

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Status is a point-in-time health snapshot for a single provider.
@@ -38,7 +39,7 @@ type Config struct {
 // failoverPriority is the order auto-failover prefers healthy peers in.
 // Copilot is last: it is never chosen over claude/codex, but can be a
 // fallback target when both are unhealthy, and can itself fail over to them.
-var failoverPriority = []string{"claude", "codex", "copilot"}
+var failoverPriority = providerid.All()
 
 const defaultProbeErrorThreshold = 2
 

@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -786,7 +787,7 @@ func BuildTaskStartPrompt(t task.Task, prompt string, includeTaskDescription boo
 // the requested provider. Rolls back on any failure so no orphans leak.
 func (o *Orchestrator) StartChat(projectID, providerName, prompt string) (*agent.Agent, error) {
 	prov := strings.ToLower(strings.TrimSpace(providerName))
-	if prov != "claude" && prov != "codex" && prov != "copilot" {
+	if !providerid.IsKnown(prov) {
 		return nil, fmt.Errorf("invalid provider %q: must be claude, codex, or copilot", providerName)
 	}
 	if strings.TrimSpace(projectID) == "" {

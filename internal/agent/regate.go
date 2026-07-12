@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // regateForTurn re-consults provider health/limit gating for a per-turn
@@ -111,7 +113,7 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 		return cfg, false, nil
 	}
 
-	candidateProviders := []string{"claude", "codex", "copilot"}
+	candidateProviders := providerid.All()
 	alt := firstHealthyProvider(current, candidateProviders, healthy)
 	if alt == "" && lg != nil {
 		if chosen, _ := lg.ChooseProvider(current, candidateProviders, healthy, lp); chosen != "" {
