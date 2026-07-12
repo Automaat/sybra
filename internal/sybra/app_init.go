@@ -475,8 +475,38 @@ func (a *App) initStatusHook() {
 			a.dispatchStatusWorkflow(taskID, task.StatusTesting)
 		case string(task.StatusReadyPR):
 			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
+		case string(task.StatusDone):
+			go a.closeLinkedIssueOnDone(taskID)
 		}
 	})
+}
+
+func (a *App) closeLinkedIssueOnDone(taskID string) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	issue := strings.TrimSpace(t.Issue)
+	if issue == "" {
+		return
+	}
+	repo, num := github.ParseIssueURL(issue)
+	if num == 0 || repo != t.ProjectID {
+		return
+	}
+	closeFn := a.umbrellaCloseIssue
+	if closeFn == nil {
+		closeFn = github.CloseIssue
+	}
+	comment := "Completed by Sybra."
+	if t.PRNumber > 0 {
+		comment = fmt.Sprintf("Completed by Sybra via #%d.", t.PRNumber)
+	}
+	if closeErr := closeFn(repo, num, comment); closeErr != nil {
+		a.logger.Warn("task.done.close-issue", "task_id", taskID, "issue", issue, "err", closeErr)
+		return
+	}
+	a.logger.Info("task.done.close-issue", "task_id", taskID, "issue", issue)
 }
 
 func shouldReleaseTaskAgentsForStatus(status task.Status) bool {
