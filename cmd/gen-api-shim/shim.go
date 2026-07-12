@@ -127,47 +127,78 @@ type moduleImport struct {
 	lineIndex int
 }
 
-func lastCallLineByService(lines []string, services []service) map[string]int {
-	last := map[string]int{}
+func lastAPIHTTPCallLineByService(lines []string, services []service) map[string]int {
+	lastCallLine := map[string]int{}
 	for i, line := range lines {
 		for _, svc := range services {
 			if strings.Contains(line, "call('"+svc.name+"'") {
-				last[svc.name] = i
+				lastCallLine[svc.name] = i
 			}
 		}
 	}
-	return last
+	return lastCallLine
 }
 
-func collectShimNameSets(services []service, imports map[string]*moduleImport) (reserved, usedLocals map[string]bool) {
-	reserved = map[string]bool{}
+func buildAPIHTTPFunctionInserts(services []service, bindingDir string, skip, existing map[string]bool, lastCallLine map[string]int, addImport func(module, typeName string) string) (funcInserts map[int][]string, added []string, err error) {
+	funcInserts = map[int][]string{}
 	for _, svc := range services {
+		var bindingImports map[string]string
+		var bindingSrc string
 		for _, method := range svc.methods {
-			reserved[method] = true
+			if existing[method] || skip[method] {
+				continue
+			}
+			if bindingSrc == "" {
+				data, err := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
+				if err != nil {
+					return nil, nil, err
+				}
+				bindingSrc = string(data)
+				bindingImports = parseBindingImports(bindingSrc)
+			}
+			params, ret, ok := parseBindingSig(bindingSrc, method)
+			if !ok {
+				return nil, nil, fmt.Errorf("api-http.ts: no binding signature for %s.%s", svc.name, method)
+			}
+			anchor, ok := lastCallLine[svc.name]
+			if !ok {
+				return nil, nil, fmt.Errorf("api-http.ts: no existing block for service %q to place %q", svc.name, method)
+			}
+			sig, refs := renderParams(params, bindingImports, addImport)
+			retType := mapType(ret, bindingImports, addImport)
+			line := fmt.Sprintf("export function %s(%s): Promise<%s> { return call('%s', '%s'%s) }",
+				method, sig, retType, svc.name, method, refs)
+			funcInserts[anchor] = append(funcInserts[anchor], line)
+			added = append(added, method)
 		}
 	}
-	usedLocals = map[string]bool{}
-	for _, mi := range imports {
-		for _, entry := range mi.entries {
-			usedLocals[entry.local] = true
-		}
-	}
-	return reserved, usedLocals
+	return funcInserts, added, nil
 }
 
 func fillAPIHTTP(src string, services []service, bindingDir string, skip map[string]bool) (out string, added []string, err error) {
 	lines := strings.Split(src, "\n")
 
 	existing := map[string]bool{}
+	reservedMethodNames := map[string]bool{}
+	for _, svc := range services {
+		for _, method := range svc.methods {
+			reservedMethodNames[method] = true
+		}
+	}
 	for _, line := range lines {
 		if m := apiHTTPFuncRe.FindStringSubmatch(line); m != nil {
 			existing[m[1]] = true
 		}
 	}
 	imports, localByModuleType, lastImportIdx := parseAPIHTTPImports(lines)
-	reservedMethodNames, usedImportLocals := collectShimNameSets(services, imports)
+	usedImportLocals := map[string]bool{}
+	for _, mi := range imports {
+		for _, entry := range mi.entries {
+			usedImportLocals[entry.local] = true
+		}
+	}
 
-	lastCallLine := lastCallLineByService(lines, services)
+	lastCallLine := lastAPIHTTPCallLineByService(lines, services)
 
 	var addedModules []string
 	pending := map[string][]importEntry{}
@@ -198,37 +229,9 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 		return local
 	}
 
-	funcInserts := map[int][]string{}
-	for _, svc := range services {
-		var bindingImports map[string]string
-		var bindingSrc string
-		for _, method := range svc.methods {
-			if existing[method] || skip[method] {
-				continue
-			}
-			if bindingSrc == "" {
-				data, err := os.ReadFile(filepath.Join(bindingDir, bindingModuleBase(svc.name)+".ts"))
-				if err != nil {
-					return "", nil, err
-				}
-				bindingSrc = string(data)
-				bindingImports = parseBindingImports(bindingSrc)
-			}
-			params, ret, ok := parseBindingSig(bindingSrc, method)
-			if !ok {
-				return "", nil, fmt.Errorf("api-http.ts: no binding signature for %s.%s", svc.name, method)
-			}
-			anchor, ok := lastCallLine[svc.name]
-			if !ok {
-				return "", nil, fmt.Errorf("api-http.ts: no existing block for service %q to place %q", svc.name, method)
-			}
-			sig, refs := renderParams(params, bindingImports, addImport)
-			retType := mapType(ret, bindingImports, addImport)
-			line := fmt.Sprintf("export function %s(%s): Promise<%s> { return call('%s', '%s'%s) }",
-				method, sig, retType, svc.name, method, refs)
-			funcInserts[anchor] = append(funcInserts[anchor], line)
-			added = append(added, method)
-		}
+	funcInserts, added, err := buildAPIHTTPFunctionInserts(services, bindingDir, skip, existing, lastCallLine, addImport)
+	if err != nil {
+		return "", nil, err
 	}
 
 	importInserts := map[int][]string{}

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte'
 import AgentListRow from './AgentListRow.svelte'
+import { agentStore } from '../stores/agents.svelte.js'
 import { taskStore } from '../stores/tasks.svelte.js'
 import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
@@ -41,6 +42,7 @@ function makeTask(overrides: Record<string, unknown> = {}): Task {
 describe('AgentListRow', () => {
   afterEach(() => {
     cleanup()
+    agentStore.queueByTask = new Map()
     taskStore.tasks = new Map()
   })
 
@@ -56,6 +58,24 @@ describe('AgentListRow', () => {
     render(AgentListRow, { props: { agent: makeAgent(), onclick: () => {} } })
     expect(screen.getByText('sybra')).toBeDefined()
     expect(screen.getByText('$0.42')).toBeDefined()
+  })
+
+  it('renders queued position/depth copy for queued agents', () => {
+    agentStore.queueByTask = new Map([['task-1', {
+      taskId: 'task-1',
+      role: 'implementation',
+      position: 2,
+      depth: 5,
+      priority: 'medium',
+      effectivePriority: 'medium',
+      status: 'todo',
+      manual: true,
+      mode: 'headless',
+      enqueued: '2026-07-11T12:00:00Z',
+    }]])
+    render(AgentListRow, { props: { agent: makeAgent({ state: 'queued' }), onclick: () => {} } })
+    expect(screen.getByText('Waiting for a slot · Queue 2 of 5')).toBeDefined()
+    expect(screen.getByText('Queued')).toBeDefined()
   })
 
   it('strips the role prefix when there is no linked task', () => {
