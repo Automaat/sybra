@@ -251,7 +251,7 @@ func TestModelsForClones(t *testing.T) {
 	got := modelsFor(Standard)
 	got["claude"] = "mutated"
 	again := modelsFor(Standard)
-	if again["claude"] != "sonnet" || again["codex"] != "gpt-5.5" || again["copilot"] != "" {
+	if again["claude"] != "sonnet" || again["codex"] != "gpt-5.5" || again["copilot"] != "claude-sonnet-4.6" {
 		t.Fatalf("modelsFor did not clone standard row: %#v", again)
 	}
 }
