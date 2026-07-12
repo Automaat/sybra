@@ -315,12 +315,16 @@ type Engine struct {
 	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int           // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
-	maxCheckpoints   int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
-	verifyTimeout    time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	abTesting        abtest.Config
-	evalGate         *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
-	conflictRecovery func(taskID string) bool
+	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
+	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
+	// nil-is-true default.
+	openPROnUnrunnableGate bool
+	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
+	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	abTesting              abtest.Config
+	evalGate               *prompteval.Gate // nil = offline eval verdicts do not gate A/B enrollment
+	conflictRecovery       func(taskID string) bool
 	// dispatchComparator, when set, orders TaskInfo pairs for ResumeStalled's
 	// per-tick dispatch scan, replacing the built-in
 	// dispatchorder.Rank(status)-only sort. Wired by app_init.go so
@@ -349,21 +353,22 @@ const defaultMaxCheckpoints = config.DefaultMaxCheckpoints
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return &Engine{
-		store:            store,
-		tasks:            tasks,
-		agents:           agents,
-		logger:           logger,
-		ctx:              context.Background(),
-		inflightMutexes:  make(map[string]*sync.Mutex),
-		dispatching:      make(map[string]struct{}),
-		starting:         make(map[string]struct{}),
-		humanAction:      make(map[string]struct{}),
-		agentRoutes:      make(map[string]agentRoute),
-		pendingStepStart: make(map[string]int),
-		cascadeDepth:     make(map[string]int),
-		pendingRecovery:  make(map[string]pendingRecovery),
-		resumeError:      logging.NewErrorThrottle(),
-		demotionThrottle: logging.NewErrorThrottle(),
+		store:                  store,
+		tasks:                  tasks,
+		agents:                 agents,
+		logger:                 logger,
+		ctx:                    context.Background(),
+		inflightMutexes:        make(map[string]*sync.Mutex),
+		dispatching:            make(map[string]struct{}),
+		starting:               make(map[string]struct{}),
+		humanAction:            make(map[string]struct{}),
+		agentRoutes:            make(map[string]agentRoute),
+		pendingStepStart:       make(map[string]int),
+		cascadeDepth:           make(map[string]int),
+		pendingRecovery:        make(map[string]pendingRecovery),
+		resumeError:            logging.NewErrorThrottle(),
+		demotionThrottle:       logging.NewErrorThrottle(),
+		openPROnUnrunnableGate: true,
 	}
 }
 
@@ -468,6 +473,14 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
+// (ready-pr) instead of escalating to human-required once a testing cycle
+// exhausts its auto-retry budget on an infra_failure outcome — i.e. the
+// manual gate itself could not be run (harness/tooling limitation), not a
+// product defect. Defaults to true (see NewEngine); wired from
+// config.TestingOpenPROnUnrunnableGateEnabled in app_init.go.
+func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate = v }
 
 // SetMaxCheckpoints sets how many checkpoint handoffs a workflow step may
 // spend before the task is parked human-required. Values <= 0 fall back to

@@ -2004,6 +2004,34 @@ func installTestingTaskWorkflow(t *testing.T, env *e2eEnv) {
 	}
 }
 
+func installSimpleTaskPRWorkflow(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	const testPRWorkflowYAML = `id: simple-task-pr
+name: Test Open PR
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-pr
+steps:
+  - id: mark_in_review
+    name: Hand to In Review
+    type: set_status
+    config:
+      status: in-review
+      status_reason: PR opened for CI and review
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "simple-task-pr.yaml"),
+		[]byte(testPRWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatalf("write simple-task-pr.yaml: %v", err)
+	}
+}
+
 func countStepRecords(tk task.Task, stepID string) int {
 	if tk.Workflow == nil {
 		return 0
@@ -2179,6 +2207,109 @@ func TestE2E_TestingTaskWorkflow_FailEscalatesAtCap(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Status != task.StatusHumanRequired {
 		t.Errorf("status at attempt cap = %q, want %q", tk.Status, task.StatusHumanRequired)
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap proves the production
+// fix for #1928 end-to-end: when manual testing is un-runnable for harness
+// reasons, exhausting the infra retry budget must route into ready-pr and
+// cascade into the PR workflow, not park human-required with no PR path.
+func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
+	env := setupE2EMulti(t, []string{"test_infra_failure"})
+	installTestingTaskWorkflow(t, env)
+	installSimpleTaskPRWorkflow(t, env)
+
+	created, err := env.tasks.Create("manual test infra", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{
+			workflow.WorkflowVarDir:                  env.agentDir,
+			"step.run_test.auto_retry.infra_failure": strconv.Itoa(2),
+		}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "testing infra failure cascades to pr workflow", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.WorkflowID == "simple-task-pr" &&
+			tk.Workflow.State == workflow.ExecCompleted &&
+			tk.Status == task.StatusInReview
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusInReview {
+		t.Fatalf("status after infra failure = %q, want %q", tk.Status, task.StatusInReview)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("workflow = nil, want completed simple-task-pr")
+	}
+	if tk.Workflow.WorkflowID != "simple-task-pr" {
+		t.Fatalf("workflow id = %q, want simple-task-pr", tk.Workflow.WorkflowID)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q, want %q", tk.Workflow.State, workflow.ExecCompleted)
+	}
+	if reason := tk.StatusReason; !strings.Contains(reason, "PR opened for CI and review") {
+		t.Fatalf("status reason = %q, want PR workflow handoff reason", reason)
+	}
+}
+
+// TestE2E_TestingTaskWorkflow_InfraFailureEscalatesWhenOpenPRDisabled proves
+// the escape hatch still preserves the legacy behavior: once the unrunnable
+// manual-gate retry budget is exhausted and open-PR routing is disabled, the
+// task must stop at human-required rather than cascading into PR creation.
+func TestE2E_TestingTaskWorkflow_InfraFailureEscalatesWhenOpenPRDisabled(t *testing.T) {
+	env := setupE2EMulti(t, []string{"test_infra_failure"})
+	installTestingTaskWorkflow(t, env)
+	installSimpleTaskPRWorkflow(t, env)
+	env.engine.SetOpenPROnUnrunnableGate(false)
+
+	created, err := env.tasks.Create("manual test infra legacy", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
+		map[string]string{"task.status": string(task.StatusTesting)},
+		map[string]string{
+			workflow.WorkflowVarDir:                  env.agentDir,
+			"step.run_test.auto_retry.infra_failure": strconv.Itoa(2),
+		}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, "testing infra failure stops at human-required", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.WorkflowID == "testing-task" &&
+			tk.Workflow.State == workflow.ExecCompleted &&
+			tk.Status == task.StatusHumanRequired
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	if tk.Status != task.StatusHumanRequired {
+		t.Fatalf("status after disabled open-pr path = %q, want %q", tk.Status, task.StatusHumanRequired)
+	}
+	if tk.Workflow == nil {
+		t.Fatal("workflow = nil, want completed testing-task")
+	}
+	if tk.Workflow.WorkflowID != "testing-task" {
+		t.Fatalf("workflow id = %q, want testing-task", tk.Workflow.WorkflowID)
+	}
+	if tk.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %q, want %q", tk.Workflow.State, workflow.ExecCompleted)
+	}
+	if reason := tk.StatusReason; !strings.Contains(reason, "no implementation attempt consumed") {
+		t.Fatalf("status reason = %q, want legacy infra-failure escalation reason", reason)
 	}
 }
 
