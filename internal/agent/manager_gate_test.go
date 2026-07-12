@@ -131,6 +131,49 @@ func TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor(t 
 	}
 }
 
+// TestPrepareRunConfig_HeadlessSteerableGatedByRole is a regression guard for
+// #1825: the review/human-review/fix-review dispatch paths hardcode
+// Mode: "headless" for unattended, poller-driven runs that nothing ever steers.
+// Forcing the global headless_steerable transport onto that dispatch left the
+// process waiting on a FIFO stdin no caller intended to feed. Only roles a
+// human may actively watch and steer from the GUI should get the transport.
+func TestPrepareRunConfig_HeadlessSteerableGatedByRole(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime:     ManagerRuntimeConfig{HeadlessSteerable: true},
+		SandboxHome: testSandboxHome(t),
+	})
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"claude": true}})
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{RoleImplementation.AgentName("Impl"), true},
+		{"", true}, // legacy unprefixed name maps to implementation
+		{RoleReview.AgentName("Review"), false},
+		{RoleFixReview.AgentName("Fix"), false},
+		{RoleHumanReview.AgentName("Diagnose"), false},
+		{RoleTestRunner.AgentName("Test"), false},
+		{RoleEval.AgentName("Eval"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, _, err := m.prepareRunConfig(RunConfig{
+				Provider: "claude",
+				Mode:     "headless",
+				Name:     tt.name,
+				Dir:      t.TempDir(),
+			})
+			if err != nil {
+				t.Fatalf("prepareRunConfig: %v", err)
+			}
+			if cfg.HeadlessSteerable != tt.want {
+				t.Errorf("Name=%q: HeadlessSteerable = %v, want %v", tt.name, cfg.HeadlessSteerable, tt.want)
+			}
+		})
+	}
+}
+
 func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetHealthGate(&fakeGate{

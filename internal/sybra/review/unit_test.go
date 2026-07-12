@@ -189,11 +189,20 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
 
+	if cfg.Name != agent.RoleReview.AgentName("Needs review") {
+		t.Fatalf("Name = %q, want %q", cfg.Name, agent.RoleReview.AgentName("Needs review"))
+	}
+	if cfg.Mode != "headless" {
+		t.Fatalf("Mode = %q, want headless", cfg.Mode)
+	}
 	if cfg.Provider != "" {
 		t.Fatalf("Provider = %q, want empty (resolved by Manager.ApplyABVariant / default)", cfg.Provider)
 	}
 	if cfg.Model != "opus" {
 		t.Fatalf("Model = %q, want opus", cfg.Model)
+	}
+	if cfg.HeadlessPermissionMode != "default" {
+		t.Fatalf("HeadlessPermissionMode = %q, want default", cfg.HeadlessPermissionMode)
 	}
 	if cfg.DisableProviderFailover {
 		t.Fatal("DisableProviderFailover = true, want false (availability preferred)")
