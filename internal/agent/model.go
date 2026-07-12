@@ -1240,13 +1240,7 @@ type RunConfig struct {
 	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
-	SandboxMode string
-	// PlaywrightMCPEligible marks a run as a candidate for the headless
-	// Playwright MCP server (set by the workflow dispatcher for RoleTestRunner
-	// runs only; see agentAdapter.StartAgent). Actually attaching MCP
-	// additionally requires config.PlaywrightMCPEnabled, a headless run, and a
-	// final-resolved Claude provider — decided by
-	// Manager.preparePlaywrightMCP, never by the raw requested provider.
+	SandboxMode           string
 	PlaywrightMCPEligible bool
 	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
 	// server writes screenshots/console logs to. Set by the workflow

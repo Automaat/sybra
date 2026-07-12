@@ -44,12 +44,15 @@ func renderCopilotMCPConfig(mcpJSON string) (string, error) {
 	}
 	rendered := make(map[string]any, len(servers))
 	for name, s := range servers {
-		rendered[name] = map[string]any{
+		server := map[string]any{
 			"type":    "local",
 			"command": s.Command,
-			"args":    s.Args,
 			"tools":   []string{"*"},
 		}
+		if len(s.Args) > 0 {
+			server["args"] = s.Args
+		}
+		rendered[name] = server
 	}
 	data, err := json.Marshal(map[string]any{"mcpServers": rendered})
 	if err != nil {

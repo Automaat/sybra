@@ -31,6 +31,19 @@ func TestRenderCopilotMCPConfig(t *testing.T) {
 	}
 }
 
+func TestRenderCopilotMCPConfig_OmitsNullArgs(t *testing.T) {
+	out, err := renderCopilotMCPConfig(`{"mcpServers":{"noargs":{"command":"foo"}}}`)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "null") {
+		t.Fatalf("copilot config must not emit null args; got %s", out)
+	}
+	if strings.Contains(out, `"args"`) {
+		t.Fatalf("copilot config should omit args when none given; got %s", out)
+	}
+}
+
 func TestRenderCodexMCPArgs(t *testing.T) {
 	if out, err := renderCodexMCPArgs(""); err != nil || out != nil {
 		t.Fatalf("empty input: got %v err %v", out, err)

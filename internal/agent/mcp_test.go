@@ -183,10 +183,10 @@ func TestPreparePlaywrightMCP(t *testing.T) {
 		if cfg.MCPConfigJSON == "" {
 			t.Fatal("expected MCPConfigJSON to be set for a codex test-runner (provider parity)")
 		}
-		if !slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool {
-			return strings.HasPrefix(kv, "PLAYWRIGHT_BROWSERS_PATH=")
-		}) {
-			t.Fatalf("expected playwright env injected for codex provider, got %v", cfg.ExtraEnv)
+		for _, key := range []string{"PLAYWRIGHT_BROWSERS_PATH=", "npm_config_cache="} {
+			if !slices.ContainsFunc(cfg.ExtraEnv, func(kv string) bool { return strings.HasPrefix(kv, key) }) {
+				t.Fatalf("expected %s injected for codex provider, got %v", key, cfg.ExtraEnv)
+			}
 		}
 	})
 
