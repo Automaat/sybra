@@ -130,6 +130,11 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	t = e.withManualTestConfig(t)
 	t.Workflow = wfExec
 
+	if parked, pErr := e.maybeParkImplementGitHubRetry(taskID, currentStep, wfExec, t, output); parked || pErr != nil {
+		release()
+		return pErr
+	}
+
 	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
 	if err != nil {
 		return err
