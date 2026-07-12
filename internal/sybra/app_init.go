@@ -562,6 +562,21 @@ func (a *App) runsTaskLocally(t task.Task) bool {
 	return a.cfg == nil || a.cfg.HomeNodeFor(t.ProjectID).Local
 }
 
+func (a *App) isWorkProject(projectID string) bool {
+	if projectID == "" || a.projects == nil {
+		return false
+	}
+	p, err := a.projects.Get(projectID)
+	if err != nil {
+		return true
+	}
+	return p.Type == project.ProjectTypeWork
+}
+
+func (a *App) auditClusterBlock(taskID, node, reason string) {
+	a.logAudit(audit.EventClusterAssignBlocked, taskID, "", map[string]any{"node": node, "reason": reason})
+}
+
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
@@ -580,7 +595,7 @@ func (a *App) initCluster() {
 		a.logger.Info("cluster.leader.no-followers")
 		return
 	}
-	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.logger)
+	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
 	a.logger.Info("cluster.leader.enabled", "followers", roster.Names())
 }
