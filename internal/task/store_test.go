@@ -1808,6 +1808,9 @@ func TestCloneTaskMirrorUpdatedAtNonAliased(t *testing.T) {
 		UpdatedAt:       ts,
 	}
 	clone := cloneTask(orig)
+	if clone.MirrorUpdatedAt == nil {
+		t.Fatal("clone.MirrorUpdatedAt is nil — cloneTask dropped the pointer")
+	}
 	if clone.MirrorUpdatedAt == orig.MirrorUpdatedAt {
 		t.Error("clone.MirrorUpdatedAt shares pointer with original")
 	}

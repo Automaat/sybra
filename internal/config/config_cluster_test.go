@@ -78,11 +78,32 @@ func TestFollowerEncrypted(t *testing.T) {
 		{"plain lan http", Follower{Endpoints: []string{"http://192.168.20.219:8080"}}, false},
 		{"mixed https+plain", Follower{Endpoints: []string{"https://box.ts.net", "http://192.168.20.219:8080"}}, false},
 		{"both encrypted", Follower{Endpoints: []string{"https://box.example", "http://node.corp.ts.net:8080"}}, true},
+		{"blank ignored when https present", Follower{Endpoints: []string{"https://box.example", "  "}}, true},
+		{"only blanks", Follower{Endpoints: []string{"", "   "}}, false},
 		{"garbage", Follower{Endpoints: []string{"::not a url"}}, false},
 	}
 	for _, c := range cases {
 		if got := c.f.Encrypted(); got != c.want {
 			t.Errorf("%s: Encrypted() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestFollowerPrimaryEndpoint(t *testing.T) {
+	cases := []struct {
+		name string
+		eps  []string
+		want string
+	}{
+		{"none", nil, ""},
+		{"first wins", []string{"https://a.example", "https://b.example"}, "https://a.example"},
+		{"skips blank leading", []string{"", "  ", "https://b.example"}, "https://b.example"},
+		{"trims whitespace", []string{"  https://a.example  "}, "https://a.example"},
+		{"all blank", []string{"", " "}, ""},
+	}
+	for _, c := range cases {
+		if got := (Follower{Endpoints: c.eps}).PrimaryEndpoint(); got != c.want {
+			t.Errorf("%s: PrimaryEndpoint() = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

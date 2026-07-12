@@ -136,10 +136,12 @@ func (c *Config) HomeNodeFor(projectID string) HomeNode {
 // PrimaryEndpoint returns the first configured endpoint, empty when none are
 // set. Failover across the remaining endpoints is the client's job (P1).
 func (f Follower) PrimaryEndpoint() string {
-	if len(f.Endpoints) == 0 {
-		return ""
+	for _, ep := range f.Endpoints {
+		if trimmed := strings.TrimSpace(ep); trimmed != "" {
+			return trimmed
+		}
 	}
-	return f.Endpoints[0]
+	return ""
 }
 
 // ResolveToken reads the follower's bearer token from AuthTokenEnv. Empty when
@@ -157,15 +159,17 @@ func (f Follower) ResolveToken() string {
 // them. The confidentiality guard (P4) reads this to keep work tasks off
 // cleartext links.
 func (f Follower) Encrypted() bool {
-	if len(f.Endpoints) == 0 {
-		return false
-	}
+	seen := false
 	for _, ep := range f.Endpoints {
+		if strings.TrimSpace(ep) == "" {
+			continue
+		}
+		seen = true
 		if !endpointEncrypted(ep) {
 			return false
 		}
 	}
-	return true
+	return seen
 }
 
 func endpointEncrypted(endpoint string) bool {
