@@ -150,11 +150,15 @@ func TestPrepareRunConfig_HeadlessSteerableGatedByRole(t *testing.T) {
 	}{
 		{RoleImplementation.AgentName("Impl"), true},
 		{"", true}, // legacy unprefixed name maps to implementation
+		{RolePlan.AgentName("Plan"), true},
+		{RolePRFix.AgentName("PR Fix"), true},
 		{RoleReview.AgentName("Review"), false},
 		{RoleFixReview.AgentName("Fix"), false},
 		{RoleHumanReview.AgentName("Diagnose"), false},
 		{RoleTestRunner.AgentName("Test"), false},
 		{RoleEval.AgentName("Eval"), false},
+		{RoleTriage.AgentName("Triage"), false},
+		{RolePlanCritic.AgentName("Critic"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
