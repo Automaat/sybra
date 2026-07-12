@@ -29,6 +29,7 @@ type Mirror struct {
 	roster   *cluster.Roster
 	logger   *slog.Logger
 	interval time.Duration
+	applyMu  sync.Mutex
 }
 
 // NewMirror constructs a Mirror. A nil logger falls back to slog.Default(); a
@@ -132,6 +133,9 @@ func (m *Mirror) consume(ctx context.Context, node string, client *cluster.Clien
 }
 
 func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
 	canonical, err := m.tasks.Get(follower.ID)
 	if err != nil {
 		return false
@@ -143,29 +147,39 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 	if !ok {
 		return false
 	}
+	if err := m.writeSidecars(merged); err != nil {
+		m.logger.Warn("cluster.mirror.sidecar.failed", "node", node, "task", follower.ID, "err", err)
+		return false
+	}
 	if _, _, err := m.tasks.Put(merged); err != nil {
 		m.logger.Warn("cluster.mirror.apply.failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
-	m.writeSidecars(merged)
 	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
 	return true
 }
 
-func (m *Mirror) writeSidecars(t task.Task) {
+func (m *Mirror) writeSidecars(t task.Task) error {
 	if m.tasks == nil {
-		return
+		return nil
 	}
 	store := m.tasks.Store()
 	if t.Plan != "" {
-		_ = store.Plans().Write(t.ID, t.Plan)
+		if err := store.Plans().Write(t.ID, t.Plan); err != nil {
+			return err
+		}
 	}
 	if t.PlanContract != "" {
-		_ = store.PlanContracts().Write(t.ID, t.PlanContract)
+		if err := store.PlanContracts().Write(t.ID, t.PlanContract); err != nil {
+			return err
+		}
 	}
 	if t.CodeReview != "" {
-		_ = store.CodeReviews().Write(t.ID, t.CodeReview)
+		if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // Merge produces the canonical task's next state from a follower's reported

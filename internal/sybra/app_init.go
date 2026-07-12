@@ -435,6 +435,11 @@ func (a *App) initStatusHook() {
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
+		local := true
+		if t, err := a.tasks.Get(taskID); err == nil {
+			local = a.runsTaskLocally(t)
+		}
+
 		// Wake the dispatch pass immediately so a task that just became ready
 		// (e.g. a dependency completing, a stage advancing) is picked up now
 		// instead of waiting for the next fast tick.
@@ -443,10 +448,10 @@ func (a *App) initStatusHook() {
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
 		// never exit between turns) signal step completion.
-		if a.workflowEngine != nil {
+		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
-		if releaseTaskAgents {
+		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
 
@@ -467,7 +472,7 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if a.humanReview != nil {
+			if local && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
@@ -477,7 +482,9 @@ func (a *App) initStatusHook() {
 		case string(task.StatusReadyPR):
 			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 		case string(task.StatusDone):
-			go a.closeLinkedIssueOnDone(taskID)
+			if local {
+				go a.closeLinkedIssueOnDone(taskID)
+			}
 		}
 	})
 }
@@ -1026,6 +1033,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
 		},
+		DispatchGate: a.runsTaskLocally,
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

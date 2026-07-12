@@ -35,6 +35,9 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
 			continue
 		}
+		if r.DispatchGate != nil && !r.DispatchGate(t) {
+			continue
+		}
 		if t.Status != task.StatusInProgress {
 			continue
 		}
