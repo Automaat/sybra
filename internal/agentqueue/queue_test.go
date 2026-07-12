@@ -100,8 +100,17 @@ func TestQueue_OfferDedupRefreshesInPlace(t *testing.T) {
 		t.Fatal("re-offer of existing TaskID should return false")
 	}
 
-	// Re-offer refreshes Priority, Status, Manual, and Role in place.
-	if q.Offer(Item{TaskID: "t1", Role: "review", Priority: task.PriorityUrgent, Status: task.StatusInReview, Manual: true}) {
+	// Re-offer refreshes Priority, Status, Manual, Role, and manual replay fields in place.
+	if q.Offer(Item{
+		TaskID:                 "t1",
+		Role:                   "review",
+		Priority:               task.PriorityUrgent,
+		Status:                 task.StatusInReview,
+		Manual:                 true,
+		Mode:                   "headless",
+		Prompt:                 "retry",
+		IncludeTaskDescription: true,
+	}) {
 		t.Fatal("re-offer should return false even when fields change")
 	}
 
@@ -110,7 +119,8 @@ func TestQueue_OfferDedupRefreshesInPlace(t *testing.T) {
 		t.Fatalf("expected 1 item after dedup re-offers, got %d", len(snap))
 	}
 	got := snap[0]
-	if got.Role != "review" || got.Priority != task.PriorityUrgent || got.Status != task.StatusInReview || !got.Manual {
+	if got.Role != "review" || got.Priority != task.PriorityUrgent || got.Status != task.StatusInReview || !got.Manual ||
+		got.Mode != "headless" || got.Prompt != "retry" || !got.IncludeTaskDescription {
 		t.Errorf("re-offer did not refresh fields: %+v", got)
 	}
 }
@@ -165,6 +175,60 @@ func TestQueue_PopReadySlotBound(t *testing.T) {
 	}
 }
 
+func TestQueue_PopManualReadyLeavesWorkflowItemsVisible(t *testing.T) {
+	q := mustQueue(t, Options{})
+	oldest := time.Date(2026, 7, 11, 9, 0, 0, 0, time.UTC)
+	middle := oldest.Add(time.Minute)
+	newest := oldest.Add(2 * time.Minute)
+
+	if !q.Offer(Item{TaskID: "workflow", Role: "implementation", Priority: task.PriorityUrgent, Enqueued: oldest}) {
+		t.Fatal("Offer(workflow) returned false, want true")
+	}
+	if !q.Offer(Item{
+		TaskID:                 "manual-high",
+		Role:                   "implementation",
+		Priority:               task.PriorityHigh,
+		Status:                 task.StatusTodo,
+		Manual:                 true,
+		Mode:                   "headless",
+		Prompt:                 "first",
+		IncludeTaskDescription: true,
+		Enqueued:               middle,
+	}) {
+		t.Fatal("Offer(manual-high) returned false, want true")
+	}
+	if !q.Offer(Item{
+		TaskID:   "manual-low",
+		Role:     "implementation",
+		Priority: task.PriorityLow,
+		Manual:   true,
+		Mode:     "headless",
+		Prompt:   "second",
+		Enqueued: newest,
+	}) {
+		t.Fatal("Offer(manual-low) returned false, want true")
+	}
+
+	got := q.PopManualReady(2)
+	if len(got) != 2 {
+		t.Fatalf("PopManualReady(2) returned %d items, want 2", len(got))
+	}
+	if got[0].TaskID != "manual-high" || got[1].TaskID != "manual-low" {
+		t.Fatalf("PopManualReady order = %+v, want [manual-high manual-low]", got)
+	}
+	if !got[0].Manual || !got[1].Manual {
+		t.Fatalf("PopManualReady returned non-manual items: %+v", got)
+	}
+	if got[0].Prompt != "first" || !got[0].IncludeTaskDescription {
+		t.Fatalf("manual replay fields lost from popped item: %+v", got[0])
+	}
+
+	remaining := q.Snapshot()
+	if len(remaining) != 1 || remaining[0].TaskID != "workflow" || remaining[0].Manual {
+		t.Fatalf("remaining snapshot = %+v, want workflow item preserved", remaining)
+	}
+}
+
 func TestQueue_MaxDepthBackpressure(t *testing.T) {
 	q := mustQueue(t, Options{MaxDepth: 2})
 
@@ -188,6 +252,41 @@ func TestQueue_MaxDepthBackpressure(t *testing.T) {
 	if q.Snapshot()[0].Priority != task.PriorityUrgent {
 		t.Fatal("re-offer at MaxDepth should still refresh the item")
 	}
+}
+
+func TestQueue_RestoreBypassesMaxDepth(t *testing.T) {
+	q := mustQueue(t, Options{MaxDepth: 1})
+	enqueued := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	it := Item{TaskID: "t1", Manual: true, Mode: "headless", Prompt: "retry", Enqueued: enqueued}
+	if !q.Offer(it) {
+		t.Fatal("Offer should enqueue the first item")
+	}
+
+	popped := q.PopManualReady(1)
+	if len(popped) != 1 {
+		t.Fatalf("PopManualReady(1) = %+v, want single item", popped)
+	}
+	if !q.Offer(Item{TaskID: "other"}) {
+		t.Fatal("Offer(other) should fill the queue back to max depth")
+	}
+
+	if restored := q.Restore(popped[0]); !restored {
+		t.Fatal("Restore should bypass MaxDepth for a previously popped item")
+	}
+	snap := q.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("Snapshot() after Restore = %+v, want both items present", snap)
+	}
+	for _, got := range snap {
+		if got.TaskID != "t1" {
+			continue
+		}
+		if !got.Enqueued.Equal(enqueued) || got.Prompt != "retry" || !got.Manual {
+			t.Fatalf("restored item = %+v, want original enqueued/manual replay fields preserved", got)
+		}
+		return
+	}
+	t.Fatalf("restored item missing from snapshot: %+v", snap)
 }
 
 func TestQueue_DepthSnapshot(t *testing.T) {

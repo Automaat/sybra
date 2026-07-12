@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/svelte'
 import AgentStateBadge from './AgentStateBadge.svelte'
-import { PHASE_CONFIG } from '$lib/agent-phases.js'
+import { PHASE_CONFIG, getAgentPhase } from '$lib/agent-phases.js'
 
 describe('AgentStateBadge', () => {
   afterEach(cleanup)
@@ -25,6 +25,10 @@ describe('AgentStateBadge', () => {
   it('omits the dot for resting phases (queued, done)', () => {
     const { container } = render(AgentStateBadge, { props: { phase: 'queued' } })
     expect(container.querySelectorAll('span').length).toBe(1)
+  })
+
+  it('maps backend queued state to the queued phase', () => {
+    expect(getAgentPhase('queued')).toBe('queued')
   })
 
   it('uses larger sizing for the md variant', () => {

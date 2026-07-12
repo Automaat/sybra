@@ -368,12 +368,30 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
 }
 
+type startOptions struct {
+	admissionGate bool
+	manualDrain   bool
+}
+
 // StartAgent is the manual/direct dispatch entry point (App.StartAgent,
-// recovery.RestartStaleInProgress). It bypasses the admission-queue gate —
-// only the workflow implementation dispatch path (StartAgentWithAssignment)
-// is gated — until P3 supplies queue-drain/manual-queue-UI semantics.
+// recovery.RestartStaleInProgress). Saturated non-interactive starts are
+// persisted to the manual queue and return a synthetic queued agent instead of
+// surfacing a pool-busy error to the caller.
 func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
-	ag, _, err := o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, false)
+	ag, _, err := o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, startOptions{})
+	return ag, err
+}
+
+// StartQueuedManualItem replays a previously queued manual start once the app
+// drain has observed available capacity. Unlike StartAgent, it never silently
+// re-queues on a transient pool-busy race; the caller re-offers the original
+// item with its original Enqueued timestamp so durable intent is not dropped.
+func (o *Orchestrator) StartQueuedManualItem(it agentqueue.Item) (*agent.Agent, error) {
+	if !it.Manual {
+		return nil, fmt.Errorf("task %s: queued manual replay requires manual queue item", it.TaskID)
+	}
+	mode := FirstNonEmpty(it.Mode, "headless")
+	ag, _, err := o.startAgent(it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{manualDrain: true})
 	return ag, err
 }
 
@@ -469,10 +487,10 @@ func translatePoolBusy(err error) error {
 // returns workflow.ErrAgentPoolBusy instead of dispatching, so run_agent
 // parks ExecWaiting and ResumeStalled retries once a slot frees.
 func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
-	return o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, true)
+	return o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true})
 }
 
-func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, admissionGate bool) (*agent.Agent, string, error) {
+func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -515,13 +533,21 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
+	ignoreConcurrencyLimit := effMode == "interactive"
 
-	// Admission gate: only the workflow implementation dispatch path
-	// (admissionGate=true) is queue-gated — a manual/direct StartAgent call
-	// bypasses this entirely (see StartAgent's doc comment). TryReserveSlot is
-	// an advisory peek; a genuine race is closed below, after agents.Run.
-	if admissionGate && o.queue != nil && !o.agents.TryReserveSlot() {
-		return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+	// Admission gate: workflow implementation dispatches park their token in
+	// the workflow-owned queue, while saturated manual headless starts persist
+	// their replay intent in the manual queue and return a synthetic queued
+	// agent. Interactive/chat starts bypass the cap entirely.
+	if !ignoreConcurrencyLimit && o.queue != nil && !o.agents.TryReserveSlot() {
+		switch {
+		case opts.admissionGate:
+			return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+		case opts.manualDrain:
+			return nil, "", workflow.ErrAgentPoolBusy
+		default:
+			return o.enqueueManualStart(t, taskID, effMode, prompt, includeTaskDescription, skipWT)
+		}
 	}
 
 	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, claim)
@@ -567,6 +593,7 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 		RequirePermissions:      requirePerm,
 		HeadlessPermissionMode:  posture,
 		OneShot:                 oneShot,
+		IgnoreConcurrencyLimit:  ignoreConcurrencyLimit,
 		ResumeSessionID:         resumeSessionID,
 		ExtraEnv:                extraEnv,
 		MaxTurns:                t.MaxTurns,
@@ -584,10 +611,18 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 		o.handleProviderGateStartError(taskID, err)
 		// TryReserveSlot above is advisory only — a concurrent dispatch can win
 		// the last slot between that peek and this Run call. Closing the race
-		// the same way: offer the task to the queue rather than letting a
-		// benign capacity race surface as an unqueued pool-busy park.
-		if admissionGate && o.queue != nil && errors.Is(err, agent.ErrMaxConcurrentReached) {
-			return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+		// the same way: queue the manual/workflow dispatch instead of letting a
+		// benign capacity race surface as dropped durable work or an unqueued
+		// pool-busy park.
+		if o.queue != nil && errors.Is(err, agent.ErrMaxConcurrentReached) {
+			switch {
+			case opts.admissionGate:
+				return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+			case opts.manualDrain:
+				return nil, "", workflow.ErrAgentPoolBusy
+			case !ignoreConcurrencyLimit:
+				return o.enqueueManualStart(t, taskID, effMode, prompt, includeTaskDescription, skipWT)
+			}
 		}
 		return nil, "", translatePoolBusy(err)
 	}
@@ -609,6 +644,48 @@ func (o *Orchestrator) admitQueueFullOrEnqueue(t task.Task, taskID string) error
 	return fmt.Errorf("task %s: agent pool full and admission queue rejected the task (max depth reached or unsafe task id)", taskID)
 }
 
+func (o *Orchestrator) enqueueManualStart(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT bool) (*agent.Agent, string, error) {
+	var err error
+	t, err = o.ensureQueueableManualTask(t, taskID, skipWT)
+	if err != nil {
+		return nil, "", err
+	}
+	if o.queue == nil {
+		return nil, "", workflow.ErrAgentPoolBusy
+	}
+	o.queue.Offer(agentqueue.Item{
+		TaskID:                 taskID,
+		Role:                   string(agent.RoleImplementation),
+		Priority:               t.Priority,
+		Status:                 t.Status,
+		Manual:                 true,
+		Mode:                   mode,
+		Prompt:                 prompt,
+		IncludeTaskDescription: includeTaskDescription,
+	})
+	for _, it := range o.queue.Snapshot() {
+		if it.TaskID != taskID || !it.Manual {
+			continue
+		}
+		return syntheticQueuedAgent(t, mode), "", nil
+	}
+	return nil, "", fmt.Errorf("task %s: agent pool full and manual queue rejected the task (max depth reached or unsafe task id)", taskID)
+}
+
+func (o *Orchestrator) ensureQueueableManualTask(t task.Task, taskID string, skipWT bool) (task.Task, error) {
+	if skipWT {
+		return t, nil
+	}
+	assigned, err := o.AutoAssignProject(t)
+	if err != nil {
+		return t, err
+	}
+	if assigned.ProjectID == "" {
+		return assigned, fmt.Errorf("task %s has no project_id: refusing to queue agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
+	}
+	return assigned, nil
+}
+
 // enqueueImplementation offers an implementation-dispatch item to the
 // admission queue and confirms it landed. Offer's bool return conflates
 // "freshly queued" and "already queued, refreshed in place" (both false) with
@@ -627,6 +704,20 @@ func (o *Orchestrator) enqueueImplementation(t task.Task, taskID string) bool {
 		}
 	}
 	return false
+}
+
+func syntheticQueuedAgent(t task.Task, mode string) *agent.Agent {
+	now := time.Now()
+	return &agent.Agent{
+		ID:          "queued-" + t.ID,
+		TaskID:      t.ID,
+		Mode:        mode,
+		State:       agent.StateQueued,
+		Name:        t.Title,
+		Project:     t.ProjectID,
+		StartedAt:   now,
+		LastEventAt: now,
+	}
 }
 
 // taskCumulativeCostUSD sums CostUSD across every AgentRun a task has ever

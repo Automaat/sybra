@@ -16,12 +16,15 @@ func TestStore_RoundTrip(t *testing.T) {
 		t.Fatalf("newStore: %v", err)
 	}
 	it := Item{
-		TaskID:   "t1",
-		Role:     "implementation",
-		Priority: task.PriorityHigh,
-		Status:   task.StatusInReview,
-		Manual:   true,
-		Enqueued: time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
+		TaskID:                 "t1",
+		Role:                   "implementation",
+		Priority:               task.PriorityHigh,
+		Status:                 task.StatusInReview,
+		Manual:                 true,
+		Mode:                   "headless",
+		Prompt:                 "ship it",
+		IncludeTaskDescription: true,
+		Enqueued:               time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
 	}
 	if err := s.put(it); err != nil {
 		t.Fatalf("put: %v", err)
@@ -33,7 +36,9 @@ func TestStore_RoundTrip(t *testing.T) {
 	}
 	if !loaded[0].Enqueued.Equal(it.Enqueued) || loaded[0].TaskID != it.TaskID ||
 		loaded[0].Role != it.Role || loaded[0].Priority != it.Priority ||
-		loaded[0].Status != it.Status || loaded[0].Manual != it.Manual {
+		loaded[0].Status != it.Status || loaded[0].Manual != it.Manual ||
+		loaded[0].Mode != it.Mode || loaded[0].Prompt != it.Prompt ||
+		loaded[0].IncludeTaskDescription != it.IncludeTaskDescription {
 		t.Errorf("round-tripped item = %+v, want %+v", loaded[0], it)
 	}
 

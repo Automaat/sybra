@@ -672,6 +672,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		DisableProviderFailover: assignment.ExperimentID != "",
 		Dir:                     dir,
 		OneShot:                 oneShot,
+		IgnoreConcurrencyLimit:  mode == "interactive",
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,

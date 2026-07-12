@@ -808,6 +808,9 @@ func (a *App) initWorkflowEngine() {
 	// Order ResumeStalled's per-tick scan with the same agentqueue.Less
 	// ordering the admission queue itself uses (priority/status-floor,
 	// manual, dispatch-status, age), and prune stale queue entries first.
+	// App-level manual draining only pops manual items; workflow-owned queue
+	// entries stay visible here so ResumeStalled remains the sole owner of
+	// workflow dispatch order and token consumption.
 	// Wired here (not inside internal/workflow) so the engine package never
 	// imports internal/agentqueue — see TaskInfo.Priority's doc comment.
 	if q != nil {
