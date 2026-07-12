@@ -119,8 +119,11 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
 		m.mu.RLock()
-		cfg.HeadlessSteerable = m.headlessSteerable
+		steerable := m.headlessSteerable
 		m.mu.RUnlock()
+		// Verifier/system roles and fix-review dispatch unattended (no caller
+		// ever writes a steer message) — see Role.SupportsHeadlessSteer.
+		cfg.HeadlessSteerable = steerable && RoleFromName(cfg.Name).SupportsHeadlessSteer()
 	}
 	cfg.approvalAddr = m.approvalAddr
 	// Headless Claude runs with require_permissions:true rely on Sybra's
