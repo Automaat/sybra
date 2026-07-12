@@ -29,6 +29,25 @@ func ValidateSlug(s string) error {
 	return nil
 }
 
+var validIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// ValidateID rejects task IDs that could traverse or corrupt the tasks
+// directory when written as "<id>.md". This matters for externally-supplied
+// IDs — notably a leader-pushed task in cluster mode (TaskService.AssignTask) —
+// since Store.Create's own IDs are always safe UUID prefixes.
+func ValidateID(id string) error {
+	if id == "" {
+		return errors.New("task id must not be empty")
+	}
+	if len(id) > 64 {
+		return fmt.Errorf("task id %q exceeds 64 chars", id)
+	}
+	if !validIDRe.MatchString(id) {
+		return fmt.Errorf("invalid task id %q: use only letters, digits, hyphens, and underscores", id)
+	}
+	return nil
+}
+
 // Slugify converts a title into a filesystem-safe slug.
 // Returns "task" for empty or all-special-character inputs.
 func Slugify(title string) string {

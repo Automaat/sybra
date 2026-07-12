@@ -85,6 +85,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"GetCopilotModels",
 		),
 		"TaskService": httpapi.NewService(a.taskSvc,
+			"AssignTask",
 			"BlessTampering",
 			"ListTasks",
 			"ListTaskArtifacts",

@@ -476,6 +476,48 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 	return s.CreateTaskWithInit(title, body, mode, task.Update{})
 }
 
+// AssignTask persists a task pushed from the cluster leader into this
+// follower's local store (leader-follower execution mirror, umbrella #1803).
+// The task is written verbatim — the leader owns its canonical ID, status, and
+// workflow — and the file watcher then dispatches it through the normal
+// workflow, so nothing downstream changes. The pushed DTO is validated before
+// it touches disk; a malformed task is rejected with a 400 rather than
+// corrupting the board.
+func (s *TaskService) AssignTask(t task.Task) error {
+	if err := task.ValidateID(t.ID); err != nil {
+		return validationError(err.Error())
+	}
+	if strings.TrimSpace(t.Title) == "" {
+		return validationError("assigned task must have a title")
+	}
+	if _, err := task.ValidateStatus(string(t.Status)); err != nil {
+		return validationError(err.Error())
+	}
+	if t.AgentMode != "" {
+		if _, err := task.ValidateAgentMode(t.AgentMode); err != nil {
+			return validationError(err.Error())
+		}
+	}
+	if t.TaskType != "" {
+		if _, err := task.ValidateTaskType(string(t.TaskType)); err != nil {
+			return validationError(err.Error())
+		}
+	}
+	saved, created, err := s.tasks.Put(t)
+	if err != nil {
+		return fmt.Errorf("assign task: %w", err)
+	}
+	if s.audit != nil && created {
+		_ = s.audit.Log(audit.Event{
+			Type:   audit.EventTaskCreated,
+			TaskID: saved.ID,
+			Data:   map[string]any{"source": "cluster_assign", "assigned_node": saved.AssignedNode, "status": string(saved.Status)},
+		})
+	}
+	s.logger.Info("cluster.task.assigned", "task", saved.ID, "created", created, "status", string(saved.Status), "assigned_node", saved.AssignedNode)
+	return nil
+}
+
 // CreateTaskWithInit is CreateTask plus caller-supplied initial field
 // overrides (e.g. TodoistID) applied atomically in the same first-write as
 // task creation. Callers that need a dedupe key persisted alongside the task
