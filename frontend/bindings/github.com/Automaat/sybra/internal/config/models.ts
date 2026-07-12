@@ -184,6 +184,13 @@ export class AgentDefaults {
      */
     "playwrightMcp": PlaywrightMCPConfig;
 
+    /**
+     * Queue configures the agent-dispatch admission queue (internal/agentqueue)
+     * that a workflow implementation dispatch falls back to when the agent
+     * pool is saturated, instead of erroring or wasting a worktree prep.
+     */
+    "queue": QueueConfig;
+
     /** Creates a new AgentDefaults instance. */
     constructor($$source: Partial<AgentDefaults> = {}) {
         if (!("provider" in $$source)) {
@@ -267,6 +274,9 @@ export class AgentDefaults {
         if (!("playwrightMcp" in $$source)) {
             this["playwrightMcp"] = (new PlaywrightMCPConfig());
         }
+        if (!("queue" in $$source)) {
+            this["queue"] = (new QueueConfig());
+        }
 
         Object.assign(this, $$source);
     }
@@ -277,12 +287,16 @@ export class AgentDefaults {
     static createFrom($$source: any = {}): AgentDefaults {
         const $$createField25_0 = $$createType0;
         const $$createField26_0 = $$createType1;
+        const $$createField27_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
             $$parsedSource["roleEffort"] = $$createField25_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
             $$parsedSource["playwrightMcp"] = $$createField26_0($$parsedSource["playwrightMcp"]);
+        }
+        if ("queue" in $$parsedSource) {
+            $$parsedSource["queue"] = $$createField27_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -535,7 +549,7 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField9_0 = $$createType2;
+        const $$createField9_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
             $$parsedSource["app"] = $$createField9_0($$parsedSource["app"]);
@@ -637,7 +651,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType3;
+        const $$createField9_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -739,7 +753,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType4;
+        const $$createField1_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -897,11 +911,11 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType5;
-        const $$createField1_0 = $$createType6;
-        const $$createField2_0 = $$createType6;
-        const $$createField3_0 = $$createType6;
-        const $$createField4_0 = $$createType7;
+        const $$createField0_0 = $$createType6;
+        const $$createField1_0 = $$createType7;
+        const $$createField2_0 = $$createType7;
+        const $$createField3_0 = $$createType7;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -919,6 +933,36 @@ export class ProvidersConfig {
             $$parsedSource["limits"] = $$createField4_0($$parsedSource["limits"]);
         }
         return new ProvidersConfig($$parsedSource as Partial<ProvidersConfig>);
+    }
+}
+
+/**
+ * QueueConfig configures the agent-dispatch admission queue.
+ */
+export class QueueConfig {
+    /**
+     * MaxDepth caps the number of distinct tasks the admission queue holds at
+     * once (agentqueue.Options.MaxDepth). 0 means unbounded. Once full, a new
+     * task that can't get a pool slot is rejected with a normal dispatch
+     * error instead of being queued.
+     */
+    "maxDepth": number;
+
+    /** Creates a new QueueConfig instance. */
+    constructor($$source: Partial<QueueConfig> = {}) {
+        if (!("maxDepth" in $$source)) {
+            this["maxDepth"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): QueueConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueConfig($$parsedSource as Partial<QueueConfig>);
     }
 }
 
@@ -1024,7 +1068,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType4;
+        const $$createField6_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1206,9 +1250,10 @@ export class UmbrellaConfig {
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
-const $$createType2 = GitHubAppConfig.createFrom;
-const $$createType3 = $Create.Map($Create.Any, $Create.Any);
-const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = ProviderHealthCheckConfig.createFrom;
-const $$createType6 = ProviderEntryConfig.createFrom;
-const $$createType7 = ProviderLimitsConfig.createFrom;
+const $$createType2 = QueueConfig.createFrom;
+const $$createType3 = GitHubAppConfig.createFrom;
+const $$createType4 = $Create.Map($Create.Any, $Create.Any);
+const $$createType5 = $Create.Array($Create.Any);
+const $$createType6 = ProviderHealthCheckConfig.createFrom;
+const $$createType7 = ProviderEntryConfig.createFrom;
+const $$createType8 = ProviderLimitsConfig.createFrom;

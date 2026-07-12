@@ -858,15 +858,26 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
+	// Prune stale admission-queue items (missing/terminal/in-progress tasks)
+	// before scanning, so this tick's ordering never reasons about a queued
+	// item that no longer reflects live task state.
+	if e.queueReconciler != nil {
+		e.queueReconciler()
+	}
+
 	tasks, err := e.tasks.ListTasks()
 	if err != nil {
 		e.logger.Error("workflow.resume-stalled.list", "err", err)
 		return
 	}
 
-	slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-		return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
-	})
+	if e.dispatchComparator != nil {
+		slices.SortStableFunc(tasks, e.dispatchComparator())
+	} else {
+		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
+			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+		})
+	}
 
 	for i := range tasks {
 		t := &tasks[i]
@@ -933,9 +944,7 @@ func (e *Engine) ResumeStalled() {
 		// claimed/advancing) never burns budget for a retry that didn't
 		// happen.
 		if e.handleTransientFetchRetry(t, step) {
-			e.mu.Lock()
-			delete(e.dispatching, t.ID)
-			e.mu.Unlock()
+			e.clearResumeDispatching(t.ID)
 			continue
 		}
 
@@ -944,32 +953,32 @@ func (e *Engine) ResumeStalled() {
 		// already advanced the workflow past this step.
 		fresh, skip := e.shouldSkipResumeAfterFreshRead(t.ID, t.Workflow)
 		if skip {
-			e.mu.Lock()
-			delete(e.dispatching, t.ID)
-			e.mu.Unlock()
+			e.clearResumeDispatching(t.ID)
 			continue
 		}
 
-		e.logger.Info("workflow.resume-stalled", "task_id", t.ID, "step", step.ID)
-		comp, rErr := e.executeSteps(t.ID, &def, step, t.Workflow)
-		e.mu.Lock()
-		delete(e.dispatching, t.ID)
-		e.mu.Unlock()
-		// ResumeStalled only resumes async run_agent steps, so comp is normally
-		// nil (fireComplete no-ops). Kept defensive so the day a sync step
-		// becomes resumable its completion cascades correctly instead of being
-		// silently dropped.
-		e.fireComplete(comp)
-		e.drainPendingConflictRecovery(t.ID)
-		e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", t.ID, rErr, "task_id", t.ID)
-		if rErr != nil {
-			e.surfaceStartFailure(t.ID, fresh.Status, rErr, fresh.Workflow, step.ID)
-		} else {
-			e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
-			e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
-			e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
-		}
+		e.finishResumeStalledStep(t.ID, &def, step, t.Workflow, fresh)
 	}
+}
+
+func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *Step, wf *Execution, fresh TaskInfo) {
+	e.logger.Info("workflow.resume-stalled", "task_id", taskID, "step", step.ID)
+	comp, rErr := e.executeSteps(taskID, def, step, wf)
+	e.clearResumeDispatching(taskID)
+	// ResumeStalled only resumes async run_agent steps, so comp is normally
+	// nil (fireComplete no-ops). Kept defensive so the day a sync step
+	// becomes resumable its completion cascades correctly instead of being
+	// silently dropped.
+	e.fireComplete(comp)
+	e.drainPendingConflictRecovery(taskID)
+	e.resumeError.Log(e.logger, "workflow.resume-stalled.exec", taskID, rErr, "task_id", taskID)
+	if rErr != nil {
+		e.surfaceStartFailure(taskID, fresh.Status, rErr, fresh.Workflow, step.ID)
+		return
+	}
+	e.clearTransientFetchRetry(fresh.ID, fresh.Workflow, step.ID)
+	e.clearCircuitBreakerOnSuccess(fresh.ID, fresh.Workflow, step.ID)
+	e.clearWatchdogReaskNote(fresh.ID, fresh.Workflow)
 }
 
 func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {

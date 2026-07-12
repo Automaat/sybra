@@ -17,6 +17,7 @@ export {
     ProviderHealthCheckConfig,
     ProviderLimitsConfig,
     ProvidersConfig,
+    QueueConfig,
     RenovateConfig,
     SelfMonitorConfig,
     TestingConfig,

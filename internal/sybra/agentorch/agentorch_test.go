@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -254,6 +255,174 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	}
 	if permanent {
 		t.Error("pool-busy must never classify as permanent — a slot frees on its own")
+	}
+}
+
+// newFakeClaudeManager builds an agent.Manager backed by a fake, long-sleeping
+// "claude" CLI on PATH so a test can genuinely saturate agents.TryReserveSlot
+// with maxConcurrent, without spending real model credits or requiring the
+// claude CLI to be installed. Mirrors the harness in
+// TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel.
+func newFakeClaudeManager(t *testing.T, maxConcurrent int) *agent.Manager {
+	t.Helper()
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
+		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
+		"sleep 5\n"+
+		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
+		0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	am, err := agent.NewManager(t.Context(), func(string, any) {}, discardSlogLogger(), t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: maxConcurrent},
+		SandboxHome: func(string) (string, error) {
+			return t.TempDir(), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+	return am
+}
+
+// newResearchTask creates a task whose TaskTypeResearch (plus a real
+// ResearchMachineDir on the orchestrator's config) skips worktree/project
+// setup entirely (see ResolveExecution), so dispatch reaches o.agents.Run
+// directly without any git/project plumbing.
+func newResearchTask(t *testing.T, tm *task.Manager, title string) task.Task {
+	t.Helper()
+	tk, err := tm.Create(title, "", "headless")
+	if err != nil {
+		t.Fatalf("task Create(%q): %v", title, err)
+	}
+	if _, err := tm.Update(tk.ID, task.Update{TaskType: task.Ptr(task.TaskTypeResearch)}); err != nil {
+		t.Fatalf("Update TaskType(%q): %v", title, err)
+	}
+	return tk
+}
+
+// TestStartAgentWithAssignment_AdmissionGate pins the workflow implementation
+// dispatch path's admission-queue behavior once the agent pool is saturated:
+// a pool-busy dispatch is offered to the queue (not just hard-errored), a
+// re-dispatch of the same task refreshes the existing queue entry instead of
+// duplicating it, and a manual/direct StartAgent call bypasses the queue
+// offer entirely even though it still reports the same pool-busy sentinel.
+func TestStartAgentWithAssignment_AdmissionGate(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	am := newFakeClaudeManager(t, 1)
+
+	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, discardSlogLogger())
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+		},
+	})
+	o.SetQueue(q)
+
+	first := newResearchTask(t, tm, "occupies the only pool slot")
+	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
+	}
+	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
+
+	second := newResearchTask(t, tm, "pool-busy, falls back to the queue")
+	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	}
+	snap := q.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != second.ID {
+		t.Fatalf("queue snapshot = %+v, want exactly [%s] queued", snap, second.ID)
+	}
+	if snap[0].Role != string(agent.RoleImplementation) {
+		t.Errorf("queued Role = %q, want %q", snap[0].Role, agent.RoleImplementation)
+	}
+
+	// Re-dispatching the same still-pool-busy task must refresh the existing
+	// queue entry in place (agentqueue.Offer's dedup contract), not add a
+	// second entry.
+	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("re-dispatch(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	}
+	if got := len(q.Snapshot()); got != 1 {
+		t.Fatalf("queue depth after re-dispatch = %d, want 1 (dedup refresh, not a duplicate)", got)
+	}
+
+	// A manual/direct StartAgent call must still observe the pool-busy
+	// sentinel (unchanged pre-existing translatePoolBusy behavior) but must
+	// never offer the task to the admission queue itself.
+	third := newResearchTask(t, tm, "manual dispatch bypasses admission gate")
+	if _, err := o.StartAgent(third.ID, "headless", "go", false, false); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("StartAgent(third) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	}
+	snap = q.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != second.ID {
+		t.Fatalf("queue snapshot after manual StartAgent = %+v, want unchanged [%s] (manual dispatch must bypass admission)", snap, second.ID)
+	}
+}
+
+// TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel pins
+// that a queue at agent.queue.max_depth capacity rejects a genuinely new
+// task outright, rather than reporting it as workflow.ErrAgentPoolBusy — an
+// unqueued task must never be parked by run_agent as if it were queued.
+func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	am := newFakeClaudeManager(t, 1)
+
+	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{MaxDepth: 1}, discardSlogLogger())
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+		},
+	})
+	o.SetQueue(q)
+
+	first := newResearchTask(t, tm, "occupies the only pool slot")
+	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
+	}
+	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
+
+	second := newResearchTask(t, tm, "fills the queue to max depth")
+	if _, _, err := o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	}
+
+	third := newResearchTask(t, tm, "rejected: queue already at max depth")
+	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	if err == nil {
+		t.Fatal("expected a non-nil error once the queue is at max depth")
+	}
+	if errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("err = %v, must NOT wrap workflow.ErrAgentPoolBusy — the task was rejected, not queued", err)
+	}
+	snap := q.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != second.ID {
+		t.Fatalf("queue snapshot = %+v, want unchanged [%s] (rejected task must not appear queued)", snap, second.ID)
 	}
 }
 

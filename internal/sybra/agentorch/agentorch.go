@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
@@ -142,6 +143,13 @@ type Orchestrator struct {
 	bgops     *bgop.Tracker
 	logger    *slog.Logger
 	audit     *audit.Logger
+	// queue is the admission queue a workflow implementation dispatch falls
+	// back to when the agent pool is saturated (see StartAgentWithAssignment's
+	// admissionGate). Late-bound via SetQueue once agentqueue.New succeeds at
+	// startup; nil disables admission gating entirely (dispatch behaves
+	// exactly as it did before this feature landed) — every read site
+	// nil-guards for this reason.
+	queue *agentqueue.Queue
 	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
 	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
 	// in wireServices after the review.Handler exists; nil keeps the
@@ -191,6 +199,14 @@ func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
 // once the review.Handler that implements it exists.
 func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
 	o.conflictRecovery = fn
+}
+
+// SetQueue late-binds the admission queue once agentqueue.New succeeds at
+// startup (see App.initWorkflowEngine). Leaving it unset (nil) — e.g. because
+// construction failed — disables admission gating: workflow implementation
+// dispatch behaves exactly as it did before this feature landed.
+func (o *Orchestrator) SetQueue(q *agentqueue.Queue) {
+	o.queue = q
 }
 
 // SetContext late-binds the app root context so dispatch-path worktree/sandbox
@@ -352,8 +368,12 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
 }
 
+// StartAgent is the manual/direct dispatch entry point (App.StartAgent,
+// recovery.RestartStaleInProgress). It bypasses the admission-queue gate —
+// only the workflow implementation dispatch path (StartAgentWithAssignment)
+// is gated — until P3 supplies queue-drain/manual-queue-UI semantics.
 func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
-	ag, _, err := o.StartAgentWithAssignment(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{})
+	ag, _, err := o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, false)
 	return ag, err
 }
 
@@ -443,7 +463,16 @@ func translatePoolBusy(err error) error {
 	return err
 }
 
+// StartAgentWithAssignment is the workflow implementation dispatch path
+// (agentAdapter.StartAgent for the implementation role). Gated by admission:
+// when the agent pool is saturated it offers the task to the queue and
+// returns workflow.ErrAgentPoolBusy instead of dispatching, so run_agent
+// parks ExecWaiting and ResumeStalled retries once a slot frees.
 func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
+	return o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, true)
+}
+
+func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, admissionGate bool) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -486,6 +515,15 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 		researchDir = o.cfg.Agent.ResearchMachineDir
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
+
+	// Admission gate: only the workflow implementation dispatch path
+	// (admissionGate=true) is queue-gated — a manual/direct StartAgent call
+	// bypasses this entirely (see StartAgent's doc comment). TryReserveSlot is
+	// an advisory peek; a genuine race is closed below, after agents.Run.
+	if admissionGate && o.queue != nil && !o.agents.TryReserveSlot() {
+		return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+	}
+
 	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, claim)
 	if dirErr != nil {
 		return nil, "", dirErr
@@ -544,10 +582,51 @@ func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, inc
 	})
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
+		// TryReserveSlot above is advisory only — a concurrent dispatch can win
+		// the last slot between that peek and this Run call. Closing the race
+		// the same way: offer the task to the queue rather than letting a
+		// benign capacity race surface as an unqueued pool-busy park.
+		if admissionGate && o.queue != nil && errors.Is(err, agent.ErrMaxConcurrentReached) {
+			return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
+		}
 		return nil, "", translatePoolBusy(err)
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+// admitQueueFullOrEnqueue offers taskID's implementation dispatch to the
+// admission queue and reports the outcome as an agent-start error: present in
+// the queue afterward (freshly queued or refreshed in place) maps to
+// workflow.ErrAgentPoolBusy, the benign/transient sentinel that parks the
+// run_agent step in ExecWaiting for ResumeStalled to retry. Rejected (max
+// depth reached, or an unsafe TaskID) maps to a normal, non-transient error
+// instead — the task must not be parked as if it were queued when it isn't.
+func (o *Orchestrator) admitQueueFullOrEnqueue(t task.Task, taskID string) error {
+	if o.enqueueImplementation(t, taskID) {
+		return workflow.ErrAgentPoolBusy
+	}
+	return fmt.Errorf("task %s: agent pool full and admission queue rejected the task (max depth reached or unsafe task id)", taskID)
+}
+
+// enqueueImplementation offers an implementation-dispatch item to the
+// admission queue and confirms it landed. Offer's bool return conflates
+// "freshly queued" and "already queued, refreshed in place" (both false) with
+// "rejected" (max depth or unsafe TaskID) — Snapshot disambiguates so callers
+// only treat the first two as a successful admission.
+func (o *Orchestrator) enqueueImplementation(t task.Task, taskID string) bool {
+	o.queue.Offer(agentqueue.Item{
+		TaskID:   taskID,
+		Role:     string(agent.RoleImplementation),
+		Priority: t.Priority,
+		Status:   t.Status,
+	})
+	for _, it := range o.queue.Snapshot() {
+		if it.TaskID == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 // taskCumulativeCostUSD sums CostUSD across every AgentRun a task has ever
