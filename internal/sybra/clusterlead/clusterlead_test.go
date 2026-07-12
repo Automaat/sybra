@@ -89,7 +89,7 @@ func TestAssignerRoutesRemoteAndStamps(t *testing.T) {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
 	}
 	mgr := newManager(t)
-	assigner := NewAssigner(cfg, mgr, roster, nil)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
 
 	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"}); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestAssignerLeavesLocalTaskAlone(t *testing.T) {
 	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
 	mgr := newManager(t)
-	assigner := NewAssigner(cfg, mgr, roster, nil)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
 
 	local := task.Task{ID: "task-local", Title: "t", Status: task.StatusTodo, ProjectID: "owner/other"}
 	routed, err := assigner.Route(context.Background(), local)
@@ -137,7 +137,7 @@ func TestAssignerTickIsIdempotent(t *testing.T) {
 	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
 	mgr := newManager(t)
-	assigner := NewAssigner(cfg, mgr, roster, nil)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
 
 	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"}); err != nil {
 		t.Fatal(err)
