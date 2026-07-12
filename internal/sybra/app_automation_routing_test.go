@@ -103,6 +103,41 @@ func TestPollHubReviewerRegistration_GitHubReviewToggles(t *testing.T) {
 	}
 }
 
+// TestPollHubFollowerDisablesAllPollers verifies the leader-follower gate:
+// a follower node registers no inbound pollers regardless of its GitHub flags,
+// since the leader owns task-source polling and pushes work via AssignTask.
+func TestPollHubFollowerDisablesAllPollers(t *testing.T) {
+	t.Parallel()
+
+	follower := &App{
+		cfg: &config.Config{
+			Cluster: config.ClusterConfig{Role: config.ClusterRoleFollower},
+			GitHub:  config.GitHubConfig{Enabled: true, ReviewsEnabled: true, IssuesEnabled: true},
+		},
+		logger:   discardLogger(),
+		reviewer: review.New(nil, nil, nil, nil, discardLogger(), nil, nil, nil, nil, nil, nil),
+	}
+	reg := &fakePollRegistrar{}
+	registerPollHandlers(follower, reg, nil)
+	if len(reg.registered) != 0 {
+		t.Errorf("follower registered pollers %v, want none", reg.registered)
+	}
+
+	leader := &App{
+		cfg: &config.Config{
+			Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader},
+			GitHub:  config.GitHubConfig{Enabled: true, ReviewsEnabled: true, IssuesEnabled: true},
+		},
+		logger:   discardLogger(),
+		reviewer: review.New(nil, nil, nil, nil, discardLogger(), nil, nil, nil, nil, nil, nil),
+	}
+	regLeader := &fakePollRegistrar{}
+	registerPollHandlers(leader, regLeader, nil)
+	if !slices.Contains(regLeader.registered, "reviews") {
+		t.Errorf("leader should still register reviewer, got %v", regLeader.registered)
+	}
+}
+
 func TestRunsGitHubRateBudgetLoop(t *testing.T) {
 	t.Parallel()
 
