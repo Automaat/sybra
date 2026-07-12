@@ -214,17 +214,19 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 // and any status change — including a fresh push that lands directly at a stage
 // like ready-review/testing/ready-pr — fires the status hook so stage dispatch
 // runs. The fired-status dedupe is recorded under the per-task lock so the file
-// watcher this write wakes cannot double-fire the hook. See Store.Put.
-func (m *Manager) Put(t Task) (Task, error) {
+// watcher this write wakes cannot double-fire the hook. The returned bool
+// reports whether the task was newly created (vs an in-place update). See
+// Store.Put.
+func (m *Manager) Put(t Task) (Task, bool, error) {
 	mu := m.lockFor(t.ID)
 	mu.Lock()
 
-	prev, getErr := m.store.Get(t.ID)
+	prev, getErr := m.store.read(t.ID)
 	existed := getErr == nil
 	saved, err := m.store.Put(t)
 	if err != nil {
 		mu.Unlock()
-		return saved, err
+		return saved, false, err
 	}
 
 	prevStatus := ""
@@ -248,7 +250,7 @@ func (m *Manager) Put(t Task) (Task, error) {
 	if fireHook {
 		m.onStatusHook(saved.ID, prevStatus, newStatus)
 	}
-	return saved, nil
+	return saved, !existed, nil
 }
 
 // CreateChat persists a synthetic chat task and emits task:created.

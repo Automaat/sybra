@@ -503,20 +503,18 @@ func (s *TaskService) AssignTask(t task.Task) error {
 			return validationError(err.Error())
 		}
 	}
-	_, getErr := s.tasks.Get(t.ID)
-	existed := getErr == nil
-	saved, err := s.tasks.Put(t)
+	saved, created, err := s.tasks.Put(t)
 	if err != nil {
 		return fmt.Errorf("assign task: %w", err)
 	}
-	if s.audit != nil && !existed {
+	if s.audit != nil && created {
 		_ = s.audit.Log(audit.Event{
 			Type:   audit.EventTaskCreated,
 			TaskID: saved.ID,
 			Data:   map[string]any{"source": "cluster_assign", "assigned_node": saved.AssignedNode, "status": string(saved.Status)},
 		})
 	}
-	s.logger.Info("cluster.task.assigned", "task", saved.ID, "existed", existed, "status", string(saved.Status), "assigned_node", saved.AssignedNode)
+	s.logger.Info("cluster.task.assigned", "task", saved.ID, "created", created, "status", string(saved.Status), "assigned_node", saved.AssignedNode)
 	return nil
 }
 

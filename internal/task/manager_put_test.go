@@ -22,7 +22,7 @@ func TestManagerPutFiresStatusHookForStageStatus(t *testing.T) {
 		mu.Unlock()
 	})
 
-	if _, err := m.Put(Task{ID: "leader-1", Title: "t", Status: StatusReadyReview, AgentMode: AgentModeHeadless}); err != nil {
+	if _, _, err := m.Put(Task{ID: "leader-1", Title: "t", Status: StatusReadyReview, AgentMode: AgentModeHeadless}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -51,12 +51,16 @@ func TestManagerPutFiresHookOnTransition(t *testing.T) {
 	})
 
 	base := Task{ID: "leader-2", Title: "t", Status: StatusInProgress, AgentMode: AgentModeHeadless}
-	if _, err := m.Put(base); err != nil {
+	if _, created, err := m.Put(base); err != nil {
 		t.Fatal(err)
+	} else if !created {
+		t.Error("first Put should report created=true")
 	}
 	base.Status = StatusTesting
-	if _, err := m.Put(base); err != nil {
+	if _, created, err := m.Put(base); err != nil {
 		t.Fatal(err)
+	} else if created {
+		t.Error("second Put (upsert) should report created=false")
 	}
 
 	mu.Lock()
@@ -81,11 +85,11 @@ func TestManagerPutNoHookWhenStatusUnchanged(t *testing.T) {
 	})
 
 	base := Task{ID: "leader-3", Title: "t", Status: StatusTodo, AgentMode: AgentModeHeadless}
-	if _, err := m.Put(base); err != nil {
+	if _, _, err := m.Put(base); err != nil {
 		t.Fatal(err)
 	}
 	base.Title = "renamed"
-	if _, err := m.Put(base); err != nil {
+	if _, _, err := m.Put(base); err != nil {
 		t.Fatal(err)
 	}
 

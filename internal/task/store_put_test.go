@@ -15,6 +15,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 
 	created := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	updated := time.Date(2026, 7, 2, 15, 30, 0, 0, time.UTC)
 	in := Task{
 		ID:           "mirror-1",
 		Title:        "pushed",
@@ -23,7 +24,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 		AssignedNode: "box",
 		MirrorRev:    3,
 		CreatedAt:    created,
-		UpdatedAt:    created,
+		UpdatedAt:    updated,
 		Body:         "body text",
 	}
 	saved, err := store.Put(in)
@@ -43,6 +44,9 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 	if !got.CreatedAt.Equal(created) {
 		t.Errorf("Put overwrote CreatedAt: %v", got.CreatedAt)
+	}
+	if !got.UpdatedAt.Equal(updated) {
+		t.Errorf("Put overwrote leader-supplied UpdatedAt: got %v, want %v", got.UpdatedAt, updated)
 	}
 
 	in.Status = StatusReadyPR

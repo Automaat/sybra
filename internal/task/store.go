@@ -602,7 +602,7 @@ func (s *Store) Put(t Task) (Task, error) {
 	if t.TaskType == "" {
 		t.TaskType = TaskTypeNormal
 	}
-	data, err := Marshal(t)
+	data, err := marshalTask(t, false)
 	if err != nil {
 		return Task{}, err
 	}
