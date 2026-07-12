@@ -83,6 +83,37 @@ func cloneSkillNames(names []string) []string {
 	return out
 }
 
+func discoverCopilotSkills() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return discoverCopilotSkillsInHome(home)
+}
+
+func discoverCopilotSkillsInHome(home string) []string {
+	seen := make(map[string]struct{}, 64)
+	for _, dir := range []string{
+		filepath.Join(home, ".copilot", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+	} {
+		for _, name := range listSkillDirs(dir) {
+			seen[name] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out
+}
+
 func discoverCodexSkillsInHome(home string) []string {
 	seen := make(map[string]struct{}, 64)
 	for _, name := range listSkillDirs(filepath.Join(home, ".codex", "skills")) {
