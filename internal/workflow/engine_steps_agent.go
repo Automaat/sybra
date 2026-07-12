@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
@@ -519,12 +520,26 @@ func isCodeAuthorRole(role string) bool {
 }
 
 func crossProvider(provider string) string {
-	switch normalizeWorkflowProvider(provider) {
-	case "codex", "copilot":
-		return "claude"
-	default:
-		return "codex"
+	author := normalizeWorkflowProvider(provider)
+	order := providerid.All()
+	start := slices.Index(order, author)
+	if start < 0 {
+		start = slices.Index(order, "claude")
 	}
+	firstDifferent := ""
+	for i := 1; i <= len(order); i++ {
+		cand := order[(start+i)%len(order)]
+		if cand == author {
+			continue
+		}
+		if firstDifferent == "" {
+			firstDifferent = cand
+		}
+		if providerAvailable(cand) {
+			return cand
+		}
+	}
+	return firstDifferent
 }
 
 func normalizeWorkflowProvider(provider string) string {

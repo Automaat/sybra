@@ -14,10 +14,10 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// setupCrossProviderEnv creates an e2e env with both fake-claude and fake-codex
-// on PATH, separate scenario files for each provider, and the test-review-fix
+// setupCrossProviderEnv creates an e2e env with fake-claude, fake-codex, and
+// fake-copilot on PATH, separate scenario files for each provider, and the test-review-fix
 // workflow loaded.
-func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios, codexScenarios []string) *e2eEnv {
+func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios, codexScenarios, copilotScenarios []string) *e2eEnv {
 	t.Helper()
 
 	claudeSF := filepath.Join(t.TempDir(), "claude-scenarios.txt")
@@ -28,12 +28,18 @@ func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios
 	if err := os.WriteFile(codexSF, []byte(strings.Join(codexScenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	copilotSF := filepath.Join(t.TempDir(), "copilot-scenarios.txt")
+	if err := os.WriteFile(copilotSF, []byte(strings.Join(copilotScenarios, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := setupE2EProvider(t, defaultProvider, "")
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", claudeSF)
 	t.Setenv("FAKE_CODEX_SCENARIO_FILE", codexSF)
+	t.Setenv("FAKE_COPILOT_SCENARIO_FILE", copilotSF)
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "")
 	t.Setenv("FAKE_CODEX_SCENARIO", "")
+	t.Setenv("FAKE_COPILOT_SCENARIO", "")
 
 	// Load test-review-fix workflow.
 	src, err := os.ReadFile("../../internal/workflow/testdata/test-review-fix.yaml")
@@ -58,6 +64,7 @@ func TestE2E_CrossProvider_ReviewThenFix(t *testing.T) {
 	env := setupCrossProviderEnv(t, "claude",
 		[]string{"success", "success"}, // claude: implement, fix_review
 		[]string{"success"},            // codex: code_review (cross)
+		nil,
 	)
 
 	created, err := env.tasks.Create("cross-provider review test", "", "headless")
@@ -122,6 +129,7 @@ func TestE2E_CrossProvider_ReviewSidecarPersisted(t *testing.T) {
 	env := setupCrossProviderEnv(t, "claude",
 		[]string{"success", "success"},  // claude: implement, fix_review
 		[]string{"code_review_success"}, // codex: code_review writes sidecar via CLI
+		nil,
 	)
 
 	created, err := env.tasks.Create("review sidecar persisted", "", "headless")
@@ -173,6 +181,7 @@ func TestE2E_CrossProvider_NoreviewTagSkipsReview(t *testing.T) {
 	env := setupCrossProviderEnv(t, "claude",
 		[]string{"success"}, // claude: implement only
 		[]string{},          // codex: nothing (review skipped)
+		nil,
 	)
 
 	created, err := env.tasks.Create("noreview test", "", "headless")
@@ -239,6 +248,7 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 	env := setupCrossProviderEnv(t, "claude",
 		[]string{"success", "success"}, // claude: implement, fix_review
 		[]string{"success"},            // codex: code_review
+		nil,
 	)
 	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
 	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
@@ -284,17 +294,18 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 
 // TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex verifies the
 // inverse routing: when default provider is codex, provider: cross dispatches
-// the review step to claude.
+// the review step to copilot (the next available provider after codex in the rotation).
 func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T) {
 	codexArgsLog := filepath.Join(t.TempDir(), "codex-args.log")
-	claudeArgsLog := filepath.Join(t.TempDir(), "claude-args.log")
+	copilotArgsLog := filepath.Join(t.TempDir(), "copilot-args.log")
 
 	env := setupCrossProviderEnv(t, "codex",
-		[]string{"success"},            // claude: code_review (cross)
-		[]string{"success", "success"}, // codex: implement, fix_review
+		nil,
+		[]string{"success", "success"},
+		[]string{"success"},
 	)
 	t.Setenv("FAKE_CODEX_ARGS_LOG", codexArgsLog)
-	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
+	t.Setenv("FAKE_COPILOT_ARGS_LOG", copilotArgsLog)
 
 	created, err := env.tasks.Create("provider verify inverse test", "", "headless")
 	if err != nil {
@@ -322,15 +333,15 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T)
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
 	}
 
-	if _, err := os.Stat(claudeArgsLog); err != nil {
-		t.Fatalf("claude args log not written — review step did not invoke claude: %v", err)
+	if _, err := os.Stat(copilotArgsLog); err != nil {
+		t.Fatalf("copilot args log not written — review step did not invoke copilot: %v", err)
 	}
-	claudeArgs, err := os.ReadFile(claudeArgsLog)
+	copilotArgs, err := os.ReadFile(copilotArgsLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(claudeArgs), "Review") {
-		t.Errorf("claude invocation should contain review prompt, got:\n%s", string(claudeArgs))
+	if !strings.Contains(string(copilotArgs), "Review") {
+		t.Errorf("copilot invocation should contain review prompt, got:\n%s", string(copilotArgs))
 	}
 
 	if _, err := os.Stat(codexArgsLog); err != nil {

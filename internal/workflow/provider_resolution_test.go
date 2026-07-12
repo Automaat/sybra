@@ -2,7 +2,15 @@ package workflow
 
 import "testing"
 
+func stubCrossAvailability(t *testing.T) {
+	t.Helper()
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+}
+
 func TestResolveProviderCrossUsesCurrentWorkflowHistory(t *testing.T) {
+	stubCrossAvailability(t)
 	wf := &Execution{StepHistory: []StepRecord{
 		{StepID: "implement", Provider: "claude"},
 		{StepID: "set_ready_review"},
@@ -21,6 +29,7 @@ func TestResolveProviderCrossUsesCurrentWorkflowHistory(t *testing.T) {
 }
 
 func TestResolveProviderCrossUsesCodeAuthorRunBeforeHandoffSource(t *testing.T) {
+	stubCrossAvailability(t)
 	tk := TaskInfo{
 		HandoffSourceProvider: "codex",
 		AgentRuns: []AgentRunInfo{
@@ -35,6 +44,7 @@ func TestResolveProviderCrossUsesCodeAuthorRunBeforeHandoffSource(t *testing.T) 
 }
 
 func TestResolveProviderCrossIgnoresReviewRunsForTaskProvenance(t *testing.T) {
+	stubCrossAvailability(t)
 	tk := TaskInfo{
 		AgentRuns: []AgentRunInfo{
 			{Role: "implementation", Provider: "claude"},
@@ -48,16 +58,18 @@ func TestResolveProviderCrossIgnoresReviewRunsForTaskProvenance(t *testing.T) {
 	}
 }
 
-func TestResolveProviderCrossUsesHandoffSourceProvider(t *testing.T) {
+func TestResolveProviderCrossRotatesCodexToCopilot(t *testing.T) {
+	stubCrossAvailability(t)
 	tk := TaskInfo{HandoffSourceProvider: "codex"}
 
 	got := resolveProvider("cross", &Execution{}, "codex", tk)
-	if got != "claude" {
-		t.Fatalf("provider = %q, want claude", got)
+	if got != "copilot" {
+		t.Fatalf("provider = %q, want copilot (codex rotates to copilot)", got)
 	}
 }
 
-func TestResolveProviderCrossCopilotFallsBackToClaude(t *testing.T) {
+func TestResolveProviderCrossRotatesCopilotToClaude(t *testing.T) {
+	stubCrossAvailability(t)
 	tk := TaskInfo{HandoffSourceProvider: "copilot"}
 
 	got := resolveProvider("cross", &Execution{}, "codex", tk)
@@ -66,7 +78,32 @@ func TestResolveProviderCrossCopilotFallsBackToClaude(t *testing.T) {
 	}
 }
 
+func TestResolveProviderCrossSkipsUnavailableRotationTarget(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(p string) bool { return p != "copilot" }
+	t.Cleanup(func() { providerAvailable = prev })
+	tk := TaskInfo{HandoffSourceProvider: "codex"}
+
+	got := resolveProvider("cross", &Execution{}, "codex", tk)
+	if got != "claude" {
+		t.Fatalf("provider = %q, want claude (copilot unavailable, rotate past it)", got)
+	}
+}
+
+func TestResolveProviderCrossAllUnavailableReturnsFirstDifferent(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return false }
+	t.Cleanup(func() { providerAvailable = prev })
+	tk := TaskInfo{HandoffSourceProvider: "codex"}
+
+	got := resolveProvider("cross", &Execution{}, "codex", tk)
+	if got != "copilot" {
+		t.Fatalf("provider = %q, want copilot (first different in rotation; resolveAgentVariant strips it to default)", got)
+	}
+}
+
 func TestResolveProviderCrossWithoutProvenanceDefersToDefaultProvider(t *testing.T) {
+	stubCrossAvailability(t)
 	got := resolveProvider("cross", &Execution{}, "claude", TaskInfo{})
 	if got != "" {
 		t.Fatalf("provider = %q, want empty default-provider sentinel", got)
