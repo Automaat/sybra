@@ -61,6 +61,12 @@ func TestParse(t *testing.T) {
 			wantSource: SourceJSON,
 		},
 		{
+			name:       "unblocked decision valid",
+			input:      `{"decision":"unblocked","summary":"fixed lint, pushed, advanced to ready-pr"}`,
+			want:       Decision{Decision: "unblocked", Summary: "fixed lint, pushed, advanced to ready-pr"},
+			wantSource: SourceJSON,
+		},
+		{
 			name:    "invalid decision value",
 			input:   `{"decision":"maybe","summary":"x"}`,
 			wantErr: true,
