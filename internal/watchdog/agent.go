@@ -257,20 +257,24 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 		return
 	}
 
-	// A "stall" trigger on an agent that has never produced a single byte of
-	// output since launch (LastEventAt untouched since StartedAt — see
-	// AppendOutput/TouchLastEvent, the only writers) is not a mid-task hang;
-	// the judge would have nothing to read from an empty log either. It is
-	// the signature of a broken provider CLI invocation (auth hang, spawn
-	// failure, wedged handshake) — #1913 saw the same claude process produce
-	// zero NDJSON and zero stderr across three consecutive clean re-dispatches,
-	// each burning the same-provider "watchdog hang" retry budget for nothing
-	// before landing the task (and its umbrella parent) in human-required.
+	// A "stall" trigger on an agent that has never produced a single stream
+	// event since launch (empty output buffer — see AppendOutput, the only
+	// writer, plus rehydrateFromLog on reattach) is not a mid-task hang; the
+	// judge would have nothing to read from an empty log either. It is the
+	// signature of a broken provider CLI invocation (auth hang, spawn failure,
+	// wedged handshake) — #1913 saw the same claude process produce zero NDJSON
+	// and zero stderr across three consecutive clean re-dispatches, each burning
+	// the same-provider "watchdog hang" retry budget for nothing before landing
+	// the task (and its umbrella parent) in human-required. We key off the
+	// buffer rather than LastEventAt==StartedAt so a detached survivor that
+	// crossed an app restart still classifies correctly: fromRecord bumps
+	// LastEventAt to reattach wall-clock, so an empty-log survivor would no
+	// longer satisfy the timestamp equality even though it has produced nothing.
 	// Route it through the provider-health signal path instead, exactly like
 	// stopForRateLimit: this marks the provider unhealthy for its cooldown
 	// window so the reschedule can fail over to a working peer, rather than
 	// retrying the identical broken provider.
-	if trigger == "stall" && ag.GetLastEventAt().Equal(ag.StartedAt) {
+	if trigger == "stall" && ag.OutputLen() == 0 {
 		w.handleZeroOutputStall(ag, stall, total)
 		return
 	}

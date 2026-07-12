@@ -493,9 +493,8 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 }
 
 // TestInspectHeadless_MidRunStallStillUsesJudge ensures an agent that DID
-// produce output before stalling (LastEventAt after StartedAt) keeps using
-// the normal LLM-judge path — the zero-output fast path must not swallow a
-// genuine mid-task hang.
+// produce output before stalling keeps using the normal LLM-judge path — the
+// zero-output fast path must not swallow a genuine mid-task hang.
 func TestInspectHeadless_MidRunStallStillUsesJudge(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
@@ -514,20 +513,77 @@ func TestInspectHeadless_MidRunStallStillUsesJudge(t *testing.T) {
 
 	started := time.Now().Add(-20 * time.Minute)
 	ag := &agent.Agent{
-		ID:          "a1",
-		TaskID:      tk.ID,
-		Provider:    "claude",
-		Mode:        "headless",
-		StartedAt:   started,
-		LastEventAt: started.Add(5 * time.Minute),
-		LogPath:     "/tmp/does-not-matter.ndjson",
+		ID:        "a1",
+		TaskID:    tk.ID,
+		Provider:  "claude",
+		Mode:      "headless",
+		StartedAt: started,
+		LogPath:   "/tmp/does-not-matter.ndjson",
 	}
+	// A real mid-run stall has produced at least one stream event; append one,
+	// then rewind LastEventAt into the stall window (AppendOutput stamps it to
+	// wall-clock).
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant"})
+	ag.SetLastEventAt(started.Add(5 * time.Minute))
 
 	w.inspectHeadless(context.Background(), newState(), time.Now(), ag)
 	w.wg.Wait()
 
 	if !judgeCalled {
 		t.Fatal("LLM judge not invoked for a genuine mid-run stall")
+	}
+}
+
+// TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge covers the
+// survive-restart gap: a detached headless agent that produced nothing before
+// crossing an app restart is rebuilt by fromRecord with LastEventAt bumped to
+// reattach wall-clock (no longer == StartedAt), yet its output buffer stays
+// empty. It must still route to handleZeroOutputStall, not the (pointless,
+// empty-log) LLM judge.
+func TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	judgeCalled := false
+	stopped := false
+	var signaledReason string
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		emit:   func(string, any) {},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			judgeCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+			ag.SetError("rate_limit", reason)
+			signaledReason = reason
+		},
+	}
+
+	// Empty log, StartedAt well in the past, LastEventAt set to reattach time —
+	// exactly the fromRecord skeleton for an empty-log survivor.
+	started := time.Now().Add(-40 * time.Minute)
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		Provider:    "claude",
+		Mode:        "headless",
+		StartedAt:   started,
+		LastEventAt: time.Now().Add(-20 * time.Minute),
+		LogPath:     "/tmp/does-not-matter.ndjson",
+	}
+
+	w.inspectHeadless(context.Background(), newState(), time.Now(), ag)
+
+	if judgeCalled {
+		t.Fatal("LLM judge invoked for a reattached zero-output stall; should be skipped")
+	}
+	if !stopped {
+		t.Fatal("stopAgent not called on reattached zero-output stall")
+	}
+	if signaledReason != zeroOutputReason {
+		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
 	}
 }
 
