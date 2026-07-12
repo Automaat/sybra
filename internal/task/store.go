@@ -578,6 +578,42 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	}
 }
 
+// Put writes a fully-formed task to the store verbatim (upsert by ID),
+// preserving the caller-supplied ID, status, workflow, and timestamps rather
+// than minting new ones. It is the leader-follower execution mirror's write
+// path (TaskService.AssignTask): the leader owns the canonical task and pushes
+// it here, and the follower's file watcher then dispatches it through the
+// normal workflow. Marshal persists frontmatter + body; sidecars are not
+// written by this path.
+func (s *Store) Put(t Task) (Task, error) {
+	if t.ID == "" {
+		return Task{}, fmt.Errorf("task id is required")
+	}
+	now := time.Now().UTC()
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = now
+	}
+	if t.StatusChangedAt.IsZero() {
+		t.StatusChangedAt = t.UpdatedAt
+	}
+	if t.TaskType == "" {
+		t.TaskType = TaskTypeNormal
+	}
+	data, err := Marshal(t)
+	if err != nil {
+		return Task{}, err
+	}
+	t.FilePath = filepath.Join(s.dir, t.ID+".md")
+	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
+		return Task{}, fmt.Errorf("write task file: %w", err)
+	}
+	s.storeTaskCache(t)
+	return t, nil
+}
+
 // CreateChat creates a synthetic chat task bound to projectID. Chat tasks are
 // hidden from the task list UI and never restart on app reboot. The slug is
 // "chat-<8char>" so the worktree DirName is distinctive.

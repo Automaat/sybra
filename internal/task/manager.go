@@ -206,6 +206,28 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 	return t, nil
 }
 
+// Put writes a fully-formed task verbatim (upsert by ID) and emits the matching
+// lifecycle event so the orchestrator and frontend react immediately. It is the
+// leader-follower execution mirror's write path: a first push emits
+// task:created, a subsequent push (e.g. a leader-side status change) emits
+// task:updated. See Store.Put.
+func (m *Manager) Put(t Task) (Task, error) {
+	_, getErr := m.store.Get(t.ID)
+	existed := getErr == nil
+	saved, err := m.store.Put(t)
+	if err != nil {
+		return saved, err
+	}
+	m.recordFiredStatus(saved.ID, string(saved.Status))
+	if existed {
+		m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+	} else {
+		metrics.TaskCreated()
+		m.emitter.Emit(events.TaskCreated, saved.FilePath)
+	}
+	return saved, nil
+}
+
 // CreateChat persists a synthetic chat task and emits task:created.
 func (m *Manager) CreateChat(projectID string) (Task, error) {
 	t, err := m.store.CreateChat(projectID)

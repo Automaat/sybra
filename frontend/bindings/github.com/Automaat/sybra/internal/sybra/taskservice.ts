@@ -22,6 +22,19 @@ import * as task$0 from "../task/models.js";
 import * as $models from "./models.js";
 
 /**
+ * AssignTask persists a task pushed from the cluster leader into this
+ * follower's local store (leader-follower execution mirror, umbrella #1803).
+ * The task is written verbatim — the leader owns its canonical ID, status, and
+ * workflow — and the file watcher then dispatches it through the normal
+ * workflow, so nothing downstream changes. The pushed DTO is validated before
+ * it touches disk; a malformed task is rejected with a 400 rather than
+ * corrupting the board.
+ */
+export function AssignTask(t: task$0.Task): $CancellablePromise<void> {
+    return $Call.ByID(835614146, t);
+}
+
+/**
  * BlessTampering records a human bless for a tamper-flagged task and sends it
  * back to the review workflow.
  */
