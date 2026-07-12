@@ -262,9 +262,9 @@ func (m *Manager) startDocker(ctx context.Context, taskID, worktreePath string, 
 	}, nil
 }
 
-func (m *Manager) stopDocker(inst *Instance) {
+func (m *Manager) stopDocker(ctx context.Context, inst *Instance) {
 	downArgs := extendArgs(inst.composeArgs, "down", "-v")
-	if out, err := runCmd(context.Background(), "", nil, "docker", downArgs...); err != nil {
+	if out, err := runCmd(ctx, "", nil, "docker", downArgs...); err != nil {
 		m.logger.Warn("sandbox.docker.down", "task_id", inst.TaskID, "err", err, "out", out)
 	}
 	if inst.entryFile != "" {

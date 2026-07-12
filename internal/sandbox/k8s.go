@@ -107,7 +107,7 @@ func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg
 	}, nil
 }
 
-func (m *Manager) stopK8s(inst *Instance) {
+func (m *Manager) stopK8s(ctx context.Context, inst *Instance) {
 	// Kill port-forward.
 	if inst.portFwdCmd != nil && inst.portFwdCmd.Process != nil {
 		_ = inst.portFwdCmd.Process.Kill()
@@ -116,7 +116,7 @@ func (m *Manager) stopK8s(inst *Instance) {
 
 	// Delete cluster.
 	if inst.clusterName != "" {
-		if err := stopK3dCluster(context.Background(), inst.clusterName); err != nil {
+		if err := stopK3dCluster(ctx, inst.clusterName); err != nil {
 			m.logger.Warn("sandbox.k8s.cluster-delete", "task_id", inst.TaskID, "err", err)
 		}
 	}

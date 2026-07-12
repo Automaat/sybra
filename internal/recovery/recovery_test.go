@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -78,6 +79,77 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	}
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
+}
+
+func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	active, err := tasks.Create("active sandbox task", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := tasks.Create("done sandbox task", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneStatus := task.StatusDone
+	done, err = tasks.Update(done.ID, task.Update{Status: &doneStatus})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sbDir := t.TempDir()
+	sbMgr := sandbox.NewManager(sbDir, discardLogger())
+	activeHome, err := sbMgr.SybraHomeDir(active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneHome, err := sbMgr.SybraHomeDir(done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRoot := filepath.Join(sbDir, "missing-task")
+	if err := os.MkdirAll(missingRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:     tasks,
+		Agents:    agents,
+		Worktrees: wm,
+		Sandboxes: sbMgr,
+		Logger:    logger,
+		Throttle:  logging.NewErrorThrottle(),
+		WG:        &wg,
+		LogDir:    t.TempDir(),
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+
+	if _, err := os.Stat(filepath.Dir(activeHome)); err != nil {
+		t.Fatalf("active sandbox dir removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(doneHome)); !os.IsNotExist(err) {
+		t.Fatalf("done sandbox dir still exists after startup cleanup: %v", err)
+	}
+	if _, err := os.Stat(missingRoot); !os.IsNotExist(err) {
+		t.Fatalf("missing sandbox dir still exists after startup cleanup: %v", err)
+	}
 }
 
 // TestRunStartupCleanup_GcOrphanChatIsTrashedNotLost verifies the
