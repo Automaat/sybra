@@ -18,7 +18,7 @@ func TestCloseLinkedIssueOnDone_ClosesSameRepoIssue(t *testing.T) {
 	}
 
 	tk, err := tasks.CreateFull("done task", "", task.AgentModeHeadless, task.Update{
-		Issue:     task.Ptr("https://github.com/Automaat/sybra/issues/1849"),
+		Issue:     task.Ptr("  https://github.com/Automaat/sybra/issues/1849\n"),
 		ProjectID: task.Ptr("Automaat/sybra"),
 		PRNumber:  task.Ptr(42),
 		Status:    task.Ptr(task.StatusDone),

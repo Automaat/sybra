@@ -483,10 +483,14 @@ func (a *App) initStatusHook() {
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {
 	t, err := a.tasks.Get(taskID)
-	if err != nil || strings.TrimSpace(t.Issue) == "" {
+	if err != nil {
 		return
 	}
-	repo, num := github.ParseIssueURL(t.Issue)
+	issue := strings.TrimSpace(t.Issue)
+	if issue == "" {
+		return
+	}
+	repo, num := github.ParseIssueURL(issue)
 	if num == 0 || repo != t.ProjectID {
 		return
 	}
@@ -499,10 +503,10 @@ func (a *App) closeLinkedIssueOnDone(taskID string) {
 		comment = fmt.Sprintf("Completed by Sybra via #%d.", t.PRNumber)
 	}
 	if closeErr := closeFn(repo, num, comment); closeErr != nil {
-		a.logger.Warn("task.done.close-issue", "task_id", taskID, "issue", t.Issue, "err", closeErr)
+		a.logger.Warn("task.done.close-issue", "task_id", taskID, "issue", issue, "err", closeErr)
 		return
 	}
-	a.logger.Info("task.done.close-issue", "task_id", taskID, "issue", t.Issue)
+	a.logger.Info("task.done.close-issue", "task_id", taskID, "issue", issue)
 }
 
 func shouldReleaseTaskAgentsForStatus(status task.Status) bool {
