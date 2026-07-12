@@ -806,7 +806,7 @@ func (a *App) initWorkflowEngine() {
 	// manual, dispatch-status, age), and prune stale queue entries first.
 	// Wired here (not inside internal/workflow) so the engine package never
 	// imports internal/agentqueue — see TaskInfo.Priority's doc comment.
-	a.workflowEngine.SetDispatchComparator(func(x, y workflow.TaskInfo) int {
+	a.workflowEngine.SetDispatchComparator(func() func(x, y workflow.TaskInfo) int {
 		snap := q.Snapshot()
 		queued := make(map[string]agentqueue.Item, len(snap))
 		for _, it := range snap {
@@ -820,14 +820,16 @@ func (a *App) initWorkflowEngine() {
 			}
 			return it
 		}
-		ai, bi := toItem(x), toItem(y)
-		switch {
-		case agentqueue.Less(ai, bi):
-			return -1
-		case agentqueue.Less(bi, ai):
-			return 1
-		default:
-			return 0
+		return func(x, y workflow.TaskInfo) int {
+			ai, bi := toItem(x), toItem(y)
+			switch {
+			case agentqueue.Less(ai, bi):
+				return -1
+			case agentqueue.Less(bi, ai):
+				return 1
+			default:
+				return 0
+			}
 		}
 	})
 	a.workflowEngine.SetQueueReconciler(func() {

@@ -872,7 +872,7 @@ func (e *Engine) ResumeStalled() {
 	}
 
 	if e.dispatchComparator != nil {
-		slices.SortStableFunc(tasks, e.dispatchComparator)
+		slices.SortStableFunc(tasks, e.dispatchComparator())
 	} else {
 		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
 			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))

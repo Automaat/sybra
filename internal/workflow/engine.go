@@ -327,7 +327,7 @@ type Engine struct {
 	// importing internal/agentqueue (which imports internal/task — see
 	// TaskInfo.Priority's doc comment). fn must return <0/0/>0 like
 	// cmp.Compare. nil preserves the original status-rank-only ordering.
-	dispatchComparator func(a, b TaskInfo) int
+	dispatchComparator func() func(a, b TaskInfo) int
 	// queueReconciler, when set, runs once per ResumeStalled tick before the
 	// dispatch scan, pruning admission-queue items whose task has gone
 	// missing, terminal, or already in-progress (agentqueue.Queue.Reconcile).
@@ -496,8 +496,8 @@ func (e *Engine) SetDivergenceRecovery(fn func(taskID string) bool) {
 // per-tick task scan, replacing the built-in dispatchorder.Rank(status)-only
 // sort. fn must return <0/0/>0 like cmp.Compare. Leaving it unset (nil)
 // preserves the original status-rank-only ordering.
-func (e *Engine) SetDispatchComparator(fn func(a, b TaskInfo) int) {
-	e.dispatchComparator = fn
+func (e *Engine) SetDispatchComparator(factory func() func(a, b TaskInfo) int) {
+	e.dispatchComparator = factory
 }
 
 // SetQueueReconciler wires a hook invoked once per ResumeStalled tick, before

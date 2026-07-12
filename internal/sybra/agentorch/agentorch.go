@@ -605,7 +605,7 @@ func (o *Orchestrator) admitQueueFullOrEnqueue(t task.Task, taskID string) error
 	if o.enqueueImplementation(t, taskID) {
 		return workflow.ErrAgentPoolBusy
 	}
-	return fmt.Errorf("task %s: agent pool full and admission queue rejected the task (max depth reached)", taskID)
+	return fmt.Errorf("task %s: agent pool full and admission queue rejected the task (max depth reached or unsafe task id)", taskID)
 }
 
 // enqueueImplementation offers an implementation-dispatch item to the

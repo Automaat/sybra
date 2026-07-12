@@ -1904,8 +1904,10 @@ func TestResumeStalled_DispatchComparatorOverridesDefaultOrder(t *testing.T) {
 	// Reverse alphabetical order by ID — deliberately nothing like the
 	// built-in status-rank sort, so a passing test proves the comparator
 	// actually drove the ordering rather than coincidentally matching it.
-	engine.SetDispatchComparator(func(a, b TaskInfo) int {
-		return cmp.Compare(b.ID, a.ID)
+	engine.SetDispatchComparator(func() func(a, b TaskInfo) int {
+		return func(a, b TaskInfo) int {
+			return cmp.Compare(b.ID, a.ID)
+		}
 	})
 
 	engine.ResumeStalled()
