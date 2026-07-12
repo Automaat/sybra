@@ -117,7 +117,7 @@ func run() (int, error) {
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
+	addr := os.Getenv("SYBRA_HOST") + ":" + port
 
 	srv := &http.Server{
 		Addr:              addr,
