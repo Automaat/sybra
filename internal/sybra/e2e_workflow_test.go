@@ -382,20 +382,6 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	}
 }
 
-// e2eTimeoutScale returns the integer multiplier applied to every waitFor
-// deadline. Resolved per wait so later waits in the same package can absorb
-// higher live runner contention instead of freezing the first-observed scale
-// for the full suite. Resolution priority:
-//
-//  1. SYBRA_E2E_TIMEOUT_SCALE env var (positive integer) — explicit override.
-//  2. CI=true or GITHUB_ACTIONS=true — defaults to 4 (CI fork/exec variance).
-//  3. Local — 1.
-//
-// Scaling lets the suite absorb 5–10× CI slowdowns without each test
-// hand-picking a generous timeout (which would hide real regressions on
-// developer machines). 4× of a 30s local-comfortable budget gives a 2-minute
-// CI ceiling — long enough for the slowest observed runner, short enough that
-// a deadlocked test still fails the job within the per-job budget.
 func e2eTimeoutScale() int64 {
 	return e2eTimeoutScaleResolve()
 }
