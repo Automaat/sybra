@@ -151,6 +151,10 @@ type Handler struct {
 	// Returns the PR number (0 = none or ambiguous). nil falls back to gh-based implementation.
 	// Overridable in tests.
 	findMergedPRFn func(repo, branch string) (int, error)
+	// triageReviewFn dispatches a review agent for a newly-created review task
+	// (or routes it to human-required for small PRs). Overridable in tests;
+	// nil falls back to r.triageReview.
+	triageReviewFn func(task.Task)
 	// lastRevertScan rate-limits the default-branch revert scan (revertScanInterval).
 	lastRevertScan time.Time
 	// tryCleanMergeFn attempts the deterministic clean-merge fast-path before a
@@ -1438,7 +1442,6 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 			ProjectID: task.Ptr(pr.Repository),
 			PRNumber:  task.Ptr(pr.Number),
 			Branch:    task.Ptr(pr.HeadRefName),
-			Status:    task.Ptr(task.StatusInReview),
 		})
 		if err != nil {
 			r.logger.Error("pr-monitor.taskless-adopt", "pr", pr.Number, "err", err)
@@ -1446,6 +1449,11 @@ func (r *Handler) adoptTasklessPRs(tasks []task.Task, prs []github.PullRequest) 
 		}
 		r.logAudit(audit.EventPROrphanAdopted, t.ID, "", map[string]any{"pr": pr.Number, "repo": pr.Repository, "resurrected": true})
 		r.logger.Info("pr-monitor.taskless-adopted", "task_id", t.ID, "pr", pr.Number, "branch", pr.HeadRefName)
+		triage := r.triageReviewFn
+		if triage == nil {
+			triage = r.triageReview
+		}
+		go triage(t)
 	}
 }
 
