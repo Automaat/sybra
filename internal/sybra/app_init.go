@@ -817,8 +817,8 @@ func (a *App) initWorkflowEngine() {
 		a.workflowEngine.SetDispatchComparator(func() func(x, y workflow.TaskInfo) int {
 			snap := q.Snapshot()
 			queued := make(map[string]agentqueue.Item, len(snap))
-			for _, it := range snap {
-				queued[it.TaskID] = it
+			for i := range snap {
+				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
 				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}

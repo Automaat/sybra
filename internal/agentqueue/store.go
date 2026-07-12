@@ -89,8 +89,8 @@ func (s *store) load(log *slog.Logger) []Item {
 	}
 
 	out := make([]Item, 0, len(byID))
-	for _, it := range byID {
-		out = append(out, it)
+	for id := range byID {
+		out = append(out, byID[id])
 	}
 	return out
 }

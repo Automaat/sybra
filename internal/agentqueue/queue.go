@@ -113,8 +113,9 @@ func New(dir string, opts Options, log *slog.Logger) (*Queue, error) {
 		now:   time.Now,
 		opts:  opts,
 	}
-	for _, it := range st.load(log) {
-		heap.Push(q.h, it)
+	loaded := st.load(log)
+	for i := range loaded {
+		heap.Push(q.h, loaded[i])
 	}
 	return q, nil
 }
@@ -264,9 +265,9 @@ func (q *Queue) popReady(n int, keep func(Item) bool) []Item {
 	now := q.now()
 	after := q.opts.StarvationBoostAfter
 	ranked := make([]Item, 0, len(q.h.items))
-	for _, it := range q.h.items {
-		if keep(it) {
-			ranked = append(ranked, it)
+	for i := range q.h.items {
+		if keep(q.h.items[i]) {
+			ranked = append(ranked, q.h.items[i])
 		}
 	}
 	if len(ranked) == 0 {
@@ -287,10 +288,10 @@ func (q *Queue) popReady(n int, keep func(Item) bool) []Item {
 		n = len(ranked)
 	}
 	out := ranked[:n]
-	for _, it := range out {
-		pos := q.h.index[it.TaskID]
+	for i := range out {
+		pos := q.h.index[out[i].TaskID]
 		heap.Remove(q.h, pos)
-		q.deletePersist(it.TaskID)
+		q.deletePersist(out[i].TaskID)
 	}
 	return out
 }
@@ -307,8 +308,8 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 	// since items may have moved or been removed while unlocked.
 	q.mu.Lock()
 	ids := make([]string, len(q.h.items))
-	for i, it := range q.h.items {
-		ids[i] = it.TaskID
+	for i := range q.h.items {
+		ids[i] = q.h.items[i].TaskID
 	}
 	q.mu.Unlock()
 

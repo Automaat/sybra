@@ -378,7 +378,7 @@ type startOptions struct {
 // persisted to the manual queue and return a synthetic queued agent instead of
 // surfacing a pool-busy error to the caller.
 func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool) (*agent.Agent, error) {
-	ag, _, err := o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, startOptions{})
+	ag, _, err := o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, "", workflow.AgentAssignment{}, startOptions{})
 	return ag, err
 }
 
@@ -386,12 +386,12 @@ func (o *Orchestrator) StartAgent(taskID, mode, prompt string, includeTaskDescri
 // drain has observed available capacity. Unlike StartAgent, it never silently
 // re-queues on a transient pool-busy race; the caller re-offers the original
 // item with its original Enqueued timestamp so durable intent is not dropped.
-func (o *Orchestrator) StartQueuedManualItem(it agentqueue.Item) (*agent.Agent, error) {
+func (o *Orchestrator) StartQueuedManualItem(ctx context.Context, it agentqueue.Item) (*agent.Agent, error) {
 	if !it.Manual {
 		return nil, fmt.Errorf("task %s: queued manual replay requires manual queue item", it.TaskID)
 	}
 	mode := FirstNonEmpty(it.Mode, "headless")
-	ag, _, err := o.startAgent(it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{manualDrain: true})
+	ag, _, err := o.startAgent(ctx, it.TaskID, mode, it.Prompt, it.IncludeTaskDescription, false, "", workflow.AgentAssignment{}, startOptions{manualDrain: true})
 	return ag, err
 }
 
@@ -415,7 +415,7 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 // Otherwise it auto-assigns a project if needed, optionally resets the
 // worktree for a clean retry, and prepares the task's worktree, returning
 // the (possibly project-assigned) task and its worktree directory.
-func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
+func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, taskID, cleanRetryRef string, skipWT bool, dir string, claim *agent.DispatchClaim) (task.Task, string, error) {
 	if skipWT {
 		return t, dir, nil
 	}
@@ -428,12 +428,12 @@ func (o *Orchestrator) resolveDispatchDir(t task.Task, taskID, cleanRetryRef str
 		return t, "", fmt.Errorf("task %s has no project_id: refusing to start agent without isolated worktree: %w", taskID, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		if resetErr := o.resetWorktreeForCleanRetry(t, cleanRetryRef); resetErr != nil {
+		if resetErr := o.resetWorktreeForCleanRetry(ctx, t, cleanRetryRef); resetErr != nil {
 			return t, "", resetErr
 		}
 	}
 	opID, onPhase := o.startWorktreeOp("Preparing worktree: "+t.Title, t.ProjectID, taskID)
-	d, wtErr := o.worktrees.PrepareForTask(o.baseCtx(), t, onPhase)
+	d, wtErr := o.worktrees.PrepareForTask(ctx, t, onPhase)
 	if wtErr != nil {
 		o.failWorktreeOp(opID, wtErr)
 		// A tracked agent is still live in this worktree (see
@@ -487,10 +487,10 @@ func translatePoolBusy(err error) error {
 // returns workflow.ErrAgentPoolBusy instead of dispatching, so run_agent
 // parks ExecWaiting and ResumeStalled retries once a slot frees.
 func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
-	return o.startAgent(taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true})
+	return o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true})
 }
 
-func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
+func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
 	// Serialize dispatch per task. Held across the whole start — including the
 	// multi-second worktree prep below, during which the agent is not yet
 	// registered — so a concurrent dispatcher (recovery loop, ResumeStalled,
@@ -535,22 +535,11 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
 	ignoreConcurrencyLimit := effMode == "interactive"
 
-	// Admission gate: workflow implementation dispatches park their token in
-	// the workflow-owned queue, while saturated manual headless starts persist
-	// their replay intent in the manual queue and return a synthetic queued
-	// agent. Interactive/chat starts bypass the cap entirely.
-	if !ignoreConcurrencyLimit && o.queue != nil && !o.agents.TryReserveSlot() {
-		switch {
-		case opts.admissionGate:
-			return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
-		case opts.manualDrain:
-			return nil, "", workflow.ErrAgentPoolBusy
-		default:
-			return o.enqueueManualStart(t, taskID, effMode, prompt, includeTaskDescription, skipWT)
-		}
+	if ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
+		return ag, baselineRef, err
 	}
 
-	t, dir, dirErr := o.resolveDispatchDir(t, taskID, cleanRetryRef, skipWT, dir, claim)
+	t, dir, dirErr := o.resolveDispatchDir(ctx, t, taskID, cleanRetryRef, skipWT, dir, claim)
 	if dirErr != nil {
 		return nil, "", dirErr
 	}
@@ -558,7 +547,7 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 		return nil, "", fmt.Errorf("task %s: no working dir resolved (skipWorktree=%v) — refusing to run agent in Sybra cwd", taskID, skipWT)
 	}
 
-	baselineRef := CurrentWorktreeHead(dir)
+	baselineRef := CurrentWorktreeHead(ctx, dir)
 
 	var workflowStart time.Time
 	if t.Workflow != nil {
@@ -609,25 +598,42 @@ func (o *Orchestrator) startAgent(taskID, mode, prompt string, includeTaskDescri
 	})
 	if err != nil {
 		o.handleProviderGateStartError(taskID, err)
-		// TryReserveSlot above is advisory only — a concurrent dispatch can win
-		// the last slot between that peek and this Run call. Closing the race
-		// the same way: queue the manual/workflow dispatch instead of letting a
-		// benign capacity race surface as dropped durable work or an unqueued
-		// pool-busy park.
-		if o.queue != nil && errors.Is(err, agent.ErrMaxConcurrentReached) {
-			switch {
-			case opts.admissionGate:
-				return nil, "", o.admitQueueFullOrEnqueue(t, taskID)
-			case opts.manualDrain:
-				return nil, "", workflow.ErrAgentPoolBusy
-			case !ignoreConcurrencyLimit:
-				return o.enqueueManualStart(t, taskID, effMode, prompt, includeTaskDescription, skipWT)
-			}
+		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
+			return ag, baselineRef, capErr
 		}
 		return nil, "", translatePoolBusy(err)
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
+	// Admission gate: workflow implementation dispatches park their token in
+	// the workflow-owned queue, while saturated manual headless starts persist
+	// their replay intent in the manual queue and return a synthetic queued
+	// agent. Interactive/chat starts bypass the cap entirely.
+	if ignoreConcurrencyLimit || o.queue == nil || o.agents.TryReserveSlot() {
+		return nil, "", nil, false
+	}
+	switch {
+	case opts.admissionGate:
+		return nil, "", o.admitQueueFullOrEnqueue(t, taskID), true
+	case opts.manualDrain:
+		return nil, "", workflow.ErrAgentPoolBusy, true
+	default:
+		ag, baselineRef, err := o.enqueueManualStart(t, taskID, mode, prompt, includeTaskDescription, skipWT)
+		return ag, baselineRef, err, true
+	}
+}
+
+func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
+	// TryReserveSlot above is advisory only — a concurrent dispatch can win
+	// the last slot between that peek and this Run call. Close the race the
+	// same way as the preflight saturation path so durable work is not dropped.
+	if o.queue == nil || !errors.Is(runErr, agent.ErrMaxConcurrentReached) {
+		return nil, "", nil, false
+	}
+	return o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts)
 }
 
 // admitQueueFullOrEnqueue offers taskID's implementation dispatch to the
@@ -663,8 +669,9 @@ func (o *Orchestrator) enqueueManualStart(t task.Task, taskID, mode, prompt stri
 		Prompt:                 prompt,
 		IncludeTaskDescription: includeTaskDescription,
 	})
-	for _, it := range o.queue.Snapshot() {
-		if it.TaskID != taskID || !it.Manual {
+	snap := o.queue.Snapshot()
+	for i := range snap {
+		if snap[i].TaskID != taskID || !snap[i].Manual {
 			continue
 		}
 		return syntheticQueuedAgent(t, mode), "", nil
@@ -698,8 +705,9 @@ func (o *Orchestrator) enqueueImplementation(t task.Task, taskID string) bool {
 		Priority: t.Priority,
 		Status:   t.Status,
 	})
-	for _, it := range o.queue.Snapshot() {
-		if it.TaskID == taskID {
+	snap := o.queue.Snapshot()
+	for i := range snap {
+		if snap[i].TaskID == taskID {
 			return true
 		}
 	}
@@ -770,7 +778,7 @@ func (o *Orchestrator) handleProviderGateStartError(taskID string, err error) {
 	o.logger.Info("agent.start.gated", "task_id", taskID, "err", err)
 }
 
-func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error {
+func (o *Orchestrator) resetWorktreeForCleanRetry(ctx context.Context, t task.Task, ref string) error {
 	resetDir := t.WorktreeDir
 	if resetDir == "" {
 		resetDir = o.worktrees.PathFor(t)
@@ -781,10 +789,7 @@ func (o *Orchestrator) resetWorktreeForCleanRetry(t task.Task, ref string) error
 		}
 		return fmt.Errorf("stat clean retry worktree: %w", statErr)
 	}
-	// context.Background(): reached from StartAgentWithAssignment, which is
-	// itself reached from Wails-bound / workflow.AgentDispatcher dead ends
-	// (see comments elsewhere in this file).
-	if err := project.ResetWorktreeForRetry(context.Background(), resetDir, ref); err != nil {
+	if err := project.ResetWorktreeForRetry(ctx, resetDir, ref); err != nil {
 		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
 		return err
 	}
@@ -1243,11 +1248,11 @@ func (o *Orchestrator) failWorktreeOp(opID string, err error) {
 
 // CurrentWorktreeHead returns the current HEAD SHA of the git worktree at dir,
 // or "" if dir is empty or the git invocation fails.
-func CurrentWorktreeHead(dir string) string {
+func CurrentWorktreeHead(ctx context.Context, dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--verify", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

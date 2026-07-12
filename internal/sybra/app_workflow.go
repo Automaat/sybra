@@ -713,7 +713,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		cfg.Dir = config.HomeDir()
 	}
 
-	baselineRef = agentorch.CurrentWorktreeHead(cfg.Dir)
+	baselineRef = agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
 	a.configureTestRunnerRun(&cfg, taskID, r, t)
 
 	ag, err := a.agents.Run(cfg)

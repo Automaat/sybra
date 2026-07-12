@@ -82,7 +82,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	}
 }
 
-func (a *App) drainManualQueue(context.Context) {
+func (a *App) drainManualQueue(ctx context.Context) {
 	if a.agentQueue == nil || a.agentOrch == nil || a.agents == nil || a.tasks == nil {
 		return
 	}
@@ -92,8 +92,8 @@ func (a *App) drainManualQueue(context.Context) {
 	})
 	snap := a.agentQueue.Snapshot()
 	manualDepth := 0
-	for _, it := range snap {
-		if it.Manual {
+	for i := range snap {
+		if snap[i].Manual {
 			manualDepth++
 		}
 	}
@@ -101,9 +101,11 @@ func (a *App) drainManualQueue(context.Context) {
 	if slots <= 0 {
 		return
 	}
-	for _, it := range a.agentQueue.PopManualReady(slots) {
-		ag, err := a.agentOrch.StartQueuedManualItem(it)
-		if ag != nil && ag.State == agent.StateQueued {
+	popped := a.agentQueue.PopManualReady(slots)
+	for i := range popped {
+		it := popped[i]
+		ag, err := a.agentOrch.StartQueuedManualItem(ctx, it)
+		if ag != nil && ag.GetState() == agent.StateQueued {
 			a.restoreManualQueueItem(it)
 			continue
 		}
@@ -125,8 +127,9 @@ func (a *App) restoreManualQueueItem(it agentqueue.Item) {
 	if restored := a.agentQueue.Restore(it); restored {
 		return
 	}
-	for _, queued := range a.agentQueue.Snapshot() {
-		if queued.TaskID == it.TaskID && queued.Manual {
+	snap := a.agentQueue.Snapshot()
+	for i := range snap {
+		if snap[i].TaskID == it.TaskID && snap[i].Manual {
 			return
 		}
 	}
