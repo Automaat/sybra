@@ -567,8 +567,14 @@ func (c *Config) Directories() map[string]string {
 		"loop_agents": c.LoopAgentsDir,
 		"artifacts":   ArtifactsDir(),
 		"experiences": c.ExperiencesDir(),
+		"agentqueue":  AgentQueueDir(),
 		"learning":    LearningDir(),
 	}
+}
+
+// AgentQueueDir is the directory under ~/.sybra that persists agent queue items.
+func AgentQueueDir() string {
+	return filepath.Join(HomeDir(), "agentqueue")
 }
 
 // LearningDir is the directory under ~/.sybra that holds persisted Learning

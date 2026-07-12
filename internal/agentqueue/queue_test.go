@@ -190,6 +190,61 @@ func TestQueue_MaxDepthBackpressure(t *testing.T) {
 	}
 }
 
+func TestQueue_DepthSnapshot(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		opts Options
+		seed []Item
+		want DepthSnapshot
+	}{
+		{
+			name: "empty queue",
+			want: DepthSnapshot{
+				Depth:                0,
+				TopEffectivePriority: task.PriorityNone,
+			},
+		},
+		{
+			name: "saturated queue",
+			opts: Options{MaxDepth: 2},
+			seed: []Item{
+				{TaskID: "low", Priority: task.PriorityLow, Enqueued: now},
+				{TaskID: "high", Priority: task.PriorityHigh, Enqueued: now.Add(time.Minute)},
+			},
+			want: DepthSnapshot{
+				Depth:                2,
+				TopEffectivePriority: task.PriorityHigh,
+			},
+		},
+		{
+			name: "status floor promotes top effective priority",
+			seed: []Item{
+				{TaskID: "promoted", Priority: task.PriorityNone, Status: task.StatusInReview, Enqueued: now},
+				{TaskID: "medium", Priority: task.PriorityMedium, Enqueued: now.Add(time.Minute)},
+			},
+			want: DepthSnapshot{
+				Depth:                2,
+				TopEffectivePriority: task.PriorityHigh,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := mustQueue(t, tt.opts)
+			for _, it := range tt.seed {
+				if added := q.Offer(it); !added {
+					t.Fatalf("Offer(%q) returned false, want true", it.TaskID)
+				}
+			}
+			if got := q.DepthSnapshot(); got != tt.want {
+				t.Fatalf("DepthSnapshot() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestQueue_StarvationBoost(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	q := mustQueue(t, Options{StarvationBoostAfter: time.Hour})

@@ -1,6 +1,7 @@
 // Package agentqueue implements a priority queue primitive for dispatching
-// agent runs against tasks. It is a pure, self-contained package: no part of
-// Sybra wires into it yet (see task 8bcbe346, umbrella #1844).
+// agent runs against tasks. Sybra now wires it for per-node queue durability
+// and depth readouts; dispatch still does not consume it yet (see task
+// 8bcbe346, umbrella #1844).
 package agentqueue
 
 import (

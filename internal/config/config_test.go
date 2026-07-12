@@ -1052,6 +1052,16 @@ func TestPathsUnderHomeDir(t *testing.T) {
 	}
 }
 
+func TestDirectories_AgentQueueDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg := DefaultConfig()
+	if got := cfg.Directories()["agentqueue"]; got != AgentQueueDir() {
+		t.Fatalf("Directories()[agentqueue] = %q, want %q", got, AgentQueueDir())
+	}
+}
+
 func TestLoadWritesRestrictivePermsOnFreshInstall(t *testing.T) {
 	dir := t.TempDir()
 	sybraHome := filepath.Join(dir, ".sybra")
