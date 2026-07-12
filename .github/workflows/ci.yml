@@ -141,8 +141,17 @@ jobs:
   check-wailsjs:
     name: Wails Bindings Sync
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Only same-repo PRs check out the head branch (so regenerated files
+          # can be pushed back). Fork PRs and push/tag events resolve to an
+          # empty ref and use the default checkout — a fork branch name would
+          # not resolve in this repo, and a fork cannot be pushed to.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
+          persist-credentials: true
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -164,10 +173,42 @@ jobs:
       - name: Regenerate bindings
         run: wails3 generate bindings -ts -clean -d frontend/bindings ./...
 
-      - name: Check for drift
+      - name: Regenerate api transport shims
+        # gen-api-shim consumes the freshly regenerated bindings, so a new
+        # Wails service gets both its binding and its api.ts/api-http.ts shims
+        # produced in the same pass.
+        run: go run ./cmd/gen-api-shim
+
+      - name: Commit and push regenerated bindings and shims
+        # Restricted to same-repo PRs — a fork PR's GITHUB_TOKEN is read-only
+        # and falls through to the drift gate. A GITHUB_TOKEN push never
+        # re-triggers workflows, so no loop; the generated files ride into the
+        # squash-merge.
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          git diff --exit-code frontend/bindings/ || \
-            (echo "::error::Wails v3 bindings out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...'." && exit 1)
+          if git diff --quiet -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts; then
+            echo "bindings and api shims already in sync"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts
+          git commit -s -m "chore(bindings): regenerate wails bindings and api shims"
+          git push origin HEAD:"$HEAD_REF"
+
+      - name: Check for drift
+        # Fork PRs and push/tag events cannot auto-commit, so the hard gate
+        # stays as the backstop and any drift there still fails red.
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          git diff --exit-code frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts || \
+            (echo "::error::Wails bindings / api shims out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...' and 'go run ./cmd/gen-api-shim'." && exit 1)
 
   check-api-shim-sync:
     name: API Shim Sync
