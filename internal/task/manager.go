@@ -206,6 +206,53 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 	return t, nil
 }
 
+// Put writes a fully-formed task verbatim (upsert by ID) and drives the same
+// lifecycle side-effects an in-process create/update would, so the pushed task
+// dispatches through the normal workflow. It is the leader-follower execution
+// mirror's write path: a first push emits task:created (todo/new tasks then
+// dispatch via the external-task path), a subsequent push emits task:updated,
+// and any status change — including a fresh push that lands directly at a stage
+// like ready-review/testing/ready-pr — fires the status hook so stage dispatch
+// runs. The fired-status dedupe is recorded under the per-task lock so the file
+// watcher this write wakes cannot double-fire the hook. The returned bool
+// reports whether the task was newly created (vs an in-place update). See
+// Store.Put.
+func (m *Manager) Put(t Task) (Task, bool, error) {
+	mu := m.lockFor(t.ID)
+	mu.Lock()
+
+	prev, getErr := m.store.read(t.ID)
+	existed := getErr == nil
+	saved, err := m.store.Put(t)
+	if err != nil {
+		mu.Unlock()
+		return saved, false, err
+	}
+
+	prevStatus := ""
+	if existed {
+		prevStatus = string(prev.Status)
+	}
+	newStatus := string(saved.Status)
+	fireHook := m.onStatusHook != nil && newStatus != prevStatus
+	if fireHook {
+		m.recordFiredStatus(saved.ID, newStatus)
+	}
+	mu.Unlock()
+
+	if existed {
+		metrics.TaskUpdated()
+		m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+	} else {
+		metrics.TaskCreated()
+		m.emitter.Emit(events.TaskCreated, saved.FilePath)
+	}
+	if fireHook {
+		m.onStatusHook(saved.ID, prevStatus, newStatus)
+	}
+	return saved, !existed, nil
+}
+
 // CreateChat persists a synthetic chat task and emits task:created.
 func (m *Manager) CreateChat(projectID string) (Task, error) {
 	t, err := m.store.CreateChat(projectID)

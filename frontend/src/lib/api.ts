@@ -161,6 +161,7 @@ export const GetTask = pick(TaskSvc.GetTask, http.GetTask)
 export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
 export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
+export const AssignTask = pick(TaskSvc.AssignTask, http.AssignTask)
 
 // WorkflowService
 export const DeleteWorkflow = pick(WorkflowSvc.DeleteWorkflow, http.DeleteWorkflow)
