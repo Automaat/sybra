@@ -96,6 +96,90 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_StopWithBufferedResultRoutesThroughCompletion covers
+// #1836: a headless agent's stream can already contain a non-error terminal
+// result (e.g. a test-runner's PASS verdict) with only trailing, non-result
+// events after it (a lingering forked subagent) — the exact shape that made
+// CompletedSuccessfully's old last-event check miss it in tick() and fall
+// through to judge inspection. A "stop" verdict on such an agent must route
+// through stopCompletedAgent (so the normal completion path — e.g.
+// route_test_result — processes the buffered result) instead of force-
+// setting human-required and discarding it via the generic stopAgent.
+func TestApplyVerdict_StopWithBufferedResultRoutesThroughCompletion(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	var stoppedGeneric, stoppedCompleted string
+	w := &Watchdog{
+		tasks:              tasks,
+		logger:             slog.New(slog.DiscardHandler),
+		stopAgent:          func(id string) error { stoppedGeneric = id; return nil },
+		stopCompletedAgent: func(id string) error { stoppedCompleted = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: `{"verdict":"PASS"}`})
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "lingering subagent chatter"})
+
+	w.applyVerdict(ag, "budget", agent.InspectorVerdict{
+		Stuck:          false,
+		Reason:         "Agent completed verification successfully with PASS verdict; idle post-completion",
+		Recommendation: "stop",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q unchanged (completion path owns the transition)", got.Status, task.StatusInProgress)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want empty (watchdog must not force human-required)", got.StatusReason)
+	}
+	if stoppedCompleted != "a1" {
+		t.Fatalf("stopCompletedAgent called with %q, want a1", stoppedCompleted)
+	}
+	if stoppedGeneric != "" {
+		t.Fatalf("generic stopAgent called with %q, want unused", stoppedGeneric)
+	}
+}
+
+// TestApplyVerdict_StopWithErrorResultStillEscalates ensures the buffered-
+// result fast path in applyVerdict only kicks in for a *successful* terminal
+// result — an agent whose last result was an error must still take the
+// normal human-required stop path.
+func TestApplyVerdict_StopWithErrorResultStillEscalates(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:              tasks,
+		logger:             slog.New(slog.DiscardHandler),
+		stopAgent:          func(id string) error { stopped = id; return nil },
+		stopCompletedAgent: func(string) error { t.Fatal("stopCompletedAgent should not be called for an error result"); return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless"}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Subtype: "error_during_execution"})
+
+	w.applyVerdict(ag, "budget", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "stuck after an error",
+		Recommendation: "stop",
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
 func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 

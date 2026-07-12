@@ -532,12 +532,24 @@ func TestCompletedSuccessfully(t *testing.T) {
 			t.Fatal("CompletedSuccessfully = true on error result, want false")
 		}
 	})
-	t.Run("not terminated on result", func(t *testing.T) {
+	t.Run("trailing event after result", func(t *testing.T) {
+		// A skill that forks subagents (CLAUDE_CODE_FORK_SUBAGENT) can append
+		// further NDJSON lines onto the stream after CC's own terminal
+		// result, so a trailing non-result event must not disqualify an
+		// already-completed run — see #1836.
 		a := &Agent{}
 		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
 		a.AppendOutput(StreamEvent{Type: "assistant", Content: "still going"})
+		if !a.CompletedSuccessfully() {
+			t.Fatal("CompletedSuccessfully = false when a trailing non-result event follows the result, want true")
+		}
+	})
+	t.Run("error result stays error despite trailing event", func(t *testing.T) {
+		a := &Agent{}
+		a.AppendOutput(StreamEvent{Type: "result", Subtype: "error_during_execution"})
+		a.AppendOutput(StreamEvent{Type: "assistant", Content: "still going"})
 		if a.CompletedSuccessfully() {
-			t.Fatal("CompletedSuccessfully = true when result is not the last event, want false")
+			t.Fatal("CompletedSuccessfully = true on error result with a trailing event, want false")
 		}
 	})
 }
@@ -571,15 +583,18 @@ func TestTerminalResultIdle(t *testing.T) {
 			t.Fatal("TerminalResultIdle = true on error result, want false")
 		}
 	})
-	t.Run("non-result last event", func(t *testing.T) {
+	t.Run("non-result last event still idles out on the result", func(t *testing.T) {
+		// A lingering forked subagent can append a non-result event after the
+		// real terminal result; the idle clock still runs off LastEventAt, so
+		// this must idle out the same as a clean last-event result (#1836).
 		a := &Agent{}
 		a.AppendOutput(StreamEvent{Type: "result", Content: "done"})
 		a.AppendOutput(StreamEvent{Type: "assistant", Content: "long bash running"})
 		a.mu.Lock()
 		a.LastEventAt = time.Now().Add(-2 * time.Minute)
 		a.mu.Unlock()
-		if a.TerminalResultIdle(90 * time.Second) {
-			t.Fatal("TerminalResultIdle = true when last event is not a result, want false")
+		if !a.TerminalResultIdle(90 * time.Second) {
+			t.Fatal("TerminalResultIdle = false when a trailing non-result event follows the result, want true")
 		}
 	})
 	t.Run("codex turn.completed idle past grace", func(t *testing.T) {
