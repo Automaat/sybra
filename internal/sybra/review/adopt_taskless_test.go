@@ -27,6 +27,8 @@ func newTasklessAdoptHandler(t *testing.T) (*Handler, *task.Manager) {
 
 func TestAdoptTasklessPRs_ResurrectsSybraPROnly(t *testing.T) {
 	r, tasks := newTasklessAdoptHandler(t)
+	triaged := make(chan task.Task, 1)
+	r.triageReviewFn = func(t task.Task) { triaged <- t }
 	prs := []github.PullRequest{
 		{Number: 1677, Repository: "owner/repo", HeadRefName: "perf/bound-limits-1a2b3c4d", Title: "perf: bound", URL: "https://x/1677"},
 		{Number: 99, Repository: "owner/repo", HeadRefName: "external/random-branch", Title: "ext", URL: "https://x/99"},
@@ -43,11 +45,20 @@ func TestAdoptTasklessPRs_ResurrectsSybraPROnly(t *testing.T) {
 		t.Fatalf("created %d tasks, want 1 (only the non-draft Sybra-branch PR)", len(all))
 	}
 	got := all[0]
-	if got.PRNumber != 1677 || got.Status != task.StatusInReview || got.Branch != "perf/bound-limits-1a2b3c4d" {
-		t.Fatalf("adopted task = {pr:%d status:%q branch:%q}, want {1677 in-review perf/bound-limits-1a2b3c4d}", got.PRNumber, got.Status, got.Branch)
+	if got.PRNumber != 1677 || got.Branch != "perf/bound-limits-1a2b3c4d" {
+		t.Fatalf("adopted task = {pr:%d status:%q branch:%q}, want {1677 * perf/bound-limits-1a2b3c4d}", got.PRNumber, got.Status, got.Branch)
 	}
 	if !slices.Contains(got.Tags, "review") {
 		t.Error("adopted task missing the review tag — would let simple-task-plan claim task.created")
+	}
+
+	select {
+	case triagedTask := <-triaged:
+		if triagedTask.ID != got.ID {
+			t.Fatalf("triaged task ID = %q, want %q", triagedTask.ID, got.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("triageReview was not dispatched for the taskless-adopted task")
 	}
 }
 
