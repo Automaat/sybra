@@ -2269,11 +2269,11 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
 	}
-	if reason := tasks.Reason("t-failed-pass"); !strings.Contains(reason, "infrastructure failed") {
-		t.Errorf("status reason = %q, want infrastructure failure", reason)
+	if reason := tasks.Reason("t-failed-pass"); !strings.Contains(reason, "harness/infra limitation") {
+		t.Errorf("status reason = %q, want harness/infra limitation", reason)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeInfraFailure {
 		t.Errorf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeInfraFailure)
@@ -2335,12 +2335,12 @@ func TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", got.Status)
 	}
 	reason := tasks.Reason("t-empty-stdout")
-	if !strings.Contains(reason, "no implementation attempt consumed") {
-		t.Errorf("status reason = %q, want no implementation attempt consumed", reason)
+	if !strings.Contains(reason, "harness/infra limitation") {
+		t.Errorf("status reason = %q, want harness/infra limitation", reason)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeInfraFailure {
 		t.Errorf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeInfraFailure)
@@ -2480,14 +2480,38 @@ func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if out.Output != "infra failure — opened pr" {
+		t.Errorf("output = %q, want infra failure — opened pr", out.Output)
+	}
+	ti, _ := tasks.GetTask("t-infra")
+	if ti.Status != "ready-pr" {
+		t.Errorf("status = %q, want ready-pr (default openPROnUnrunnableGate)", ti.Status)
+	}
+	if reason := tasks.Reason("t-infra"); !strings.Contains(reason, "harness/infra limitation") {
+		t.Errorf("reason = %q, want harness/infra limitation mention", reason)
+	}
+}
+
+// TestRouteTestResult_InfraFailureEscalatesToHumanRequiredWhenDisabled covers
+// the SetOpenPROnUnrunnableGate(false) escape hatch: exhausted infra_failure
+// retries must fall back to the legacy human-required escalation instead of
+// opening a PR.
+func TestRouteTestResult_InfraFailureEscalatesToHumanRequiredWhenDisabled(t *testing.T) {
+	t.Parallel()
+	e, tasks := makeTestEngine(t)
+	e.SetOpenPROnUnrunnableGate(false)
+	vars := map[string]string{testingAutoRetryKey(testOutcomeInfraFailure): strconv.Itoa(testingAutoRetryCap)}
+	out, ti, err := routeWithOutcome(t, e, tasks, "t-infra-disabled", testOutcomeInfraFailure, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out.Output != "infra failure" {
 		t.Errorf("output = %q, want infra failure", out.Output)
 	}
-	ti, _ := tasks.GetTask("t-infra")
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
 	}
-	if reason := tasks.Reason("t-infra"); !strings.Contains(reason, "no implementation attempt consumed") {
+	if reason := tasks.Reason("t-infra-disabled"); !strings.Contains(reason, "no implementation attempt consumed") {
 		t.Errorf("reason = %q, want no implementation attempt consumed", reason)
 	}
 }
@@ -2572,7 +2596,7 @@ func TestRouteTestResult_AutoRetryClearsRunTestStepHistory(t *testing.T) {
 	}
 }
 
-func TestRouteTestResult_InfraFailureEscalatesAtCap(t *testing.T) {
+func TestRouteTestResult_InfraFailureOpensPRAtCap(t *testing.T) {
 	t.Parallel()
 	e, tasks := makeTestEngine(t)
 	vars := map[string]string{testingAutoRetryKey(testOutcomeInfraFailure): strconv.Itoa(testingAutoRetryCap)}
@@ -2580,11 +2604,11 @@ func TestRouteTestResult_InfraFailureEscalatesAtCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Output != "infra failure" {
-		t.Errorf("output = %q, want infra failure", out.Output)
+	if out.Output != "infra failure — opened pr" {
+		t.Errorf("output = %q, want infra failure — opened pr", out.Output)
 	}
-	if ti.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", ti.Status)
+	if ti.Status != "ready-pr" {
+		t.Errorf("status = %q, want ready-pr", ti.Status)
 	}
 	if reason := tasks.Reason("t-infra-cap"); !strings.Contains(reason, "auto-retries") {
 		t.Errorf("reason = %q, want auto-retries mention", reason)

@@ -799,7 +799,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
 	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
 	if a.cfg.Evaluation.Offline.Enabled {
@@ -879,6 +879,14 @@ func (a *App) initWorkflowEngine() {
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
+}
+
+// configureTestingEscalation wires the testing→escalation config knobs onto
+// the workflow engine (split out of initWorkflowEngine to keep it under the
+// funlen cap).
+func (a *App) configureTestingEscalation() {
+	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 }
 
 func (a *App) initAgentConfig() {

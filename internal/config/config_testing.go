@@ -16,4 +16,13 @@ type TestingConfig struct {
 	// when distinct grounded defects keep surfacing without convergence. 0
 	// falls back to DefaultTestingMaxAttempts.
 	MaxAttempts int `yaml:"max_attempts" json:"maxAttempts"`
+	// OpenPROnUnrunnableGate controls what happens when a testing cycle
+	// exhausts its auto-retry budget on an infra_failure outcome — the manual
+	// gate itself could not be run (harness/tooling limitation), not a
+	// product defect (see classifyTestOutcome). nil means not configured
+	// (defaults to true): the task opens a PR (ready-pr) so CI and a human
+	// reviewer see the real diff, instead of parking at human-required with
+	// no PR for anyone to act on. Set false to restore the legacy
+	// human-required escalation.
+	OpenPROnUnrunnableGate *bool `yaml:"open_pr_on_unrunnable_gate" json:"openPrOnUnrunnableGate"`
 }

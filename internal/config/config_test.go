@@ -1612,6 +1612,31 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 	}
 }
 
+func TestTestingOpenPROnUnrunnableGateEnabledDefault(t *testing.T) {
+	t.Parallel()
+	var cfg *Config
+	if !cfg.TestingOpenPROnUnrunnableGateEnabled() {
+		t.Error("nil config TestingOpenPROnUnrunnableGateEnabled() = false, want true")
+	}
+
+	cfg = &Config{}
+	if !cfg.TestingOpenPROnUnrunnableGateEnabled() {
+		t.Error("zero-value TestingOpenPROnUnrunnableGateEnabled() = false, want true")
+	}
+
+	disabled := false
+	cfg.Testing.OpenPROnUnrunnableGate = &disabled
+	if cfg.TestingOpenPROnUnrunnableGateEnabled() {
+		t.Error("TestingOpenPROnUnrunnableGateEnabled() = true, want false when explicitly disabled")
+	}
+
+	enabled := true
+	cfg.Testing.OpenPROnUnrunnableGate = &enabled
+	if !cfg.TestingOpenPROnUnrunnableGateEnabled() {
+		t.Error("TestingOpenPROnUnrunnableGateEnabled() = false, want true when explicitly enabled")
+	}
+}
+
 func TestCheckpointDefaults(t *testing.T) {
 	t.Parallel()
 

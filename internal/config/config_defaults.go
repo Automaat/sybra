@@ -287,6 +287,17 @@ func (c *Config) TestingMaxAttempts() int {
 	return DefaultTestingMaxAttempts
 }
 
+// TestingOpenPROnUnrunnableGateEnabled reports whether an exhausted
+// infra_failure testing outcome (the manual gate could not be run) should
+// open a PR (ready-pr) instead of escalating to human-required. Nil/unset
+// defaults to true.
+func (c *Config) TestingOpenPROnUnrunnableGateEnabled() bool {
+	if c != nil && c.Testing.OpenPROnUnrunnableGate != nil {
+		return *c.Testing.OpenPROnUnrunnableGate
+	}
+	return true
+}
+
 // PollDefaults exposes the resolved poll intervals (override-or-default) so the
 // poll handlers don't each re-implement the fallback logic.
 const (
