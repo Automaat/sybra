@@ -736,10 +736,6 @@ func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID strin
 	if role != agent.RoleTestRunner {
 		return
 	}
-	// Eligibility only — Manager.preparePlaywrightMCP decides whether to
-	// actually attach the MCP server, gated on config enablement and the
-	// FINAL resolved provider (not this raw role/provider check), so a
-	// test-runner that fails over to codex never gets a claude-only flag.
 	cfg.PlaywrightMCPEligible = true
 	cfg.PlaywrightMCPOutputDir = filepath.Join(cfg.Dir, worktree.EvidenceDirName)
 }

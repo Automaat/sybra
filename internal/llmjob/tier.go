@@ -21,12 +21,12 @@ var tierModels = map[Tier]map[string]string{
 	Standard: {
 		"claude":  "sonnet",
 		"codex":   "gpt-5.5",
-		"copilot": "",
+		"copilot": "claude-sonnet-4.6",
 	},
 	Deep: {
 		"claude":  "opus",
 		"codex":   "gpt-5.5",
-		"copilot": "",
+		"copilot": "gemini-3.1-pro-preview",
 	},
 }
 

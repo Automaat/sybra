@@ -71,6 +71,7 @@ type App struct {
 	artifacts         *artifact.Store
 	experience        *experience.Store
 	learning          *learning.Store
+	agentQueue        *agentqueue.Queue
 	stats             *stats.Store
 	limits            *limits.Store
 	tasksDir          string
@@ -160,6 +161,9 @@ type App struct {
 	browserSvc   *BrowserService
 	learningSvc  *LearningService
 	promptLabSvc *PromptLabService
+
+	// HTTP-only services. QueueService must stay out of V3Services().
+	queueSvc *QueueService
 }
 
 // Option configures App behaviour at construction time.
@@ -231,6 +235,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.browserSvc = &BrowserService{}
 	a.learningSvc = &LearningService{}
 	a.promptLabSvc = &PromptLabService{}
+	a.queueSvc = &QueueService{}
 	for _, o := range opts {
 		o(a)
 	}

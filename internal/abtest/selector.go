@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 )
 
@@ -283,9 +284,7 @@ func validateVariant(expID string, v Variant) error {
 	if strings.TrimSpace(v.ID) == "" {
 		return fmt.Errorf("abtest: experiment %q has variant with empty id", expID)
 	}
-	switch v.Provider {
-	case "claude", "codex", "copilot":
-	default:
+	if !providerid.IsKnown(v.Provider) {
 		return fmt.Errorf("abtest: variant %q has invalid provider %q", v.ID, v.Provider)
 	}
 	if strings.TrimSpace(v.Model) == "" {

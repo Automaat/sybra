@@ -92,7 +92,7 @@ steps:
     type: run_agent
     config:
       role: plan
-      provider: claude
+      provider: ab
       mode: headless
       model: opus
       needs_worktree: true

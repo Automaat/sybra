@@ -196,6 +196,7 @@ func (a *App) initLocalStores() {
 	a.initArtifacts()
 	a.initExperience()
 	a.initLearning()
+	a.initAgentQueue()
 }
 
 func (a *App) initExperience() {
@@ -217,6 +218,15 @@ func (a *App) initLearning() {
 		return
 	}
 	a.learning = store
+}
+
+func (a *App) initAgentQueue() {
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{}, a.logger)
+	if err != nil {
+		a.logger.Warn("agentqueue.init.degraded", "err", err)
+		return
+	}
+	a.agentQueue = queue
 }
 
 func (a *App) initLimits() {
@@ -774,7 +784,12 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
 	if a.cfg.Evaluation.Offline.Enabled {
-		a.workflowEngine.SetEvalGate(prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline))
+		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
+		a.workflowEngine.SetEvalGate(gate)
+		a.agents.SetEvalPassed(func(variantID, digest string) bool {
+			allow, _, gateErr := gate.AllowEnrollment(variantID, digest)
+			return gateErr == nil && allow
+		})
 	}
 	if a.artifacts != nil {
 		a.workflowEngine.SetArtifactRecorder(&artifactRecorderAdapter{store: a.artifacts})

@@ -38,6 +38,15 @@ func TestRewriteInvocations(t *testing.T) {
 	}
 }
 
+func TestStripInvocations(t *testing.T) {
+	t.Parallel()
+	got := StripInvocations("Run /plan-critic, not /tmp/plan-critic or /plan-critic-extra.", []string{"plan", "plan-critic"})
+	want := "Run plan-critic, not /tmp/plan-critic or /plan-critic-extra."
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestContainsInvocation(t *testing.T) {
 	t.Parallel()
 	if !ContainsInvocation("Run /sybra-test now.", "sybra-test") {

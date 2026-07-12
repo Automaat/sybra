@@ -26,6 +26,10 @@ func rewriteSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.RewriteInvocations(prompt, skillNames)
 }
 
+func stripSkillInvocations(prompt string, skillNames []string) string {
+	return skillinvoke.StripInvocations(prompt, skillNames)
+}
+
 // discoverCodexSkills returns the union of skill names sybra knows about for
 // the codex skill rewriter. A "known" skill is one whose name shows up in
 // any of: ~/.codex/skills/, ~/.claude/skills/, `codex plugin list --json`,
@@ -76,6 +80,37 @@ func cloneSkillNames(names []string) []string {
 	}
 	out := make([]string, len(names))
 	copy(out, names)
+	return out
+}
+
+func discoverCopilotSkills() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return discoverCopilotSkillsInHome(home)
+}
+
+func discoverCopilotSkillsInHome(home string) []string {
+	seen := make(map[string]struct{}, 64)
+	for _, dir := range []string{
+		filepath.Join(home, ".copilot", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+	} {
+		for _, name := range listSkillDirs(dir) {
+			seen[name] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	slices.Sort(out)
 	return out
 }
 

@@ -44,10 +44,20 @@ func (copilotProvider) BuildCommand(cfg RunConfig, model string) string {
 func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	// --allow-all-tools is required for non-interactive mode; --no-ask-user
 	// stops the agent blocking on questions (no TTY/UI to answer them).
-	args := []string{"-p", cfg.Prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	prompt := stripSkillInvocations(cfg.Prompt, discoverCopilotSkills())
+	args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	args = append(args, effortArgs(a.ReasoningEffort)...)
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
+	}
+	if cfg.MCPConfigJSON != "" {
+		mcpConfig, err := renderCopilotMCPConfig(cfg.MCPConfigJSON)
+		if err != nil {
+			return headlessInvocation{}, err
+		}
+		if mcpConfig != "" {
+			args = append(args, "--additional-mcp-config", mcpConfig)
+		}
 	}
 	// Copilot only reports its session id on the terminal result event, so
 	// a resume id is available only for an intentional stop/restart. Use

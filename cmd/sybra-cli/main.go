@@ -893,6 +893,7 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		cfg.SkillsDir,
 		filepath.Join(home, ".claude", "skills"),
 		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".copilot", "skills"),
 		filepath.Join(home, ".agents", "skills"),
 	}
 	if jsonOut {
@@ -1963,8 +1964,9 @@ Commands:
   triage classify --all        Classify every task with status=new.
 
   install-skills               Install/refresh Sybra's bundled skills into
-                               ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
-                               (and the app skills dir) for Claude Code + Codex.
+                               ~/.claude/skills, ~/.codex/skills, ~/.copilot/skills,
+                               ~/.agents/skills (and the app skills dir) for
+                               Claude Code, Codex, and Copilot.
 
   artifact list <task-id>      List artifacts for a task.
   artifact get  <task-id> <name>  Print raw artifact bytes to stdout.
