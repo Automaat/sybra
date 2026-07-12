@@ -569,11 +569,11 @@ func (a *App) isWorkProject(projectID string) bool {
 	if a.projects == nil {
 		return true
 	}
-	p, err := a.projects.Get(projectID)
+	rawType, err := a.projects.RawType(projectID)
 	if err != nil {
 		return true
 	}
-	return p.Type != project.ProjectTypePet
+	return rawType != project.ProjectTypePet
 }
 
 func (a *App) auditClusterBlock(taskID, node, reason string) {

@@ -2,6 +2,8 @@ package sybra
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -16,6 +18,9 @@ func TestIsWorkProjectFailsSafe(t *testing.T) {
 	}
 	mustWriteProjectYAML(t, dir, "owner/work", project.ProjectTypeWork)
 	mustWriteProjectYAML(t, dir, "owner/pet", project.ProjectTypePet)
+	if err := os.WriteFile(filepath.Join(dir, "owner--notype.yaml"), []byte("id: owner/notype\nowner: stub\nrepo: stub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	a := &App{projects: store, logger: slog.Default()}
 
@@ -26,6 +31,7 @@ func TestIsWorkProjectFailsSafe(t *testing.T) {
 	}{
 		{"work project is work", "owner/work", true},
 		{"pet project is not work", "owner/pet", false},
+		{"missing-type project fails safe to work", "owner/notype", true},
 		{"unregistered project fails safe to work", "owner/ghost", true},
 		{"empty projectID is not work", "", false},
 	}
