@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -101,14 +102,22 @@ func (c *Client) ActiveEndpoint() string {
 	return eps[c.active]
 }
 
-// Call invokes service.method on the follower with the given args, retrying
-// across the node's endpoints in preference order until one is reachable. A
-// transport failure (dial/timeout) fails over to the next endpoint; a follower
-// that responds — even with an error status — is considered reachable and its
-// APIError is returned without further failover (the shared token/state makes
-// retrying other endpoints pointless). The reachable endpoint becomes the new
-// preferred one.
+// Call invokes service.method on the follower and is the safe default for
+// callers that cannot vouch for idempotency: it fails over to another endpoint
+// only when the connection was never established (so the follower never saw the
+// request), never after a partial send. Read-only wrappers use callIdempotent,
+// which additionally fails over on any transport error and on a gateway-down
+// status (502/503/504 — a proxy fronting a dead backend). The reachable
+// endpoint becomes the new preferred one.
 func (c *Client) Call(ctx context.Context, service, method string, args ...any) (json.RawMessage, error) {
+	return c.call(ctx, false, service, method, args...)
+}
+
+func (c *Client) callIdempotent(ctx context.Context, service, method string, args ...any) (json.RawMessage, error) {
+	return c.call(ctx, true, service, method, args...)
+}
+
+func (c *Client) call(ctx context.Context, idempotent bool, service, method string, args ...any) (json.RawMessage, error) {
 	body, err := encodeArgs(args)
 	if err != nil {
 		return nil, fmt.Errorf("cluster: encode args for %s.%s: %w", service, method, err)
@@ -118,13 +127,21 @@ func (c *Client) Call(ctx context.Context, service, method string, args ...any) 
 		return nil, fmt.Errorf("cluster: node %q has no usable endpoints", c.node.Name)
 	}
 	start := c.activeIndex(len(eps))
-	var transportErrs []error
+	var failoverErrs []error
 	for i := range eps {
 		idx := (start + i) % len(eps)
 		raw, apiErr, transportErr := c.do(ctx, eps[idx], service, method, body)
 		if transportErr != nil {
-			transportErrs = append(transportErrs, fmt.Errorf("%s: %w", eps[idx], transportErr))
+			failoverErrs = append(failoverErrs, fmt.Errorf("%s: %w", eps[idx], transportErr))
 			c.logger.Debug("cluster.endpoint.unreachable", "node", c.node.Name, "endpoint", eps[idx], "err", transportErr)
+			if idempotent || isConnectError(transportErr) {
+				continue
+			}
+			return nil, fmt.Errorf("cluster: %s.%s failed on %s and is not safe to retry: %w", service, method, eps[idx], transportErr)
+		}
+		if apiErr != nil && idempotent && isGatewayDown(apiErr.Status) {
+			failoverErrs = append(failoverErrs, fmt.Errorf("%s: %w", eps[idx], apiErr))
+			c.logger.Debug("cluster.endpoint.gateway_down", "node", c.node.Name, "endpoint", eps[idx], "status", apiErr.Status)
 			continue
 		}
 		c.setActive(idx)
@@ -133,8 +150,22 @@ func (c *Client) Call(ctx context.Context, service, method string, args ...any) 
 		}
 		return raw, nil
 	}
-	return nil, fmt.Errorf("cluster: all %d endpoints unreachable for %s.%s: %w",
-		len(eps), service, method, errors.Join(transportErrs...))
+	return nil, fmt.Errorf("cluster: all %d endpoints failed for %s.%s: %w",
+		len(eps), service, method, errors.Join(failoverErrs...))
+}
+
+func isConnectError(err error) bool {
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return netErr.Op == "dial"
+	}
+	return false
+}
+
+func isGatewayDown(status int) bool {
+	return status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
 }
 
 // ProbeHealth checks the follower's GET /health across its endpoints in
@@ -267,7 +298,7 @@ func (c *Client) AssignTask(ctx context.Context, t task.Task) error {
 
 // GetTask fetches a task's current state from the follower.
 func (c *Client) GetTask(ctx context.Context, id string) (task.Task, error) {
-	raw, err := c.Call(ctx, "TaskService", "GetTask", id)
+	raw, err := c.callIdempotent(ctx, "TaskService", "GetTask", id)
 	if err != nil {
 		return task.Task{}, err
 	}
@@ -276,7 +307,7 @@ func (c *Client) GetTask(ctx context.Context, id string) (task.Task, error) {
 
 // ListTasks fetches all of the follower's tasks.
 func (c *Client) ListTasks(ctx context.Context) ([]task.Task, error) {
-	raw, err := c.Call(ctx, "TaskService", "ListTasks")
+	raw, err := c.callIdempotent(ctx, "TaskService", "ListTasks")
 	if err != nil {
 		return nil, err
 	}

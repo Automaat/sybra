@@ -39,7 +39,7 @@ func (c *Client) Subscribe(ctx context.Context) (<-chan Event, error) {
 		}
 		c.setActive(idx)
 		ch := make(chan Event, eventChanBuf)
-		go c.pumpEvents(body, ch)
+		go c.pumpEvents(ctx, body, ch)
 		return ch, nil
 	}
 	return nil, fmt.Errorf("cluster: no reachable /events endpoint for node %q: %w", c.node.Name, errors.Join(errs...))
@@ -71,32 +71,28 @@ func (c *Client) openEvents(ctx context.Context, base string) (io.ReadCloser, er
 	return resp.Body, nil
 }
 
-func (c *Client) pumpEvents(body io.ReadCloser, ch chan<- Event) {
+func (c *Client) pumpEvents(ctx context.Context, body io.ReadCloser, ch chan<- Event) {
 	defer close(ch)
 	defer func() { _ = body.Close() }()
 
 	reader := bufio.NewReader(body)
 	var name string
 	var data strings.Builder
-	flush := func() {
-		if data.Len() == 0 && name == "" {
-			return
-		}
-		evName := name
-		if evName == "" {
-			evName = "message"
-		}
-		ch <- Event{Name: evName, Data: data.String()}
-		name = ""
-		data.Reset()
-	}
 	for {
 		line, err := reader.ReadString('\n')
 		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
 			switch {
 			case trimmed == "":
-				flush()
+				if name != "" || data.Len() > 0 {
+					select {
+					case ch <- Event{Name: eventName(name), Data: data.String()}:
+					case <-ctx.Done():
+						return
+					}
+					name = ""
+					data.Reset()
+				}
 			case strings.HasPrefix(trimmed, ":"):
 			case strings.HasPrefix(trimmed, "event:"):
 				name = strings.TrimSpace(trimmed[len("event:"):])
@@ -104,11 +100,18 @@ func (c *Client) pumpEvents(body io.ReadCloser, ch chan<- Event) {
 				if data.Len() > 0 {
 					data.WriteByte('\n')
 				}
-				data.WriteString(strings.TrimSpace(trimmed[len("data:"):]))
+				data.WriteString(strings.TrimPrefix(trimmed[len("data:"):], " "))
 			}
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+func eventName(name string) string {
+	if name == "" {
+		return "message"
+	}
+	return name
 }

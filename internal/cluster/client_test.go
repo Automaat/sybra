@@ -143,8 +143,8 @@ func TestClientAllEndpointsUnreachable(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error when all endpoints are unreachable")
 	}
-	if !strings.Contains(err.Error(), "unreachable") {
-		t.Errorf("err = %v, want 'unreachable'", err)
+	if !strings.Contains(err.Error(), "all 2 endpoints failed") {
+		t.Errorf("err = %v, want 'all 2 endpoints failed'", err)
 	}
 }
 
