@@ -716,10 +716,10 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		if upstream == "" {
 			continue
 		}
-		upstreamContent, uErr := gitFileAtRef(ctx, wtPath, upstream, c.Path)
+		upstreamContent, uErr := gitFileAtRef(ctx, wtPath, upstream, basePath)
 		if uErr != nil {
 			if ctx.Err() != nil {
-				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", upstream, c.Path, ctx.Err())
+				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", upstream, basePath, ctx.Err())
 			}
 			e.logger.Debug("workflow.detect-tampering.upstream-content",
 				"task_id", taskID, "file", c.Path, "err", uErr)
