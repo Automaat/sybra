@@ -484,8 +484,8 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 // it touches disk; a malformed task is rejected with a 400 rather than
 // corrupting the board.
 func (s *TaskService) AssignTask(t task.Task) error {
-	if strings.TrimSpace(t.ID) == "" {
-		return validationError("assigned task must have an id")
+	if err := task.ValidateID(t.ID); err != nil {
+		return validationError(err.Error())
 	}
 	if strings.TrimSpace(t.Title) == "" {
 		return validationError("assigned task must have a title")

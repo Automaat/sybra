@@ -1,6 +1,8 @@
 package task
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -63,13 +65,20 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 }
 
-func TestStorePutRequiresID(t *testing.T) {
+func TestStorePutRejectsUnsafeID(t *testing.T) {
 	t.Parallel()
-	store, err := NewStore(t.TempDir())
+	dir := t.TempDir()
+	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Put(Task{Title: "no id"}); err == nil {
-		t.Fatal("Put must reject a task with no ID")
+	canary := filepath.Join(dir, "..", "escaped.md")
+	for _, id := range []string{"", "..", "../escaped", "a/b", "a\\b", ".hidden", "../../etc/passwd"} {
+		if _, err := store.Put(Task{ID: id, Title: "x", Status: StatusTodo}); err == nil {
+			t.Errorf("Put must reject unsafe id %q", id)
+		}
+	}
+	if _, err := os.Stat(canary); !os.IsNotExist(err) {
+		t.Fatalf("a traversal id escaped the tasks dir: %s exists", canary)
 	}
 }

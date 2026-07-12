@@ -80,6 +80,9 @@ func TestAssignTaskRejectsMalformed(t *testing.T) {
 		in   task.Task
 	}{
 		{"no id", task.Task{Title: "t", Status: task.StatusTodo}},
+		{"path traversal id", task.Task{ID: "../../etc/passwd", Title: "t", Status: task.StatusTodo}},
+		{"slash in id", task.Task{ID: "a/b", Title: "t", Status: task.StatusTodo}},
+		{"dotdot id", task.Task{ID: "..", Title: "t", Status: task.StatusTodo}},
 		{"no title", task.Task{ID: "x", Status: task.StatusTodo}},
 		{"bad status", task.Task{ID: "x", Title: "t", Status: task.Status("bogus")}},
 		{"bad agent mode", task.Task{ID: "x", Title: "t", Status: task.StatusTodo, AgentMode: "telepathy"}},

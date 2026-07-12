@@ -586,8 +586,8 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 // normal workflow. Marshal persists frontmatter + body; sidecars are not
 // written by this path.
 func (s *Store) Put(t Task) (Task, error) {
-	if t.ID == "" {
-		return Task{}, fmt.Errorf("task id is required")
+	if err := ValidateID(t.ID); err != nil {
+		return Task{}, err
 	}
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
