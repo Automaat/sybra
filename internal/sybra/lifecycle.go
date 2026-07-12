@@ -72,6 +72,9 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 	if a.mirror != nil {
 		a.wg.Go(func() { a.mirror.Run(ctx) })
 	}
+	if a.clusterRoster != nil {
+		a.wg.Go(func() { a.clusterHealthLoop(ctx) })
+	}
 	lm.startAppAuthLoop(ctx)
 	lm.startRateBudgetLoop(ctx)
 	lm.startPollHub(ctx, issuesFetcher)

@@ -1,6 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity'
 import {
-  StopAgent,
   ListAgents,
   GetAgentOutput,
   DiscoverAgents,
@@ -9,6 +8,8 @@ import {
   StopChat,
   AgentQueueSnapshot as FetchAgentQueueSnapshot,
 } from '$lib/api'
+import { stopAgentForTask } from '$lib/api-cluster'
+import { taskStore } from './tasks.svelte.js'
 import { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type {
@@ -167,8 +168,9 @@ class AgentStore extends EntityStore<Agent> {
   }
 
   async stop(agentID: string): Promise<void> {
-    await StopAgent(agentID)
     const a = this.items.get(agentID)
+    const node = a?.taskId ? taskStore.tasks.get(a.taskId)?.assignedNode : undefined
+    await stopAgentForTask(node, agentID)
     if (a) {
       a.state = 'stopped'
       this.set(agentID, a)

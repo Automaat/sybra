@@ -5,6 +5,8 @@
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import TaskCard from './TaskCard.svelte'
   import InlineTaskAdd from './InlineTaskAdd.svelte'
+  import ClusterHealth from './ClusterHealth.svelte'
+  import { clusterStore } from '../stores/cluster.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
   import { viewport } from '../lib/viewport.svelte.js'
   import { fly } from 'svelte/transition'
@@ -114,6 +116,12 @@
   }
 </script>
 
+<div class="flex min-h-0 flex-1 flex-col">
+{#if clusterStore.enabled}
+  <div class="shrink-0 border-b border-surface-200 px-3 py-1.5 dark:border-surface-700 md:px-6">
+    <ClusterHealth />
+  </div>
+{/if}
 <div
   bind:this={scrollEl}
   onscroll={updateScroll}
@@ -205,4 +213,5 @@
     </div>
     {/if}
   {/each}
+</div>
 </div>

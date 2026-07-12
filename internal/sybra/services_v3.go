@@ -31,5 +31,6 @@ func (a *App) V3Services() []application.Service {
 		application.NewService(a.browserSvc),
 		application.NewService(a.learningSvc),
 		application.NewService(a.promptLabSvc),
+		application.NewService(a.clusterSvc),
 	}
 }

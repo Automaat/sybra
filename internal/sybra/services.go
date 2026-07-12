@@ -111,6 +111,13 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		"QueueService": httpapi.NewService(a.queueSvc,
 			"SnapshotDepth",
 		),
+		"ClusterService": httpapi.NewService(a.clusterSvc,
+			"GetNodes",
+			"StopAgentOnNode",
+			"SendMessageToNode",
+			"RespondApprovalOnNode",
+			"ApprovePlanOnNode",
+		),
 	}
 }
 

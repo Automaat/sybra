@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
@@ -95,6 +96,8 @@ type App struct {
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
 	mirror            *clusterlead.Mirror
+	clusterRoster     *cluster.Roster
+	clusterSvc        *ClusterService
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
 	todoist           *todoistCoordinator
@@ -234,6 +237,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.learningSvc = &LearningService{}
 	a.promptLabSvc = &PromptLabService{}
 	a.queueSvc = &QueueService{}
+	a.clusterSvc = &ClusterService{logger: logger}
 	for _, o := range opts {
 		o(a)
 	}

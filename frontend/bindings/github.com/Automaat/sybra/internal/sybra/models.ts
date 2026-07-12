@@ -296,6 +296,38 @@ export class AppSettings {
 }
 
 /**
+ * ClusterNodeDTO is the aggregated-board view of one follower node: its roster
+ * name and live health (online/degraded/offline/unknown) as last observed by
+ * the leader.
+ */
+export class ClusterNodeDTO {
+    "name": string;
+    "status": string;
+    "activeEndpoint"?: string;
+    "lastError"?: string;
+
+    /** Creates a new ClusterNodeDTO instance. */
+    constructor($$source: Partial<ClusterNodeDTO> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClusterNodeDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClusterNodeDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClusterNodeDTO($$parsedSource as Partial<ClusterNodeDTO>);
+    }
+}
+
+/**
  * CodexModel is a single entry from `codex debug models`.
  */
 export class CodexModel {

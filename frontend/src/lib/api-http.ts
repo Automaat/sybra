@@ -6,7 +6,7 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
@@ -209,6 +209,13 @@ export function ListWorkflows(): Promise<Array<Definition>> { return call('Workf
 export function ResetBuiltin(arg1: string): Promise<void> { return call('WorkflowService', 'ResetBuiltin', arg1) }
 export function SaveWorkflow(arg1: Definition): Promise<void> { return call('WorkflowService', 'SaveWorkflow', arg1) }
 export function StartWorkflow(arg1: string, arg2: string): Promise<void> { return call('WorkflowService', 'StartWorkflow', arg1, arg2) }
+
+// ClusterService
+export function GetNodes(): Promise<Array<ClusterNodeDTO>> { return call('ClusterService', 'GetNodes') }
+export function StopAgentOnNode(arg1: string, arg2: string): Promise<void> { return call('ClusterService', 'StopAgentOnNode', arg1, arg2) }
+export function SendMessageToNode(arg1: string, arg2: string, arg3: string): Promise<void> { return call('ClusterService', 'SendMessageToNode', arg1, arg2, arg3) }
+export function RespondApprovalOnNode(arg1: string, arg2: string, arg3: boolean): Promise<void> { return call('ClusterService', 'RespondApprovalOnNode', arg1, arg2, arg3) }
+export function ApprovePlanOnNode(arg1: string, arg2: string): Promise<void> { return call('ClusterService', 'ApprovePlanOnNode', arg1, arg2) }
 
 // Shared EventSource for the multiplexed /events SSE stream.
 // All EventsOn subscriptions funnel through a single connection.

@@ -7,6 +7,7 @@
 import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
 import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
 import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
+import * as ClusterSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/clusterservice.js'
 import * as ConfigSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/configservice.js'
 import * as IntegrationSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/integrationservice.js'
 import * as LearningSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/learningservice.js'
@@ -171,6 +172,13 @@ export const ListWorkflows = pick(WorkflowSvc.ListWorkflows, http.ListWorkflows)
 export const ResetBuiltin = pick(WorkflowSvc.ResetBuiltin, http.ResetBuiltin)
 export const SaveWorkflow = pick(WorkflowSvc.SaveWorkflow, http.SaveWorkflow)
 export const StartWorkflow = pick(WorkflowSvc.StartWorkflow, http.StartWorkflow)
+
+// ClusterService
+export const GetNodes = pick(ClusterSvc.GetNodes, http.GetNodes)
+export const StopAgentOnNode = pick(ClusterSvc.StopAgentOnNode, http.StopAgentOnNode)
+export const SendMessageToNode = pick(ClusterSvc.SendMessageToNode, http.SendMessageToNode)
+export const RespondApprovalOnNode = pick(ClusterSvc.RespondApprovalOnNode, http.RespondApprovalOnNode)
+export const ApprovePlanOnNode = pick(ClusterSvc.ApprovePlanOnNode, http.ApprovePlanOnNode)
 
 // Runtime events and browser utilities.
 //
