@@ -216,7 +216,7 @@ func fillAPIHTTP(src string, services []service, bindingDir string, skip map[str
 			return local
 		}
 		local := typeName
-		if reservedMethodNames[local] {
+		if reservedMethodNames[local] || usedImportLocals[local] {
 			local = uniqueLocal(typeName + "Data")
 		} else {
 			usedImportLocals[local] = true
