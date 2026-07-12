@@ -478,7 +478,7 @@ func resolveProvider(stepProv string, wfExec *Execution, _ string, t TaskInfo) s
 			return crossProvider(p)
 		}
 		return ""
-	case "":
+	case "", "ab":
 		return ""
 	default:
 		return stepProv

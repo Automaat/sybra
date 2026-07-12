@@ -28,11 +28,12 @@ export function IsOrchestratorRunning(): $CancellablePromise<boolean> {
 
 /**
  * StartOrchestrator launches the orchestrator as an in-app conversational
- * Claude agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live).
- * The detector/dispatch loop runs in-process in the Go backend (see
+ * agent rooted at ~/.sybra (where the brain CLAUDE.md + skills live). The
+ * detector/dispatch loop runs in-process in the Go backend (see
  * LifecycleManager.startMonitorService); this session handles the
- * judgment-driven work on top of it, so it stays pinned to Claude even when
- * generic task agents can fail over to another provider.
+ * judgment-driven work on top of it. Provider is resolved through the A/B suite
+ * (ApplyABVariant) like any other role, and health/limit failover stays on so
+ * the brain is not stranded when its provider is unavailable.
  */
 export function StartOrchestrator(): $CancellablePromise<void> {
     return $Call.ByID(4069016469);

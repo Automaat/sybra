@@ -129,10 +129,12 @@ steps:
     config:
       role: review
       mode: headless
-      # High-risk/staff review is pinned to claude, not routed by "cross" or
-      # the A/B suite — codex review fails ~2x more often than claude review
-      # (scorecard: 17% vs 9%) on the diffs that reach staff-level scrutiny.
-      provider: claude
+      # Routed through the A/B suite (review-expensive) for provider equality.
+      # Historically pinned to claude because codex review failed ~2x more often
+      # on staff-level diffs (scorecard: 17% vs 9%); uniform weights plus the
+      # eval scorecard are expected to re-balance this — watch the review
+      # breakdown per provider after rollout.
+      provider: ab
       needs_worktree: true
       max_retries: 2
       prompt: >-

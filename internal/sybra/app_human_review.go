@@ -184,11 +184,10 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	h.mu.Unlock()
 
 	prompt := h.buildPrompt(t, wctx)
-	ag, err := h.agents.Run(agent.RunConfig{
+	ag, err := h.agents.Run(h.agents.ApplyABVariant(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RoleHumanReview.AgentName(t.Title),
 		Mode:                   "headless",
-		Provider:               "claude",
 		Model:                  h.cfg.HumanReviewModel(),
 		Prompt:                 prompt,
 		Dir:                    h.cfg.HumanReview.SybraRepoDir,
@@ -196,7 +195,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
-	})
+	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview)))
 	if err != nil {
 		h.mu.Lock()
 		delete(h.inflight, taskID)

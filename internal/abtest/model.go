@@ -146,13 +146,6 @@ func DefaultConfig() Config {
 				},
 			},
 			{
-				// Inert for review routing: simple-task-review.yaml pins both
-				// review steps to an explicit provider (claude for staff,
-				// cross for simple) instead of "ab"/"", so selectABVariant
-				// never runs for the review role. Kept as a built-in (rather
-				// than deleted) so a future workflow that opts a review step
-				// back into "ab" picks up a sane premium-tier default; the
-				// "plan" role is likewise routed by provider: cross today.
 				ID:             "review-expensive",
 				Enabled:        &expEnabled,
 				AssignmentUnit: "stage",

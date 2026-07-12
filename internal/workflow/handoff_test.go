@@ -136,8 +136,8 @@ func TestBuiltinHandoffReview_SkipsToReview(t *testing.T) {
 		t.Fatal("simple-task-review code_review_staff step not found")
 		return
 	}
-	if staff.Config.Provider != "claude" {
-		t.Errorf("simple-task-review code_review_staff provider = %q, want claude", staff.Config.Provider)
+	if staff.Config.Provider != "ab" {
+		t.Errorf("simple-task-review code_review_staff provider = %q, want ab", staff.Config.Provider)
 	}
 }
 
