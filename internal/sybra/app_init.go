@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
@@ -434,6 +435,11 @@ func (a *App) initStatusHook() {
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
+		local := true
+		if t, err := a.tasks.Get(taskID); err == nil {
+			local = a.runsTaskLocally(t)
+		}
+
 		// Wake the dispatch pass immediately so a task that just became ready
 		// (e.g. a dependency completing, a stage advancing) is picked up now
 		// instead of waiting for the next fast tick.
@@ -442,10 +448,10 @@ func (a *App) initStatusHook() {
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
 		// never exit between turns) signal step completion.
-		if a.workflowEngine != nil {
+		if local && a.workflowEngine != nil {
 			a.workflowEngine.HandleStatusChange(taskID, to)
 		}
-		if releaseTaskAgents {
+		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
 		}
 
@@ -466,7 +472,7 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if a.humanReview != nil {
+			if local && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
@@ -476,7 +482,9 @@ func (a *App) initStatusHook() {
 		case string(task.StatusReadyPR):
 			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 		case string(task.StatusDone):
-			go a.closeLinkedIssueOnDone(taskID)
+			if local {
+				go a.closeLinkedIssueOnDone(taskID)
+			}
 		}
 	})
 }
@@ -550,6 +558,33 @@ func (a *App) releaseTaskAgents(taskID string) {
 	}(filtered)
 }
 
+func (a *App) runsTaskLocally(t task.Task) bool {
+	return a.cfg == nil || a.cfg.HomeNodeFor(t.ProjectID).Local
+}
+
+func (a *App) initCluster() {
+	if a.workflowEngine != nil {
+		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
+			return a.cfg == nil || a.cfg.HomeNodeFor(ti.ProjectID).Local
+		})
+	}
+	if a.cfg == nil || !a.cfg.IsLeader() {
+		return
+	}
+	roster, err := clusterlead.NewRoster(a.cfg, a.logger)
+	if err != nil {
+		a.logger.Error("cluster.roster.init.failed", "err", err)
+		return
+	}
+	if roster == nil || len(roster.Names()) == 0 {
+		a.logger.Info("cluster.leader.no-followers")
+		return
+	}
+	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.logger)
+	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
+	a.logger.Info("cluster.leader.enabled", "followers", roster.Names())
+}
+
 // dispatchStatusWorkflow starts the workflow matching a status-change event.
 //
 // ErrWorkflowAlreadyActive is benign for these status transitions:
@@ -575,6 +610,9 @@ func (a *App) releaseTaskAgents(taskID string) {
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 	if a.workflowEngine == nil {
+		return
+	}
+	if t, err := a.tasks.Get(taskID); err == nil && !a.runsTaskLocally(t) {
 		return
 	}
 
@@ -639,6 +677,14 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		// no status condition, so without this guard a task.created dispatch
 		// could restart planning on an in-review/done task.
 		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
+			return
+		}
+		if !a.runsTaskLocally(t) {
+			if a.assigner != nil {
+				if _, err := a.assigner.Route(a.ctx, t); err != nil {
+					a.logger.Warn("cluster.assign.failed", "task_id", id, "err", err)
+				}
+			}
 			return
 		}
 		// pr-fix / ordinary existing-PR tasks are driven outside task.created.
@@ -987,6 +1033,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
 		},
+		DispatchGate: a.runsTaskLocally,
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

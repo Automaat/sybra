@@ -333,6 +333,64 @@ func TestRunStartupCleanup_PruneTrashZeroUsesDefaultRetention(t *testing.T) {
 // in-progress task whose latest agent run started seconds ago is left
 // alone (no respawn) so a hot-reloaded App doesn't race a still-living
 // subprocess from the prior lifecycle.
+func TestRestartStaleSkipsGatedTask(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("remote", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/pet"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-1",
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+		DispatchGate: func(tk task.Task) bool { return tk.ProjectID != "owner/pet" },
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 0 {
+		t.Errorf("gated (remote-homed) task was restarted %d times; want 0 — the leader must not run a follower's task", stub.startCalls)
+	}
+}
+
 func TestRestartStaleSkipsRecentRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)

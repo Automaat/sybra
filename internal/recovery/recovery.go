@@ -79,6 +79,8 @@ type Recovery struct {
 	LogRetention time.Duration // 0 disables age-based pruning
 	OrphanRoots  []string
 
+	DispatchGate func(task.Task) bool
+
 	// TrashRetentionDays bounds how long a soft-deleted task (see
 	// task.Store.Delete) survives under the trash dir before
 	// pruneTrash permanently removes it. A negative value disables

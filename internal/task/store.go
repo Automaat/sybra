@@ -1607,10 +1607,10 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	if status != nil {
 		oldStatus := t.Status
 		t.Status = *status
-		now := time.Now().UTC()
 		if oldStatus != t.Status {
 			t.StatusChangedAt = now
 		} else {
@@ -1624,10 +1624,11 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 			t.ClosedAt = nil
 		}
 	} else {
-		backfillStatusChangedAt(&t, time.Now().UTC())
+		backfillStatusChangedAt(&t, now)
 	}
 	t.AgentRuns = append(t.AgentRuns, run)
-	d, err := Marshal(t)
+	t.UpdatedAt = now
+	d, err := marshalTask(t, false)
 	if err != nil {
 		return err
 	}
@@ -1808,8 +1809,10 @@ func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	if !found {
 		return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 	}
-	backfillStatusChangedAt(&t, time.Now().UTC())
-	d, err := Marshal(t)
+	now := time.Now().UTC()
+	backfillStatusChangedAt(&t, now)
+	t.UpdatedAt = now
+	d, err := marshalTask(t, false)
 	if err != nil {
 		return err
 	}
