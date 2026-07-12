@@ -194,6 +194,7 @@ func TestRecoverStaleBranchConflict_LeavesParkedPRFixWorkflowWithoutBurningBudge
 		WorkflowID:  prFixWorkflowID,
 		CurrentStep: "fix",
 		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": string(github.PRIssueConflict)},
 	}
 	if _, err := r.tasks.Update(tk.ID, task.Update{Workflow: &parked}); err != nil {
 		t.Fatal(err)
@@ -215,6 +216,47 @@ func TestRecoverStaleBranchConflict_LeavesParkedPRFixWorkflowWithoutBurningBudge
 	}
 	if n := r.prTracker.Retries(tk.ID, github.PRIssueConflict); n != 0 {
 		t.Fatalf("conflict retry budget = %d, want 0 (no agent ran, so nothing to charge)", n)
+	}
+}
+
+// TestRecoverStaleBranchConflict_ProceedsPastNonConflictParkedPRFix guards the
+// regression where the parked-pr-fix short-circuit was kind-blind: pr-fix also
+// handles ci_failure and comments, so a task parked on a non-conflict pr-fix
+// must NOT be treated as "conflict recovery already in flight". Otherwise a
+// real rebase conflict encountered while an unrelated pr-fix is parked would
+// report success without ever dispatching conflict recovery, and the caller
+// would skip human escalation.
+//
+// Here the conflict retry budget is pre-exhausted, so proceeding past the guard
+// deterministically escalates to human-required — the opposite of the early
+// return's untouched-workflow / success outcome.
+func TestRecoverStaleBranchConflict_ProceedsPastNonConflictParkedPRFix(t *testing.T) {
+	r, tk := setupRebaseRecoveryHandler(t, false)
+	parked := &workflow.Execution{
+		WorkflowID:  prFixWorkflowID,
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": string(github.PRIssueCIFailure)},
+	}
+	if _, err := r.tasks.Update(tk.ID, task.Update{Workflow: &parked}); err != nil {
+		t.Fatal(err)
+	}
+	// Exhaust the conflict retry budget so the (correct) non-early path lands on
+	// a deterministic terminal outcome we can assert on.
+	for range github.MaxRetries {
+		r.prTracker.MarkHandled(tk.ID, github.PRIssueConflict, "sha")
+	}
+
+	if r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("RecoverStaleBranchConflict early-returned as already-parked for a ci_failure pr-fix; it must proceed to conflict recovery")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required (proves it proceeded past the parked-fix guard to the exhausted-conflict path)", got.Status)
 	}
 }
 
