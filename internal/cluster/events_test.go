@@ -15,7 +15,10 @@ import (
 func TestSubscribeDecodesFrames(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != "tok" {
+		if r.URL.RawQuery != "" {
+			t.Errorf("token must not leak into the /events URL query, got %q", r.URL.RawQuery)
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

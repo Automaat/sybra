@@ -32,20 +32,23 @@ func pinnedTransport(pin string) (*http.Transport, error) {
 	if err != nil {
 		return nil, err
 	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-			VerifyConnection: func(cs tls.ConnectionState) error {
-				if len(cs.PeerCertificates) == 0 {
-					return errors.New("cluster: follower presented no certificate")
-				}
-				got := sha256.Sum256(cs.PeerCertificates[0].Raw)
-				if subtle.ConstantTimeCompare(got[:], want) != 1 {
-					return fmt.Errorf("cluster: cert pin mismatch (got sha256:%x)", got)
-				}
-				return nil
-			},
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("cluster: http.DefaultTransport is not *http.Transport")
+	}
+	tr := base.Clone()
+	tr.TLSClientConfig = &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("cluster: follower presented no certificate")
+			}
+			got := sha256.Sum256(cs.PeerCertificates[0].Raw)
+			if subtle.ConstantTimeCompare(got[:], want) != 1 {
+				return fmt.Errorf("cluster: cert pin mismatch (got sha256:%x)", got)
+			}
+			return nil
 		},
 	}
 	return tr, nil

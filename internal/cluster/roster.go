@@ -141,8 +141,10 @@ func (r *Roster) ProbeNode(ctx context.Context, name string, now time.Time) Node
 }
 
 // SetHealthFromEvent lets a live SSE liveness signal update a node's status
-// between /health polls: a received event marks the node online, a stream drop
-// marks it offline (until the next successful probe reclassifies it).
+// between /health polls: a received event lifts an offline/unknown node to
+// online (a degraded node stays degraded, since an event only proves *some*
+// endpoint answered, not that the preferred one recovered), and a stream drop
+// marks the node offline until the next successful probe reclassifies it.
 func (r *Roster) SetHealthFromEvent(name string, online bool, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

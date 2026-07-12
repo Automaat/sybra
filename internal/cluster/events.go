@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -48,11 +47,7 @@ func (c *Client) Subscribe(ctx context.Context) (<-chan Event, error) {
 const eventChanBuf = 64
 
 func (c *Client) openEvents(ctx context.Context, base string) (io.ReadCloser, error) {
-	u := strings.TrimRight(base, "/") + "/events"
-	if c.node.Token != "" {
-		u += "?token=" + url.QueryEscape(c.node.Token)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/events", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
