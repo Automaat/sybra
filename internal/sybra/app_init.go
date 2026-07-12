@@ -808,14 +808,17 @@ func (a *App) initWorkflowEngine() {
 	// Order ResumeStalled's per-tick scan with the same agentqueue.Less
 	// ordering the admission queue itself uses (priority/status-floor,
 	// manual, dispatch-status, age), and prune stale queue entries first.
+	// App-level manual draining only pops manual items; workflow-owned queue
+	// entries stay visible here so ResumeStalled remains the sole owner of
+	// workflow dispatch order and token consumption.
 	// Wired here (not inside internal/workflow) so the engine package never
 	// imports internal/agentqueue — see TaskInfo.Priority's doc comment.
 	if q != nil {
 		a.workflowEngine.SetDispatchComparator(func() func(x, y workflow.TaskInfo) int {
 			snap := q.Snapshot()
 			queued := make(map[string]agentqueue.Item, len(snap))
-			for _, it := range snap {
-				queued[it.TaskID] = it
+			for i := range snap {
+				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
 				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}

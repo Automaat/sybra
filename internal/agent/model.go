@@ -27,6 +27,7 @@ type State string
 
 const (
 	StateIdle    State = "idle"
+	StateQueued  State = "queued"
 	StateRunning State = "running"
 	StatePaused  State = "paused"
 	StateStopped State = "stopped"
@@ -1152,8 +1153,8 @@ type RunConfig struct {
 	// any workflow that expects the agent to "finish". Ignored in headless mode.
 	OneShot bool
 	// IgnoreConcurrencyLimit lets an agent start even when MaxConcurrent is
-	// saturated. Reserved for system-level long-lived sessions (orchestrator)
-	// that must always be runnable regardless of swarm load.
+	// saturated. Reserved for operator-present interactive/chat sessions and
+	// system-level runs that must never sit behind the headless swarm queue.
 	IgnoreConcurrencyLimit bool
 	// IgnoreHealthGate lets an agent start even when the provider health gate
 	// marks the requested provider as unhealthy. Reserved for internal probes

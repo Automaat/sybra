@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/project"
@@ -65,6 +67,106 @@ func setupApp(t *testing.T) *App {
 		worktrees: wm,
 		agentOrch: agentOrch,
 	}
+}
+
+func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent int) *App {
+	t.Helper()
+	if taskDir == "" {
+		var err error
+		taskDir, err = os.MkdirTemp("", "sybra-manual-queue-tasks-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(taskDir) })
+	}
+	if queueDir == "" {
+		queueDir = t.TempDir()
+	}
+
+	store, err := task.NewStore(taskDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
+		"trap 'exit 0' TERM INT\n"+
+		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
+		"sleep 5\n"+
+		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
+		0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logger := discardLogger()
+	mgr, err := agent.NewManager(t.Context(), func(string, any) {}, logger, t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: maxConcurrent},
+		SandboxHome: func(string) (string, error) {
+			return t.TempDir(), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewManager: %v", err)
+	}
+	q, err := agentqueue.New(queueDir, agentqueue.Options{}, logger)
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+
+	noPermissions := false
+	cfg := config.DefaultConfig()
+	cfg.Agent.ResearchMachineDir = t.TempDir()
+	cfg.Agent.RequirePermissions = &noPermissions
+
+	orch := agentorch.New(taskMgr, nil, mgr, nil, logger, nil, cfg)
+	orch.SetQueue(q)
+	orch.SetContext(t.Context())
+
+	return &App{
+		ctx:           t.Context(),
+		tasks:         taskMgr,
+		agents:        mgr,
+		agentQueue:    q,
+		agentOrch:     orch,
+		logger:        logger,
+		cfg:           cfg,
+		dispatchNudge: make(chan struct{}, 1),
+		orchSvc:       &OrchestratorService{},
+	}
+}
+
+func createResearchTaskWithPriority(t *testing.T, tasks *task.Manager, title string, priority task.Priority) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", "headless")
+	if err != nil {
+		t.Fatalf("task Create(%q): %v", title, err)
+	}
+	updated, err := tasks.Update(created.ID, task.Update{
+		TaskType: task.Ptr(task.TaskTypeResearch),
+		Priority: task.Ptr(priority),
+	})
+	if err != nil {
+		t.Fatalf("task Update(%q): %v", title, err)
+	}
+	return updated
+}
+
+func waitForTaskAgent(t *testing.T, mgr *agent.Manager, taskID string) *agent.Agent {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, ag := range mgr.ListAgents() {
+			if ag != nil && ag.TaskID == taskID {
+				return ag
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for agent registration for task %s", taskID)
+	return nil
 }
 
 func TestInitAgentManagerEmitsDegradedWhenSurvivalDisabled(t *testing.T) {
@@ -350,6 +452,142 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
+}
+
+func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
+	a := setupManualQueueApp(t, "", "", 1)
+
+	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
+	if err != nil {
+		t.Fatalf("StartAgent(blocker): %v", err)
+	}
+	t.Cleanup(func() { _ = a.agents.StopAgent(blockerAgent.ID) })
+
+	queuedTask := createResearchTaskWithPriority(t, a.tasks, "queued manual", task.PriorityHigh)
+	queued, err := a.StartAgent(queuedTask.ID, "headless", "ship it", true)
+	if err != nil {
+		t.Fatalf("StartAgent(queuedTask): %v", err)
+	}
+	if queued.State != agent.StateQueued {
+		t.Fatalf("queued State = %q, want %q", queued.State, agent.StateQueued)
+	}
+	if _, err := a.agents.GetAgent(queued.ID); err == nil {
+		t.Fatalf("queued agent %q must not be registered live", queued.ID)
+	}
+	if got := a.agents.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount = %d, want 1", got)
+	}
+	snap := a.agentQueue.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != queuedTask.ID || !snap[0].Manual {
+		t.Fatalf("queue snapshot = %+v, want single manual item for %s", snap, queuedTask.ID)
+	}
+}
+
+func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
+	a := setupManualQueueApp(t, "", "", 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.agents.QueueNudge():
+				a.queueDrainPass(ctx)
+			}
+		}
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+	_, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
+	if err != nil {
+		t.Fatalf("StartAgent(blocker): %v", err)
+	}
+
+	high := createResearchTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
+	low := createResearchTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
+	if _, err := a.StartAgent(high.ID, "headless", "high", false); err != nil {
+		t.Fatalf("StartAgent(high): %v", err)
+	}
+	if _, err := a.StartAgent(low.ID, "headless", "low", false); err != nil {
+		t.Fatalf("StartAgent(low): %v", err)
+	}
+	workflowTask := createResearchTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
+	a.agentQueue.Offer(agentqueue.Item{
+		TaskID:   workflowTask.ID,
+		Role:     string(agent.RoleImplementation),
+		Priority: task.PriorityUrgent,
+		Status:   task.StatusTodo,
+	})
+
+	a.agents.KillAgentsForTask(blocker.ID, 5*time.Second)
+	start := time.Now()
+	waitForTaskAgent(t, a.agents, high.ID)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("manual queue drain took %s, want under 1s after queue nudge", elapsed)
+	}
+
+	for _, ag := range a.agents.ListAgents() {
+		if ag != nil && ag.TaskID == low.ID {
+			t.Fatalf("low-priority manual task started before high-priority task: %+v", ag)
+		}
+	}
+	snap := a.agentQueue.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("queue snapshot after first drain = %+v, want workflow token + low manual", snap)
+	}
+	var sawWorkflow, sawLow bool
+	for _, it := range snap {
+		if it.TaskID == workflowTask.ID && !it.Manual {
+			sawWorkflow = true
+		}
+		if it.TaskID == low.ID && it.Manual {
+			sawLow = true
+		}
+	}
+	if !sawWorkflow || !sawLow {
+		t.Fatalf("queue snapshot after first drain = %+v, want workflow token preserved and low manual still queued", snap)
+	}
+	a.agents.KillAgentsForTask(high.ID, 5*time.Second)
+}
+
+func TestManualQueueReloadDrainsAfterRestart(t *testing.T) {
+	taskDir := t.TempDir()
+	queueDir := t.TempDir()
+
+	first := setupManualQueueApp(t, taskDir, queueDir, 1)
+	blocker := createResearchTaskWithPriority(t, first.tasks, "blocker", task.PriorityMedium)
+	blockerAgent, err := first.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
+	if err != nil {
+		t.Fatalf("StartAgent(blocker): %v", err)
+	}
+	queuedTask := createResearchTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
+	if _, err := first.StartAgent(queuedTask.ID, "headless", "after restart", false); err != nil {
+		t.Fatalf("StartAgent(queuedTask): %v", err)
+	}
+	if err := first.agents.StopAgent(blockerAgent.ID); err != nil {
+		t.Fatalf("StopAgent(blocker): %v", err)
+	}
+
+	restored := setupManualQueueApp(t, taskDir, queueDir, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		restored.orchestratorLoop(ctx)
+	}()
+	waitForTaskAgent(t, restored.agents, queuedTask.ID)
+	restored.agents.KillAgentsForTask(queuedTask.ID, 5*time.Second)
+	cancel()
+	<-done
 }
 
 // runTestAgent bypasses the orchestrator (which requires a project) and spawns

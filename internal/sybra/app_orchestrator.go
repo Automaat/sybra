@@ -2,10 +2,14 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // orchestratorLoop runs two cadences. The cheap, latency-sensitive dispatch pass
@@ -15,15 +19,23 @@ import (
 // agents, prune orphan worktrees) — which hits git and may spawn agents — fires
 // on a slower ticker so it never runs hot.
 func (a *App) orchestratorLoop(ctx context.Context) {
+	a.queueDrainPass(ctx)
+
 	dispatch := time.NewTicker(a.dispatchInterval())
 	defer dispatch.Stop()
 	maintenance := time.NewTicker(a.maintenanceInterval())
 	defer maintenance.Stop()
+	var queueNudge <-chan struct{}
+	if a.agents != nil {
+		queueNudge = a.agents.QueueNudge()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-queueNudge:
+			a.queueDrainPass(ctx)
 		case <-a.dispatchNudge:
 			a.dispatchPass(ctx)
 		case <-dispatch.C:
@@ -45,12 +57,7 @@ func (a *App) dispatchPass(ctx context.Context) {
 // maintenancePass runs the expensive, git/agent-touching recovery and cleanup.
 func (a *App) maintenancePass(ctx context.Context) {
 	metrics.OrchestratorTick(ctx)
-	if a.workflowEngine != nil {
-		// workflow.Engine derives its shell-step context from its own e.ctx
-		// field (Engine.SetContext, bound once from App's root ctx), not an
-		// explicit per-call parameter.
-		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
-	}
+	a.queueDrainPass(ctx)
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
 	a.recovery.RestartStaleInProgress(ctx)
@@ -63,6 +70,70 @@ func (a *App) maintenancePass(ctx context.Context) {
 		a.taskSvc.ReconcilePendingEnrichment() //nolint:contextcheck // agent.Manager dispatch chain uses its own m.ctx field, see comment above
 	}
 	a.worktrees.CleanupOrphaned(ctx)
+}
+
+func (a *App) queueDrainPass(ctx context.Context) {
+	a.drainManualQueue(ctx)
+	if a.workflowEngine != nil {
+		// workflow.Engine derives its shell-step context from its own e.ctx
+		// field (Engine.SetContext, bound once from App's root ctx), not an
+		// explicit per-call parameter.
+		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	}
+}
+
+func (a *App) drainManualQueue(ctx context.Context) {
+	if a.agentQueue == nil || a.agentOrch == nil || a.agents == nil || a.tasks == nil {
+		return
+	}
+	a.agentQueue.Reconcile(func(id string) (task.Task, bool) {
+		t, err := a.tasks.Get(id)
+		return t, err == nil
+	})
+	snap := a.agentQueue.Snapshot()
+	manualDepth := 0
+	for i := range snap {
+		if snap[i].Manual {
+			manualDepth++
+		}
+	}
+	slots := a.agents.AvailableQueueDrainSlots(manualDepth)
+	if slots <= 0 {
+		return
+	}
+	popped := a.agentQueue.PopManualReady(slots)
+	for i := range popped {
+		it := popped[i]
+		ag, err := a.agentOrch.StartQueuedManualItem(ctx, it)
+		if ag != nil && ag.GetState() == agent.StateQueued {
+			a.restoreManualQueueItem(it)
+			continue
+		}
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, workflow.ErrAgentPoolBusy) || errors.Is(err, workflow.ErrDispatchInFlight) {
+			a.restoreManualQueueItem(it)
+			continue
+		}
+		a.logger.Warn("agentqueue.manual-drain.dispatch", "task_id", it.TaskID, "err", err)
+	}
+}
+
+func (a *App) restoreManualQueueItem(it agentqueue.Item) {
+	if a.agentQueue == nil {
+		return
+	}
+	if restored := a.agentQueue.Restore(it); restored {
+		return
+	}
+	snap := a.agentQueue.Snapshot()
+	for i := range snap {
+		if snap[i].TaskID == it.TaskID && snap[i].Manual {
+			return
+		}
+	}
+	a.logger.Warn("agentqueue.manual-drain.restore", "task_id", it.TaskID)
 }
 
 // nudgeDispatch asks the orchestrator loop to run a dispatch pass promptly

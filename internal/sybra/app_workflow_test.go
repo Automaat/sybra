@@ -299,6 +299,57 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 }
 
+func TestAgentAdapterStartAgentInteractiveBypassesConcurrencyCap(t *testing.T) {
+	fakebin := t.TempDir()
+	fakeClaude := filepath.Join(fakebin, "claude")
+	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\ntrap 'exit 0' TERM INT\nsleep 5\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", fakebin+":"+os.Getenv("PATH"))
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := task.NewManager(store, nil)
+	logger := discardLogger()
+	mgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir(), agent.ManagerConfig{
+		Runtime: agent.ManagerRuntimeConfig{DefaultProvider: "claude", MaxConcurrent: 1},
+	})
+	orch := agentorch.New(tm, nil, mgr, nil, logger, nil, &config.Config{})
+	aa := &agentAdapter{agents: mgr, agentOrch: orch, tasks: tm}
+
+	blocker, err := mgr.Run(agent.RunConfig{
+		TaskID: "blocker",
+		Name:   "blocker",
+		Mode:   "headless",
+		Prompt: "hold",
+		Dir:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("start blocker: %v", err)
+	}
+	t.Cleanup(func() { mgr.KillAgentsForTask(blocker.TaskID, 5*time.Second) })
+
+	created, err := tm.Create("interactive direct role", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mgr.KillAgentsForTask(created.ID, 5*time.Second) })
+
+	agentID, _, _, err := aa.StartAgent(created.ID, string(agent.RolePlan), "interactive", "sonnet", "claude", "prompt", "", nil, false, false, "", "", workflow.AgentAssignment{})
+	if err != nil {
+		t.Fatalf("interactive StartAgent at cap: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("interactive StartAgent returned empty agentID")
+	}
+	if got := mgr.RunningCount(); got != 2 {
+		t.Fatalf("RunningCount = %d, want 2 after interactive bypass", got)
+	}
+}
+
 // conflictRecoveryHarness bundles the real-git fixture used to drive a
 // direct-dispatch StartAgent into a rebase-blocked worktree-prep error and its
 // synchronous conflict-recovery callback.

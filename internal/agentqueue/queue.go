@@ -18,7 +18,12 @@ type Item struct {
 	Priority task.Priority `yaml:"priority"`
 	Status   task.Status   `yaml:"status"`
 	Manual   bool          `yaml:"manual"`
-	Enqueued time.Time     `yaml:"enqueued"`
+	Mode     string        `yaml:"mode,omitempty"`
+	Prompt   string        `yaml:"prompt,omitempty"`
+	// IncludeTaskDescription mirrors the manual-start flag so a queued manual
+	// replay rebuilds the same prompt shape once a slot becomes available.
+	IncludeTaskDescription bool      `yaml:"include_task_description,omitempty"`
+	Enqueued               time.Time `yaml:"enqueued"`
 }
 
 // Options configures queue behavior. These are package-local for P0 — no
@@ -108,8 +113,9 @@ func New(dir string, opts Options, log *slog.Logger) (*Queue, error) {
 		now:   time.Now,
 		opts:  opts,
 	}
-	for _, it := range st.load(log) {
-		heap.Push(q.h, it)
+	loaded := st.load(log)
+	for i := range loaded {
+		heap.Push(q.h, loaded[i])
 	}
 	return q, nil
 }
@@ -121,6 +127,18 @@ func New(dir string, opts Options, log *slog.Logger) (*Queue, error) {
 // (logged, no mutation). A genuinely new TaskID is rejected when
 // Options.MaxDepth > 0 and the queue is already at that depth.
 func (q *Queue) Offer(it Item) bool {
+	return q.offer(it, false)
+}
+
+// Restore re-inserts an item previously popped from the queue, preserving its
+// original Enqueued timestamp and bypassing MaxDepth. Used only to put a
+// manual item back after a transient drain-time failure so a race does not
+// silently drop durable operator intent.
+func (q *Queue) Restore(it Item) bool {
+	return q.offer(it, true)
+}
+
+func (q *Queue) offer(it Item, restore bool) bool {
 	if !safeTaskID(it.TaskID) {
 		q.log.Warn("agentqueue.offer.unsafe-task-id", "task_id", it.TaskID)
 		return false
@@ -131,14 +149,14 @@ func (q *Queue) Offer(it Item) bool {
 
 	if pos, ok := q.h.index[it.TaskID]; ok {
 		existing := q.h.items[pos]
-		it.Enqueued = existing.Enqueued
+		it.Enqueued = earliestEnqueued(existing.Enqueued, it.Enqueued)
 		q.h.items[pos] = it
 		heap.Fix(q.h, pos)
 		q.persist(it)
 		return false
 	}
 
-	if q.opts.MaxDepth > 0 && len(q.h.items) >= q.opts.MaxDepth {
+	if !restore && q.opts.MaxDepth > 0 && len(q.h.items) >= q.opts.MaxDepth {
 		q.log.Warn("agentqueue.offer.max-depth", "task_id", it.TaskID, "max_depth", q.opts.MaxDepth)
 		return false
 	}
@@ -149,6 +167,19 @@ func (q *Queue) Offer(it Item) bool {
 	heap.Push(q.h, it)
 	q.persist(it)
 	return true
+}
+
+func earliestEnqueued(existing, incoming time.Time) time.Time {
+	switch {
+	case existing.IsZero():
+		return incoming
+	case incoming.IsZero():
+		return existing
+	case incoming.Before(existing):
+		return incoming
+	default:
+		return existing
+	}
 }
 
 // Remove drops taskID from the queue and its store file, if present. An
@@ -209,6 +240,17 @@ func (q *Queue) DepthSnapshot() DepthSnapshot {
 // long are re-ranked one priority tier higher (capped at Urgent) for this
 // pop only — the exported Less ordering itself stays clock-free.
 func (q *Queue) PopReady(n int) []Item {
+	return q.popReady(n, func(Item) bool { return true })
+}
+
+// PopManualReady returns up to n ready manual items, preserving the queue's
+// priority ordering among manual items while leaving workflow-owned entries
+// persisted and visible for ResumeStalled.
+func (q *Queue) PopManualReady(n int) []Item {
+	return q.popReady(n, func(it Item) bool { return it.Manual })
+}
+
+func (q *Queue) popReady(n int, keep func(Item) bool) []Item {
 	if n <= 0 {
 		return nil
 	}
@@ -222,8 +264,15 @@ func (q *Queue) PopReady(n int) []Item {
 
 	now := q.now()
 	after := q.opts.StarvationBoostAfter
-	ranked := make([]Item, len(q.h.items))
-	copy(ranked, q.h.items)
+	ranked := make([]Item, 0, len(q.h.items))
+	for i := range q.h.items {
+		if keep(q.h.items[i]) {
+			ranked = append(ranked, q.h.items[i])
+		}
+	}
+	if len(ranked) == 0 {
+		return nil
+	}
 	slices.SortFunc(ranked, func(a, b Item) int {
 		switch {
 		case lessBoosted(a, b, now, after):
@@ -239,10 +288,10 @@ func (q *Queue) PopReady(n int) []Item {
 		n = len(ranked)
 	}
 	out := ranked[:n]
-	for _, it := range out {
-		pos := q.h.index[it.TaskID]
+	for i := range out {
+		pos := q.h.index[out[i].TaskID]
 		heap.Remove(q.h, pos)
-		q.deletePersist(it.TaskID)
+		q.deletePersist(out[i].TaskID)
 	}
 	return out
 }
@@ -259,8 +308,8 @@ func (q *Queue) Reconcile(exists func(taskID string) (task.Task, bool)) {
 	// since items may have moved or been removed while unlocked.
 	q.mu.Lock()
 	ids := make([]string, len(q.h.items))
-	for i, it := range q.h.items {
-		ids[i] = it.TaskID
+	for i := range q.h.items {
+		ids[i] = q.h.items[i].TaskID
 	}
 	q.mu.Unlock()
 

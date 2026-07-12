@@ -304,13 +304,13 @@ func newResearchTask(t *testing.T, tm *task.Manager, title string) task.Task {
 	return tk
 }
 
-// TestStartAgentWithAssignment_AdmissionGate pins the workflow implementation
+// TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy pins the workflow implementation
 // dispatch path's admission-queue behavior once the agent pool is saturated:
 // a pool-busy dispatch is offered to the queue (not just hard-errored), a
 // re-dispatch of the same task refreshes the existing queue entry instead of
-// duplicating it, and a manual/direct StartAgent call bypasses the queue
-// offer entirely even though it still reports the same pool-busy sentinel.
-func TestStartAgentWithAssignment_AdmissionGate(t *testing.T) {
+// duplicating it, and a manual/direct StartAgent call persists a manual queue
+// replay and returns a synthetic queued agent instead of hard-erroring.
+func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
@@ -362,16 +362,38 @@ func TestStartAgentWithAssignment_AdmissionGate(t *testing.T) {
 		t.Fatalf("queue depth after re-dispatch = %d, want 1 (dedup refresh, not a duplicate)", got)
 	}
 
-	// A manual/direct StartAgent call must still observe the pool-busy
-	// sentinel (unchanged pre-existing translatePoolBusy behavior) but must
-	// never offer the task to the admission queue itself.
-	third := newResearchTask(t, tm, "manual dispatch bypasses admission gate")
-	if _, err := o.StartAgent(third.ID, "headless", "go", false, false); !errors.Is(err, workflow.ErrAgentPoolBusy) {
-		t.Fatalf("StartAgent(third) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
+	// A manual/direct StartAgent call must persist a manual replay item and
+	// return a synthetic queued agent without consuming a live slot.
+	third := newResearchTask(t, tm, "manual dispatch queues durably")
+	ag, err := o.StartAgent(third.ID, "headless", "go", true, false)
+	if err != nil {
+		t.Fatalf("StartAgent(third) unexpected err: %v", err)
+	}
+	if ag == nil || ag.State != agent.StateQueued {
+		t.Fatalf("StartAgent(third) = %+v, want synthetic queued agent", ag)
+	}
+	if _, err := am.GetAgent(ag.ID); err == nil {
+		t.Fatalf("synthetic queued agent %q must not be registered as a live agent", ag.ID)
+	}
+	if got := am.RunningCount(); got != 1 {
+		t.Fatalf("RunningCount after queued manual start = %d, want 1 (queued item must not consume a slot)", got)
 	}
 	snap = q.Snapshot()
-	if len(snap) != 1 || snap[0].TaskID != second.ID {
-		t.Fatalf("queue snapshot after manual StartAgent = %+v, want unchanged [%s] (manual dispatch must bypass admission)", snap, second.ID)
+	if len(snap) != 2 {
+		t.Fatalf("queue snapshot after manual StartAgent = %+v, want workflow + manual items", snap)
+	}
+	var manualItem *agentqueue.Item
+	for i := range snap {
+		if snap[i].TaskID == third.ID {
+			manualItem = &snap[i]
+			break
+		}
+	}
+	if manualItem == nil {
+		t.Fatalf("manual queued item for %s missing from snapshot %+v", third.ID, snap)
+	}
+	if !manualItem.Manual || manualItem.Mode != "headless" || manualItem.Prompt != "go" || !manualItem.IncludeTaskDescription {
+		t.Fatalf("manual queued item = %+v, want Manual=true mode=headless prompt=go includeTaskDescription=true", *manualItem)
 	}
 }
 
@@ -423,6 +445,53 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	snap := q.Snapshot()
 	if len(snap) != 1 || snap[0].TaskID != second.ID {
 		t.Fatalf("queue snapshot = %+v, want unchanged [%s] (rejected task must not appear queued)", snap, second.ID)
+	}
+}
+
+func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
+	ts, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tm := task.NewManager(ts, nil)
+	am := newFakeClaudeManager(t, 1)
+
+	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{MaxDepth: 1}, discardSlogLogger())
+	if err != nil {
+		t.Fatalf("agentqueue.New: %v", err)
+	}
+
+	noPermissions := false
+	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
+		Agent: config.AgentDefaults{
+			ResearchMachineDir: t.TempDir(),
+			RequirePermissions: &noPermissions,
+		},
+	})
+	o.SetQueue(q)
+
+	blocker := newResearchTask(t, tm, "occupies the only pool slot")
+	if _, _, err := o.StartAgentWithAssignment(blocker.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+		t.Fatalf("StartAgentWithAssignment(blocker) unexpected err: %v", err)
+	}
+	t.Cleanup(func() { am.KillAgentsForTask(blocker.ID, 5*time.Second) })
+
+	firstQueued := newResearchTask(t, tm, "fills the only queue slot")
+	if _, _, err := o.StartAgentWithAssignment(firstQueued.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("StartAgentWithAssignment(firstQueued) err = %v, want workflow.ErrAgentPoolBusy", err)
+	}
+
+	manual := newResearchTask(t, tm, "manual queue rejection")
+	ag, err := o.StartAgent(manual.ID, "headless", "go", false, false)
+	if err == nil {
+		t.Fatalf("StartAgent(manual) = %+v, want non-nil error once queue is at max depth", ag)
+	}
+	if errors.Is(err, workflow.ErrAgentPoolBusy) {
+		t.Fatalf("StartAgent(manual) err = %v, want hard rejection rather than workflow.ErrAgentPoolBusy", err)
+	}
+	snap := q.Snapshot()
+	if len(snap) != 1 || snap[0].TaskID != firstQueued.ID {
+		t.Fatalf("queue snapshot = %+v, want unchanged [%s]", snap, firstQueued.ID)
 	}
 }
 

@@ -783,6 +783,29 @@ func (m *Manager) TryReserveSlot() bool {
 	return m.maxConcurrent <= 0 || m.liveCount < m.maxConcurrent
 }
 
+// AvailableQueueDrainSlots returns how many queued manual items can be drained
+// immediately, bounded by the caller's current manual-queue depth. This is a
+// read-only helper for the app-level queue drain: it never claims capacity,
+// and registerRunningAgent still re-checks the cap authoritatively.
+func (m *Manager) AvailableQueueDrainSlots(queueDepth int) int {
+	if queueDepth <= 0 {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.maxConcurrent <= 0 {
+		return queueDepth
+	}
+	free := m.maxConcurrent - m.liveCount
+	if free <= 0 {
+		return 0
+	}
+	if free > queueDepth {
+		return queueDepth
+	}
+	return free
+}
+
 // signalQueueNudge fires a non-blocking, coalescing signal on queueNudge. If
 // a nudge is already pending (buffer full), the send is dropped — one
 // pending nudge is sufficient to prompt a dispatcher to re-scan.

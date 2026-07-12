@@ -351,6 +351,47 @@ func TestTryReserveSlot(t *testing.T) {
 	}
 }
 
+func TestAvailableQueueDrainSlots(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	if got := m.AvailableQueueDrainSlots(0); got != 0 {
+		t.Fatalf("AvailableQueueDrainSlots(0) = %d, want 0", got)
+	}
+	if got := m.AvailableQueueDrainSlots(-1); got != 0 {
+		t.Fatalf("AvailableQueueDrainSlots(-1) = %d, want 0", got)
+	}
+
+	m.mu.Lock()
+	m.maxConcurrent = 2
+	m.mu.Unlock()
+	if got := m.AvailableQueueDrainSlots(5); got != 2 {
+		t.Fatalf("under cap AvailableQueueDrainSlots(5) = %d, want 2", got)
+	}
+
+	a := &Agent{ID: "occupant", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if got := m.AvailableQueueDrainSlots(5); got != 1 {
+		t.Fatalf("partially full AvailableQueueDrainSlots(5) = %d, want 1", got)
+	}
+
+	b := &Agent{ID: "occupant-2", Provider: "claude", done: make(chan struct{})}
+	if err := m.registerRunningAgent(b, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent(second): %v", err)
+	}
+	if got := m.AvailableQueueDrainSlots(5); got != 0 {
+		t.Fatalf("at cap AvailableQueueDrainSlots(5) = %d, want 0", got)
+	}
+
+	m.mu.Lock()
+	m.maxConcurrent = 0
+	m.mu.Unlock()
+	if got := m.AvailableQueueDrainSlots(3); got != 3 {
+		t.Fatalf("cap disabled AvailableQueueDrainSlots(3) = %d, want 3", got)
+	}
+}
+
 // TestMarkAgentDone_QueueNudge locks in that freeing a slot in markAgentDone
 // delivers exactly one pending signal on QueueNudge.
 func TestMarkAgentDone_QueueNudge(t *testing.T) {

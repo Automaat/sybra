@@ -96,6 +96,7 @@ export const PHASE_CONFIG: Record<AgentPhase, PhaseConfig> = {
  * Derive the visual phase for an agent from its state and context.
  *
  * - idle                                          → queued
+ * - queued                                        → queued
  * - running                                       → running
  * - paused, has escalationReason                  → human-required (guardrail hit)
  * - paused, awaitingApproval=true                 → blocked (tool approval pending)
@@ -111,6 +112,7 @@ export function getAgentPhase(
 ): AgentPhase {
   switch (state) {
     case 'idle':
+    case 'queued':
       return 'queued'
     case 'running':
       return 'running'

@@ -672,6 +672,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		DisableProviderFailover: assignment.ExperimentID != "",
 		Dir:                     dir,
 		OneShot:                 oneShot,
+		IgnoreConcurrencyLimit:  mode == "interactive",
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
@@ -712,7 +713,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		cfg.Dir = config.HomeDir()
 	}
 
-	baselineRef = agentorch.CurrentWorktreeHead(cfg.Dir)
+	baselineRef = agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
 	a.configureTestRunnerRun(&cfg, taskID, r, t)
 
 	ag, err := a.agents.Run(cfg)
