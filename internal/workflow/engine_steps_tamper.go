@@ -106,6 +106,11 @@ type tamperChange struct {
 	// brand-new identical skip lines added in the same commit "establish"
 	// each other.
 	BaseContent string
+	// UpstreamContent is the file content on origin/<default> at diff time,
+	// when available. Used to discount suspicious added lines that came from
+	// merging upstream during the fix step rather than from the agent's own
+	// edits in the same file.
+	UpstreamContent string
 }
 
 type tamperPatchResult struct {
@@ -281,12 +286,15 @@ func splitTopArgs(s string) []string {
 // `--`/`++` is still classified by its leading diff marker rather than mistaken
 // for a header. Comment-only additions are ignored, so commenting out a test or
 // assertion registers as a removal (the deletion side) with no offsetting add.
-func scanTamperPatch(path string, cat tamperCategory, patch, baseContent string) []tamperFinding {
-	return scanTamperPatchResult(path, cat, patch, baseContent).Findings
+func scanTamperPatch(path string, cat tamperCategory, patch, baseContent, upstreamContent string) []tamperFinding {
+	return scanTamperPatchResult(path, cat, patch, baseContent, upstreamContent).Findings
 }
 
-func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent string) tamperPatchResult {
-	s := &tamperScan{path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{}, baseContent: baseContent}
+func scanTamperPatchResult(path string, cat tamperCategory, patch, baseContent, upstreamContent string) tamperPatchResult {
+	s := &tamperScan{
+		path: path, cat: cat, isCI: cat == tamperCatCI, seen: map[string]bool{},
+		baseContent: baseContent, mergedUpstreamSkips: mergedUpstreamSkipAllowance(baseContent, upstreamContent),
+	}
 	inHunk := false
 	for line := range strings.SplitSeq(patch, "\n") {
 		switch {
@@ -319,22 +327,59 @@ func isDiffHeaderLine(line string) bool {
 
 // tamperScan accumulates findings and net token counts while walking a patch.
 type tamperScan struct {
-	path        string
-	cat         tamperCategory
-	isCI        bool
-	baseContent string
-	seen        map[string]bool
-	findings    []tamperFinding
-	addAssert   int
-	delAssert   int
-	addDecl     int
-	delDecl     int
-	addRun      int
-	delRun      int
-	guardWindow int
+	path                string
+	cat                 tamperCategory
+	isCI                bool
+	baseContent         string
+	mergedUpstreamSkips map[string]int
+	seen                map[string]bool
+	findings            []tamperFinding
+	addAssert           int
+	delAssert           int
+	addDecl             int
+	delDecl             int
+	addRun              int
+	delRun              int
+	guardWindow         int
 }
 
 const tamperGuardWindowLines = 3
+
+func mergedUpstreamSkipAllowance(baseContent, upstreamContent string) map[string]int {
+	upstreamCounts := trimmedMatchingLineCounts(upstreamContent, tamperAddedSkipRe)
+	if len(upstreamCounts) == 0 {
+		return nil
+	}
+	baseCounts := trimmedMatchingLineCounts(baseContent, tamperAddedSkipRe)
+	allow := make(map[string]int, len(upstreamCounts))
+	for line, n := range upstreamCounts {
+		if delta := n - baseCounts[line]; delta > 0 {
+			allow[line] = delta
+		}
+	}
+	if len(allow) == 0 {
+		return nil
+	}
+	return allow
+}
+
+func trimmedMatchingLineCounts(content string, re *regexp.Regexp) map[string]int {
+	if content == "" {
+		return nil
+	}
+	counts := map[string]int{}
+	for line := range strings.SplitSeq(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || !re.MatchString(trimmed) {
+			continue
+		}
+		counts[trimmed]++
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
 
 func (s *tamperScan) add(rule, detail string) {
 	if s.seen[rule] {
@@ -363,7 +408,9 @@ func (s *tamperScan) feedAdded(content string) {
 	} else if s.guardWindow > 0 {
 		s.guardWindow--
 	}
-	if tamperAddedSkipRe.MatchString(content) && !guarded && !isEstablishedSkipIdiom(content, s.baseContent) {
+	if tamperAddedSkipRe.MatchString(content) && !guarded &&
+		!isEstablishedSkipIdiom(content, s.baseContent) &&
+		!s.consumeMergedUpstreamSkip(content) {
 		s.add("added-skip", trimDiffLine(content))
 	}
 	if tamperAddedExitRe.MatchString(content) {
@@ -387,6 +434,18 @@ func (s *tamperScan) feedAdded(content string) {
 	if detectTautology(content) {
 		s.add("tautological-assertion", trimDiffLine(content))
 	}
+}
+
+func (s *tamperScan) consumeMergedUpstreamSkip(content string) bool {
+	if len(s.mergedUpstreamSkips) == 0 {
+		return false
+	}
+	key := strings.TrimSpace(content)
+	if s.mergedUpstreamSkips[key] <= 0 {
+		return false
+	}
+	s.mergedUpstreamSkips[key]--
+	return true
 }
 
 func (s *tamperScan) feedRemoved(content string) {
@@ -459,7 +518,7 @@ func buildTamperReport(taskID, base string, changes []tamperChange) tamperReport
 			continue
 		}
 		scanned++
-		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent)
+		res := scanTamperPatchResult(c.Path, cat, c.Patch, c.BaseContent, c.UpstreamContent)
 		totalAddedAssertions += res.AddAssert
 		totalDeletedAssertions += res.DelAssert
 		totalAddedDecl += res.AddDecl
@@ -585,6 +644,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	base, rangeSpec := resolveTamperRange(ctx, wtPath, t, taskID, e.logger)
+	upstream := resolveOriginBase(ctx, wtPath)
 
 	// core.quotePath=false keeps non-ASCII paths unquoted so classification and
 	// the per-file diff pathspec below see the real filename.
@@ -600,7 +660,7 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 		return tamperReport{}, fmt.Errorf("git diff --name-status: %w", err)
 	}
 
-	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, parseNameStatus(string(nsOut)), e.logger)
+	changes := dropUpstreamMergedChanges(ctx, wtPath, taskID, upstream, parseNameStatus(string(nsOut)), e.logger)
 	fetched := 0
 	for i := range changes {
 		c := &changes[i]
@@ -650,9 +710,22 @@ func (e *Engine) collectTamperReport(taskID, wtPath string, t TaskInfo) (tamperR
 			}
 			e.logger.Debug("workflow.detect-tampering.base-content",
 				"task_id", taskID, "file", c.Path, "err", cErr)
+		} else {
+			c.BaseContent = content
+		}
+		if upstream == "" {
 			continue
 		}
-		c.BaseContent = content
+		upstreamContent, uErr := gitFileAtRef(ctx, wtPath, upstream, basePath)
+		if uErr != nil {
+			if ctx.Err() != nil {
+				return tamperReport{}, fmt.Errorf("git show %s:%s: %w", upstream, basePath, ctx.Err())
+			}
+			e.logger.Debug("workflow.detect-tampering.upstream-content",
+				"task_id", taskID, "file", c.Path, "err", uErr)
+			continue
+		}
+		c.UpstreamContent = upstreamContent
 	}
 	report := buildTamperReport(taskID, base, changes)
 	report.Range = rangeSpec
@@ -693,8 +766,7 @@ func resolveTamperRange(ctx context.Context, wtPath string, t TaskInfo, taskID s
 	return base, base + "...HEAD"
 }
 
-func dropUpstreamMergedChanges(ctx context.Context, wtPath, taskID string, changes []tamperChange, logger *slog.Logger) []tamperChange {
-	upstream := resolveOriginBase(ctx, wtPath)
+func dropUpstreamMergedChanges(ctx context.Context, wtPath, taskID, upstream string, changes []tamperChange, logger *slog.Logger) []tamperChange {
 	if upstream == "" {
 		return changes
 	}
