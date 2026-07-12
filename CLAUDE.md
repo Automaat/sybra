@@ -348,7 +348,7 @@ ssh root@192.168.20.219 "systemctl status sybra"                     # service s
 ssh root@192.168.20.219 "journalctl -u sybra -n 100 --no-pager"      # unit journal (build + start)
 ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server app logs
 ssh root@192.168.20.219 "ls /data/sybra/home/tasks/"                 # task files
-ssh root@192.168.20.219 "sudo -u sybra env -i bash -lc 'cd /opt/sybra/src && mise exec -- /opt/sybra/build/sybra-cli list'"  # CLI
+ssh root@192.168.20.219 "sudo -u sybra env -i bash -lc 'cd /opt/sybra/src && mise exec -- go run ./cmd/sybra-cli list'"  # CLI (sybra-build.sh only builds sybra-server; run the CLI from source)
 ```
 
 Deploying = merge to `main` (auto-deploys within ~5 min) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).

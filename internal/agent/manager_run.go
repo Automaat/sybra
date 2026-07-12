@@ -521,6 +521,9 @@ func (m *Manager) markAgentDone(a *Agent) {
 	}
 	a.doneOnce.Do(func() {
 		close(a.done)
+		if a.isDetached() {
+			reapProcessGroup(a.GetPID())
+		}
 		// Close the stdin pipe/FIFO and drop the registry record + FIFO file
 		// so a completed agent leaks neither an fd nor an on-disk pipe.
 		a.convo.closeStdinPipe()

@@ -151,6 +151,10 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		h.skip(taskID, "verdict_rendered")
 		return
 	}
+	if strings.TrimSpace(t.ProjectID) == "" {
+		h.skip(taskID, "no_project")
+		return
+	}
 	// Work-Data Confidentiality: if the task's project is work-typed, the
 	// review still runs (we want the diagnosis) but the prompt is augmented
 	// with redaction instructions and the verdict is routed to a local

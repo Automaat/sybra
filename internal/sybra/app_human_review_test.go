@@ -1059,6 +1059,7 @@ func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *
 	cycleStart := time.Now().UTC()
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:                task.Ptr(task.StatusHumanRequired),
+		ProjectID:             task.Ptr("Automaat/sybra"),
 		TestingCycleStartedAt: &cycleStart,
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -1102,7 +1103,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Verdict is set (persisted by onAgentComplete) but onComplete never ran —
@@ -1147,7 +1148,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Verdict persisted by onAgentComplete but onComplete never rendered the note.
@@ -1185,7 +1186,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Add a run with NO verdict (e.g. agent was killed mid-run).
@@ -1212,6 +1213,29 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	}()
 	if !panicked {
 		t.Fatal("expected spawn attempt; gate must not block a run with no verdict (agent killed mid-run)")
+	}
+}
+
+func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
+	t.Parallel()
+	h, tasks, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Orphan smoke-test task", "queued", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+
+	h.maybeSpawn(tk.ID, "")
+
+	h.mu.Lock()
+	_, busy := h.inflight[tk.ID]
+	h.mu.Unlock()
+	if busy {
+		t.Error("expected no inflight entry — a project-less task must not spawn a review agent in the Sybra source tree")
 	}
 }
 
