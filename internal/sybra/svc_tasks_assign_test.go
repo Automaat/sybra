@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -69,6 +70,34 @@ func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("upsert produced %d copies of leader-02, want 1", count)
+	}
+}
+
+func TestAssignTaskDispatchesStageStatus(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	var mu sync.Mutex
+	var fired []string
+	svc.tasks.SetStatusChangeHook(func(_, _, to string) {
+		mu.Lock()
+		fired = append(fired, to)
+		mu.Unlock()
+	})
+
+	pushed := task.Task{
+		ID:        "leader-stage",
+		Title:     "mid-workflow handoff",
+		Status:    task.StatusReadyReview,
+		AgentMode: task.AgentModeHeadless,
+	}
+	if err := svc.AssignTask(pushed); err != nil {
+		t.Fatalf("AssignTask: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fired) != 1 || fired[0] != string(task.StatusReadyReview) {
+		t.Fatalf("status hook fired %v, want [ready-review] — otherwise the pushed stage never dispatches", fired)
 	}
 }
 
