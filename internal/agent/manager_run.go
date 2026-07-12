@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/google/uuid"
 )
 
@@ -687,7 +688,7 @@ func (m *Manager) resolveProviderDecision(cfg RunConfig) (string, []providerGate
 		return (g == nil || g.IsHealthy(p)) && underCap(p)
 	}
 	var gateEvents []providerGateEvent
-	candidateProviders := []string{"claude", "codex", "copilot"}
+	candidateProviders := providerid.All()
 	if g != nil && !g.IsHealthy(resolved) {
 		if cfg.DisableProviderFailover {
 			reason := g.Reason(resolved)

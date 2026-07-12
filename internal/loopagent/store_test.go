@@ -34,7 +34,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "invalid provider",
 			la:      LoopAgent{Name: "x", Prompt: "/foo", IntervalSec: 60, Provider: "gpt4"},
-			wantErr: "provider must be claude, codex, or copilot",
+			wantErr: "provider must be one of claude, codex, copilot",
 		},
 		{
 			name: "codex provider accepted",

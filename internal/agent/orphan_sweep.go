@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type providerProcess struct {
@@ -89,10 +91,5 @@ func pathWithinRoots(path string, roots []string) bool {
 
 func isProviderProcessName(name string) bool {
 	name = strings.TrimSpace(strings.ToLower(filepath.Base(name)))
-	switch name {
-	case "claude", "codex", "copilot":
-		return true
-	default:
-		return false
-	}
+	return providerid.IsKnown(name)
 }

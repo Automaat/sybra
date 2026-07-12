@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const defaultMaxRepairs = 2
@@ -206,7 +207,7 @@ func avoidProvider(o llmexec.Options, avoid string) (llmexec.Options, error) {
 		o.Gate = avoidingGate{base: o.Gate, avoid: avoid}
 		return o, nil
 	}
-	for _, p := range []string{"claude", "codex", "copilot"} {
+	for _, p := range providerid.All() {
 		if p != avoid {
 			o.Provider = p
 			o.Gate = avoidingGate{base: o.Gate, avoid: avoid}
