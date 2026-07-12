@@ -1002,29 +1002,51 @@ func (a *Agent) lastConvoResult() (found, isError bool) {
 }
 
 // CompletedSuccessfully reports whether the headless agent's stream buffer
-// ends in a non-error terminal result. The watchdog uses it to skip
+// contains a non-error terminal result. The watchdog uses it to skip
 // inspecting (and never escalate) an agent that has already produced its
 // final result but whose process has not yet exited — a skill that spawns
-// subagents can leave CC alive after the terminal result.
+// subagents can leave CC alive after the terminal result, appending further
+// non-result events onto the stream, so the result is not required to be
+// strictly the last buffered event (see bufferedResultEvent).
 func (a *Agent) CompletedSuccessfully() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	found, isError := lastHeadlessResultEvent(a.outputBuffer)
+	found, isError := bufferedResultEvent(a.outputBuffer)
 	return found && !isError
 }
 
-// TerminalResultIdle reports whether the headless stream's last event is a
+// TerminalResultIdle reports whether the headless stream contains a
 // non-error terminal result and no further output has arrived for at least
 // grace. It flags a process that finished its work (emitted the final result)
 // but did not exit, so the runner can stop it and finalize from the result.
+// Like CompletedSuccessfully, the result need not be the literal last event.
 func (a *Agent) TerminalResultIdle(grace time.Duration) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	found, isError := lastHeadlessResultEvent(a.outputBuffer)
+	found, isError := bufferedResultEvent(a.outputBuffer)
 	if !found || isError {
 		return false
 	}
 	return time.Since(a.LastEventAt) >= grace
+}
+
+// bufferedResultEvent scans the full event slice for the last "result" event,
+// regardless of whether it is the final element — unlike
+// lastHeadlessResultEvent, which requires the result to be strictly last.
+// Mirrors completion.terminalResultContent's own forward scan: a skill that
+// spawns subagents (CLAUDE_CODE_FORK_SUBAGENT) can append further NDJSON
+// lines onto the stream after CC's own terminal result, so "the last event
+// is a result" is a stricter — and sometimes wrongly false — condition than
+// "a terminal result was produced".
+func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
+	for i := range events {
+		if events[i].Type != "result" {
+			continue
+		}
+		found = true
+		isError = resultSubtypeIsError(events[i].Subtype) || events[i].ErrorType != "" || events[i].ErrorStatus != 0
+	}
+	return found, isError
 }
 
 // backgroundTaskGrace is the extra idle time granted to a post-result-hang
