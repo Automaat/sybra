@@ -14,8 +14,8 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// setupCrossProviderEnv creates an e2e env with both fake-claude and fake-codex
-// on PATH, separate scenario files for each provider, and the test-review-fix
+// setupCrossProviderEnv creates an e2e env with fake-claude, fake-codex, and
+// fake-copilot on PATH, separate scenario files for each provider, and the test-review-fix
 // workflow loaded.
 func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios, codexScenarios, copilotScenarios []string) *e2eEnv {
 	t.Helper()
