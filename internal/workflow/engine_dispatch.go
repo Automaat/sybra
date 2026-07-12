@@ -331,13 +331,26 @@ func (e *Engine) HasActiveWorkflow(taskID string) bool {
 // it, and for the parked-dispatch case that burns a bounded retry-budget slot
 // for a fix agent that never ran.
 func (e *Engine) WorkflowParkedWaiting(taskID, workflowID string) bool {
+	_, ok := e.WorkflowParkedWaitingVars(taskID, workflowID)
+	return ok
+}
+
+// WorkflowParkedWaitingVars is WorkflowParkedWaiting plus the parked workflow's
+// variables, letting a caller distinguish which PR issue kind a parked pr-fix
+// workflow was dispatched for (pr-fix handles conflict, ci_failure, and
+// comments). Returns (nil, false) unless the task's active workflow is
+// workflowID and is parked mid-run (ExecWaiting with a non-empty CurrentStep).
+func (e *Engine) WorkflowParkedWaitingVars(taskID, workflowID string) (map[string]string, bool) {
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil || t.Workflow == nil {
-		return false
+		return nil, false
 	}
-	return t.Workflow.WorkflowID == workflowID &&
+	if t.Workflow.WorkflowID == workflowID &&
 		t.Workflow.State == ExecWaiting &&
-		t.Workflow.CurrentStep != ""
+		t.Workflow.CurrentStep != "" {
+		return t.Workflow.Variables, true
+	}
+	return nil, false
 }
 
 // CancelWorkflow terminates a task's active workflow without running any
