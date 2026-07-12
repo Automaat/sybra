@@ -19,7 +19,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 3
+const CurrentBuiltinVersion = 4
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -82,26 +82,16 @@ type Assignment struct {
 }
 
 // DefaultConfig returns the default A/B suite split by price bracket: code
-// author roles use cheap variants, while planning and review use premium
-// ones.
+// author roles use cheap variants, while planning and review use premium ones.
 //
-// The cheap bracket is split into two role-scoped experiments rather than one
-// shared bracket. The live evaluation scorecard (30d, 2026-07-05) grounds the
-// weights:
-//   - implementation: claude:sonnet:medium is the highest-quality/highest-cost
-//     option (failureRate 0.059, mergeRate 0.933, ~$2.58/run over 236 runs);
-//     codex:gpt-5.5 is comparable-to-better at a fraction of the cost
-//     (failureRate 0.038-0.13, mergeRate 1.0, ~$0.31/run); copilot:gpt-5.5
-//     lands respectably too (failureRate 0.021, mergeRate 0.833, ~$0.07/run).
-//     Weighted 1:2:1 (claude:codex:copilot) — codex takes the plurality,
-//     copilot gets a capped (not blanket) exposure, claude keeps a non-zero
-//     exploration/fallback floor.
-//   - fix-review/pr-fix/test-runner ("maintenance"): codex clearly wins on
-//     pr-fix (failureRate 0.036 vs claude's 0.084) and test-runner (0.037 vs
-//     claude's 0.268), and is only modestly behind claude on fix-review
-//     (0.095 vs 0.014). Copilot's maintenance-role sample is too thin to
-//     enable here (see decision log) — weighted 1:3 (claude:codex), no
-//     copilot, until more data justifies widening it.
+// Every experiment enrolls all three providers at equal weight (1:1:1) so each
+// role is genuinely runnable on any provider and the evaluation scorecard sees
+// balanced samples. This is the deliberate "equal agents" posture: rather than
+// hardcoding scorecard-derived weights (which favoured codex on implementation
+// and excluded copilot from maintenance), selection is uniform and the
+// scorecard informs later reweighting rather than a static bias. Watch the
+// per-provider breakdown after rollout — a provider that regresses a role can
+// be down-weighted here without code changes.
 func DefaultConfig() Config {
 	enabled := true
 	expEnabled := true
@@ -119,7 +109,7 @@ func DefaultConfig() Config {
 				Roles:          []string{"implementation"},
 				Variants: []Variant{
 					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 2},
+					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 1},
 					{ID: "copilot-sonnet", Provider: "copilot", Model: "claude-sonnet-4.6", Tier: "cheap", Weight: 1},
 				},
 			},
@@ -131,7 +121,8 @@ func DefaultConfig() Config {
 				Roles:          []string{"pr-fix", "test-runner"},
 				Variants: []Variant{
 					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 3},
+					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 1},
+					{ID: "copilot-sonnet", Provider: "copilot", Model: "claude-sonnet-4.6", Tier: "cheap", Weight: 1},
 				},
 			},
 			{
@@ -143,6 +134,7 @@ func DefaultConfig() Config {
 				Variants: []Variant{
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
 					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
 				},
 			},
 			{
