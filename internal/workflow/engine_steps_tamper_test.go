@@ -48,11 +48,12 @@ func TestClassifyTamperPath(t *testing.T) {
 func TestScanTamperPatch(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name        string
-		cat         tamperCategory // defaults to test when empty
-		patch       string
-		baseContent string
-		wantRules   []string // high-severity rules expected (order-insensitive subset)
+		name            string
+		cat             tamperCategory // defaults to test when empty
+		patch           string
+		baseContent     string
+		upstreamContent string
+		wantRules       []string // high-severity rules expected (order-insensitive subset)
 	}{
 		{
 			name:      "added_go_skip",
@@ -71,6 +72,20 @@ func TestScanTamperPatch(t *testing.T) {
 			patch:       "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n",
 			baseContent: "func TestBar(t *testing.T) {\n}\n", // no prior occurrence in the base file
 			wantRules:   []string{"added-skip"},
+		},
+		{
+			name:            "added_skip_merged_from_upstream_not_flagged",
+			patch:           "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n+\tt.Fatal(\"updated\")\n",
+			baseContent:     "func TestBar(t *testing.T) {\n\tif ready {\n\t\tt.Fatal(\"x\")\n\t}\n}\n",
+			upstreamContent: "func TestBar(t *testing.T) {\n\tif ready {\n\t\tt.Skip(\"flaky\")\n\t\tt.Fatal(\"x\")\n\t}\n}\n",
+			wantRules:       nil,
+		},
+		{
+			name:            "extra_identical_skip_beyond_upstream_delta_still_flags",
+			patch:           "@@ @@\n func TestBar(t *testing.T) {\n+\tt.Skip(\"flaky\")\n+\tt.Skip(\"flaky\")\n",
+			baseContent:     "func TestBar(t *testing.T) {\n}\n",
+			upstreamContent: "func TestBar(t *testing.T) {\n\tt.Skip(\"flaky\")\n}\n",
+			wantRules:       []string{"added-skip"},
 		},
 		{
 			name:      "capability_guarded_skip_same_line_not_flagged",
@@ -214,7 +229,7 @@ func TestScanTamperPatch(t *testing.T) {
 			if cat == "" {
 				cat = tamperCatTest
 			}
-			got := scanTamperPatch("x_test.go", cat, tc.patch, tc.baseContent)
+			got := scanTamperPatch("x_test.go", cat, tc.patch, tc.baseContent, tc.upstreamContent)
 			gotRules := map[string]bool{}
 			for _, f := range got {
 				if f.Severity != tamperHigh {
@@ -841,6 +856,50 @@ func TestExecDetectTampering_MergedUpstreamSkipNotFlagged(t *testing.T) {
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; a t.Skip merged in from origin/main must not be attributed to the agent", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecDetectTampering_MergedUpstreamSkipInLocallyEditedFileNotFlagged(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+
+	gitRun(t, wt, "checkout", "-b", "task")
+	baseline := strings.TrimSpace(gitOutput(t, wt, "rev-parse", "HEAD"))
+
+	upstreamTest := "package agent\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestReap(t *testing.T) {\n\tif runtime.GOOS != \"linux\" {\n\t\tt.Skip(\"linux-only process enumeration test\")\n\t}\n\tif 1 != 1 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"
+	gitRun(t, wt, "checkout", "main")
+	writeRepoFile(t, wt, "internal/agent/orphan_sweep_test.go", upstreamTest)
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "test: add orphan sweep")
+	gitRun(t, wt, "fetch", "origin")
+
+	gitRun(t, wt, "checkout", "task")
+	gitRun(t, wt, "merge", "--no-edit", "origin/main")
+	writeRepoFile(t, wt, "internal/agent/orphan_sweep_test.go",
+		strings.Replace(upstreamTest, "t.Fatal(\"x\")", "t.Fatal(\"updated\")", 1))
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "test: tweak failure text")
+
+	engine, tasks := newTamperEngine(t, wt)
+	wf := &Execution{
+		Variables: map[string]string{tamperBaselineVar("fix"): baseline},
+		StepHistory: []StepRecord{{
+			StepID:  "fix",
+			Status:  "completed",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean; merged-in upstream skip must stay ignored even when the file also has local edits", out.Output)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want unchanged in-progress", ti.Status)
