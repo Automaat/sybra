@@ -23,7 +23,7 @@
   // Show the session name only when it adds something beyond the heading.
   const subtitle = $derived(cleanAgentName(a.name))
   const showSubtitle = $derived(subtitle.length > 0 && subtitle !== heading)
-  const queueInfo = $derived(a.taskId ? agentStore.queueByTask.get(a.taskId) : undefined)
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask?.get(a.taskId) : undefined)
 </script>
 
 <div class="flex flex-col gap-6">

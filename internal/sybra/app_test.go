@@ -111,6 +111,7 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
 	}
+	t.Cleanup(func() { mgr.ShutdownWithGrace(2 * time.Second) })
 	q, err := agentqueue.New(queueDir, agentqueue.Options{}, logger)
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)

@@ -45,7 +45,7 @@
     onnavigate,
   }: Props = $props()
 
-  const queueInfo = $derived(a.taskId ? agentStore.queueByTask.get(a.taskId) : null)
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask?.get(a.taskId) : null)
 </script>
 
 <div class="min-h-[60vh]">

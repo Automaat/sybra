@@ -17,7 +17,7 @@
   const { agent: a, onclick }: Props = $props()
 
   const linkedTask = $derived(a.taskId ? taskStore.tasks.get(a.taskId) : null)
-  const queueInfo = $derived(a.taskId ? agentStore.queueByTask.get(a.taskId) : undefined)
+  const queueInfo = $derived(a.taskId ? agentStore.queueByTask?.get(a.taskId) : undefined)
 
   const heading = $derived(agentDisplayName(a, linkedTask?.title))
   const subtitle = $derived(cleanAgentName(a.name))

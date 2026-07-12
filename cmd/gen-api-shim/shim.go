@@ -127,37 +127,47 @@ type moduleImport struct {
 	lineIndex int
 }
 
+func lastCallLineByService(lines []string, services []service) map[string]int {
+	last := map[string]int{}
+	for i, line := range lines {
+		for _, svc := range services {
+			if strings.Contains(line, "call('"+svc.name+"'") {
+				last[svc.name] = i
+			}
+		}
+	}
+	return last
+}
+
+func collectShimNameSets(services []service, imports map[string]*moduleImport) (reserved, usedLocals map[string]bool) {
+	reserved = map[string]bool{}
+	for _, svc := range services {
+		for _, method := range svc.methods {
+			reserved[method] = true
+		}
+	}
+	usedLocals = map[string]bool{}
+	for _, mi := range imports {
+		for _, entry := range mi.entries {
+			usedLocals[entry.local] = true
+		}
+	}
+	return reserved, usedLocals
+}
+
 func fillAPIHTTP(src string, services []service, bindingDir string, skip map[string]bool) (out string, added []string, err error) {
 	lines := strings.Split(src, "\n")
 
 	existing := map[string]bool{}
-	reservedMethodNames := map[string]bool{}
-	for _, svc := range services {
-		for _, method := range svc.methods {
-			reservedMethodNames[method] = true
-		}
-	}
 	for _, line := range lines {
 		if m := apiHTTPFuncRe.FindStringSubmatch(line); m != nil {
 			existing[m[1]] = true
 		}
 	}
 	imports, localByModuleType, lastImportIdx := parseAPIHTTPImports(lines)
-	usedImportLocals := map[string]bool{}
-	for _, mi := range imports {
-		for _, entry := range mi.entries {
-			usedImportLocals[entry.local] = true
-		}
-	}
+	reservedMethodNames, usedImportLocals := collectShimNameSets(services, imports)
 
-	lastCallLine := map[string]int{}
-	for i, line := range lines {
-		for _, svc := range services {
-			if strings.Contains(line, "call('"+svc.name+"'") {
-				lastCallLine[svc.name] = i
-			}
-		}
-	}
+	lastCallLine := lastCallLineByService(lines, services)
 
 	var addedModules []string
 	pending := map[string][]importEntry{}
