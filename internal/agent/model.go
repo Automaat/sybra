@@ -1142,6 +1142,17 @@ func (a *Agent) SetLastEventAt(t time.Time) {
 	a.mu.Unlock()
 }
 
+// OutputLen returns the number of headless stream events produced (or, on
+// reattach, rehydrated from the log) so far. Zero means the provider CLI has
+// yet to emit a single parseable NDJSON line — the zero-output signature the
+// watchdog keys off, robust across app restarts (reattach bumps LastEventAt to
+// wall-clock but leaves the buffer empty when the log is empty).
+func (a *Agent) OutputLen() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.outputBuffer)
+}
+
 // Output returns a snapshot of the stream events produced so far. The
 // returned slice is safe to inspect concurrently with the agent's runner
 // goroutine appending more events.
