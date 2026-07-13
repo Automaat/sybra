@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/notes"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -527,6 +528,50 @@ func TestRunSetup_CwdIsWorktreeRoot(t *testing.T) {
 	}
 }
 
+func TestRunSetup_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
+
+	if err := m.runSetup(context.Background(), "task-1", wtDir, []string{`printf '%s|%s' "$GOCACHE" "$GOMODCACHE" > cache-env-1.txt`}); err != nil {
+		t.Fatalf("runSetup(task-1): %v", err)
+	}
+	if err := m.runSetup(context.Background(), "task-2", wtDir, []string{`printf '%s|%s' "$GOCACHE" "$GOMODCACHE" > cache-env-2.txt`}); err != nil {
+		t.Fatalf("runSetup(task-2): %v", err)
+	}
+
+	data1, err := os.ReadFile(filepath.Join(wtDir, "cache-env-1.txt"))
+	if err != nil {
+		t.Fatalf("read cache-env-1: %v", err)
+	}
+	data2, err := os.ReadFile(filepath.Join(wtDir, "cache-env-2.txt"))
+	if err != nil {
+		t.Fatalf("read cache-env-2: %v", err)
+	}
+
+	parts1 := strings.Split(strings.TrimSpace(string(data1)), "|")
+	parts2 := strings.Split(strings.TrimSpace(string(data2)), "|")
+	if len(parts1) != 2 || len(parts2) != 2 {
+		t.Fatalf("cache env outputs malformed: %q / %q", data1, data2)
+	}
+	if got, want := parts1[0], buildcache.TaskGoBuildDir("task-1"); got != want {
+		t.Fatalf("task-1 GOCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts2[0], buildcache.TaskGoBuildDir("task-2"); got != want {
+		t.Fatalf("task-2 GOCACHE = %q, want %q", got, want)
+	}
+	if parts1[0] == parts2[0] {
+		t.Fatalf("GOCACHE must differ per task, got shared %q", parts1[0])
+	}
+	if got, want := parts1[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("task-1 GOMODCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts2[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("task-2 GOMODCACHE = %q, want %q", got, want)
+	}
+}
+
 // TestRunSetup_TimeoutKillsProcess confirms a stuck command is killed at
 // the configured timeout and that the log captures the timeout marker.
 func TestRunSetup_TimeoutKillsProcess(t *testing.T) {
@@ -682,19 +727,20 @@ func TestRunSetup_NoLogsDir(t *testing.T) {
 
 // --- mise trust preflight -----------------------------------------------
 //
-// installFakeMise writes a tiny mise shim that logs invocation args to a file
-// and exits with exitCode. Returns (shimPath, logPath). Tests pass shimPath via
-// Config.MisePath so parallel tests don't race on os.Setenv(PATH).
-func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath string) {
+// installFakeMise writes a tiny mise shim that logs invocation args and cache
+// env to files, then exits with exitCode. Tests pass shimPath via Config.MisePath
+// so parallel tests don't race on os.Setenv(PATH).
+func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath, envLogPath string) {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath = filepath.Join(binDir, "invocations.log")
-	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit " + strconv.Itoa(exitCode) + "\n"
+	envLogPath = filepath.Join(binDir, "env.log")
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nprintf '%s|%s\\n' \"$GOCACHE\" \"$GOMODCACHE\" >> " + envLogPath + "\nexit " + strconv.Itoa(exitCode) + "\n"
 	shimPath = filepath.Join(binDir, "mise")
 	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)
 	}
-	return shimPath, logPath
+	return shimPath, logPath, envLogPath
 }
 
 // TestRunSetup_TrustsMiseConfig guards the fix for the 2026-04-16 server
@@ -703,13 +749,13 @@ func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath string) {
 // --yes` before any user setup command so first-run setup does not
 // fail.
 func TestRunSetup_TrustsMiseConfig(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	logsDir := t.TempDir()
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
 		t.Fatalf("seed mise.toml: %v", err)
 	}
-	miseBin, miseLog := installFakeMise(t, 0)
+	miseBin, miseLog, _ := installFakeMise(t, 0)
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	if err := m.runSetup(context.Background(), "task-trust", wtDir, []string{"true"}); err != nil {
@@ -740,7 +786,7 @@ func TestRunSetup_SkipsTrustWithoutMiseConfig(t *testing.T) {
 	t.Parallel()
 	logsDir := t.TempDir()
 	wtDir := t.TempDir()
-	miseBin, miseLog := installFakeMise(t, 0)
+	miseBin, miseLog, _ := installFakeMise(t, 0)
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	if err := m.runSetup(context.Background(), "task-no-mise", wtDir, []string{"true"}); err != nil {
@@ -757,13 +803,13 @@ func TestRunSetup_SkipsTrustWithoutMiseConfig(t *testing.T) {
 // itself cannot accept), the setup commands still run. The clearer error
 // surfaces from the real command that needs mise, not from the preflight.
 func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
-	t.Parallel()
+	t.Setenv("SYBRA_HOME", t.TempDir())
 	logsDir := t.TempDir()
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, ".mise.toml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("seed .mise.toml: %v", err)
 	}
-	miseBin, _ := installFakeMise(t, 3)
+	miseBin, _, _ := installFakeMise(t, 3)
 
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
 	marker := filepath.Join(wtDir, "did-run")
@@ -772,6 +818,36 @@ func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("marker missing — setup command did not execute: %v", err)
+	}
+}
+
+func TestRunSetup_TrustUsesTaskScopedGoBuildCache(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	logsDir := t.TempDir()
+	wtDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
+		t.Fatalf("seed mise.toml: %v", err)
+	}
+	miseBin, _, envLog := installFakeMise(t, 0)
+
+	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger(), MisePath: miseBin})
+	if err := m.runSetup(context.Background(), "task-trust-env", wtDir, []string{"true"}); err != nil {
+		t.Fatalf("runSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(envLog)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	parts := strings.Split(strings.TrimSpace(string(data)), "|")
+	if len(parts) != 2 {
+		t.Fatalf("cache env = %q, want GOCACHE|GOMODCACHE", data)
+	}
+	if got, want := parts[0], buildcache.TaskGoBuildDir("task-trust-env"); got != want {
+		t.Fatalf("GOCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("GOMODCACHE = %q, want %q", got, want)
 	}
 }
 

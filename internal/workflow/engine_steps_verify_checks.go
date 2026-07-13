@@ -679,19 +679,7 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 }
 
 func verifyCommandEnv(taskID string) ([]string, error) {
-	if strings.TrimSpace(taskID) == "" {
-		return nil, fmt.Errorf("prepare Go cache: empty task id")
-	}
-	goBuild := buildcache.TaskGoBuildDir(taskID)
-	goMod := buildcache.SharedGoModDir()
-	for _, dir := range []string{goBuild, goMod} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("prepare Go cache %q: %w", dir, err)
-		}
-	}
-	env := stripEnvKeys(os.Environ(), "GOCACHE", "GOMODCACHE")
-	env = append(env, "GOCACHE="+goBuild, "GOMODCACHE="+goMod)
-	return env, nil
+	return buildcache.PrepareGoEnv(taskID, os.Environ())
 }
 
 // boundedTail is a concurrency-safe io.Writer that retains only the last `max`
@@ -726,24 +714,4 @@ func tailString(s string, n int) string {
 		return s
 	}
 	return "…(truncated)…\n" + s[len(s)-n:]
-}
-
-func stripEnvKeys(env []string, keys ...string) []string {
-	if len(env) == 0 {
-		return env
-	}
-	out := make([]string, 0, len(env))
-	for _, kv := range env {
-		drop := false
-		for _, k := range keys {
-			if strings.HasPrefix(kv, k+"=") {
-				drop = true
-				break
-			}
-		}
-		if !drop {
-			out = append(out, kv)
-		}
-	}
-	return out
 }
