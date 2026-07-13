@@ -4,9 +4,8 @@
 /**
  * PromptLabService exposes Prompt Lab proposal approve/reject operations as
  * Wails-bound methods. Proposals are plain tasks (tagged
- * "prompt-lab-proposal" + "requires-human", status human-required) with no
- * workflow attached, so approve/reject are direct task.Manager transitions
- * rather than workflow-engine actions.
+ * "prompt-lab-proposal" + "requires-human", status human-required) until
+ * approval, which starts the dedicated prompt-lab authoring workflow.
  * @module
  */
 
@@ -20,9 +19,9 @@ import * as task$0 from "../task/models.js";
 
 /**
  * ApproveProposal greenlights a pending prompt-lab proposal: moves it to
- * todo (ready for variant authoring + offline eval) and drops the
- * requires-human tag. Errors without mutating if the task is not a pending
- * proposal (wrong status, or missing the prompt-lab-proposal tag).
+ * in-progress, drops the requires-human tag, and starts the dedicated
+ * prompt-lab authoring workflow. Errors without mutating if the task is not a
+ * pending proposal (wrong status, or missing the prompt-lab-proposal tag).
  */
 export function ApproveProposal(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3299652469, id).then(($result: any) => {
