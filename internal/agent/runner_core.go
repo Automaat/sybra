@@ -55,6 +55,11 @@ type sandboxSpec struct {
 	tmp         string
 	sharedCache string
 	profilePath string
+
+	claudeState  string
+	codexState   string
+	copilotState string
+	toolCache    string
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,
@@ -121,5 +126,5 @@ func (m *Manager) finalizeRun(ctx context.Context, a *Agent, doneLogEvent string
 	m.logger.Info(doneLogEvent, "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)
-	m.markAgentDone(a)
+	m.markAgentDone(ctx, a)
 }

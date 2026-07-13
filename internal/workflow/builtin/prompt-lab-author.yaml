@@ -1,0 +1,140 @@
+id: prompt-lab-author
+name: Prompt Lab — Author Variant
+description: >-
+  Human-approved Prompt Lab proposal. Author a concrete prompt/skill A/B
+  variant, run the offline prompt eval gate, then hand the repo change through
+  the normal review/testing/PR pipeline.
+builtin: true
+trigger:
+  on: task.status_changed
+  priority: 20
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+    - field: task.tags
+      operator: contains
+      value: prompt-lab-proposal
+steps:
+  - id: author_variant
+    name: Author Variant
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      needs_worktree: true
+      max_retries: 1
+      prompt: >-
+        Implement this approved Prompt Lab proposal as a concrete, gated A/B
+        experiment in Sybra.
+
+        First read the task context:
+
+            sybra-cli get --compact {{.Task.ID}}
+
+        The task body contains the Proposal ID, subject role, candidate intent,
+        evidence, expected impact, and offline-eval note. Do not treat the
+        proposal text as the final variant text; author the actual
+        prompt/skill change in this repo.
+
+        Required outcome:
+
+        1. Identify the prompt, workflow prompt, or skill body that controls
+           the proposal's subject role. Keep the change tightly scoped to that
+           role/subject.
+        2. Add a versioned A/B experiment variant for the new prompt/skill
+           using Sybra's existing abtest config model. Preserve the baseline
+           variant and give the new variant a stable ID derived from the
+           Proposal ID.
+        3. For prompt variants, set a prompt_transform with resolved text and
+           a digest matching the exact bytes evaluated offline. For skill
+           variants, use skill_aliases or the existing skill-versioning
+           mechanism if present.
+        4. Create or update the smallest useful offline golden cases and
+           candidate-variant JSON needed to screen this change. Run:
+
+              sybra-cli evaluation offline run --variants <variants.json> --golden <golden.json>
+              sybra-cli evaluation offline gate <variant-id> <digest>
+
+           If a live/provider runner is unavailable and the configured
+           unavailable policy blocks enrollment, stop and mark the task
+           human-required with the exact blocker. Do not enroll an unevaluated
+           variant.
+        5. Run focused repository tests for the changed packages and any config
+           validation tests covering the new experiment.
+        6. Commit and push the branch. Do not create a PR; Sybra will run
+           review, testing, and PR creation after this workflow completes.
+
+        Constraints:
+
+        - Never include work-repo identifiers or task evidence from work
+          projects in committed files, commit messages, PR text, or logs.
+        - Do not disable the offline gate, lower eval thresholds, or give the
+          new variant weight unless the gate allows enrollment.
+        - If the right implementation target is ambiguous, stop and mark the
+          task human-required with the specific decision needed.
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_commits
+
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
+      - goto: codegen_gate
+
+  - id: codegen_gate
+    name: Codegen Gate
+    type: codegen_gate
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: detect_tampering
+
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_checks
+
+  - id: verify_checks
+    name: Verify Checks
+    type: verify_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: set_ready_review
+
+  - id: set_ready_review
+    name: Hand Off to Review
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""

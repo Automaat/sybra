@@ -1,13 +1,17 @@
 package sybra
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func setupPromptLabService(t *testing.T) *PromptLabService {
@@ -16,9 +20,14 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	if err != nil {
 		t.Fatal(err)
 	}
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &PromptLabService{
 		tasks:     task.NewManager(store, nil),
 		artifacts: artifact.New(t.TempDir()),
+		projects:  projects,
 	}
 }
 
@@ -48,8 +57,8 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v", err)
 	}
-	if got.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo", got.Status)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress", got.Status)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared", got.StatusReason)
@@ -67,6 +76,23 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Kind != artifact.ProgressKindDecision {
 		t.Fatalf("progress entries = %+v, want one decision entry", entries)
+	}
+}
+
+func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	if _, err := svc.projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
+
+	got, err := svc.ApproveProposal(created.ID)
+	if err != nil {
+		t.Fatalf("ApproveProposal: %v", err)
+	}
+	if got.ProjectID != promptLabProjectID {
+		t.Fatalf("ProjectID = %q, want %q", got.ProjectID, promptLabProjectID)
 	}
 }
 
@@ -213,8 +239,8 @@ func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo (unchanged by the rejected re-approve)", after.Status)
+	if after.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (unchanged by the rejected re-approve)", after.Status)
 	}
 }
 
@@ -243,7 +269,65 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v, want nil error despite progress-log failure", err)
 	}
-	if got.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo (status change not rolled back)", got.Status)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (status change not rolled back)", got.Status)
 	}
+}
+
+func TestPromptLabDispatchStarted_RequiresActiveWorkflowForAlreadyActive(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusInProgress, []string{promptlab.ProposalTag})
+
+	if svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive without a task workflow must not count as started")
+	}
+
+	active := &workflow.Execution{
+		WorkflowID:  "prompt-lab-author",
+		CurrentStep: "author_variant",
+		State:       workflow.ExecRunning,
+		StartedAt:   time.Now().UTC(),
+	}
+	if _, err := svc.tasks.Update(created.ID, task.Update{Workflow: &active}); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive with an active task workflow should count as already started")
+	}
+	if !svc.promptLabDispatchStarted(created.ID, "prompt-lab-author", nil) {
+		t.Fatal("matched workflow without error should count as started")
+	}
+	if svc.promptLabDispatchStarted(created.ID, "", nil) {
+		t.Fatal("no match and no error should not count as started")
+	}
+	if svc.promptLabDispatchStarted(created.ID, "", errors.New("boom")) {
+		t.Fatal("ordinary dispatch error should not count as started")
+	}
+}
+
+func TestPromptLabDispatchStarted_WaitsForWorkflowAfterAlreadyActive(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusInProgress, []string{promptlab.ProposalTag})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(promptLabAlreadyActivePoll * 2)
+		active := &workflow.Execution{
+			WorkflowID:  "prompt-lab-author",
+			CurrentStep: "author_variant",
+			State:       workflow.ExecRunning,
+			StartedAt:   time.Now().UTC(),
+		}
+		if _, err := svc.tasks.Update(created.ID, task.Update{Workflow: &active}); err != nil {
+			t.Errorf("Update workflow: %v", err)
+		}
+	}()
+
+	if !svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive should wait for a concurrent active workflow to appear")
+	}
+	<-done
 }

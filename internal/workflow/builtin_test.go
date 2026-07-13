@@ -370,6 +370,42 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	}
 }
 
+func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
+	t.Parallel()
+
+	impl := mustBuiltinDefinition(t, "simple-task-implement")
+	hasPromptLabExclusion := false
+	for _, cond := range impl.Trigger.Conditions {
+		if cond.Field == "task.tags" && cond.Operator == "not_contains" && cond.Value == "prompt-lab-proposal" {
+			hasPromptLabExclusion = true
+			break
+		}
+	}
+	if !hasPromptLabExclusion {
+		t.Fatal("simple-task-implement must exclude prompt-lab-proposal tasks")
+	}
+
+	promptLab := mustBuiltinDefinition(t, "prompt-lab-author")
+	if promptLab.Trigger.On != "task.status_changed" || promptLab.Trigger.Priority <= impl.Trigger.Priority {
+		t.Fatalf("prompt-lab-author trigger = %+v, want higher-priority task.status_changed trigger", promptLab.Trigger)
+	}
+	if !slices.ContainsFunc(promptLab.Trigger.Conditions, func(c Condition) bool {
+		return c.Field == "task.tags" && c.Operator == "contains" && c.Value == "prompt-lab-proposal"
+	}) {
+		t.Fatalf("prompt-lab-author conditions = %+v, want prompt-lab-proposal tag match", promptLab.Trigger.Conditions)
+	}
+	step := promptLab.StepByID("author_variant")
+	if step == nil {
+		t.Fatal("prompt-lab-author author_variant step not found")
+	}
+	if step.Type != StepRunAgent || !step.Config.NeedsWorktree || step.Config.Mode != "headless" {
+		t.Fatalf("author_variant step = %+v, want headless run_agent with worktree", step)
+	}
+	if !strings.Contains(step.Config.Prompt, "evaluation offline run") || !strings.Contains(step.Config.Prompt, "evaluation offline gate") {
+		t.Fatalf("author_variant prompt must require offline eval run+gate, got:\n%s", step.Config.Prompt)
+	}
+}
+
 // TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
 // implementation workflow ordering: verify_commits flows into codegen_gate,
 // which must run before detect_tampering and verify_checks so downstream

@@ -496,5 +496,5 @@ func (m *Manager) reattachConvo(ctx context.Context, a *Agent, startOffset int64
 	m.logger.Info("agent.reattach.convo.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)
-	m.markAgentDone(a)
+	m.markAgentDone(ctx, a)
 }

@@ -11,6 +11,13 @@ trigger:
     - field: task.tags
       operator: not_contains
       value: review
+    # Prompt Lab proposals need a specialised authoring prompt that produces
+    # an offline-evaluated A/B variant. The ordinary implementation prompt
+    # would treat the proposal like a generic task and strand it before
+    # enrollment.
+    - field: task.tags
+      operator: not_contains
+      value: prompt-lab-proposal
 steps:
   - id: implement
     name: Implement

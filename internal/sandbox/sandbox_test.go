@@ -488,6 +488,75 @@ func TestManager_CleanupOrphaned(t *testing.T) {
 	}
 }
 
+func TestManager_CleanupOrphaned_Retention(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	m.SetRetentionWindow(time.Hour)
+
+	now := time.Now()
+
+	agedDoneDir, err := m.SybraHomeDir("task-aged-done")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(aged-done): %v", err)
+	}
+	agedCancelledDir, err := m.SybraHomeDir("task-aged-cancelled")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(aged-cancelled): %v", err)
+	}
+	agedBlockedDir, err := m.SybraHomeDir("task-aged-blocked")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(aged-blocked): %v", err)
+	}
+	recentBlockedDir, err := m.SybraHomeDir("task-recent-blocked")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(recent-blocked): %v", err)
+	}
+	inReviewDir, err := m.SybraHomeDir("task-in-review")
+	if err != nil {
+		t.Fatalf("SybraHomeDir(in-review): %v", err)
+	}
+
+	tasks := []task.Task{
+		{ID: "task-aged-done", Status: task.StatusDone, StatusChangedAt: now.Add(-2 * time.Hour)},
+		{ID: "task-aged-cancelled", Status: task.StatusCancelled, StatusChangedAt: now.Add(-2 * time.Hour)},
+		{ID: "task-aged-blocked", Status: task.StatusBlocked, StatusChangedAt: now.Add(-2 * time.Hour)},
+		{ID: "task-recent-blocked", Status: task.StatusBlocked, StatusChangedAt: now},
+		{ID: "task-in-review", Status: task.StatusInReview, StatusChangedAt: now.Add(-2 * time.Hour)},
+	}
+	m.CleanupOrphaned(context.Background(), tasks, nil)
+
+	for _, dir := range []string{agedDoneDir, agedCancelledDir, agedBlockedDir} {
+		if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
+			t.Errorf("aged eligible dir %q still exists after cleanup: %v", dir, err)
+		}
+	}
+	for _, dir := range []string{recentBlockedDir, inReviewDir} {
+		if _, err := os.Stat(filepath.Dir(dir)); err != nil {
+			t.Errorf("preserved dir %q removed unexpectedly: %v", dir, err)
+		}
+	}
+}
+
+func TestManager_CleanupOrphaned_RetentionDisabled(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+	m.SetRetentionWindow(-1)
+
+	dir, err := m.SybraHomeDir("task-aged-done")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+
+	tasks := []task.Task{
+		{ID: "task-aged-done", Status: task.StatusDone, StatusChangedAt: time.Now().Add(-1000 * time.Hour)},
+	}
+	m.CleanupOrphaned(context.Background(), tasks, nil)
+
+	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
+		t.Fatalf("eligible dir removed despite disabled retention: %v", err)
+	}
+}
+
 // TestRunCmd_ContextCancellationKillsProcess proves runCmd's exec.Command is
 // built with the caller's context (exec.CommandContext): cancelling ctx must
 // kill an in-flight subprocess instead of leaving it to run to completion.

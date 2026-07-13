@@ -404,16 +404,7 @@ func applyPromptTransform(prompt string, transform *PromptTransform) string {
 	if transform == nil {
 		return prompt
 	}
-	switch strings.TrimSpace(transform.Op) {
-	case "replace", "template":
-		return transform.Text
-	case "prepend":
-		return transform.Text + prompt
-	case "append":
-		return prompt + transform.Text
-	default:
-		return prompt
-	}
+	return abtest.ApplyPromptTransformOpText(prompt, transform.Op, transform.Text)
 }
 
 func workflowPromptTransform(in *abtest.PromptTransform) *PromptTransform {

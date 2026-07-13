@@ -93,17 +93,29 @@ func canonicalizeRoot(root string) (string, error) {
 // profile or SBPL defect can only affect enforce-mode runs, never the
 // default (report) posture — see the rollback note on DefaultSandboxMode. A
 // nil cfg (tests constructing a command directly) is never wrapped.
+func sandboxRootOr(root, fallback string) string {
+	if strings.TrimSpace(root) == "" {
+		return fallback
+	}
+	return root
+}
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
 	}
-	wrapped := make([]string, 0, len(args)+11)
+	home := cfg.sandbox.sandboxHome
+	wrapped := make([]string, 0, len(args)+19)
 	wrapped = append(wrapped,
 		"-f", cfg.sandbox.profilePath,
 		"-D", "WORKTREE="+cfg.sandbox.worktree,
-		"-D", "SANDBOX_HOME="+cfg.sandbox.sandboxHome,
+		"-D", "SANDBOX_HOME="+home,
 		"-D", "TMP="+cfg.sandbox.tmp,
 		"-D", "SHARED_CACHE="+cfg.sandbox.sharedCache,
+		"-D", "CLAUDE_STATE="+sandboxRootOr(cfg.sandbox.claudeState, home),
+		"-D", "CODEX_STATE="+sandboxRootOr(cfg.sandbox.codexState, home),
+		"-D", "COPILOT_STATE="+sandboxRootOr(cfg.sandbox.copilotState, home),
+		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
 		name,
 	)
 	wrapped = append(wrapped, args...)

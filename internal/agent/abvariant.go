@@ -57,5 +57,13 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	cfg.VariantID = a.VariantID
 	cfg.AssignmentUnit = a.AssignmentUnit
 	cfg.AssignmentKey = a.AssignmentKey
+	cfg.Prompt = applyPromptTransform(cfg.Prompt, a.PromptTransform)
 	return cfg
+}
+
+func applyPromptTransform(prompt string, transform *abtest.PromptTransform) string {
+	if transform == nil {
+		return prompt
+	}
+	return abtest.ApplyPromptTransformOpText(prompt, transform.Op, transform.Text)
 }

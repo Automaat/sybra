@@ -66,6 +66,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	started := recordMappingStartedAt()
 	a := recordMappingAgent(started)
 	a.sessionCWD = "/tmp/sybra/worktrees/task-map"
+	a.sandboxHomeDir = "/tmp/sybra/sandboxes/task-map"
 	a.setStdinPath("/tmp/sybra/agents/a-map.stdin")
 	a.oneShot = true
 	a.requirePermissions = true
@@ -202,6 +203,7 @@ func recordMappingRecord(started time.Time) Record {
 		SessionID:          "sess-map",
 		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
 		CWD:                "/tmp/sybra/worktrees/task-map",
+		SandboxHomeDir:     "/tmp/sybra/sandboxes/task-map",
 		StartedAt:          started,
 		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
 		PendingPrompts:     []string{"queued turn 1", "queued turn 2"},
