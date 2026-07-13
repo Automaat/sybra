@@ -15,3 +15,7 @@ export function respondApprovalForTask(node: string | undefined, toolUseID: stri
 export function approvePlanForTask(node: string | undefined, taskID: string): Promise<unknown> {
   return node ? api.ApprovePlanOnNode(node, taskID) : api.ApprovePlan(taskID)
 }
+
+export function rejectPlanForTask(node: string | undefined, taskID: string, feedback: string): Promise<unknown> {
+  return node ? api.RejectPlanOnNode(node, taskID, feedback) : api.RejectPlan(taskID, feedback)
+}

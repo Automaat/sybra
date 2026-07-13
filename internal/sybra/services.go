@@ -117,6 +117,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"SendMessageToNode",
 			"RespondApprovalOnNode",
 			"ApprovePlanOnNode",
+			"RejectPlanOnNode",
 		),
 	}
 }

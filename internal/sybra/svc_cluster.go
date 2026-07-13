@@ -30,9 +30,7 @@ type ClusterService struct {
 	roster *cluster.Roster
 }
 
-// SetRoster late-binds the follower roster, which is built during Startup after
-// the service is registered.
-func (s *ClusterService) SetRoster(r *cluster.Roster) {
+func (s *ClusterService) setRoster(r *cluster.Roster) {
 	s.mu.Lock()
 	s.roster = r
 	s.mu.Unlock()
@@ -92,6 +90,15 @@ func (s *ClusterService) RespondApprovalOnNode(node, toolUseID string, approved 
 func (s *ClusterService) ApprovePlanOnNode(node, taskID string) error {
 	return s.withClient(node, func(ctx context.Context, c *cluster.Client) error {
 		_, err := c.ApprovePlan(ctx, taskID)
+		return err
+	})
+}
+
+// RejectPlanOnNode proxies a plan rejection (with feedback) to the named
+// follower.
+func (s *ClusterService) RejectPlanOnNode(node, taskID, feedback string) error {
+	return s.withClient(node, func(ctx context.Context, c *cluster.Client) error {
+		_, err := c.RejectPlan(ctx, taskID, feedback)
 		return err
 	})
 }

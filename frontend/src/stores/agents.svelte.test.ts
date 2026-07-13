@@ -4,6 +4,7 @@ import { Agent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/int
 const mockListAgents = vi.fn()
 const mockStartAgent = vi.fn()
 const mockStopAgent = vi.fn()
+const mockStopAgentOnNode = vi.fn()
 const mockGetAgentOutput = vi.fn()
 const mockDiscoverAgents = vi.fn()
 const mockAgentQueueSnapshot = vi.fn()
@@ -12,6 +13,7 @@ vi.mock('$lib/api', () => ({
   StartAgent: (...args: unknown[]) => mockStartAgent(...args),
   ListAgents: (...args: unknown[]) => mockListAgents(...args),
   StopAgent: (...args: unknown[]) => mockStopAgent(...args),
+  StopAgentOnNode: (...args: unknown[]) => mockStopAgentOnNode(...args),
   GetAgentOutput: (...args: unknown[]) => mockGetAgentOutput(...args),
   DiscoverAgents: (...args: unknown[]) => mockDiscoverAgents(...args),
   AgentQueueSnapshot: (...args: unknown[]) => mockAgentQueueSnapshot(...args),
@@ -377,5 +379,35 @@ describe('AgentStore', () => {
       agentStore.stopPolling()
       vi.useRealTimers()
     })
+  })
+})
+
+describe('AgentStore node-aware stop routing', () => {
+  it('stops a homed-away agent on its follower, not the leader', async () => {
+    const { taskStore } = await import('./tasks.svelte.js')
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    taskStore.tasks = new Map()
+    agentStore.items.set('a1', { id: 'a1', taskId: 't1', state: 'running' } as never)
+    taskStore.tasks.set('t1', { id: 't1', assignedNode: 'pet-box' } as never)
+
+    await agentStore.stop('a1')
+
+    expect(mockStopAgentOnNode).toHaveBeenCalledWith('pet-box', 'a1')
+    expect(mockStopAgent).not.toHaveBeenCalled()
+  })
+
+  it('stops a local agent on the leader', async () => {
+    const { taskStore } = await import('./tasks.svelte.js')
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    taskStore.tasks = new Map()
+    agentStore.items.set('a2', { id: 'a2', taskId: 't2', state: 'running' } as never)
+    taskStore.tasks.set('t2', { id: 't2' } as never)
+
+    await agentStore.stop('a2')
+
+    expect(mockStopAgent).toHaveBeenCalledWith('a2')
+    expect(mockStopAgentOnNode).not.toHaveBeenCalled()
   })
 })

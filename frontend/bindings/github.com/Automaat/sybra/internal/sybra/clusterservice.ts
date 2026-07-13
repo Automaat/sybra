@@ -16,10 +16,6 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as cluster$0 from "../cluster/models.js";
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
 /**
@@ -41,6 +37,14 @@ export function GetNodes(): $CancellablePromise<$models.ClusterNodeDTO[]> {
 }
 
 /**
+ * RejectPlanOnNode proxies a plan rejection (with feedback) to the named
+ * follower.
+ */
+export function RejectPlanOnNode(node: string, taskID: string, feedback: string): $CancellablePromise<void> {
+    return $Call.ByID(155381432, node, taskID, feedback);
+}
+
+/**
  * RespondApprovalOnNode proxies a tool-approval decision to the named follower.
  */
 export function RespondApprovalOnNode(node: string, toolUseID: string, approved: boolean): $CancellablePromise<void> {
@@ -53,14 +57,6 @@ export function RespondApprovalOnNode(node: string, toolUseID: string, approved:
  */
 export function SendMessageToNode(node: string, agentID: string, text: string): $CancellablePromise<void> {
     return $Call.ByID(2804790751, node, agentID, text);
-}
-
-/**
- * SetRoster late-binds the follower roster, which is built during Startup after
- * the service is registered.
- */
-export function SetRoster(r: cluster$0.Roster | null): $CancellablePromise<void> {
-    return $Call.ByID(835348412, r);
 }
 
 /**

@@ -342,6 +342,16 @@ func (c *Client) ApprovePlan(ctx context.Context, id string) (task.Task, error) 
 	return decode[task.Task](raw)
 }
 
+// RejectPlan proxies a plan rejection (with feedback) to the follower and
+// returns the updated task.
+func (c *Client) RejectPlan(ctx context.Context, id, feedback string) (task.Task, error) {
+	raw, err := c.Call(ctx, "PlanningService", "RejectPlan", id, feedback)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return decode[task.Task](raw)
+}
+
 func decode[T any](raw json.RawMessage) (T, error) {
 	var v T
 	if len(raw) == 0 {

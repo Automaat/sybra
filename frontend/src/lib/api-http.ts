@@ -216,6 +216,7 @@ export function StopAgentOnNode(arg1: string, arg2: string): Promise<void> { ret
 export function SendMessageToNode(arg1: string, arg2: string, arg3: string): Promise<void> { return call('ClusterService', 'SendMessageToNode', arg1, arg2, arg3) }
 export function RespondApprovalOnNode(arg1: string, arg2: string, arg3: boolean): Promise<void> { return call('ClusterService', 'RespondApprovalOnNode', arg1, arg2, arg3) }
 export function ApprovePlanOnNode(arg1: string, arg2: string): Promise<void> { return call('ClusterService', 'ApprovePlanOnNode', arg1, arg2) }
+export function RejectPlanOnNode(arg1: string, arg2: string, arg3: string): Promise<void> { return call('ClusterService', 'RejectPlanOnNode', arg1, arg2, arg3) }
 
 // Shared EventSource for the multiplexed /events SSE stream.
 // All EventsOn subscriptions funnel through a single connection.

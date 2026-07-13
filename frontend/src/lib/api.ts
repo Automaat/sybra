@@ -179,6 +179,7 @@ export const StopAgentOnNode = pick(ClusterSvc.StopAgentOnNode, http.StopAgentOn
 export const SendMessageToNode = pick(ClusterSvc.SendMessageToNode, http.SendMessageToNode)
 export const RespondApprovalOnNode = pick(ClusterSvc.RespondApprovalOnNode, http.RespondApprovalOnNode)
 export const ApprovePlanOnNode = pick(ClusterSvc.ApprovePlanOnNode, http.ApprovePlanOnNode)
+export const RejectPlanOnNode = pick(ClusterSvc.RejectPlanOnNode, http.RejectPlanOnNode)
 
 // Runtime events and browser utilities.
 //
