@@ -10,6 +10,10 @@
       {
         "type": "regex",
         "value": "\"decision\"\\s*:\\s*\"human\""
+      },
+      {
+        "type": "regex",
+        "value": "\"issue_title\"\\s*:\\s*null"
       }
     ]
   }

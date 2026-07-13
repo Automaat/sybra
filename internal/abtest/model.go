@@ -46,7 +46,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 6
+const CurrentBuiltinVersion = 7
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -70,17 +70,26 @@ var BuiltinExperimentIDs = []string{
 // `sybra-cli evaluation offline run` — editing this text invalidates that
 // verdict and re-blocks enrollment until the offline eval is re-run.
 const humanReviewDedupeAddendum = `
-## Before filing (dedupe check)
+## Existing diagnosis reuse
 
-Before returning 'sybra_bug', or diagnosing at all: scan the task body for
-existing '## Auto-review verdict' sections and the progress log for prior
-'decision'/'blocker'/'failure' entries. If one of them already correctly
-explains the CURRENT status and status_reason and no new evidence has
-appeared since it was written, do not re-run the investigation or file a
-second issue for the same root cause — return the SAME decision as that
-entry, restate its diagnosis in 'summary', and leave 'issue_title',
-'issue_body', and 'issue_labels' null so you never duplicate a filing that
-already exists.
+Before investigating or filing, scan the task body and recent agent runs for
+an existing human-review verdict, Auto-review verdict section, or progress-log
+diagnosis. If an existing entry still explains the current status and
+status_reason, and no newer task evidence contradicts it, reuse that diagnosis
+instead of re-investigating or filing a duplicate.
+
+When reusing an existing entry:
+- Return the same "decision" ("unblocked", "human", or "sybra_bug") that the
+  existing entry reached.
+- Write "summary" as one sentence that restates the already-recorded diagnosis.
+- Set "issue_title", "issue_body", and "issue_labels" to null unless the
+  existing entry explicitly says no issue was filed and the current task still
+  needs one.
+
+This addendum does not change the output protocol: your final response must be
+exactly one JSON object with the required keys and no markdown fences or prose.
+The first byte of your response must be "{" and the last byte must be "}".
+Never wrap the JSON in a markdown code fence.
 `
 
 const ReviewTightenInstructionsPLA2D853B2C1D9 = `
@@ -248,12 +257,10 @@ func DefaultConfig() Config {
 }
 
 // humanReviewDedupeExperiment is Prompt Lab proposal pl-5cf660095cb8
-// (candidate intent "tighten-instructions"), scaffolded from fleet evidence
-// that role human-review fails 19% vs 11% overall. The challenger variant's
-// weight stays 0 (never selected — see abtest.EligibleVariants) until
-// `sybra-cli evaluation offline gate` allows its digest to enroll; bumping
-// the weight before that is exactly the unevaluated-enrollment this gate
-// exists to prevent.
+// (candidate intent "tighten-instructions"). The challenger variant is
+// enrolled only after `sybra-cli evaluation offline gate` allows the exact
+// digest below; changing the prompt text invalidates that verdict and requires
+// re-running the offline eval before keeping positive weight.
 func humanReviewDedupeExperiment(expEnabled bool) Experiment {
 	return Experiment{
 		ID:             "human-review-pl-5cf660095cb8",
@@ -268,12 +275,13 @@ func humanReviewDedupeExperiment(expEnabled bool) Experiment {
 				ID:       "pl-5cf660095cb8",
 				Provider: "claude",
 				Model:    "claude-haiku-4-5-20251001",
-				Digest:   "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
+				Version:  "pl-5cf660095cb8",
+				Digest:   digestString(humanReviewDedupeAddendum),
 				PromptTransform: &PromptTransform{
 					Op:   "append",
 					Text: humanReviewDedupeAddendum,
 				},
-				Weight: 0,
+				Weight: 1,
 			},
 		},
 	}

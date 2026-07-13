@@ -1,9 +1,10 @@
 [
   {
     "id": "pl-5cf660095cb8",
-    "digest": "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
-    "prompt": "\n## Before filing (dedupe check)\n\nBefore returning 'sybra_bug', or diagnosing at all: scan the task body for\nexisting '## Auto-review verdict' sections and the progress log for prior\n'decision'/'blocker'/'failure' entries. If one of them already correctly\nexplains the CURRENT status and status_reason and no new evidence has\nappeared since it was written, do not re-run the investigation or file a\nsecond issue for the same root cause — return the SAME decision as that\nentry, restate its diagnosis in 'summary', and leave 'issue_title',\n'issue_body', and 'issue_labels' null so you never duplicate a filing that\nalready exists.\n",
+    "digest": "d2b789dc35e4244c51d1578baa6247e1ab3a07d0870abfd4712acf60625922db",
+    "prompt": "\n## Existing diagnosis reuse\n\nBefore investigating or filing, scan the task body and recent agent runs for\nan existing human-review verdict, Auto-review verdict section, or progress-log\ndiagnosis. If an existing entry still explains the current status and\nstatus_reason, and no newer task evidence contradicts it, reuse that diagnosis\ninstead of re-investigating or filing a duplicate.\n\nWhen reusing an existing entry:\n- Return the same \"decision\" (\"unblocked\", \"human\", or \"sybra_bug\") that the\n  existing entry reached.\n- Write \"summary\" as one sentence that restates the already-recorded diagnosis.\n- Set \"issue_title\", \"issue_body\", and \"issue_labels\" to null unless the\n  existing entry explicitly says no issue was filed and the current task still\n  needs one.\n\nThis addendum does not change the output protocol: your final response must be\nexactly one JSON object with the required keys and no markdown fences or prose.\nThe first byte of your response must be \"{\" and the last byte must be \"}\".\nNever wrap the JSON in a markdown code fence.\n",
     "provider": "claude",
-    "model": "claude-haiku-4-5-20251001"
+    "model": "claude-haiku-4-5-20251001",
+    "outputSchema": "{\"type\":\"object\",\"properties\":{\"decision\":{\"type\":\"string\",\"enum\":[\"human\",\"sybra_bug\",\"unblocked\"]},\"summary\":{\"type\":\"string\"},\"issue_title\":{\"type\":[\"string\",\"null\"]},\"issue_body\":{\"type\":[\"string\",\"null\"]},\"issue_labels\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"string\"}}},\"required\":[\"decision\",\"summary\",\"issue_title\",\"issue_body\",\"issue_labels\"],\"additionalProperties\":false}"
   }
 ]

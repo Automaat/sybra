@@ -43,6 +43,7 @@ func (r *NativeRunner) Run(ctx context.Context, spec Spec) (Result, error) {
 	out, err := llmexec.RunJSON(ctx, resolvedPrompt(spec), llmexec.Options{
 		Provider: spec.Variant.Provider,
 		Models:   map[string]string{spec.Variant.Provider: spec.Variant.Model},
+		Schema:   spec.Variant.OutputSchema,
 	})
 	latencyMS := time.Since(start).Milliseconds()
 	if err != nil {

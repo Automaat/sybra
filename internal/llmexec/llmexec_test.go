@@ -202,16 +202,16 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 	}
 }
 
-func TestRunJSONEmbedsSchemaAsProseForClaude(t *testing.T) {
+func TestRunJSONPassesClaudeJSONSchemaFlag(t *testing.T) {
 	dir := t.TempDir()
 	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/bash
-if [[ "$*" == *"--output-schema"* ]]; then
-  echo "claude must not receive --output-schema" >&2
-  exit 7
+if [[ "$*" != *"--json-schema"* ]]; then
+  echo "missing --json-schema: $*" >&2
+	exit 7
 fi
-if [[ "$*" != *"Output schema:"* ]]; then
-  echo "prompt missing schema prose: $*" >&2
-  exit 7
+if [[ "$*" == *"Output schema:"* ]]; then
+  echo "schema should not be appended as prompt prose: $*" >&2
+	exit 7
 fi
 printf '%s\n' '{"result":"{\"ok\":true}"}'
 `)

@@ -1,25 +1,29 @@
 [
   {
     "variantId": "pl-5cf660095cb8",
-    "digest": "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
-    "status": "fail",
-    "score": 0.5,
+    "digest": "d2b789dc35e4244c51d1578baa6247e1ab3a07d0870abfd4712acf60625922db",
+    "status": "pass",
+    "score": 1,
     "costUsd": 0,
-    "latencyMs": 8838,
+    "latencyMs": 9794,
     "assertions": [
       {
         "type": "is-json",
-        "passed": false,
-        "detail": "did not match \"valid JSON\""
+        "passed": true,
+        "detail": "matched \"valid JSON\""
       },
       {
         "type": "regex",
         "passed": true,
         "detail": "matched \"\\\"decision\\\"\\\\s*:\\\\s*\\\"human\\\"\""
+      },
+      {
+        "type": "regex",
+        "passed": true,
+        "detail": "matched \"\\\"issue_title\\\"\\\\s*:\\\\s*null\""
       }
     ],
     "runner": "native",
-    "reason": "case human-review-defers-to-existing-diagnosis: runner reported failure",
-    "createdAt": "2026-07-13T11:53:19.458447Z"
+    "createdAt": "2026-07-13T13:57:49.400831Z"
   }
 ]

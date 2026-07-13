@@ -118,10 +118,9 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 // TestDefaultConfigEnrollsEveryProviderUniformly locks the "equal agents"
 // posture: every default model-comparison experiment enrolls all three
 // providers at weight 1 so no role is shut out of any provider and the
-// scorecard sees balanced samples. Prompt/skill experiments are exempt — they
-// compare variant text on one fixed provider/model (validatePromptSkillHomogeneity
-// requires it), and an unenrolled challenger is deliberately weight 0 until its
-// offline eval gate passes.
+// scorecard sees balanced samples. Prompt/skill experiments are exempt: they
+// compare variant text on one fixed provider/model, and their enrollment is
+// controlled by offline eval gates instead of provider-balance checks.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 	cfg := DefaultConfig()
 	for _, exp := range cfg.Experiments {
@@ -220,6 +219,66 @@ func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T
 	}
 
 	data, err := os.ReadFile("../prompteval/testdata/promptlab-review-tighten-codex-variants.json")
+	if err != nil {
+		t.Fatalf("read offline fixture: %v", err)
+	}
+	var fixtures []struct {
+		ID     string `json:"id"`
+		Digest string `json:"digest"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(data, &fixtures); err != nil {
+		t.Fatalf("parse offline fixture: %v", err)
+	}
+	if len(fixtures) != 1 {
+		t.Fatalf("offline fixture count = %d, want 1", len(fixtures))
+	}
+	if fixtures[0].ID != found.ID || fixtures[0].Digest != found.Digest || fixtures[0].Prompt != found.PromptTransform.Text {
+		t.Fatalf("offline fixture = %+v, want id/digest/prompt from default variant", fixtures[0])
+	}
+}
+
+func TestDefaultConfigHumanReviewDedupeVariantIsDigestedPromptTransform(t *testing.T) {
+	cfg := DefaultConfig()
+	var exp *Experiment
+	var found *Variant
+	for i := range cfg.Experiments {
+		if cfg.Experiments[i].ID != "human-review-pl-5cf660095cb8" {
+			continue
+		}
+		exp = &cfg.Experiments[i]
+		for j := range cfg.Experiments[i].Variants {
+			if cfg.Experiments[i].Variants[j].ID == "pl-5cf660095cb8" {
+				found = &cfg.Experiments[i].Variants[j]
+			}
+		}
+	}
+	if exp == nil {
+		t.Fatal("prompt-lab human-review experiment not found")
+	}
+	if exp.KindValue() != "prompt" {
+		t.Fatalf("Kind = %q, want prompt", exp.KindValue())
+	}
+	if exp.Subject == nil || exp.Subject.Role != "human-review" {
+		t.Fatalf("Subject = %+v, want role human-review", exp.Subject)
+	}
+	if found == nil {
+		t.Fatal("prompt-lab human-review variant not found")
+	}
+	if found.Version != "pl-5cf660095cb8" {
+		t.Fatalf("Version = %q, want proposal id", found.Version)
+	}
+	if found.Weight != 1 {
+		t.Fatalf("Weight = %d, want 1 after offline gate approval", found.Weight)
+	}
+	if found.PromptTransform == nil || found.PromptTransform.Op != "append" || found.PromptTransform.Text != humanReviewDedupeAddendum {
+		t.Fatalf("PromptTransform = %+v, want append of reviewed text", found.PromptTransform)
+	}
+	if want := digestString(humanReviewDedupeAddendum); found.Digest != want {
+		t.Fatalf("Digest = %q, want %q", found.Digest, want)
+	}
+
+	data, err := os.ReadFile("../../docs/prompt-lab/pl-5cf660095cb8/variants.json")
 	if err != nil {
 		t.Fatalf("read offline fixture: %v", err)
 	}

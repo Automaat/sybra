@@ -20,6 +20,7 @@ type CandidateVariant struct {
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	OutputSchema    string `json:"outputSchema,omitempty"`
 }
 
 // Assertion is one check run against a variant's output for a golden case.

@@ -47,9 +47,10 @@ type Options struct {
 	Logger       *slog.Logger
 	Gate         provider.HealthGate
 	// Schema is an optional JSON Schema describing the expected result shape.
-	// Codex receives it natively via `--output-schema <tempfile>` (no prose);
-	// claude and copilot have no such flag, so it is embedded as prose in the
-	// prompt instead. Empty means no schema is delivered by either path.
+	// Claude receives it via `--json-schema`; Codex receives it via
+	// `--output-schema <tempfile>`; Copilot has no schema flag, so it is
+	// embedded as prose in the prompt instead. Empty means no schema is
+	// delivered by any path.
 	Schema string
 }
 
@@ -174,21 +175,24 @@ func binaryName(p string) string {
 
 func runProvider(ctx context.Context, p, prompt, model string, disableTools bool, schema string) (stdout []byte, stderrOut string, err error) {
 	effectivePrompt := prompt
-	schemaPath := ""
+	schemaArg := ""
 	if strings.TrimSpace(schema) != "" {
-		if p == "codex" {
+		switch p {
+		case "codex":
 			path, schemaErr := writeSchemaTempFile(schema)
 			if schemaErr != nil {
 				return nil, "", fmt.Errorf("%w: %w", errSchemaDelivery, schemaErr)
 			}
 			defer os.Remove(path)
-			schemaPath = path
-		} else {
+			schemaArg = path
+		case "claude":
+			schemaArg = strings.TrimSpace(schema)
+		default:
 			effectivePrompt = prompt + "\n\nOutput schema:\n" + strings.TrimSpace(schema)
 		}
 	}
 
-	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaPath)
+	name, args, stdin := invocation(p, effectivePrompt, model, disableTools, schemaArg)
 	cmd := exec.CommandContext(ctx, name, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -216,7 +220,7 @@ func writeSchemaTempFile(schema string) (string, error) {
 	return f.Name(), nil
 }
 
-func invocation(p, prompt, model string, disableTools bool, schemaPath string) (name string, args []string, stdin string) {
+func invocation(p, prompt, model string, disableTools bool, schemaArg string) (name string, args []string, stdin string) {
 	switch p {
 	case "codex":
 		args := []string{
@@ -226,8 +230,8 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		if schemaPath != "" {
-			args = append(args, "--output-schema", schemaPath)
+		if schemaArg != "" {
+			args = append(args, "--output-schema", schemaArg)
 		}
 		args = append(args, "-")
 		return "codex", args, prompt
@@ -246,6 +250,9 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 		}
 		if model != "" {
 			args = append(args, "--model", model)
+		}
+		if schemaArg != "" {
+			args = append(args, "--json-schema", schemaArg)
 		}
 		return "claude", args, ""
 	}
@@ -367,12 +374,18 @@ func overloaded(parts ...string) bool {
 }
 
 func schemaFlagRejected(providerName, schema string, parts ...string) bool {
-	if providerName != "codex" || strings.TrimSpace(schema) == "" {
+	if strings.TrimSpace(schema) == "" {
+		return false
+	}
+	flag := "--output-schema"
+	if providerName == "claude" {
+		flag = "--json-schema"
+	} else if providerName != "codex" {
 		return false
 	}
 	for _, part := range parts {
 		lower := strings.ToLower(part)
-		if !strings.Contains(lower, "--output-schema") {
+		if !strings.Contains(lower, flag) {
 			continue
 		}
 		if containsAnyString(lower,
@@ -383,7 +396,7 @@ func schemaFlagRejected(providerName, schema string, parts ...string) bool {
 			"unrecognized argument",
 			"unexpected option",
 			"unexpected argument",
-			"found argument '--output-schema' which wasn't expected",
+			fmt.Sprintf("found argument '%s' which wasn't expected", flag),
 			"no such option",
 			"unsupported option",
 		) {
