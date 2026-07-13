@@ -17,8 +17,9 @@ import (
 const DefaultSampleIntervalSeconds = 15
 
 // Gate is a local resource-pressure admission gate consulted before
-// dispatching new agent work. A nil *Gate is safe to call: every method
-// treats it as "gating disabled" and admits unconditionally — see New.
+// dispatching new agent work. A nil *Gate is safe to call: every method treats
+// it as "gating disabled" and admits unconditionally. Call sites may still keep
+// explicit nil guards when they need enabled-only side effects such as audit.
 type Gate struct {
 	minDiskFreePct float64
 	minMemAvailPct float64
@@ -114,28 +115,42 @@ var errAllSignalsUnreadable = errors.New("all resource-pressure signals unreadab
 // sample returns the cached Sample, refreshing it when older than interval.
 func (g *Gate) sample() (Sample, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if !g.cachedAt.IsZero() && time.Since(g.cachedAt) < g.interval {
-		return g.cached, nil
+		sample := g.cached
+		g.mu.Unlock()
+		if allSignalsUnreadable(sample) {
+			return sample, errAllSignalsUnreadable
+		}
+		return sample, nil
 	}
 	fn := g.sampleFn
+	probeDir := g.probeDir
+	g.mu.Unlock()
+
 	if fn == nil {
 		fn = func(probeDir string) (Sample, error) {
 			return readSample(probeDir), nil
 		}
 	}
-	sample, err := fn(g.probeDir)
+	sample, err := fn(probeDir)
 	if err != nil {
 		return Sample{}, err
 	}
+
+	g.mu.Lock()
 	g.cached = sample
 	g.cachedAt = time.Now()
-	if math.IsNaN(sample.DiskFreePct) &&
-		math.IsNaN(sample.MemAvailablePct) &&
-		math.IsNaN(sample.LoadPerCPU) {
-		return g.cached, errAllSignalsUnreadable
+	g.mu.Unlock()
+	if allSignalsUnreadable(sample) {
+		return sample, errAllSignalsUnreadable
 	}
-	return g.cached, nil
+	return sample, nil
+}
+
+func allSignalsUnreadable(sample Sample) bool {
+	return math.IsNaN(sample.DiskFreePct) &&
+		math.IsNaN(sample.MemAvailablePct) &&
+		math.IsNaN(sample.LoadPerCPU)
 }
 
 // recordDeny stashes the latest deny reason for Status and logs it, throttled
