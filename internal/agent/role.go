@@ -57,6 +57,26 @@ func (r Role) IsSystem() bool {
 	return r == RoleTriage || r == RoleEval || r == RolePlanCritic || r == RoleHumanReview
 }
 
+// SupportsHeadlessSteer reports whether headless runs of this role should be
+// launched with the stdin/stream-json steerable transport
+// (RunConfig.HeadlessSteerable). Steering exists so a human watching a live
+// run from the GUI can send follow-up guidance; verifier/system roles
+// (review, test-runner, eval, triage, plan-critic, human-review) and
+// fix-review are dispatched unattended by pollers/watchers with
+// Mode hardcoded to "headless" independent of the originating task's own
+// AgentMode (see internal/sybra/review/inbound.go, app_human_review.go) —
+// nothing ever writes a steer message to them. Forcing the steerable
+// transport onto that unattended dispatch produced the stdin deadlock in
+// #1825: the process sat waiting on a FIFO no caller intended to feed.
+// Excluding these roles falls back to the plain one-shot `-p <prompt>`
+// invocation, which has no stdin dependency to hang on.
+func (r Role) SupportsHeadlessSteer() bool {
+	if r.IsVerifier() || r.IsSystem() {
+		return false
+	}
+	return r != RoleFixReview
+}
+
 // ParseRoleFromName extracts the Role from a prefixed agent name.
 // The bool reports whether the name carried a known role prefix.
 func ParseRoleFromName(name string) (Role, bool) {
