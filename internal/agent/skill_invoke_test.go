@@ -103,8 +103,43 @@ func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
 	if got != "Run $sybra-test-v2 now" {
 		t.Fatalf("prompt arg = %q, want Codex dollar invocation", got)
 	}
+	if slices.Contains(inv.args, "--ignore-user-config") {
+		t.Fatalf("Codex skill invocation args included --ignore-user-config: %v", inv.args)
+	}
 	if strings.Contains(got, "/sybra-test") || strings.Contains(got, "$sybra-test now") {
 		t.Fatalf("prompt was not fully aliased before Codex rewrite: %q", got)
+	}
+}
+
+func TestBuildHeadlessInvocation_CodexKeepsUserConfigIgnoredWithoutSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "staff-code-review")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Review this directly"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	if !slices.Contains(inv.args, "--ignore-user-config") {
+		t.Fatalf("Codex non-skill args omitted --ignore-user-config: %v", inv.args)
+	}
+}
+
+func TestBuildCodexConvoArgsWithProvider_LoadsUserConfigForSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "staff-code-review")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	args := buildCodexConvoArgs(&Agent{ID: "a", Provider: "codex"}, RunConfig{}, "Run /staff-code-review")
+	if slices.Contains(args, "--ignore-user-config") {
+		t.Fatalf("Codex convo skill args included --ignore-user-config: %v", args)
+	}
+	if got := args[len(args)-1]; got != "Run $staff-code-review" {
+		t.Fatalf("prompt arg = %q, want Codex dollar invocation", got)
 	}
 }
 

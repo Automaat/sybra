@@ -357,7 +357,8 @@ func buildCodexConvoArgs(a *Agent, cfg RunConfig, prompt string) []string {
 }
 
 func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, provider Provider) []string {
-	args := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
+	skillNames := discoverCodexSkills()
+	args := codexExecBaseArgs(prompt, skillNames)
 	// headless=false: interactive (conversational) mode has a human present
 	// who can approve sandbox prompts via the UI.
 	args = append(args, provider.SandboxArgs(cfg.RequirePermissions, false)...)
@@ -370,7 +371,7 @@ func buildCodexConvoArgsWithProvider(a *Agent, cfg RunConfig, prompt string, pro
 	}
 	// Lifecycle hooks (fail-open: omitted when sybra-cli unresolvable or taskID unsafe).
 	args = append(args, buildCodexHookArgs(a.TaskID)...)
-	args = append(args, rewriteSkillInvocations(prompt, discoverCodexSkills()))
+	args = append(args, rewriteSkillInvocations(prompt, skillNames))
 	return args
 }
 
