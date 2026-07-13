@@ -34,7 +34,9 @@ func (p codexProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	args := []string{"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
+	skillNames := discoverCodexSkills()
+	prompt := rewriteSkillInvocations(cfg.Prompt, skillNames)
+	args := codexExecBaseArgs(prompt != cfg.Prompt)
 	// headless=true: --sandbox workspace-write requires approval prompts
 	// which auto-reject in headless mode (no TTY/UI). Always bypass.
 	args = append(args, p.SandboxArgs(cfg.RequirePermissions, true)...)
@@ -61,13 +63,21 @@ func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 		}
 		args = append(args, mcpArgs...)
 	}
-	prompt := rewriteSkillInvocations(cfg.Prompt, discoverCodexSkills())
 	args = append(args, prompt)
 	return headlessInvocation{
 		name:    "codex",
 		args:    args,
 		command: "codex " + strings.Join(args, " "),
 	}, nil
+}
+
+func codexExecBaseArgs(loadUserConfig bool) []string {
+	args := []string{"exec", "--json", "--skip-git-repo-check"}
+	if !loadUserConfig {
+		args = append(args, "--ignore-user-config")
+	}
+	args = append(args, "--ignore-rules")
+	return args
 }
 
 func (codexProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
