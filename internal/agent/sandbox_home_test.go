@@ -33,7 +33,7 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
-		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
@@ -173,7 +173,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
-		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
@@ -209,7 +209,7 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
-		"GOCACHE=" + filepath.Join(base, "go-build"),
+		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
@@ -273,7 +273,7 @@ func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
 
 	base := sharedBuildCacheDir()
 	for key, want := range map[string]string{
-		"GOCACHE=":          filepath.Join(base, "go-build"),
+		"GOCACHE=":          filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=":       filepath.Join(base, "go-mod"),
 		"npm_config_cache=": filepath.Join(base, "npm"),
 	} {
@@ -289,11 +289,58 @@ func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
 			t.Fatalf("want exactly one %s entry, got %d in %v", key, hits, cfg.ExtraEnv)
 		}
 		if got != want {
-			t.Fatalf("%s%q, want shared %q", key, got, want)
+			t.Fatalf("%s%q, want %q", key, got, want)
 		}
 		if info, statErr := os.Stat(want); statErr != nil || !info.IsDir() {
 			t.Fatalf("shared cache dir %q not created: %v", want, statErr)
 		}
+	}
+}
+
+func TestPrepareRunConfig_SharedBuildCache_GOCACHEIsPerTask(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+	})
+
+	task1, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-1", Mode: "headless", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareRunConfig(task-1): %v", err)
+	}
+	task2, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-2", Mode: "headless", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareRunConfig(task-2): %v", err)
+	}
+
+	var gocache1, gocache2, gomod1, gomod2 string
+	for _, kv := range task1.ExtraEnv {
+		if v, ok := strings.CutPrefix(kv, "GOCACHE="); ok {
+			gocache1 = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GOMODCACHE="); ok {
+			gomod1 = v
+		}
+	}
+	for _, kv := range task2.ExtraEnv {
+		if v, ok := strings.CutPrefix(kv, "GOCACHE="); ok {
+			gocache2 = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GOMODCACHE="); ok {
+			gomod2 = v
+		}
+	}
+	if gocache1 == "" || gocache2 == "" {
+		t.Fatalf("missing GOCACHE values: %q %q", gocache1, gocache2)
+	}
+	if gocache1 == gocache2 {
+		t.Fatalf("GOCACHE must be task-scoped, got shared %q", gocache1)
+	}
+	if gomod1 == "" || gomod2 == "" {
+		t.Fatalf("missing GOMODCACHE values: %q %q", gomod1, gomod2)
+	}
+	if gomod1 != gomod2 {
+		t.Fatalf("GOMODCACHE must stay shared, got %q vs %q", gomod1, gomod2)
 	}
 }
 
