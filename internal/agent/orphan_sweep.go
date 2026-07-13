@@ -4,10 +4,13 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+const orphanSweepTimeout = 2 * time.Second
 
 type providerProcess struct {
 	PID     int
@@ -25,6 +28,13 @@ func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []strin
 	if len(roots) == 0 {
 		return 0
 	}
+	if ctx == nil {
+		return 0
+	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, orphanSweepTimeout)
+	defer cancel()
+
 	procs := listProviderProcessesUnderRoots(ctx, roots)
 	if len(procs) == 0 {
 		return 0
