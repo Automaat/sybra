@@ -265,6 +265,45 @@ func TestScanLogsOlderThanOverride(t *testing.T) {
 	}
 }
 
+func TestScanLogsIncludesWorktreeSetupLogs(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Agent.LogRetentionDays = 1
+
+	now := time.Now()
+	oldSetupLog := filepath.Join(cfg.Logging.Dir, "worktrees", "orphan123-setup.log")
+	newSetupLog := filepath.Join(cfg.Logging.Dir, "worktrees", "fresh456-setup.log")
+	writeFileAt(t, oldSetupLog, 10, now.Add(-72*time.Hour))
+	writeFileAt(t, newSetupLog, 10, now.Add(-1*time.Hour))
+
+	s := NewScanner(cfg, &fakeLister{})
+	res, err := s.Scan(Options{Only: []string{BucketLogs}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if got := res.Buckets[0].Items; got != 1 {
+		t.Fatalf("expected 1 eligible setup log, got %d (%v)", got, res.Buckets[0].Paths)
+	}
+	if res.Buckets[0].Paths[0] != oldSetupLog {
+		t.Fatalf("expected old setup log to be the eligible one, got %v", res.Buckets[0].Paths)
+	}
+
+	// Apply must actually delete it (bucketRoot/containedChild must accept
+	// worktrees/ paths, not just agents/).
+	applyRes, err := s.Apply(res.Buckets, Options{Only: []string{BucketLogs}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if applyRes.Buckets[0].Removed != 1 {
+		t.Fatalf("expected 1 removed, got %d (skipped: %v, errors: %v)", applyRes.Buckets[0].Removed, applyRes.Buckets[0].Skipped, applyRes.Buckets[0].Errors)
+	}
+	if _, err := os.Stat(oldSetupLog); !os.IsNotExist(err) {
+		t.Fatalf("expected old setup log to be deleted, stat err = %v", err)
+	}
+	if _, err := os.Stat(newSetupLog); err != nil {
+		t.Fatalf("expected fresh setup log to survive, stat err = %v", err)
+	}
+}
+
 func TestScanAuditUsesOwnRetentionNotOverriddenByDefault(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Audit.RetentionDays = 7
