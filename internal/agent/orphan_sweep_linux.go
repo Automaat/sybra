@@ -69,29 +69,5 @@ func linuxMCPOwner(pid string) mcpOwner {
 	if err != nil || len(data) == 0 {
 		return mcpOwner{}
 	}
-	owner := mcpOwner{}
-	marked := false
-	for part := range strings.SplitSeq(string(data), "\x00") {
-		key, value, ok := strings.Cut(part, "=")
-		if !ok {
-			continue
-		}
-		switch key {
-		case mcpOwnerFlagEnv:
-			if value != mcpOwnerFlagTrue {
-				return mcpOwner{}
-			}
-			marked = true
-		case mcpAgentIDEnv:
-			owner.AgentID = value
-		case mcpTaskIDEnv:
-			owner.TaskID = value
-		case mcpAgentModeEnv:
-			owner.Mode = value
-		}
-	}
-	if !marked || owner.AgentID == "" || owner.Mode == "" {
-		return mcpOwner{}
-	}
-	return owner
+	return mcpOwnerFromEnvAssignments(strings.Split(string(data), "\x00"))
 }

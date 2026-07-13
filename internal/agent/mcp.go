@@ -131,6 +131,34 @@ func mcpOwnerAssignments(owner mcpOwner) []string {
 	return assignments
 }
 
+func mcpOwnerFromEnvAssignments(assignments []string) mcpOwner {
+	owner := mcpOwner{}
+	marked := false
+	for _, assignment := range assignments {
+		key, value, ok := strings.Cut(assignment, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case mcpOwnerFlagEnv:
+			if value != mcpOwnerFlagTrue {
+				return mcpOwner{}
+			}
+			marked = true
+		case mcpAgentIDEnv:
+			owner.AgentID = value
+		case mcpTaskIDEnv:
+			owner.TaskID = value
+		case mcpAgentModeEnv:
+			owner.Mode = value
+		}
+	}
+	if !marked || owner.AgentID == "" || owner.Mode == "" {
+		return mcpOwner{}
+	}
+	return owner
+}
+
 func stringSliceFromJSON(v any) ([]string, error) {
 	if v == nil {
 		return nil, nil

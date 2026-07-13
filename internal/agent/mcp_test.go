@@ -100,6 +100,35 @@ func TestWrapMCPConfigWithOwnership(t *testing.T) {
 	})
 }
 
+func TestMCPOwnerFromEnvAssignments(t *testing.T) {
+	t.Parallel()
+
+	got := mcpOwnerFromEnvAssignments([]string{
+		"PATH=/bin",
+		mcpOwnerFlagEnv + "=" + mcpOwnerFlagTrue,
+		mcpAgentIDEnv + "=agent-1",
+		mcpTaskIDEnv + "=task-1",
+		mcpAgentModeEnv + "=headless",
+		"NOISE",
+	})
+	if got != (mcpOwner{AgentID: "agent-1", TaskID: "task-1", Mode: "headless"}) {
+		t.Fatalf("owner = %+v, want agent/task/headless", got)
+	}
+
+	for name, assignments := range map[string][]string{
+		"missing_marker": {mcpAgentIDEnv + "=agent-1", mcpAgentModeEnv + "=headless"},
+		"bad_marker":     {mcpOwnerFlagEnv + "=0", mcpAgentIDEnv + "=agent-1", mcpAgentModeEnv + "=headless"},
+		"missing_agent":  {mcpOwnerFlagEnv + "=" + mcpOwnerFlagTrue, mcpAgentModeEnv + "=headless"},
+		"missing_mode":   {mcpOwnerFlagEnv + "=" + mcpOwnerFlagTrue, mcpAgentIDEnv + "=agent-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := mcpOwnerFromEnvAssignments(assignments); got != (mcpOwner{}) {
+				t.Fatalf("owner = %+v, want empty", got)
+			}
+		})
+	}
+}
+
 func jsonContainsArgs(t *testing.T, raw string, want ...string) bool {
 	t.Helper()
 	var parsed struct {
