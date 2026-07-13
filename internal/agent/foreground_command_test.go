@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,4 +62,47 @@ func TestApplyStreamEventState_IgnoresNonBashToolUses(t *testing.T) {
 	if command, _, ok := a.ActiveForegroundCommand(); ok {
 		t.Fatalf("ActiveForegroundCommand() = %q, want no foreground command for non-Bash tool", command)
 	}
+}
+
+func TestRehydrateFromLog_RebuildsForegroundBashState(t *testing.T) {
+	t.Run("live command remains active", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.ndjson")
+		data := strings.Join([]string{
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"mise run verify"}}]}}`,
+		}, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatalf("write log: %v", err)
+		}
+
+		a := &Agent{Provider: "claude"}
+		rehydrateFromLog(a, path)
+
+		command, _, ok := a.ActiveForegroundCommand()
+		if !ok {
+			t.Fatal("ActiveForegroundCommand() = not found after rehydrate, want live command")
+		}
+		if command != "mise run verify" {
+			t.Fatalf("command = %q, want %q", command, "mise run verify")
+		}
+	})
+
+	t.Run("matching tool result clears command", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.ndjson")
+		data := strings.Join([]string{
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"mise run verify"}}]}}`,
+			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok"}]}}`,
+		}, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatalf("write log: %v", err)
+		}
+
+		a := &Agent{Provider: "claude"}
+		rehydrateFromLog(a, path)
+
+		if command, _, ok := a.ActiveForegroundCommand(); ok {
+			t.Fatalf("ActiveForegroundCommand() = %q after rehydrate, want cleared by tool_result", command)
+		}
+	})
 }
