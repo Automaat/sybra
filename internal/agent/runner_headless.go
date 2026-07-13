@@ -793,6 +793,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	if event.Type == "usage" && event.Content == "" && event.LimitSnapshot != nil {
 		return false
 	}
+	a.applyStreamEventState(event)
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
 	// Feed the tool-call fingerprint into the real-time loop detector. An empty
@@ -821,10 +822,6 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if p := provider.SessionFilePath(event.SessionID); p != "" {
 			a.SetSessionFilePath(p)
 		}
-	}
-
-	if event.Type == "system" && event.Subtype == "background_tasks_changed" {
-		a.SetBackgroundTaskIDs(event.BackgroundTaskIDs)
 	}
 
 	if (event.Type == "system" || event.Type == "init") && len(event.PluginErrors) > 0 {
