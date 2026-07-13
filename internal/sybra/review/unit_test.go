@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
@@ -157,7 +158,7 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 		"PUSH_REMOTE=origin",
 		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
 		"PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")",
-		"case \"$PUSH_URL\" in https://github.com/*|http://github.com/*) gh auth status --hostname github.com >/dev/null ;; esac",
+		"case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac",
 		"git push \"$PUSH_REMOTE\" HEAD:" + branch,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -185,6 +186,16 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 	if open {
 		t.Fatalf("prompt has an unclosed code fence (%d markers):\n%s", fences, prompt)
+	}
+}
+
+func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
+	got := truncatePushPreflightReason("prefix \xff café suffix", 12)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated reason = %q, want ellipsis", got)
 	}
 }
 

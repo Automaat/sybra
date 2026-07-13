@@ -1251,11 +1251,7 @@ func scrubCredentialPreflightMessage(msg string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
-		if trimmed == "" ||
-			strings.Contains(lower, "token:") ||
-			strings.Contains(lower, "oauth_token") ||
-			strings.Contains(lower, "ghp_") ||
-			strings.Contains(lower, "github_pat_") {
+		if trimmed == "" || containsGitHubCredentialMarker(lower) {
 			continue
 		}
 		kept = append(kept, trimmed)
@@ -1267,6 +1263,24 @@ func scrubCredentialPreflightMessage(msg string) string {
 		return "authentication check failed"
 	}
 	return strings.Join(kept, "; ")
+}
+
+func containsGitHubCredentialMarker(lower string) bool {
+	for _, marker := range []string{
+		"token:",
+		"oauth_token",
+		"ghp_",
+		"gho_",
+		"ghu_",
+		"ghs_",
+		"ghr_",
+		"github_pat_",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveWorktree deletes worktreePath and its `git worktree` registration

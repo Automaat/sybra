@@ -90,13 +90,19 @@ func TestScrubCredentialPreflightMessage(t *testing.T) {
 		"github_pat_should_not_leak\n" +
 		"- The token in GH_TOKEN is invalid."
 	got := scrubCredentialPreflightMessage(msg)
-	for _, forbidden := range []string{"ghp_", "github_pat_", "token:"} {
+	for _, forbidden := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "token:"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("scrubbed message leaked %q: %q", forbidden, got)
 		}
 	}
 	if !strings.Contains(got, "Failed to log in") || !strings.Contains(got, "GH_TOKEN is invalid") {
 		t.Fatalf("scrubbed message dropped useful auth context: %q", got)
+	}
+
+	for _, prefix := range []string{"gho_", "ghu_", "ghs_", "ghr_"} {
+		if got := scrubCredentialPreflightMessage(prefix + "should_not_leak"); strings.Contains(got, prefix) {
+			t.Fatalf("scrubbed message leaked %q: %q", prefix, got)
+		}
 	}
 }
 

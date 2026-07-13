@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/executil"
@@ -340,7 +341,7 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 	b.WriteString("PUSH_REMOTE=origin\n")
 	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
 	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
-	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
+	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
 	if fenced {
 		b.WriteString("\n```")
@@ -548,10 +549,18 @@ func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir stri
 }
 
 func truncatePushPreflightReason(s string, limit int) string {
+	s = strings.ToValidUTF8(s, "")
 	if limit <= 0 || len(s) <= limit {
 		return s
 	}
-	return strings.TrimSpace(s[:limit]) + "..."
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len()+utf8.RuneLen(r) > limit {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String()) + "..."
 }
 
 func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
