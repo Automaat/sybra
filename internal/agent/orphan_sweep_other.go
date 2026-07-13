@@ -10,7 +10,7 @@ import (
 )
 
 func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []providerProcess {
-	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "-eww", "-axo", "pid=,command=").Output()
 	if err != nil {
 		return nil
 	}
@@ -25,7 +25,8 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 			continue
 		}
 		cmd := fields[1]
-		if !isProviderProcessName(cmd) {
+		owner := mcpOwnerFromEnvAssignments(fields[2:])
+		if owner.AgentID == "" && !isProviderProcessName(cmd) {
 			continue
 		}
 		cwdOut, err := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-Fn", "-p", strconv.Itoa(pid)).Output()
@@ -36,7 +37,7 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 		if !pathWithinRoots(cwd, roots) {
 			continue
 		}
-		procs = append(procs, providerProcess{PID: pid, Command: cmd, CWD: cwd})
+		procs = append(procs, providerProcess{PID: pid, Command: cmd, CWD: cwd, Owner: owner})
 	}
 	return procs
 }

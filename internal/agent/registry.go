@@ -32,6 +32,7 @@ type Record struct {
 	SessionID      string    `yaml:"session_id,omitempty"`
 	LogPath        string    `yaml:"log_path,omitempty"`
 	CWD            string    `yaml:"cwd,omitempty"`
+	SandboxHomeDir string    `yaml:"sandbox_home_dir,omitempty"`
 	StartedAt      time.Time `yaml:"started_at"`
 	ProcStartedAt  string    `yaml:"proc_started_at,omitempty"` // ps lstart, guards PID reuse
 	StdinPath      string    `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival

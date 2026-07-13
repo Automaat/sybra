@@ -481,6 +481,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		LastEventAt:            now,
 		cancel:                 cancel,
 		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,
 		requirePermissions:     cfg.RequirePermissions,
@@ -540,7 +541,7 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 	return nil
 }
 
-func (m *Manager) markAgentDone(a *Agent) {
+func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 	if a == nil || a.done == nil {
 		return
 	}
@@ -571,6 +572,12 @@ func (m *Manager) markAgentDone(a *Agent) {
 		retention := m.deadAgentRetention
 		m.mu.Unlock()
 		m.signalQueueNudge()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if roots := orphanSweepRootsForAgent(a); len(roots) > 0 {
+			m.ReapOrphanProviderProcesses(ctx, roots)
+		}
 
 		// Evict the finished agent from the live registry so its output
 		// buffer and prompt do not accumulate forever on a long-lived
