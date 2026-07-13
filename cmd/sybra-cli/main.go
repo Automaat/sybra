@@ -205,6 +205,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "doctor":
+		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -1984,11 +1986,26 @@ Commands:
   config doctor                Sanity-check config: data dirs, agent.provider,
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
-                               missing required credentials.
+                               missing required credentials.%s
 
 Global flags:
   --json   Output as JSON
-`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList(), doctorUsageBlock())
+}
+
+func doctorUsageBlock() string {
+	return `
+
+  doctor cleanup [--apply] [--only b1,b2] [--worktrees] [--external] [--force]
+                 [--older-than DURATION] [--json]
+           Report (default: dry-run) or delete (--apply) reclaimable disk
+           usage: logs, audit, sandboxes, go-build-cache (safe, cleaned by
+           default under --apply) plus worktrees/shared-cache/external
+           (destructive — each needs its own --worktrees/--external
+           flag before --apply will touch it, or even include it in the
+           report; --force only bypasses dirty worktree protection).
+           Deletion is irreversible; dry-run first. Exit codes:
+           0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {
