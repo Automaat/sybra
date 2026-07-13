@@ -507,6 +507,7 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 			continue
 		}
 		ev.Timestamp = time.Now().UTC()
+		a.applyStreamEventState(ev)
 		a.AppendOutput(ev)
 		// Restore per-run effort the same way the live stream loop accumulates
 		// it (processHeadlessLine + checkTurnsGuardrail). Without this a run
