@@ -59,7 +59,7 @@ func lsofCWDsByPID(ctx context.Context, pids []string) map[int]string {
 	if len(pids) == 0 {
 		return out
 	}
-	cwdOut, err := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-Fn", "-p", strings.Join(pids, ",")).Output()
+	cwdOut, err := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-Fpn", "-p", strings.Join(pids, ",")).Output()
 	if err != nil {
 		return out
 	}
