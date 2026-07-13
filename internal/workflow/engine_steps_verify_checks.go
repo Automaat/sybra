@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/buildcache"
 )
 
 // verifyChecksDefaultTimeout bounds the whole verify run (every command). A test
@@ -177,8 +179,12 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 				timeout, verifyChecksTimeoutRetries+1)
 			return e.flagVerifyChecks(taskID, step, reason, "timeout")
 		}
-		e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
-		return stepDone(step, "skipped: context canceled")
+		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
+			return stepDone(step, "skipped: context canceled")
+		}
+		reason := "verify suite could not prepare its isolated cache or run cleanly: " + trimDiffLine(runErr.Error())
+		return e.flagVerifyChecks(taskID, step, reason, "setup")
 	}
 
 	if failedCmd != "" {
@@ -625,13 +631,17 @@ func ownedByNpm(dir string) bool {
 // Returns the first command that exited non-zero on every attempt (a real
 // failure → caller blocks). A failing command is retried up to
 // verifyChecksFlakeRetries times to absorb nondeterministic flakes; a command
-// that passes on any attempt moves on. A non-nil err means the run could not
-// complete (ctx timeout/cancel) and is never retried — the budget is already
-// spent; the caller decides the policy (fail closed on our deadline, open on
-// shutdown). Output streams into a fixed-size tail buffer so a flood of
-// stdout/stderr cannot exhaust memory.
+// that passes on any attempt moves on. A non-nil err means the suite could not
+// even be prepared/run cleanly (ctx timeout/cancel or isolated-cache prep
+// failure) and is never retried — the budget is already spent; the caller
+// decides the policy. Output streams into a fixed-size tail buffer so a flood
+// of stdout/stderr cannot exhaust memory.
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
+	cmdEnv, err := verifyCommandEnv(taskID)
+	if err != nil {
+		return "", tail.String(), err
+	}
 	for _, raw := range cmds {
 		e.ensureNodeToolchain(ctx, taskID, wtPath, raw, tail)
 		passed := false
@@ -648,6 +658,7 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 			_, _ = io.WriteString(tail, "$ "+raw+"\n")
 			cmd := exec.CommandContext(ctx, "sh", "-c", raw)
 			cmd.Dir = wtPath
+			cmd.Env = cmdEnv
 			cmd.Stdout = tail
 			cmd.Stderr = tail
 			runErr := cmd.Run()
@@ -665,6 +676,10 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 		}
 	}
 	return "", tail.String(), nil
+}
+
+func verifyCommandEnv(taskID string) ([]string, error) {
+	return buildcache.PrepareGoEnv(taskID, os.Environ())
 }
 
 // boundedTail is a concurrency-safe io.Writer that retains only the last `max`

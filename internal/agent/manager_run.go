@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
@@ -258,17 +259,16 @@ func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
 }
 
 func sharedBuildCacheDir() string {
-	return filepath.Join(config.HomeDir(), "shared-cache")
+	return buildcache.SharedRoot()
 }
 
 func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 	if cfg.resolvedSandboxHome == "" {
 		return nil
 	}
-	base := sharedBuildCacheDir()
-	goBuild := filepath.Join(base, "go-build")
-	goMod := filepath.Join(base, "go-mod")
-	npm := filepath.Join(base, "npm")
+	goBuild := buildcache.TaskGoBuildDir(cfg.TaskID)
+	goMod := buildcache.SharedGoModDir()
+	npm := buildcache.SharedNPMDir()
 	for _, d := range []string{goBuild, goMod, npm} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("agent.Run: create shared build cache %q: %w", d, err)
