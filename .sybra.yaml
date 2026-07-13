@@ -32,7 +32,7 @@ manual_test:
 # the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
 checks:
   pre_commit:
-    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$PWD")" mise exec -- golangci-lint run ./...'
+    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./...'
     - (cd frontend && npx oxlint .)
     - mise exec -- hadolint Dockerfile
   pre_push:
@@ -65,7 +65,7 @@ checks:
   verify:
     - mise exec -- bash scripts/check-api-shim-sync.sh
     - mise exec -- bash scripts/check-no-home-fallback.sh
-    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$PWD")" mise exec -- golangci-lint run ./internal/... ./cmd/...'
+    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./internal/... ./cmd/...'
     - mise exec -- go test ./internal/... ./cmd/...
     - (cd frontend && mise exec -- npm run build:web)
     - (cd frontend && mise exec -- npm run test:coverage)
