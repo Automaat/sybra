@@ -448,7 +448,7 @@ func TestScanSymlinkedSandboxRefused(t *testing.T) {
 
 // --- Scan: shared-cache / external ----------------------------------------
 
-func TestScanSharedCacheRequiresForce(t *testing.T) {
+func TestScanSharedCacheRequiresExternal(t *testing.T) {
 	cfg := testConfig(t)
 	writeFileAt(t, filepath.Join(buildcache.SharedGoModDir(), "x"), 100, time.Now())
 
@@ -458,15 +458,15 @@ func TestScanSharedCacheRequiresForce(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 	if len(res.Buckets) != 0 {
-		t.Fatalf("shared-cache must be absent without --force, got %+v", res.Buckets)
+		t.Fatalf("shared-cache must be absent without --external, got %+v", res.Buckets)
 	}
 
-	res, err = s.Scan(Options{Only: []string{BucketSharedCache}, Force: true})
+	res, err = s.Scan(Options{Only: []string{BucketSharedCache}, External: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if len(res.Buckets) != 1 || res.Buckets[0].Bytes != 100 {
-		t.Fatalf("expected shared-cache bucket with 100 bytes given --force, got %+v", res.Buckets)
+		t.Fatalf("expected shared-cache bucket with 100 bytes given --external, got %+v", res.Buckets)
 	}
 	if res.Buckets[0].Risk != RiskDestructive {
 		t.Fatalf("shared-cache must be RiskDestructive, got %v", res.Buckets[0].Risk)

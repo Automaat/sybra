@@ -86,10 +86,10 @@ type Options struct {
 	Only []string
 	// Worktrees gates inclusion of the destructive worktrees bucket.
 	Worktrees bool
-	// External gates inclusion of the report-only external (docker) bucket.
+	// External gates inclusion of the destructive shared-cache bucket plus
+	// the report-only external (docker) bucket.
 	External bool
-	// Force gates inclusion of the destructive shared-cache bucket, and
-	// bypasses the per-worktree dirty-git-status safety check.
+	// Force bypasses the per-worktree dirty-git-status safety check.
 	Force bool
 	// OlderThan overrides the log/audit file age threshold. Zero means use
 	// the configured retention default. Never affects sandbox/go-build-
@@ -343,7 +343,7 @@ func (s *Scanner) Scan(opts Options) (Result, error) {
 			}
 			buckets = append(buckets, s.scanWorktrees(snap, opts))
 		case BucketSharedCache:
-			if !opts.Force {
+			if !opts.External {
 				continue
 			}
 			buckets = append(buckets, s.scanSharedCache())
