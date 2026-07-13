@@ -24,10 +24,10 @@ const certValidity = 10 * 365 * 24 * time.Hour
 // the certificate that was actually written, not from the inputs, so the printed
 // pin can never drift from the file on disk.
 type GeneratedCert struct {
-	CertFile string `json:"certFile"`
-	KeyFile  string `json:"keyFile"`
-	Pin      string `json:"pin"`
-	Hosts    []string
+	CertFile string    `json:"certFile"`
+	KeyFile  string    `json:"keyFile"`
+	Pin      string    `json:"pin"`
+	Hosts    []string  `json:"hosts"`
 	NotAfter time.Time `json:"notAfter"`
 }
 

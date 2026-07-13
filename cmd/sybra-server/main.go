@@ -4,8 +4,11 @@
 //
 // Environment variables:
 //
-//	SYBRA_PORT       HTTP listen port (default: 8080; overrides cluster.bind_addr)
-//	SYBRA_HOST       HTTP listen host (default: all interfaces)
+//	SYBRA_BIND_ADDR  Listen address; overrides cluster.bind_addr(s)
+//	SYBRA_PORT       HTTP listen port (default: 8080; a configured
+//	                   cluster.bind_addr(s) wins over this)
+//	SYBRA_HOST       HTTP listen host (default: all interfaces; a configured
+//	                   cluster.bind_addr(s) wins over this)
 //	SYBRA_AUTH_TOKEN Bearer token for the HTTP control plane
 //	SYBRA_STATIC_DIR Directory to serve as /; set to frontend/dist for SPA
 //	                   (optional — omit to skip static file serving)
