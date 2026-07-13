@@ -1,0 +1,9 @@
+[
+  {
+    "id": "pl-5cf660095cb8",
+    "digest": "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
+    "prompt": "\n## Before filing (dedupe check)\n\nBefore returning 'sybra_bug', or diagnosing at all: scan the task body for\nexisting '## Auto-review verdict' sections and the progress log for prior\n'decision'/'blocker'/'failure' entries. If one of them already correctly\nexplains the CURRENT status and status_reason and no new evidence has\nappeared since it was written, do not re-run the investigation or file a\nsecond issue for the same root cause — return the SAME decision as that\nentry, restate its diagnosis in 'summary', and leave 'issue_title',\n'issue_body', and 'issue_labels' null so you never duplicate a filing that\nalready exists.\n",
+    "provider": "claude",
+    "model": "claude-haiku-4-5-20251001"
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "caseId": "human-review-defers-to-existing-diagnosis",
+    "input": "## Task\n- ID: demo-0001\n- Status: human-required\n- Status reason: ci_check_failed_dco\n\n### Task body\n## Auto-review verdict: needs human\nThe DCO check is failing because the last commit is unsigned; fixing this\nrequires the task owner to re-sign and force-push, which the agent cannot do\nwithout write credentials to the fork — a genuine human-only gate, not a\nSybra defect.\n\n## Recent agent runs\n\n### Run 1 — role=human-review state=completed\nResult:\n```\n{\"decision\":\"human\",\"summary\":\"DCO check requires the owner to re-sign the last commit; agent lacks push credentials.\",\"issue_title\":null,\"issue_body\":null,\"issue_labels\":null}\n```\n\n## Output protocol (REQUIRED)\nReturn exactly one JSON object with these fields, and nothing else — no\nmarkdown code fences, no prose before or after it:\n\n- `decision`: \"unblocked\" | \"human\" | \"sybra_bug\"\n- `summary`: one sentence\n- `issue_title` / `issue_body` / `issue_labels`: set to null when unused\n\nDiagnose this human-required task now and return your verdict.",
+    "assertions": [
+      {
+        "type": "is-json",
+        "value": ""
+      },
+      {
+        "type": "regex",
+        "value": "\"decision\"\\s*:\\s*\"human\""
+      }
+    ]
+  }
+]

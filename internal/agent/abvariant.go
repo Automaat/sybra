@@ -53,6 +53,7 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	if a.ReasoningEffort != "" {
 		cfg.ReasoningEffort = a.ReasoningEffort
 	}
+	cfg.Prompt = abtest.ApplyPromptTransform(cfg.Prompt, a.PromptTransform)
 	cfg.ExperimentID = a.ExperimentID
 	cfg.VariantID = a.VariantID
 	cfg.AssignmentUnit = a.AssignmentUnit

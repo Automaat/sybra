@@ -114,11 +114,18 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 }
 
 // TestDefaultConfigEnrollsEveryProviderUniformly locks the "equal agents"
-// posture: every default experiment enrolls all three providers at weight 1 so
-// no role is shut out of any provider and the scorecard sees balanced samples.
+// posture: every default model-comparison experiment enrolls all three
+// providers at weight 1 so no role is shut out of any provider and the
+// scorecard sees balanced samples. Prompt/skill experiments are exempt — they
+// compare variant text on one fixed provider/model (validatePromptSkillHomogeneity
+// requires it), and an unenrolled challenger is deliberately weight 0 until its
+// offline eval gate passes.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 	cfg := DefaultConfig()
 	for _, exp := range cfg.Experiments {
+		if exp.KindValue() != "model" {
+			continue
+		}
 		providers := map[string]bool{}
 		for _, v := range exp.Variants {
 			if v.Weight != 1 {

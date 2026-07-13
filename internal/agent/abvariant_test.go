@@ -83,6 +83,33 @@ func TestApplyABVariant_EvalGateExcludesDigestedVariant(t *testing.T) {
 	}
 }
 
+func TestApplyABVariant_AppliesPromptTransform(t *testing.T) {
+	stubProviderCLIAvailable(t, func(string) bool { return true })
+	m := &Manager{}
+	ab := reviewExperiment(abtest.Variant{
+		ID: "tightened", Provider: "claude", Model: "sonnet", Weight: 1,
+		PromptTransform: &abtest.PromptTransform{Op: "append", Text: "\nextra instructions"},
+	})
+
+	cfg := m.ApplyABVariant(RunConfig{Prompt: "base prompt"}, ab, "task-1", "review")
+
+	if cfg.Prompt != "base prompt\nextra instructions" {
+		t.Fatalf("Prompt = %q, want base prompt + appended transform text", cfg.Prompt)
+	}
+}
+
+func TestApplyABVariant_NilPromptTransformLeavesPromptUnchanged(t *testing.T) {
+	stubProviderCLIAvailable(t, func(string) bool { return true })
+	m := &Manager{}
+	ab := reviewExperiment(abtest.Variant{ID: "codex-only", Provider: "codex", Model: "gpt-5.5", Weight: 1})
+
+	cfg := m.ApplyABVariant(RunConfig{Prompt: "base prompt"}, ab, "task-1", "review")
+
+	if cfg.Prompt != "base prompt" {
+		t.Fatalf("Prompt = %q, want unchanged base prompt", cfg.Prompt)
+	}
+}
+
 func TestApplyABVariant_RoleMismatchLeavesConfigUnchanged(t *testing.T) {
 	stubProviderCLIAvailable(t, func(string) bool { return true })
 	m := &Manager{}

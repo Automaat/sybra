@@ -2,6 +2,29 @@ package abtest
 
 import "strings"
 
+// ApplyPromptTransform rewrites prompt per an assigned variant's transform:
+// "replace"/"template" swaps in Text outright, "prepend"/"append" splice
+// Text around the original prompt, and a nil transform (or unrecognized Op)
+// leaves prompt unchanged. Shared by every non-workflow dispatch site that
+// routes through Manager.ApplyABVariant (human-review, orchestrator, staff PR
+// review) so a "prompt" experiment's variant text actually reaches the model
+// instead of only stamping provider/model attribution.
+func ApplyPromptTransform(prompt string, t *PromptTransform) string {
+	if t == nil {
+		return prompt
+	}
+	switch strings.TrimSpace(t.Op) {
+	case "replace", "template":
+		return t.Text
+	case "prepend":
+		return t.Text + prompt
+	case "append":
+		return prompt + t.Text
+	default:
+		return prompt
+	}
+}
+
 // Config controls deterministic A/B assignment for workflow agent runs.
 type Config struct {
 	Enabled              *bool        `yaml:"enabled" json:"enabled"`
@@ -19,13 +42,35 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 4
+const CurrentBuiltinVersion = 5
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
 // reconcile if its ID appears here — every other experiment ID is treated as
 // user-authored and preserved verbatim.
-var BuiltinExperimentIDs = []string{"code-author-cheap", "code-author-maintenance-cheap", "fix-review-expensive", "review-expensive"}
+var BuiltinExperimentIDs = []string{"code-author-cheap", "code-author-maintenance-cheap", "fix-review-expensive", "review-expensive", "human-review-pl-5cf660095cb8"}
+
+// humanReviewDedupeAddendum is Prompt Lab proposal pl-5cf660095cb8's
+// candidate text for the human-review role: appended to the base
+// human-review prompt (internal/sybra buildPrompt), it tells the reviewer to
+// defer to an existing correct diagnosis already recorded on the task instead
+// of re-investigating and re-filing. Its sha256 digest (see the
+// pl-5cf660095cb8 variant below) must match the exact bytes screened by
+// `sybra-cli evaluation offline run` — editing this text invalidates that
+// verdict and re-blocks enrollment until the offline eval is re-run.
+const humanReviewDedupeAddendum = `
+## Before filing (dedupe check)
+
+Before returning 'sybra_bug', or diagnosing at all: scan the task body for
+existing '## Auto-review verdict' sections and the progress log for prior
+'decision'/'blocker'/'failure' entries. If one of them already correctly
+explains the CURRENT status and status_reason and no new evidence has
+appeared since it was written, do not re-run the investigation or file a
+second issue for the same root cause — return the SAME decision as that
+entry, restate its diagnosis in 'summary', and leave 'issue_title',
+'issue_body', and 'issue_labels' null so you never duplicate a filing that
+already exists.
+`
 
 // Experiment selects among variants for matching workflow roles.
 type Experiment struct {
@@ -147,6 +192,36 @@ func DefaultConfig() Config {
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
 					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
 					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+				},
+			},
+			// human-review-pl-5cf660095cb8: Prompt Lab proposal
+			// pl-5cf660095cb8 (candidate intent "tighten-instructions"),
+			// scaffolded from fleet evidence that role human-review fails
+			// 19% vs 11% overall. The challenger variant's weight stays 0
+			// (never selected — see abtest.EligibleVariants) until
+			// `sybra-cli evaluation offline gate` allows its digest to
+			// enroll; bumping the weight before that is exactly the
+			// unevaluated-enrollment this gate exists to prevent.
+			{
+				ID:             "human-review-pl-5cf660095cb8",
+				Kind:           "prompt",
+				Enabled:        &expEnabled,
+				AssignmentUnit: "task",
+				Subject:        &Subject{Role: "human-review"},
+				Roles:          []string{"human-review"},
+				Variants: []Variant{
+					{ID: "baseline", Provider: "claude", Model: "claude-haiku-4-5-20251001", Weight: 1},
+					{
+						ID:       "pl-5cf660095cb8",
+						Provider: "claude",
+						Model:    "claude-haiku-4-5-20251001",
+						Digest:   "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
+						PromptTransform: &PromptTransform{
+							Op:   "append",
+							Text: humanReviewDedupeAddendum,
+						},
+						Weight: 0,
+					},
 				},
 			},
 		},

@@ -1,0 +1,25 @@
+[
+  {
+    "variantId": "pl-5cf660095cb8",
+    "digest": "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
+    "status": "fail",
+    "score": 0.5,
+    "costUsd": 0,
+    "latencyMs": 8838,
+    "assertions": [
+      {
+        "type": "is-json",
+        "passed": false,
+        "detail": "did not match \"valid JSON\""
+      },
+      {
+        "type": "regex",
+        "passed": true,
+        "detail": "matched \"\\\"decision\\\"\\\\s*:\\\\s*\\\"human\\\"\""
+      }
+    ],
+    "runner": "native",
+    "reason": "case human-review-defers-to-existing-diagnosis: runner reported failure",
+    "createdAt": "2026-07-13T11:53:19.458447Z"
+  }
+]
