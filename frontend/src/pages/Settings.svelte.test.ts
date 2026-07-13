@@ -51,7 +51,15 @@ function uninstallNotification() {
 
 function baseSettings() {
   return {
-    agent: { provider: 'claude', model: 'sonnet', mode: 'headless', maxConcurrent: 3 },
+    agent: {
+      provider: 'claude',
+      model: 'sonnet',
+      mode: 'headless',
+      maxConcurrent: 3,
+      logRetentionDays: 14,
+      logGzipAfterDays: 3,
+      logRetentionMaxSizeMb: 1024,
+    },
     notification: { desktop: false },
     orchestrator: { dispatchIntervalSeconds: 10, maintenanceIntervalSeconds: 60 },
     logging: { level: 'info', maxSizeMB: 100, maxFiles: 10 },
@@ -219,6 +227,19 @@ describe('Settings', () => {
     await vi.waitFor(() => expect(screen.getByText('Agent defaults')).toBeDefined())
   })
 
+  it('renders the full agent log retention controls', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
+    await fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Log retention (days)')).toBeDefined()
+      expect(screen.getByLabelText('Log gzip after (days)')).toBeDefined()
+      expect(screen.getByLabelText('Log max size (MB)')).toBeDefined()
+    })
+  })
+
   it('renders the raw YAML config pane when selected', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     // RawConfigPanel imports GetRawConfig/SaveRawConfig directly; provide via the mock.
@@ -242,11 +263,13 @@ describe('Settings', () => {
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
     await goTo('Defaults')
-    const concurrencyInput = screen.getByLabelText('Max concurrent') as HTMLInputElement
-    await fireEvent.input(concurrencyInput, { target: { value: '5' } })
+    await fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    const gzipAfterInput = screen.getByLabelText('Log gzip after (days)') as HTMLInputElement
+    await fireEvent.input(gzipAfterInput, { target: { value: '5' } })
     await fireEvent.click(screen.getByText('Save'))
     await vi.waitFor(() => {
       expect(mockUpdateSettings).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls.at(-1)?.[0]?.agent?.logGzipAfterDays).toBe(5)
       expect(screen.getByText('Settings saved')).toBeDefined()
     })
   })

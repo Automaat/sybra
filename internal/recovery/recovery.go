@@ -77,7 +77,13 @@ type Recovery struct {
 
 	LogDir       string
 	LogRetention time.Duration // 0 disables age-based pruning
-	OrphanRoots  []string
+	// LogGzipAfter compresses retained per-agent NDJSON logs older than
+	// this. 0 disables compression.
+	LogGzipAfter time.Duration
+	// LogMaxTotalBytes caps the total size of the per-agent log directory.
+	// 0 disables size-based enforcement.
+	LogMaxTotalBytes int64
+	OrphanRoots      []string
 
 	DispatchGate func(task.Task) bool
 
@@ -121,10 +127,22 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	r.RestartStaleInProgress(ctx)
 }
 
-// pruneAgentLogs removes stale per-agent NDJSON files. Safe to call with
-// an empty LogDir (test setups) — the logging helper no-ops.
+// pruneAgentLogs enforces retention (age/empty deletion, gzip compression,
+// size cap) over per-agent NDJSON files. Safe to call with an empty LogDir
+// (test setups) — the logging helper no-ops. Agent liveness is queried
+// first so a live agent's own log — still being appended to — is excluded
+// from every pass of the sweep.
 func (r *Recovery) pruneAgentLogs() {
-	rep := logging.PruneAgentLogs(r.LogDir, r.LogRetention, time.Now())
+	var active map[string]bool
+	if r.Agents != nil {
+		active = r.Agents.ActiveLogPaths()
+	}
+	rep := logging.EnforceAgentLogRetention(r.LogDir, logging.RetentionOptions{
+		MaxAge:         r.LogRetention,
+		GzipAfter:      r.LogGzipAfter,
+		MaxTotalBytes:  r.LogMaxTotalBytes,
+		ActiveLogPaths: active,
+	}, time.Now())
 	logging.LogPruneReport(r.Logger, rep)
 }
 

@@ -1,6 +1,8 @@
 package logging
 
 import (
+	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +155,167 @@ func TestPruneAgentLogs_EmptyLogDirIsNoop(t *testing.T) {
 	r := PruneAgentLogs("", 24*time.Hour, time.Now())
 	if r.Scanned != 0 || len(r.Errors) != 0 {
 		t.Errorf("expected empty report for empty logDir, got %+v", r)
+	}
+}
+
+func writeAgentLog(t *testing.T, agentsDir, name, content string, age time.Duration, now time.Time) string {
+	t.Helper()
+	path := filepath.Join(agentsDir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	mtime := now.Add(-age)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("chtimes %s: %v", name, err)
+	}
+	return path
+}
+
+func TestEnforceAgentLogRetention_Gzip(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := strings.Repeat("hello world\n", 100)
+	old := writeAgentLog(t, agents, "agt-1-2026-04-01T00-00-00.ndjson", content, 5*24*time.Hour, now)
+	fresh := writeAgentLog(t, agents, "agt-2-2026-04-16T00-00-00.ndjson", content, time.Hour, now)
+
+	r := EnforceAgentLogRetention(dir, RetentionOptions{GzipAfter: 3 * 24 * time.Hour}, now)
+	if r.Compressed != 1 {
+		t.Errorf("Compressed = %d, want 1", r.Compressed)
+	}
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("original old file should have been removed, stat err=%v", err)
+	}
+	gzPath := old + ".gz"
+	f, err := os.Open(gzPath)
+	if err != nil {
+		t.Fatalf("open .gz sibling: %v", err)
+	}
+	defer f.Close()
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	got, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("read gzip content: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("decompressed content mismatch: got %d bytes, want %d", len(got), len(content))
+	}
+
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh file should be untouched: %v", err)
+	}
+}
+
+func TestEnforceAgentLogRetention_GzipPreservesAgeForLaterPrune(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := writeAgentLog(t, agents, "agt-1-2026-04-01T00-00-00.ndjson", "old\n", 10*24*time.Hour, now)
+
+	first := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxAge:    14 * 24 * time.Hour,
+		GzipAfter: 3 * 24 * time.Hour,
+	}, now)
+	if first.Compressed != 1 {
+		t.Fatalf("first pass Compressed = %d, want 1", first.Compressed)
+	}
+
+	gzPath := old + ".gz"
+	info, err := os.Stat(gzPath)
+	if err != nil {
+		t.Fatalf("stat .gz sibling: %v", err)
+	}
+	if !info.ModTime().Equal(now.Add(-10 * 24 * time.Hour)) {
+		t.Fatalf("compressed mtime = %s, want %s", info.ModTime(), now.Add(-10*24*time.Hour))
+	}
+
+	second := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxAge: 14 * 24 * time.Hour,
+	}, now.Add(5*24*time.Hour))
+	if second.DeletedOld != 1 {
+		t.Fatalf("second pass DeletedOld = %d, want 1", second.DeletedOld)
+	}
+	if _, err := os.Stat(gzPath); !os.IsNotExist(err) {
+		t.Fatalf("compressed file should be age-pruned later, stat err=%v", err)
+	}
+}
+
+func TestEnforceAgentLogRetention_SizeCap(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	chunk := strings.Repeat("x", 100)
+	oldest := writeAgentLog(t, agents, "agt-1.ndjson", chunk, 3*time.Hour, now)
+	middle := writeAgentLog(t, agents, "agt-2.ndjson", chunk, 2*time.Hour, now)
+	newest := writeAgentLog(t, agents, "agt-3.ndjson", chunk, time.Hour, now)
+
+	// Total is 300 bytes; cap at 150 should evict the two oldest files,
+	// oldest-mtime-first, and keep the newest.
+	r := EnforceAgentLogRetention(dir, RetentionOptions{MaxTotalBytes: 150}, now)
+	if r.DeletedForSize != 2 {
+		t.Errorf("DeletedForSize = %d, want 2", r.DeletedForSize)
+	}
+	if r.Kept != 1 {
+		t.Errorf("Kept = %d, want 1", r.Kept)
+	}
+	if _, err := os.Stat(oldest); !os.IsNotExist(err) {
+		t.Errorf("oldest file should have been evicted, stat err=%v", err)
+	}
+	if _, err := os.Stat(middle); !os.IsNotExist(err) {
+		t.Errorf("middle file should have been evicted, stat err=%v", err)
+	}
+	if _, err := os.Stat(newest); err != nil {
+		t.Errorf("newest file should survive: %v", err)
+	}
+}
+
+func TestEnforceAgentLogRetention_ProtectsActiveLogPaths(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	chunk := strings.Repeat("x", 100)
+	// Old, empty-eligible, and over-cap on every axis — would be deleted by
+	// every pass if it weren't for the active-log protection.
+	active := writeAgentLog(t, agents, "agt-active.ndjson", chunk, 30*24*time.Hour, now)
+	activeStderr := writeAgentLog(t, agents, "agt-active.ndjson.stderr", "", 30*24*time.Hour, now)
+
+	r := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxAge:         24 * time.Hour,
+		GzipAfter:      time.Hour,
+		MaxTotalBytes:  1,
+		ActiveLogPaths: map[string]bool{active: true},
+	}, now)
+
+	if r.Protected != 2 {
+		t.Errorf("Protected = %d, want 2 (main log + stderr sidecar)", r.Protected)
+	}
+	if r.DeletedOld != 0 || r.DeletedEmpty != 0 || r.DeletedForSize != 0 || r.Compressed != 0 {
+		t.Errorf("expected no deletions/compression of protected files, got %+v", r)
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Errorf("active log was removed/compressed: %v", err)
+	}
+	if _, err := os.Stat(activeStderr); err != nil {
+		t.Errorf("active stderr sidecar was removed: %v", err)
 	}
 }

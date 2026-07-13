@@ -2,10 +2,13 @@ package agent
 
 import (
 	"bufio"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ParseLogFile reads an NDJSON agent log written by the headless runner and
@@ -21,7 +24,7 @@ import (
 //
 // Malformed lines are skipped silently.
 func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, error) {
-	f, err := os.Open(path)
+	f, err := openAgentLogReader(path)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +78,7 @@ func ParseConvoLogFile(path string, maxEvents int, logger *slog.Logger) ([]Convo
 		logger = slog.Default()
 	}
 
-	f, err := os.Open(path)
+	f, err := openAgentLogReader(path)
 	if err != nil {
 		return nil, fmt.Errorf("open convo log: %w", err)
 	}
@@ -118,15 +121,75 @@ func ParseConvoLogFile(path string, maxEvents int, logger *slog.Logger) ([]Convo
 }
 
 // FindLogFile locates the NDJSON log for agentID inside logsDir/agents/ by
-// globbing "{agentID}-*.ndjson". Returns the first match or an error.
+// globbing "{agentID}-*.ndjson". Retention may have gzip-compressed an aged
+// log (see logging.EnforceAgentLogRetention), so a plain match is preferred
+// but "{agentID}-*.ndjson.gz" is used as a fallback. Returns the first match
+// or an error.
 func FindLogFile(logsDir, agentID string) (string, error) {
 	pattern := filepath.Join(logsDir, "agents", agentID+"-*.ndjson")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return "", err
 	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no log file for agent %s", agentID)
+	if len(matches) > 0 {
+		return matches[0], nil
 	}
-	return matches[0], nil
+	gzMatches, err := filepath.Glob(pattern + ".gz")
+	if err != nil {
+		return "", err
+	}
+	if len(gzMatches) > 0 {
+		return gzMatches[0], nil
+	}
+	return "", fmt.Errorf("no log file for agent %s", agentID)
+}
+
+// openAgentLogReader opens an agent NDJSON log for reading, transparently
+// handling the gzip compression applied by retention: aged .ndjson files are
+// rewritten to a sibling .ndjson.gz with the original removed (see
+// logging.EnforceAgentLogRetention). Resolution order: the path as given,
+// then "<path>.gz" when the plain .ndjson is gone. A .gz input — matched
+// either way — is wrapped in a gzip.Reader so callers scan decompressed
+// NDJSON. The returned ReadCloser closes both the decompressor and the
+// underlying file.
+func openAgentLogReader(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) && !strings.HasSuffix(path, ".gz") {
+			if gzFile, gzErr := os.Open(path + ".gz"); gzErr == nil {
+				return newGzipReadCloser(gzFile)
+			}
+		}
+		return nil, err
+	}
+	if strings.HasSuffix(path, ".gz") {
+		return newGzipReadCloser(f)
+	}
+	return f, nil
+}
+
+// gzipReadCloser couples a gzip.Reader to its backing file so both are closed
+// together.
+type gzipReadCloser struct {
+	gz *gzip.Reader
+	f  *os.File
+}
+
+func (g *gzipReadCloser) Read(p []byte) (int, error) { return g.gz.Read(p) }
+
+func (g *gzipReadCloser) Close() error {
+	err := g.gz.Close()
+	if cerr := g.f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+func newGzipReadCloser(f *os.File) (io.ReadCloser, error) {
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &gzipReadCloser{gz: gz, f: f}, nil
 }
