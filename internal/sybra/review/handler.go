@@ -167,6 +167,10 @@ type Handler struct {
 	// pushSyncFn pushes the fast-path's clean merge commit. Overridable in
 	// tests; nil falls back to project.PushSync.
 	pushSyncFn func(ctx context.Context, worktreePath, branch string) error
+	// pushPreflightFn validates the push credential path before push-dependent
+	// fix workflows spend agent turns or mutate worktrees. Overridable in
+	// tests; nil falls back to project.PreflightPushCredentials.
+	pushPreflightFn func(ctx context.Context, worktreePath string) error
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
@@ -233,6 +237,7 @@ func New(
 		experience:          experienceStore,
 		tryCleanMergeFn:     project.TryCleanMerge,
 		pushSyncFn:          project.PushSync,
+		pushPreflightFn:     project.PreflightPushCredentials,
 	}
 }
 

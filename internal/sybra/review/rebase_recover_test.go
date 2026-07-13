@@ -347,8 +347,9 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 			Tasks:        tasks,
 			Logger:       slog.New(slog.DiscardHandler),
 		}),
-		WorkflowEngine: engine,
-		wtFailures:     make(map[string]int),
+		WorkflowEngine:  engine,
+		wtFailures:      make(map[string]int),
+		pushPreflightFn: stubPushPreflight(nil),
 		fetchKnownPRFn: func(repo string, number int) (github.PullRequest, bool, error) {
 			if repo != "owner/repo" || number != 42 {
 				return github.PullRequest{}, false, nil
@@ -584,8 +585,9 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 			Tasks:        tasks,
 			Logger:       slog.New(slog.DiscardHandler),
 		}),
-		WorkflowEngine: engine,
-		wtFailures:     make(map[string]int),
+		WorkflowEngine:  engine,
+		wtFailures:      make(map[string]int),
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 
 	tk, err := tasks.Create("no pr rebase recover", "", task.AgentModeHeadless)
@@ -670,6 +672,32 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
 		t.Fatal("PR conflict retry budget should stay untouched for no-PR recovery")
+	}
+}
+
+func TestRecoverBranchConflictNoPR_PushPreflightFailureBlocksRecoveryWorkflow(t *testing.T) {
+	r, tk := setupBranchConflictNoPRHandler(t, task.StatusTesting, nil)
+	r.pushPreflightFn = stubPushPreflight(errors.New("github push credential preflight failed: gh auth status: Bad credentials"))
+
+	if !r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("RecoverStaleBranchConflict returned false, want handled credential blocker")
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want no branch-conflict-fix workflow after preflight failure", got.Workflow)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "GitHub push credential preflight failed before starting PR fix") {
+		t.Fatalf("status reason = %q, want push credential preflight reason", got.StatusReason)
+	}
+	if r.prTracker.Retries(tk.ID, github.PRIssueBranchConflictNoPR) != 0 {
+		t.Fatal("branch-conflict retry budget was marked handled even though recovery workflow did not start")
 	}
 }
 
