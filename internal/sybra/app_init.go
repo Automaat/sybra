@@ -961,7 +961,7 @@ func (a *App) initWorkflowEngine() {
 }
 
 func (a *App) newWorkflowAgentLauncher() *agentAdapter {
-	pressureGate := pressure.New(a.cfg.Orchestrator.Pressure, config.HomeDir(), a.logger)
+	pressureGate := a.getPressureGate()
 	if a.agentOrch != nil {
 		a.agentOrch.SetPressureGate(pressureGate)
 	}
@@ -974,6 +974,13 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 		experience: a.experience,
 		pressure:   pressureGate,
 	}
+}
+
+func (a *App) getPressureGate() *pressure.Gate {
+	if a.pressureGate == nil {
+		a.pressureGate = pressure.New(a.cfg.Orchestrator.Pressure, config.HomeDir(), a.logger)
+	}
+	return a.pressureGate
 }
 
 // configureTestingEscalation wires the testing→escalation config knobs onto

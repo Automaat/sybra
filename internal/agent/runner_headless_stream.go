@@ -55,10 +55,12 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.PlanSteps = extractTodoWriteSteps(e.Message.ToolUses)
 			ev.ToolCalls = len(e.Message.ToolUses)
 			ev.toolSig = toolSignature(e.Message.ToolUses)
+			ev.toolUses = e.Message.ToolUses
 		}
 	case "user":
 		if e.Message != nil {
 			ev.Content = formatHeadlessToolResults(e.Message.ToolResults)
+			ev.toolResults = e.Message.ToolResults
 			for _, tr := range e.Message.ToolResults {
 				if classifyAutoModeDenial(tr) {
 					ev.permissionDenials = append(ev.permissionDenials, PermissionDenial{
@@ -137,10 +139,12 @@ func codexEventToStreamEvent(e CodexEvent) StreamEvent {
 			ev.Content = cmd
 			ev.ToolCalls = len(e.Message.ToolUses)
 			ev.toolSig = toolSignature(e.Message.ToolUses)
+			ev.toolUses = e.Message.ToolUses
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {
 			ev.Content = e.Message.ToolResults[0].Content
+			ev.toolResults = e.Message.ToolResults
 		}
 	case "result":
 		if e.Result != nil {
@@ -178,10 +182,12 @@ func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
 			ev.Content = cmd
 			ev.ToolCalls = len(e.Message.ToolUses)
 			ev.toolSig = toolSignature(e.Message.ToolUses)
+			ev.toolUses = e.Message.ToolUses
 		}
 	case "tool_result":
 		if e.Message != nil && len(e.Message.ToolResults) > 0 {
 			ev.Content = e.Message.ToolResults[0].Content
+			ev.toolResults = e.Message.ToolResults
 		}
 	case "result":
 		if e.Result != nil {

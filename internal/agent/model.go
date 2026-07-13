@@ -162,6 +162,11 @@ type Agent struct {
 	// silence for a hung/orphaned process and kill it mid-write (task
 	// 3aeabb65: a killed `npm ci` left a corrupted, zero-byte node_modules).
 	backgroundTaskIDs []string
+	// foregroundCommands tracks live foreground Bash/command_execution calls
+	// that started but have not yet emitted their tool_result. The watchdog
+	// consults it to avoid spawning an inspector while the agent is simply
+	// waiting on a legitimate long-running verify/build/test command.
+	foregroundCommands map[string]foregroundCommand
 
 	// detached is true when the agent's subprocess was spawned to survive
 	// an app restart (Setsid, output redirected to its log file, no ctx
@@ -200,6 +205,11 @@ type Agent struct {
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+type foregroundCommand struct {
+	Command   string
+	StartedAt time.Time
 }
 
 // View is a point-in-time, concurrency-safe snapshot of an Agent's exported
@@ -1098,6 +1108,65 @@ func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
 		return base + backgroundTaskGrace
 	}
 	return base
+}
+
+// SetForegroundCommand records a live foreground Bash/command_execution call.
+// The entry remains until ClearForegroundCommand sees the matching tool result.
+func (a *Agent) SetForegroundCommand(id, command string, startedAt time.Time) {
+	if id == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.foregroundCommands == nil {
+		a.foregroundCommands = make(map[string]foregroundCommand)
+	}
+	a.foregroundCommands[id] = foregroundCommand{
+		Command:   command,
+		StartedAt: startedAt,
+	}
+	a.mu.Unlock()
+}
+
+// ClearForegroundCommand marks a foreground Bash/command_execution call as
+// finished once its tool_result arrives.
+func (a *Agent) ClearForegroundCommand(id string) {
+	if id == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.foregroundCommands, id)
+	a.mu.Unlock()
+}
+
+// ActiveForegroundCommand reports the oldest still-running foreground
+// Bash/command_execution command, if any.
+func (a *Agent) ActiveForegroundCommand() (command string, startedAt time.Time, ok bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, live := range a.foregroundCommands {
+		if !ok || live.StartedAt.Before(startedAt) {
+			command = live.Command
+			startedAt = live.StartedAt
+			ok = true
+		}
+	}
+	return command, startedAt, ok
+}
+
+func (a *Agent) applyStreamEventState(ev StreamEvent) {
+	if ev.Type == "system" && ev.Subtype == "background_tasks_changed" {
+		a.SetBackgroundTaskIDs(ev.BackgroundTaskIDs)
+	}
+	for i := range ev.toolUses {
+		if ev.toolUses[i].Name != "Bash" {
+			continue
+		}
+		cmd, _ := ev.toolUses[i].Input["command"].(string)
+		a.SetForegroundCommand(ev.toolUses[i].ID, cmd, ev.Timestamp)
+	}
+	for i := range ev.toolResults {
+		a.ClearForegroundCommand(ev.toolResults[i].ToolUseID)
+	}
 }
 
 func (a *Agent) setCompletedByResult(v bool) {
