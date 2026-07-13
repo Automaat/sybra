@@ -252,6 +252,55 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestHealthPrintsProcessesAndJSON(t *testing.T) {
+	setupStore(t)
+
+	report := `{
+  "generatedAt":"2026-07-13T20:00:00Z",
+  "periodStart":"2026-07-12T20:00:00Z",
+  "periodEnd":"2026-07-13T20:00:00Z",
+  "score":"warning",
+  "findings":[{"severity":"warning","category":"cost_drift","title":"Cost drift"}],
+  "stats":{"totalAgentRuns":1},
+  "processes":{
+    "topCpu":[{"pid":123,"name":"sybra-server","cpuPercent":18.5,"memPercent":4.2,"owned":true}],
+    "topMem":[{"pid":456,"name":"browser","cpuPercent":2.0,"memPercent":11.4,"owned":false}],
+    "sampledAt":"2026-07-13T20:00:00Z",
+    "available":true
+  }
+}`
+	if err := os.WriteFile(filepath.Join(config.HomeDir(), "health-report.json"), []byte(report), 0o644); err != nil {
+		t.Fatalf("write health report: %v", err)
+	}
+
+	code, out := runCLI(t, "health")
+	if code != 0 {
+		t.Fatalf("health exit %d: %s", code, out)
+	}
+	for _, want := range []string{"Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("health output missing %q:\n%s", want, out)
+		}
+	}
+
+	code, out = runCLI(t, "--json", "health")
+	if code != 0 {
+		t.Fatalf("json health exit %d: %s", code, out)
+	}
+	var got struct {
+		Processes struct {
+			TopCPU []struct {
+				PID   int  `json:"pid"`
+				Owned bool `json:"owned"`
+			} `json:"topCpu"`
+		} `json:"processes"`
+	}
+	mustUnmarshal(t, out, &got)
+	if len(got.Processes.TopCPU) != 1 || got.Processes.TopCPU[0].PID != 123 || !got.Processes.TopCPU[0].Owned {
+		t.Fatalf("json health processes = %+v", got.Processes)
+	}
+}
+
 func TestTrashListAndRestore(t *testing.T) {
 	setupStore(t)
 

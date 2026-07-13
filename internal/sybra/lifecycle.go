@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -51,7 +52,29 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		a.logger.Info("watchdog.disabled")
 	}
 
-	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit)
+	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit, func() health.OwnedProcesses {
+		owned := health.OwnedProcesses{
+			PIDs:          map[int]bool{},
+			ProcessGroups: map[int]bool{},
+		}
+		if pid := os.Getpid(); pid > 0 {
+			owned.PIDs[pid] = true
+		}
+		for _, ag := range a.agents.ListAgents() {
+			if ag == nil {
+				continue
+			}
+			pid := ag.GetPID()
+			if pid <= 0 {
+				continue
+			}
+			owned.PIDs[pid] = true
+			if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
+				owned.ProcessGroups[pgid] = true
+			}
+		}
+		return owned
+	})
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)

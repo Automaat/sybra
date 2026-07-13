@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -26,6 +27,7 @@ type Checker struct {
 	homeDir  string
 	logger   *slog.Logger
 	emit     func(string, any)
+	owned    func() OwnedProcesses
 
 	mu     sync.RWMutex
 	report *Report
@@ -38,6 +40,7 @@ func New(
 	homeDir string,
 	logger *slog.Logger,
 	emit func(string, any),
+	owned func() OwnedProcesses,
 ) *Checker {
 	return &Checker{
 		auditDir: auditDir,
@@ -45,7 +48,22 @@ func New(
 		homeDir:  homeDir,
 		logger:   logger,
 		emit:     emit,
+		owned:    owned,
 	}
+}
+
+// OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
+type OwnedProcesses struct {
+	PIDs          map[int]bool
+	ProcessGroups map[int]bool
+}
+
+// Owns reports whether pid is exact-owned or pgid is a trusted owned group.
+func (o OwnedProcesses) Owns(pid, pgid int) bool {
+	if pid > 0 && o.PIDs[pid] {
+		return true
+	}
+	return pgid > 0 && o.ProcessGroups[pgid]
 }
 
 // Run blocks until ctx is done, running checks every TickInterval.
@@ -112,6 +130,11 @@ func (c *Checker) check() {
 	}
 
 	stats := buildStats(dayEvents)
+	owned := OwnedProcesses{}
+	if c.owned != nil {
+		owned = c.owned()
+	}
+	processes := procstat.Sample(5, owned.Owns)
 
 	report := &Report{
 		GeneratedAt: now,
@@ -120,6 +143,7 @@ func (c *Checker) check() {
 		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
+		Processes:   &processes,
 	}
 
 	c.mu.Lock()
