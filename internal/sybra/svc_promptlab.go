@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/project"
@@ -18,6 +19,11 @@ import (
 // rejects a prompt-lab proposal without typing feedback, so the reject is
 // still auditable from the task's status alone.
 const rejectedNoFeedbackReason = "rejected (no feedback provided)"
+
+const (
+	promptLabAlreadyActiveWait = 500 * time.Millisecond
+	promptLabAlreadyActivePoll = 25 * time.Millisecond
+)
 
 // PromptLabService exposes Prompt Lab proposal approve/reject operations as
 // Wails-bound methods. Proposals are plain tasks (tagged
@@ -96,6 +102,19 @@ func (s *PromptLabService) promptLabDispatchStarted(id, matched string, err erro
 	if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
 		return false
 	}
+	deadline := time.Now().Add(promptLabAlreadyActiveWait)
+	for {
+		if s.promptLabTaskHasActiveWorkflow(id) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(promptLabAlreadyActivePoll)
+	}
+}
+
+func (s *PromptLabService) promptLabTaskHasActiveWorkflow(id string) bool {
 	t, getErr := s.tasks.Get(id)
 	if getErr != nil || t.Workflow == nil {
 		return false

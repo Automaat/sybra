@@ -305,3 +305,29 @@ func TestPromptLabDispatchStarted_RequiresActiveWorkflowForAlreadyActive(t *test
 		t.Fatal("ordinary dispatch error should not count as started")
 	}
 }
+
+func TestPromptLabDispatchStarted_WaitsForWorkflowAfterAlreadyActive(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusInProgress, []string{promptlab.ProposalTag})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(promptLabAlreadyActivePoll * 2)
+		active := &workflow.Execution{
+			WorkflowID:  "prompt-lab-author",
+			CurrentStep: "author_variant",
+			State:       workflow.ExecRunning,
+			StartedAt:   time.Now().UTC(),
+		}
+		if _, err := svc.tasks.Update(created.ID, task.Update{Workflow: &active}); err != nil {
+			t.Errorf("Update workflow: %v", err)
+		}
+	}()
+
+	if !svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive should wait for a concurrent active workflow to appear")
+	}
+	<-done
+}
