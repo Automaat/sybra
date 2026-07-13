@@ -54,10 +54,14 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
 	if cfg.MCPConfigJSON != "" {
+		mcpJSON, err := wrapMCPConfigWithOwnership(cfg.MCPConfigJSON, mcpOwnerForAgent(a))
+		if err != nil {
+			return headlessInvocation{}, err
+		}
 		// --strict-mcp-config always pairs with --mcp-config: without it Claude
 		// also loads any project/user-level MCP servers, which would leak an
 		// operator's unrelated MCP tools into an unattended test-runner run.
-		args = append(args, "--mcp-config", cfg.MCPConfigJSON, "--strict-mcp-config")
+		args = append(args, "--mcp-config", mcpJSON, "--strict-mcp-config")
 	}
 	// Wire the same PreToolUse approval hook the conversational runner uses
 	// whenever this run requires permission gating. Without this, a headless
