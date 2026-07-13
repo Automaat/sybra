@@ -55,6 +55,11 @@ type sandboxSpec struct {
 	tmp         string
 	sharedCache string
 	profilePath string
+
+	claudeState  string
+	codexState   string
+	copilotState string
+	toolCache    string
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,
