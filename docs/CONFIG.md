@@ -548,6 +548,7 @@ follower's server cert/key for the TLS + cert-pin transport tier.
 |---|---|---|---|
 | `cluster.role` | `string` | `standalone` |  |
 | `cluster.bind_addr` | `string` |  |  |
+| `cluster.bind_addrs` | `[]string` |  |  |
 | `cluster.followers` | `[]Follower` | _(see below)_ |  |
 | `cluster.local_homes` | `[]string` |  |  |
 | `cluster.tls` | `ClusterTLS` | _(see below)_ |  |

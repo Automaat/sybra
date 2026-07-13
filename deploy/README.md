@@ -163,6 +163,83 @@ The `deploy/` artifacts live in **this repo** on purpose: autoupdate rebuilds
 from the sybra checkout, so the unit + build script are versioned alongside the
 code they build. home-nas just installs them.
 
+## Deploying a follower (leader-follower mode)
+
+A follower is the *same* unit and the *same* build — only its config and env
+differ. See `docs/leader-follower.md` for the transport tiers and the security
+model; this is the deployment checklist.
+
+**1. Provision the host exactly as above** (mise + toolchain + provider CLIs).
+A follower runs agents, so it needs the full toolchain, not a thin proxy.
+
+**2. Give the unit a token.** In `/etc/sybra/sybra.env`:
+
+```
+SYBRA_AUTH_TOKEN=<32-byte hex, unique per node>
+```
+
+The same value goes on the leader, named — never inlined:
+
+```yaml
+followers:
+  - name: gpu-box
+    auth_token_env: GPU_BOX_TOKEN     # leader's unit reads it from its own env
+```
+
+**3. Set the role and the bind** in the follower's `~/.sybra/config.yaml`:
+
+```yaml
+cluster:
+  role: follower
+  bind_addr: ":8080"          # or bind_addrs: [...] to lock down interfaces
+```
+
+A follower hard-disables every poller (Todoist/GitHub/Renovate) regardless of its
+own feature flags, so no `project_types` juggling is needed — the leader is the
+only ingress.
+
+**4. Pick a transport.** On a tailnet, nothing more is required. For the LAN +
+pinned-cert tier, generate the keypair **on the follower**:
+
+```bash
+sudo -u sybra sybra-cli cluster gen-cert --host gpu-box.lan --host 192.168.20.9 \
+  --out /data/sybra/tls
+```
+
+It prints both config blocks, including the `tls_pin` for the leader. Point the
+follower at the keypair:
+
+```yaml
+cluster:
+  tls:
+    cert_file: /data/sybra/tls/follower.crt
+    key_file: /data/sybra/tls/follower.key
+```
+
+The private key is written `0600` and owned by the `sybra` user; it must stay off
+the leader and out of git. `gen-cert` **overwrites** `follower.crt`/`follower.key`
+in the target directory, so running it against a live follower's dir rotates that
+node's identity — the leader will refuse the connection until you update
+`tls_pin`. The pin is the whole trust anchor: regenerating the cert always means
+updating the leader.
+
+**5. Home some projects on it** (leader side) and restart both:
+
+```yaml
+followers:
+  - name: gpu-box
+    endpoints: ["https://gpu-box.lan:8080"]
+    tls_pin: <printed by gen-cert>
+    trusted: true                      # required for work-typed projects
+    homes: ["Automaat/sybra"]
+```
+
+**Verify:** each node logs one `server.listen` line per listener with its `tls=`
+and `role=`; the leader logs `cluster.leader.enabled followers=[...]`. From the
+leader, `sybra-cli cluster nodes` lists the roster with its resolved
+`trusted`/`encrypted` posture — if a node you expect to be encrypted shows
+`encrypted=false`, the confidentiality guard will refuse work-typed tasks on it.
+
 ## How a deploy happens
 
 - **Automatic:** merge to `main` → within `poll_seconds` autoupdate ff-merges +

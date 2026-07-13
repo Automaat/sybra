@@ -4,7 +4,12 @@
 //
 // Environment variables:
 //
-//	SYBRA_PORT       HTTP listen port (default: 8080)
+//	SYBRA_BIND_ADDR  Listen address; overrides cluster.bind_addr(s)
+//	SYBRA_PORT       HTTP listen port (default: 8080; a configured
+//	                   cluster.bind_addr(s) wins over this)
+//	SYBRA_HOST       HTTP listen host (default: all interfaces; a configured
+//	                   cluster.bind_addr(s) wins over this)
+//	SYBRA_AUTH_TOKEN Bearer token for the HTTP control plane
 //	SYBRA_STATIC_DIR Directory to serve as /; set to frontend/dist for SPA
 //	                   (optional — omit to skip static file serving)
 package main
@@ -55,6 +60,10 @@ func main() {
 func run() (int, error) {
 	cfg, err := config.Load()
 	if err != nil {
+		return 1, fmt.Errorf("config: %w", err)
+	}
+
+	if err := cfg.ValidateCluster(); err != nil {
 		return 1, fmt.Errorf("config: %w", err)
 	}
 
@@ -114,23 +123,10 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	port := os.Getenv("SYBRA_PORT")
-	if port == "" {
-		port = "8080"
+	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
+	if err != nil {
+		return 1, err
 	}
-	addr := net.JoinHostPort(strings.TrimSpace(os.Getenv("SYBRA_HOST")), port)
-
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("server.listen", "addr", addr)
-		errCh <- srv.ListenAndServe()
-	}()
 
 	select {
 	case <-ctx.Done():
@@ -361,4 +357,58 @@ type slogWriter struct{ logger *slog.Logger }
 func (w slogWriter) Write(p []byte) (int, error) {
 	w.logger.Debug("stdlib.log", "msg", string(p))
 	return len(p), nil
+}
+
+func serveAll(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+	envHost, envPort := os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT")
+	addrs, envDiscarded := cfg.ListenAddrs(envHost, envPort)
+	if envDiscarded {
+		logger.Warn("server.bind.env_ignored",
+			"bind", addrs, "env_host", envHost, "env_port", envPort,
+			"hint", "cluster.bind_addr(s) wins; set SYBRA_BIND_ADDR to override")
+	}
+	if len(addrs) == 0 {
+		return nil, nil, fmt.Errorf("no listen address resolved")
+	}
+	servesTLS := cfg.ServesTLS()
+
+	srv := &http.Server{
+		Addr:              addrs[0],
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listeners, err := listenAll(ctx, addrs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		ln := listeners[i]
+		logger.Info("server.listen", "addr", ln.Addr().String(), "tls", servesTLS, "role", cfg.ClusterRole())
+		go func() {
+			if servesTLS {
+				errCh <- srv.ServeTLS(ln, cfg.Cluster.TLS.CertFile, cfg.Cluster.TLS.KeyFile)
+				return
+			}
+			errCh <- srv.Serve(ln)
+		}()
+	}
+	return srv, errCh, nil
+}
+
+func listenAll(ctx context.Context, addrs []string) ([]net.Listener, error) {
+	var lc net.ListenConfig
+	listeners := make([]net.Listener, 0, len(addrs))
+	for _, addr := range addrs {
+		ln, err := lc.Listen(ctx, "tcp", addr)
+		if err != nil {
+			for _, open := range listeners {
+				_ = open.Close()
+			}
+			return nil, fmt.Errorf("listen %s: %w", addr, err)
+		}
+		listeners = append(listeners, ln)
+	}
+	return listeners, nil
 }
