@@ -333,6 +333,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
+		SandboxMode:            cfg.DefaultSandboxMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}

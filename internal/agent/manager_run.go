@@ -294,7 +294,13 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 // this run's spec falls back to "off" (unwrapped) instead of erroring, so a
 // misconfigured or unsupported host cannot break the default posture.
 func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
-	mode, err := config.NormalizeSandboxMode(cfg.SandboxMode)
+	requested := cfg.SandboxMode
+	if strings.TrimSpace(requested) == "" {
+		m.mu.RLock()
+		requested = m.defaultSandboxMode
+		m.mu.RUnlock()
+	}
+	mode, err := config.NormalizeSandboxMode(requested)
 	if err != nil {
 		return fmt.Errorf("agent.Run: sandbox mode: %w", err)
 	}
