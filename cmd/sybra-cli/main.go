@@ -205,6 +205,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "doctor":
+		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -1985,6 +1987,16 @@ Commands:
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
                                missing required credentials.
+
+  doctor cleanup [--apply] [--only b1,b2] [--worktrees] [--external] [--force]
+                 [--older-than DURATION] [--json]
+           Report (default: dry-run) or delete (--apply) reclaimable disk
+           usage: logs, audit, sandboxes, go-build-cache (safe, cleaned by
+           default under --apply) plus worktrees/shared-cache/external
+           (destructive — each needs its own --worktrees/--force/--external
+           flag before --apply will touch it, or even include it in the
+           report). Deletion is irreversible; dry-run first. Exit codes:
+           0 ok, 1 a delete failed, 2 bad flags/arguments.
 
 Global flags:
   --json   Output as JSON
