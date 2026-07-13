@@ -183,11 +183,11 @@ func TestContainedChild(t *testing.T) {
 		ok   bool
 	}{
 		{"/home/sybra/worktrees/task-abc12345", true},
-		{"/home/sybra/worktrees", false},              // root itself, not a child
-		{"/home/sybra/worktrees/../other", false},      // escapes
-		{"/home/sybra/worktreesXYZ/task", false},       // sibling prefix collision
-		{"/etc/passwd", false},                         // unrelated absolute path
-		{"/home/sybra/worktrees/a/../../etc", false},   // escapes via traversal
+		{"/home/sybra/worktrees", false},             // root itself, not a child
+		{"/home/sybra/worktrees/../other", false},    // escapes
+		{"/home/sybra/worktreesXYZ/task", false},     // sibling prefix collision
+		{"/etc/passwd", false},                       // unrelated absolute path
+		{"/home/sybra/worktrees/a/../../etc", false}, // escapes via traversal
 	}
 	for _, c := range cases {
 		_, ok := containedChild(root, c.path)
@@ -199,16 +199,16 @@ func TestContainedChild(t *testing.T) {
 
 func TestIsSymlink(t *testing.T) {
 	dir := t.TempDir()
-	real := filepath.Join(dir, "real")
-	mustMkdir(t, real)
+	target := filepath.Join(dir, "real")
+	mustMkdir(t, target)
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 	if !isSymlink(link) {
 		t.Error("expected link to be reported as a symlink")
 	}
-	if isSymlink(real) {
+	if isSymlink(target) {
 		t.Error("expected real dir not to be reported as a symlink")
 	}
 	if isSymlink(filepath.Join(dir, "missing")) {

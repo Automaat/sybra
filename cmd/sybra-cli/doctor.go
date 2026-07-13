@@ -80,7 +80,7 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 
 	var onlyNames []string
 	if strings.TrimSpace(*only) != "" {
-		for _, n := range strings.Split(*only, ",") {
+		for n := range strings.SplitSeq(*only, ",") {
 			n = strings.TrimSpace(n)
 			if n == "" {
 				continue
