@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,6 +85,9 @@ func TestMetricsPipeline(t *testing.T) {
 	RegisterProviderHealth(func() map[string]int64 {
 		return map[string]int64{"claude": 1, "codex": 0}
 	})
+	RegisterProviderRawHealth(func() map[string]int64 {
+		return map[string]int64{"claude": 1, "codex": 0}
+	})
 
 	body := scrape(t)
 
@@ -116,6 +118,7 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_agent_failovers_total",
 		"sybra_agents_gated_total",
 		"sybra_provider_healthy",
+		"sybra_provider_raw_healthy",
 		`status="todo"`,
 		`state="running"`,
 		`result="ok"`,
@@ -135,17 +138,9 @@ func TestMetricsPipeline(t *testing.T) {
 
 func scrape(t *testing.T) string {
 	t.Helper()
-	srv := httptest.NewServer(promhttp.Handler())
-	defer srv.Close()
 
-	resp, err := http.Get(srv.URL)
-	if err != nil {
-		t.Fatalf("scrape: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	return string(body)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	promhttp.Handler().ServeHTTP(rec, req)
+	return rec.Body.String()
 }
