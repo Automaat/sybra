@@ -30,6 +30,8 @@ type promptLabCoordinator struct {
 	scrubContext      func(projectID string) *WorkScrubContext
 }
 
+const promptLabProjectID = "Automaat/sybra"
+
 func newPromptLabCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,
@@ -133,10 +135,14 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 			tags = append(tags, "requires-human")
 			status = task.StatusHumanRequired
 		}
-		created, err := c.tasks.CreateFull(p.Title, body, task.AgentModeInteractive, task.Update{
+		update := task.Update{
 			Status: &status,
 			Tags:   &tags,
-		})
+		}
+		if projectID := promptLabTargetProjectID(c.projects); projectID != "" {
+			update.ProjectID = &projectID
+		}
+		created, err := c.tasks.CreateFull(p.Title, body, task.AgentModeHeadless, update)
 		if err != nil {
 			return filed, err
 		}
@@ -144,6 +150,16 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 		existing = append(existing, created)
 	}
 	return filed, nil
+}
+
+func promptLabTargetProjectID(projects *project.Store) string {
+	if projects == nil {
+		return ""
+	}
+	if _, err := projects.Get(promptLabProjectID); err == nil {
+		return promptLabProjectID
+	}
+	return ""
 }
 
 // allowsAnyProject reports whether this machine should file a proposal
