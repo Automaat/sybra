@@ -106,7 +106,7 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	newSrv := newNode.server(t)
 
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true},
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
 		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
 	}, nil)
 
@@ -114,6 +114,7 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	seedTask(t, tasks, task.Task{
 		ID:              "t1",
 		Title:           "move me",
+		ProjectID:       "acme/x",
 		Status:          task.StatusInProgress,
 		AssignedNode:    "old-box",
 		WorktreeDir:     "/on/old/box/wt",
@@ -165,10 +166,10 @@ func TestReassignStopsAgentsOnTheOldNode(t *testing.T) {
 	newSrv := newNode.server(t)
 
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true},
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
 		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
 	}, nil)
-	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress, AssignedNode: "old-box"})
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", ProjectID: "acme/x", Status: task.StatusInProgress, AssignedNode: "old-box"})
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
@@ -187,10 +188,10 @@ func TestReassignProceedsWhenOldNodeIsDead(t *testing.T) {
 	dead.Close()
 
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "dead-box", Endpoints: []string{dead.URL}, Trusted: true},
+		{Name: "dead-box", Endpoints: []string{dead.URL}, Trusted: true, Homes: []string{"acme/x"}},
 		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
 	}, nil)
-	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress, AssignedNode: "dead-box"})
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", ProjectID: "acme/x", Status: task.StatusInProgress, AssignedNode: "dead-box"})
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("a dead old node must not block the escape hatch: %v", err)
@@ -205,9 +206,9 @@ func TestReassignHomeBringsTaskBackToLeader(t *testing.T) {
 	oldSrv := oldNode.server(t)
 
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true},
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
 	}, nil)
-	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress, AssignedNode: "old-box", WorktreeDir: "/remote/wt"})
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", ProjectID: "acme/x", Status: task.StatusInProgress, AssignedNode: "old-box", WorktreeDir: "/remote/wt"})
 
 	if err := a.Reassign(t.Context(), "t1", config.LocalNodeName); err != nil {
 		t.Fatalf("Reassign local: %v", err)
@@ -243,7 +244,7 @@ func TestReassignCannotBypassConfidentialityGuard(t *testing.T) {
 	srv := untrusted.server(t)
 
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "untrusted-box", Endpoints: []string{srv.URL}, Trusted: false},
+		{Name: "untrusted-box", Endpoints: []string{srv.URL}, Trusted: false, Homes: []string{"acme/private"}},
 	}, func(string) bool { return true })
 	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusTodo, ProjectID: "acme/private"})
 
@@ -264,9 +265,9 @@ func TestReassignIsIdempotentForTheSameNode(t *testing.T) {
 	node := &followerRecorder{}
 	srv := node.server(t)
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "box", Endpoints: []string{srv.URL}, Trusted: true},
+		{Name: "box", Endpoints: []string{srv.URL}, Trusted: true, Homes: []string{"acme/x"}},
 	}, nil)
-	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress, AssignedNode: "box", WorktreeDir: "/wt"})
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", ProjectID: "acme/x", Status: task.StatusInProgress, AssignedNode: "box", WorktreeDir: "/wt"})
 
 	if err := a.Reassign(t.Context(), "t1", "box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
@@ -284,10 +285,10 @@ func TestReassignedTaskIgnoresStaleMirrorFromOldNode(t *testing.T) {
 	oldNode := &followerRecorder{}
 	newNode := &followerRecorder{}
 	a, tasks := newReassignFixture(t, []config.Follower{
-		{Name: "old-box", Endpoints: []string{oldNode.server(t).URL}, Trusted: true},
+		{Name: "old-box", Endpoints: []string{oldNode.server(t).URL}, Trusted: true, Homes: []string{"acme/x"}},
 		{Name: "new-box", Endpoints: []string{newNode.server(t).URL}, Trusted: true},
 	}, nil)
-	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress, AssignedNode: "old-box"})
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", ProjectID: "acme/x", Status: task.StatusInProgress, AssignedNode: "old-box"})
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
@@ -350,5 +351,143 @@ func TestReassignUnknownNodeMessageNamesTheNode(t *testing.T) {
 	err := a.Reassign(context.Background(), "t1", "ghost")
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("operator needs to see which node was rejected, got %v", err)
+	}
+}
+
+func TestReassignSurvivesTheNextAssignerTick(t *testing.T) {
+	oldNode := &followerRecorder{}
+	newNode := &followerRecorder{}
+	oldSrv := oldNode.server(t)
+	newSrv := newNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
+	}, nil)
+	seedTask(t, tasks, task.Task{
+		ID: "t1", Title: "x", ProjectID: "acme/x",
+		Status: task.StatusInProgress, AssignedNode: "old-box",
+	})
+
+	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
+		t.Fatalf("Reassign: %v", err)
+	}
+	a.Tick(t.Context())
+
+	got, err := tasks.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AssignedNode != "new-box" {
+		t.Fatalf("the assigner dragged the task back to its config home: node=%q", got.AssignedNode)
+	}
+	if len(oldNode.assignedTasks()) != 0 {
+		t.Fatalf("the assigner re-pushed the task to the node it was evacuated from: %+v", oldNode.assignedTasks())
+	}
+}
+
+func TestBringHomeSurvivesTheNextAssignerTick(t *testing.T) {
+	oldNode := &followerRecorder{}
+	oldSrv := oldNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+	}, nil)
+	seedTask(t, tasks, task.Task{
+		ID: "t1", Title: "x", ProjectID: "acme/x",
+		Status: task.StatusInProgress, AssignedNode: "old-box",
+	})
+
+	if err := a.Reassign(t.Context(), "t1", config.LocalNodeName); err != nil {
+		t.Fatalf("Reassign local: %v", err)
+	}
+	a.Tick(t.Context())
+
+	got, err := tasks.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AssignedNode != "" {
+		t.Fatalf("a task brought home was re-routed to %q", got.AssignedNode)
+	}
+	if len(oldNode.assignedTasks()) != 0 {
+		t.Fatalf("a task brought home was pushed back to a follower: %+v", oldNode.assignedTasks())
+	}
+	if !a.cfg.HomeNodeForTask(got.ProjectID, got.NodeOverride).Local {
+		t.Fatal("the leader's dispatch gates read HomeNodeForTask; a task brought home must resolve local")
+	}
+}
+
+func TestReassignRollsBackWhenTheNewNodeRejectsThePush(t *testing.T) {
+	oldNode := &followerRecorder{}
+	oldSrv := oldNode.server(t)
+	deadNew := httptest.NewServer(http.NewServeMux())
+	deadNew.Close()
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "old-box", Endpoints: []string{oldSrv.URL}, Trusted: true, Homes: []string{"acme/x"}},
+		{Name: "sick-box", Endpoints: []string{deadNew.URL}, Trusted: true},
+	}, nil)
+	seedTask(t, tasks, task.Task{
+		ID: "t1", Title: "x", ProjectID: "acme/x",
+		Status: task.StatusInProgress, AssignedNode: "old-box",
+	})
+
+	if err := a.Reassign(t.Context(), "t1", "sick-box"); err == nil {
+		t.Fatal("want an error when the target node cannot be reached")
+	}
+	got, err := tasks.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AssignedNode != "old-box" || got.NodeOverride != "" {
+		t.Fatalf("a failed push must not strand the task on a node that never received it: node=%q override=%q",
+			got.AssignedNode, got.NodeOverride)
+	}
+}
+
+func TestReassignStopsTheLeadersOwnAgentsWhenMovingOffLocal(t *testing.T) {
+	newNode := &followerRecorder{}
+	newSrv := newNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
+	}, nil)
+	var stopped []string
+	a.SetStopLocalAgents(func(taskID string) { stopped = append(stopped, taskID) })
+
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress})
+
+	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
+		t.Fatalf("Reassign: %v", err)
+	}
+	if len(stopped) != 1 || stopped[0] != "t1" {
+		t.Fatalf("the leader's own agent must be stopped before a follower starts one on the same branch, stopped=%v", stopped)
+	}
+}
+
+func TestReassignRefusesToMoveALocalRunWhenItCannotDrainIt(t *testing.T) {
+	newNode := &followerRecorder{}
+	newSrv := newNode.server(t)
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "new-box", Endpoints: []string{newSrv.URL}, Trusted: true},
+	}, nil)
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusInProgress})
+
+	err := a.Reassign(t.Context(), "t1", "new-box")
+	if !errors.Is(err, ErrCannotDrainLocal) {
+		t.Fatalf("a caller with no way to stop the leader's agents must fail closed, got %v", err)
+	}
+	if len(newNode.assignedTasks()) != 0 {
+		t.Fatalf("task was pushed while a local agent may still drive the branch: %+v", newNode.assignedTasks())
+	}
+}
+
+func TestReassignRejectsEmptyNode(t *testing.T) {
+	a, tasks := newReassignFixture(t, nil, nil)
+	seedTask(t, tasks, task.Task{ID: "t1", Title: "x", Status: task.StatusTodo})
+	if err := a.Reassign(t.Context(), "t1", "   "); !errors.Is(err, ErrUnknownNode) {
+		t.Fatalf("a blank node must be rejected, not resolved to an unnamed follower, got %v", err)
 	}
 }

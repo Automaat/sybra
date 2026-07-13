@@ -53,6 +53,7 @@ type taskFrontmatter struct {
 	UpdatedAt              time.Time           `yaml:"updated_at"`
 	StatusChangedAt        time.Time           `yaml:"status_changed_at,omitempty"`
 	AssignedNode           string              `yaml:"assigned_node,omitempty"`
+	NodeOverride           string              `yaml:"node_override,omitempty"`
 	MirrorRev              int64               `yaml:"mirror_rev,omitempty"`
 	MirrorUpdatedAt        *time.Time          `yaml:"mirror_updated_at,omitempty"`
 }
@@ -133,6 +134,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		UpdatedAt:              fm.UpdatedAt,
 		StatusChangedAt:        fm.StatusChangedAt,
 		AssignedNode:           fm.AssignedNode,
+		NodeOverride:           fm.NodeOverride,
 		MirrorRev:              fm.MirrorRev,
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
@@ -193,6 +195,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		UpdatedAt:              t.UpdatedAt,
 		StatusChangedAt:        t.StatusChangedAt,
 		AssignedNode:           t.AssignedNode,
+		NodeOverride:           t.NodeOverride,
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,
 	}

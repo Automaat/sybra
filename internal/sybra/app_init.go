@@ -559,7 +559,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeFor(t.ProjectID).Local
+	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -583,7 +583,7 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeFor(ti.ProjectID).Local
+			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {
@@ -600,6 +600,7 @@ func (a *App) initCluster() {
 	}
 	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
+	a.assigner.SetStopLocalAgents(a.releaseTaskAgents)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
 	if a.clusterSvc != nil {
 		a.clusterSvc.setRoster(roster)

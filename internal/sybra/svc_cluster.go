@@ -90,7 +90,8 @@ func (s *ClusterService) ReassignTask(taskID, node string) error {
 	if s.logger != nil {
 		s.logger.Error("cluster.reassign.failed", "task", taskID, "node", node, "err", err)
 	}
-	if errors.Is(err, clusterlead.ErrUnknownNode) || errors.Is(err, clusterlead.ErrConfidentiality) {
+	if errors.Is(err, clusterlead.ErrUnknownNode) || errors.Is(err, clusterlead.ErrConfidentiality) ||
+		errors.Is(err, clusterlead.ErrCannotDrainLocal) {
 		return validationError(err.Error())
 	}
 	return fmt.Errorf("reassign task %s to node %s failed", taskID, node)

@@ -109,6 +109,22 @@ type HomeNode struct {
 // reassignment accepts it to bring a task home when every follower is down.
 const LocalNodeName = "local"
 
+// HomeNodeForTask resolves which node owns execution for a task. An operator's
+// manual override wins over the project's configured home — otherwise the
+// assigner would recompute the config home on its next tick and drag the task
+// straight back to the node it was evacuated from. An override naming a node
+// that no longer exists in the roster falls back to the config home, so a
+// removed follower cannot strand a task on a name nothing resolves.
+func (c *Config) HomeNodeForTask(projectID, override string) HomeNode {
+	if override == "" {
+		return c.HomeNodeFor(projectID)
+	}
+	if home, ok := c.HomeNodeByName(override); ok {
+		return home
+	}
+	return c.HomeNodeFor(projectID)
+}
+
 // HomeNodeByName resolves a node by roster name, for operations that target a
 // node explicitly instead of following the project's configured home (manual
 // reassignment). Reports ok=false for an unknown name, so a typo can never be
