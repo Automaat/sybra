@@ -2,6 +2,8 @@ package sybra
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -10,7 +12,10 @@ import (
 	"github.com/Automaat/sybra/internal/cluster"
 )
 
-const nodeCallTimeout = 30 * time.Second
+const (
+	nodeCallTimeout = 30 * time.Second
+	nodeListTimeout = 5 * time.Second
+)
 
 // ClusterNodeDTO is the aggregated-board view of one follower node: its roster
 // name and live health (online/degraded/offline/unknown) as last observed by
@@ -118,7 +123,18 @@ func (s *ClusterService) withClient(node string, fn func(context.Context, *clust
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
 	defer cancel()
-	return fn(ctx, c)
+	return relayFollowerError(node, fn(ctx, c))
+}
+
+func relayFollowerError(node string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *cluster.APIError
+	if errors.As(err, &apiErr) && apiErr.IsClientError() {
+		return &clientError{status: apiErr.Status, msg: apiErr.Message}
+	}
+	return fmt.Errorf("cluster call to node %s failed: %w", node, err)
 }
 
 // ListNodeAgents returns every follower's live agents, each stamped with the
@@ -138,7 +154,7 @@ func (s *ClusterService) ListNodeAgents() ([]*agent.Agent, error) {
 		if !ok || c == nil {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), nodeListTimeout)
 		agents, err := c.ListAgents(ctx)
 		cancel()
 		if err != nil {

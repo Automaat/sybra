@@ -231,6 +231,7 @@ type View struct {
 	Name                     string    `json:"name,omitempty"`
 	Project                  string    `json:"project,omitempty"`
 	Provider                 string    `json:"provider,omitempty"`
+	Node                     string    `json:"node,omitempty"`
 	Model                    string    `json:"model,omitempty"`
 	ExperimentID             string    `json:"experimentId,omitempty"`
 	VariantID                string    `json:"variantId,omitempty"`
@@ -283,6 +284,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		Name:                     a.Name,
 		Project:                  a.Project,
 		Provider:                 a.Provider,
+		Node:                     a.Node,
 		Model:                    a.Model,
 		ExperimentID:             a.ExperimentID,
 		VariantID:                a.VariantID,

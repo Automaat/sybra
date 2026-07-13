@@ -62,16 +62,12 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("cluster: follower returned %d: %s", e.Status, e.Message)
 }
 
-// HTTPStatus implements httpapi.ClientError for follower-side 4xx responses so
-// the leader relays the follower's own reason ("task is not waiting for human
-// action") instead of sanitizing every remote refusal to an opaque 500. Only
-// client errors pass through; a follower 5xx stays a 5xx, whose message may
-// describe follower internals and is not safe to surface.
-func (e *APIError) HTTPStatus() int {
-	if e.Status >= 400 && e.Status < 500 {
-		return e.Status
-	}
-	return 500
+// IsClientError reports whether the follower refused the call for a reason the
+// caller can act on (4xx). Deliberately not an httpapi.ClientError itself: the
+// handler surfaces a ClientError's Error() verbatim, and a follower's 5xx text
+// can describe follower internals. Callers relay a 4xx and sanitize the rest.
+func (e *APIError) IsClientError() bool {
+	return e.Status >= 400 && e.Status < 500
 }
 
 // NewClient constructs a follower Client. When node.TLSPin is set, https

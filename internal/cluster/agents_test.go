@@ -28,22 +28,23 @@ func TestListAgentsReturnsFollowerAgents(t *testing.T) {
 	}
 }
 
-func TestAPIErrorRelaysFollowerClientErrors(t *testing.T) {
+func TestAPIErrorClassifiesFollowerStatus(t *testing.T) {
 	tests := []struct {
-		name       string
-		status     int
-		wantStatus int
+		name         string
+		status       int
+		wantIsClient bool
 	}{
-		{"follower 400 passes through", 400, 400},
-		{"follower 404 passes through", 404, 404},
-		{"follower 500 is not surfaced verbatim", 500, 500},
-		{"follower 502 collapses to 500", 502, 500},
+		{"follower 400 is actionable by the caller", 400, true},
+		{"follower 404 is actionable by the caller", 404, true},
+		{"follower 409 is actionable by the caller", 409, true},
+		{"follower 500 is not relayable", 500, false},
+		{"follower 502 is not relayable", 502, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := &APIError{Status: tc.status, Message: "boom"}
-			if got := err.HTTPStatus(); got != tc.wantStatus {
-				t.Fatalf("HTTPStatus() = %d, want %d", got, tc.wantStatus)
+			if got := err.IsClientError(); got != tc.wantIsClient {
+				t.Fatalf("IsClientError() = %v, want %v", got, tc.wantIsClient)
 			}
 		})
 	}
