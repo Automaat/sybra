@@ -76,6 +76,8 @@ func cmdPromptLabRun(cfg *config.Config, store *task.Manager, projStore *project
 	return 0
 }
 
+const promptLabProjectID = "Automaat/sybra"
+
 // filePromptLabProposals files each proposal as a reviewed local task, skipping
 // rejected/duplicate proposals and scrubbing the body before persistence. Scrub
 // is EXPLICIT here, not inherited: fileHarnessProposals (harness_evolution.go)
@@ -99,10 +101,14 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 			tags = append(tags, "requires-human")
 			status = task.StatusHumanRequired
 		}
-		created, err := store.CreateFull(p.Title, body, task.AgentModeInteractive, task.Update{
+		update := task.Update{
 			Status: &status,
 			Tags:   &tags,
-		})
+		}
+		if projectID := promptLabTargetProjectID(projStore); projectID != "" {
+			update.ProjectID = &projectID
+		}
+		created, err := store.CreateFull(p.Title, body, task.AgentModeHeadless, update)
 		if err != nil {
 			return filed, err
 		}
@@ -110,6 +116,16 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 		existing = append(existing, created)
 	}
 	return filed, nil
+}
+
+func promptLabTargetProjectID(projStore *project.Store) string {
+	if projStore == nil {
+		return ""
+	}
+	if _, err := projStore.Get(promptLabProjectID); err == nil {
+		return promptLabProjectID
+	}
+	return ""
 }
 
 // scrubProposalBody redacts a proposal body against every work-typed

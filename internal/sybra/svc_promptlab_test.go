@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -16,9 +17,14 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	if err != nil {
 		t.Fatal(err)
 	}
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &PromptLabService{
 		tasks:     task.NewManager(store, nil),
 		artifacts: artifact.New(t.TempDir()),
+		projects:  projects,
 	}
 }
 
@@ -48,8 +54,8 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v", err)
 	}
-	if got.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo", got.Status)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress", got.Status)
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared", got.StatusReason)
@@ -67,6 +73,23 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Kind != artifact.ProgressKindDecision {
 		t.Fatalf("progress entries = %+v, want one decision entry", entries)
+	}
+}
+
+func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	if _, err := svc.projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
+
+	got, err := svc.ApproveProposal(created.ID)
+	if err != nil {
+		t.Fatalf("ApproveProposal: %v", err)
+	}
+	if got.ProjectID != promptLabProjectID {
+		t.Fatalf("ProjectID = %q, want %q", got.ProjectID, promptLabProjectID)
 	}
 }
 
@@ -213,8 +236,8 @@ func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo (unchanged by the rejected re-approve)", after.Status)
+	if after.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (unchanged by the rejected re-approve)", after.Status)
 	}
 }
 
@@ -243,7 +266,7 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v, want nil error despite progress-log failure", err)
 	}
-	if got.Status != task.StatusTodo {
-		t.Fatalf("status = %q, want todo (status change not rolled back)", got.Status)
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (status change not rolled back)", got.Status)
 	}
 }
