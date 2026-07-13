@@ -481,6 +481,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		LastEventAt:            now,
 		cancel:                 cancel,
 		sessionCWD:             cfg.Dir,
+		sandboxHomeDir:         cfg.resolvedSandboxHome,
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,
 		requirePermissions:     cfg.RequirePermissions,
@@ -574,7 +575,7 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		if roots := orphanSweepRootsForAgent(a, m.sandboxHome); len(roots) > 0 {
+		if roots := orphanSweepRootsForAgent(a); len(roots) > 0 {
 			m.ReapOrphanProviderProcesses(ctx, roots)
 		}
 

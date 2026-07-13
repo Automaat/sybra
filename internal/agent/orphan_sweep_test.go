@@ -120,6 +120,28 @@ func TestReapOrphanProviderProcesses_SkipsInteractiveOwnedMCPHelper(t *testing.T
 	}
 }
 
+func TestOrphanSweepRootsForAgent_UsesResolvedSandboxHome(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	sandboxHome := t.TempDir()
+	got := orphanSweepRootsForAgent(&Agent{
+		TaskID:         "task-1",
+		Mode:           "headless",
+		sessionCWD:     cwd,
+		sandboxHomeDir: sandboxHome,
+	})
+	want := canonicalProcessRoots([]string{cwd, sandboxHome})
+	if len(got) != len(want) {
+		t.Fatalf("roots len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("roots[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	t.Helper()
 
