@@ -3,6 +3,7 @@ package sybra
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -53,14 +54,15 @@ func TestRelayFollowerError(t *testing.T) {
 			wantLeak: true,
 		},
 		{
-			name:     "transport failure does not leak",
-			err:      errors.New("dial tcp 10.0.0.9:443: connection refused"),
+			name:     "transport failure does not leak the follower address",
+			err:      errors.New("dial tcp " + secret + ":443: connection refused"),
 			wantLeak: true,
 		},
 	}
+	svc := &ClusterService{}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := relayFollowerError("pet-box", tc.err)
+			got := svc.relayFollowerError("pet-box", tc.err)
 			if got == nil {
 				t.Fatal("want error, got nil")
 			}
@@ -70,6 +72,12 @@ func TestRelayFollowerError(t *testing.T) {
 			if tc.wantLeak {
 				if isClient {
 					t.Fatalf("non-4xx surfaced as a client error, so the handler would print it verbatim: %v", got)
+				}
+				if strings.Contains(got.Error(), secret) {
+					t.Fatalf("follower internals leaked in the error text (Wails surfaces it verbatim): %v", got)
+				}
+				if errors.Is(got, tc.err) {
+					t.Fatalf("wrapped error still unwraps to the follower error, so %%v on the cause leaks it: %v", got)
 				}
 				return
 			}
@@ -88,7 +96,8 @@ func TestRelayFollowerError(t *testing.T) {
 }
 
 func TestRelayFollowerErrorNilIsNil(t *testing.T) {
-	if err := relayFollowerError("pet-box", nil); err != nil {
+	svc := &ClusterService{}
+	if err := svc.relayFollowerError("pet-box", nil); err != nil {
 		t.Fatalf("want nil, got %v", err)
 	}
 }

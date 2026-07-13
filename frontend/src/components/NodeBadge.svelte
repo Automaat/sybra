@@ -10,19 +10,20 @@
 
   const status = $derived(clusterStore.statusOf(node))
 
-  const statusClass = $derived(
+  const dotClass = $derived(
     status === 'online'
-      ? 'text-success-600 dark:text-success-400'
+      ? 'bg-success-500'
       : status === 'degraded'
-        ? 'text-warning-600 dark:text-warning-400'
+        ? 'bg-warning-500'
         : status === 'offline'
-          ? 'text-error-600 dark:text-error-400'
-          : 'text-surface-500',
+          ? 'bg-error-500'
+          : 'bg-surface-400',
   )
 </script>
 
 {#if node}
-  <Pill role="reference" class={statusClass} title={`node ${node}: ${status || 'unknown'}`} data-testid="node-badge">
-    ⬡ {node}
+  <Pill role="reference" title={`node ${node}: ${status || 'unknown'}`} data-testid="node-badge">
+    <span class="inline-block size-1.5 rounded-full {dotClass}" aria-hidden="true"></span>
+    {node}
   </Pill>
 {/if}

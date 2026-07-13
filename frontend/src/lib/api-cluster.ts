@@ -7,7 +7,8 @@ import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/ag
 // unreachable. A cluster-less leader returns [], so this is a no-op then.
 export async function listRemoteAgents(): Promise<Agent[]> {
   try {
-    return (await api.ListNodeAgents()) ?? []
+    const listed = (await api.ListNodeAgents()) ?? []
+    return listed.filter((a): a is Agent => a != null)
   } catch {
     return []
   }

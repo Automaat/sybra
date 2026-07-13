@@ -123,10 +123,10 @@ func (s *ClusterService) withClient(node string, fn func(context.Context, *clust
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
 	defer cancel()
-	return relayFollowerError(node, fn(ctx, c))
+	return s.relayFollowerError(node, fn(ctx, c))
 }
 
-func relayFollowerError(node string, err error) error {
+func (s *ClusterService) relayFollowerError(node string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -134,7 +134,10 @@ func relayFollowerError(node string, err error) error {
 	if errors.As(err, &apiErr) && apiErr.IsClientError() {
 		return &clientError{status: apiErr.Status, msg: apiErr.Message}
 	}
-	return fmt.Errorf("cluster call to node %s failed: %w", node, err)
+	if s.logger != nil {
+		s.logger.Error("cluster.call.failed", "node", node, "err", err)
+	}
+	return fmt.Errorf("cluster call to node %s failed", node)
 }
 
 // ListNodeAgents returns every follower's live agents, each stamped with the
