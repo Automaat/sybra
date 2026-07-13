@@ -1,7 +1,9 @@
 package abtest
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -161,16 +163,72 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 				if err != nil || !ok {
 					t.Fatalf("Select ok=%v err=%v", ok, err)
 				}
-				if a.ExperimentID != "review-expensive" {
-					t.Fatalf("ExperimentID = %q, want review-expensive", a.ExperimentID)
+				wantExp := "review-expensive"
+				if role == "review" {
+					wantExp = "review-tighten-instructions-pl-a2d853b2c1d9"
+				}
+				if a.ExperimentID != wantExp {
+					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, wantExp)
 				}
 				switch a.VariantID {
-				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro":
+				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "pl-a2d853b2c1d9-codex-gpt-5.5":
 				default:
 					t.Fatalf("VariantID = %q, want expensive variant", a.VariantID)
 				}
 			}
 		})
+	}
+}
+
+func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T) {
+	cfg := DefaultConfig()
+	var found *Variant
+	for i := range cfg.Experiments {
+		if cfg.Experiments[i].ID != "review-tighten-instructions-pl-a2d853b2c1d9" {
+			continue
+		}
+		if cfg.Experiments[i].KindValue() != "compound" {
+			t.Fatalf("Kind = %q, want compound", cfg.Experiments[i].KindValue())
+		}
+		if cfg.Experiments[i].Subject == nil || cfg.Experiments[i].Subject.Role != "review" {
+			t.Fatalf("Subject = %+v, want role review", cfg.Experiments[i].Subject)
+		}
+		for j := range cfg.Experiments[i].Variants {
+			if cfg.Experiments[i].Variants[j].ID == "pl-a2d853b2c1d9-codex-gpt-5.5" {
+				found = &cfg.Experiments[i].Variants[j]
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("prompt-lab review variant not found")
+	}
+	if found.Version != "pl-a2d853b2c1d9" {
+		t.Fatalf("Version = %q, want proposal id", found.Version)
+	}
+	if found.PromptTransform == nil || found.PromptTransform.Op != "append" || found.PromptTransform.Text != ReviewTightenInstructionsPLA2D853B2C1D9 {
+		t.Fatalf("PromptTransform = %+v, want append of reviewed text", found.PromptTransform)
+	}
+	if want := digestString(ReviewTightenInstructionsPLA2D853B2C1D9); found.Digest != want {
+		t.Fatalf("Digest = %q, want %q", found.Digest, want)
+	}
+
+	data, err := os.ReadFile("../prompteval/testdata/promptlab-review-tighten-codex-variants.json")
+	if err != nil {
+		t.Fatalf("read offline fixture: %v", err)
+	}
+	var fixtures []struct {
+		ID     string `json:"id"`
+		Digest string `json:"digest"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(data, &fixtures); err != nil {
+		t.Fatalf("parse offline fixture: %v", err)
+	}
+	if len(fixtures) != 1 {
+		t.Fatalf("offline fixture count = %d, want 1", len(fixtures))
+	}
+	if fixtures[0].ID != found.ID || fixtures[0].Digest != found.Digest || fixtures[0].Prompt != found.PromptTransform.Text {
+		t.Fatalf("offline fixture = %+v, want id/digest/prompt from default variant", fixtures[0])
 	}
 }
 

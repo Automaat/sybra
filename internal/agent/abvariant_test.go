@@ -55,6 +55,24 @@ func TestApplyABVariant_AssignsEligibleProvider(t *testing.T) {
 	}
 }
 
+func TestApplyABVariant_AppliesPromptTransform(t *testing.T) {
+	stubProviderCLIAvailable(t, func(string) bool { return true })
+	m := &Manager{}
+	ab := reviewExperiment(abtest.Variant{
+		ID:              "codex-prompt",
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		PromptTransform: &abtest.PromptTransform{Op: "append", Text: "\nUse the review variant."},
+		Weight:          1,
+	})
+
+	cfg := m.ApplyABVariant(RunConfig{Model: "opus", Prompt: "Run /staff-code-review"}, ab, "task-1", "review")
+
+	if want := "Run /staff-code-review\nUse the review variant."; cfg.Prompt != want {
+		t.Fatalf("Prompt = %q, want %q", cfg.Prompt, want)
+	}
+}
+
 func TestApplyABVariant_SkipsProviderWithMissingCLI(t *testing.T) {
 	stubProviderCLIAvailable(t, func(p string) bool { return p != "copilot" })
 	m := &Manager{}
