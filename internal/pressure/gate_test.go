@@ -15,7 +15,7 @@ func testGate(t *testing.T, cfg config.PressureConfig, sample Sample) *Gate {
 	if g == nil {
 		return nil
 	}
-	g.sampleFn = func(string) Sample { return sample }
+	g.sampleFn = func(string) (Sample, error) { return sample, nil }
 	return g
 }
 
@@ -108,12 +108,25 @@ func TestAdmit(t *testing.T) {
 	}
 }
 
+func TestAdmitFailsOpenOnSamplerError(t *testing.T) {
+	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 15}, "/tmp", nil)
+	if g == nil {
+		t.Fatal("New returned nil for enabled gate")
+	}
+	g.sampleFn = func(string) (Sample, error) {
+		return Sample{}, assertError("probe failed")
+	}
+	if ok, reason := g.Admit(); !ok || reason != "" {
+		t.Fatalf("Admit() = (%v, %q), want fail-open true/empty", ok, reason)
+	}
+}
+
 func TestAdmitCachesSampleWithinTTL(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 60}, "/tmp", nil)
 	calls := 0
-	g.sampleFn = func(string) Sample {
+	g.sampleFn = func(string) (Sample, error) {
 		calls++
-		return Sample{DiskFreePct: 50, MemAvailablePct: 50, LoadPerCPU: 1}
+		return Sample{DiskFreePct: 50, MemAvailablePct: 50, LoadPerCPU: 1}, nil
 	}
 	for range 5 {
 		if ok, _ := g.Admit(); !ok {
@@ -134,3 +147,7 @@ func TestNewCoercesNonPositiveSampleInterval(t *testing.T) {
 		t.Fatalf("interval = %v, want %v", g.interval, DefaultSampleIntervalSeconds*time.Second)
 	}
 }
+
+type assertError string
+
+func (e assertError) Error() string { return string(e) }

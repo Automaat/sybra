@@ -95,6 +95,11 @@ func TestClassifyAgentStartError(t *testing.T) {
 			name: "agent pool busy yields empty and transient",
 			err:  fmt.Errorf("start agent: %w", ErrAgentPoolBusy),
 		},
+		{
+			name:         "resource pressure is transient with surfaced reason",
+			err:          fmt.Errorf("start agent: %w: disk free 1.0%% below minimum 5.0%%", ErrResourcePressure),
+			wantContains: "machine under resource pressure — disk free 1.0% below minimum 5.0%",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,6 +120,23 @@ func TestClassifyAgentStartError(t *testing.T) {
 				t.Errorf("reason length %d exceeds cap %d", len(reason), startReasonMaxLen)
 			}
 		})
+	}
+}
+
+func TestClassifyAgentStartError_ResourcePressureExcludedFromBreaker(t *testing.T) {
+	err := fmt.Errorf("start agent: %w: disk free 1.0%% below minimum 5.0%%", ErrResourcePressure)
+	reason, permanent := ClassifyAgentStartError(err)
+	if permanent {
+		t.Fatal("resource pressure must not be permanent")
+	}
+	if reason == "" {
+		t.Fatal("resource pressure reason must not be empty")
+	}
+	if !transientAgentStartError(err) {
+		t.Fatal("resource pressure must be transient")
+	}
+	if !isDeferredNotFailed(err) {
+		t.Fatal("resource pressure must be excluded from the breaker")
 	}
 }
 

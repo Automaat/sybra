@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/prcontent"
+	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -595,6 +596,7 @@ type agentAdapter struct {
 	projects   *project.Store
 	sandboxes  *sandbox.Manager
 	experience *experience.Store
+	pressure   *pressure.Gate
 }
 
 func translatePoolBusy(err error) error {
@@ -986,6 +988,22 @@ func (a *agentAdapter) TryClaimDispatch(taskID string) (workflow.DispatchClaim, 
 
 func (a *agentAdapter) IsDispatching(taskID string) bool {
 	return a.agents.IsDispatching(taskID)
+}
+
+func (a *agentAdapter) AdmitDispatch(role, mode string) (admit bool, reason string) {
+	if mode == "interactive" || a.pressure == nil {
+		return true, ""
+	}
+	admit, reason = a.pressure.Admit()
+	if !admit {
+		a.agentOrch.LogAudit(audit.EventAgentDeferredPressure, "", "", map[string]any{
+			"role":   role,
+			"mode":   mode,
+			"reason": reason,
+		})
+		return false, reason
+	}
+	return true, ""
 }
 
 // CheckTaskCostBudget implements workflow.CostBudgetChecker for the

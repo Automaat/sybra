@@ -583,7 +583,7 @@ func (m *mockAgents) IsDispatching(taskID string) bool {
 	return m.dispatchClaimed[taskID]
 }
 
-func (m *mockAgents) AdmitDispatch(role, mode string) (bool, string) {
+func (m *mockAgents) AdmitDispatch(role, mode string) (admit bool, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.admitDenyReason == "" {
@@ -5701,6 +5701,48 @@ func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
 	}
 	if got := agents.LastCall().Prompt; got != "do the work" {
 		t.Fatalf("second dispatch prompt = %q, want unsteered (steer already consumed)", got)
+	}
+}
+
+func TestExecRunAgent_ResourcePressureParksWithoutConsumingSteer(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	tasks.SetSteer("t1", "keep this steer")
+	agents.SetAdmitDispatch("disk free 1.0% below minimum 5.0%")
+
+	step := &Step{
+		ID:     "implement",
+		Type:   StepRunAgent,
+		Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "do the work"},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "in-progress"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent call count = %d, want 0", got)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Fatalf("workflow state = %s, want waiting", wfExec.State)
+	}
+	if got := tasks.Reason("t1"); got != "disk free 1.0% below minimum 5.0%" {
+		t.Fatalf("status_reason = %q", got)
+	}
+
+	agents.SetAdmitDispatch("")
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := agents.LastCall().Prompt
+	want := "Supervisor course-correction: keep this steer\n\ndo the work"
+	if got != want {
+		t.Fatalf("prompt after pressure clears = %q, want %q", got, want)
 	}
 }
 
