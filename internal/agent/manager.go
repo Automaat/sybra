@@ -381,6 +381,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
 	m.headlessSteerable = cfg.HeadlessSteerable
+	m.defaultSandboxMode = cfg.SandboxMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()
