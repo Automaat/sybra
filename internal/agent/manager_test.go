@@ -1238,6 +1238,34 @@ func TestFindRunningAgentForTask_FiltersByRoleAndTask(t *testing.T) {
 	}
 }
 
+func TestActiveLogPaths(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	putAgent(t, m, &Agent{ID: "a1", TaskID: "task-1", State: StateRunning, LogPath: "/logs/agents/a1.ndjson"})
+	putAgent(t, m, &Agent{ID: "a2", TaskID: "task-2", State: StatePaused, LogPath: "/logs/agents/a2.ndjson"})
+	putAgent(t, m, &Agent{ID: "a3", TaskID: "task-3", State: StateStopped, LogPath: "/logs/agents/a3.ndjson"})
+	putAgent(t, m, &Agent{ID: "a4", TaskID: "task-4", State: StateIdle, LogPath: "/logs/agents/a4.ndjson"})
+	putAgent(t, m, &Agent{ID: "a5", TaskID: "task-5", State: StateRunning})
+
+	got := m.ActiveLogPaths()
+
+	want := map[string]bool{
+		"/logs/agents/a1.ndjson": true,
+		"/logs/agents/a2.ndjson": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ActiveLogPaths() = %v, want %v", got, want)
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("missing expected active path %q", p)
+		}
+	}
+	if got["/logs/agents/a3.ndjson"] || got["/logs/agents/a4.ndjson"] {
+		t.Errorf("stopped/idle agents must not be reported active: %v", got)
+	}
+}
+
 // captureStdinAgent wires up a real io.Pipe so a test can observe
 // exactly what SendPromptToAgent writes to the conversational agent's
 // stdin. Returns the agent (already registered in m) and a channel that
