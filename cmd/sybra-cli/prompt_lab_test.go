@@ -131,3 +131,28 @@ func TestFilePromptLabProposalsSkipsDuplicates(t *testing.T) {
 		t.Fatalf("len(second) = %d, want 0 (duplicate proposal ID must not refile)", len(second))
 	}
 }
+
+func TestFilePromptLabProposalsAssignsSybraProjectWhenRegistered(t *testing.T) {
+	dir := setupStore(t)
+	tasks := newTaskManager(t, dir)
+	projects := newProjectStore(t, dir)
+
+	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+
+	p := testProposal("pl-sybra-1", "implementation", nil)
+	filed, err := filePromptLabProposals(tasks, projects, promptlab.RunResult{Proposals: []promptlab.Proposal{p}})
+	if err != nil {
+		t.Fatalf("filePromptLabProposals: %v", err)
+	}
+	if len(filed) != 1 {
+		t.Fatalf("len(filed) = %d, want 1", len(filed))
+	}
+	if filed[0].ProjectID != promptLabProjectID {
+		t.Fatalf("ProjectID = %q, want %q", filed[0].ProjectID, promptLabProjectID)
+	}
+	if filed[0].AgentMode != task.AgentModeHeadless {
+		t.Fatalf("AgentMode = %q, want headless", filed[0].AgentMode)
+	}
+}
