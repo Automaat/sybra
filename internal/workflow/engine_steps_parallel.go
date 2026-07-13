@@ -117,6 +117,9 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if mode == "" {
 		mode = "headless"
 	}
+	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {
+		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
+	}
 	model := child.Config.Model
 	if model == "" {
 		model = "sonnet"

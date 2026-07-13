@@ -44,6 +44,9 @@ func (f *fakeAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderHealthy(string) bool      { return true }
 func (f *fakeAgentLauncher) IsDispatching(string) bool        { return false }
+func (f *fakeAgentLauncher) AdmitDispatch(string, string, string) (admit bool, reason string) {
+	return true, ""
+}
 
 // setupDispatchTestService builds a TaskService whose workflow engine is
 // wired to a fakeAgentLauncher instead of the real agent.Manager-backed

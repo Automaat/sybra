@@ -169,6 +169,16 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 // (VariantID=attempt_N, AssignmentUnit=bestofn-attempt) independent of the
 // trimmable Execution state above.
 func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Execution, parentCtx TemplateContext, attemptID string, status *AttemptStatus) error {
+	mode := step.Config.Mode
+	if mode == "" || mode == "interactive" {
+		// Attempts must terminate on their own so the parent can advance —
+		// same rationale as spawnParallelChild's oneShot=false headless-only
+		// requirement.
+		mode = "headless"
+	}
+	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
+		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
+	}
 	dir, branch, err := e.attemptWorktrees.PrepareAttempt(taskID, attemptID)
 	if err != nil {
 		return fmt.Errorf("prepare attempt worktree: %w", err)
@@ -177,13 +187,6 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	status.Branch = branch
 
 	attemptCtx := parentCtx
-	mode := step.Config.Mode
-	if mode == "" || mode == "interactive" {
-		// Attempts must terminate on their own so the parent can advance —
-		// same rationale as spawnParallelChild's oneShot=false headless-only
-		// requirement.
-		mode = "headless"
-	}
 	model := step.Config.Model
 	if model == "" {
 		model = "sonnet"

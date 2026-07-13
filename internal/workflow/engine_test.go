@@ -402,6 +402,7 @@ type mockAgents struct {
 	failSpawnOnce     error
 	startGate         chan struct{}
 	startEntered      chan struct{}
+	admitDenyReason   string // when non-empty, AdmitDispatch denies with this reason
 }
 
 type panicStartAgents struct{ *mockAgents }
@@ -580,6 +581,23 @@ func (m *mockAgents) IsDispatching(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dispatchClaimed[taskID]
+}
+
+func (m *mockAgents) AdmitDispatch(taskID, role, mode string) (admit bool, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.admitDenyReason == "" {
+		return true, ""
+	}
+	return false, m.admitDenyReason
+}
+
+// SetAdmitDispatch arms the mock so AdmitDispatch denies with reason. Pass
+// "" to disarm (the default: always admit).
+func (m *mockAgents) SetAdmitDispatch(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.admitDenyReason = reason
 }
 
 type mockDispatchClaim struct {
@@ -5683,6 +5701,48 @@ func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
 	}
 	if got := agents.LastCall().Prompt; got != "do the work" {
 		t.Fatalf("second dispatch prompt = %q, want unsteered (steer already consumed)", got)
+	}
+}
+
+func TestExecRunAgent_ResourcePressureParksWithoutConsumingSteer(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
+	tasks.SetSteer("t1", "keep this steer")
+	agents.SetAdmitDispatch("disk free 1.0% below minimum 5.0%")
+
+	step := &Step{
+		ID:     "implement",
+		Type:   StepRunAgent,
+		Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "do the work"},
+	}
+	wfExec := &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
+	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "in-progress"}, Step: *step, Vars: wfExec.Variables}
+
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := agents.CallCount(); got != 0 {
+		t.Fatalf("StartAgent call count = %d, want 0", got)
+	}
+	if wfExec.State != ExecWaiting {
+		t.Fatalf("workflow state = %s, want waiting", wfExec.State)
+	}
+	if got := tasks.Reason("t1"); got != "work paused: machine under resource pressure — disk free 1.0% below minimum 5.0%" {
+		t.Fatalf("status_reason = %q", got)
+	}
+
+	agents.SetAdmitDispatch("")
+	if err := engine.execRunAgent("t1", step, wfExec, ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := agents.LastCall().Prompt
+	want := "Supervisor course-correction: keep this steer\n\ndo the work"
+	if got != want {
+		t.Fatalf("prompt after pressure clears = %q, want %q", got, want)
 	}
 }
 

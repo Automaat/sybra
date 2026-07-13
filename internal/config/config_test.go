@@ -172,6 +172,65 @@ func TestLoadExperienceDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadPressureDefaults locks in that a config missing the pressure block
+// (or the whole orchestrator block) resolves to the seeded thresholds.
+func TestLoadPressureDefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Orchestrator.Pressure
+	if !p.Enabled {
+		t.Fatal("pressure.enabled = false, want true")
+	}
+	if p.MinDiskFreePercent != 5 {
+		t.Fatalf("pressure.min_disk_free_percent = %v, want 5", p.MinDiskFreePercent)
+	}
+	if p.MinMemAvailablePercent != 8 {
+		t.Fatalf("pressure.min_mem_available_percent = %v, want 8", p.MinMemAvailablePercent)
+	}
+	if p.MaxLoadPerCPU != 8.0 {
+		t.Fatalf("pressure.max_load_per_cpu = %v, want 8", p.MaxLoadPerCPU)
+	}
+	if p.SampleIntervalSeconds != 15 {
+		t.Fatalf("pressure.sample_interval_seconds = %d, want 15", p.SampleIntervalSeconds)
+	}
+}
+
+// TestLoadPressureExplicitZeroDisablesDimension locks in the documented
+// `<=0 disables this dimension` escape hatch: an explicit 0 for a pressure
+// threshold must survive defaulting rather than being rewritten to its seed.
+func TestLoadPressureExplicitZeroDisablesDimension(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("orchestrator:\n  pressure:\n    min_disk_free_percent: 0\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Orchestrator.Pressure
+	if p.MinDiskFreePercent != 0 {
+		t.Fatalf("pressure.min_disk_free_percent = %v, want 0 (disabled)", p.MinDiskFreePercent)
+	}
+	// The untouched dimensions keep their seeds.
+	if p.MinMemAvailablePercent != 8 {
+		t.Fatalf("pressure.min_mem_available_percent = %v, want 8", p.MinMemAvailablePercent)
+	}
+	if p.MaxLoadPerCPU != 8.0 {
+		t.Fatalf("pressure.max_load_per_cpu = %v, want 8", p.MaxLoadPerCPU)
+	}
+}
+
 func TestLoadAutoUpdateDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

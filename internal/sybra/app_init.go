@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/prcontent"
+	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
@@ -850,7 +851,7 @@ func (a *App) initWorkflowEngine() {
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
-	agentLauncher := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: a.projects, sandboxes: a.sandboxes, experience: a.experience}
+	agentLauncher := a.newWorkflowAgentLauncher()
 	a.workflowEngine = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
@@ -957,6 +958,22 @@ func (a *App) initWorkflowEngine() {
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
+}
+
+func (a *App) newWorkflowAgentLauncher() *agentAdapter {
+	pressureGate := pressure.New(a.cfg.Orchestrator.Pressure, config.HomeDir(), a.logger)
+	if a.agentOrch != nil {
+		a.agentOrch.SetPressureGate(pressureGate)
+	}
+	return &agentAdapter{
+		agents:     a.agents,
+		agentOrch:  a.agentOrch,
+		tasks:      a.tasks,
+		projects:   a.projects,
+		sandboxes:  a.sandboxes,
+		experience: a.experience,
+		pressure:   pressureGate,
+	}
 }
 
 // configureTestingEscalation wires the testing→escalation config knobs onto

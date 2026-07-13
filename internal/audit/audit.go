@@ -90,6 +90,11 @@ const (
 	// audit log can see which tasks are running with unrestricted file-write
 	// access instead of only discovering it after an incident.
 	EventAgentSandboxDisabled = "agent.sandbox_disabled"
+	// EventAgentDeferredPressure records that a new agent dispatch was parked
+	// because the local host was under disk/memory/load pressure. Distinct from
+	// agent.start_failed: this is a benign defer that ResumeStalled re-drives
+	// automatically once pressure clears.
+	EventAgentDeferredPressure = "agent.deferred_pressure"
 	// EventAgentCheckpoint records a turn-ceiling checkpoint handoff attempt.
 	// Data.reason distinguishes a committed handoff ("checkpoint") from a
 	// failed commit ("checkpoint_failed").
