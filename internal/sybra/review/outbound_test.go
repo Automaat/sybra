@@ -427,6 +427,7 @@ func TestReconcileHumanRequiredBlockersFallbackProbe(t *testing.T) {
 		wantLatch  bool
 	}{
 		{"ci_failure cleared -> flips to in-review", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeableGreenPR(), nil }, task.StatusInReview, true},
+		{"CI infra rerun permission cleared -> flips to in-review", ciInfraRerunPermissionReason, nil, func(string, int) (github.PRState, error) { return openMergeableGreenPR(), nil }, task.StatusInReview, true},
 		{"conflict cleared -> flips to in-review", exhaustedFixReason(3, github.PRIssueConflict), nil, func(string, int) (github.PRState, error) { return openMergeableGreenPR(), nil }, task.StatusInReview, true},
 		{"CI pending -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeablePendingPR(), nil }, task.StatusHumanRequired, false},
 		{"CI unknown/empty -> stays parked", exhaustedFixReason(3, github.PRIssueCIFailure), nil, func(string, int) (github.PRState, error) { return openMergeableNoChecksPR(), nil }, task.StatusHumanRequired, false},
