@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,12 +65,7 @@ func AllBucketNames() []string {
 
 // ValidBucketName reports whether name is a known bucket.
 func ValidBucketName(name string) bool {
-	for _, n := range AllBucketNames() {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AllBucketNames(), name)
 }
 
 // Bucket is one reclaimable category of disk usage: the set of paths Scan
@@ -168,8 +164,8 @@ func (s *Scanner) snapshot() (snapshot, error) {
 		return snapshot{}, fmt.Errorf("list tasks: %w", err)
 	}
 	m := make(map[string]task.Task, len(tasks))
-	for _, t := range tasks {
-		m[t.ID] = t
+	for i := range tasks {
+		m[tasks[i].ID] = tasks[i]
 	}
 	return snapshot{byID: m}, nil
 }
@@ -190,7 +186,7 @@ func cleanupEligible(st task.Status) bool {
 // refuses age-based cleanup, deferring to task deletion instead. An empty or
 // unknownTaskID is always ineligible — callers must resolve the owning task
 // before calling this.
-func eligible(snap snapshot, taskID, path string, retention time.Duration, retentionDisabled bool, now time.Time) (bool, string) {
+func eligible(snap snapshot, taskID, path string, retention time.Duration, retentionDisabled bool, now time.Time) (ok bool, reason string) {
 	if taskID == "" || taskID == unknownTaskID {
 		return false, "unknown owning task"
 	}
@@ -393,7 +389,7 @@ func (s *Scanner) retentionDays(bucketName string, opts Options) (days int, disa
 // retention window. opts.OlderThan, when set, overrides the configured
 // per-bucket default; a negative configured default (and no override)
 // disables age-based deletion for that bucket entirely.
-func (s *Scanner) ageEligible(bucketName, path string, opts Options) (bool, string) {
+func (s *Scanner) ageEligible(bucketName, path string, opts Options) (ok bool, reason string) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false, "stat failed"
@@ -586,7 +582,9 @@ func (s *Scanner) scanSharedCache() Bucket {
 }
 
 func defaultExternalRunner() (string, error) {
-	out, err := exec.Command("docker", "system", "df").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "system", "df").Output()
 	if err != nil {
 		return "", err
 	}
@@ -676,7 +674,7 @@ func (s *Scanner) bucketRoot(bucketName string) (string, bool) {
 // revalidate re-derives eligibility for path immediately before deletion,
 // using a fresh snapshot rather than trusting Scan's (possibly stale)
 // result.
-func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Options) (bool, string) {
+func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Options) (ok bool, reason string) {
 	root, ok := s.bucketRoot(bucketName)
 	if !ok {
 		return false, "unknown bucket"

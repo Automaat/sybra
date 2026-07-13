@@ -1986,7 +1986,15 @@ Commands:
   config doctor                Sanity-check config: data dirs, agent.provider,
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
-                               missing required credentials.
+                               missing required credentials.%s
+
+Global flags:
+  --json   Output as JSON
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList(), doctorUsageBlock())
+}
+
+func doctorUsageBlock() string {
+	return `
 
   doctor cleanup [--apply] [--only b1,b2] [--worktrees] [--external] [--force]
                  [--older-than DURATION] [--json]
@@ -1996,11 +2004,7 @@ Commands:
            (destructive — each needs its own --worktrees/--force/--external
            flag before --apply will touch it, or even include it in the
            report). Deletion is irreversible; dry-run first. Exit codes:
-           0 ok, 1 a delete failed, 2 bad flags/arguments.
-
-Global flags:
-  --json   Output as JSON
-`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+           0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {
