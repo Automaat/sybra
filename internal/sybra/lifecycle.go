@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/poll"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
@@ -343,15 +344,12 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 	}
 	if a.providerHealth != nil {
 		metrics.RegisterProviderHealth(func() map[string]int64 {
-			out := make(map[string]int64, 2)
-			for name, s := range a.providerHealth.Snapshot() {
-				if s.Healthy {
-					out[name] = 1
-				} else {
-					out[name] = 0
-				}
-			}
-			return out
+			alertHealth, _ := providerHealthMetrics(a.providerHealth.Snapshot(), a.providerHealth.Failover)
+			return alertHealth
+		})
+		metrics.RegisterProviderRawHealth(func() map[string]int64 {
+			_, rawHealth := providerHealthMetrics(a.providerHealth.Snapshot(), a.providerHealth.Failover)
+			return rawHealth
 		})
 	}
 	metrics.RegisterAgentsInFlightByProvider(func() map[string]int64 {
@@ -362,6 +360,28 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 		}
 		return out
 	})
+}
+
+func providerHealthMetrics(
+	snapshot map[string]provider.Status,
+	failover func(string) string,
+) (alertHealth, rawHealth map[string]int64) {
+	alertHealth = make(map[string]int64, len(snapshot))
+	rawHealth = make(map[string]int64, len(snapshot))
+	for name, s := range snapshot {
+		if s.Healthy {
+			alertHealth[name] = 1
+			rawHealth[name] = 1
+			continue
+		}
+		rawHealth[name] = 0
+		if failover != nil && failover(name) != "" {
+			alertHealth[name] = 1
+		} else {
+			alertHealth[name] = 0
+		}
+	}
+	return alertHealth, rawHealth
 }
 
 // startMonitorService wires the in-process monitor loop when enabled.

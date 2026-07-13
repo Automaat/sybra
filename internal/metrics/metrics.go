@@ -76,11 +76,13 @@ var (
 	renovatePRsFetchFn  func() int64
 	providerHealthFn    func() map[string]int64
 	pollerAuthHealthFn  func() map[string]int64
+	providerRawHealthFn func() map[string]int64
 	agentsInFlightFn    func() map[string]int64
 	tasksByStatusGauge  metric.Int64ObservableGauge
 	agentsActiveGauge   metric.Int64ObservableGauge
 	renovatePRsGauge    metric.Int64ObservableGauge
 	providerHealthyG    metric.Int64ObservableGauge
+	providerRawHealthyG metric.Int64ObservableGauge
 	pollerAuthHealthyG  metric.Int64ObservableGauge
 	agentsInFlightGauge metric.Int64ObservableGauge
 )
@@ -364,7 +366,13 @@ func createObservableGauges() error {
 	}
 	if providerHealthyG, err = m.Int64ObservableGauge(
 		"sybra_provider_healthy",
-		metric.WithDescription("Current provider health (1=healthy, 0=unhealthy), by provider."),
+		metric.WithDescription("Provider alert health (1=usable directly or through failover, 0=no healthy path), by provider."),
+	); err != nil {
+		return err
+	}
+	if providerRawHealthyG, err = m.Int64ObservableGauge(
+		"sybra_provider_raw_healthy",
+		metric.WithDescription("Raw provider health gate state (1=healthy, 0=unhealthy), by provider."),
 	); err != nil {
 		return err
 	}
@@ -382,7 +390,7 @@ func createObservableGauges() error {
 	}
 	_, err = m.RegisterCallback(
 		observe,
-		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
+		tasksByStatusGauge, agentsActiveGauge, renovatePRsGauge, providerHealthyG, providerRawHealthyG, pollerAuthHealthyG, agentsInFlightGauge,
 	)
 	return err
 }
@@ -393,6 +401,7 @@ func observe(_ context.Context, obs metric.Observer) error {
 	byState := agentsActiveFn
 	prs := renovatePRsFetchFn
 	providerHealth := providerHealthFn
+	providerRawHealth := providerRawHealthFn
 	pollerAuthHealth := pollerAuthHealthFn
 	inFlight := agentsInFlightFn
 	obsMu.RUnlock()
@@ -415,6 +424,12 @@ func observe(_ context.Context, obs metric.Observer) error {
 	if providerHealth != nil {
 		for name, healthy := range providerHealth() {
 			obs.ObserveInt64(providerHealthyG, healthy,
+				metric.WithAttributes(attribute.String("provider", name)))
+		}
+	}
+	if providerRawHealth != nil {
+		for name, healthy := range providerRawHealth() {
+			obs.ObserveInt64(providerRawHealthyG, healthy,
 				metric.WithAttributes(attribute.String("provider", name)))
 		}
 	}
@@ -458,10 +473,19 @@ func RegisterRenovatePRsFetched(fn func() int64) {
 }
 
 // RegisterProviderHealth wires a provider callback returning provider name →
-// health (1=healthy, 0=unhealthy). Invoked on every scrape.
+// alert health (1=usable directly or through failover, 0=no healthy path).
+// Invoked on every scrape.
 func RegisterProviderHealth(fn func() map[string]int64) {
 	obsMu.Lock()
 	providerHealthFn = fn
+	obsMu.Unlock()
+}
+
+// RegisterProviderRawHealth wires a provider callback returning provider name
+// → raw health-gate state (1=healthy, 0=unhealthy). Invoked on every scrape.
+func RegisterProviderRawHealth(fn func() map[string]int64) {
+	obsMu.Lock()
+	providerRawHealthFn = fn
 	obsMu.Unlock()
 }
 
