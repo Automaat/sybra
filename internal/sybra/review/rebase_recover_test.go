@@ -826,6 +826,9 @@ func (b *blockingAgentLauncher) ProviderRateLimited(string) bool  { return false
 func (b *blockingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (b *blockingAgentLauncher) ProviderHealthy(string) bool      { return true }
 func (b *blockingAgentLauncher) IsDispatching(string) bool        { return false }
+func (b *blockingAgentLauncher) AdmitDispatch(string, string) (admit bool, reason string) {
+	return true, ""
+}
 
 // TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHeld
 // locks the fix for dispatchBranchConflictRecovery's own re-dispatch call: a
@@ -1066,6 +1069,9 @@ func (f *failingAgentLauncher) ProviderRateLimited(string) bool  { return false 
 func (f *failingAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *failingAgentLauncher) ProviderHealthy(string) bool      { return false }
 func (f *failingAgentLauncher) IsDispatching(string) bool        { return false }
+func (f *failingAgentLauncher) AdmitDispatch(string, string) (admit bool, reason string) {
+	return true, ""
+}
 func (f *failingAgentLauncher) TryClaimDispatch(string) (workflow.DispatchClaim, bool) {
 	return nil, true
 }

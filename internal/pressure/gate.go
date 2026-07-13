@@ -1,8 +1,10 @@
 package pressure
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -26,7 +28,7 @@ type Gate struct {
 	logger         *slog.Logger
 	// sampleFn is swapped out in tests so Admit's threshold/caching logic is
 	// exercised without real syscalls.
-	sampleFn func(probeDir string) Sample
+	sampleFn func(probeDir string) (Sample, error)
 
 	mu         sync.Mutex
 	cached     Sample
@@ -54,7 +56,9 @@ func New(cfg config.PressureConfig, probeDir string, logger *slog.Logger) *Gate 
 		interval:       interval,
 		probeDir:       probeDir,
 		logger:         logger,
-		sampleFn:       readSample,
+		sampleFn: func(probeDir string) (Sample, error) {
+			return readSample(probeDir), nil
+		},
 	}
 }
 
@@ -69,7 +73,14 @@ func (g *Gate) Admit() (ok bool, reason string) {
 	if g == nil {
 		return true, ""
 	}
-	s := g.sample()
+	s, err := g.sample()
+	if err != nil {
+		if !errors.Is(err, errAllSignalsUnreadable) && g.logger != nil {
+			g.logger.Warn("pressure.gate.sample", "err", err)
+		}
+		g.clearReason()
+		return true, ""
+	}
 	switch {
 	case thresholdTripped(s.DiskFreePct, g.minDiskFreePct, true):
 		reason = fmt.Sprintf("disk free %.1f%% below minimum %.1f%%", s.DiskFreePct, g.minDiskFreePct)
@@ -78,6 +89,7 @@ func (g *Gate) Admit() (ok bool, reason string) {
 	case thresholdTripped(s.LoadPerCPU, g.maxLoadPerCPU, false):
 		reason = fmt.Sprintf("load per cpu %.2f exceeds maximum %.2f", s.LoadPerCPU, g.maxLoadPerCPU)
 	default:
+		g.clearReason()
 		return true, ""
 	}
 	g.recordDeny(reason)
@@ -88,7 +100,7 @@ func (g *Gate) Admit() (ok bool, reason string) {
 // currently denying dispatch, the last tripped reason — for the UI/CLI to
 // explain a pressure park without forcing a fresh sample. A nil Gate reports
 // a zero Sample and no reason.
-func (g *Gate) Status() (Sample, string) {
+func (g *Gate) Status() (sample Sample, reason string) {
 	if g == nil {
 		return Sample{}, ""
 	}
@@ -97,20 +109,33 @@ func (g *Gate) Status() (Sample, string) {
 	return g.cached, g.lastReason
 }
 
+var errAllSignalsUnreadable = errors.New("all resource-pressure signals unreadable")
+
 // sample returns the cached Sample, refreshing it when older than interval.
-func (g *Gate) sample() Sample {
+func (g *Gate) sample() (Sample, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.cachedAt.IsZero() && time.Since(g.cachedAt) < g.interval {
-		return g.cached
+		return g.cached, nil
 	}
 	fn := g.sampleFn
 	if fn == nil {
-		fn = readSample
+		fn = func(probeDir string) (Sample, error) {
+			return readSample(probeDir), nil
+		}
 	}
-	g.cached = fn(g.probeDir)
+	sample, err := fn(g.probeDir)
+	if err != nil {
+		return Sample{}, err
+	}
+	g.cached = sample
 	g.cachedAt = time.Now()
-	return g.cached
+	if math.IsNaN(sample.DiskFreePct) &&
+		math.IsNaN(sample.MemAvailablePct) &&
+		math.IsNaN(sample.LoadPerCPU) {
+		return g.cached, errAllSignalsUnreadable
+	}
+	return g.cached, nil
 }
 
 // recordDeny stashes the latest deny reason for Status and logs it, throttled
@@ -125,6 +150,12 @@ func (g *Gate) recordDeny(reason string) {
 	}
 	g.mu.Unlock()
 	if shouldLog && g.logger != nil {
-		g.logger.Warn("pressure.gate.deny", "reason", reason)
+		g.logger.Warn("pressure.gate.deferred", "reason", reason)
 	}
+}
+
+func (g *Gate) clearReason() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.lastReason = ""
 }

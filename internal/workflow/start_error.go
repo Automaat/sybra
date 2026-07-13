@@ -98,7 +98,7 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		// dispatch-plumbing sentinels above, this names an operator-visible
 		// machine condition, so it DOES surface a status_reason (see
 		// isDeferredNotFailed for why it still never feeds the breaker).
-		reason = "work paused: machine under resource pressure — " + strings.TrimPrefix(err.Error(), "agent dispatch deferred: ")
+		reason = "work paused: machine under resource pressure — " + resourcePressureDetail(err)
 		return truncateReason(reason), false
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
@@ -185,6 +185,23 @@ func isDeferredNotFailed(err error) bool {
 
 func isTransientFetchReason(reason string) bool {
 	return strings.TrimSpace(reason) == transientFetchStatusReason
+}
+
+func resourcePressureDetail(err error) string {
+	if err == nil {
+		return "local resource pressure"
+	}
+	msg := err.Error()
+	base := ErrResourcePressure.Error()
+	_, suffix, ok := strings.Cut(msg, base)
+	if !ok {
+		return "local resource pressure"
+	}
+	detail := strings.TrimSpace(strings.TrimPrefix(suffix, ":"))
+	if detail == "" {
+		return "local resource pressure"
+	}
+	return detail
 }
 
 // truncateReason caps a status_reason to startReasonMaxLen bytes with an

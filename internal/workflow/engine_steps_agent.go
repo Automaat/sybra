@@ -140,6 +140,14 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if mode == "" {
 		mode = "headless"
 	}
+	if admit, reason := e.agents.AdmitDispatch(step.Config.Role, mode); !admit {
+		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, reason); err != nil {
+			return err
+		}
+		wfExec.State = ExecWaiting
+		e.logger.Info("workflow.run-agent.resource-pressure", "task_id", taskID, "step", step.ID, "reason", reason)
+		return e.tasks.SetWorkflow(taskID, wfExec)
+	}
 
 	model := step.Config.Model
 	if model == "" {

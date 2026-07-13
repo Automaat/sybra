@@ -42,7 +42,7 @@ func memAvailablePct() float64 {
 	}
 	var total, avail float64
 	haveTotal, haveAvail := false, false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
