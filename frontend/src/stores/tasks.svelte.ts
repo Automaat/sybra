@@ -7,6 +7,7 @@ import {
   DeleteTask,
   ApprovePlan,
   ApprovePlanOnNode,
+  ReassignTask,
   RejectPlanOnNode,
   RejectPlan,
   SendPlanMessage,
@@ -156,6 +157,11 @@ class TaskStore extends EntityStore<Task> {
     }
     const result = await RejectPlan(id, feedback)
     this.set(result.id, result)
+  }
+
+  async reassign(id: string, node: string): Promise<void> {
+    await ReassignTask(id, node)
+    await this.patchOne(id)
   }
 
   async sendPlanMessage(id: string, message: string): Promise<void> {
