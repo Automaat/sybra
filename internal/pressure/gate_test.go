@@ -123,6 +123,9 @@ func TestAdmitFailsOpenOnSamplerError(t *testing.T) {
 
 func TestAdmitCachesSampleWithinTTL(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 60}, "/tmp", nil)
+	if g == nil {
+		t.Fatal("New returned nil for enabled gate")
+	}
 	calls := 0
 	g.sampleFn = func(string) (Sample, error) {
 		calls++
