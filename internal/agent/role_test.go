@@ -90,6 +90,37 @@ func TestRole_IsSystem(t *testing.T) {
 	}
 }
 
+func TestRole_SupportsHeadlessSteer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role Role
+		want bool
+	}{
+		// Unattended verifier/system dispatch — never receives a steer message.
+		{RoleReview, false},
+		{RoleTestRunner, false},
+		{RoleEval, false},
+		{RoleTriage, false},
+		{RolePlanCritic, false},
+		{RoleHumanReview, false},
+		{RoleFixReview, false},
+		// Roles a human may actively watch and steer from the GUI.
+		{RoleImplementation, true},
+		{RolePlan, true},
+		{RolePRFix, true},
+		{Role(""), true}, // empty maps to implementation
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.SupportsHeadlessSteer(); got != tt.want {
+				t.Errorf("Role(%q).SupportsHeadlessSteer() = %v, want %v", tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRole_AuthorsCode(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

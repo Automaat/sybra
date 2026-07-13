@@ -83,6 +83,24 @@ func (s *Store) Get(id string) (Project, error) {
 	return s.readFile(path)
 }
 
+// RawType returns a project's type exactly as recorded on disk, without the
+// missing-type→pet coercion Get applies. The confidentiality guard uses this so
+// a work project whose type field is absent or unknown is never mistaken for
+// pet and routed to an untrusted follower.
+func (s *Store) RawType(id string) (ProjectType, error) {
+	data, err := os.ReadFile(s.filePath(id))
+	if err != nil {
+		return "", err
+	}
+	var raw struct {
+		Type ProjectType `yaml:"type"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("parse project type: %w", err)
+	}
+	return raw.Type, nil
+}
+
 // Create parses rawURL into an owner/repo ID, clones it as a bare repo
 // under clonesDir, and persists a ready Project record. Fails if a project
 // with the same ID is already registered. See CreateMeta for the

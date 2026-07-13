@@ -1292,13 +1292,18 @@ const rebaseAbortTimeout = 30 * time.Second
 // ref's tip is fully contained in HEAD. `git merge-base --is-ancestor`
 // considers ref merged in this case, so treating that as "nothing to do"
 // avoids the identical conflict resurfacing on every subsequent prepare.
+// The abort runs on a context derived from ctx via context.WithoutCancel,
+// bounded by its own timeout (mirrors MergeOnto/TryCleanMerge): if the
+// rebase failed because ctx was canceled or its deadline expired, running
+// the abort on that same ctx would skip cleanup and leave rebase-* state
+// behind in the worktree.
 func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
 	if isAncestor(ctx, worktreePath, ref, "HEAD") {
 		return nil
 	}
 	if err := executil.Run(ctx, worktreePath, "git", "rebase", ref); err != nil {
-		abortCtx, cancel := context.WithTimeout(context.Background(), rebaseAbortTimeout)
-		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort") //nolint:contextcheck // detached cleanup must survive a cancelled caller ctx, see rebaseAbortTimeout comment
+		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
+		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort")
 		cancel()
 		return fmt.Errorf("rebase onto %s: %w", ref, err)
 	}
