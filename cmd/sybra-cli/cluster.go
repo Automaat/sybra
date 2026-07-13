@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -64,16 +65,29 @@ func cmdClusterNodes(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
+func splitLeadingID(args []string) (id string, rest []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
+}
+
 func cmdClusterReassign(cfg *config.Config, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reassign", flag.ContinueOnError)
 	node := fs.String("node", "", `target node name, or "local" to bring the task back to the leader`)
-	if err := fs.Parse(args); err != nil {
+
+	taskID, rest := splitLeadingID(args)
+	if err := fs.Parse(rest); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
-	if fs.NArg() != 1 {
+	if taskID == "" && fs.NArg() == 1 {
+		taskID = fs.Arg(0)
+	} else if taskID != "" && fs.NArg() > 0 {
 		return fatal(jsonOut, "usage: sybra-cli cluster reassign <task-id> --node <name>")
 	}
-	taskID := fs.Arg(0)
+	if taskID == "" {
+		return fatal(jsonOut, "usage: sybra-cli cluster reassign <task-id> --node <name>")
+	}
 	if *node == "" {
 		return fatal(jsonOut, "--node is required")
 	}

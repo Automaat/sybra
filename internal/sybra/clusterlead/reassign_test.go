@@ -491,3 +491,42 @@ func TestReassignRejectsEmptyNode(t *testing.T) {
 		t.Fatalf("a blank node must be rejected, not resolved to an unnamed follower, got %v", err)
 	}
 }
+
+func TestRollbackKeepsTheOperatorsPreviousPin(t *testing.T) {
+	nodeB := &followerRecorder{}
+	bSrv := nodeB.server(t)
+	sick := httptest.NewServer(http.NewServeMux())
+	sick.Close()
+
+	a, tasks := newReassignFixture(t, []config.Follower{
+		{Name: "node-a", Endpoints: []string{"http://127.0.0.1:1"}, Trusted: true, Homes: []string{"acme/x"}},
+		{Name: "node-b", Endpoints: []string{bSrv.URL}, Trusted: true},
+		{Name: "node-c", Endpoints: []string{sick.URL}, Trusted: true},
+	}, nil)
+
+	seedTask(t, tasks, task.Task{
+		ID: "t1", Title: "x", ProjectID: "acme/x",
+		Status: task.StatusInProgress, AssignedNode: "node-b", NodeOverride: "node-b",
+	})
+
+	if err := a.Reassign(t.Context(), "t1", "node-c"); err == nil {
+		t.Fatal("want an error when the target refuses the push")
+	}
+
+	got, err := tasks.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AssignedNode != "node-b" || got.NodeOverride != "node-b" {
+		t.Fatalf("a failed push must restore the operator's pin, got node=%q override=%q", got.AssignedNode, got.NodeOverride)
+	}
+
+	a.Tick(t.Context())
+	after, err := tasks.Get("t1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if after.AssignedNode != "node-b" {
+		t.Fatalf("after a failed push the assigner dragged the task back to its config home: %q", after.AssignedNode)
+	}
+}

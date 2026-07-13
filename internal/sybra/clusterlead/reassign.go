@@ -78,6 +78,7 @@ func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
 	}
 
 	previous := t.AssignedNode
+	previousOverride := t.NodeOverride
 	if previous == home.Name {
 		return a.pinOverride(taskID, node)
 	}
@@ -98,11 +99,11 @@ func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
 
 	client, ok := a.roster.Client(home.Name)
 	if !ok || client == nil {
-		a.rollbackNode(taskID, previous, moved)
+		a.rollbackNode(taskID, previous, previousOverride, moved)
 		return fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
 	}
 	if err := client.AssignTask(ctx, moved); err != nil {
-		a.rollbackNode(taskID, previous, moved)
+		a.rollbackNode(taskID, previous, previousOverride, moved)
 		return fmt.Errorf("clusterlead: assign %s to %s: %w", taskID, home.Name, err)
 	}
 	a.logger.Info("cluster.reassign", "task", taskID, "from", previous, "to", home.Name)
@@ -141,7 +142,7 @@ func (a *Assigner) stampNode(taskID, override, assigned string) (task.Task, erro
 	return saved, nil
 }
 
-func (a *Assigner) rollbackNode(taskID, previous string, moved task.Task) {
+func (a *Assigner) rollbackNode(taskID, previous, previousOverride string, moved task.Task) {
 	cur, err := a.tasks.Get(taskID)
 	if err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
@@ -151,7 +152,7 @@ func (a *Assigner) rollbackNode(taskID, previous string, moved task.Task) {
 		return
 	}
 	cur.AssignedNode = previous
-	cur.NodeOverride = ""
+	cur.NodeOverride = previousOverride
 	if _, _, err := a.tasks.Put(cur); err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
