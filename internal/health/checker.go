@@ -134,9 +134,7 @@ func (c *Checker) check() {
 	if c.owned != nil {
 		owned = c.owned()
 	}
-	processes := procstat.Sample(5, func(pid, pgid int) bool {
-		return owned.Owns(pid, pgid)
-	})
+	processes := procstat.Sample(5, owned.Owns)
 
 	report := &Report{
 		GeneratedAt: now,
