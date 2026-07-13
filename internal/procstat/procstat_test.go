@@ -7,8 +7,6 @@ import (
 )
 
 func TestSampleSortsMarksAndTruncates(t *testing.T) {
-	t.Parallel()
-
 	restore := stubSampler(t, []Process{
 		{PID: 11, PGID: 101, Name: "worker", CPUPercent: 10, MemPercent: 2},
 		{PID: 12, PGID: 102, Name: "browser", CPUPercent: 40, MemPercent: 12},
@@ -48,8 +46,6 @@ func TestSampleSortsMarksAndTruncates(t *testing.T) {
 }
 
 func TestSampleNilOwnedAndUnavailable(t *testing.T) {
-	t.Parallel()
-
 	t.Run("nil owned", func(t *testing.T) {
 		restore := stubSampler(t, []Process{{PID: 21, PGID: 201, Name: "one", CPUPercent: 1, MemPercent: 2}}, true)
 		defer restore()

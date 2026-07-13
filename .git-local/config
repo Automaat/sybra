@@ -1,0 +1,26 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+	worktree = /data/sybra/home/worktrees/feat-monitor-surface-hot-local-processes-9ab8a130
+	hooksPath = /data/sybra/home/worktrees/feat-monitor-surface-hot-local-processes-9ab8a130/.git-local/hooks
+[remote "origin"]
+	url = https://github.com/Automaat/sybra.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+[user]
+	name = Smoke Test
+	email = smoke@test.local
+	signingkey = /tmp/gpg-local/id_ed25519.pub
+[commit]
+	gpgsign = true
+[gpg]
+	format = ssh
+[branch "feat/feat-monitor-surface-hot-local-processes-9ab8a130"]
+	remote = origin
+	merge = refs/heads/feat/feat-monitor-surface-hot-local-processes-9ab8a130
+[credential "https://github.com"]
+	helper = !gh auth git-credential
