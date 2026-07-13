@@ -12,6 +12,20 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
+const (
+	mcpOwnerFlagEnv  = "SYBRA_MCP_OWNER"
+	mcpAgentIDEnv    = "SYBRA_MCP_AGENT_ID"
+	mcpTaskIDEnv     = "SYBRA_MCP_TASK_ID"
+	mcpAgentModeEnv  = "SYBRA_MCP_AGENT_MODE"
+	mcpOwnerFlagTrue = "1"
+)
+
+type mcpOwner struct {
+	AgentID string
+	TaskID  string
+	Mode    string
+}
+
 // buildPlaywrightMCPConfig returns the Claude --mcp-config JSON payload for a
 // headless Playwright MCP server writing screenshots/console logs to
 // outputDir. Pure/no I/O — callers must ensure outputDir already exists.
@@ -34,6 +48,106 @@ func buildPlaywrightMCPConfig(outputDir string, extraArgs []string) (string, err
 		return "", fmt.Errorf("agent: playwright mcp: marshal config: %w", err)
 	}
 	return string(data), nil
+}
+
+func mcpOwnerForAgent(a *Agent) mcpOwner {
+	if a == nil {
+		return mcpOwner{}
+	}
+	return mcpOwner{
+		AgentID: strings.TrimSpace(a.ID),
+		TaskID:  strings.TrimSpace(a.TaskID),
+		Mode:    strings.TrimSpace(a.Mode),
+	}
+}
+
+func wrapMCPConfigWithOwnership(mcpJSON string, owner mcpOwner) (string, error) {
+	if strings.TrimSpace(mcpJSON) == "" {
+		return "", nil
+	}
+	assignments := mcpOwnerAssignments(owner)
+	if len(assignments) == 0 {
+		return mcpJSON, nil
+	}
+	var doc struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(mcpJSON), &doc); err != nil {
+		return "", fmt.Errorf("agent: wrap mcp ownership: %w", err)
+	}
+	for name, raw := range doc.MCPServers {
+		server, err := wrapMCPServerOwnership(raw, assignments)
+		if err != nil {
+			return "", fmt.Errorf("agent: wrap mcp server %q: %w", name, err)
+		}
+		doc.MCPServers[name] = server
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("agent: marshal wrapped mcp config: %w", err)
+	}
+	return string(data), nil
+}
+
+func wrapMCPServerOwnership(raw json.RawMessage, assignments []string) (json.RawMessage, error) {
+	var server map[string]any
+	if err := json.Unmarshal(raw, &server); err != nil {
+		return nil, err
+	}
+	command, _ := server["command"].(string)
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, fmt.Errorf("missing command")
+	}
+	args, err := stringSliceFromJSON(server["args"])
+	if err != nil {
+		return nil, fmt.Errorf("parse args: %w", err)
+	}
+	wrapped := make([]string, 0, len(assignments)+1+len(args))
+	wrapped = append(wrapped, assignments...)
+	wrapped = append(wrapped, command)
+	wrapped = append(wrapped, args...)
+	server["command"] = "env"
+	server["args"] = wrapped
+	data, err := json.Marshal(server)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func mcpOwnerAssignments(owner mcpOwner) []string {
+	if owner.AgentID == "" || owner.Mode == "" {
+		return nil
+	}
+	assignments := []string{
+		mcpOwnerFlagEnv + "=" + mcpOwnerFlagTrue,
+		mcpAgentIDEnv + "=" + owner.AgentID,
+		mcpAgentModeEnv + "=" + owner.Mode,
+	}
+	if owner.TaskID != "" {
+		assignments = append(assignments, mcpTaskIDEnv+"="+owner.TaskID)
+	}
+	return assignments
+}
+
+func stringSliceFromJSON(v any) ([]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	items, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("want []string-compatible value, got %T", v)
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("want string arg, got %T", item)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func (m *Manager) preparePlaywrightMCP(cfg *RunConfig) {
