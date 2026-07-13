@@ -1042,9 +1042,16 @@ func (a *App) seedDefaultLoopAgents() {
 // orchestrator loop. Holds a pointer to a.restartStaleErr so the throttle
 // state is shared across both call sites.
 func (a *App) newRecovery() *recovery.Recovery {
-	var retention time.Duration
+	var retention, gzipAfter time.Duration
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		retention = time.Duration(days) * 24 * time.Hour
+	}
+	if days := a.cfg.DefaultLogGzipAfterDays(); days > 0 {
+		gzipAfter = time.Duration(days) * 24 * time.Hour
+	}
+	var maxTotalBytes int64
+	if mb := a.cfg.DefaultLogRetentionMaxSizeMB(); mb > 0 {
+		maxTotalBytes = int64(mb) * 1024 * 1024
 	}
 	r := &recovery.Recovery{
 		Tasks:              a.tasks,
@@ -1060,6 +1067,8 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WG:                 &a.wg,
 		LogDir:             a.logDir,
 		LogRetention:       retention,
+		LogGzipAfter:       gzipAfter,
+		LogMaxTotalBytes:   maxTotalBytes,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),

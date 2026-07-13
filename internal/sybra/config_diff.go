@@ -69,6 +69,8 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 		old.Agent.ResearchMachineDir != next.Agent.ResearchMachineDir ||
 		old.Agent.MaxLogEvents != next.Agent.MaxLogEvents ||
 		old.Agent.LogRetentionDays != next.Agent.LogRetentionDays ||
+		old.Agent.LogGzipAfterDays != next.Agent.LogGzipAfterDays ||
+		old.Agent.LogRetentionMaxSizeMB != next.Agent.LogRetentionMaxSizeMB ||
 		old.Agent.RequirePermissions != next.Agent.RequirePermissions {
 		hot = append(hot, "agent.other")
 	}
