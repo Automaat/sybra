@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -21,11 +22,12 @@ const (
 
 // Checker runs periodic health checks on audit data and task state.
 type Checker struct {
-	auditDir string
-	tasks    *task.Manager
-	homeDir  string
-	logger   *slog.Logger
-	emit     func(string, any)
+	auditDir  string
+	tasks     *task.Manager
+	homeDir   string
+	logger    *slog.Logger
+	emit      func(string, any)
+	ownedPIDs func() map[int]bool
 
 	mu     sync.RWMutex
 	report *Report
@@ -38,13 +40,15 @@ func New(
 	homeDir string,
 	logger *slog.Logger,
 	emit func(string, any),
+	ownedPIDs func() map[int]bool,
 ) *Checker {
 	return &Checker{
-		auditDir: auditDir,
-		tasks:    tasks,
-		homeDir:  homeDir,
-		logger:   logger,
-		emit:     emit,
+		auditDir:  auditDir,
+		tasks:     tasks,
+		homeDir:   homeDir,
+		logger:    logger,
+		emit:      emit,
+		ownedPIDs: ownedPIDs,
 	}
 }
 
@@ -112,6 +116,15 @@ func (c *Checker) check() {
 	}
 
 	stats := buildStats(dayEvents)
+	ownedSet := map[int]bool{}
+	if c.ownedPIDs != nil {
+		if got := c.ownedPIDs(); got != nil {
+			ownedSet = got
+		}
+	}
+	processes := procstat.Sample(5, func(pid, pgid int) bool {
+		return ownedSet[pid] || ownedSet[pgid]
+	})
 
 	report := &Report{
 		GeneratedAt: now,
@@ -120,6 +133,7 @@ func (c *Checker) check() {
 		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
+		Processes:   &processes,
 	}
 
 	c.mu.Lock()

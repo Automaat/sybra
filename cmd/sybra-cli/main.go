@@ -1634,17 +1634,58 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 		}
 		fmt.Printf("  [%s] %s: %s\n", f.Severity, f.Category, f.Title)
 	}
+	if report.Processes == nil {
+		return 0
+	}
+	fmt.Println()
+	if !report.Processes.Available {
+		fmt.Println("Processes: unavailable")
+		return 0
+	}
+	printProcessBlock("Top CPU", report.Processes.TopCPU)
+	fmt.Println()
+	printProcessBlock("Top Memory", report.Processes.TopMem)
 	return 0
 }
 
 // healthReport mirrors the JSON structure without importing the health package.
 type healthReport struct {
-	GeneratedAt string            `json:"generatedAt"`
-	PeriodStart string            `json:"periodStart"`
-	PeriodEnd   string            `json:"periodEnd"`
-	Score       string            `json:"score"`
-	Findings    []json.RawMessage `json:"findings"`
-	Stats       json.RawMessage   `json:"stats"`
+	GeneratedAt string                `json:"generatedAt"`
+	PeriodStart string                `json:"periodStart"`
+	PeriodEnd   string                `json:"periodEnd"`
+	Score       string                `json:"score"`
+	Findings    []json.RawMessage     `json:"findings"`
+	Stats       json.RawMessage       `json:"stats"`
+	Processes   *healthProcessSummary `json:"processes,omitempty"`
+}
+
+type healthProcessSummary struct {
+	TopCPU    []healthProcess `json:"topCpu"`
+	TopMem    []healthProcess `json:"topMem"`
+	SampledAt string          `json:"sampledAt"`
+	Available bool            `json:"available"`
+}
+
+type healthProcess struct {
+	PID        int     `json:"pid"`
+	Name       string  `json:"name"`
+	CPUPercent float64 `json:"cpuPercent"`
+	MemPercent float64 `json:"memPercent"`
+	Owned      bool    `json:"owned"`
+}
+
+func printProcessBlock(title string, processes []healthProcess) {
+	fmt.Printf("%s:\n", title)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "OWNER\tPID\tNAME\tCPU%\tMEM%")
+	for _, p := range processes {
+		owner := "[ext]"
+		if p.Owned {
+			owner = "[sybra]"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%.1f\t%.1f\n", owner, p.PID, p.Name, p.CPUPercent, p.MemPercent)
+	}
+	_ = w.Flush()
 }
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {

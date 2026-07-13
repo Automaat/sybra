@@ -1,6 +1,10 @@
 package health
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/procstat"
+)
 
 // Severity indicates how urgent a finding is.
 type Severity string
@@ -63,12 +67,13 @@ type Stats struct {
 
 // Report is the output of a single health check run.
 type Report struct {
-	GeneratedAt time.Time `json:"generatedAt"`
-	PeriodStart time.Time `json:"periodStart"`
-	PeriodEnd   time.Time `json:"periodEnd"`
-	Score       Score     `json:"score"`
-	Findings    []Finding `json:"findings"`
-	Stats       Stats     `json:"stats"`
+	GeneratedAt time.Time         `json:"generatedAt"`
+	PeriodStart time.Time         `json:"periodStart"`
+	PeriodEnd   time.Time         `json:"periodEnd"`
+	Score       Score             `json:"score"`
+	Findings    []Finding         `json:"findings"`
+	Stats       Stats             `json:"stats"`
+	Processes   *procstat.Summary `json:"processes,omitempty"`
 }
 
 // RollupScore returns good if there are no findings, critical if any finding
