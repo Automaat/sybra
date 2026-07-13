@@ -81,6 +81,9 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 		old.Orchestrator.MaintenanceIntervalSeconds != next.Orchestrator.MaintenanceIntervalSeconds {
 		restart = append(restart, "orchestrator.intervals")
 	}
+	// pressure.Gate captures its thresholds at construction, same rationale
+	// as orchestrator.intervals above.
+	restart = appendDeepChanged(restart, "orchestrator.pressure", old.Orchestrator.Pressure, next.Orchestrator.Pressure)
 	if !reflect.DeepEqual(old.Audit, next.Audit) {
 		hot = append(hot, "audit")
 	}

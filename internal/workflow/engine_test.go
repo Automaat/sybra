@@ -402,6 +402,7 @@ type mockAgents struct {
 	failSpawnOnce     error
 	startGate         chan struct{}
 	startEntered      chan struct{}
+	admitDenyReason   string // when non-empty, AdmitDispatch denies with this reason
 }
 
 type panicStartAgents struct{ *mockAgents }
@@ -580,6 +581,23 @@ func (m *mockAgents) IsDispatching(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dispatchClaimed[taskID]
+}
+
+func (m *mockAgents) AdmitDispatch(role, mode string) (bool, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.admitDenyReason == "" {
+		return true, ""
+	}
+	return false, m.admitDenyReason
+}
+
+// SetAdmitDispatch arms the mock so AdmitDispatch denies with reason. Pass
+// "" to disarm (the default: always admit).
+func (m *mockAgents) SetAdmitDispatch(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.admitDenyReason = reason
 }
 
 type mockDispatchClaim struct {

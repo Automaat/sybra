@@ -555,6 +555,9 @@ func DefaultConfig() *Config {
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
 		},
+		Orchestrator: OrchestratorConfig{
+			Pressure: PressureConfig{Enabled: true},
+		},
 		TasksDir: defaultTasksDir(),
 	}
 }
@@ -1167,6 +1170,27 @@ func applyOrchestratorDefaults(cfg *Config) {
 	}
 	if cfg.Orchestrator.MaintenanceIntervalSeconds <= 0 {
 		cfg.Orchestrator.MaintenanceIntervalSeconds = 60
+	}
+	applyPressureDefaults(cfg)
+}
+
+// applyPressureDefaults fills zero values for the Pressure block. Enabled
+// stays true from DefaultConfig's seed, so a config predating this feature
+// (or one missing the block entirely) behaves identically to a fresh
+// install; an explicit `enabled: false` survives untouched.
+func applyPressureDefaults(cfg *Config) {
+	p := &cfg.Orchestrator.Pressure
+	if p.MinDiskFreePercent <= 0 {
+		p.MinDiskFreePercent = 5
+	}
+	if p.MinMemAvailablePercent <= 0 {
+		p.MinMemAvailablePercent = 8
+	}
+	if p.MaxLoadPerCPU <= 0 {
+		p.MaxLoadPerCPU = 8.0
+	}
+	if p.SampleIntervalSeconds <= 0 {
+		p.SampleIntervalSeconds = 15
 	}
 }
 

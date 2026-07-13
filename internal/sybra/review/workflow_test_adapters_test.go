@@ -246,3 +246,7 @@ func (a *agentAdapter) ProviderHealthy(provider string) bool {
 func (a *agentAdapter) IsDispatching(taskID string) bool {
 	return a.agents.IsDispatching(taskID)
 }
+
+func (a *agentAdapter) AdmitDispatch(role, mode string) (bool, string) {
+	return true, ""
+}
