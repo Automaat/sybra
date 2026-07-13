@@ -409,9 +409,9 @@ func (a *App) Startup(ctx context.Context) error {
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
-	// sandboxes has no dependency on the agent manager and must exist before
+	// initSandboxes has no agent-manager dependency and must run before
 	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
-	a.sandboxes = sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
+	a.initSandboxes()
 	if err := a.initAgentManager(ctx, emit); err != nil {
 		return err
 	}
@@ -452,6 +452,16 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.started")
 	started = true
 	return nil
+}
+
+// sandboxRetentionWindow translates the resolved sandbox.retention_hours
+// config into the sentinel sandbox.Manager.SetRetentionWindow expects:
+// a negative duration disables age-based pruning.
+func sandboxRetentionWindow(cfg *config.Config) time.Duration {
+	if window, disabled := cfg.DefaultSandboxRetention(); !disabled {
+		return window
+	}
+	return -1
 }
 
 // GetMonitorReport returns the most recent finished report from the
