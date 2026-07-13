@@ -93,6 +93,26 @@ type PromptTransform struct {
 	Text string `yaml:"text,omitempty" json:"text,omitempty"`
 }
 
+// ApplyPromptTransformOpText rewrites prompt per op/text: "replace"/
+// "template" overwrite it outright, "prepend"/"append" splice text in, any
+// other value (including empty) leaves prompt unchanged. Op and text are
+// taken as plain strings rather than *PromptTransform so dispatch paths that
+// mirror PromptTransform as a local type (e.g. internal/workflow, to avoid
+// depending on internal/abtest in their launcher interface) can still share
+// this logic instead of reimplementing the switch.
+func ApplyPromptTransformOpText(prompt, op, text string) string {
+	switch strings.TrimSpace(op) {
+	case "replace", "template":
+		return text
+	case "prepend":
+		return text + prompt
+	case "append":
+		return prompt + text
+	default:
+		return prompt
+	}
+}
+
 // Assignment is the durable identity selected for a workflow stage.
 type Assignment struct {
 	ExperimentID    string
