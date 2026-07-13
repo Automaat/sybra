@@ -277,6 +277,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		AgentMode:             t.AgentMode,
 		Priority:              string(t.Priority),
 		ProjectID:             t.ProjectID,
+		NodeOverride:          t.NodeOverride,
 		HandoffSourceProvider: t.HandoffSourceProvider,
 		PRNumber:              t.PRNumber,
 		Branch:                t.Branch,

@@ -35,6 +35,7 @@ type TaskInfo struct {
 	Priority              string
 	ProjectID             string
 	ProjectType           string
+	NodeOverride          string
 	HandoffSourceProvider string
 	PRNumber              int
 	Branch                string

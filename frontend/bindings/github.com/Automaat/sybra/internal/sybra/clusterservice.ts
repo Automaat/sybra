@@ -76,6 +76,16 @@ export function ListNodeAgents(): $CancellablePromise<(agent$0.Agent | null)[]> 
 }
 
 /**
+ * ReassignTask moves a task to an explicitly named node ("local" brings it back
+ * to the leader), overriding its project's configured home. The old node's
+ * agents for the task are stopped first when it is still reachable, so a
+ * merely-degraded follower cannot keep driving the branch alongside the new one.
+ */
+export function ReassignTask(taskID: string, node: string): $CancellablePromise<void> {
+    return $Call.ByID(3580635212, taskID, node);
+}
+
+/**
  * RejectPlanOnNode proxies a plan rejection (with feedback) to the named
  * follower.
  */

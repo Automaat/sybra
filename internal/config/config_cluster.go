@@ -105,6 +105,53 @@ type HomeNode struct {
 	Local     bool
 }
 
+// LocalNodeName is the reserved node name for the leader itself. Manual
+// reassignment accepts it to bring a task home when every follower is down.
+const LocalNodeName = "local"
+
+// HomeNodeForTask resolves which node owns execution for a task. An operator's
+// manual override wins over the project's configured home — otherwise the
+// assigner would recompute the config home on its next tick and drag the task
+// straight back to the node it was evacuated from. An override naming a node
+// that no longer exists in the roster falls back to the config home, so a
+// removed follower cannot strand a task on a name nothing resolves.
+func (c *Config) HomeNodeForTask(projectID, override string) HomeNode {
+	if override == "" {
+		return c.HomeNodeFor(projectID)
+	}
+	if home, ok := c.HomeNodeByName(override); ok {
+		return home
+	}
+	return c.HomeNodeFor(projectID)
+}
+
+// HomeNodeByName resolves a node by roster name, for operations that target a
+// node explicitly instead of following the project's configured home (manual
+// reassignment). Reports ok=false for an unknown name, so a typo can never be
+// mistaken for the leader and silently run work meant for a follower.
+func (c *Config) HomeNodeByName(name string) (HomeNode, bool) {
+	if name == LocalNodeName {
+		return HomeNode{Trusted: true, Encrypted: true, Local: true}, true
+	}
+	if c == nil {
+		return HomeNode{}, false
+	}
+	for i := range c.Cluster.Followers {
+		f := c.Cluster.Followers[i]
+		if f.Name != name {
+			continue
+		}
+		return HomeNode{
+			Name:      f.Name,
+			URL:       f.PrimaryEndpoint(),
+			Token:     f.ResolveToken(),
+			Trusted:   f.Trusted,
+			Encrypted: f.Encrypted(),
+		}, true
+	}
+	return HomeNode{}, false
+}
+
 // HomeNodeFor resolves which node owns execution for projectID. A project in a
 // follower's Homes routes to that follower; a project in LocalHomes, in no
 // roster, or on a non-leader node routes local. Per-project homing means the

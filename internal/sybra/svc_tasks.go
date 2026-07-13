@@ -578,7 +578,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if s.cfg != nil && !s.cfg.HomeNodeFor(t.ProjectID).Local {
+	if s.cfg != nil && !s.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
