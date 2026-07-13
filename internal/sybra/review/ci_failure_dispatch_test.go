@@ -38,14 +38,15 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 		logger,
 	)
 	return &Handler{
-		logger:         logger,
-		emit:           func(string, any) {},
-		tasks:          tasks,
-		projects:       projects,
-		agents:         agentMgr,
-		prTracker:      github.NewIssueTracker(time.Minute),
-		WorkflowEngine: engine,
-		fetchReviewsFn: fetchReviewsFn,
+		logger:          logger,
+		emit:            func(string, any) {},
+		tasks:           tasks,
+		projects:        projects,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		fetchReviewsFn:  fetchReviewsFn,
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 }
 
