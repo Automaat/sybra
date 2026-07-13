@@ -248,6 +248,10 @@ func gzipAndRemove(path string) (string, int64, error) {
 		return "", 0, err
 	}
 	defer src.Close()
+	srcInfo, err := src.Stat()
+	if err != nil {
+		return "", 0, err
+	}
 
 	gzPath := path + ".gz"
 	dst, err := os.OpenFile(gzPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -266,6 +270,10 @@ func gzipAndRemove(path string) (string, int64, error) {
 			return "", 0, copyErr
 		}
 		return "", 0, closeErr
+	}
+	if err := os.Chtimes(gzPath, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
+		os.Remove(gzPath)
+		return "", 0, err
 	}
 
 	if err := os.Remove(path); err != nil {
