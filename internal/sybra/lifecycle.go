@@ -362,9 +362,12 @@ func (lm *LifecycleManager) registerMetricsObservers() {
 	})
 }
 
-func providerHealthMetrics(snapshot map[string]provider.Status, failover func(string) string) (map[string]int64, map[string]int64) {
-	alertHealth := make(map[string]int64, len(snapshot))
-	rawHealth := make(map[string]int64, len(snapshot))
+func providerHealthMetrics(
+	snapshot map[string]provider.Status,
+	failover func(string) string,
+) (alertHealth, rawHealth map[string]int64) {
+	alertHealth = make(map[string]int64, len(snapshot))
+	rawHealth = make(map[string]int64, len(snapshot))
 	for name, s := range snapshot {
 		if s.Healthy {
 			alertHealth[name] = 1

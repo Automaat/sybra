@@ -139,7 +139,7 @@ func TestMetricsPipeline(t *testing.T) {
 func scrape(t *testing.T) string {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody)
 	rec := httptest.NewRecorder()
 	promhttp.Handler().ServeHTTP(rec, req)
 	return rec.Body.String()
