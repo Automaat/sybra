@@ -51,6 +51,75 @@ func TestReapOrphanProviderProcesses_SkipsTrackedPID(t *testing.T) {
 	}
 }
 
+func TestReapOrphanProviderProcesses_ReapsOwnedHeadlessMCPHelper(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	proc := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", mcpOwner{
+		AgentID: "agent-1",
+		TaskID:  "task-1",
+		Mode:    "headless",
+	})
+
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 1 {
+		t.Fatalf("reaped = %d, want 1", got)
+	}
+	waitForProcessExit(t, proc.Process.Pid)
+}
+
+func TestReapOrphanProviderProcesses_SkipsTrackedOwnedHeadlessMCPHelper(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	proc := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", mcpOwner{
+		AgentID: "agent-1",
+		TaskID:  "task-1",
+		Mode:    "headless",
+	})
+
+	m.mu.Lock()
+	m.agents["agent-1"] = &Agent{ID: "agent-1", TaskID: "task-1", Mode: "headless", State: StateRunning}
+	m.mu.Unlock()
+
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 0 {
+		t.Fatalf("reaped = %d, want 0 for tracked helper owner", got)
+	}
+	if !processAlive(proc.Process.Pid) {
+		t.Fatal("tracked helper was killed")
+	}
+}
+
+func TestReapOrphanProviderProcesses_SkipsInteractiveOwnedMCPHelper(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	proc := spawnOwnedMCPHelperProcess(t, root, "chrome-devtools-mcp", mcpOwner{
+		AgentID: "agent-1",
+		TaskID:  "task-1",
+		Mode:    "interactive",
+	})
+
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 0 {
+		t.Fatalf("reaped = %d, want 0 for interactive-owned helper", got)
+	}
+	if !processAlive(proc.Process.Pid) {
+		t.Fatal("interactive helper was killed")
+	}
+}
+
 func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	t.Helper()
 
@@ -71,6 +140,33 @@ func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	cmd.Dir = cwd
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	go func() { _ = cmd.Wait() }()
+	return cmd
+}
+
+func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner) *exec.Cmd {
+	t.Helper()
+
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("sleep not found: %v", err)
+	}
+	binDir := t.TempDir()
+	link := filepath.Join(binDir, name)
+	if err := os.Symlink(sleepPath, link); err != nil {
+		t.Fatalf("symlink sleep -> %s: %v", name, err)
+	}
+	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	cmd := exec.Command(link, "30")
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), mcpOwnerAssignments(owner)...)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start owned helper: %v", err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()

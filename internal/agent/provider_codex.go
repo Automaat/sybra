@@ -51,7 +51,11 @@ func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	// Lifecycle hooks (fail-open: omitted when sybra-cli unresolvable or taskID unsafe).
 	args = append(args, buildCodexHookArgs(a.TaskID)...)
 	if cfg.MCPConfigJSON != "" {
-		mcpArgs, err := renderCodexMCPArgs(cfg.MCPConfigJSON)
+		mcpJSON, err := wrapMCPConfigWithOwnership(cfg.MCPConfigJSON, mcpOwnerForAgent(a))
+		if err != nil {
+			return headlessInvocation{}, err
+		}
+		mcpArgs, err := renderCodexMCPArgs(mcpJSON)
 		if err != nil {
 			return headlessInvocation{}, err
 		}

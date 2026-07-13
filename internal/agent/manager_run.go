@@ -571,6 +571,9 @@ func (m *Manager) markAgentDone(a *Agent) {
 		retention := m.deadAgentRetention
 		m.mu.Unlock()
 		m.signalQueueNudge()
+		if roots := orphanSweepRootsForAgent(a, m.sandboxHome); len(roots) > 0 {
+			m.ReapOrphanProviderProcesses(context.Background(), roots)
+		}
 
 		// Evict the finished agent from the live registry so its output
 		// buffer and prompt do not accumulate forever on a long-lived

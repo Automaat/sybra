@@ -63,6 +63,43 @@ func TestBuildPlaywrightMCPConfig(t *testing.T) {
 	})
 }
 
+func TestWrapMCPConfigWithOwnership(t *testing.T) {
+	t.Run("wraps_command_and_preserves_args", func(t *testing.T) {
+		raw := `{"mcpServers":{"devtools":{"command":"npx","args":["-y","chrome-devtools-mcp@latest"],"enabled":true}}}`
+		got, err := wrapMCPConfigWithOwnership(raw, mcpOwner{AgentID: "agent-1", TaskID: "task-1", Mode: "headless"})
+		if err != nil {
+			t.Fatalf("wrapMCPConfigWithOwnership: %v", err)
+		}
+		if !strings.Contains(got, `"command":"env"`) {
+			t.Fatalf("wrapped config missing env command: %s", got)
+		}
+		for _, want := range []string{
+			`"SYBRA_MCP_OWNER=1"`,
+			`"SYBRA_MCP_AGENT_ID=agent-1"`,
+			`"SYBRA_MCP_TASK_ID=task-1"`,
+			`"SYBRA_MCP_AGENT_MODE=headless"`,
+			`"npx"`,
+			`"chrome-devtools-mcp@latest"`,
+			`"enabled":true`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("wrapped config missing %q: %s", want, got)
+			}
+		}
+	})
+
+	t.Run("empty_owner_is_noop", func(t *testing.T) {
+		raw := `{"mcpServers":{"devtools":{"command":"npx"}}}`
+		got, err := wrapMCPConfigWithOwnership(raw, mcpOwner{})
+		if err != nil {
+			t.Fatalf("wrapMCPConfigWithOwnership: %v", err)
+		}
+		if got != raw {
+			t.Fatalf("got %s, want unchanged %s", got, raw)
+		}
+	})
+}
+
 func jsonContainsArgs(t *testing.T, raw string, want ...string) bool {
 	t.Helper()
 	var parsed struct {
