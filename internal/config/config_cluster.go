@@ -46,11 +46,18 @@ type ClusterConfig struct {
 // Precedence: SYBRA_BIND_ADDR > bind_addrs (one listener each, shared handler)
 // > bind_addr > SYBRA_HOST/SYBRA_PORT > all interfaces on the default port.
 // Never returns empty.
-func (c *Config) ListenAddrs(envHost, envPort string) []string {
+//
+// envDiscarded reports that a configured bind beat a non-empty SYBRA_HOST/
+// SYBRA_PORT. The caller must surface it: this package cannot log it itself,
+// because slog's default logger is not the server's logger — a warning emitted
+// here lands at DEBUG, below the shipped level, and the operator never learns
+// that the port from their unit file was ignored.
+func (c *Config) ListenAddrs(envHost, envPort string) (addrs []string, envDiscarded bool) {
 	if override := strings.TrimSpace(os.Getenv("SYBRA_BIND_ADDR")); override != "" {
-		return []string{override}
+		return []string{override}, false
 	}
 	envHost, envPort = strings.TrimSpace(envHost), strings.TrimSpace(envPort)
+	envSet := envHost != "" || envPort != ""
 	if c != nil {
 		configured := nonBlank(c.Cluster.BindAddrs)
 		if len(configured) == 0 {
@@ -59,20 +66,16 @@ func (c *Config) ListenAddrs(envHost, envPort string) []string {
 			}
 		}
 		if len(configured) > 0 {
-			if envHost != "" || envPort != "" {
-				slog.Warn("config: cluster bind wins over SYBRA_HOST/SYBRA_PORT; set SYBRA_BIND_ADDR to override",
-					"bind", configured, "env_host", envHost, "env_port", envPort)
-			}
-			return configured
+			return configured, envSet
 		}
 	}
-	if envHost != "" || envPort != "" {
+	if envSet {
 		if envPort == "" {
 			envPort = DefaultServerPort
 		}
-		return []string{net.JoinHostPort(envHost, envPort)}
+		return []string{net.JoinHostPort(envHost, envPort)}, false
 	}
-	return []string{net.JoinHostPort("", DefaultServerPort)}
+	return []string{net.JoinHostPort("", DefaultServerPort)}, false
 }
 
 // ValidateCluster rejects a half-configured TLS block. Exactly one of

@@ -170,6 +170,16 @@ cleartext while the leader still believed the `https://` endpoint was encrypted 
 and the confidentiality guard would go on treating the node as safe for
 work-typed projects.
 
+When a configured bind discards a `SYBRA_PORT` from the unit file, startup logs
+`server.bind.env_ignored` at WARN — so a surprising bind is visible without
+turning on debug logging.
+
+> If you lock the bind to a single interface, add `127.0.0.1:<port>` as a second
+> entry when anything probes the node locally. A liveness check against
+> `localhost` (the container `HEALTHCHECK`, a local `curl`) cannot reach a
+> control plane bound only to a tailnet address. The systemd deploy is the
+> supported path and does not health-probe over HTTP; the Dockerfile is CI/legacy.
+
 ## Reassignment
 
 Per-project homing is static config. When a follower dies or degrades, move a task

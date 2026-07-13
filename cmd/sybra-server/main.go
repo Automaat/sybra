@@ -357,7 +357,16 @@ func (w slogWriter) Write(p []byte) (int, error) {
 }
 
 func serveAll(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
-	addrs := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	envHost, envPort := os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT")
+	addrs, envDiscarded := cfg.ListenAddrs(envHost, envPort)
+	if envDiscarded {
+		logger.Warn("server.bind.env_ignored",
+			"bind", addrs, "env_host", envHost, "env_port", envPort,
+			"hint", "cluster.bind_addr(s) wins; set SYBRA_BIND_ADDR to override")
+	}
+	if len(addrs) == 0 {
+		return nil, nil, fmt.Errorf("no listen address resolved")
+	}
 	servesTLS := cfg.ServesTLS()
 
 	srv := &http.Server{

@@ -72,7 +72,7 @@ func TestListenAddrs(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.cfg.ListenAddrs(tc.envHost, tc.envPort)
+			got, _ := tc.cfg.ListenAddrs(tc.envHost, tc.envPort)
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("ListenAddrs() = %v, want %v", got, tc.want)
 			}
@@ -83,9 +83,29 @@ func TestListenAddrs(t *testing.T) {
 func TestListenAddrsBindAddrEnvOverridesConfig(t *testing.T) {
 	t.Setenv("SYBRA_BIND_ADDR", "127.0.0.1:7777")
 	cfg := &Config{Cluster: ClusterConfig{BindAddrs: []string{"100.64.0.2:8080"}}}
-	got := cfg.ListenAddrs("", "8080")
+	got, _ := cfg.ListenAddrs("", "8080")
 	if !slices.Equal(got, []string{"127.0.0.1:7777"}) {
 		t.Fatalf("SYBRA_BIND_ADDR is the rescue hatch and must beat config, got %v", got)
+	}
+}
+
+func TestListenAddrsReportsADiscardedEnvBind(t *testing.T) {
+	cfg := &Config{Cluster: ClusterConfig{BindAddrs: []string{"100.64.0.2:8080"}}}
+
+	_, discarded := cfg.ListenAddrs("", "8080")
+	if !discarded {
+		t.Fatal("the shipped unit file sets SYBRA_PORT; discarding it silently leaves the operator " +
+			"believing their bind lockdown applied. The caller must be told so it can warn.")
+	}
+
+	_, discarded = cfg.ListenAddrs("", "")
+	if discarded {
+		t.Fatal("nothing was discarded when env is unset")
+	}
+
+	bare := &Config{}
+	if _, discarded := bare.ListenAddrs("", "8080"); discarded {
+		t.Fatal("env is honoured when no bind is configured, so nothing is discarded")
 	}
 }
 
