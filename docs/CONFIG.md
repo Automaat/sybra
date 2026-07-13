@@ -199,10 +199,10 @@ requires a restart to take effect (see diffConfig's
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `orchestrator.pressure.enabled` | `bool` | `true` | Enabled turns the gate on. Default true. When false, New returns a nil *Gate and every dispatch path admits unconditionally — the same as running without this feature at all. |
-| `orchestrator.pressure.min_disk_free_percent` | `float64` |  | MinDiskFreePercent is the minimum percentage of free disk space (on the filesystem holding SYBRA_HOME) below which new dispatch is deferred. <=0 disables this dimension. Default 5. |
-| `orchestrator.pressure.min_mem_available_percent` | `float64` |  | MinMemAvailablePercent is the minimum percentage of available memory (reclaimable caches counted as available, matching the kernel's own notion of headroom) below which new dispatch is deferred. <=0 disables this dimension. Default 8. |
-| `orchestrator.pressure.max_load_per_cpu` | `float64` |  | MaxLoadPerCPU is the maximum 1-minute load average, normalized by CPU count, above which new dispatch is deferred. <=0 disables this dimension. Default 8.0. |
-| `orchestrator.pressure.sample_interval_seconds` | `int` |  | SampleIntervalSeconds is both the resource-sample cache TTL and the deny-log throttle window. <=0 falls back to pressure.DefaultSampleIntervalSeconds (15). Default 15. |
+| `orchestrator.pressure.min_disk_free_percent` | `float64` | `5` | MinDiskFreePercent is the minimum percentage of free disk space (on the filesystem holding SYBRA_HOME) below which new dispatch is deferred. <=0 disables this dimension. Default 5. |
+| `orchestrator.pressure.min_mem_available_percent` | `float64` | `8` | MinMemAvailablePercent is the minimum percentage of available memory (reclaimable caches counted as available, matching the kernel's own notion of headroom) below which new dispatch is deferred. <=0 disables this dimension. Default 8. |
+| `orchestrator.pressure.max_load_per_cpu` | `float64` | `8` | MaxLoadPerCPU is the maximum 1-minute load average, normalized by CPU count, above which new dispatch is deferred. <=0 disables this dimension. Default 8.0. |
+| `orchestrator.pressure.sample_interval_seconds` | `int` | `15` | SampleIntervalSeconds is both the resource-sample cache TTL and the deny-log throttle window. <=0 falls back to pressure.DefaultSampleIntervalSeconds (15). Default 15. |
 
 ## TodoistConfig (`todoist`)
 

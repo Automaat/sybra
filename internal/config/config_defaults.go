@@ -556,7 +556,17 @@ func DefaultConfig() *Config {
 			Role: ClusterRoleStandalone,
 		},
 		Orchestrator: OrchestratorConfig{
-			Pressure: PressureConfig{Enabled: true},
+			// Seed the pressure thresholds here (not in applyPressureDefaults) so
+			// an explicit `0` in YAML — the documented "disable this dimension"
+			// sentinel — survives loading. A config missing the block entirely
+			// keeps these seeds; a config that sets a threshold to 0 keeps its 0.
+			Pressure: PressureConfig{
+				Enabled:                true,
+				MinDiskFreePercent:     5,
+				MinMemAvailablePercent: 8,
+				MaxLoadPerCPU:          8.0,
+				SampleIntervalSeconds:  15,
+			},
 		},
 		TasksDir: defaultTasksDir(),
 	}
@@ -1174,21 +1184,19 @@ func applyOrchestratorDefaults(cfg *Config) {
 	applyPressureDefaults(cfg)
 }
 
-// applyPressureDefaults fills zero values for the Pressure block. Enabled
-// stays true from DefaultConfig's seed, so a config predating this feature
-// (or one missing the block entirely) behaves identically to a fresh
-// install; an explicit `enabled: false` survives untouched.
+// applyPressureDefaults fills the Pressure block. The thresholds
+// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU) are seeded in
+// DefaultConfig, NOT here: their documented `<=0 disables this dimension`
+// sentinel means an explicit `0` in YAML must survive loading, so defaulting
+// them on `<=0` would silently re-enable a signal the operator turned off. A
+// config missing the block entirely keeps the DefaultConfig seeds; a config
+// that sets one threshold to 0 keeps its 0.
+//
+// SampleIntervalSeconds is different — its `<=0` means "fall back to the
+// default", not "disable" — so it is safe to normalize here (pressure.Gate
+// also falls back internally).
 func applyPressureDefaults(cfg *Config) {
 	p := &cfg.Orchestrator.Pressure
-	if p.MinDiskFreePercent <= 0 {
-		p.MinDiskFreePercent = 5
-	}
-	if p.MinMemAvailablePercent <= 0 {
-		p.MinMemAvailablePercent = 8
-	}
-	if p.MaxLoadPerCPU <= 0 {
-		p.MaxLoadPerCPU = 8.0
-	}
 	if p.SampleIntervalSeconds <= 0 {
 		p.SampleIntervalSeconds = 15
 	}
