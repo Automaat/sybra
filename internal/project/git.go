@@ -27,6 +27,10 @@ var (
 // ErrBranchMissing is returned by PushSync when the local branch ref does not exist.
 var ErrBranchMissing = errors.New("local branch ref does not exist")
 
+// ErrPushAuthPreflight is returned by PreflightPushCredentials when the
+// current process cannot authenticate to the configured GitHub push remote.
+var ErrPushAuthPreflight = errors.New("github push credential preflight failed")
+
 // ErrBranchDiverged is returned by ReconcileWithRemote when the local branch and
 // the remote branch head have genuinely diverged (neither is an ancestor of the
 // other). Proceeding would force-push over remote-only commits — e.g. a fix
@@ -1201,6 +1205,68 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
+// PreflightPushCredentials cheaply validates the GitHub credential path before
+// Sybra spends an agent turn or starts push-dependent git work. It intentionally
+// skips SSH and non-GitHub remotes: those either use OS-level ssh-agent state or
+// an unknown host-specific credential mechanism, so a false-negative preflight
+// would be worse than letting the actual push report the error.
+func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
+	remote := PushRemote(ctx, worktreePath)
+	pushURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", "--push", remote)
+	if err != nil {
+		return fmt.Errorf("resolve push remote %s: %w", remote, err)
+	}
+	if !isGitHubHTTPSRemote(strings.TrimSpace(pushURL)) {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "gh", "auth", "status", "--hostname", "github.com")
+	cmd.Dir = worktreePath
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	return fmt.Errorf("%w: gh auth status: %s", ErrPushAuthPreflight, scrubCredentialPreflightMessage(msg))
+}
+
+func isGitHubHTTPSRemote(remoteURL string) bool {
+	u, err := url.Parse(remoteURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "github.com")
+}
+
+func scrubCredentialPreflightMessage(msg string) string {
+	lines := strings.Split(msg, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if trimmed == "" ||
+			strings.Contains(lower, "token:") ||
+			strings.Contains(lower, "oauth_token") ||
+			strings.Contains(lower, "ghp_") ||
+			strings.Contains(lower, "github_pat_") {
+			continue
+		}
+		kept = append(kept, trimmed)
+		if len(kept) >= 4 {
+			break
+		}
+	}
+	if len(kept) == 0 {
+		return "authentication check failed"
+	}
+	return strings.Join(kept, "; ")
 }
 
 // RemoveWorktree deletes worktreePath and its `git worktree` registration

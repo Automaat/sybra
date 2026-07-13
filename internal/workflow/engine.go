@@ -199,6 +199,14 @@ type PRHeadFetcher interface {
 	FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error)
 }
 
+// PushCredentialPreflighter validates that the current process can authenticate
+// to the worktree's configured push remote before push-dependent workflow
+// steps spend more work or attempt a real push. Engine operates with a nil
+// preflighter by falling back to project.PreflightPushCredentials.
+type PushCredentialPreflighter interface {
+	PreflightPushCredentials(ctx context.Context, worktreePath string) error
+}
+
 // PRCreator opens a new GitHub pull request for an already-pushed branch via
 // `gh pr create`, run inside the task's worktree so gh resolves the same
 // repo/fork context an interactive invocation would. Used by the `create_pr`
@@ -289,6 +297,7 @@ type Engine struct {
 	prReviewers      PRReviewRequester
 	prStates         PRStateFetcher
 	prHeads          PRHeadFetcher
+	pushPreflight    PushCredentialPreflighter
 	prCreator        PRCreator
 	prFinder         PRFinder
 	prContentGen     PRContentGenerator
@@ -402,6 +411,13 @@ func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
 // SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
 // push landed. Leaving it unset skips the verification.
 func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
+
+// SetPushCredentialPreflighter wires the push-auth preflight used before
+// `push_branch` and `create_pr` attempt a real git push. Leaving it unset uses
+// project.PreflightPushCredentials.
+func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
+	e.pushPreflight = p
+}
 
 // SetPRCreator wires an implementation of `gh pr create` used by the
 // `create_pr` step. Leaving it unset flips the task to human-required when

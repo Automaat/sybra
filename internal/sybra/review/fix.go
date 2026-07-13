@@ -339,6 +339,8 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 	}
 	b.WriteString("PUSH_REMOTE=origin\n")
 	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
+	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
 	if fenced {
 		b.WriteString("\n```")
@@ -506,6 +508,10 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return false
 	}
 
+	if admit, handled := r.preflightPushCredentials(ctx, t.ID, dir); !admit {
+		return handled
+	}
+
 	if !opts.replaceActiveWorkflow &&
 		r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
 		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
@@ -519,6 +525,33 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
 	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+}
+
+func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
+	preflight := r.pushPreflightFn
+	if preflight == nil {
+		preflight = project.PreflightPushCredentials
+	}
+	if err := preflight(ctx, dir); err != nil {
+		reason := "GitHub push credential preflight failed before starting PR fix: " + truncatePushPreflightReason(err.Error(), 240)
+		if _, updateErr := r.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); updateErr != nil {
+			r.logger.Error("pr-monitor.push-preflight.status", "task_id", taskID, "err", updateErr)
+			return false, false
+		}
+		r.logger.Warn("pr-monitor.push-preflight.failed", "task_id", taskID, "err", err)
+		return false, true
+	}
+	return true, false
+}
+
+func truncatePushPreflightReason(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	return strings.TrimSpace(s[:limit]) + "..."
 }
 
 func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
@@ -952,6 +985,9 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	}
 	if !r.allowPreparedWorktree(taskID, dir) {
 		return false
+	}
+	if admit, handled := r.preflightPushCredentials(ctx, taskID, dir); !admit {
+		return handled
 	}
 	// Refetch: PrepareForBranchFix's ensureBranch call may have just set
 	// t.Branch for the first time (a task whose worktree never got created

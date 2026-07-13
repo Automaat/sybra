@@ -156,6 +156,8 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	for _, want := range []string{
 		"PUSH_REMOTE=origin",
 		"if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi",
+		"PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")",
+		"case \"$PUSH_URL\" in https://github.com/*|http://github.com/*) gh auth status --hostname github.com >/dev/null ;; esac",
 		"git push \"$PUSH_REMOTE\" HEAD:" + branch,
 	} {
 		if !strings.Contains(prompt, want) {
