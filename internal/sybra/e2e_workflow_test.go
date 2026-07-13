@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -378,13 +379,19 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)", desc, scaled, e2eTimeoutScale())
+			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, scaled, e2eTimeoutScale(), e2eGoroutineDump())
 		case <-time.After(50 * time.Millisecond):
 			if fn() {
 				return
 			}
 		}
 	}
+}
+
+func e2eGoroutineDump() string {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + string(buf[:n])
 }
 
 func e2eTimeoutScale() int64 {
