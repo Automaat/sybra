@@ -4,10 +4,15 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+const orphanSweepTimeout = 2 * time.Second
+
+var orphanSweepDefaultContext = context.Background()
 
 type providerProcess struct {
 	PID     int
@@ -20,11 +25,18 @@ type trackedAgentSnapshot struct {
 	State State
 }
 
-func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int {
+func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int { //nolint:contextcheck // Nil is a legacy caller contract; normalize it before deriving the bounded sweep context.
 	roots = canonicalProcessRoots(roots)
 	if len(roots) == 0 {
 		return 0
 	}
+	if ctx == nil {
+		ctx = orphanSweepDefaultContext
+	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, orphanSweepTimeout)
+	defer cancel()
+
 	procs := listProviderProcessesUnderRoots(ctx, roots)
 	if len(procs) == 0 {
 		return 0
