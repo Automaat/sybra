@@ -114,6 +114,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 		"ClusterService": httpapi.NewService(a.clusterSvc,
 			"GetNodes",
 			"ListNodeAgents",
+			"ReassignTask",
 			"GetAgentOutputOnNode",
 			"GetConvoOutputOnNode",
 			"StopAgentOnNode",
