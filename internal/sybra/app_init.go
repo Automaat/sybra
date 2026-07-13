@@ -30,6 +30,7 @@ import (
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -259,6 +260,12 @@ func (a *App) initLimits() {
 			a.startLiveLimitPolling(a.ctx, limitStore, policy)
 		}
 	}
+}
+
+func (a *App) initSandboxes() {
+	mgr := sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
+	mgr.SetRetentionWindow(sandboxRetentionWindow(a.cfg))
+	a.sandboxes = mgr
 }
 
 func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
