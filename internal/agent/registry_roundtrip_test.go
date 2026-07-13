@@ -37,6 +37,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		ReasoningEffort:          "high",
 		MaxTurns:                 12,
 		sessionCWD:               "/tmp/worktree",
+		sandboxHomeDir:           "/tmp/sandbox",
 		convo:                    convoIO{stdinPath: "/tmp/stdin.fifo"},
 		oneShot:                  true,
 		requirePermissions:       true,
@@ -81,6 +82,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		SessionID:          rehydrated.SessionID,
 		LogPath:            rehydrated.LogPath,
 		SessionCWD:         rehydrated.sessionCWD,
+		SandboxHomeDir:     rehydrated.sandboxHomeDir,
 		StartedAt:          rehydrated.StartedAt,
 		StdinPath:          rehydrated.GetStdinPath(),
 		OneShot:            rehydrated.oneShot,
@@ -104,6 +106,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		SessionID:          original.SessionID,
 		LogPath:            original.LogPath,
 		SessionCWD:         original.sessionCWD,
+		SandboxHomeDir:     original.sandboxHomeDir,
 		StartedAt:          original.StartedAt,
 		StdinPath:          original.GetStdinPath(),
 		OneShot:            original.oneShot,
@@ -212,6 +215,7 @@ type persistedAgentFields struct {
 	SessionID          string
 	LogPath            string
 	SessionCWD         string
+	SandboxHomeDir     string
 	StartedAt          time.Time
 	StdinPath          string
 	OneShot            bool
