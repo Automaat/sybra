@@ -459,18 +459,18 @@ func TestRunningCountTracksLiveAgents(t *testing.T) {
 		t.Fatalf("RunningCount = %d, want 2", got)
 	}
 
-	m.markAgentDone(a1)
+	m.markAgentDone(context.Background(), a1)
 	if got := m.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount after one done = %d, want 1", got)
 	}
 
 	// Idempotent on repeated terminal paths.
-	m.markAgentDone(a1)
+	m.markAgentDone(context.Background(), a1)
 	if got := m.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount after duplicate done = %d, want 1", got)
 	}
 
-	m.markAgentDone(a2)
+	m.markAgentDone(context.Background(), a2)
 	if got := m.RunningCount(); got != 0 {
 		t.Fatalf("RunningCount after all done = %d, want 0", got)
 	}
