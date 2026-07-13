@@ -71,8 +71,8 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 	apply := fs.Bool("apply", false, "delete eligible resources instead of only reporting them (default: dry-run)")
 	only := fs.String("only", "", "comma-separated bucket names to limit to ("+strings.Join(cleanup.AllBucketNames(), ", ")+")")
 	worktrees := fs.Bool("worktrees", false, "include the destructive worktrees bucket (git worktrees deleted irreversibly)")
-	external := fs.Bool("external", false, "include the report-only external (docker) bucket")
-	force := fs.Bool("force", false, "include the destructive shared-cache bucket, and bypass the dirty-worktree safety check")
+	external := fs.Bool("external", false, "include the destructive shared-cache bucket plus the report-only external (docker) bucket")
+	force := fs.Bool("force", false, "bypass the dirty-worktree safety check for the destructive worktrees bucket")
 	olderThan := fs.String("older-than", "", "override the log/audit file age threshold (e.g. 72h); does not affect sandbox/worktree/go-build-cache eligibility")
 	if err := fs.Parse(args); err != nil {
 		return fatalUsage(jsonOut, "%v", err)
@@ -167,7 +167,7 @@ func renderDoctorCleanupHuman(report doctorCleanupReport) {
 
 	if !report.Applied {
 		fmt.Println("\nDry run — nothing was deleted. Pass --apply to delete eligible resources;")
-		fmt.Println("destructive buckets also need --worktrees / --external / --force.")
+		fmt.Println("destructive buckets also need --worktrees / --external.")
 		return
 	}
 

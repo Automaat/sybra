@@ -2001,9 +2001,10 @@ func doctorUsageBlock() string {
            Report (default: dry-run) or delete (--apply) reclaimable disk
            usage: logs, audit, sandboxes, go-build-cache (safe, cleaned by
            default under --apply) plus worktrees/shared-cache/external
-           (destructive — each needs its own --worktrees/--force/--external
+           (destructive — each needs its own --worktrees/--external
            flag before --apply will touch it, or even include it in the
-           report). Deletion is irreversible; dry-run first. Exit codes:
+           report; --force only bypasses dirty worktree protection).
+           Deletion is irreversible; dry-run first. Exit codes:
            0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 

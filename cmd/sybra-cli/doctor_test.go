@@ -216,6 +216,38 @@ func TestDoctorCleanupWorktreesBucketRequiresGateFlag(t *testing.T) {
 	}
 }
 
+func TestDoctorCleanupSharedCacheRequiresExternal(t *testing.T) {
+	setupDoctorHome(t)
+	now := time.Now()
+
+	goModCache := filepath.Join(config.HomeDir(), "shared-cache", "go-mod", "cache.txt")
+	npmCache := filepath.Join(config.HomeDir(), "shared-cache", "npm", "cache.txt")
+	writeDoctorFile(t, goModCache, 10, now)
+	writeDoctorFile(t, npmCache, 12, now)
+
+	code, out := runCLI(t, "--json", "doctor", "cleanup", "--only", "shared-cache")
+	if code != 0 {
+		t.Fatalf("doctor cleanup exit = %d, want 0 (output: %q)", code, out)
+	}
+	var report doctorCleanupReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("unmarshal report: %v\n%s", err, out)
+	}
+	if len(report.Buckets) != 0 {
+		t.Fatalf("shared-cache bucket must not appear without --external, got %+v", report.Buckets)
+	}
+
+	code, out = runCLI(t, "--json", "doctor", "cleanup", "--apply", "--only", "shared-cache", "--external")
+	if code != 0 {
+		t.Fatalf("doctor cleanup --apply --only shared-cache --external exit = %d, want 0 (output: %q)", code, out)
+	}
+	for _, path := range []string{goModCache, npmCache} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected shared-cache file to be removed with --external: %s stat err = %v", path, err)
+		}
+	}
+}
+
 func TestDoctorCleanupApplyPartialFailureExitsOne(t *testing.T) {
 	setupDoctorHome(t)
 	now := time.Now()
