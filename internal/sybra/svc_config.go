@@ -271,6 +271,7 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
+		SandboxMode:            cfg.DefaultSandboxMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 	}
