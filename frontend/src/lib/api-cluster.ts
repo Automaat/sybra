@@ -1,4 +1,25 @@
 import * as api from '$lib/api'
+import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
+
+// Agents running on followers, each stamped with its node. The leader's own
+// ListAgents only ever returns local agents, so without this the board cannot
+// see a remote run at all — and every *OnNode action below would be
+// unreachable. A cluster-less leader returns [], so this is a no-op then.
+export async function listRemoteAgents(): Promise<Agent[]> {
+  try {
+    return (await api.ListNodeAgents()) ?? []
+  } catch {
+    return []
+  }
+}
+
+export function getAgentOutputForNode(node: string | undefined, agentID: string) {
+  return node ? api.GetAgentOutputOnNode(node, agentID) : api.GetAgentOutput(agentID)
+}
+
+export function getConvoOutputForNode(node: string | undefined, agentID: string) {
+  return node ? api.GetConvoOutputOnNode(node, agentID) : api.GetConvoOutput(agentID)
+}
 
 export function stopAgentForTask(node: string | undefined, agentID: string): Promise<void> {
   return node ? api.StopAgentOnNode(node, agentID) : api.StopAgent(agentID)

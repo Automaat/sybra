@@ -6,15 +6,19 @@ const mockStartAgent = vi.fn()
 const mockStopAgent = vi.fn()
 const mockStopAgentOnNode = vi.fn()
 const mockGetAgentOutput = vi.fn()
+const mockGetAgentOutputOnNode = vi.fn()
+const mockListNodeAgents = vi.fn()
 const mockDiscoverAgents = vi.fn()
 const mockAgentQueueSnapshot = vi.fn()
 
 vi.mock('$lib/api', () => ({
   StartAgent: (...args: unknown[]) => mockStartAgent(...args),
   ListAgents: (...args: unknown[]) => mockListAgents(...args),
+  ListNodeAgents: (...args: unknown[]) => mockListNodeAgents(...args),
   StopAgent: (...args: unknown[]) => mockStopAgent(...args),
   StopAgentOnNode: (...args: unknown[]) => mockStopAgentOnNode(...args),
   GetAgentOutput: (...args: unknown[]) => mockGetAgentOutput(...args),
+  GetAgentOutputOnNode: (...args: unknown[]) => mockGetAgentOutputOnNode(...args),
   DiscoverAgents: (...args: unknown[]) => mockDiscoverAgents(...args),
   AgentQueueSnapshot: (...args: unknown[]) => mockAgentQueueSnapshot(...args),
 }))
@@ -383,17 +387,45 @@ describe('AgentStore', () => {
 })
 
 describe('AgentStore node-aware stop routing', () => {
-  it('stops a homed-away agent on its follower, not the leader', async () => {
-    const { taskStore } = await import('./tasks.svelte.js')
+  it('merges follower agents into the board stamped with their node, since a leader ListAgents never returns them', async () => {
     vi.clearAllMocks()
     agentStore.items = new Map()
-    taskStore.tasks = new Map()
-    agentStore.items.set('a1', { id: 'a1', taskId: 't1', state: 'running' } as never)
-    taskStore.tasks.set('t1', { id: 't1', assignedNode: 'pet-box' } as never)
+    mockDiscoverAgents.mockResolvedValue(undefined)
+    mockListAgents.mockResolvedValue([makeAgent({ id: 'local-1', taskId: 't-local' })])
+    mockListNodeAgents.mockResolvedValue([
+      makeAgent({ id: 'remote-1', taskId: 't-remote', node: 'pet-box' }),
+    ])
+    mockAgentQueueSnapshot.mockRejectedValue(new Error('no queue'))
+
+    await agentStore.load()
+
+    expect(agentStore.items.get('remote-1')?.node).toBe('pet-box')
+    expect(agentStore.nodeOf('remote-1')).toBe('pet-box')
+    expect(agentStore.nodeOf('local-1')).toBeUndefined()
+  })
+
+  it('stops a follower agent on its node, not the leader', async () => {
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    agentStore.items.set('a1', makeAgent({ id: 'a1', taskId: 't1', node: 'pet-box' }))
 
     await agentStore.stop('a1')
 
     expect(mockStopAgentOnNode).toHaveBeenCalledWith('pet-box', 'a1')
+    expect(mockStopAgent).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the task home when an unstamped agent belongs to a homed-away task', async () => {
+    const { taskStore } = await import('./tasks.svelte.js')
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    taskStore.tasks = new Map()
+    agentStore.items.set('a3', makeAgent({ id: 'a3', taskId: 't3' }))
+    taskStore.tasks.set('t3', { id: 't3', assignedNode: 'pet-box' } as never)
+
+    await agentStore.stop('a3')
+
+    expect(mockStopAgentOnNode).toHaveBeenCalledWith('pet-box', 'a3')
     expect(mockStopAgent).not.toHaveBeenCalled()
   })
 
@@ -402,12 +434,24 @@ describe('AgentStore node-aware stop routing', () => {
     vi.clearAllMocks()
     agentStore.items = new Map()
     taskStore.tasks = new Map()
-    agentStore.items.set('a2', { id: 'a2', taskId: 't2', state: 'running' } as never)
+    agentStore.items.set('a2', makeAgent({ id: 'a2', taskId: 't2' }))
     taskStore.tasks.set('t2', { id: 't2' } as never)
 
     await agentStore.stop('a2')
 
     expect(mockStopAgent).toHaveBeenCalledWith('a2')
     expect(mockStopAgentOnNode).not.toHaveBeenCalled()
+  })
+
+  it('reads a follower agent output from its node', async () => {
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    agentStore.items.set('a4', makeAgent({ id: 'a4', taskId: 't4', node: 'pet-box' }))
+    mockGetAgentOutputOnNode.mockResolvedValue([])
+
+    await agentStore.getOutput('a4')
+
+    expect(mockGetAgentOutputOnNode).toHaveBeenCalledWith('pet-box', 'a4')
+    expect(mockGetAgentOutput).not.toHaveBeenCalled()
   })
 })

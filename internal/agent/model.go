@@ -59,6 +59,7 @@ type Agent struct {
 	Name            string    `json:"name,omitempty"`
 	Project         string    `json:"project,omitempty"`
 	Provider        string    `json:"provider,omitempty"`
+	Node            string    `json:"node,omitempty"`
 	Model           string    `json:"model,omitempty"`
 	ExperimentID    string    `json:"experimentId,omitempty"`
 	VariantID       string    `json:"variantId,omitempty"`

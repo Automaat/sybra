@@ -6,8 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/cluster"
 )
+
+const nodeCallTimeout = 30 * time.Second
 
 // ClusterNodeDTO is the aggregated-board view of one follower node: its roster
 // name and live health (online/degraded/offline/unknown) as last observed by
@@ -20,10 +23,11 @@ type ClusterNodeDTO struct {
 }
 
 // ClusterService exposes the leader's follower roster to the aggregated board
-// and proxies control actions for a task executing on a remote follower. The
-// browser never sees a follower's URL or token — every remote action is
-// tunnelled through the leader's already-authenticated cluster client. The
-// roster is nil (all methods degrade to empty/errors) on a non-leader node.
+// and proxies agent reads and control actions for tasks executing on a remote
+// follower. A follower's auth token never leaves the leader — every remote call
+// is tunnelled through the leader's already-authenticated cluster client (the
+// board does see a node's endpoint, surfaced for health diagnostics). The roster
+// is nil (all methods degrade to empty/errors) on a non-leader node.
 type ClusterService struct {
 	logger *slog.Logger
 	mu     sync.RWMutex
@@ -112,7 +116,72 @@ func (s *ClusterService) withClient(node string, fn func(context.Context, *clust
 	if !ok || c == nil {
 		return validationError("unknown cluster node: " + node)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
 	defer cancel()
 	return fn(ctx, c)
+}
+
+// ListNodeAgents returns every follower's live agents, each stamped with the
+// node it runs on. The leader's own agent manager only ever holds local agents,
+// so without this the board cannot see — and therefore cannot stop, steer, or
+// approve — a run executing on a follower. An unreachable node is skipped
+// rather than failing the whole aggregation: one offline follower must not
+// blank out the board's agent list.
+func (s *ClusterService) ListNodeAgents() ([]*agent.Agent, error) {
+	r := s.getRoster()
+	if r == nil {
+		return []*agent.Agent{}, nil
+	}
+	out := []*agent.Agent{}
+	for _, name := range r.Names() {
+		c, ok := r.Client(name)
+		if !ok || c == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
+		agents, err := c.ListAgents(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("cluster.list_agents.failed", "node", name, "err", err)
+			continue
+		}
+		for _, a := range agents {
+			if a == nil {
+				continue
+			}
+			a.Node = name
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// GetAgentOutputOnNode reads a follower agent's headless stream buffer so the
+// board can render a remote run's output.
+func (s *ClusterService) GetAgentOutputOnNode(node, agentID string) ([]agent.StreamEvent, error) {
+	var events []agent.StreamEvent
+	err := s.withClient(node, func(ctx context.Context, c *cluster.Client) error {
+		var callErr error
+		events, callErr = c.GetAgentOutput(ctx, agentID)
+		return callErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// GetConvoOutputOnNode reads a follower agent's conversational transcript so the
+// board can render a remote interactive session.
+func (s *ClusterService) GetConvoOutputOnNode(node, agentID string) ([]agent.ConvoEvent, error) {
+	var events []agent.ConvoEvent
+	err := s.withClient(node, func(ctx context.Context, c *cluster.Client) error {
+		var callErr error
+		events, callErr = c.GetConvoOutput(ctx, agentID)
+		return callErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
 }

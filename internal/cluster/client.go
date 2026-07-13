@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -59,6 +60,18 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("cluster: follower returned %d (%s): %s", e.Status, e.Code, e.Message)
 	}
 	return fmt.Sprintf("cluster: follower returned %d: %s", e.Status, e.Message)
+}
+
+// HTTPStatus implements httpapi.ClientError for follower-side 4xx responses so
+// the leader relays the follower's own reason ("task is not waiting for human
+// action") instead of sanitizing every remote refusal to an opaque 500. Only
+// client errors pass through; a follower 5xx stays a 5xx, whose message may
+// describe follower internals and is not safe to surface.
+func (e *APIError) HTTPStatus() int {
+	if e.Status >= 400 && e.Status < 500 {
+		return e.Status
+	}
+	return 500
 }
 
 // NewClient constructs a follower Client. When node.TLSPin is set, https
@@ -318,6 +331,35 @@ func (c *Client) ListTasks(ctx context.Context) ([]task.Task, error) {
 func (c *Client) StopAgent(ctx context.Context, agentID string) error {
 	_, err := c.Call(ctx, "AgentService", "StopAgent", agentID)
 	return err
+}
+
+// ListAgents returns the agents currently live on a follower. The leader's own
+// agent manager never holds a follower's agents, so this is the only way the
+// aggregated board can see — and therefore control — a remote run.
+func (c *Client) ListAgents(ctx context.Context) ([]*agent.Agent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "ListAgents")
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]*agent.Agent](raw)
+}
+
+// GetAgentOutput reads a follower agent's headless stream buffer.
+func (c *Client) GetAgentOutput(ctx context.Context, agentID string) ([]agent.StreamEvent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "GetAgentOutput", agentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]agent.StreamEvent](raw)
+}
+
+// GetConvoOutput reads a follower agent's conversational transcript.
+func (c *Client) GetConvoOutput(ctx context.Context, agentID string) ([]agent.ConvoEvent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "GetConvoOutput", agentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]agent.ConvoEvent](raw)
 }
 
 // SendMessage proxies a steering message to a follower's interactive agent.

@@ -180,6 +180,9 @@ export const SendMessageToNode = pick(ClusterSvc.SendMessageToNode, http.SendMes
 export const RespondApprovalOnNode = pick(ClusterSvc.RespondApprovalOnNode, http.RespondApprovalOnNode)
 export const ApprovePlanOnNode = pick(ClusterSvc.ApprovePlanOnNode, http.ApprovePlanOnNode)
 export const RejectPlanOnNode = pick(ClusterSvc.RejectPlanOnNode, http.RejectPlanOnNode)
+export const ListNodeAgents = pick(ClusterSvc.ListNodeAgents, http.ListNodeAgents)
+export const GetAgentOutputOnNode = pick(ClusterSvc.GetAgentOutputOnNode, http.GetAgentOutputOnNode)
+export const GetConvoOutputOnNode = pick(ClusterSvc.GetConvoOutputOnNode, http.GetConvoOutputOnNode)
 
 // Runtime events and browser utilities.
 //

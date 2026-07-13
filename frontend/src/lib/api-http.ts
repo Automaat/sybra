@@ -217,6 +217,9 @@ export function SendMessageToNode(arg1: string, arg2: string, arg3: string): Pro
 export function RespondApprovalOnNode(arg1: string, arg2: string, arg3: boolean): Promise<void> { return call('ClusterService', 'RespondApprovalOnNode', arg1, arg2, arg3) }
 export function ApprovePlanOnNode(arg1: string, arg2: string): Promise<void> { return call('ClusterService', 'ApprovePlanOnNode', arg1, arg2) }
 export function RejectPlanOnNode(arg1: string, arg2: string, arg3: string): Promise<void> { return call('ClusterService', 'RejectPlanOnNode', arg1, arg2, arg3) }
+export function ListNodeAgents(): Promise<Array<Agent>> { return call('ClusterService', 'ListNodeAgents') }
+export function GetAgentOutputOnNode(arg1: string, arg2: string): Promise<Array<StreamEvent>> { return call('ClusterService', 'GetAgentOutputOnNode', arg1, arg2) }
+export function GetConvoOutputOnNode(arg1: string, arg2: string): Promise<Array<ConvoEvent>> { return call('ClusterService', 'GetConvoOutputOnNode', arg1, arg2) }
 
 // Shared EventSource for the multiplexed /events SSE stream.
 // All EventsOn subscriptions funnel through a single connection.

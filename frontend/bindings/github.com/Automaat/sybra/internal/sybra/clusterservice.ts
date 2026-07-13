@@ -3,16 +3,21 @@
 
 /**
  * ClusterService exposes the leader's follower roster to the aggregated board
- * and proxies control actions for a task executing on a remote follower. The
- * browser never sees a follower's URL or token — every remote action is
- * tunnelled through the leader's already-authenticated cluster client. The
- * roster is nil (all methods degrade to empty/errors) on a non-leader node.
+ * and proxies agent reads and control actions for tasks executing on a remote
+ * follower. A follower's auth token never leaves the leader — every remote call
+ * is tunnelled through the leader's already-authenticated cluster client (the
+ * board does see a node's endpoint, surfaced for health diagnostics). The roster
+ * is nil (all methods degrade to empty/errors) on a non-leader node.
  * @module
  */
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as agent$0 from "../agent/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -26,13 +31,47 @@ export function ApprovePlanOnNode(node: string, taskID: string): $CancellablePro
 }
 
 /**
+ * GetAgentOutputOnNode reads a follower agent's headless stream buffer so the
+ * board can render a remote run's output.
+ */
+export function GetAgentOutputOnNode(node: string, agentID: string): $CancellablePromise<agent$0.StreamEvent[]> {
+    return $Call.ByID(2160804420, node, agentID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * GetConvoOutputOnNode reads a follower agent's conversational transcript so the
+ * board can render a remote interactive session.
+ */
+export function GetConvoOutputOnNode(node: string, agentID: string): $CancellablePromise<agent$0.ConvoEvent[]> {
+    return $Call.ByID(2592187350, node, agentID).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * GetNodes returns the follower roster with live health for the aggregated
  * board. Empty on a standalone/follower node or before any follower is
  * configured.
  */
 export function GetNodes(): $CancellablePromise<$models.ClusterNodeDTO[]> {
     return $Call.ByID(387005392).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType5($result);
+    });
+}
+
+/**
+ * ListNodeAgents returns every follower's live agents, each stamped with the
+ * node it runs on. The leader's own agent manager only ever holds local agents,
+ * so without this the board cannot see — and therefore cannot stop, steer, or
+ * approve — a run executing on a follower. An unreachable node is skipped
+ * rather than failing the whole aggregation: one offline follower must not
+ * blank out the board's agent list.
+ */
+export function ListNodeAgents(): $CancellablePromise<(agent$0.Agent | null)[]> {
+    return $Call.ByID(589298399).then(($result: any) => {
+        return $$createType6($result);
     });
 }
 
@@ -68,5 +107,10 @@ export function StopAgentOnNode(node: string, agentID: string): $CancellableProm
 }
 
 // Private type creation functions
-const $$createType0 = $models.ClusterNodeDTO.createFrom;
+const $$createType0 = agent$0.StreamEvent.createFrom;
 const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = agent$0.ConvoEvent.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $models.ClusterNodeDTO.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = $Create.Array($Create.Any);
