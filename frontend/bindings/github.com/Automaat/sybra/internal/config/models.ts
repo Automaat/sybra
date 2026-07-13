@@ -726,6 +726,13 @@ export class OrchestratorConfig {
      */
     "maintenanceIntervalSeconds": number;
 
+    /**
+     * Pressure configures the local resource-pressure admission gate that
+     * defers new agent dispatch while the host is short on disk, memory, or
+     * CPU headroom. See internal/pressure.
+     */
+    "pressure": PressureConfig;
+
     /** Creates a new OrchestratorConfig instance. */
     constructor($$source: Partial<OrchestratorConfig> = {}) {
         if (!("dispatchIntervalSeconds" in $$source)) {
@@ -733,6 +740,9 @@ export class OrchestratorConfig {
         }
         if (!("maintenanceIntervalSeconds" in $$source)) {
             this["maintenanceIntervalSeconds"] = 0;
+        }
+        if (!("pressure" in $$source)) {
+            this["pressure"] = (new PressureConfig());
         }
 
         Object.assign(this, $$source);
@@ -742,7 +752,11 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
+        const $$createField2_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pressure" in $$parsedSource) {
+            $$parsedSource["pressure"] = $$createField2_0($$parsedSource["pressure"]);
+        }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
     }
 }
@@ -781,12 +795,86 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType5;
+        const $$createField1_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
         }
         return new PlaywrightMCPConfig($$parsedSource as Partial<PlaywrightMCPConfig>);
+    }
+}
+
+/**
+ * PressureConfig configures internal/pressure.Gate, the local
+ * resource-pressure admission gate consulted before dispatching new agent
+ * work. Thresholds are captured once at Gate construction, so a change here
+ * requires a restart to take effect (see diffConfig's
+ * "orchestrator.pressure" restart entry).
+ */
+export class PressureConfig {
+    /**
+     * Enabled turns the gate on. Default true. When false, New returns a nil
+     * *Gate and every dispatch path admits unconditionally — the same as
+     * running without this feature at all.
+     */
+    "enabled": boolean;
+
+    /**
+     * MinDiskFreePercent is the minimum percentage of free disk space (on the
+     * filesystem holding SYBRA_HOME) below which new dispatch is deferred.
+     * <=0 disables this dimension. Default 5.
+     */
+    "minDiskFreePercent": number;
+
+    /**
+     * MinMemAvailablePercent is the minimum percentage of available memory
+     * (reclaimable caches counted as available, matching the kernel's own
+     * notion of headroom) below which new dispatch is deferred. <=0 disables
+     * this dimension. Default 8.
+     */
+    "minMemAvailablePercent": number;
+
+    /**
+     * MaxLoadPerCPU is the maximum 1-minute load average, normalized by CPU
+     * count, above which new dispatch is deferred. <=0 disables this
+     * dimension. Default 8.0.
+     */
+    "maxLoadPerCpu": number;
+
+    /**
+     * SampleIntervalSeconds is both the resource-sample cache TTL and the
+     * deny-log throttle window. <=0 falls back to
+     * pressure.DefaultSampleIntervalSeconds (15). Default 15.
+     */
+    "sampleIntervalSeconds": number;
+
+    /** Creates a new PressureConfig instance. */
+    constructor($$source: Partial<PressureConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("minDiskFreePercent" in $$source)) {
+            this["minDiskFreePercent"] = 0;
+        }
+        if (!("minMemAvailablePercent" in $$source)) {
+            this["minMemAvailablePercent"] = 0;
+        }
+        if (!("maxLoadPerCpu" in $$source)) {
+            this["maxLoadPerCpu"] = 0;
+        }
+        if (!("sampleIntervalSeconds" in $$source)) {
+            this["sampleIntervalSeconds"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PressureConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PressureConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PressureConfig($$parsedSource as Partial<PressureConfig>);
     }
 }
 
@@ -939,11 +1027,11 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType6;
-        const $$createField1_0 = $$createType7;
-        const $$createField2_0 = $$createType7;
-        const $$createField3_0 = $$createType7;
-        const $$createField4_0 = $$createType8;
+        const $$createField0_0 = $$createType7;
+        const $$createField1_0 = $$createType8;
+        const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1096,7 +1184,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType5;
+        const $$createField6_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1296,7 +1384,8 @@ const $$createType1 = PlaywrightMCPConfig.createFrom;
 const $$createType2 = QueueConfig.createFrom;
 const $$createType3 = GitHubAppConfig.createFrom;
 const $$createType4 = $Create.Map($Create.Any, $Create.Any);
-const $$createType5 = $Create.Array($Create.Any);
-const $$createType6 = ProviderHealthCheckConfig.createFrom;
-const $$createType7 = ProviderEntryConfig.createFrom;
-const $$createType8 = ProviderLimitsConfig.createFrom;
+const $$createType5 = PressureConfig.createFrom;
+const $$createType6 = $Create.Array($Create.Any);
+const $$createType7 = ProviderHealthCheckConfig.createFrom;
+const $$createType8 = ProviderEntryConfig.createFrom;
+const $$createType9 = ProviderLimitsConfig.createFrom;
