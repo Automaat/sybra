@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -26,9 +27,91 @@ const (
 type ClusterConfig struct {
 	Role       string     `yaml:"role,omitempty" json:"role"`
 	BindAddr   string     `yaml:"bind_addr,omitempty" json:"bindAddr"`
+	BindAddrs  []string   `yaml:"bind_addrs,omitempty" json:"bindAddrs"`
 	Followers  []Follower `yaml:"followers,omitempty" json:"followers"`
 	LocalHomes []string   `yaml:"local_homes,omitempty" json:"localHomes"`
 	TLS        ClusterTLS `yaml:"tls,omitempty" json:"tls"`
+}
+
+// ListenAddrs returns every address the control plane should listen on.
+//
+// A configured bind wins over SYBRA_HOST/SYBRA_PORT. That inversion is
+// deliberate: the shipped unit file and the Dockerfile both set SYBRA_PORT, so
+// letting env win would silently discard bind_addrs on every supported deploy —
+// an operator who locked the control plane to the tailnet would get it bound on
+// every interface instead, which is the opposite of what they asked for.
+// SYBRA_BIND_ADDR is the explicit escape hatch that still overrides config, for
+// rescuing a bad bind from the unit file.
+//
+// Precedence: SYBRA_BIND_ADDR > bind_addrs (one listener each, shared handler)
+// > bind_addr > SYBRA_HOST/SYBRA_PORT > all interfaces on the default port.
+// Never returns empty.
+//
+// envDiscarded reports that a configured bind beat a non-empty SYBRA_HOST/
+// SYBRA_PORT. The caller must surface it: this package cannot log it itself,
+// because slog's default logger is not the server's logger — a warning emitted
+// here lands at DEBUG, below the shipped level, and the operator never learns
+// that the port from their unit file was ignored.
+func (c *Config) ListenAddrs(envHost, envPort string) (addrs []string, envDiscarded bool) {
+	if override := strings.TrimSpace(os.Getenv("SYBRA_BIND_ADDR")); override != "" {
+		return []string{override}, false
+	}
+	envHost, envPort = strings.TrimSpace(envHost), strings.TrimSpace(envPort)
+	envSet := envHost != "" || envPort != ""
+	if c != nil {
+		configured := nonBlank(c.Cluster.BindAddrs)
+		if len(configured) == 0 {
+			if addr := strings.TrimSpace(c.Cluster.BindAddr); addr != "" {
+				configured = []string{addr}
+			}
+		}
+		if len(configured) > 0 {
+			return configured, envSet
+		}
+	}
+	if envSet {
+		if envPort == "" {
+			envPort = DefaultServerPort
+		}
+		return []string{net.JoinHostPort(envHost, envPort)}, false
+	}
+	return []string{net.JoinHostPort("", DefaultServerPort)}, false
+}
+
+// ValidateCluster rejects a half-configured TLS block. Exactly one of
+// cert_file/key_file means the operator intended TLS but the node would come up
+// in cleartext, while the leader still believes an https:// endpoint is
+// encrypted — so the confidentiality guard would keep letting work-typed tasks
+// onto a node whose bearer token now rides the wire in the clear. Fail to start
+// instead.
+func (c *Config) ValidateCluster() error {
+	if c == nil {
+		return nil
+	}
+	cert := strings.TrimSpace(c.Cluster.TLS.CertFile)
+	key := strings.TrimSpace(c.Cluster.TLS.KeyFile)
+	if (cert == "") != (key == "") {
+		return fmt.Errorf("cluster.tls needs both cert_file and key_file (got cert_file=%q key_file=%q); "+
+			"a half-configured block would serve the control plane in cleartext", cert, key)
+	}
+	return nil
+}
+
+// ServesTLS reports whether the control plane should terminate TLS itself. This
+// is the LAN tier: no CA, no ACME — the leader pins the certificate's SHA-256
+// fingerprint (tls_pin) instead of validating a chain.
+func (c *Config) ServesTLS() bool {
+	return c != nil && strings.TrimSpace(c.Cluster.TLS.CertFile) != "" && strings.TrimSpace(c.Cluster.TLS.KeyFile) != ""
+}
+
+func nonBlank(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // ClusterTLS holds a follower's server certificate/key paths for the TLS +

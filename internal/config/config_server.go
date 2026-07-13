@@ -1,5 +1,9 @@
 package config
 
+// DefaultServerPort is the control plane's listen port when neither env nor
+// cluster.bind_addr says otherwise.
+const DefaultServerPort = "8080"
+
 // ServerConfig controls sybra-server's HTTP control-plane authentication and
 // CORS policy. AuthToken gates every request except GET /health behind a
 // shared-secret bearer token: callers must send
