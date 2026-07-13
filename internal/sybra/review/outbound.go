@@ -177,6 +177,7 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 // never to a human- or agent-authored explanation that merely mentions a
 // check by name.
 const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
+const ciInfraRerunPermissionReason = "CI failure rerun requires higher GitHub permissions"
 
 // exhaustedFixReason renders the StatusReason escalateExhaustedFix parks a task
 // with. It is the sole producer of the string exhaustedFixReasonKind parses back
@@ -209,12 +210,11 @@ func exhaustedFixReasonKind(reason string) (github.PRIssueKind, bool) {
 }
 
 // humanRequiredBlockerReconcilable reports whether t is a human-required task
-// parked solely by the pr-monitor auto-fix-exhausted escalation for a
-// ci_failure or conflict issue — the only kinds a live PR probe can decide
-// resolved itself. Excludes watchdog stops, tamper flags, comment-review
-// exhaustion (no CI-state probe can tell whether reviewer feedback was
-// actually addressed), human-authored reasons, and tasks already reconciled
-// once (latch tag present, to prevent flip-flopping).
+// parked solely by a PR blocker a live PR probe can decide resolved itself.
+// Excludes watchdog stops, tamper flags, comment-review exhaustion (no CI-state
+// probe can tell whether reviewer feedback was actually addressed),
+// human-authored reasons, and tasks already reconciled once (latch tag present,
+// to prevent flip-flopping).
 func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok bool) {
 	if t == nil || t.TaskType == task.TaskTypeChat || slices.Contains(t.Tags, "review") {
 		return "", false
@@ -228,6 +228,9 @@ func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok
 	reason := strings.TrimSpace(t.StatusReason)
 	if workflow.IsTamperFlaggedReason(reason) {
 		return "", false
+	}
+	if reason == ciInfraRerunPermissionReason {
+		return github.PRIssueCIFailure, true
 	}
 	kind, ok = exhaustedFixReasonKind(reason)
 	if !ok {
