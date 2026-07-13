@@ -20,6 +20,7 @@ machine.
 | `logging` | `LoggingConfig` | _(see below)_ |  |
 | `audit` | `AuditConfig` | _(see below)_ |  |
 | `trash` | `TrashConfig` | _(see below)_ |  |
+| `sandbox` | `SandboxConfig` | _(see below)_ |  |
 | `task_snapshot` | `TaskSnapshotConfig` | _(see below)_ |  |
 | `agent` | `AgentDefaults` | _(see below)_ |  |
 | `testing` | `TestingConfig` | _(see below)_ |  |
@@ -80,6 +81,15 @@ TrashConfig controls the retention of soft-deleted tasks under
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `trash.retention_days` | `int` |  | RetentionDays bounds how long a trashed task generation survives before the startup sweep permanently removes it. 0 falls back to DefaultTrashRetentionDays (14); a negative value disables pruning. |
+
+## SandboxConfig (`sandbox`)
+
+SandboxConfig controls retention of per-task app sandbox dirs under
+~/.sybra/sandboxes (see internal/sandbox.Manager.CleanupOrphaned).
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `sandbox.retention_hours` | `int` |  | RetentionHours bounds how long a done/cancelled/blocked task's sandbox dir survives before the periodic sweep removes it. 0 falls back to DefaultSandboxRetention (24h); a negative value disables age-based pruning (eligible dirs are never removed by age, only on task delete). |
 
 ## TaskSnapshotConfig (`task_snapshot`)
 

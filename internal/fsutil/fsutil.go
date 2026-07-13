@@ -2,6 +2,7 @@ package fsutil
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,35 @@ func AtomicWrite(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// RemoveAllForce removes path and everything under it, tolerating read-only
+// files and directories (e.g. Go module cache entries, which ship 0444/0555
+// permissions). It tries a plain os.RemoveAll first; on failure it walks the
+// tree — confined to path via os.Root to avoid a symlink TOCTOU escape —
+// chmod'ing every directory to 0700 and every file to 0600 (best effort:
+// per-entry errors are ignored, since the retry below is what surfaces the
+// real failure), then retries os.RemoveAll once and returns that result.
+func RemoveAllForce(path string) error {
+	if err := os.RemoveAll(path); err == nil {
+		return nil
+	}
+
+	if root, err := os.OpenRoot(path); err == nil {
+		_ = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+			if err == nil {
+				if d.IsDir() {
+					_ = root.Chmod(p, 0o700)
+				} else {
+					_ = root.Chmod(p, 0o600)
+				}
+			}
+			return nil
+		})
+		_ = root.Close()
+	}
+
+	return os.RemoveAll(path)
 }
 
 // ListFiles returns absolute paths of non-directory entries in dir whose
