@@ -65,11 +65,11 @@ func shouldReapOwnedMCPHelper(proc providerProcess, tracked map[string]trackedAg
 	return true
 }
 
-func (m *Manager) trackedProcessOwners() (map[int]struct{}, map[string]trackedAgentSnapshot) {
+func (m *Manager) trackedProcessOwners() (tracked map[int]struct{}, owners map[string]trackedAgentSnapshot) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	tracked := make(map[int]struct{}, len(m.agents))
-	owners := make(map[string]trackedAgentSnapshot, len(m.agents))
+	tracked = make(map[int]struct{}, len(m.agents))
+	owners = make(map[string]trackedAgentSnapshot, len(m.agents))
 	for _, a := range m.agents {
 		if pid := a.GetPID(); pid > 0 {
 			tracked[pid] = struct{}{}

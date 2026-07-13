@@ -71,7 +71,7 @@ func linuxMCPOwner(pid string) mcpOwner {
 	}
 	owner := mcpOwner{}
 	marked := false
-	for _, part := range strings.Split(string(data), "\x00") {
+	for part := range strings.SplitSeq(string(data), "\x00") {
 		key, value, ok := strings.Cut(part, "=")
 		if !ok {
 			continue
