@@ -409,11 +409,19 @@ func (s *Scanner) ageEligible(bucketName, path string, opts Options) (ok bool, r
 }
 
 func (s *Scanner) scanLogs(opts Options) Bucket {
-	dir := filepath.Join(s.cfg.Logging.Dir, "agents")
-	b := Bucket{Name: BucketLogs, Risk: RiskSafe, Description: "per-agent NDJSON logs past retention"}
+	b := Bucket{Name: BucketLogs, Risk: RiskSafe, Description: "per-agent NDJSON logs and per-task worktree setup logs past retention"}
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "agents"), opts, &b)
+	s.scanLogDir(filepath.Join(s.cfg.Logging.Dir, "worktrees"), opts, &b)
+	return b
+}
+
+// scanLogDir appends every plain, non-symlink, age-eligible file directly
+// under dir to b. Shared by the agents/ and worktrees/ subdirectories of the
+// logs bucket, which are sized and retained identically.
+func (s *Scanner) scanLogDir(dir string, opts Options, b *Bucket) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return b
+		return
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -434,7 +442,6 @@ func (s *Scanner) scanLogs(opts Options) Bucket {
 		b.Bytes += info.Size()
 		b.Items++
 	}
-	return b
 }
 
 func (s *Scanner) scanAudit(opts Options) Bucket {
@@ -655,7 +662,7 @@ func (s *Scanner) applyBucket(b Bucket, snap snapshot, opts Options) BucketResul
 func (s *Scanner) bucketRoot(bucketName string) (string, bool) {
 	switch bucketName {
 	case BucketLogs:
-		return filepath.Join(s.cfg.Logging.Dir, "agents"), true
+		return s.cfg.Logging.Dir, true
 	case BucketAudit:
 		return s.cfg.AuditDir(), true
 	case BucketSandboxes:
