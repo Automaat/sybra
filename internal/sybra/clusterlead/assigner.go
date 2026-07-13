@@ -14,19 +14,31 @@ import (
 // project: it pushes the task via the follower control plane and stamps
 // AssignedNode on the canonical copy so the local dispatch paths (gated on
 // HomeNodeFor) leave it to the follower. Inert on a non-leader node.
+//
+// isWorkProject reports whether a project holds confidential work content; it
+// must fail safe (return true when a project's type cannot be determined) so an
+// unclassifiable project is never leaked to a follower. auditBlock, when set,
+// records a confidentiality refusal.
 type Assigner struct {
-	cfg    *config.Config
-	tasks  *task.Manager
-	roster *cluster.Roster
-	logger *slog.Logger
+	cfg           *config.Config
+	tasks         *task.Manager
+	roster        *cluster.Roster
+	isWorkProject func(projectID string) bool
+	auditBlock    func(taskID, node, reason string)
+	logger        *slog.Logger
 }
 
-// NewAssigner constructs an Assigner. A nil logger falls back to slog.Default().
-func NewAssigner(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, logger *slog.Logger) *Assigner {
+// NewAssigner constructs an Assigner. isWorkProject classifies a project as
+// confidential work (must fail safe); auditBlock records a confidentiality
+// refusal and may be nil. A nil logger falls back to slog.Default().
+func NewAssigner(cfg *config.Config, tasks *task.Manager, roster *cluster.Roster, isWorkProject func(string) bool, auditBlock func(taskID, node, reason string), logger *slog.Logger) *Assigner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Assigner{cfg: cfg, tasks: tasks, roster: roster, logger: logger}
+	if isWorkProject == nil {
+		isWorkProject = func(string) bool { return true }
+	}
+	return &Assigner{cfg: cfg, tasks: tasks, roster: roster, isWorkProject: isWorkProject, auditBlock: auditBlock, logger: logger}
 }
 
 // Tick scans the canonical store and routes every non-terminal task whose
@@ -44,7 +56,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsTerminalStatus(t.Status) || t.TaskType == task.TaskTypeChat {
+		if task.IsTerminalStatus(t.Status) || t.TaskType == task.TaskTypeChat || t.Status == task.StatusBlocked {
 			continue
 		}
 		home := a.cfg.HomeNodeFor(t.ProjectID)
@@ -69,6 +81,9 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 	if home.Local {
 		return false, nil
 	}
+	if a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {
+		return false, a.blockForConfidentiality(t, home)
+	}
 	client, ok := a.roster.Client(home.Name)
 	if !ok || client == nil {
 		return false, fmt.Errorf("clusterlead: no follower client for node %q", home.Name)
@@ -87,4 +102,20 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 		return true, fmt.Errorf("clusterlead: stamp assigned_node on %s: %w", t.ID, err)
 	}
 	return true, nil
+}
+
+func (a *Assigner) blockForConfidentiality(t task.Task, home config.HomeNode) error {
+	reason := fmt.Sprintf("cluster: work task withheld from %q (trusted=%v encrypted=%v); assign a trusted, encrypted follower", home.Name, home.Trusted, home.Encrypted)
+	if t.Status == task.StatusBlocked && t.StatusReason == reason {
+		return nil
+	}
+	blocked := task.StatusBlocked
+	if _, err := a.tasks.Update(t.ID, task.Update{Status: &blocked, StatusReason: &reason}); err != nil {
+		return fmt.Errorf("clusterlead: block work task %s: %w", t.ID, err)
+	}
+	if a.auditBlock != nil {
+		a.auditBlock(t.ID, home.Name, reason)
+	}
+	a.logger.Warn("cluster.assign.blocked_confidential", "task", t.ID, "node", home.Name, "trusted", home.Trusted, "encrypted", home.Encrypted)
+	return nil
 }

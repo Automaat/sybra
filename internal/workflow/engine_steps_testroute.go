@@ -152,6 +152,58 @@ func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanR
 	return StepOutput{StepID: stepID, Status: "completed", Output: doneOutput}, nil
 }
 
+// retryOrOpenPRForUnrunnableGate auto-retries an infra_failure testing outcome
+// while retry budget remains (same re-arm as retryOrEscalateTransient), but
+// once the budget is exhausted it opens a PR (ready-pr) instead of parking at
+// human-required. infra_failure means the tester found no evidence either way
+// (see classifyTestOutcome): the manual gate itself — not the implementation —
+// is what could not run. Routing through ready-pr reuses the exact same
+// simple-task-pr.yaml → create_pr → in-review path a PASS verdict already
+// takes, so CI and a human PR reviewer see the real diff instead of the task
+// dead-ending at human-required with no PR for anyone to act on (#1928).
+func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	parked, err := e.parkTestingRetryOrEscalate(taskID, testOutcomeInfraFailure, "", wfExec, t)
+	if err != nil {
+		return StepOutput{}, err
+	}
+	if parked {
+		return StepOutput{}, errStepParked
+	}
+	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
+	if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", reason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.test.infra-failure.open-pr", "task_id", taskID)
+	return StepOutput{StepID: stepID, Status: "completed", Output: "infra failure — opened pr"}, nil
+}
+
+func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
+	switch outcome {
+	case testOutcomeInfraFailure:
+		if e.openPROnUnrunnableGate {
+			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
+			return out, true, err
+		}
+		out, err := e.retryOrEscalateTransient(taskID, stepID, testOutcomeInfraFailure, "",
+			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
+			"infra failure", "workflow.test.infra-failure", wfExec, t)
+		return out, true, err
+	case testOutcomeMissingEvidence:
+		out, err := e.retryOrEscalateTransient(taskID, stepID, testOutcomeMissingEvidence, missingEvidenceReask,
+			"test-runner failed without grounded evidence after auto-retries — needs local reproduction before implementation retries",
+			"missing evidence", "workflow.test.missing-evidence", wfExec, t)
+		return out, true, err
+	case testOutcomeAmbiguousRequirement:
+		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
+		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			return StepOutput{}, true, err
+		}
+		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
+		return StepOutput{StepID: stepID, Status: "completed", Output: "ambiguous requirement"}, true, nil
+	default:
+		return StepOutput{}, false, nil
+	}
+}
 func clearTestVerdictVars(wfExec *Execution) {
 	if wfExec == nil || wfExec.Variables == nil {
 		return
@@ -2285,6 +2337,12 @@ func ExtractTestVerdict(output string) string {
 //     for distinct-defect loops that never converge.
 //   - tester/provisioning failures and ambiguous specs do not consume the
 //     implementation retry budget.
+//   - infra failure (the manual gate itself could not be run) → auto-retries,
+//     then — when openPROnUnrunnableGate is set (the default) — ready-pr, on
+//     the theory that a harness/tooling limitation is not evidence of a
+//     product defect and CI plus a human PR reviewer are better positioned to
+//     judge the diff than a task stuck with no PR at all. Set false to
+//     restore the legacy human-required escalation.
 //
 // Counting prior test-runner runs (which persist on the task across the
 // implement→review→test loop) gives a natural, stateless attempt counter:
@@ -2324,22 +2382,8 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
 	}
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
-	switch outcome {
-	case testOutcomeInfraFailure:
-		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeInfraFailure, "",
-			"testing infrastructure failed after auto-retries — no implementation attempt consumed; rerun testing or inspect the test-runner log",
-			"infra failure", "workflow.test.infra-failure", wfExec, t)
-	case testOutcomeMissingEvidence:
-		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
-			"test-runner failed without grounded evidence after auto-retries — needs local reproduction before implementation retries",
-			"missing evidence", "workflow.test.missing-evidence", wfExec, t)
-	case testOutcomeAmbiguousRequirement:
-		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "ambiguous requirement"}, nil
+	if out, handled, err := e.routeNonProductTestOutcome(taskID, step.ID, outcome, wfExec, t); handled || err != nil {
+		return out, err
 	}
 
 	// Count test-runner runs that belong to the current testing cycle.

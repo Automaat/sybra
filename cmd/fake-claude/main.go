@@ -26,6 +26,8 @@
 //   - evaluate: runs sybra-cli to set status=in-review, emits result
 //   - pr_created: emits result with a github.com/.../pull/N URL so the
 //     mechanical link_pr_and_review step can extract the PR number via regex
+//   - test_infra_failure: emits a grounded FAIL report classified as
+//     infra_failure, simulating an un-runnable manual gate
 //   - auth_error: emits auth-failure text then exits 1
 //   - malformed_pr_output: emits large malformed PR-ish text (no valid URL)
 //   - signal_kill: emits system+assistant then kills self with SIGTERM
@@ -157,6 +159,7 @@ var scenarioHandlers = map[string]func(string){
 	"test_pass":                   func(string) { runTestPass() },
 	"test_pass_verbose":           func(string) { runTestPassVerbose() },
 	"test_fail":                   func(string) { runTestFail() },
+	"test_infra_failure":          func(string) { runTestInfraFailure() },
 	"triage_to_done":              func(taskID string) { runTriage(taskID, "done", "") },
 	"triage_to_in_review":         func(taskID string) { runTriage(taskID, "in-review", "") },
 	"triage_to_human_required":    func(taskID string) { runTriage(taskID, "human-required", "") },
@@ -349,6 +352,12 @@ func runTestFail() {
 	emitResult(testFailureReport() + "\nTEST_VERDICT: FAIL")
 }
 
+func runTestInfraFailure() {
+	emitSystem()
+	emitAssistant("The app could not be exercised in this harness.")
+	emitResult(testInfraFailureReport() + "\nTEST_VERDICT: FAIL")
+}
+
 func testFailureReport() string {
 	return "## Test Failures\n\n" +
 		"Classification: product_bug\n\n" +
@@ -357,6 +366,16 @@ func testFailureReport() string {
 		"Actual output:\n```text\nwrong output\n```\n\n" +
 		"Expected output: expected output.\n\n" +
 		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
+}
+
+func testInfraFailureReport() string {
+	return "## Test Failures\n\n" +
+		"Classification: infra_failure\n\n" +
+		"Requirement tested: the task requires a real manual smoke against the running app.\n\n" +
+		"Command run:\n```sh\ncurl http://127.0.0.1:3000/queue\n```\n\n" +
+		"Actual output:\n```text\ncurl: (7) Failed to connect to 127.0.0.1 port 3000: Connection refused\n```\n\n" +
+		"Expected output: reachable manual-test surface with queued state rendered.\n\n" +
+		"Unable to run manual test: isolated harness cannot render the required queued state."
 }
 
 func testPassReport() string {

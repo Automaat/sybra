@@ -562,6 +562,24 @@ func (a *App) runsTaskLocally(t task.Task) bool {
 	return a.cfg == nil || a.cfg.HomeNodeFor(t.ProjectID).Local
 }
 
+func (a *App) isWorkProject(projectID string) bool {
+	if projectID == "" {
+		return false
+	}
+	if a.projects == nil {
+		return true
+	}
+	rawType, err := a.projects.RawType(projectID)
+	if err != nil {
+		return true
+	}
+	return rawType != project.ProjectTypePet
+}
+
+func (a *App) auditClusterBlock(taskID, node, reason string) {
+	a.logAudit(audit.EventClusterAssignBlocked, taskID, "", map[string]any{"node": node, "reason": reason})
+}
+
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
@@ -580,7 +598,7 @@ func (a *App) initCluster() {
 		a.logger.Info("cluster.leader.no-followers")
 		return
 	}
-	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.logger)
+	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
 	a.logger.Info("cluster.leader.enabled", "followers", roster.Names())
 }
@@ -845,7 +863,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
 	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
 	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
 	if a.cfg.Evaluation.Offline.Enabled {
@@ -925,6 +943,14 @@ func (a *App) initWorkflowEngine() {
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
+}
+
+// configureTestingEscalation wires the testing→escalation config knobs onto
+// the workflow engine (split out of initWorkflowEngine to keep it under the
+// funlen cap).
+func (a *App) configureTestingEscalation() {
+	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 }
 
 func (a *App) initAgentConfig() {
