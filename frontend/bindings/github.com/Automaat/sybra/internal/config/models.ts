@@ -94,9 +94,31 @@ export class AgentDefaults {
      * LogRetentionDays bounds how long per-agent NDJSON log files live
      * under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte
      * files, regardless of age) are swept on app startup and daily
-     * thereafter. 0 falls back to DefaultLogRetentionDays (14).
+     * thereafter. 0 falls back to DefaultLogRetentionDays (14). A negative
+     * value disables age-based deletion (0-byte files are still removed).
      */
     "logRetentionDays": number;
+
+    /**
+     * LogGzipAfterDays bounds how long a retained per-agent NDJSON log
+     * stays uncompressed before the retention sweep gzips it in place
+     * (original removed once the .gz sibling is written successfully). 0
+     * falls back to DefaultLogGzipAfterDays (3). A negative value disables
+     * compression entirely.
+     */
+    "logGzipAfterDays": number;
+
+    /**
+     * LogRetentionMaxSizeMB caps the total size (in MB) of the per-agent
+     * NDJSON log directory (~/.sybra/logs/agents/, including any
+     * gzip-compressed and .stderr sidecar files). When the age/gzip passes
+     * still leave the directory over this cap, the sweep deletes the
+     * oldest non-active files (by mtime) until it's back under the cap, or
+     * only currently-active agents' logs remain. 0 falls back to
+     * DefaultLogRetentionMaxSizeMB (1024, i.e. 1 GiB). A negative value
+     * disables size-based enforcement entirely.
+     */
+    "logRetentionMaxSizeMb": number;
 
     /**
      * SurviveRestart keeps agent subprocesses running across an app
@@ -247,6 +269,12 @@ export class AgentDefaults {
         if (!("logRetentionDays" in $$source)) {
             this["logRetentionDays"] = 0;
         }
+        if (!("logGzipAfterDays" in $$source)) {
+            this["logGzipAfterDays"] = 0;
+        }
+        if (!("logRetentionMaxSizeMb" in $$source)) {
+            this["logRetentionMaxSizeMb"] = 0;
+        }
         if (!("surviveRestart" in $$source)) {
             this["surviveRestart"] = null;
         }
@@ -285,18 +313,18 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField25_0 = $$createType0;
-        const $$createField26_0 = $$createType1;
-        const $$createField27_0 = $$createType2;
+        const $$createField27_0 = $$createType0;
+        const $$createField28_0 = $$createType1;
+        const $$createField29_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField25_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField27_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField26_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField28_0($$parsedSource["playwrightMcp"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField27_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField29_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

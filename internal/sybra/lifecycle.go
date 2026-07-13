@@ -284,14 +284,26 @@ func (lm *LifecycleManager) startTaskSnapshotLoop(ctx context.Context) {
 
 // prune is the periodic body of startAgentLogPruneLoop. Mirrors the
 // retention computation Recovery does at startup so both passes use the
-// same maxAge.
+// same maxAge/gzipAfter/size cap and the same active-agent allowlist.
 func (lm *LifecycleManager) prune() {
 	a := lm.app
-	var maxAge time.Duration
+	var maxAge, gzipAfter time.Duration
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		maxAge = time.Duration(days) * 24 * time.Hour
 	}
-	r := logging.PruneAgentLogs(a.logDir, maxAge, time.Now())
+	if days := a.cfg.DefaultLogGzipAfterDays(); days > 0 {
+		gzipAfter = time.Duration(days) * 24 * time.Hour
+	}
+	var maxTotalBytes int64
+	if mb := a.cfg.DefaultLogRetentionMaxSizeMB(); mb > 0 {
+		maxTotalBytes = int64(mb) * 1024 * 1024
+	}
+	r := logging.EnforceAgentLogRetention(a.logDir, logging.RetentionOptions{
+		MaxAge:         maxAge,
+		GzipAfter:      gzipAfter,
+		MaxTotalBytes:  maxTotalBytes,
+		ActiveLogPaths: a.agents.ActiveLogPaths(),
+	}, time.Now())
 	logging.LogPruneReport(a.logger, r)
 }
 

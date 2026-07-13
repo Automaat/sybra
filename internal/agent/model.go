@@ -105,6 +105,7 @@ type Agent struct {
 	cmd             *exec.Cmd
 	cancel          context.CancelFunc
 	sessionCWD      string
+	sandboxHomeDir  string
 	sessionFilePath string // path to provider session file (Codex JSONL)
 	// done is closed when the headless/conversational goroutine has fully exited.
 	// Used by HasRunningAgentForTask to guard worktree cleanup.
@@ -363,6 +364,7 @@ func (a *Agent) toRecord() Record {
 		SessionID:          a.SessionID,
 		LogPath:            a.LogPath,
 		CWD:                a.sessionCWD,
+		SandboxHomeDir:     a.sandboxHomeDir,
 		StartedAt:          a.StartedAt,
 		StdinPath:          a.convo.stdinPath,
 		PendingPrompts:     pendingPrompts,
@@ -392,6 +394,7 @@ func fromRecord(r Record) *Agent {
 		SessionID:          r.SessionID,
 		LogPath:            r.LogPath,
 		sessionCWD:         r.CWD,
+		sandboxHomeDir:     r.SandboxHomeDir,
 		StartedAt:          r.StartedAt,
 		LastEventAt:        time.Now().UTC(),
 		State:              StateRunning,

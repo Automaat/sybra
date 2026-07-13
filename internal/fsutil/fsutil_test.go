@@ -143,6 +143,44 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	}
 }
 
+func TestRemoveAllForce(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	root := t.TempDir()
+	tree := filepath.Join(root, "tree")
+	subdir := filepath.Join(tree, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roFile := filepath.Join(tree, "readonly.txt")
+	if err := os.WriteFile(roFile, []byte("cached"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	nestedFile := filepath.Join(subdir, "nested.txt")
+	if err := os.WriteFile(nestedFile, []byte("cached"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(subdir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveAllForce(tree); err != nil {
+		t.Fatalf("RemoveAllForce: %v", err)
+	}
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Fatalf("tree still exists after RemoveAllForce: %v", err)
+	}
+}
+
+func TestRemoveAllForce_NoOpOnMissingPath(t *testing.T) {
+	t.Parallel()
+	if err := RemoveAllForce(filepath.Join(t.TempDir(), "nonexistent")); err != nil {
+		t.Fatalf("RemoveAllForce on missing path: %v", err)
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -1200,6 +1200,48 @@ func TestDefaultLogRetentionDays(t *testing.T) {
 	}
 }
 
+func TestDefaultLogGzipAfterDays(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{"nil config → 3", nil, 3},
+		{"unset → 3", &Config{}, 3},
+		{"explicit 1 → 1", &Config{Agent: AgentDefaults{LogGzipAfterDays: 1}}, 1},
+		{"negative disables (sentinel preserved)", &Config{Agent: AgentDefaults{LogGzipAfterDays: -1}}, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.DefaultLogGzipAfterDays(); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultLogRetentionMaxSizeMB(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  *Config
+		want int
+	}{
+		{"nil config → 1024", nil, 1024},
+		{"unset → 1024", &Config{}, 1024},
+		{"explicit 200 → 200", &Config{Agent: AgentDefaults{LogRetentionMaxSizeMB: 200}}, 200},
+		{"negative disables (sentinel preserved)", &Config{Agent: AgentDefaults{LogRetentionMaxSizeMB: -1}}, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.DefaultLogRetentionMaxSizeMB(); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDefaultTrashRetentionDays(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

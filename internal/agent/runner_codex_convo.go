@@ -146,7 +146,7 @@ func (m *Manager) runPerTurnConversational(ctx context.Context, a *Agent, cfg Ru
 		m.logger.Info("agent.convo.done", "id", a.ID, "provider", a.Provider, "cost", a.GetCostUSD())
 		m.emit(events.AgentState(a.ID), a)
 		m.fireComplete(ctx, a, a.GetExitErr() == nil)
-		m.markAgentDone(a)
+		m.markAgentDone(ctx, a)
 	}()
 
 	outFile, logWriter := m.openPerTurnConvoLog(a)

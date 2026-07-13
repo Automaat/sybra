@@ -30,6 +30,7 @@ import (
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -259,6 +260,12 @@ func (a *App) initLimits() {
 			a.startLiveLimitPolling(a.ctx, limitStore, policy)
 		}
 	}
+}
+
+func (a *App) initSandboxes() {
+	mgr := sandbox.NewManager(filepath.Join(config.HomeDir(), "sandboxes"), a.logger)
+	mgr.SetRetentionWindow(sandboxRetentionWindow(a.cfg))
+	a.sandboxes = mgr
 }
 
 func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
@@ -559,7 +566,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeFor(t.ProjectID).Local
+	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -583,7 +590,7 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeFor(ti.ProjectID).Local
+			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {
@@ -600,9 +607,11 @@ func (a *App) initCluster() {
 	}
 	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
+	a.assigner.SetStopLocalAgents(a.releaseTaskAgents)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
 	if a.clusterSvc != nil {
 		a.clusterSvc.setRoster(roster)
+		a.clusterSvc.setAssigner(a.assigner)
 	}
 	a.logger.Info("cluster.leader.enabled", "followers", roster.Names())
 }
@@ -1040,9 +1049,16 @@ func (a *App) seedDefaultLoopAgents() {
 // orchestrator loop. Holds a pointer to a.restartStaleErr so the throttle
 // state is shared across both call sites.
 func (a *App) newRecovery() *recovery.Recovery {
-	var retention time.Duration
+	var retention, gzipAfter time.Duration
 	if days := a.cfg.DefaultLogRetentionDays(); days > 0 {
 		retention = time.Duration(days) * 24 * time.Hour
+	}
+	if days := a.cfg.DefaultLogGzipAfterDays(); days > 0 {
+		gzipAfter = time.Duration(days) * 24 * time.Hour
+	}
+	var maxTotalBytes int64
+	if mb := a.cfg.DefaultLogRetentionMaxSizeMB(); mb > 0 {
+		maxTotalBytes = int64(mb) * 1024 * 1024
 	}
 	r := &recovery.Recovery{
 		Tasks:              a.tasks,
@@ -1058,6 +1074,8 @@ func (a *App) newRecovery() *recovery.Recovery {
 		WG:                 &a.wg,
 		LogDir:             a.logDir,
 		LogRetention:       retention,
+		LogGzipAfter:       gzipAfter,
+		LogMaxTotalBytes:   maxTotalBytes,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 		OrphanRoots: []string{
 			filepath.Join(config.HomeDir(), "sandboxes"),

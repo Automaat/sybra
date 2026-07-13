@@ -1141,7 +1141,7 @@ func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, false)
-	m.markAgentDone(a)
+	m.markAgentDone(ctx, a)
 }
 
 // classifyAgentError maps a fatal agent error to a canonical kind string.

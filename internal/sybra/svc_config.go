@@ -160,6 +160,15 @@ func (s *ConfigService) validateSettings(settings AppSettings) error {
 	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
 		return validationError("maxConcurrent must be 1–100")
 	}
+	if settings.Agent.LogRetentionDays < -1 {
+		return validationError("logRetentionDays must be -1 or greater")
+	}
+	if settings.Agent.LogGzipAfterDays < -1 {
+		return validationError("logGzipAfterDays must be -1 or greater")
+	}
+	if settings.Agent.LogRetentionMaxSizeMB < -1 {
+		return validationError("logRetentionMaxSizeMb must be -1 or greater")
+	}
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[settings.Logging.Level] {
 		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))

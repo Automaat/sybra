@@ -129,10 +129,21 @@
         bind:value={settings.agent.dispatchJitterMs}
         modified={a.dispatchJitterMs !== d.dispatchJitterMs}
         onreset={() => (settings.agent.dispatchJitterMs = d.dispatchJitterMs)} />
-      <NumberField id="agent-logret" label="Log retention (days)" keyPath="agent.log_retention_days" min={0}
+      <NumberField id="agent-logret" label="Log retention (days)" keyPath="agent.log_retention_days" min={-1}
+        description="-1 disables age pruning; 0 = default (14)"
         bind:value={settings.agent.logRetentionDays}
         modified={a.logRetentionDays !== d.logRetentionDays}
         onreset={() => (settings.agent.logRetentionDays = d.logRetentionDays)} />
+      <NumberField id="agent-loggzip" label="Log gzip after (days)" keyPath="agent.log_gzip_after_days" min={-1}
+        description="-1 disables compression; 0 = default (3)"
+        bind:value={settings.agent.logGzipAfterDays}
+        modified={a.logGzipAfterDays !== d.logGzipAfterDays}
+        onreset={() => (settings.agent.logGzipAfterDays = d.logGzipAfterDays)} />
+      <NumberField id="agent-logmax" label="Log max size (MB)" keyPath="agent.log_retention_max_size_mb" min={-1}
+        description="-1 disables size cap; 0 = default (1024)"
+        bind:value={settings.agent.logRetentionMaxSizeMb}
+        modified={a.logRetentionMaxSizeMb !== d.logRetentionMaxSizeMb}
+        onreset={() => (settings.agent.logRetentionMaxSizeMb = d.logRetentionMaxSizeMb)} />
       <NumberField id="agent-approval-port" label="Approval port" keyPath="agent.approval_port" min={0} max={65535}
         description="Pin the localhost approval-server port (0 = random)"
         bind:value={settings.agent.approvalPort}

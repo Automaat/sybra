@@ -1,6 +1,10 @@
 package abtest
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 // ApplyPromptTransform rewrites prompt per an assigned variant's transform:
 // "replace"/"template" swaps in Text outright, "prepend"/"append" splice
@@ -42,13 +46,20 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 5
+const CurrentBuiltinVersion = 6
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
 // reconcile if its ID appears here — every other experiment ID is treated as
 // user-authored and preserved verbatim.
-var BuiltinExperimentIDs = []string{"code-author-cheap", "code-author-maintenance-cheap", "fix-review-expensive", "review-expensive", "human-review-pl-5cf660095cb8"}
+var BuiltinExperimentIDs = []string{
+	"code-author-cheap",
+	"code-author-maintenance-cheap",
+	"fix-review-expensive",
+	"review-expensive",
+	"human-review-pl-5cf660095cb8",
+	"review-tighten-instructions-pl-a2d853b2c1d9",
+}
 
 // humanReviewDedupeAddendum is Prompt Lab proposal pl-5cf660095cb8's
 // candidate text for the human-review role: appended to the base
@@ -71,6 +82,22 @@ entry, restate its diagnosis in 'summary', and leave 'issue_title',
 'issue_body', and 'issue_labels' null so you never duplicate a filing that
 already exists.
 `
+
+const ReviewTightenInstructionsPLA2D853B2C1D9 = `
+
+Review variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard before returning a verdict.
+
+- Lead with concrete blocking defects only: correctness, security, data loss, broken workflows, test gaps that can hide a regression, or repository-rule violations.
+- For every finding, name the exact file/line evidence and the user-visible failure mode. If you cannot tie a concern to behavior or a repo rule, omit it.
+- Check that implementation and tests cover the task's current acceptance criteria, including edge cases and failure paths. Treat missing focused tests as a finding when the change is risky or user-visible.
+- Separate must-fix-before-merge issues from optional cleanup; do not block on style preferences, speculative rewrites, or unrelated refactors.
+- If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.
+`
+
+func digestString(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // Experiment selects among variants for matching workflow roles.
 type Experiment struct {
@@ -110,6 +137,26 @@ type Variant struct {
 type PromptTransform struct {
 	Op   string `yaml:"op,omitempty" json:"op,omitempty"`
 	Text string `yaml:"text,omitempty" json:"text,omitempty"`
+}
+
+// ApplyPromptTransformOpText rewrites prompt per op/text: "replace"/
+// "template" overwrite it outright, "prepend"/"append" splice text in, any
+// other value (including empty) leaves prompt unchanged. Op and text are
+// taken as plain strings rather than *PromptTransform so dispatch paths that
+// mirror PromptTransform as a local type (e.g. internal/workflow, to avoid
+// depending on internal/abtest in their launcher interface) can still share
+// this logic instead of reimplementing the switch.
+func ApplyPromptTransformOpText(prompt, op, text string) string {
+	switch strings.TrimSpace(op) {
+	case "replace", "template":
+		return text
+	case "prepend":
+		return text + prompt
+	case "append":
+		return prompt + text
+	default:
+		return prompt
+	}
 }
 
 // Assignment is the durable identity selected for a workflow stage.
@@ -187,42 +234,76 @@ func DefaultConfig() Config {
 				Enabled:        &expEnabled,
 				AssignmentUnit: "stage",
 				Bracket:        "expensive",
-				Roles:          []string{"review", "plan"},
+				Roles:          []string{"plan"},
 				Variants: []Variant{
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
 					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
 					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
 				},
 			},
-			// human-review-pl-5cf660095cb8: Prompt Lab proposal
-			// pl-5cf660095cb8 (candidate intent "tighten-instructions"),
-			// scaffolded from fleet evidence that role human-review fails
-			// 19% vs 11% overall. The challenger variant's weight stays 0
-			// (never selected — see abtest.EligibleVariants) until
-			// `sybra-cli evaluation offline gate` allows its digest to
-			// enroll; bumping the weight before that is exactly the
-			// unevaluated-enrollment this gate exists to prevent.
+			humanReviewDedupeExperiment(expEnabled),
+			reviewTightenInstructionsExperiment(expEnabled),
+		},
+	}
+}
+
+// humanReviewDedupeExperiment is Prompt Lab proposal pl-5cf660095cb8
+// (candidate intent "tighten-instructions"), scaffolded from fleet evidence
+// that role human-review fails 19% vs 11% overall. The challenger variant's
+// weight stays 0 (never selected — see abtest.EligibleVariants) until
+// `sybra-cli evaluation offline gate` allows its digest to enroll; bumping
+// the weight before that is exactly the unevaluated-enrollment this gate
+// exists to prevent.
+func humanReviewDedupeExperiment(expEnabled bool) Experiment {
+	return Experiment{
+		ID:             "human-review-pl-5cf660095cb8",
+		Kind:           "prompt",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "task",
+		Subject:        &Subject{Role: "human-review"},
+		Roles:          []string{"human-review"},
+		Variants: []Variant{
+			{ID: "baseline", Provider: "claude", Model: "claude-haiku-4-5-20251001", Weight: 1},
 			{
-				ID:             "human-review-pl-5cf660095cb8",
-				Kind:           "prompt",
-				Enabled:        &expEnabled,
-				AssignmentUnit: "task",
-				Subject:        &Subject{Role: "human-review"},
-				Roles:          []string{"human-review"},
-				Variants: []Variant{
-					{ID: "baseline", Provider: "claude", Model: "claude-haiku-4-5-20251001", Weight: 1},
-					{
-						ID:       "pl-5cf660095cb8",
-						Provider: "claude",
-						Model:    "claude-haiku-4-5-20251001",
-						Digest:   "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
-						PromptTransform: &PromptTransform{
-							Op:   "append",
-							Text: humanReviewDedupeAddendum,
-						},
-						Weight: 0,
-					},
+				ID:       "pl-5cf660095cb8",
+				Provider: "claude",
+				Model:    "claude-haiku-4-5-20251001",
+				Digest:   "e0e4bf727cb35b08b97197c4a849445162ac82a834f760fa996731692f4d9c86",
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: humanReviewDedupeAddendum,
 				},
+				Weight: 0,
+			},
+		},
+	}
+}
+
+func reviewTightenInstructionsExperiment(expEnabled bool) Experiment {
+	return Experiment{
+		ID:             "review-tighten-instructions-pl-a2d853b2c1d9",
+		Kind:           "compound",
+		Enabled:        &expEnabled,
+		AssignmentUnit: "stage",
+		Bracket:        "expensive",
+		Subject:        &Subject{Role: "review"},
+		Roles:          []string{"review"},
+		Variants: []Variant{
+			{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
+			{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
+			{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+			{
+				ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
+				Provider: "codex",
+				Model:    "gpt-5.5",
+				Tier:     "expensive",
+				Version:  "pl-a2d853b2c1d9",
+				Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),
+				PromptTransform: &PromptTransform{
+					Op:   "append",
+					Text: ReviewTightenInstructionsPLA2D853B2C1D9,
+				},
+				Weight: 1,
 			},
 		},
 	}

@@ -55,6 +55,24 @@ func TestApplyABVariant_AssignsEligibleProvider(t *testing.T) {
 	}
 }
 
+func TestApplyABVariant_AppliesPromptTransform(t *testing.T) {
+	stubProviderCLIAvailable(t, func(string) bool { return true })
+	m := &Manager{}
+	ab := reviewExperiment(abtest.Variant{
+		ID:              "codex-prompt",
+		Provider:        "codex",
+		Model:           "gpt-5.5",
+		PromptTransform: &abtest.PromptTransform{Op: "append", Text: "\nUse the review variant."},
+		Weight:          1,
+	})
+
+	cfg := m.ApplyABVariant(RunConfig{Model: "opus", Prompt: "Run /staff-code-review"}, ab, "task-1", "review")
+
+	if want := "Run /staff-code-review\nUse the review variant."; cfg.Prompt != want {
+		t.Fatalf("Prompt = %q, want %q", cfg.Prompt, want)
+	}
+}
+
 func TestApplyABVariant_SkipsProviderWithMissingCLI(t *testing.T) {
 	stubProviderCLIAvailable(t, func(p string) bool { return p != "copilot" })
 	m := &Manager{}
@@ -80,21 +98,6 @@ func TestApplyABVariant_EvalGateExcludesDigestedVariant(t *testing.T) {
 
 	if cfg.Provider != "" {
 		t.Fatalf("Provider = %q, want empty — an eval-failed digested variant must not enroll", cfg.Provider)
-	}
-}
-
-func TestApplyABVariant_AppliesPromptTransform(t *testing.T) {
-	stubProviderCLIAvailable(t, func(string) bool { return true })
-	m := &Manager{}
-	ab := reviewExperiment(abtest.Variant{
-		ID: "tightened", Provider: "claude", Model: "sonnet", Weight: 1,
-		PromptTransform: &abtest.PromptTransform{Op: "append", Text: "\nextra instructions"},
-	})
-
-	cfg := m.ApplyABVariant(RunConfig{Prompt: "base prompt"}, ab, "task-1", "review")
-
-	if cfg.Prompt != "base prompt\nextra instructions" {
-		t.Fatalf("Prompt = %q, want base prompt + appended transform text", cfg.Prompt)
 	}
 }
 

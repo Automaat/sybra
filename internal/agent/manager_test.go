@@ -459,18 +459,18 @@ func TestRunningCountTracksLiveAgents(t *testing.T) {
 		t.Fatalf("RunningCount = %d, want 2", got)
 	}
 
-	m.markAgentDone(a1)
+	m.markAgentDone(context.Background(), a1)
 	if got := m.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount after one done = %d, want 1", got)
 	}
 
 	// Idempotent on repeated terminal paths.
-	m.markAgentDone(a1)
+	m.markAgentDone(context.Background(), a1)
 	if got := m.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount after duplicate done = %d, want 1", got)
 	}
 
-	m.markAgentDone(a2)
+	m.markAgentDone(context.Background(), a2)
 	if got := m.RunningCount(); got != 0 {
 		t.Fatalf("RunningCount after all done = %d, want 0", got)
 	}
@@ -1235,6 +1235,34 @@ func TestFindRunningAgentForTask_FiltersByRoleAndTask(t *testing.T) {
 	}
 	if got.ID != "a1" {
 		t.Errorf("ID = %q, want a1", got.ID)
+	}
+}
+
+func TestActiveLogPaths(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	putAgent(t, m, &Agent{ID: "a1", TaskID: "task-1", State: StateRunning, LogPath: "/logs/agents/a1.ndjson"})
+	putAgent(t, m, &Agent{ID: "a2", TaskID: "task-2", State: StatePaused, LogPath: "/logs/agents/a2.ndjson"})
+	putAgent(t, m, &Agent{ID: "a3", TaskID: "task-3", State: StateStopped, LogPath: "/logs/agents/a3.ndjson"})
+	putAgent(t, m, &Agent{ID: "a4", TaskID: "task-4", State: StateIdle, LogPath: "/logs/agents/a4.ndjson"})
+	putAgent(t, m, &Agent{ID: "a5", TaskID: "task-5", State: StateRunning})
+
+	got := m.ActiveLogPaths()
+
+	want := map[string]bool{
+		"/logs/agents/a1.ndjson": true,
+		"/logs/agents/a2.ndjson": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ActiveLogPaths() = %v, want %v", got, want)
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("missing expected active path %q", p)
+		}
+	}
+	if got["/logs/agents/a3.ndjson"] || got["/logs/agents/a4.ndjson"] {
+		t.Errorf("stopped/idle agents must not be reported active: %v", got)
 	}
 }
 

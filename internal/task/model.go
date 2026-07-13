@@ -398,6 +398,7 @@ type Task struct {
 	StatusChangedAt time.Time `json:"statusChangedAt"`
 
 	AssignedNode    string     `json:"assignedNode,omitempty"`
+	NodeOverride    string     `json:"nodeOverride,omitempty"`
 	MirrorRev       int64      `json:"mirrorRev,omitempty"`
 	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
 

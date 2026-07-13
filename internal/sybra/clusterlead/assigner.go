@@ -26,6 +26,16 @@ type Assigner struct {
 	isWorkProject func(projectID string) bool
 	auditBlock    func(taskID, node, reason string)
 	logger        *slog.Logger
+
+	stopLocalAgents func(taskID string)
+}
+
+// SetStopLocalAgents supplies the hook Reassign uses to stop the leader's own
+// agents for a task before it is moved onto a follower. Without it, a task
+// running locally would keep its local agent alive while the new node starts a
+// second one on the same branch.
+func (a *Assigner) SetStopLocalAgents(stop func(taskID string)) {
+	a.stopLocalAgents = stop
 }
 
 // NewAssigner constructs an Assigner. isWorkProject classifies a project as
@@ -59,7 +69,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 		if task.IsTerminalStatus(t.Status) || t.TaskType == task.TaskTypeChat || t.Status == task.StatusBlocked {
 			continue
 		}
-		home := a.cfg.HomeNodeFor(t.ProjectID)
+		home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 		if home.Local || t.AssignedNode == home.Name {
 			continue
 		}
@@ -77,7 +87,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 // idempotent: the follower's AssignTask upserts by id, so a repeated push is
 // harmless.
 func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err error) {
-	home := a.cfg.HomeNodeFor(t.ProjectID)
+	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
 	if home.Local {
 		return false, nil
 	}

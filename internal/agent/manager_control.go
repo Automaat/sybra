@@ -213,6 +213,27 @@ func (m *Manager) ListAgents() []*Agent {
 	return agents
 }
 
+// ActiveLogPaths returns the set of output-log paths owned by currently live
+// agents (isLive: running, or paused between conversational turns). The
+// per-agent log retention sweep (internal/logging.EnforceAgentLogRetention)
+// uses this as a never-touch allowlist so a live agent's own NDJSON stream —
+// and its .gz/.stderr siblings — is never deleted or compressed out from
+// under it while it's still appending.
+func (m *Manager) ActiveLogPaths() map[string]bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]bool, len(m.agents))
+	for _, a := range m.agents {
+		if !isLive(a.GetState()) {
+			continue
+		}
+		if p := a.GetLogPath(); p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
 // HasRunningAgentForTask returns true if any agent is currently running for the given task.
 // For headless agents this checks whether the goroutine has truly exited (via the done
 // channel) rather than the State field, which may be set to Stopped by StopAgent before

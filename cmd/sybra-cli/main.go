@@ -175,6 +175,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdReopen(store, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
+	case "cluster":
+		return cmdCluster(cfg, store, projStore, rest, jsonOut)
 	case "audit":
 		return cmdAudit(cfg, rest, jsonOut)
 	case "board":
@@ -1945,6 +1947,9 @@ Commands:
   project create --url <github-url> [--type pet|work]
   project update <id> --type pet|work
   project delete <id>
+
+  cluster nodes
+  cluster reassign <task-id> --node <name>   ("local" brings it back to the leader)
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)

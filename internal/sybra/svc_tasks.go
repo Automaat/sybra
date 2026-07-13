@@ -578,7 +578,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if s.cfg != nil && !s.cfg.HomeNodeFor(t.ProjectID).Local {
+	if s.cfg != nil && !s.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
@@ -947,7 +947,8 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 	}
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", t.ProjectID, t.PRNumber)
-	ag, err := s.agents.Run(s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.cfg.ABTesting, t.ID, string(agent.RoleReview)))
+	cfg := s.agents.ApplyABVariant(review.StaffCodeReviewRunConfig(t, prompt, dir, posture), s.cfg.ABTesting, t.ID, string(agent.RoleReview))
+	ag, err := s.agents.Run(cfg)
 	if err != nil {
 		return err
 	}
@@ -957,7 +958,7 @@ func (s *TaskService) startPRReviewAgent(t task.Task) error {
 		Mode:      "headless",
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
-		Prompt:    prompt,
+		Prompt:    cfg.Prompt,
 	}); err != nil {
 		s.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}

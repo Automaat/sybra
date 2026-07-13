@@ -94,6 +94,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		CreatedAt:       now.Add(-time.Hour),
 		UpdatedAt:       now,
 		AssignedNode:    "pet-box",
+		NodeOverride:    "gpu-box",
 		MirrorRev:       7,
 		MirrorUpdatedAt: &completedAt,
 		Body:            "body",
@@ -311,6 +312,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.StatusChangedAt = later
 	case "AssignedNode":
 		task.AssignedNode = "pet-box"
+	case "NodeOverride":
+		task.NodeOverride = "gpu-box"
 	case "MirrorRev":
 		task.MirrorRev = 7
 	case "MirrorUpdatedAt":
