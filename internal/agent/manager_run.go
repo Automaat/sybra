@@ -388,18 +388,40 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 
-	cfg.sandbox = sandboxSpec{
-		mode:        "enforce",
-		worktree:    canonWorktree,
-		sandboxHome: canonSandboxHome,
-		tmp:         canonTmp,
-		sharedCache: canonSharedCache,
-		profilePath: profilePath,
-	}
+	cfg.sandbox = enforceSpec(canonWorktree, canonSandboxHome, canonTmp, canonSharedCache, profilePath)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
-		"shared_cache", canonSharedCache, "profile", profilePath)
+		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
+		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
+		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
+}
+
+func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
+	return sandboxSpec{
+		mode:         "enforce",
+		worktree:     worktree,
+		sandboxHome:  sandboxHome,
+		tmp:          tmp,
+		sharedCache:  sharedCache,
+		profilePath:  profilePath,
+		claudeState:  agentStateRoot(".claude", sandboxHome),
+		codexState:   agentStateRoot(".codex", sandboxHome),
+		copilotState: agentStateRoot(".copilot", sandboxHome),
+		toolCache:    agentStateRoot(".cache", sandboxHome),
+	}
+}
+
+func agentStateRoot(sub, fallback string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return fallback
+	}
+	canon, err := canonicalizeRoot(filepath.Join(home, sub))
+	if err != nil {
+		return fallback
+	}
+	return canon
 }
 
 // stripEnvKeys returns env with any "KEY=..." entries for the given keys

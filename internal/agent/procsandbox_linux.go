@@ -52,7 +52,11 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		"--dev", "/dev",
 		"--proc", "/proc",
 	}
-	for _, root := range dedupeRoots(cfg.sandbox.worktree, cfg.sandbox.sandboxHome, cfg.sandbox.tmp, cfg.sandbox.sharedCache) {
+	roots := dedupeRoots(
+		cfg.sandbox.worktree, cfg.sandbox.sandboxHome, cfg.sandbox.tmp, cfg.sandbox.sharedCache,
+		cfg.sandbox.claudeState, cfg.sandbox.codexState, cfg.sandbox.copilotState, cfg.sandbox.toolCache,
+	)
+	for _, root := range roots {
 		wrapped = append(wrapped, "--bind", root, root)
 	}
 	wrapped = append(wrapped, "--", name)
