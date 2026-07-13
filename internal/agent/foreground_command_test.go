@@ -90,10 +90,8 @@ func TestRehydrateFromLog_RebuildsForegroundBashState(t *testing.T) {
 	t.Run("matching tool result clears command", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "agent.ndjson")
-		data := strings.Join([]string{
-			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"mise run verify"}}]}}`,
-			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok"}]}}`,
-		}, "\n") + "\n"
+		data := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"mise run verify"}}]}}` + "\n" +
+			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok"}]}}` + "\n"
 		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 			t.Fatalf("write log: %v", err)
 		}

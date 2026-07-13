@@ -127,17 +127,17 @@ func (s *state) deferForBusyCommand(id string, now time.Time) time.Time {
 	return deadline
 }
 
-func (s *state) deferForPressure(id string, now time.Time) (time.Time, int) {
+func (s *state) deferForPressure(id string, now time.Time) (deadline time.Time, defers int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := s.pressureDefers[id] + 1
-	s.pressureDefers[id] = n
-	deadline := now.Add(pressureInspectBackoff(n))
+	defers = s.pressureDefers[id] + 1
+	s.pressureDefers[id] = defers
+	deadline = now.Add(pressureInspectBackoff(defers))
 	if current := s.nextEligibleAt[id]; current.After(deadline) {
 		deadline = current
 	}
 	s.nextEligibleAt[id] = deadline
-	return deadline, n
+	return deadline, defers
 }
 
 func pressureInspectBackoff(defers int) time.Duration {
