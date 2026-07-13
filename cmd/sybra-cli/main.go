@@ -1950,6 +1950,8 @@ Commands:
 
   cluster nodes
   cluster reassign <task-id> --node <name>   ("local" brings it back to the leader)
+  cluster gen-cert --host <name> [--host ...] [--out DIR]
+           self-signed follower cert + the tls_pin the leader must trust
 
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)

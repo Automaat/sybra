@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -26,9 +27,51 @@ const (
 type ClusterConfig struct {
 	Role       string     `yaml:"role,omitempty" json:"role"`
 	BindAddr   string     `yaml:"bind_addr,omitempty" json:"bindAddr"`
+	BindAddrs  []string   `yaml:"bind_addrs,omitempty" json:"bindAddrs"`
 	Followers  []Follower `yaml:"followers,omitempty" json:"followers"`
 	LocalHomes []string   `yaml:"local_homes,omitempty" json:"localHomes"`
 	TLS        ClusterTLS `yaml:"tls,omitempty" json:"tls"`
+}
+
+// ListenAddrs returns every address the control plane should listen on, most
+// significant first. Explicit env (SYBRA_HOST/SYBRA_PORT) wins so an operator
+// can always override a bad config from the unit file; then bind_addrs (one
+// listener per entry, sharing a single handler, for interface-level lockdown);
+// then bind_addr; then the default. Never returns empty.
+func (c *Config) ListenAddrs(envHost, envPort string) []string {
+	envHost, envPort = strings.TrimSpace(envHost), strings.TrimSpace(envPort)
+	if envHost != "" || envPort != "" {
+		if envPort == "" {
+			envPort = DefaultServerPort
+		}
+		return []string{net.JoinHostPort(envHost, envPort)}
+	}
+	if c != nil {
+		if addrs := nonBlank(c.Cluster.BindAddrs); len(addrs) > 0 {
+			return addrs
+		}
+		if addr := strings.TrimSpace(c.Cluster.BindAddr); addr != "" {
+			return []string{addr}
+		}
+	}
+	return []string{net.JoinHostPort("", DefaultServerPort)}
+}
+
+// ServesTLS reports whether the control plane should terminate TLS itself. This
+// is the LAN tier: no CA, no ACME — the leader pins the certificate's SHA-256
+// fingerprint (tls_pin) instead of validating a chain.
+func (c *Config) ServesTLS() bool {
+	return c != nil && strings.TrimSpace(c.Cluster.TLS.CertFile) != "" && strings.TrimSpace(c.Cluster.TLS.KeyFile) != ""
+}
+
+func nonBlank(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if trimmed := strings.TrimSpace(s); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // ClusterTLS holds a follower's server certificate/key paths for the TLS +

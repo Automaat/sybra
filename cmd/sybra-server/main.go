@@ -4,7 +4,9 @@
 //
 // Environment variables:
 //
-//	SYBRA_PORT       HTTP listen port (default: 8080)
+//	SYBRA_PORT       HTTP listen port (default: 8080; overrides cluster.bind_addr)
+//	SYBRA_HOST       HTTP listen host (default: all interfaces)
+//	SYBRA_AUTH_TOKEN Bearer token for the HTTP control plane
 //	SYBRA_STATIC_DIR Directory to serve as /; set to frontend/dist for SPA
 //	                   (optional — omit to skip static file serving)
 package main
@@ -114,23 +116,32 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	port := os.Getenv("SYBRA_PORT")
-	if port == "" {
-		port = "8080"
-	}
-	addr := net.JoinHostPort(strings.TrimSpace(os.Getenv("SYBRA_HOST")), port)
+	addrs := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	servesTLS := cfg.ServesTLS()
 
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              addrs[0],
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("server.listen", "addr", addr)
-		errCh <- srv.ListenAndServe()
-	}()
+	listeners, err := listenAll(ctx, addrs)
+	if err != nil {
+		return 1, err
+	}
+
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		ln := listeners[i]
+		logger.Info("server.listen", "addr", ln.Addr().String(), "tls", servesTLS, "role", cfg.ClusterRole())
+		go func() {
+			if servesTLS {
+				errCh <- srv.ServeTLS(ln, cfg.Cluster.TLS.CertFile, cfg.Cluster.TLS.KeyFile)
+				return
+			}
+			errCh <- srv.Serve(ln)
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -361,4 +372,20 @@ type slogWriter struct{ logger *slog.Logger }
 func (w slogWriter) Write(p []byte) (int, error) {
 	w.logger.Debug("stdlib.log", "msg", string(p))
 	return len(p), nil
+}
+
+func listenAll(ctx context.Context, addrs []string) ([]net.Listener, error) {
+	var lc net.ListenConfig
+	listeners := make([]net.Listener, 0, len(addrs))
+	for _, addr := range addrs {
+		ln, err := lc.Listen(ctx, "tcp", addr)
+		if err != nil {
+			for _, open := range listeners {
+				_ = open.Close()
+			}
+			return nil, fmt.Errorf("listen %s: %w", addr, err)
+		}
+		listeners = append(listeners, ln)
+	}
+	return listeners, nil
 }

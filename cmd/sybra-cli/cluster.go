@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,16 +19,61 @@ const clusterCmdTimeout = 60 * time.Second
 
 func cmdCluster(cfg *config.Config, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign> [flags]")
+		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign|gen-cert> [flags]")
 	}
 	switch args[0] {
 	case "nodes":
 		return cmdClusterNodes(cfg, jsonOut)
 	case "reassign":
 		return cmdClusterReassign(cfg, tasks, projects, args[1:], jsonOut)
+	case "gen-cert":
+		return cmdClusterGenCert(args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown cluster command: %s", args[0])
 	}
+}
+
+func cmdClusterGenCert(args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("gen-cert", flag.ContinueOnError)
+	dir := fs.String("out", "", "directory for follower.crt / follower.key (default: <sybra home>/tls)")
+	var hosts multiFlag
+	fs.Var(&hosts, "host", "hostname or IP the leader will dial (repeatable)")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	outDir := *dir
+	if outDir == "" {
+		outDir = filepath.Join(config.HomeDir(), "tls")
+	}
+
+	got, err := GenerateFollowerCert(outDir, hosts, time.Now())
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(got)
+	}
+	fmt.Printf("wrote %s\n      %s\n\n", got.CertFile, got.KeyFile)
+	fmt.Printf("On the FOLLOWER, serve the control plane with this keypair:\n\n")
+	fmt.Printf("  cluster:\n    tls:\n      cert_file: %s\n      key_file: %s\n\n", got.CertFile, got.KeyFile)
+	fmt.Printf("On the LEADER, pin this exact certificate:\n\n")
+	fmt.Printf("  cluster:\n    followers:\n      - name: <node-name>\n        endpoints: [\"https://%s:8080\"]\n        tls_pin: %s\n\n", got.Hosts[0], got.Pin)
+	fmt.Printf("Expires %s. The leader validates this fingerprint, not a CA chain,\n", got.NotAfter.Format("2006-01-02"))
+	fmt.Printf("so regenerating the certificate means updating tls_pin on the leader.\n")
+	return 0
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+
+func (m *multiFlag) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fmt.Errorf("empty --host")
+	}
+	*m = append(*m, v)
+	return nil
 }
 
 func cmdClusterNodes(cfg *config.Config, jsonOut bool) int {
