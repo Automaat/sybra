@@ -217,9 +217,11 @@ cluster:
 ```
 
 The private key is written `0600` and owned by the `sybra` user; it must stay off
-the leader and out of git. Regenerating the cert **requires updating `tls_pin` on
-the leader** — the pin is the whole trust anchor, so a stale pin correctly refuses
-the connection.
+the leader and out of git. `gen-cert` **overwrites** `follower.crt`/`follower.key`
+in the target directory, so running it against a live follower's dir rotates that
+node's identity — the leader will refuse the connection until you update
+`tls_pin`. The pin is the whole trust anchor: regenerating the cert always means
+updating the leader.
 
 **5. Home some projects on it** (leader side) and restart both:
 

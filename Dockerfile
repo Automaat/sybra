@@ -176,8 +176,14 @@ WORKDIR /home/sybra
 
 EXPOSE 8080
 
+# Scheme-agnostic: a follower configured for the TLS + cert-pin tier
+# (cluster.tls) serves https on the same port, so an http-only probe would mark
+# it permanently unhealthy. -k is safe here: the probe is localhost-only and the
+# leader, not the container, is what pins the certificate.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf "http://localhost:${SYBRA_PORT}/health" || exit 1
+    CMD curl -sf "http://localhost:${SYBRA_PORT}/health" \
+     || curl -skf "https://localhost:${SYBRA_PORT}/health" \
+     || exit 1
 
 # Mounts expected (host dirs must be chowned to uid:gid 1000:1000):
 #   ~/.sybra  → /home/sybra/.sybra  (task store, config, projects)

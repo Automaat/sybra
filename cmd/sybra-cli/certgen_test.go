@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,6 +86,50 @@ func TestGenerateFollowerCertRequiresAHost(t *testing.T) {
 	}
 }
 
+func TestRegeneratingOverAWorldReadableKeyTightensIt(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "follower.key")
+	if err := os.WriteFile(stale, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed stale key: %v", err)
+	}
+	got, err := GenerateFollowerCert(dir, []string{"127.0.0.1"}, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateFollowerCert: %v", err)
+	}
+	info, err := os.Stat(got.KeyFile)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("O_TRUNC keeps an existing file's mode, so a key restored at 0644 stays world-readable: got %04o", perm)
+	}
+}
+
+func TestGeneratedCertIsNotACA(t *testing.T) {
+	got, err := GenerateFollowerCert(t.TempDir(), []string{"127.0.0.1"}, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateFollowerCert: %v", err)
+	}
+	pemBytes, err := os.ReadFile(got.CertFile)
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		t.Fatal("cert is not PEM")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse cert: %v", err)
+	}
+	if parsed.IsCA {
+		t.Fatal("the pinned path never builds a chain; a follower leaf must not be able to sign other certs")
+	}
+	if parsed.KeyUsage&x509.KeyUsageCertSign != 0 {
+		t.Fatal("follower key must not carry CertSign")
+	}
+}
+
 func TestGeneratedKeyIsNotWorldReadable(t *testing.T) {
 	dir := t.TempDir()
 	got, err := GenerateFollowerCert(dir, []string{"127.0.0.1"}, time.Now())
@@ -97,11 +143,11 @@ func TestGeneratedKeyIsNotWorldReadable(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("private key mode = %04o, want 0600", perm)
 	}
-	pem, err := os.ReadFile(got.CertFile)
+	encoded, err := os.ReadFile(got.CertFile)
 	if err != nil {
 		t.Fatalf("read cert: %v", err)
 	}
-	if !strings.Contains(string(pem), "BEGIN CERTIFICATE") {
+	if !strings.Contains(string(encoded), "BEGIN CERTIFICATE") {
 		t.Fatalf("cert file is not PEM: %s", filepath.Base(got.CertFile))
 	}
 }

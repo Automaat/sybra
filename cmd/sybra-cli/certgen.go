@@ -53,10 +53,10 @@ func GenerateFollowerCert(dir string, hosts []string, now time.Time) (GeneratedC
 		Subject:               pkix.Name{CommonName: hosts[0], Organization: []string{"sybra follower"}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(certValidity),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
+		IsCA:                  false,
 	}
 	for _, h := range hosts {
 		if ip := net.ParseIP(h); ip != nil {
@@ -102,9 +102,15 @@ func writePEM(path, blockType string, der []byte, perm os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	defer f.Close()
 	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	if err := os.Chmod(path, perm); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
 }

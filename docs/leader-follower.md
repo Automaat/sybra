@@ -87,9 +87,14 @@ followers:
     tls_pin: 8c98022c027068bb0a67f1781f0cd40d82436d80791da230944cebcca4b3c1d5
 ```
 
-Because the pin *is* the trust anchor, **regenerating the certificate means
-updating `tls_pin` on the leader** — otherwise the leader will (correctly) refuse
-to talk to the follower.
+`gen-cert` overwrites an existing `follower.crt`/`follower.key` in the target
+directory. Because the pin *is* the trust anchor, **regenerating the certificate
+means updating `tls_pin` on the leader** — otherwise the leader will (correctly)
+refuse to talk to the follower.
+
+The generated leaf is not a CA and cannot sign other certificates: the pinned
+path never builds a chain, so the certificate needs no authority beyond proving
+it is the one the leader pinned.
 
 ### 3. Plain HTTP with a bearer token (pet projects only, trusted LAN)
 
@@ -151,8 +156,19 @@ address fails to bind the server does **not** start: a follower that came up on
 only some of its interfaces would be silently unreachable from the leader on the
 others.
 
-`SYBRA_HOST` / `SYBRA_PORT` override the config, so a bad bind can always be
-rescued from the unit file without editing `config.yaml`.
+Precedence is **`SYBRA_BIND_ADDR` > `bind_addrs` > `bind_addr` > `SYBRA_HOST`/
+`SYBRA_PORT` > all interfaces on 8080.** A configured bind deliberately beats
+`SYBRA_PORT`, because the shipped unit file and the Dockerfile both set it — if
+env won, `bind_addrs` would be silently discarded on every supported deploy and
+a control plane you locked to the tailnet would come up on the LAN as well.
+`SYBRA_BIND_ADDR` is the escape hatch for rescuing a bad bind from the unit file
+without editing `config.yaml`.
+
+If `cluster.tls` names a `cert_file` but no `key_file` (or vice versa) the server
+**refuses to start**. A half-configured block would otherwise come up in
+cleartext while the leader still believed the `https://` endpoint was encrypted —
+and the confidentiality guard would go on treating the node as safe for
+work-typed projects.
 
 ## Reassignment
 

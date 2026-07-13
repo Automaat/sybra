@@ -33,28 +33,65 @@ type ClusterConfig struct {
 	TLS        ClusterTLS `yaml:"tls,omitempty" json:"tls"`
 }
 
-// ListenAddrs returns every address the control plane should listen on, most
-// significant first. Explicit env (SYBRA_HOST/SYBRA_PORT) wins so an operator
-// can always override a bad config from the unit file; then bind_addrs (one
-// listener per entry, sharing a single handler, for interface-level lockdown);
-// then bind_addr; then the default. Never returns empty.
+// ListenAddrs returns every address the control plane should listen on.
+//
+// A configured bind wins over SYBRA_HOST/SYBRA_PORT. That inversion is
+// deliberate: the shipped unit file and the Dockerfile both set SYBRA_PORT, so
+// letting env win would silently discard bind_addrs on every supported deploy —
+// an operator who locked the control plane to the tailnet would get it bound on
+// every interface instead, which is the opposite of what they asked for.
+// SYBRA_BIND_ADDR is the explicit escape hatch that still overrides config, for
+// rescuing a bad bind from the unit file.
+//
+// Precedence: SYBRA_BIND_ADDR > bind_addrs (one listener each, shared handler)
+// > bind_addr > SYBRA_HOST/SYBRA_PORT > all interfaces on the default port.
+// Never returns empty.
 func (c *Config) ListenAddrs(envHost, envPort string) []string {
+	if override := strings.TrimSpace(os.Getenv("SYBRA_BIND_ADDR")); override != "" {
+		return []string{override}
+	}
 	envHost, envPort = strings.TrimSpace(envHost), strings.TrimSpace(envPort)
+	if c != nil {
+		configured := nonBlank(c.Cluster.BindAddrs)
+		if len(configured) == 0 {
+			if addr := strings.TrimSpace(c.Cluster.BindAddr); addr != "" {
+				configured = []string{addr}
+			}
+		}
+		if len(configured) > 0 {
+			if envHost != "" || envPort != "" {
+				slog.Warn("config: cluster bind wins over SYBRA_HOST/SYBRA_PORT; set SYBRA_BIND_ADDR to override",
+					"bind", configured, "env_host", envHost, "env_port", envPort)
+			}
+			return configured
+		}
+	}
 	if envHost != "" || envPort != "" {
 		if envPort == "" {
 			envPort = DefaultServerPort
 		}
 		return []string{net.JoinHostPort(envHost, envPort)}
 	}
-	if c != nil {
-		if addrs := nonBlank(c.Cluster.BindAddrs); len(addrs) > 0 {
-			return addrs
-		}
-		if addr := strings.TrimSpace(c.Cluster.BindAddr); addr != "" {
-			return []string{addr}
-		}
-	}
 	return []string{net.JoinHostPort("", DefaultServerPort)}
+}
+
+// ValidateCluster rejects a half-configured TLS block. Exactly one of
+// cert_file/key_file means the operator intended TLS but the node would come up
+// in cleartext, while the leader still believes an https:// endpoint is
+// encrypted — so the confidentiality guard would keep letting work-typed tasks
+// onto a node whose bearer token now rides the wire in the clear. Fail to start
+// instead.
+func (c *Config) ValidateCluster() error {
+	if c == nil {
+		return nil
+	}
+	cert := strings.TrimSpace(c.Cluster.TLS.CertFile)
+	key := strings.TrimSpace(c.Cluster.TLS.KeyFile)
+	if (cert == "") != (key == "") {
+		return fmt.Errorf("cluster.tls needs both cert_file and key_file (got cert_file=%q key_file=%q); "+
+			"a half-configured block would serve the control plane in cleartext", cert, key)
+	}
+	return nil
 }
 
 // ServesTLS reports whether the control plane should terminate TLS itself. This

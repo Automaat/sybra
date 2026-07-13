@@ -60,6 +60,10 @@ func run() (int, error) {
 		return 1, fmt.Errorf("config: %w", err)
 	}
 
+	if err := cfg.ValidateCluster(); err != nil {
+		return 1, fmt.Errorf("config: %w", err)
+	}
+
 	logger, levelVar, cleanup, err := logging.New(cfg.Logging)
 	if err != nil {
 		return 1, fmt.Errorf("logger: %w", err)
@@ -116,31 +120,9 @@ func run() (int, error) {
 	// reaching it.
 	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
-	addrs := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
-	servesTLS := cfg.ServesTLS()
-
-	srv := &http.Server{
-		Addr:              addrs[0],
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	listeners, err := listenAll(ctx, addrs)
+	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
 	if err != nil {
 		return 1, err
-	}
-
-	errCh := make(chan error, len(listeners))
-	for i := range listeners {
-		ln := listeners[i]
-		logger.Info("server.listen", "addr", ln.Addr().String(), "tls", servesTLS, "role", cfg.ClusterRole())
-		go func() {
-			if servesTLS {
-				errCh <- srv.ServeTLS(ln, cfg.Cluster.TLS.CertFile, cfg.Cluster.TLS.KeyFile)
-				return
-			}
-			errCh <- srv.Serve(ln)
-		}()
 	}
 
 	select {
@@ -372,6 +354,35 @@ type slogWriter struct{ logger *slog.Logger }
 func (w slogWriter) Write(p []byte) (int, error) {
 	w.logger.Debug("stdlib.log", "msg", string(p))
 	return len(p), nil
+}
+
+func serveAll(ctx context.Context, cfg *config.Config, handler http.Handler, logger *slog.Logger) (*http.Server, chan error, error) {
+	addrs := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	servesTLS := cfg.ServesTLS()
+
+	srv := &http.Server{
+		Addr:              addrs[0],
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listeners, err := listenAll(ctx, addrs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	errCh := make(chan error, len(listeners))
+	for i := range listeners {
+		ln := listeners[i]
+		logger.Info("server.listen", "addr", ln.Addr().String(), "tls", servesTLS, "role", cfg.ClusterRole())
+		go func() {
+			if servesTLS {
+				errCh <- srv.ServeTLS(ln, cfg.Cluster.TLS.CertFile, cfg.Cluster.TLS.KeyFile)
+				return
+			}
+			errCh <- srv.Serve(ln)
+		}()
+	}
+	return srv, errCh, nil
 }
 
 func listenAll(ctx context.Context, addrs []string) ([]net.Listener, error) {
