@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -373,17 +374,29 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 // deadline.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	scaled := time.Duration(int64(timeout) * int64(e2eTimeoutScale()))
+	scale := e2eTimeoutScale()
+	scaled := time.Duration(int64(timeout) * scale)
 	deadline := time.After(scaled)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)", desc, scaled, e2eTimeoutScale())
+			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, scaled, scale, e2eGoroutineDump())
 		case <-time.After(50 * time.Millisecond):
 			if fn() {
 				return
 			}
 		}
+	}
+}
+
+func e2eGoroutineDump() string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return "--- goroutine dump at e2e timeout (what was blocked) ---\n" + string(buf[:n])
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }
 
