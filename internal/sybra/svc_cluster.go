@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/cluster"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 )
 
 const (
@@ -34,9 +36,10 @@ type ClusterNodeDTO struct {
 // board does see a node's endpoint, surfaced for health diagnostics). The roster
 // is nil (all methods degrade to empty/errors) on a non-leader node.
 type ClusterService struct {
-	logger *slog.Logger
-	mu     sync.RWMutex
-	roster *cluster.Roster
+	logger   *slog.Logger
+	mu       sync.RWMutex
+	roster   *cluster.Roster
+	assigner *clusterlead.Assigner
 }
 
 func (s *ClusterService) setRoster(r *cluster.Roster) {
@@ -45,10 +48,52 @@ func (s *ClusterService) setRoster(r *cluster.Roster) {
 	s.mu.Unlock()
 }
 
+func (s *ClusterService) setAssigner(a *clusterlead.Assigner) {
+	s.mu.Lock()
+	s.assigner = a
+	s.mu.Unlock()
+}
+
 func (s *ClusterService) getRoster() *cluster.Roster {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.roster
+}
+
+func (s *ClusterService) getAssigner() *clusterlead.Assigner {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.assigner
+}
+
+// ReassignTask moves a task to an explicitly named node ("local" brings it back
+// to the leader), overriding its project's configured home. The old node's
+// agents for the task are stopped first when it is still reachable, so a
+// merely-degraded follower cannot keep driving the branch alongside the new one.
+func (s *ClusterService) ReassignTask(taskID, node string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return validationError("task id is required")
+	}
+	if strings.TrimSpace(node) == "" {
+		return validationError("node is required")
+	}
+	a := s.getAssigner()
+	if a == nil {
+		return validationError("this node is not a cluster leader")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), nodeCallTimeout)
+	defer cancel()
+	err := a.Reassign(ctx, taskID, node)
+	if err == nil {
+		return nil
+	}
+	if s.logger != nil {
+		s.logger.Error("cluster.reassign.failed", "task", taskID, "node", node, "err", err)
+	}
+	if errors.Is(err, clusterlead.ErrUnknownNode) || errors.Is(err, clusterlead.ErrConfidentiality) {
+		return validationError(err.Error())
+	}
+	return fmt.Errorf("reassign task %s to node %s failed", taskID, node)
 }
 
 // GetNodes returns the follower roster with live health for the aggregated

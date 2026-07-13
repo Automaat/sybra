@@ -183,6 +183,7 @@ export const RejectPlanOnNode = pick(ClusterSvc.RejectPlanOnNode, http.RejectPla
 export const ListNodeAgents = pick(ClusterSvc.ListNodeAgents, http.ListNodeAgents)
 export const GetAgentOutputOnNode = pick(ClusterSvc.GetAgentOutputOnNode, http.GetAgentOutputOnNode)
 export const GetConvoOutputOnNode = pick(ClusterSvc.GetConvoOutputOnNode, http.GetConvoOutputOnNode)
+export const ReassignTask = pick(ClusterSvc.ReassignTask, http.ReassignTask)
 
 // Runtime events and browser utilities.
 //

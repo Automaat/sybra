@@ -12,6 +12,8 @@
   import TaskTagEditor from './TaskTagEditor.svelte'
   import TaskDueDateEditor from './TaskDueDateEditor.svelte'
   import TaskMaxTurnsEditor from './TaskMaxTurnsEditor.svelte'
+  import TaskNodeAssignment from './TaskNodeAssignment.svelte'
+  import { clusterStore } from '../../stores/cluster.svelte.js'
 
   interface Props {
     task: Task
@@ -124,6 +126,13 @@
       {/if}
     </button>
   </dd>
+
+  {#if clusterStore.enabled}
+    <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Node</dt>
+    <dd>
+      <TaskNodeAssignment {task} />
+    </dd>
+  {/if}
 
   {#if task.projectId}
     <dt class="text-[11px] font-medium uppercase tracking-wide text-surface-400">Branch</dt>

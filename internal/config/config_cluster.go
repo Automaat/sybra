@@ -105,6 +105,37 @@ type HomeNode struct {
 	Local     bool
 }
 
+// LocalNodeName is the reserved node name for the leader itself. Manual
+// reassignment accepts it to bring a task home when every follower is down.
+const LocalNodeName = "local"
+
+// HomeNodeByName resolves a node by roster name, for operations that target a
+// node explicitly instead of following the project's configured home (manual
+// reassignment). Reports ok=false for an unknown name, so a typo can never be
+// mistaken for the leader and silently run work meant for a follower.
+func (c *Config) HomeNodeByName(name string) (HomeNode, bool) {
+	if name == LocalNodeName {
+		return HomeNode{Trusted: true, Encrypted: true, Local: true}, true
+	}
+	if c == nil {
+		return HomeNode{}, false
+	}
+	for i := range c.Cluster.Followers {
+		f := c.Cluster.Followers[i]
+		if f.Name != name {
+			continue
+		}
+		return HomeNode{
+			Name:      f.Name,
+			URL:       f.PrimaryEndpoint(),
+			Token:     f.ResolveToken(),
+			Trusted:   f.Trusted,
+			Encrypted: f.Encrypted(),
+		}, true
+	}
+	return HomeNode{}, false
+}
+
 // HomeNodeFor resolves which node owns execution for projectID. A project in a
 // follower's Homes routes to that follower; a project in LocalHomes, in no
 // roster, or on a non-leader node routes local. Per-project homing means the
