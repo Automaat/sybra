@@ -214,6 +214,44 @@ func TestEnforceAgentLogRetention_Gzip(t *testing.T) {
 	}
 }
 
+func TestEnforceAgentLogRetention_GzipPreservesAgeForLaterPrune(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	old := writeAgentLog(t, agents, "agt-1-2026-04-01T00-00-00.ndjson", "old\n", 10*24*time.Hour, now)
+
+	first := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxAge:    14 * 24 * time.Hour,
+		GzipAfter: 3 * 24 * time.Hour,
+	}, now)
+	if first.Compressed != 1 {
+		t.Fatalf("first pass Compressed = %d, want 1", first.Compressed)
+	}
+
+	gzPath := old + ".gz"
+	info, err := os.Stat(gzPath)
+	if err != nil {
+		t.Fatalf("stat .gz sibling: %v", err)
+	}
+	if !info.ModTime().Equal(now.Add(-10 * 24 * time.Hour)) {
+		t.Fatalf("compressed mtime = %s, want %s", info.ModTime(), now.Add(-10*24*time.Hour))
+	}
+
+	second := EnforceAgentLogRetention(dir, RetentionOptions{
+		MaxAge: 14 * 24 * time.Hour,
+	}, now.Add(5*24*time.Hour))
+	if second.DeletedOld != 1 {
+		t.Fatalf("second pass DeletedOld = %d, want 1", second.DeletedOld)
+	}
+	if _, err := os.Stat(gzPath); !os.IsNotExist(err) {
+		t.Fatalf("compressed file should be age-pruned later, stat err=%v", err)
+	}
+}
+
 func TestEnforceAgentLogRetention_SizeCap(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
