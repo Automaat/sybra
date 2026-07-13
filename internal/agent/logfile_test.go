@@ -2,12 +2,31 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// writeGzip writes content to path compressed with gzip, matching what
+// logging.EnforceAgentLogRetention leaves behind for aged logs.
+func writeGzip(t *testing.T, path, content string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	gw := gzip.NewWriter(f)
+	if _, err := gw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // TestParseLogFile_UnwrapsClaudeEnvelope is the regression guard for the
 // empty-bubble bug on the Agent History panel: headless logs persist raw
@@ -55,6 +74,90 @@ func TestParseLogFile_UnwrapsClaudeEnvelope(t *testing.T) {
 	}
 	if events[4].Type != "result" || events[4].CostUSD != 0.01 {
 		t.Errorf("result event dropped: type=%s cost=%v", events[4].Type, events[4].CostUSD)
+	}
+}
+
+// TestParseLogFile_GzipCompressed is the regression guard for retention:
+// once an aged .ndjson is gzip-compressed to .ndjson.gz and the original
+// removed, replay must transparently decompress it (both when handed the
+// .gz path directly and when handed the stale .ndjson path).
+func TestParseLogFile_GzipCompressed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"hello gz"}]}}`,
+		`{"type":"result","subtype":"success","result":"done","total_cost_usd":0.02}`,
+	}, "\n") + "\n"
+
+	base := filepath.Join(dir, "test.ndjson")
+	writeGzip(t, base+".gz", content)
+
+	// Direct .gz path.
+	events, err := ParseLogFile(base+".gz", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events from .gz, got %d: %+v", len(events), events)
+	}
+	if events[1].Content != "hello gz" {
+		t.Errorf("assistant text lost through gzip: %q", events[1].Content)
+	}
+
+	// Stale .ndjson path — original removed by retention, only .gz remains.
+	events, err = ParseLogFile(base, 0, "")
+	if err != nil {
+		t.Fatalf("stale .ndjson path should resolve to .gz: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events via .gz fallback, got %d", len(events))
+	}
+	if events[2].Type != "result" || events[2].CostUSD != 0.02 {
+		t.Errorf("result event lost through gzip fallback: %+v", events[2])
+	}
+}
+
+func TestParseConvoLogFile_GzipCompressed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"convo gz"}]}}` + "\n" +
+		`{"type":"result","subtype":"success","result":"done"}` + "\n"
+
+	base := filepath.Join(dir, "agent.ndjson")
+	writeGzip(t, base+".gz", content)
+
+	events, err := ParseConvoLogFile(base, 0, nil)
+	if err != nil {
+		t.Fatalf("stale .ndjson path should resolve to .gz: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events via .gz fallback, got %d: %+v", len(events), events)
+	}
+	if events[0].Text != "convo gz" {
+		t.Errorf("assistant text lost through gzip: %q", events[0].Text)
+	}
+}
+
+// TestFindLogFile_GzipFallback confirms FindLogFile locates a gzip-compressed
+// log when the plain .ndjson has been removed by retention.
+func TestFindLogFile_GzipFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	name := "abc123-2026-04-12T10-00-00.ndjson.gz"
+	writeGzip(t, filepath.Join(agentsDir, name), `{"type":"init"}`+"\n")
+
+	got, err := FindLogFile(dir, "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != name {
+		t.Errorf("expected %s, got %s", name, filepath.Base(got))
 	}
 }
 

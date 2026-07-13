@@ -57,8 +57,24 @@ type AgentDefaults struct {
 	// LogRetentionDays bounds how long per-agent NDJSON log files live
 	// under ~/.sybra/logs/agents/. Files older than this (plus all 0-byte
 	// files, regardless of age) are swept on app startup and daily
-	// thereafter. 0 falls back to DefaultLogRetentionDays (14).
+	// thereafter. 0 falls back to DefaultLogRetentionDays (14). A negative
+	// value disables age-based deletion (0-byte files are still removed).
 	LogRetentionDays int `yaml:"log_retention_days" json:"logRetentionDays"`
+	// LogGzipAfterDays bounds how long a retained per-agent NDJSON log
+	// stays uncompressed before the retention sweep gzips it in place
+	// (original removed once the .gz sibling is written successfully). 0
+	// falls back to DefaultLogGzipAfterDays (3). A negative value disables
+	// compression entirely.
+	LogGzipAfterDays int `yaml:"log_gzip_after_days" json:"logGzipAfterDays"`
+	// LogRetentionMaxSizeMB caps the total size (in MB) of the per-agent
+	// NDJSON log directory (~/.sybra/logs/agents/, including any
+	// gzip-compressed and .stderr sidecar files). When the age/gzip passes
+	// still leave the directory over this cap, the sweep deletes the
+	// oldest non-active files (by mtime) until it's back under the cap, or
+	// only currently-active agents' logs remain. 0 falls back to
+	// DefaultLogRetentionMaxSizeMB (1024, i.e. 1 GiB). A negative value
+	// disables size-based enforcement entirely.
+	LogRetentionMaxSizeMB int `yaml:"log_retention_max_size_mb" json:"logRetentionMaxSizeMb"`
 	// SurviveRestart keeps agent subprocesses running across an app
 	// restart (detached, output streamed to their log files) and reattaches
 	// to them on the next startup. nil means not configured (defaults to

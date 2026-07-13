@@ -102,6 +102,38 @@ func (c *Config) DefaultLogRetentionDays() int {
 	return c.Agent.LogRetentionDays
 }
 
+// DefaultLogGzipAfterDays returns the configured age (in days) after which a
+// retained per-agent NDJSON log is gzip-compressed, or 3 if unset. A
+// negative value disables compression.
+func (c *Config) DefaultLogGzipAfterDays() int {
+	if c == nil {
+		return 3
+	}
+	if c.Agent.LogGzipAfterDays < 0 {
+		return c.Agent.LogGzipAfterDays
+	}
+	if c.Agent.LogGzipAfterDays == 0 {
+		return 3
+	}
+	return c.Agent.LogGzipAfterDays
+}
+
+// DefaultLogRetentionMaxSizeMB returns the configured total size cap, in MB,
+// for the per-agent NDJSON log directory, or 1024 (1 GiB) if unset. A
+// negative value disables size-based enforcement.
+func (c *Config) DefaultLogRetentionMaxSizeMB() int {
+	if c == nil {
+		return 1024
+	}
+	if c.Agent.LogRetentionMaxSizeMB < 0 {
+		return c.Agent.LogRetentionMaxSizeMB
+	}
+	if c.Agent.LogRetentionMaxSizeMB == 0 {
+		return 1024
+	}
+	return c.Agent.LogRetentionMaxSizeMB
+}
+
 // DefaultTrashRetentionDays returns the configured retention window for
 // soft-deleted tasks under ~/.sybra/trash, or 14 days if unset. A negative
 // value disables age-based pruning entirely.
