@@ -126,5 +126,5 @@ func (m *Manager) finalizeRun(ctx context.Context, a *Agent, doneLogEvent string
 	m.logger.Info(doneLogEvent, "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)
-	m.markAgentDone(a)
+	m.markAgentDone(ctx, a)
 }
