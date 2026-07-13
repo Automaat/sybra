@@ -220,7 +220,7 @@
       { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
     ] },
     { label: 'Agents', items: [
-      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot', keys: ['agent'] },
+      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot log retention gzip compression size', keys: ['agent'] },
       ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[] }] : []),
     ] },
     { label: 'Automation', items: [
