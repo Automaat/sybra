@@ -86,22 +86,54 @@ func EnforceAgentLogRetention(logDir string, opts RetentionOptions, now time.Tim
 		return r
 	}
 	dir := filepath.Join(logDir, "agents")
+	recs, err := scanAgentLogDir(dir, opts, &r)
+	if err != nil {
+		return r
+	}
+
+	var ageCutoff, gzipCutoff time.Time
+	if opts.MaxAge > 0 {
+		ageCutoff = now.Add(-opts.MaxAge)
+	}
+	if opts.GzipAfter > 0 {
+		gzipCutoff = now.Add(-opts.GzipAfter)
+	}
+
+	kept := pruneEmptyAndOld(recs, ageCutoff, &r)
+	kept = compressAged(kept, gzipCutoff, &r)
+	kept = enforceSizeCap(kept, opts.MaxTotalBytes, &r)
+
+	for _, rc := range kept {
+		if !rc.protected {
+			r.Kept++
+		}
+	}
+	return r
+}
+
+// agentLogRec is one file discovered under <logDir>/agents/ during a
+// EnforceAgentLogRetention sweep.
+type agentLogRec struct {
+	path      string
+	size      int64
+	modTime   time.Time
+	protected bool
+}
+
+// scanAgentLogDir lists dir and builds the working set of agentLogRec the
+// retention passes operate on. A missing dir is not an error (nothing to
+// prune yet); any other os.ReadDir failure is recorded on r and returned so
+// the caller can bail out with an empty report.
+func scanAgentLogDir(dir string, opts RetentionOptions, r *AgentLogPruneReport) ([]agentLogRec, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.Errors = append(r.Errors, err)
 		}
-		return r
+		return nil, err
 	}
 
-	type rec struct {
-		path      string
-		size      int64
-		modTime   time.Time
-		protected bool
-	}
-
-	var recs []rec
+	var recs []agentLogRec
 	for _, e := range entries {
 		if e.IsDir() || !strings.Contains(e.Name(), ".ndjson") {
 			continue
@@ -113,25 +145,20 @@ func EnforceAgentLogRetention(logDir string, opts RetentionOptions, now time.Tim
 		}
 		r.Scanned++
 		path := filepath.Join(dir, e.Name())
-		recs = append(recs, rec{
+		recs = append(recs, agentLogRec{
 			path:      path,
 			size:      info.Size(),
 			modTime:   info.ModTime(),
 			protected: opts.ActiveLogPaths[baseAgentLogPath(path)],
 		})
 	}
+	return recs, nil
+}
 
-	var ageCutoff, gzipCutoff time.Time
-	if opts.MaxAge > 0 {
-		ageCutoff = now.Add(-opts.MaxAge)
-	}
-	if opts.GzipAfter > 0 {
-		gzipCutoff = now.Add(-opts.GzipAfter)
-	}
-
-	// Pass 1: 0-byte and age-based deletion. Protected files are carried
-	// straight through, untouched by any pass.
-	kept := make([]rec, 0, len(recs))
+// pruneEmptyAndOld is retention pass 1: 0-byte and age-based deletion.
+// Protected files are carried straight through, untouched by any pass.
+func pruneEmptyAndOld(recs []agentLogRec, ageCutoff time.Time, r *AgentLogPruneReport) []agentLogRec {
+	kept := make([]agentLogRec, 0, len(recs))
 	for _, rc := range recs {
 		if rc.protected {
 			r.Protected++
@@ -157,60 +184,64 @@ func EnforceAgentLogRetention(logDir string, opts RetentionOptions, now time.Tim
 			kept = append(kept, rc)
 		}
 	}
+	return kept
+}
 
-	// Pass 2: gzip plain .ndjson files old enough to compress. Skips
-	// .ndjson.gz (already compressed) and .ndjson.stderr sidecars.
-	if !gzipCutoff.IsZero() {
-		for i, rc := range kept {
-			if rc.protected || !strings.HasSuffix(rc.path, ".ndjson") {
-				continue
-			}
-			if !rc.modTime.Before(gzipCutoff) {
-				continue
-			}
-			gzPath, size, err := gzipAndRemove(rc.path)
-			if err != nil {
-				r.Errors = append(r.Errors, err)
-				continue
-			}
-			kept[i].path = gzPath
-			kept[i].size = size
-			r.Compressed++
-		}
+// compressAged is retention pass 2: gzip plain .ndjson files old enough to
+// compress. Skips .ndjson.gz (already compressed) and .ndjson.stderr
+// sidecars. A zero gzipCutoff (GzipAfter disabled) is a no-op.
+func compressAged(kept []agentLogRec, gzipCutoff time.Time, r *AgentLogPruneReport) []agentLogRec {
+	if gzipCutoff.IsZero() {
+		return kept
 	}
-
-	// Pass 3: enforce the total-size cap, oldest non-protected file first.
-	if opts.MaxTotalBytes > 0 {
-		var total int64
-		for _, rc := range kept {
-			total += rc.size
+	for i, rc := range kept {
+		if rc.protected || !strings.HasSuffix(rc.path, ".ndjson") {
+			continue
 		}
-		if total > opts.MaxTotalBytes {
-			sort.Slice(kept, func(i, j int) bool { return kept[i].modTime.Before(kept[j].modTime) })
-			survivors := make([]rec, 0, len(kept))
-			for _, rc := range kept {
-				if total > opts.MaxTotalBytes && !rc.protected {
-					if err := os.Remove(rc.path); err != nil {
-						r.Errors = append(r.Errors, err)
-						survivors = append(survivors, rc)
-						continue
-					}
-					r.DeletedForSize++
-					total -= rc.size
-					continue
-				}
-				survivors = append(survivors, rc)
-			}
-			kept = survivors
+		if !rc.modTime.Before(gzipCutoff) {
+			continue
 		}
+		gzPath, size, err := gzipAndRemove(rc.path)
+		if err != nil {
+			r.Errors = append(r.Errors, err)
+			continue
+		}
+		kept[i].path = gzPath
+		kept[i].size = size
+		r.Compressed++
 	}
+	return kept
+}
 
+// enforceSizeCap is retention pass 3: enforce the total-size cap, oldest
+// non-protected file first. A zero maxTotalBytes (disabled) is a no-op.
+func enforceSizeCap(kept []agentLogRec, maxTotalBytes int64, r *AgentLogPruneReport) []agentLogRec {
+	if maxTotalBytes <= 0 {
+		return kept
+	}
+	var total int64
 	for _, rc := range kept {
-		if !rc.protected {
-			r.Kept++
-		}
+		total += rc.size
 	}
-	return r
+	if total <= maxTotalBytes {
+		return kept
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].modTime.Before(kept[j].modTime) })
+	survivors := make([]agentLogRec, 0, len(kept))
+	for _, rc := range kept {
+		if total > maxTotalBytes && !rc.protected {
+			if err := os.Remove(rc.path); err != nil {
+				r.Errors = append(r.Errors, err)
+				survivors = append(survivors, rc)
+				continue
+			}
+			r.DeletedForSize++
+			total -= rc.size
+			continue
+		}
+		survivors = append(survivors, rc)
+	}
+	return survivors
 }
 
 // PruneAgentLogs removes per-agent NDJSON files under <logDir>/agents/
@@ -242,7 +273,7 @@ func baseAgentLogPath(path string) string {
 // original on success, returning the new path and its size. A partial .gz
 // file left by a failed copy/close is cleaned up before returning the error;
 // the original is left in place on any failure.
-func gzipAndRemove(path string) (string, int64, error) {
+func gzipAndRemove(path string) (dst string, size int64, err error) {
 	src, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
@@ -254,25 +285,29 @@ func gzipAndRemove(path string) (string, int64, error) {
 	}
 
 	gzPath := path + ".gz"
-	dst, err := os.OpenFile(gzPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	gzFile, err := os.OpenFile(gzPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return "", 0, err
 	}
-	gw := gzip.NewWriter(dst)
+	gw := gzip.NewWriter(gzFile)
 	_, copyErr := io.Copy(gw, src)
 	closeErr := gw.Close()
-	if dstCloseErr := dst.Close(); closeErr == nil {
-		closeErr = dstCloseErr
+	if fileCloseErr := gzFile.Close(); closeErr == nil {
+		closeErr = fileCloseErr
 	}
 	if copyErr != nil || closeErr != nil {
-		os.Remove(gzPath)
+		if rmErr := os.Remove(gzPath); rmErr != nil {
+			slog.Warn("logs.agents.gzip_cleanup_failed", "path", gzPath, "error", rmErr)
+		}
 		if copyErr != nil {
 			return "", 0, copyErr
 		}
 		return "", 0, closeErr
 	}
 	if err := os.Chtimes(gzPath, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
-		os.Remove(gzPath)
+		if rmErr := os.Remove(gzPath); rmErr != nil {
+			slog.Warn("logs.agents.gzip_cleanup_failed", "path", gzPath, "error", rmErr)
+		}
 		return "", 0, err
 	}
 
