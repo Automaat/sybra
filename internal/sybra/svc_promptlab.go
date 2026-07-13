@@ -65,7 +65,7 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 			map[string]string{"task.status": string(task.StatusInProgress)},
 			nil,
 		)
-		if dispatchErr != nil || matched == "" {
+		if !promptLabDispatchStarted(matched, dispatchErr) {
 			failure := "no prompt-lab workflow matched"
 			if dispatchErr != nil {
 				failure = dispatchErr.Error()
@@ -87,6 +87,10 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 
 	s.appendProgress(id, artifact.ProgressKindDecision, "Approved: started Prompt Lab variant authoring + offline eval workflow")
 	return t, nil
+}
+
+func promptLabDispatchStarted(matched string, err error) bool {
+	return (err == nil && matched != "") || errors.Is(err, workflow.ErrWorkflowAlreadyActive)
 }
 
 // RejectProposal declines a pending prompt-lab proposal: moves it to

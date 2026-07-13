@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func setupPromptLabService(t *testing.T) *PromptLabService {
@@ -268,5 +270,22 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (status change not rolled back)", got.Status)
+	}
+}
+
+func TestPromptLabDispatchStarted_TreatsAlreadyActiveAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	if !promptLabDispatchStarted("", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive should mean the status hook already started the workflow")
+	}
+	if !promptLabDispatchStarted("prompt-lab-author", nil) {
+		t.Fatal("matched workflow without error should count as started")
+	}
+	if promptLabDispatchStarted("", nil) {
+		t.Fatal("no match and no error should not count as started")
+	}
+	if promptLabDispatchStarted("", errors.New("boom")) {
+		t.Fatal("ordinary dispatch error should not count as started")
 	}
 }
