@@ -356,11 +356,13 @@ func (c *Config) TestingOpenPROnUnrunnableGateEnabled() bool {
 // PollDefaults exposes the resolved poll intervals (override-or-default) so the
 // poll handlers don't each re-implement the fallback logic.
 const (
-	DefaultReviewsFastSeconds  = 120 // was 60
-	DefaultReviewsSlowSeconds  = 600 // was 300
-	DefaultIssuesSeconds       = 600 // was 300
-	DefaultRenovateFastSeconds = 120 // was 60
-	DefaultRenovateSlowSeconds = 600 // was 300
+	DefaultReviewsFastSeconds           = 120 // was 60
+	DefaultReviewsSlowSeconds           = 600 // was 300
+	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewsStableBackoffMaxTicks = 8
+	DefaultIssuesSeconds                = 600 // was 300
+	DefaultRenovateFastSeconds          = 120 // was 60
+	DefaultRenovateSlowSeconds          = 600 // was 300
 )
 
 // RunsSearchPollers reports whether this machine owns the periodic GitHub
@@ -388,6 +390,41 @@ func (c GitHubConfig) reviewsFast() time.Duration {
 
 func (c GitHubConfig) reviewsSlow() time.Duration {
 	return secsOr(c.ReviewsSlowSeconds, DefaultReviewsSlowSeconds)
+}
+
+// ReviewsMaxPRsPerTick returns the configured per-tick linked-PR cap.
+// Zero falls back to DefaultReviewsMaxPRsPerTick; negative disables the cap.
+func (c *Config) ReviewsMaxPRsPerTick() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsMaxPRsPerTick
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsMaxPRsPerTick
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
+}
+
+// ReviewsStableBackoffMaxTicks returns the configured maximum skip window for
+// stable linked PRs. Zero falls back to DefaultReviewsStableBackoffMaxTicks;
+// negative disables the backoff.
+func (c *Config) ReviewsStableBackoffMaxTicks() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsStableBackoffMaxTicks
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsStableBackoffMaxTicks
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
 }
 
 // ReviewsFast/ReviewsSlow/Issues/RenovateFast/RenovateSlow return resolved poll
