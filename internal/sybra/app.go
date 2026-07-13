@@ -39,6 +39,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/recovery"
@@ -100,6 +101,7 @@ type App struct {
 	clusterSvc        *ClusterService
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
+	pressureGate      *pressure.Gate
 	todoist           *todoistCoordinator
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator

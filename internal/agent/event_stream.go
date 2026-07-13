@@ -68,6 +68,11 @@ type StreamEvent struct {
 	// repeating the same call. Unexported so it is never serialized to the
 	// NDJSON log or emitted to the frontend; it lives only in memory.
 	toolSig string
+	// toolUses/toolResults preserve structured tool lifecycle metadata for the
+	// live runner and reattach replay (foreground-command tracking). Unexported
+	// so the NDJSON log and frontend wire format stay unchanged.
+	toolUses    []ToolUseBlock
+	toolResults []ToolResultBlock
 	// permissionDenials carries auto-mode classifier denial records extracted
 	// from this event's tool_result error blocks. Unexported so it is never
 	// serialized; lives in-memory only. Populated for claude "user" events only.
