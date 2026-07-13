@@ -35,6 +35,117 @@ func TestStallLimit(t *testing.T) {
 	}
 }
 
+func TestInspectHeadless_DefersWhileForegroundCheckRunning(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	inspectCalled := false
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		wg:     &sync.WaitGroup{},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			inspectCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+	}
+
+	now := time.Now().UTC()
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		StartedAt:   now.Add(-50 * time.Minute),
+		LastEventAt: now.Add(-20 * time.Minute),
+	}
+	ag.SetLogPath("/tmp/watchdog-a1.ndjson")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "running"})
+	ag.SetLastEventAt(now.Add(-20 * time.Minute))
+	ag.SetForegroundCommand("tu-1", "mise run verify", now.Add(-20*time.Minute))
+
+	s := newState()
+	w.inspectHeadless(context.Background(), s, now, ag)
+
+	if inspectCalled {
+		t.Fatal("inspectAgent called while a foreground verify command is still running")
+	}
+	if s.ready(ag.ID, now.Add(4*time.Minute)) {
+		t.Fatal("foreground-command defer expired too early")
+	}
+	if !s.ready(ag.ID, now.Add(6*time.Minute)) {
+		t.Fatal("foreground-command defer did not expire after debounce window")
+	}
+}
+
+func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	inspectCalled := false
+	w := &Watchdog{
+		tasks:  tasks,
+		logger: slog.New(slog.DiscardHandler),
+		wg:     &sync.WaitGroup{},
+		inspectAgent: func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error) {
+			inspectCalled = true
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+		admitPressure: func() (bool, string) {
+			return false, "load per cpu 99.00 exceeds maximum 8.00"
+		},
+	}
+
+	now := time.Now().UTC()
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		StartedAt:   now.Add(-50 * time.Minute),
+		LastEventAt: now.Add(-20 * time.Minute),
+	}
+	ag.SetLogPath("/tmp/watchdog-a1.ndjson")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "running"})
+	ag.SetLastEventAt(now.Add(-20 * time.Minute))
+
+	s := newState()
+	w.inspectHeadless(context.Background(), s, now, ag)
+
+	if inspectCalled {
+		t.Fatal("inspectAgent called under machine pressure")
+	}
+	if s.ready(ag.ID, now.Add(90*time.Second)) {
+		t.Fatal("first pressure backoff expired too early")
+	}
+
+	secondAttempt := now.Add(2 * time.Minute)
+	w.inspectHeadless(context.Background(), s, secondAttempt, ag)
+	if inspectCalled {
+		t.Fatal("inspectAgent called during second pressure defer")
+	}
+	if s.ready(ag.ID, secondAttempt.Add(3*time.Minute+30*time.Second)) {
+		t.Fatal("second pressure backoff expired too early")
+	}
+	if !s.ready(ag.ID, secondAttempt.Add(4*time.Minute)) {
+		t.Fatal("second pressure backoff did not expand to four minutes")
+	}
+}
+
+func TestIsLongRunningCheckCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"mise run verify", true},
+		{"sh -lc 'go test ./...'", true},
+		{"npm ci", true},
+		{"pwd", false},
+		{"rg watchdog internal", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.command, func(t *testing.T) {
+			if got := isLongRunningCheckCommand(tc.command); got != tc.want {
+				t.Fatalf("isLongRunningCheckCommand(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 

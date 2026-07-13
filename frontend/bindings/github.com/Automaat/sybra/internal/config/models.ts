@@ -499,6 +499,21 @@ export class GitHubConfig {
      */
     "reviewsFastSeconds": number;
     "reviewsSlowSeconds": number;
+
+    /**
+     * ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
+     * poller fetches in one tick. Zero falls back to the built-in default;
+     * resolved non-positive values mean "unlimited".
+     */
+    "reviewsMaxPRsPerTick": number;
+
+    /**
+     * ReviewsStableBackoffMaxTicks caps the exponential skip window for linked
+     * PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls
+     * back to the built-in default; resolved non-positive values disable the
+     * backoff entirely.
+     */
+    "reviewsStableBackoffMaxTicks": number;
     "issuesSeconds": number;
     "renovateFastSeconds": number;
     "renovateSlowSeconds": number;
@@ -551,6 +566,12 @@ export class GitHubConfig {
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
         }
+        if (!("reviewsMaxPRsPerTick" in $$source)) {
+            this["reviewsMaxPRsPerTick"] = 0;
+        }
+        if (!("reviewsStableBackoffMaxTicks" in $$source)) {
+            this["reviewsStableBackoffMaxTicks"] = 0;
+        }
         if (!("issuesSeconds" in $$source)) {
             this["issuesSeconds"] = 0;
         }
@@ -577,10 +598,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField9_0 = $$createType3;
+        const $$createField11_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField9_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField11_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
