@@ -23,11 +23,20 @@ type GitHubConfig struct {
 	// Poll-interval overrides in seconds. Zero falls back to the built-in
 	// default. Raised defaults (vs. the original 1m/5m) cut steady-state request
 	// volume; lower them only on a high-limit (App-token) instance.
-	ReviewsFastSeconds  int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
-	ReviewsSlowSeconds  int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
-	IssuesSeconds       int `yaml:"issues_seconds" json:"issuesSeconds"`
-	RenovateFastSeconds int `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
-	RenovateSlowSeconds int `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
+	ReviewsFastSeconds int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
+	ReviewsSlowSeconds int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
+	// ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
+	// poller fetches in one tick. Zero falls back to the built-in default;
+	// resolved non-positive values mean "unlimited".
+	ReviewsMaxPRsPerTick int `yaml:"reviews_max_prs_per_tick" json:"reviewsMaxPRsPerTick"`
+	// ReviewsStableBackoffMaxTicks caps the exponential skip window for linked
+	// PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls
+	// back to the built-in default; resolved non-positive values disable the
+	// backoff entirely.
+	ReviewsStableBackoffMaxTicks int `yaml:"reviews_stable_backoff_max_ticks" json:"reviewsStableBackoffMaxTicks"`
+	IssuesSeconds                int `yaml:"issues_seconds" json:"issuesSeconds"`
+	RenovateFastSeconds          int `yaml:"renovate_fast_seconds" json:"renovateFastSeconds"`
+	RenovateSlowSeconds          int `yaml:"renovate_slow_seconds" json:"renovateSlowSeconds"`
 	// App configures GitHub App installation-token auth. When enabled, Sybra
 	// mints a short-lived installation token and injects it into the gh
 	// subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall

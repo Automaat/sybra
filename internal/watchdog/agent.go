@@ -4,12 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -19,6 +21,8 @@ const (
 	Debounce       = 5 * time.Minute
 	InspectTimeout = 2 * time.Minute
 )
+
+const maxPressureInspectBackoff = 15 * time.Minute
 
 // completedHangGrace bounds how long a headless agent may sit
 // completed-but-alive (a terminal result observed, process not yet exited)
@@ -83,22 +87,74 @@ func sizeBudget(tags []string) time.Duration {
 
 type state struct {
 	mu             sync.Mutex
-	lastInspection map[string]time.Time
+	nextEligibleAt map[string]time.Time
+	pressureDefers map[string]int
 }
 
 func newState() *state {
-	return &state{lastInspection: make(map[string]time.Time)}
+	return &state{
+		nextEligibleAt: make(map[string]time.Time),
+		pressureDefers: make(map[string]int),
+	}
 }
 
-func (s *state) shouldInspect(id string, now time.Time) bool {
+func (s *state) ready(id string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	last, ok := s.lastInspection[id]
-	if ok && now.Sub(last) < Debounce {
+	deadline, ok := s.nextEligibleAt[id]
+	if ok && now.Before(deadline) {
 		return false
 	}
-	s.lastInspection[id] = now
 	return true
+}
+
+func (s *state) markInspection(id string, now time.Time) {
+	s.mu.Lock()
+	s.nextEligibleAt[id] = now.Add(Debounce)
+	delete(s.pressureDefers, id)
+	s.mu.Unlock()
+}
+
+func (s *state) deferForBusyCommand(id string, now time.Time) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pressureDefers, id)
+	deadline := now.Add(Debounce)
+	if current := s.nextEligibleAt[id]; current.After(deadline) {
+		deadline = current
+	}
+	s.nextEligibleAt[id] = deadline
+	return deadline
+}
+
+func (s *state) deferForPressure(id string, now time.Time) (deadline time.Time, defers int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defers = s.pressureDefers[id] + 1
+	s.pressureDefers[id] = defers
+	deadline = now.Add(pressureInspectBackoff(defers))
+	if current := s.nextEligibleAt[id]; current.After(deadline) {
+		deadline = current
+	}
+	s.nextEligibleAt[id] = deadline
+	return deadline, defers
+}
+
+func pressureInspectBackoff(defers int) time.Duration {
+	if defers <= 1 {
+		return 2 * time.Minute
+	}
+	backoff := 2 * time.Minute
+	for range defers - 1 {
+		if backoff >= maxPressureInspectBackoff {
+			return maxPressureInspectBackoff
+		}
+		backoff *= 2
+	}
+	if backoff > maxPressureInspectBackoff {
+		return maxPressureInspectBackoff
+	}
+	return backoff
 }
 
 // Watchdog monitors headless agents for stalls, budget overruns, and tool-call
@@ -140,6 +196,8 @@ type Watchdog struct {
 	// claims and conversational agents stay in dwell scope because the headless
 	// stall watchdog cannot inspect them.
 	hasLiveHeadlessAgent func(taskID string) bool
+	pressureGate         *pressure.Gate
+	admitPressure        func() (bool, string)
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -151,6 +209,7 @@ func New(
 	emit func(string, any),
 	wg *sync.WaitGroup,
 	cfg config.WatchdogConfig,
+	pressureGate *pressure.Gate,
 ) *Watchdog {
 	return &Watchdog{
 		agents:               agents,
@@ -166,6 +225,13 @@ func New(
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
 		hasLiveHeadlessAgent: agents.HasLiveHeadlessAgentForTask,
+		pressureGate:         pressureGate,
+		admitPressure: func() (bool, string) {
+			if pressureGate == nil {
+				return true, ""
+			}
+			return pressureGate.Admit()
+		},
 	}
 }
 
@@ -279,9 +345,31 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 		return
 	}
 
-	if !s.shouldInspect(ag.ID, now) {
+	if !s.ready(ag.ID, now) {
 		return
 	}
+
+	if cmd, startedAt, ok := ag.ActiveForegroundCommand(); ok && isLongRunningCheckCommand(cmd) {
+		deferredUntil := s.deferForBusyCommand(ag.ID, now)
+		w.logger.Info("agent.watchdog.inspect.deferred",
+			"id", ag.ID, "trigger", trigger, "reason", "foreground_check_running",
+			"command", cmd, "command_age_sec", int(now.Sub(startedAt).Seconds()),
+			"next_eligible_in_sec", int(deferredUntil.Sub(now).Seconds()))
+		return
+	}
+
+	if w.admitPressure != nil {
+		if admit, reason := w.admitPressure(); !admit {
+			deferredUntil, skips := s.deferForPressure(ag.ID, now)
+			w.logger.Info("agent.watchdog.inspect.deferred",
+				"id", ag.ID, "trigger", trigger, "reason", "machine_pressure",
+				"pressure", reason, "skip_count", skips,
+				"next_eligible_in_sec", int(deferredUntil.Sub(now).Seconds()))
+			return
+		}
+	}
+
+	s.markInspection(ag.ID, now)
 
 	w.logger.Info("agent.watchdog.inspect",
 		"id", ag.ID, "trigger", trigger,
@@ -289,6 +377,64 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
 
 	w.wg.Go(func() { w.inspect(ctx, ag, t, trigger, int(stall.Seconds()), int(total.Seconds())) })
+}
+
+func isLongRunningCheckCommand(command string) bool {
+	lower := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if lower == "" {
+		return false
+	}
+	return slices.ContainsFunc(longRunningCheckCommandMarkers, func(marker string) bool {
+		return strings.Contains(lower, marker)
+	})
+}
+
+var longRunningCheckCommandMarkers = []string{
+	"cargo build",
+	"cargo check",
+	"cargo clippy",
+	"cargo test",
+	"go build",
+	"go test",
+	"go vet",
+	"golangci-lint",
+	"jest",
+	"make build",
+	"make check",
+	"make lint",
+	"make test",
+	"mise run build",
+	"mise run check",
+	"mise run lint",
+	"mise run test",
+	"mise run verify",
+	"npm ci",
+	"npm install",
+	"npm run build",
+	"npm run check",
+	"npm run lint",
+	"npm run test",
+	"npm run verify",
+	"npx playwright test",
+	"oxlint",
+	"playwright test",
+	"pnpm install",
+	"pnpm run build",
+	"pnpm run check",
+	"pnpm run lint",
+	"pnpm run test",
+	"pnpm run verify",
+	"pnpm test",
+	"pytest",
+	"ruff check",
+	"svelte-check",
+	"tsc",
+	"uv sync",
+	"vitest",
+	"yarn build",
+	"yarn install",
+	"yarn lint",
+	"yarn test",
 }
 
 func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
