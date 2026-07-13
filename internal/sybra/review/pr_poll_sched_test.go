@@ -48,6 +48,7 @@ func TestSelectKnownPRPoll(t *testing.T) {
 			ID:        id,
 			ProjectID: "owner/repo",
 			PRNumber:  pr,
+			Status:    task.StatusInReview,
 			UpdatedAt: updatedAt,
 		}
 	}
@@ -103,6 +104,39 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 		if sel.cappedPRs != 1 {
 			t.Fatalf("cappedPRs = %d, want 1", sel.cappedPRs)
+		}
+	})
+
+	t.Run("ineligible PR-linked tasks do not consume cap", func(t *testing.T) {
+		t.Parallel()
+
+		r := &Handler{
+			cfg: &config.Config{
+				GitHub: config.GitHubConfig{ReviewsMaxPRsPerTick: 2},
+			},
+		}
+
+		done := newTask("done", 1, base)
+		done.Status = task.StatusDone
+		chat := newTask("chat", 2, base.Add(-time.Second))
+		chat.TaskType = task.TaskTypeChat
+		reviewTask := newTask("review-task", 3, base.Add(-2*time.Second))
+		reviewTask.Tags = []string{"review"}
+
+		sel := r.selectKnownPRPoll([]task.Task{
+			done,
+			chat,
+			reviewTask,
+			newTask("eligible-new", 4, base.Add(-time.Minute)),
+			newTask("eligible-mid", 5, base.Add(-2*time.Minute)),
+			newTask("eligible-old", 6, base.Add(-3*time.Minute)),
+		})
+
+		if got := eligibleTaskIDs(sel.tasks); len(got) != 2 || got[0] != "eligible-new" || got[1] != "eligible-mid" {
+			t.Fatalf("eligible selected ids = %v, want [eligible-new eligible-mid]", got)
+		}
+		if sel.selectedPRs != 2 || sel.cappedPRs != 1 {
+			t.Fatalf("selection stats = %+v, want selected=2 capped=1", sel)
 		}
 	})
 
@@ -221,6 +255,16 @@ func taskIDs(tasks []task.Task) []string {
 	ids := make([]string, len(tasks))
 	for i := range tasks {
 		ids[i] = tasks[i].ID
+	}
+	return ids
+}
+
+func eligibleTaskIDs(tasks []task.Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for i := range tasks {
+		if knownPRPollEligible(&tasks[i]) {
+			ids = append(ids, tasks[i].ID)
+		}
 	}
 	return ids
 }

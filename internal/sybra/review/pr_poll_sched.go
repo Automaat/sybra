@@ -52,12 +52,12 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 		tk := tasks[i]
 		if r.agents != nil && r.agents.HasRunningAgentForTask(tk.ID) {
 			active = append(active, tk)
-			if tk.PRNumber != 0 && tk.ProjectID != "" {
+			if knownPRPollEligible(&tk) {
 				activePRs++
 			}
 			continue
 		}
-		if tk.PRNumber == 0 || tk.ProjectID == "" {
+		if !knownPRPollEligible(&tk) {
 			passthrough = append(passthrough, tk)
 			continue
 		}
@@ -97,6 +97,13 @@ func (r *Handler) selectKnownPRPoll(tasks []task.Task) knownPRPollSelection {
 		deferredPRs: deferred,
 		cappedPRs:   len(candidates) - budget,
 	}
+}
+
+func knownPRPollEligible(t *task.Task) bool {
+	if t.PRNumber == 0 || t.ProjectID == "" {
+		return false
+	}
+	return prMonitorEligible(t) || prClosedEligible(t) || humanRequiredBlockerReconcileEligible(t)
 }
 
 func (r *Handler) noteKnownPRResult(repo string, number int, pr github.PullRequest) {
