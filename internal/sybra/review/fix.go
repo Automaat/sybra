@@ -545,6 +545,7 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 			}); updateErr != nil {
 				r.logger.Error("pr-monitor.ci-rerun.permission-status",
 					"task_id", t.ID, "pr", issue.PR.Number, "err", updateErr)
+				return false
 			}
 			r.logger.Warn("pr-monitor.ci-rerun.permission-denied",
 				"task_id", t.ID, "pr", issue.PR.Number, "err", err)

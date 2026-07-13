@@ -177,7 +177,7 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 // never to a human- or agent-authored explanation that merely mentions a
 // check by name.
 const exhaustedFixReasonPrefix = "pr-monitor: auto-fix exhausted after "
-const ciInfraRerunPermissionReason = "CI failure is GitHub Actions infra; rerun requires higher GitHub permissions"
+const ciInfraRerunPermissionReason = "CI failure rerun requires higher GitHub permissions"
 
 // exhaustedFixReason renders the StatusReason escalateExhaustedFix parks a task
 // with. It is the sole producer of the string exhaustedFixReasonKind parses back
