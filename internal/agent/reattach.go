@@ -436,7 +436,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	m.logger.Info("agent.reattach.done", "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)
-	m.markAgentDone(a)
+	m.markAgentDone(ctx, a)
 }
 
 // watchPID closes done when the process exits or is replaced by a PID-reuse

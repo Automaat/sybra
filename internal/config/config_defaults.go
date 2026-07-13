@@ -150,6 +150,29 @@ func (c *Config) DefaultTrashRetentionDays() int {
 	return c.Trash.RetentionDays
 }
 
+// DefaultSandboxRetentionHours is the fallback retention window (in hours)
+// for done/cancelled/blocked task sandbox dirs when Sandbox.RetentionHours
+// is unset.
+const DefaultSandboxRetentionHours = 24
+
+// DefaultSandboxRetention resolves the configured sandbox retention window.
+// disabled reports whether age-based pruning should be skipped entirely
+// (Sandbox.RetentionHours < 0); window is meaningless when disabled is true.
+// 0 (unset) resolves to DefaultSandboxRetentionHours; a positive value is
+// used verbatim.
+func (c *Config) DefaultSandboxRetention() (window time.Duration, disabled bool) {
+	hours := DefaultSandboxRetentionHours
+	if c != nil {
+		switch {
+		case c.Sandbox.RetentionHours < 0:
+			return 0, true
+		case c.Sandbox.RetentionHours > 0:
+			hours = c.Sandbox.RetentionHours
+		}
+	}
+	return time.Duration(hours) * time.Hour, false
+}
+
 // DefaultTaskSnapshotIntervalSeconds is the fallback commit interval for the
 // tasks-dir git snapshotter when TaskSnapshot.IntervalSeconds is unset.
 const DefaultTaskSnapshotIntervalSeconds = 30

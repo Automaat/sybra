@@ -51,7 +51,11 @@ func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 		args = append(args, "--model", a.Model)
 	}
 	if cfg.MCPConfigJSON != "" {
-		mcpConfig, err := renderCopilotMCPConfig(cfg.MCPConfigJSON)
+		mcpJSON, err := wrapMCPConfigWithOwnership(cfg.MCPConfigJSON, mcpOwnerForAgent(a))
+		if err != nil {
+			return headlessInvocation{}, err
+		}
+		mcpConfig, err := renderCopilotMCPConfig(mcpJSON)
 		if err != nil {
 			return headlessInvocation{}, err
 		}
