@@ -92,6 +92,9 @@ type Handler struct {
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
+	// rerunFailedChecks requests a rerun of the failed checks on a PR;
+	// overridable in tests. nil falls back to github.RerunFailedChecks.
+	rerunFailedChecks func(repo string, number int) error
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -218,6 +221,7 @@ func New(
 		dispatchFailures:    make(map[string]int),
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
+		rerunFailedChecks:   github.RerunFailedChecks,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,
