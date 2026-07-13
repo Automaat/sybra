@@ -231,6 +231,8 @@ requires a restart to take effect (see diffConfig's
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
 | `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
 | `github.reviews_slow_seconds` | `int` |  |  |
+| `github.reviews_max_prs_per_tick` | `int` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
+| `github.reviews_stable_backoff_max_ticks` | `int` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
 | `github.issues_seconds` | `int` |  |  |
 | `github.renovate_fast_seconds` | `int` |  |  |
 | `github.renovate_slow_seconds` | `int` |  |  |
