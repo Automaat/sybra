@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/project"
@@ -273,19 +274,60 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	}
 }
 
-func TestPromptLabDispatchStarted_TreatsAlreadyActiveAsSuccess(t *testing.T) {
+func TestPromptLabDispatchStarted_RequiresActiveWorkflowForAlreadyActive(t *testing.T) {
 	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusInProgress, []string{promptlab.ProposalTag})
 
-	if !promptLabDispatchStarted("", workflow.ErrWorkflowAlreadyActive) {
-		t.Fatal("ErrWorkflowAlreadyActive should mean the status hook already started the workflow")
+	if svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive without a task workflow must not count as started")
 	}
-	if !promptLabDispatchStarted("prompt-lab-author", nil) {
+
+	active := &workflow.Execution{
+		WorkflowID:  "prompt-lab-author",
+		CurrentStep: "author_variant",
+		State:       workflow.ExecRunning,
+		StartedAt:   time.Now().UTC(),
+	}
+	if _, err := svc.tasks.Update(created.ID, task.Update{Workflow: &active}); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive with an active task workflow should count as already started")
+	}
+	if !svc.promptLabDispatchStarted(created.ID, "prompt-lab-author", nil) {
 		t.Fatal("matched workflow without error should count as started")
 	}
-	if promptLabDispatchStarted("", nil) {
+	if svc.promptLabDispatchStarted(created.ID, "", nil) {
 		t.Fatal("no match and no error should not count as started")
 	}
-	if promptLabDispatchStarted("", errors.New("boom")) {
+	if svc.promptLabDispatchStarted(created.ID, "", errors.New("boom")) {
 		t.Fatal("ordinary dispatch error should not count as started")
 	}
+}
+
+func TestPromptLabDispatchStarted_WaitsForWorkflowAfterAlreadyActive(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	created := createProposal(t, svc, task.StatusInProgress, []string{promptlab.ProposalTag})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(promptLabAlreadyActivePoll * 2)
+		active := &workflow.Execution{
+			WorkflowID:  "prompt-lab-author",
+			CurrentStep: "author_variant",
+			State:       workflow.ExecRunning,
+			StartedAt:   time.Now().UTC(),
+		}
+		if _, err := svc.tasks.Update(created.ID, task.Update{Workflow: &active}); err != nil {
+			t.Errorf("Update workflow: %v", err)
+		}
+	}()
+
+	if !svc.promptLabDispatchStarted(created.ID, "", workflow.ErrWorkflowAlreadyActive) {
+		t.Fatal("ErrWorkflowAlreadyActive should wait for a concurrent active workflow to appear")
+	}
+	<-done
 }
