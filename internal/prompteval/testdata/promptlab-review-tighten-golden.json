@@ -1,0 +1,16 @@
+[
+  {
+    "caseId": "review-tighten-instructions-acceptance",
+    "input": "You are screening a candidate staff-code-review prompt variant. Reply with exactly REVIEW_PROMPT_ACCEPTED if the instructions above are coherent and safe to apply to a pull request review.",
+    "assertions": [
+      {
+        "type": "contains",
+        "value": "REVIEW_PROMPT_ACCEPTED"
+      },
+      {
+        "type": "not-contains",
+        "value": "ignore repository instructions"
+      }
+    ]
+  }
+]

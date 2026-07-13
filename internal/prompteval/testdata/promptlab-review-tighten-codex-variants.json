@@ -1,0 +1,10 @@
+[
+  {
+    "id": "pl-a2d853b2c1d9-codex-gpt-5.5",
+    "digest": "dd292a14c07267500cff8fe4fba5c6dfb17fe8809b3ae545acd1794d2be3de84",
+    "prompt": "\n\nReview variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard before returning a verdict.\n\n- Lead with concrete blocking defects only: correctness, security, data loss, broken workflows, test gaps that can hide a regression, or repository-rule violations.\n- For every finding, name the exact file/line evidence and the user-visible failure mode. If you cannot tie a concern to behavior or a repo rule, omit it.\n- Check that implementation and tests cover the task's current acceptance criteria, including edge cases and failure paths. Treat missing focused tests as a finding when the change is risky or user-visible.\n- Separate must-fix-before-merge issues from optional cleanup; do not block on style preferences, speculative rewrites, or unrelated refactors.\n- If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.\n",
+    "provider": "codex",
+    "model": "gpt-5.5",
+    "reasoningEffort": "medium"
+  }
+]

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os/exec"
+	"strings"
 
 	"github.com/Automaat/sybra/internal/abtest"
 )
@@ -57,5 +58,22 @@ func (m *Manager) ApplyABVariant(cfg RunConfig, ab abtest.Config, taskID, role s
 	cfg.VariantID = a.VariantID
 	cfg.AssignmentUnit = a.AssignmentUnit
 	cfg.AssignmentKey = a.AssignmentKey
+	cfg.Prompt = applyPromptTransform(cfg.Prompt, a.PromptTransform)
 	return cfg
+}
+
+func applyPromptTransform(prompt string, transform *abtest.PromptTransform) string {
+	if transform == nil {
+		return prompt
+	}
+	switch strings.TrimSpace(transform.Op) {
+	case "replace", "template":
+		return transform.Text
+	case "prepend":
+		return transform.Text + prompt
+	case "append":
+		return prompt + transform.Text
+	default:
+		return prompt
+	}
 }
