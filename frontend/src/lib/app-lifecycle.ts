@@ -14,6 +14,7 @@ import { notificationStore } from '../stores/notifications.svelte.js'
 import { bgopStore } from '../stores/bgops.svelte.js'
 import { connectionStore } from '../stores/connection.svelte.js'
 import { reviewStore } from '../stores/reviews.svelte.js'
+import { clusterStore } from '../stores/cluster.svelte.js'
 import { navStore } from './navigation.svelte.js'
 
 export type DegradedWarning = { subsystem: string; reason: string }
@@ -100,6 +101,8 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
   agentStore.startPolling()
   projectStore.load()
   projectStore.startPolling()
+  clusterStore.load()
+  clusterStore.startPolling()
   // Seed PR data so project cards show open-PR counts before the GitHub page is
   // ever opened. The GitHub page owns the live polling.
   reviewStore.load()
@@ -147,5 +150,6 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
     taskStore.stopPolling()
     agentStore.stopPolling()
     projectStore.stopPolling()
+    clusterStore.stopPolling()
   }
 }

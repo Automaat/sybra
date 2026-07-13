@@ -57,6 +57,22 @@ func (a *App) dispatchPass(ctx context.Context) {
 	}
 }
 
+const clusterHealthProbeInterval = 30 * time.Second
+
+func (a *App) clusterHealthLoop(ctx context.Context) {
+	ticker := time.NewTicker(clusterHealthProbeInterval)
+	defer ticker.Stop()
+	a.clusterRoster.ProbeAll(ctx, time.Now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.clusterRoster.ProbeAll(ctx, time.Now())
+		}
+	}
+}
+
 // maintenancePass runs the expensive, git/agent-touching recovery and cleanup.
 func (a *App) maintenancePass(ctx context.Context) {
 	metrics.OrchestratorTick(ctx)

@@ -1,12 +1,17 @@
 import { SvelteMap } from 'svelte/reactivity'
+import { EventsOn } from '$lib/api'
 import {
-  GetConvoOutput,
-  SendMessage,
-  RespondApproval,
-  EventsOn,
-} from '$lib/api'
+  sendMessageForTask,
+  respondApprovalForTask,
+  getConvoOutputForNode,
+} from '$lib/api-cluster'
+import { agentStore } from './agents.svelte.js'
 import type { ConvoEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import { agentConvo, agentApproval } from '../lib/events.js'
+
+function nodeForAgent(agentId: string): string | undefined {
+  return agentStore.nodeOf(agentId)
+}
 
 export interface ApprovalRequest {
   toolUseId: string
@@ -22,7 +27,7 @@ class ConvoStore {
   pendingApprovals = new SvelteMap<string, SvelteMap<string, ApprovalRequest>>()
 
   async getOutput(agentId: string): Promise<ConvoEvent[]> {
-    const events = (await GetConvoOutput(agentId)) ?? []
+    const events = (await getConvoOutputForNode(nodeForAgent(agentId), agentId)) ?? []
     this.conversations.set(agentId, events)
     return events
   }
@@ -33,7 +38,7 @@ class ConvoStore {
   }
 
   async sendMessage(agentId: string, text: string): Promise<void> {
-    await SendMessage(agentId, text)
+    await sendMessageForTask(nodeForAgent(agentId), agentId, text)
   }
 
   approvalsFor(agentId: string): ApprovalRequest[] {
@@ -41,7 +46,7 @@ class ConvoStore {
   }
 
   async respondApproval(agentId: string, toolUseId: string, approved: boolean): Promise<void> {
-    await RespondApproval(toolUseId, approved)
+    await respondApprovalForTask(nodeForAgent(agentId), toolUseId, approved)
     this.pendingApprovals.get(agentId)?.delete(toolUseId)
   }
 

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -59,6 +60,14 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("cluster: follower returned %d (%s): %s", e.Status, e.Code, e.Message)
 	}
 	return fmt.Sprintf("cluster: follower returned %d: %s", e.Status, e.Message)
+}
+
+// IsClientError reports whether the follower refused the call for a reason the
+// caller can act on (4xx). Deliberately not an httpapi.ClientError itself: the
+// handler surfaces a ClientError's Error() verbatim, and a follower's 5xx text
+// can describe follower internals. Callers relay a 4xx and sanitize the rest.
+func (e *APIError) IsClientError() bool {
+	return e.Status >= 400 && e.Status < 500
 }
 
 // NewClient constructs a follower Client. When node.TLSPin is set, https
@@ -320,6 +329,35 @@ func (c *Client) StopAgent(ctx context.Context, agentID string) error {
 	return err
 }
 
+// ListAgents returns the agents currently live on a follower. The leader's own
+// agent manager never holds a follower's agents, so this is the only way the
+// aggregated board can see — and therefore control — a remote run.
+func (c *Client) ListAgents(ctx context.Context) ([]*agent.Agent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "ListAgents")
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]*agent.Agent](raw)
+}
+
+// GetAgentOutput reads a follower agent's headless stream buffer.
+func (c *Client) GetAgentOutput(ctx context.Context, agentID string) ([]agent.StreamEvent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "GetAgentOutput", agentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]agent.StreamEvent](raw)
+}
+
+// GetConvoOutput reads a follower agent's conversational transcript.
+func (c *Client) GetConvoOutput(ctx context.Context, agentID string) ([]agent.ConvoEvent, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "GetConvoOutput", agentID)
+	if err != nil {
+		return nil, err
+	}
+	return decode[[]agent.ConvoEvent](raw)
+}
+
 // SendMessage proxies a steering message to a follower's interactive agent.
 func (c *Client) SendMessage(ctx context.Context, agentID, text string) error {
 	_, err := c.Call(ctx, "AgentService", "SendMessage", agentID, text)
@@ -336,6 +374,16 @@ func (c *Client) RespondApproval(ctx context.Context, toolUseID string, approved
 // task.
 func (c *Client) ApprovePlan(ctx context.Context, id string) (task.Task, error) {
 	raw, err := c.Call(ctx, "PlanningService", "ApprovePlan", id)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return decode[task.Task](raw)
+}
+
+// RejectPlan proxies a plan rejection (with feedback) to the follower and
+// returns the updated task.
+func (c *Client) RejectPlan(ctx context.Context, id, feedback string) (task.Task, error) {
+	raw, err := c.Call(ctx, "PlanningService", "RejectPlan", id, feedback)
 	if err != nil {
 		return task.Task{}, err
 	}

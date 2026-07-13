@@ -6,6 +6,8 @@ import { agentConvo, agentApproval } from '../lib/events.js'
 const mockGetConvoOutput = vi.fn()
 const mockSendMessage = vi.fn()
 const mockRespondApproval = vi.fn()
+const mockSendMessageToNode = vi.fn()
+const mockRespondApprovalOnNode = vi.fn()
 
 let eventCallbacks: Record<string, (data: unknown) => void> = {}
 
@@ -13,6 +15,8 @@ vi.mock('$lib/api', () => ({
   GetConvoOutput: (...args: unknown[]) => mockGetConvoOutput(...args),
   SendMessage: (...args: unknown[]) => mockSendMessage(...args),
   RespondApproval: (...args: unknown[]) => mockRespondApproval(...args),
+  SendMessageToNode: (...args: unknown[]) => mockSendMessageToNode(...args),
+  RespondApprovalOnNode: (...args: unknown[]) => mockRespondApprovalOnNode(...args),
   EventsOn: (event: string, cb: (data: unknown) => void) => {
     eventCallbacks[event] = cb
     return () => { delete eventCallbacks[event] }
@@ -20,6 +24,8 @@ vi.mock('$lib/api', () => ({
 }))
 
 const { convoStore } = await import('./convo.svelte.js')
+const { agentStore } = await import('./agents.svelte.js')
+const { taskStore } = await import('./tasks.svelte.js')
 
 function makeConvoEvent(type: string, text = ''): ConvoEvent {
   return ConvoEvent.createFrom({ type, text, timestamp: new Date().toISOString() })
@@ -201,5 +207,40 @@ describe('ConvoStore', () => {
       expect(eventCallbacks[agentConvo('a1')]).toBeUndefined()
       expect(eventCallbacks[agentApproval('a1')]).toBeUndefined()
     })
+  })
+})
+
+describe('ConvoStore node-aware routing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    agentStore.items = new Map()
+    taskStore.tasks = new Map()
+  })
+
+  function seed(assignedNode?: string) {
+    agentStore.items.set('a1', { id: 'a1', taskId: 't1' } as never)
+    taskStore.tasks.set('t1', { id: 't1', assignedNode } as never)
+  }
+
+  it('routes a homed-away agent to the follower proxy', async () => {
+    seed('pet-box')
+    await convoStore.sendMessage('a1', 'hi')
+    expect(mockSendMessageToNode).toHaveBeenCalledWith('pet-box', 'a1', 'hi')
+    expect(mockSendMessage).not.toHaveBeenCalled()
+
+    await convoStore.respondApproval('a1', 'tool-1', true)
+    expect(mockRespondApprovalOnNode).toHaveBeenCalledWith('pet-box', 'tool-1', true)
+    expect(mockRespondApproval).not.toHaveBeenCalled()
+  })
+
+  it('routes a local agent to the leader', async () => {
+    seed(undefined)
+    await convoStore.sendMessage('a1', 'hi')
+    expect(mockSendMessage).toHaveBeenCalledWith('a1', 'hi')
+    expect(mockSendMessageToNode).not.toHaveBeenCalled()
+
+    await convoStore.respondApproval('a1', 'tool-1', false)
+    expect(mockRespondApproval).toHaveBeenCalledWith('tool-1', false)
+    expect(mockRespondApprovalOnNode).not.toHaveBeenCalled()
   })
 })

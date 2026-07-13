@@ -1,14 +1,14 @@
 import { SvelteMap } from 'svelte/reactivity'
 import {
-  StopAgent,
   ListAgents,
-  GetAgentOutput,
   DiscoverAgents,
   StartAgent,
   StartChat,
   StopChat,
   AgentQueueSnapshot as FetchAgentQueueSnapshot,
 } from '$lib/api'
+import { stopAgentForTask, listRemoteAgents, getAgentOutputForNode } from '$lib/api-cluster'
+import { taskStore } from './tasks.svelte.js'
 import { StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type {
@@ -166,9 +166,15 @@ class AgentStore extends EntityStore<Agent> {
     return result
   }
 
-  async stop(agentID: string): Promise<void> {
-    await StopAgent(agentID)
+  nodeOf(agentID: string): string | undefined {
     const a = this.items.get(agentID)
+    if (a?.node) return a.node
+    return a?.taskId ? taskStore.tasks.get(a.taskId)?.assignedNode : undefined
+  }
+
+  async stop(agentID: string): Promise<void> {
+    const a = this.items.get(agentID)
+    await stopAgentForTask(this.nodeOf(agentID), agentID)
     if (a) {
       a.state = 'stopped'
       this.set(agentID, a)
@@ -182,7 +188,7 @@ class AgentStore extends EntityStore<Agent> {
   }
 
   async getOutput(agentID: string): Promise<TimestampedStreamEvent[]> {
-    const events = await GetAgentOutput(agentID)
+    const events = await getAgentOutputForNode(this.nodeOf(agentID), agentID)
     const list = events ?? []
     const now = new Date()
     const wrapped: TimestampedStreamEvent[] = list.map((e) => ({ event: e, receivedAt: now }))
@@ -215,12 +221,12 @@ class AgentStore extends EntityStore<Agent> {
 
   private async loadAgents(): Promise<Agent[]> {
     await DiscoverAgents()
-    const listed = await ListAgents()
+    const listed = [...((await ListAgents()) ?? []), ...(await listRemoteAgents())]
     try {
       const snapshot = await FetchAgentQueueSnapshot()
-      return this.reconcileQueue(listed ?? [], snapshot, true)
+      return this.reconcileQueue(listed, snapshot, true)
     } catch {
-      return this.reconcileQueue(listed ?? [], null, false)
+      return this.reconcileQueue(listed, null, false)
     }
   }
 

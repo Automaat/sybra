@@ -4,6 +4,7 @@
 import * as AgentService from "./agentservice.js";
 import * as App from "./app.js";
 import * as BrowserService from "./browserservice.js";
+import * as ClusterService from "./clusterservice.js";
 import * as ConfigService from "./configservice.js";
 import * as InfoService from "./infoservice.js";
 import * as IntegrationService from "./integrationservice.js";
@@ -21,6 +22,7 @@ export {
     AgentService,
     App,
     BrowserService,
+    ClusterService,
     ConfigService,
     InfoService,
     IntegrationService,
@@ -40,6 +42,7 @@ export {
     AgentQueueSnapshot,
     AgentQueueSnapshotItem,
     AppSettings,
+    ClusterNodeDTO,
     CodexModel,
     CopilotModel,
     LoggingSettings,

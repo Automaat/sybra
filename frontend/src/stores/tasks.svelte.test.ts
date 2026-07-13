@@ -7,6 +7,8 @@ const mockCreateTask = vi.fn()
 const mockUpdateTask = vi.fn()
 const mockDeleteTask = vi.fn()
 const mockApprovePlan = vi.fn()
+const mockApprovePlanOnNode = vi.fn()
+const mockRejectPlanOnNode = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
@@ -20,6 +22,8 @@ vi.mock('$lib/api', () => ({
   UpdateTask: (...args: unknown[]) => mockUpdateTask(...args),
   DeleteTask: (...args: unknown[]) => mockDeleteTask(...args),
   ApprovePlan: (...args: unknown[]) => mockApprovePlan(...args),
+  ApprovePlanOnNode: (...args: unknown[]) => mockApprovePlanOnNode(...args),
+  RejectPlanOnNode: (...args: unknown[]) => mockRejectPlanOnNode(...args),
   RejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
   SendPlanMessage: (...args: unknown[]) => mockSendPlanMessage(...args),
   HasLivePlanAgent: (...args: unknown[]) => mockHasLivePlanAgent(...args),
@@ -236,30 +240,48 @@ describe('TaskStore', () => {
   })
 
   describe('approvePlan', () => {
-    it('calls ApprovePlan and updates task in map', async () => {
+    it('calls local ApprovePlan and updates task in map', async () => {
       taskStore.tasks.set('t1', makeTask({ id: 't1', status: 'in-review' }))
       const approved = makeTask({ id: 't1', status: 'in-progress' })
       mockApprovePlan.mockResolvedValue(approved)
 
-      const result = await taskStore.approvePlan('t1')
+      await taskStore.approvePlan('t1')
 
       expect(mockApprovePlan).toHaveBeenCalledWith('t1')
-      expect(result.status).toBe('in-progress')
+      expect(mockApprovePlanOnNode).not.toHaveBeenCalled()
       expect(taskStore.tasks.get('t1')!.status).toBe('in-progress')
+    })
+
+    it('routes a homed-away task to the follower proxy', async () => {
+      taskStore.tasks.set('t2', makeTask({ id: 't2', status: 'in-review', assignedNode: 'pet-box' }))
+
+      await taskStore.approvePlan('t2')
+
+      expect(mockApprovePlanOnNode).toHaveBeenCalledWith('pet-box', 't2')
+      expect(mockApprovePlan).not.toHaveBeenCalled()
     })
   })
 
   describe('rejectPlan', () => {
-    it('calls RejectPlan with feedback and updates task', async () => {
+    it('calls local RejectPlan with feedback and updates task', async () => {
       taskStore.tasks.set('t1', makeTask({ id: 't1' }))
       const rejected = makeTask({ id: 't1', status: 'todo' })
       mockRejectPlan.mockResolvedValue(rejected)
 
-      const result = await taskStore.rejectPlan('t1', 'needs work')
+      await taskStore.rejectPlan('t1', 'needs work')
 
       expect(mockRejectPlan).toHaveBeenCalledWith('t1', 'needs work')
-      expect(result.id).toBe('t1')
-      expect(taskStore.tasks.get('t1')).toBeDefined()
+      expect(mockRejectPlanOnNode).not.toHaveBeenCalled()
+      expect(taskStore.tasks.get('t1')!.status).toBe('todo')
+    })
+
+    it('routes a homed-away task rejection to the follower proxy', async () => {
+      taskStore.tasks.set('t2', makeTask({ id: 't2', assignedNode: 'pet-box' }))
+
+      await taskStore.rejectPlan('t2', 'nope')
+
+      expect(mockRejectPlanOnNode).toHaveBeenCalledWith('pet-box', 't2', 'nope')
+      expect(mockRejectPlan).not.toHaveBeenCalled()
     })
   })
 

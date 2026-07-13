@@ -14,6 +14,7 @@
   import { projectShortName, projectDotStyle } from '../lib/project-cue.js'
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import Pill from './Pill.svelte'
+  import NodeBadge from './NodeBadge.svelte'
 
   interface Props {
     task: Task
@@ -186,6 +187,8 @@
         {projectShortName(t.projectId)}
       </Pill>
     {/if}
+
+    <NodeBadge node={t.assignedNode} />
 
     {#if t.taskType === 'umbrella' && umbrellaProgress && umbrellaProgress.total > 0}
       <Pill role="reference" title="{umbrellaProgress.done}/{umbrellaProgress.total} subissues complete">

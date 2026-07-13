@@ -598,8 +598,12 @@ func (a *App) initCluster() {
 		a.logger.Info("cluster.leader.no-followers")
 		return
 	}
+	a.clusterRoster = roster
 	a.assigner = clusterlead.NewAssigner(a.cfg, a.tasks, roster, a.isWorkProject, a.auditClusterBlock, a.logger)
 	a.mirror = clusterlead.NewMirror(a.cfg, a.tasks, roster, a.logger, 0)
+	if a.clusterSvc != nil {
+		a.clusterSvc.setRoster(roster)
+	}
 	a.logger.Info("cluster.leader.enabled", "followers", roster.Names())
 }
 

@@ -6,6 +6,8 @@ import {
   UpdateTask,
   DeleteTask,
   ApprovePlan,
+  ApprovePlanOnNode,
+  RejectPlanOnNode,
   RejectPlan,
   SendPlanMessage,
   HasLivePlanAgent,
@@ -136,16 +138,24 @@ class TaskStore extends EntityStore<Task> {
     this.delete(id)
   }
 
-  async approvePlan(id: string): Promise<Task> {
+  async approvePlan(id: string): Promise<void> {
+    const node = this.tasks.get(id)?.assignedNode
+    if (node) {
+      await ApprovePlanOnNode(node, id)
+      return
+    }
     const result = await ApprovePlan(id)
     this.set(result.id, result)
-    return result
   }
 
-  async rejectPlan(id: string, feedback: string): Promise<Task> {
+  async rejectPlan(id: string, feedback: string): Promise<void> {
+    const node = this.tasks.get(id)?.assignedNode
+    if (node) {
+      await RejectPlanOnNode(node, id, feedback)
+      return
+    }
     const result = await RejectPlan(id, feedback)
     this.set(result.id, result)
-    return result
   }
 
   async sendPlanMessage(id: string, message: string): Promise<void> {
