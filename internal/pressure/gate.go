@@ -97,19 +97,6 @@ func (g *Gate) Admit() (ok bool, reason string) {
 	return false, reason
 }
 
-// Status returns the most recently cached sample and, when the gate is
-// currently denying dispatch, the last tripped reason — for the UI/CLI to
-// explain a pressure park without forcing a fresh sample. A nil Gate reports
-// a zero Sample and no reason.
-func (g *Gate) Status() (sample Sample, reason string) {
-	if g == nil {
-		return Sample{}, ""
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.cached, g.lastReason
-}
-
 var errAllSignalsUnreadable = errors.New("all resource-pressure signals unreadable")
 
 // sample returns the cached Sample, refreshing it when older than interval.
