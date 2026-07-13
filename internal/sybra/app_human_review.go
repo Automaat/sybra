@@ -188,7 +188,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 	h.mu.Unlock()
 
 	prompt := h.buildPrompt(t, wctx)
-	ag, err := h.agents.Run(h.agents.ApplyABVariant(agent.RunConfig{
+	cfg := h.agents.ApplyABVariant(agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RoleHumanReview.AgentName(t.Title),
 		Mode:                   "headless",
@@ -199,7 +199,8 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
-	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview)))
+	}, h.cfg.ABTesting, taskID, string(agent.RoleHumanReview))
+	ag, err := h.agents.Run(cfg)
 	if err != nil {
 		h.mu.Lock()
 		delete(h.inflight, taskID)
@@ -219,7 +220,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) {
 		Provider:  ag.Provider,
 		State:     string(agent.StateRunning),
 		StartedAt: ag.StartedAt,
-		Prompt:    prompt,
+		Prompt:    cfg.Prompt,
 	}); err != nil {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}

@@ -36,23 +36,23 @@ func TestRegisterMarkAgentDone_ProviderAccountingInvariant(t *testing.T) {
 		t.Fatalf("codex in-flight = %d, want 1", got)
 	}
 
-	m.markAgentDone(agents[0])
+	m.markAgentDone(context.Background(), agents[0])
 	assertAccountingInvariant(t, m)
 	if got := m.InFlightByProvider()["claude"]; got != 1 {
 		t.Fatalf("claude in-flight after one done = %d, want 1", got)
 	}
 
-	m.markAgentDone(agents[1])
+	m.markAgentDone(context.Background(), agents[1])
 	assertAccountingInvariant(t, m)
 	if _, ok := m.InFlightByProvider()["claude"]; ok {
 		t.Fatal("claude bucket should be deleted once its count reaches zero")
 	}
 
 	// Idempotent: a repeated terminal call must not double-decrement.
-	m.markAgentDone(agents[1])
+	m.markAgentDone(context.Background(), agents[1])
 	assertAccountingInvariant(t, m)
 
-	m.markAgentDone(agents[2])
+	m.markAgentDone(context.Background(), agents[2])
 	assertAccountingInvariant(t, m)
 	if got := m.InFlightByProvider(); len(got) != 0 {
 		t.Fatalf("expected empty in-flight map, got %+v", got)
@@ -78,7 +78,7 @@ func TestMarkAgentDone_EvictsFromRegistry(t *testing.T) {
 		t.Fatalf("agent should be registered before completion: %v", err)
 	}
 
-	m.markAgentDone(a)
+	m.markAgentDone(context.Background(), a)
 
 	if _, err := m.GetAgent(a.ID); err == nil {
 		t.Fatal("expected evicted agent to be absent from the registry")
@@ -91,7 +91,7 @@ func TestMarkAgentDone_EvictsFromRegistry(t *testing.T) {
 
 	// Idempotent: a repeated terminal call must not panic or misbehave once
 	// the entry is already gone.
-	m.markAgentDone(a)
+	m.markAgentDone(context.Background(), a)
 }
 
 // TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod locks in that a
@@ -110,7 +110,7 @@ func TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod(t *testing.T) {
 		t.Fatalf("registerRunningAgent: %v", err)
 	}
 
-	m.markAgentDone(a)
+	m.markAgentDone(context.Background(), a)
 
 	if _, err := m.GetAgent(a.ID); err != nil {
 		t.Fatalf("agent should still be readable inside the grace period: %v", err)
@@ -144,7 +144,7 @@ func TestMarkAgentDone_DoesNotEvictReplacementAgent(t *testing.T) {
 		t.Fatalf("registerRunningAgent(fresh): %v", err)
 	}
 
-	m.markAgentDone(stale)
+	m.markAgentDone(context.Background(), stale)
 
 	got, err := m.GetAgent(fresh.ID)
 	if err != nil {
@@ -186,7 +186,7 @@ func TestRegisterRunningAgent_ConcurrentAccountingRace(t *testing.T) {
 
 	for _, a := range registered {
 		if a != nil {
-			m.markAgentDone(a)
+			m.markAgentDone(context.Background(), a)
 		}
 	}
 	assertAccountingInvariant(t, m)
@@ -402,7 +402,7 @@ func TestMarkAgentDone_QueueNudge(t *testing.T) {
 		t.Fatalf("registerRunningAgent: %v", err)
 	}
 
-	m.markAgentDone(a)
+	m.markAgentDone(context.Background(), a)
 
 	select {
 	case <-m.QueueNudge():
@@ -438,7 +438,7 @@ func TestMarkAgentDone_QueueNudgeCoalesces(t *testing.T) {
 	go func() {
 		defer close(done)
 		for _, a := range agents {
-			m.markAgentDone(a)
+			m.markAgentDone(context.Background(), a)
 		}
 	}()
 
@@ -471,9 +471,9 @@ func TestMarkAgentDone_DoneOnceSingleNudge(t *testing.T) {
 		t.Fatalf("registerRunningAgent: %v", err)
 	}
 
-	m.markAgentDone(a)
-	m.markAgentDone(a)
-	m.markAgentDone(a)
+	m.markAgentDone(context.Background(), a)
+	m.markAgentDone(context.Background(), a)
+	m.markAgentDone(context.Background(), a)
 
 	select {
 	case <-m.QueueNudge():

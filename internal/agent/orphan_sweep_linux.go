@@ -29,10 +29,11 @@ func listProviderProcessesUnderRoots(_ context.Context, roots []string) []provid
 			continue
 		}
 		cmd := linuxProcessName(entry.Name())
-		if !isProviderProcessName(cmd) {
+		owner := linuxMCPOwner(entry.Name())
+		if owner.AgentID == "" && !isProviderProcessName(cmd) {
 			continue
 		}
-		out = append(out, providerProcess{PID: pid, Command: cmd, CWD: cwd})
+		out = append(out, providerProcess{PID: pid, Command: cmd, CWD: cwd, Owner: owner})
 	}
 	return out
 }
@@ -61,4 +62,12 @@ func bytesIndexByte(data []byte, target byte) int {
 		}
 	}
 	return -1
+}
+
+func linuxMCPOwner(pid string) mcpOwner {
+	data, err := os.ReadFile(filepath.Join("/proc", pid, "environ"))
+	if err != nil || len(data) == 0 {
+		return mcpOwner{}
+	}
+	return mcpOwnerFromEnvAssignments(strings.Split(string(data), "\x00"))
 }

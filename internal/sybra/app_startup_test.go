@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // preventFetchTTLLeak guards against Startup's project.FetchTTL = 60s
@@ -228,6 +230,35 @@ func startupTestConfig(home string) *config.Config {
 	cfg.Providers.HealthCheck.Enabled = false
 	cfg.Providers.Limits.Enabled = false
 	return cfg
+}
+
+func TestInitSandboxes_AppliesRetentionWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.RetentionHours = 2
+	app := &App{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
+	app.initSandboxes()
+
+	if app.sandboxes == nil {
+		t.Fatal("initSandboxes left sandboxes nil")
+	}
+
+	dir, err := app.sandboxes.SybraHomeDir("task-done")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+
+	app.sandboxes.CleanupOrphaned(context.Background(), []task.Task{{
+		ID:              "task-done",
+		Status:          task.StatusDone,
+		StatusChangedAt: time.Now(),
+	}}, nil)
+
+	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
+		t.Fatalf("recent done sandbox removed despite positive retention: %v", err)
+	}
 }
 
 func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *config.Config, logLevel *slog.LevelVar) {

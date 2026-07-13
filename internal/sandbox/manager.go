@@ -12,7 +12,9 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -52,7 +54,8 @@ type Manager struct {
 	starting     map[string]chan struct{} // taskID -> closed when its in-flight Start finishes
 	startSandbox func(context.Context, string, string, *project.SandboxConfig) (*Instance, error)
 	logger       *slog.Logger
-	dataDir      string // e.g. ~/.sybra/sandboxes
+	dataDir      string        // e.g. ~/.sybra/sandboxes
+	retention    time.Duration // see SetRetentionWindow
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.
@@ -66,6 +69,18 @@ func NewManager(dataDir string, logger *slog.Logger) *Manager {
 		logger:    logger,
 		dataDir:   dataDir,
 	}
+}
+
+// SetRetentionWindow configures how long CleanupOrphaned waits, after a
+// task becomes cleanup-eligible (see cleanupEligible), before removing its
+// sandbox dir. d == 0 (the Manager's zero value) removes eligible dirs
+// immediately, matching pre-retention behavior. d < 0 disables age-based
+// pruning entirely — eligible dirs are only removed once their task is
+// deleted. d > 0 requires the task to have been eligible for at least d.
+func (m *Manager) SetRetentionWindow(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retention = d
 }
 
 // Get returns the running instance for a task, or nil if none exists.
@@ -195,16 +210,28 @@ func (m *Manager) RemoveContext(ctx context.Context, taskID string) {
 		m.logger.Warn("sandbox.remove.path", "task_id", taskID, "err", err)
 		return
 	}
-	if err := os.RemoveAll(taskDir); err != nil {
+	if err := fsutil.RemoveAllForce(taskDir); err != nil {
 		m.logger.Warn("sandbox.remove", "task_id", taskID, "path", taskDir, "err", err)
 		return
 	}
 	m.logger.Info("sandbox.removed", "task_id", taskID, "path", taskDir)
 }
 
-// CleanupOrphaned removes per-task sandbox dirs for deleted or terminal tasks.
-// Non-terminal tasks keep their dirs. When hasAgent reports a live task agent,
-// the dir is preserved so cleanup never races an active run.
+// cleanupEligible reports whether a task's sandbox dir is a candidate for
+// retention-based cleanup. Deliberately broader than task.IsTerminalStatus
+// (which omits blocked): a blocked task has no live agent and cannot resume
+// without a status change, so its sandbox is just as safe to age out as a
+// done/cancelled one.
+func cleanupEligible(s task.Status) bool {
+	return s == task.StatusDone || s == task.StatusCancelled || s == task.StatusBlocked
+}
+
+// CleanupOrphaned removes per-task sandbox dirs for deleted tasks
+// immediately, and for cleanup-eligible tasks (see cleanupEligible) once
+// they have been eligible for at least the configured retention window (see
+// SetRetentionWindow). Non-eligible tasks (active, in-review, etc.) always
+// keep their dirs. When hasAgent reports a live task agent, the dir is
+// preserved so cleanup never races an active run.
 func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAgent func(string) bool) {
 	entries, err := os.ReadDir(m.dataDir)
 	if err != nil {
@@ -216,6 +243,10 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 		active[tasks[i].ID] = tasks[i]
 	}
 
+	m.mu.Lock()
+	retention := m.retention
+	m.mu.Unlock()
+
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -224,11 +255,24 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 		t, exists := active[taskID]
 		switch {
 		case !exists:
-			// Deleted task — remove.
-		case !task.IsTerminalStatus(t.Status):
+			// Deleted task — remove regardless of age.
+		case !cleanupEligible(t.Status):
 			continue
 		case hasAgent != nil && hasAgent(taskID):
 			continue
+		case retention < 0:
+			// Age-based pruning disabled — eligible dirs wait for task deletion.
+			continue
+		case retention > 0:
+			staleSince := t.StatusChangedAt
+			if staleSince.IsZero() {
+				if info, err := e.Info(); err == nil {
+					staleSince = info.ModTime()
+				}
+			}
+			if staleSince.IsZero() || time.Since(staleSince) < retention {
+				continue
+			}
 		}
 		m.RemoveContext(ctx, taskID)
 	}

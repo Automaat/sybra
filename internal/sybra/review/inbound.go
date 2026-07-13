@@ -184,13 +184,14 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := fmt.Sprintf("Run /staff-code-review on https://github.com/%s/pull/%d", current.ProjectID, current.PRNumber)
 
-	ag, err := r.agents.Run(r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview)))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.cfg.ABTesting, current.ID, string(agent.RoleReview))
+	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err
 	}
 	if err := r.tasks.AddRun(current.ID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RoleReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
-		Prompt: prompt,
+		Prompt: cfg.Prompt,
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", current.ID, "err", err)
 		if stopErr := r.agents.StopAgent(ag.ID); stopErr != nil {
