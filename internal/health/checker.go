@@ -22,12 +22,12 @@ const (
 
 // Checker runs periodic health checks on audit data and task state.
 type Checker struct {
-	auditDir  string
-	tasks     *task.Manager
-	homeDir   string
-	logger    *slog.Logger
-	emit      func(string, any)
-	ownedPIDs func() map[int]bool
+	auditDir string
+	tasks    *task.Manager
+	homeDir  string
+	logger   *slog.Logger
+	emit     func(string, any)
+	owned    func() OwnedProcesses
 
 	mu     sync.RWMutex
 	report *Report
@@ -40,16 +40,30 @@ func New(
 	homeDir string,
 	logger *slog.Logger,
 	emit func(string, any),
-	ownedPIDs func() map[int]bool,
+	owned func() OwnedProcesses,
 ) *Checker {
 	return &Checker{
-		auditDir:  auditDir,
-		tasks:     tasks,
-		homeDir:   homeDir,
-		logger:    logger,
-		emit:      emit,
-		ownedPIDs: ownedPIDs,
+		auditDir: auditDir,
+		tasks:    tasks,
+		homeDir:  homeDir,
+		logger:   logger,
+		emit:     emit,
+		owned:    owned,
 	}
+}
+
+// OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
+type OwnedProcesses struct {
+	PIDs          map[int]bool
+	ProcessGroups map[int]bool
+}
+
+// Owns reports whether pid is exact-owned or pgid is a trusted owned group.
+func (o OwnedProcesses) Owns(pid, pgid int) bool {
+	if pid > 0 && o.PIDs[pid] {
+		return true
+	}
+	return pgid > 0 && o.ProcessGroups[pgid]
 }
 
 // Run blocks until ctx is done, running checks every TickInterval.
@@ -116,14 +130,12 @@ func (c *Checker) check() {
 	}
 
 	stats := buildStats(dayEvents)
-	ownedSet := map[int]bool{}
-	if c.ownedPIDs != nil {
-		if got := c.ownedPIDs(); got != nil {
-			ownedSet = got
-		}
+	owned := OwnedProcesses{}
+	if c.owned != nil {
+		owned = c.owned()
 	}
 	processes := procstat.Sample(5, func(pid, pgid int) bool {
-		return ownedSet[pid] || ownedSet[pgid]
+		return owned.Owns(pid, pgid)
 	})
 
 	report := &Report{
