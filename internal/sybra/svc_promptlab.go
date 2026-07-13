@@ -65,7 +65,7 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 			map[string]string{"task.status": string(task.StatusInProgress)},
 			nil,
 		)
-		if !promptLabDispatchStarted(matched, dispatchErr) {
+		if !s.promptLabDispatchStarted(id, matched, dispatchErr) {
 			failure := "no prompt-lab workflow matched"
 			if dispatchErr != nil {
 				failure = dispatchErr.Error()
@@ -89,8 +89,18 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 	return t, nil
 }
 
-func promptLabDispatchStarted(matched string, err error) bool {
-	return (err == nil && matched != "") || errors.Is(err, workflow.ErrWorkflowAlreadyActive)
+func (s *PromptLabService) promptLabDispatchStarted(id, matched string, err error) bool {
+	if err == nil {
+		return matched != ""
+	}
+	if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		return false
+	}
+	t, getErr := s.tasks.Get(id)
+	if getErr != nil || t.Workflow == nil {
+		return false
+	}
+	return t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed
 }
 
 // RejectProposal declines a pending prompt-lab proposal: moves it to

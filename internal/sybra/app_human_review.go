@@ -257,6 +257,9 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	if current.Status != task.StatusHumanRequired {
 		h.logger.Info("human-review.verdict.stale",
 			"task_id", taskID, "agent_id", ag.ID, "status", current.Status)
+		if parseErr == nil {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
 		h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{
 			"reason": "status_changed",
 			"status": string(current.Status),
