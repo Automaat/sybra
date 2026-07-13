@@ -295,6 +295,55 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	}
 }
 
+func TestOnComplete_StaleHumanVerdictMarksRendered(t *testing.T) {
+	t.Parallel()
+	h, tasks, sink, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Prompt Lab approval", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatalf("advance task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "hr-stale",
+		Role:    string(agent.RoleHumanReview),
+		State:   string(agent.StateStopped),
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "hr-stale", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"human","summary":"needs approval"}`,
+	})
+	h.inflight[tk.ID] = ag.ID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Errorf("status: got %q want in-progress", got.Status)
+	}
+	if strings.Contains(got.Body, "Auto-review verdict: needs human") {
+		t.Errorf("stale human verdict should not append a needs-human note to an advanced task; body:\n%s", got.Body)
+	}
+	if len(got.AgentRuns) != 1 || !got.AgentRuns[0].VerdictRendered {
+		t.Fatalf("human-review run was not marked rendered: %+v", got.AgentRuns)
+	}
+	if !verdictAlreadyRendered(got) {
+		t.Fatal("verdictAlreadyRendered should accept the stale run's rendered marker")
+	}
+	if sink.calls != 0 {
+		t.Errorf("sink should not be called for stale human verdict; calls=%d", sink.calls)
+	}
+}
+
 func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
