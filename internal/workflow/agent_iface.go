@@ -83,7 +83,7 @@ type AgentLauncher interface {
 	// called BEFORE the (potentially expensive) worktree-prep/StartAgent path,
 	// so a saturated host defers new work without ever touching the worktree.
 	// admit=false carries a human-readable reason for the caller to park with.
-	AdmitDispatch(role, mode string) (admit bool, reason string)
+	AdmitDispatch(taskID, role, mode string) (admit bool, reason string)
 }
 
 // DispatchClaim is the workflow-visible handle for a held per-task dispatch

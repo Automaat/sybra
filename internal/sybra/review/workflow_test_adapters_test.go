@@ -247,6 +247,6 @@ func (a *agentAdapter) IsDispatching(taskID string) bool {
 	return a.agents.IsDispatching(taskID)
 }
 
-func (a *agentAdapter) AdmitDispatch(role, mode string) (admit bool, reason string) {
+func (a *agentAdapter) AdmitDispatch(string, string, string) (admit bool, reason string) {
 	return true, ""
 }

@@ -140,8 +140,10 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if mode == "" {
 		mode = "headless"
 	}
-	if admit, reason := e.agents.AdmitDispatch(step.Config.Role, mode); !admit {
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, reason); err != nil {
+	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
+		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
+		classifiedReason, _ := ClassifyAgentStartError(err)
+		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, classifiedReason); err != nil {
 			return err
 		}
 		wfExec.State = ExecWaiting

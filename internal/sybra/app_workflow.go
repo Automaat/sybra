@@ -990,13 +990,13 @@ func (a *agentAdapter) IsDispatching(taskID string) bool {
 	return a.agents.IsDispatching(taskID)
 }
 
-func (a *agentAdapter) AdmitDispatch(role, mode string) (admit bool, reason string) {
+func (a *agentAdapter) AdmitDispatch(taskID, role, mode string) (admit bool, reason string) {
 	if mode == "interactive" || a.pressure == nil {
 		return true, ""
 	}
 	admit, reason = a.pressure.Admit()
 	if !admit {
-		a.agentOrch.LogAudit(audit.EventAgentDeferredPressure, "", "", map[string]any{
+		a.agentOrch.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{
 			"role":   role,
 			"mode":   mode,
 			"reason": reason,

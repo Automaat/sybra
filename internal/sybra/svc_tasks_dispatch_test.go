@@ -44,7 +44,7 @@ func (f *fakeAgentLauncher) ProviderRateLimited(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderCanFailover(string) bool  { return false }
 func (f *fakeAgentLauncher) ProviderHealthy(string) bool      { return true }
 func (f *fakeAgentLauncher) IsDispatching(string) bool        { return false }
-func (f *fakeAgentLauncher) AdmitDispatch(string, string) (admit bool, reason string) {
+func (f *fakeAgentLauncher) AdmitDispatch(string, string, string) (admit bool, reason string) {
 	return true, ""
 }
 

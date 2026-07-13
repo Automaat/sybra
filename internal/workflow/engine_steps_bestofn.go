@@ -176,7 +176,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 		// requirement.
 		mode = "headless"
 	}
-	if admit, reason := e.agents.AdmitDispatch(step.Config.Role, mode); !admit {
+	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
 	dir, branch, err := e.attemptWorktrees.PrepareAttempt(taskID, attemptID)

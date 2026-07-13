@@ -583,7 +583,7 @@ func (m *mockAgents) IsDispatching(taskID string) bool {
 	return m.dispatchClaimed[taskID]
 }
 
-func (m *mockAgents) AdmitDispatch(role, mode string) (admit bool, reason string) {
+func (m *mockAgents) AdmitDispatch(taskID, role, mode string) (admit bool, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.admitDenyReason == "" {
@@ -5731,7 +5731,7 @@ func TestExecRunAgent_ResourcePressureParksWithoutConsumingSteer(t *testing.T) {
 	if wfExec.State != ExecWaiting {
 		t.Fatalf("workflow state = %s, want waiting", wfExec.State)
 	}
-	if got := tasks.Reason("t1"); got != "disk free 1.0% below minimum 5.0%" {
+	if got := tasks.Reason("t1"); got != "work paused: machine under resource pressure — disk free 1.0% below minimum 5.0%" {
 		t.Fatalf("status_reason = %q", got)
 	}
 
