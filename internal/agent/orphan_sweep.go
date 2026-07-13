@@ -122,7 +122,7 @@ func isProviderProcessName(name string) bool {
 	return providerid.IsKnown(name)
 }
 
-func orphanSweepRootsForAgent(a *Agent, sandboxHome func(string) (string, error)) []string {
+func orphanSweepRootsForAgent(a *Agent) []string {
 	if a == nil || a.Mode != task.AgentModeHeadless {
 		return nil
 	}
@@ -130,10 +130,8 @@ func orphanSweepRootsForAgent(a *Agent, sandboxHome func(string) (string, error)
 	if cwd := strings.TrimSpace(a.sessionCWD); cwd != "" {
 		roots = append(roots, cwd)
 	}
-	if sandboxHome != nil && strings.TrimSpace(a.TaskID) != "" {
-		if dir, err := sandboxHome(a.TaskID); err == nil && strings.TrimSpace(dir) != "" {
-			roots = append(roots, dir)
-		}
+	if dir := strings.TrimSpace(a.sandboxHomeDir); dir != "" {
+		roots = append(roots, dir)
 	}
 	return canonicalProcessRoots(roots)
 }
