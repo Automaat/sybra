@@ -76,7 +76,7 @@ func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	}
 }
 
-func TestAssignTaskIdenticalPushIsNoOp(t *testing.T) {
+func TestAssignTaskSemanticallyIdenticalPushIsNoOp(t *testing.T) {
 	svc, _ := setupTaskService(t)
 
 	var (
@@ -113,9 +113,15 @@ func TestAssignTaskIdenticalPushIsNoOp(t *testing.T) {
 		t.Fatalf("ReadFile before second push: %v", err)
 	}
 
+	mirrorUpdatedAt := time.Now().UTC().Add(2 * time.Minute)
+	pushed.UpdatedAt = time.Now().UTC().Add(time.Minute)
+	pushed.StatusChangedAt = pushed.UpdatedAt
+	pushed.MirrorRev = 7
+	pushed.MirrorUpdatedAt = &mirrorUpdatedAt
+
 	time.Sleep(10 * time.Millisecond)
 	if err := svc.AssignTask(pushed); err != nil {
-		t.Fatalf("second identical AssignTask: %v", err)
+		t.Fatalf("second semantically identical AssignTask: %v", err)
 	}
 	infoAfter, err := os.Stat(got.FilePath)
 	if err != nil {

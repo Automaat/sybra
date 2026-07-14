@@ -541,19 +541,15 @@ func normalizeAssignedTaskForCompare(t task.Task, fallback *task.Task) task.Task
 	if t.TaskType == "" {
 		t.TaskType = task.TaskTypeNormal
 	}
+	// Ignore leader-owned mirror bookkeeping when deciding whether a pushed
+	// follower task would change local semantics; otherwise a mirror-only bump
+	// (timestamps / mirror rev) rewrites the file and re-triggers watchers.
+	t.UpdatedAt = time.Time{}
+	t.StatusChangedAt = time.Time{}
+	t.MirrorRev = 0
+	t.MirrorUpdatedAt = nil
 	if t.CreatedAt.IsZero() && fallback != nil {
 		t.CreatedAt = fallback.CreatedAt
-	}
-	if t.UpdatedAt.IsZero() && fallback != nil {
-		t.UpdatedAt = fallback.UpdatedAt
-	}
-	if t.StatusChangedAt.IsZero() {
-		switch {
-		case fallback != nil && !fallback.StatusChangedAt.IsZero():
-			t.StatusChangedAt = fallback.StatusChangedAt
-		case !t.UpdatedAt.IsZero():
-			t.StatusChangedAt = t.UpdatedAt
-		}
 	}
 	if t.AgentRuns == nil {
 		t.AgentRuns = []task.AgentRun{}
