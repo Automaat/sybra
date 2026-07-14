@@ -4732,14 +4732,7 @@ func TestAutoApprovePlanReview_OpenDecisionsStayWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(40 * time.Millisecond)
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "plan-review" {
-		t.Errorf("Status = %q, want plan-review", ti.Status)
-	}
-	if ti.Workflow.State != ExecWaiting {
-		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
-	}
+	assertRemainsPlanReviewWaiting(t, tasks, "t1", 200*time.Millisecond)
 }
 
 func TestAutoApprovePlanReview_InvalidContractStaysWaiting(t *testing.T) {
@@ -4760,14 +4753,7 @@ func TestAutoApprovePlanReview_InvalidContractStaysWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(40 * time.Millisecond)
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "plan-review" {
-		t.Errorf("Status = %q, want plan-review", ti.Status)
-	}
-	if ti.Workflow.State != ExecWaiting {
-		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
-	}
+	assertRemainsPlanReviewWaiting(t, tasks, "t1", 200*time.Millisecond)
 }
 
 func startAutoApprovePlanReview(t *testing.T, task TaskInfo) (*Engine, *memTasks) {
@@ -4825,6 +4811,21 @@ func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
 	}
 	ti, _ := tasks.GetTask(id)
 	t.Fatalf("timed out waiting for status %q, got %q", want, ti.Status)
+}
+
+func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		ti, err := tasks.GetTask(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ti.Status != "plan-review" || ti.Workflow == nil || ti.Workflow.State != ExecWaiting {
+			t.Fatalf("task left plan-review wait state: status=%q workflow=%+v", ti.Status, ti.Workflow)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {

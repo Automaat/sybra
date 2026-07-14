@@ -11,8 +11,24 @@ func PlanHasOpenDecisions(markdown string) bool {
 	if text == "" {
 		return true
 	}
-	if strings.Contains(strings.ToLower(text), "no open decisions") {
-		return false
+	firstSubstantive := ""
+	for line := range strings.SplitSeq(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "## ") ||
+			strings.HasPrefix(strings.ToLower(trimmed), "question:") ||
+			strings.HasPrefix(strings.ToLower(trimmed), "recommended:") ||
+			strings.HasPrefix(strings.ToLower(trimmed), "options:") {
+			return true
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if firstSubstantive == "" {
+			firstSubstantive = trimmed
+		}
 	}
-	return true
+	return !strings.HasPrefix(strings.ToLower(firstSubstantive), "no open decisions")
 }

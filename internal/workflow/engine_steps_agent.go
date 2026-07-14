@@ -623,7 +623,12 @@ func (e *Engine) maybeAutoApprovePlanReview(taskID string, step *Step) {
 			return
 		}
 		if e.planAutoApproveHook != nil {
-			e.planAutoApproveHook(t, "no_open_decisions")
+			updated, getErr := e.tasks.GetTask(taskID)
+			if getErr != nil {
+				e.logger.Warn("workflow.plan-auto-approve.hook-task", "task_id", taskID, "err", getErr)
+				return
+			}
+			e.planAutoApproveHook(updated, "no_open_decisions")
 		}
 	}()
 }

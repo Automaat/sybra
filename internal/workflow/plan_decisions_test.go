@@ -30,6 +30,21 @@ func TestPlanHasOpenDecisions(t *testing.T) {
 			in:   "# Decisions\n\nAll set.",
 			want: true,
 		},
+		{
+			name: "copied instruction marker is not enough",
+			in:   "# Decisions\n\nIf there are no meaningful choices, write: No open decisions.\n\nNo open decisions.",
+			want: true,
+		},
+		{
+			name: "marker plus structured decision is open",
+			in:   "# Decisions\n\nNo open decisions. The recommended execution contract is fully specified.\n\n## Scope\nQuestion: Which scope?",
+			want: true,
+		},
+		{
+			name: "marker plus decision labels is open",
+			in:   "# Decisions\n\nNo open decisions. The recommended execution contract is fully specified.\n\nRecommended: Small\nOptions:\n- Small - minimal",
+			want: true,
+		},
 	}
 
 	for _, tc := range cases {
