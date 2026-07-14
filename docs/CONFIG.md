@@ -225,7 +225,7 @@ requires a restart to take effect (see diffConfig's
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
-| `github.enabled` | `bool` | `true` | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below, so existing configs need no migration. true defers to IssuesEnabled/ReviewsEnabled. |
+| `github.enabled` | `bool` |  | Enabled is the top-level kill-switch: false forces every GitHub automation off regardless of the sub-toggles below. Fresh generated configs set this to false so first-run GitHub polling is opt-in. Legacy configs that omit this key keep the old enabled behavior during load. true defers to IssuesEnabled/ReviewsEnabled. |
 | `github.issues_enabled` | `bool` | `true` | IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && IssuesEnabled — use RunsIssuesFetcher() rather than reading this field directly. |
 | `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |

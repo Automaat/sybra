@@ -780,20 +780,98 @@ func TestAllowsProjectType(t *testing.T) {
 	}
 }
 
-func TestDefaultGitHubEnabled(t *testing.T) {
+func TestDefaultGitHubOptIn(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
-	if !cfg.GitHub.Enabled {
-		t.Error("default GitHub.Enabled should be true for backward compat")
+	if cfg.GitHub.Enabled {
+		t.Error("default GitHub.Enabled should be false for first-run opt-in")
 	}
 	if !cfg.GitHub.IssuesEnabled {
-		t.Error("default GitHub.IssuesEnabled should be true for backward compat")
+		t.Error("default GitHub.IssuesEnabled should be true so github.enabled=true enables issues")
 	}
 	if !cfg.GitHub.ReviewsEnabled {
-		t.Error("default GitHub.ReviewsEnabled should be true for backward compat")
+		t.Error("default GitHub.ReviewsEnabled should be true so github.enabled=true enables reviews")
 	}
 	if cfg.GitHub.NativeAutoMerge {
 		t.Error("default GitHub.NativeAutoMerge should be false (kill-switch, opt-in)")
+	}
+}
+
+func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitHub.Enabled {
+		t.Fatal("GitHub.Enabled = true, want false for fresh install")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk Config
+	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.GitHub.Enabled {
+		t.Fatalf("fresh config persisted GitHub.Enabled = true, want explicit false:\n%s", data)
+	}
+
+	reloaded, err := LoadNoPersist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.GitHub.Enabled {
+		t.Fatal("GitHub.Enabled reloaded as true; fresh explicit opt-out must persist")
+	}
+}
+
+func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		wantIssues  bool
+		wantReviews bool
+	}{
+		{
+			name:        "no github block",
+			yaml:        "logging:\n  level: debug\n",
+			wantIssues:  true,
+			wantReviews: true,
+		},
+		{
+			name:        "github block omits enabled",
+			yaml:        "github:\n  issues_enabled: false\n",
+			wantIssues:  false,
+			wantReviews: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.GitHub.Enabled {
+				t.Fatal("GitHub.Enabled = false, want true for legacy config without explicit key")
+			}
+			if got := cfg.GitHub.RunsIssuesFetcher(); got != tt.wantIssues {
+				t.Errorf("RunsIssuesFetcher() = %v, want %v", got, tt.wantIssues)
+			}
+			if got := cfg.GitHub.RunsReviewer(); got != tt.wantReviews {
+				t.Errorf("RunsReviewer() = %v, want %v", got, tt.wantReviews)
+			}
+		})
 	}
 }
 
