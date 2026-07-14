@@ -750,6 +750,14 @@ export class OrchestratorConfig {
     "maintenanceIntervalSeconds": number;
 
     /**
+     * AutoApprovePlansWithoutDecisions lets the workflow engine advance a
+     * validated simple-task plan from plan-review to implementation when the
+     * planner explicitly recorded that there are no open human decisions.
+     * Default false.
+     */
+    "autoApprovePlansWithoutDecisions": boolean;
+
+    /**
      * Pressure configures the local resource-pressure admission gate that
      * defers new agent dispatch while the host is short on disk, memory, or
      * CPU headroom. See internal/pressure.
@@ -764,6 +772,9 @@ export class OrchestratorConfig {
         if (!("maintenanceIntervalSeconds" in $$source)) {
             this["maintenanceIntervalSeconds"] = 0;
         }
+        if (!("autoApprovePlansWithoutDecisions" in $$source)) {
+            this["autoApprovePlansWithoutDecisions"] = false;
+        }
         if (!("pressure" in $$source)) {
             this["pressure"] = (new PressureConfig());
         }
@@ -775,10 +786,10 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField2_0 = $$createType5;
+        const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
-            $$parsedSource["pressure"] = $$createField2_0($$parsedSource["pressure"]);
+            $$parsedSource["pressure"] = $$createField3_0($$parsedSource["pressure"]);
         }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
     }

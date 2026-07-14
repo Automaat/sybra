@@ -11,6 +11,11 @@ type OrchestratorConfig struct {
 	// worktrees) which hits git and may spawn agents, so it must not run hot.
 	// Default 60.
 	MaintenanceIntervalSeconds int `yaml:"maintenance_interval_seconds" json:"maintenanceIntervalSeconds"`
+	// AutoApprovePlansWithoutDecisions lets the workflow engine advance a
+	// validated simple-task plan from plan-review to implementation when the
+	// planner explicitly recorded that there are no open human decisions.
+	// Default false.
+	AutoApprovePlansWithoutDecisions bool `yaml:"auto_approve_plans_without_decisions" json:"autoApprovePlansWithoutDecisions"`
 	// Pressure configures the local resource-pressure admission gate that
 	// defers new agent dispatch while the host is short on disk, memory, or
 	// CPU headroom. See internal/pressure.
