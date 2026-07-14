@@ -160,6 +160,8 @@ func normalizeProvider(p string) string {
 		return "codex"
 	case "copilot":
 		return "copilot"
+	case "opencode":
+		return "opencode"
 	default:
 		return ""
 	}
@@ -237,6 +239,13 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 			args = append(args, "--model", model)
 		}
 		return "copilot", args, ""
+	case "opencode":
+		args := []string{"run", "--format", "json", "--auto"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		args = append(args, prompt)
+		return "opencode", args, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json"}
 		if disableTools {
@@ -258,6 +267,9 @@ func parseProviderText(p string, raw []byte) (text string, costUSD float64, err 
 		return text, 0, err
 	case "copilot":
 		text, err := parseCopilotText(raw)
+		return text, 0, err
+	case "opencode":
+		text, err := parseOpenCodeText(raw)
 		return text, 0, err
 	default:
 		return parseClaudeText(raw)
@@ -344,6 +356,72 @@ func parseCopilotText(raw []byte) (string, error) {
 	return final, nil
 }
 
+func parseOpenCodeText(raw []byte) (string, error) {
+	var final string
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 0, streamScannerBuffer), streamScannerBuffer)
+	for scanner.Scan() {
+		var ev struct {
+			Type    string          `json:"type"`
+			Content string          `json:"content"`
+			Text    string          `json:"text"`
+			Message string          `json:"message"`
+			Error   string          `json:"error"`
+			Data    json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			return "", err
+		}
+		if strings.Contains(strings.ToLower(ev.Type), "error") {
+			msg := firstNonEmpty(ev.Error, ev.Message, ev.Text, ev.Content)
+			if msg == "" {
+				msg = ev.Type
+			}
+			return "", errors.New(msg)
+		}
+		if strings.Contains(strings.ToLower(ev.Type), "assistant") {
+			if text := firstNonEmpty(ev.Content, ev.Text, ev.Message, openCodeDataText(ev.Data)); text != "" {
+				final = text
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(final) == "" {
+		return "", errors.New("no assistant message in opencode output")
+	}
+	return final, nil
+}
+
+func openCodeDataText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var data struct {
+		Content string `json:"content"`
+		Text    string `json:"text"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return ""
+	}
+	return firstNonEmpty(data.Content, data.Text, data.Message)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func classifyError(p, stderrOut, content string) (provider.Signal, string, time.Duration) {
 	sample := provider.ErrorSample{Stderr: stderrOut, Content: content}
 	switch p {
@@ -351,6 +429,8 @@ func classifyError(p, stderrOut, content string) (provider.Signal, string, time.
 		return provider.ClassifyCodexError(sample)
 	case "copilot":
 		return provider.ClassifyCopilotError(sample)
+	case "opencode":
+		return provider.ClassifyOpenCodeError(sample)
 	default:
 		return provider.ClassifyClaudeError(sample)
 	}

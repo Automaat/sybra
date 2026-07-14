@@ -22,7 +22,7 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return m.SendMessage(agentID, text)
 	}
 
-	// Per-turn conversational agents (codex/copilot): deliver via promptCh.
+	// Per-turn conversational agents (codex/copilot/opencode): deliver via promptCh.
 	if a.hasPromptChannel() {
 		return m.sendConvoPrompt(agentID, text)
 	}

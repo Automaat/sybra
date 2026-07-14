@@ -68,13 +68,13 @@ func TestResolveProviderCrossRotatesCodexToCopilot(t *testing.T) {
 	}
 }
 
-func TestResolveProviderCrossRotatesCopilotToClaude(t *testing.T) {
+func TestResolveProviderCrossRotatesCopilotToOpenCode(t *testing.T) {
 	stubCrossAvailability(t)
 	tk := TaskInfo{HandoffSourceProvider: "copilot"}
 
 	got := resolveProvider("cross", &Execution{}, "codex", tk)
-	if got != "claude" {
-		t.Fatalf("provider = %q, want claude", got)
+	if got != "opencode" {
+		t.Fatalf("provider = %q, want opencode", got)
 	}
 }
 
@@ -85,8 +85,8 @@ func TestResolveProviderCrossSkipsUnavailableRotationTarget(t *testing.T) {
 	tk := TaskInfo{HandoffSourceProvider: "codex"}
 
 	got := resolveProvider("cross", &Execution{}, "codex", tk)
-	if got != "claude" {
-		t.Fatalf("provider = %q, want claude (copilot unavailable, rotate past it)", got)
+	if got != "opencode" {
+		t.Fatalf("provider = %q, want opencode (copilot unavailable, rotate past it)", got)
 	}
 }
 

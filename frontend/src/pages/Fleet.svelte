@@ -48,6 +48,7 @@
       case 'claude': return 'Claude'
       case 'codex': return 'Codex'
       case 'copilot': return 'Copilot'
+      case 'opencode': return 'OpenCode'
       default: return provider || 'Provider'
     }
   }

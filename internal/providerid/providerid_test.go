@@ -7,7 +7,7 @@ import (
 
 func TestAllReturnsFailoverOrderedCopy(t *testing.T) {
 	got := All()
-	want := []string{"claude", "codex", "copilot"}
+	want := []string{"claude", "codex", "copilot", "opencode"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("All() = %v, want %v", got, want)
 	}
@@ -18,7 +18,7 @@ func TestAllReturnsFailoverOrderedCopy(t *testing.T) {
 }
 
 func TestIsKnown(t *testing.T) {
-	for _, p := range []string{"claude", "codex", "copilot"} {
+	for _, p := range []string{"claude", "codex", "copilot", "opencode"} {
 		if !IsKnown(p) {
 			t.Errorf("IsKnown(%q) = false, want true", p)
 		}

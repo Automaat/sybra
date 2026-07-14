@@ -272,7 +272,7 @@ func convoResumeState(evs []ConvoEvent) State {
 	return StatePaused
 }
 
-// reattachPerTurnConvo recreates a per-turn (codex/copilot) conversational
+// reattachPerTurnConvo recreates a per-turn (codex/copilot/opencode) conversational
 // agent after a restart.
 // Codex convo has no persistent process between its independent per-turn
 // invocations, so there is nothing to reattach to: rebuild the idle agent,

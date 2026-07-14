@@ -18,4 +18,5 @@
   (subpath (param "CLAUDE_STATE"))
   (subpath (param "CODEX_STATE"))
   (subpath (param "COPILOT_STATE"))
+  (subpath (param "OPENCODE_STATE"))
   (subpath (param "TOOL_CACHE")))

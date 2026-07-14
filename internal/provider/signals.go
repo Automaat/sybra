@@ -205,6 +205,34 @@ func ClassifyCopilotError(s ErrorSample) (Signal, string, time.Duration) {
 	return SignalNone, "", 0
 }
 
+// ClassifyOpenCodeError classifies OpenCode CLI failures. OpenCode can front
+// many providers, so keep the patterns generic and avoid provider-specific
+// assumptions beyond common HTTP/auth/rate-limit vocabulary.
+func ClassifyOpenCodeError(s ErrorSample) (Signal, string, time.Duration) {
+	if s.ErrorStatus == 401 || s.ErrorStatus == 403 {
+		return SignalAuthFailure, "logged_out", 0
+	}
+	if s.ErrorStatus == 429 {
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+	}
+	hay := strings.ToLower(strings.Join([]string{s.ErrorType, s.Stderr, s.Content}, "\n"))
+	switch {
+	case strings.Contains(hay, "not authenticated"),
+		strings.Contains(hay, "not logged in"),
+		strings.Contains(hay, "unauthorized"),
+		strings.Contains(hay, "invalid api key"),
+		strings.Contains(hay, "missing api key"):
+		return SignalAuthFailure, "logged_out", 0
+	case strings.Contains(hay, "rate limit"),
+		strings.Contains(hay, "too many requests"),
+		strings.Contains(hay, "quota"),
+		strings.Contains(hay, "insufficient credits"),
+		strings.Contains(hay, "credit balance"):
+		return SignalRateLimit, "rate_limited", 0
+	}
+	return SignalNone, "", 0
+}
+
 func containsRateLimitContent(content string, cleanResult bool, broadNeedles ...string) bool {
 	if !cleanResult {
 		return containsAny(content, broadNeedles...)

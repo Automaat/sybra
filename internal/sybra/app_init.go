@@ -419,14 +419,16 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":  a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":   a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot": a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":  a.cfg.Providers.Claude.Enabled,
-		"codex":   a.cfg.Providers.Codex.Enabled,
-		"copilot": a.cfg.Providers.Copilot.Enabled,
+		"claude":   a.cfg.Providers.Claude.Enabled,
+		"codex":    a.cfg.Providers.Codex.Enabled,
+		"copilot":  a.cfg.Providers.Copilot.Enabled,
+		"opencode": a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
@@ -795,14 +797,16 @@ func (a *App) initProviderHealth(ctx context.Context, emit func(string, any)) {
 		return
 	}
 	pc := provider.New(provider.Config{
-		Interval:          time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
-		ClaudeEnabled:     a.cfg.Providers.Claude.Enabled,
-		CodexEnabled:      a.cfg.Providers.Codex.Enabled,
-		CopilotEnabled:    a.cfg.Providers.Copilot.Enabled,
-		AutoFailover:      a.cfg.Providers.AutoFailover,
-		ClaudeRLCooldown:  time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
-		CodexRLCooldown:   time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
-		CopilotRLCooldown: time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
+		Interval:           time.Duration(a.cfg.Providers.HealthCheck.IntervalSeconds) * time.Second,
+		ClaudeEnabled:      a.cfg.Providers.Claude.Enabled,
+		CodexEnabled:       a.cfg.Providers.Codex.Enabled,
+		CopilotEnabled:     a.cfg.Providers.Copilot.Enabled,
+		OpenCodeEnabled:    a.cfg.Providers.OpenCode.Enabled,
+		AutoFailover:       a.cfg.Providers.AutoFailover,
+		ClaudeRLCooldown:   time.Duration(a.cfg.Providers.Claude.RateLimitCooldownSeconds) * time.Second,
+		CodexRLCooldown:    time.Duration(a.cfg.Providers.Codex.RateLimitCooldownSeconds) * time.Second,
+		CopilotRLCooldown:  time.Duration(a.cfg.Providers.Copilot.RateLimitCooldownSeconds) * time.Second,
+		OpenCodeRLCooldown: time.Duration(a.cfg.Providers.OpenCode.RateLimitCooldownSeconds) * time.Second,
 	}, emit, a.logger)
 	a.providerHealth = pc
 	a.agents.SetHealthGate(pc)

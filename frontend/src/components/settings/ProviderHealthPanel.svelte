@@ -29,7 +29,7 @@
       preferUnderused: true,
       backfillDays: 14,
     }
-    for (const name of ['claude', 'codex', 'copilot']) {
+    for (const name of ['claude', 'codex', 'copilot', 'opencode']) {
       providers[name] ??= { enabled: false, rateLimitCooldownSeconds: 900, monthlySubscriptionUsd: 0 }
       providers[name].monthlySubscriptionUsd ??= 0
     }
@@ -81,7 +81,7 @@
     }
   }
 
-  type ProviderName = 'claude' | 'codex' | 'copilot'
+  type ProviderName = 'claude' | 'codex' | 'copilot' | 'opencode'
 
   async function onProviderEnabledChange(name: ProviderName, e: Event) {
     const value = (e.target as HTMLInputElement).checked
@@ -145,7 +145,7 @@
       <div class="mb-3 text-xs text-error-500">{error}</div>
     {/if}
     <div class="flex flex-col gap-3">
-      {#each ['claude', 'codex', 'copilot'] as name (name)}
+      {#each ['claude', 'codex', 'copilot', 'opencode'] as name (name)}
         {@const p = map[name]}
         <div class="flex items-center justify-between gap-3 rounded border border-surface-200 bg-white px-3 py-2 dark:border-surface-700 dark:bg-surface-900">
           <div class="flex flex-col">

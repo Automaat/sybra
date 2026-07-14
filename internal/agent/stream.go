@@ -91,6 +91,20 @@ type CopilotEvent struct {
 	Result       *ClaudeResult
 }
 
+// OpenCodeEvent is the shared envelope for OpenCode JSON output
+// (`opencode run --format json`). OpenCode supports many providers, so the
+// parser is intentionally tolerant of both OpenCode-native event names and the
+// assistant/tool/result shapes used by the other CLIs.
+type OpenCodeEvent struct {
+	Type         string
+	Subtype      string
+	SessionID    string
+	OutputTokens int
+	Raw          json.RawMessage
+	Message      *ClaudeMessage
+	Result       *ClaudeResult
+}
+
 type claudeEnvelope struct {
 	Type            string                `json:"type"`
 	Subtype         string                `json:"subtype"`
@@ -229,6 +243,64 @@ type copilotUsage struct {
 	PremiumRequests float64 `json:"premiumRequests"`
 }
 
+type opencodeEnvelope struct {
+	Type           string          `json:"type"`
+	Subtype        string          `json:"subtype"`
+	SessionID      string          `json:"sessionId"`
+	SessionIDSnake string          `json:"session_id"`
+	ExitCode       int             `json:"exitCode"`
+	Code           int             `json:"code"`
+	ErrorType      string          `json:"errorType"`
+	ErrorTypeSnake string          `json:"error_type"`
+	Error          string          `json:"error"`
+	Message        string          `json:"message"`
+	Content        string          `json:"content"`
+	Text           string          `json:"text"`
+	Data           json.RawMessage `json:"data"`
+	Usage          *opencodeUsage  `json:"usage"`
+}
+
+type opencodeUsage struct {
+	InputTokens               int     `json:"inputTokens"`
+	InputTokensSnake          int     `json:"input_tokens"`
+	OutputTokens              int     `json:"outputTokens"`
+	OutputTokensSnake         int     `json:"output_tokens"`
+	CacheReadInputTokens      int     `json:"cacheReadInputTokens"`
+	CacheReadInputTokensSnake int     `json:"cache_read_input_tokens"`
+	ReasoningTokens           int     `json:"reasoningTokens"`
+	ReasoningTokensSnake      int     `json:"reasoning_tokens"`
+	CostUSD                   float64 `json:"costUSD"`
+	CostUSDSnake              float64 `json:"cost_usd"`
+}
+
+type opencodeData struct {
+	ID           string             `json:"id"`
+	Content      string             `json:"content"`
+	Text         string             `json:"text"`
+	Message      string             `json:"message"`
+	OutputTokens int                `json:"outputTokens"`
+	ToolCallID   string             `json:"toolCallId"`
+	ToolID       string             `json:"toolId"`
+	ToolName     string             `json:"toolName"`
+	Name         string             `json:"name"`
+	Arguments    json.RawMessage    `json:"arguments"`
+	Input        json.RawMessage    `json:"input"`
+	Success      *bool              `json:"success"`
+	Error        string             `json:"error"`
+	Result       json.RawMessage    `json:"result"`
+	ToolRequests []opencodeToolCall `json:"toolRequests"`
+	ToolCalls    []opencodeToolCall `json:"toolCalls"`
+}
+
+type opencodeToolCall struct {
+	ID         string          `json:"id"`
+	ToolCallID string          `json:"toolCallId"`
+	Name       string          `json:"name"`
+	ToolName   string          `json:"toolName"`
+	Arguments  json.RawMessage `json:"arguments"`
+	Input      json.RawMessage `json:"input"`
+}
+
 // ParseCopilotLine parses one line of GitHub Copilot CLI stream-json output.
 // Ephemeral and structural lines collapse to a zero-Type CopilotEvent that
 // callers skip. The returned Raw is an independent copy safe to keep after the
@@ -327,6 +399,223 @@ func ParseCopilotLine(line []byte) (CopilotEvent, error) {
 		// content for the headless model — skip them.
 		return CopilotEvent{Raw: rawCopy}, nil
 	}
+}
+
+// ParseOpenCodeLine parses one line of OpenCode JSON output. Unknown structural
+// lines collapse to a zero-Type event so callers can keep streaming across new
+// OpenCode event types without failing the whole run.
+func ParseOpenCodeLine(line []byte) (OpenCodeEvent, error) {
+	var raw opencodeEnvelope
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return OpenCodeEvent{}, fmt.Errorf("unmarshal: %w", err)
+	}
+	rawCopy := copyRaw(line)
+	sessionID := firstNonEmpty(raw.SessionID, raw.SessionIDSnake)
+	eventType := strings.ToLower(strings.TrimSpace(raw.Type))
+
+	switch eventType {
+	case "assistant.message", "assistant", "message", "agent_message", "message.updated":
+		msg := &ClaudeMessage{Role: "assistant", Text: firstNonEmpty(raw.Content, raw.Text, raw.Message)}
+		outTokens := 0
+		if len(raw.Data) > 0 {
+			data := parseOpenCodeData(raw.Data)
+			if msg.Text == "" {
+				msg.Text = firstNonEmpty(data.Content, data.Text, data.Message)
+			}
+			outTokens = data.OutputTokens
+			msg.ToolUses = append(msg.ToolUses, opencodeToolCalls(data.ToolRequests)...)
+			msg.ToolUses = append(msg.ToolUses, opencodeToolCalls(data.ToolCalls)...)
+		}
+		if raw.Usage != nil && outTokens == 0 {
+			outTokens = raw.Usage.outputTokens()
+		}
+		return OpenCodeEvent{Type: "assistant", SessionID: sessionID, OutputTokens: outTokens, Raw: rawCopy, Message: msg}, nil
+
+	case "tool.execution_start", "tool.started", "tool.start", "tool_use", "tool.call":
+		data := parseOpenCodeData(raw.Data)
+		tool := ToolUseBlock{
+			ID:    firstNonEmpty(data.ToolCallID, data.ToolID, data.ID),
+			Name:  opencodeToolDisplayName(firstNonEmpty(data.ToolName, data.Name)),
+			Input: opencodeInputMap(firstRaw(data.Arguments, data.Input)),
+		}
+		return OpenCodeEvent{Type: "tool_use", SessionID: sessionID, Raw: rawCopy, Message: &ClaudeMessage{
+			Role:     "assistant",
+			ToolUses: []ToolUseBlock{tool},
+		}}, nil
+
+	case "tool.execution_complete", "tool.completed", "tool.complete", "tool_result", "tool.result":
+		data := parseOpenCodeData(raw.Data)
+		success := data.Success == nil || *data.Success
+		content := firstNonEmpty(data.Error, opencodeRawContent(data.Result), raw.Content, raw.Text, raw.Message)
+		return OpenCodeEvent{Type: "tool_result", SessionID: sessionID, Raw: rawCopy, Message: &ClaudeMessage{
+			Role: "user",
+			ToolResults: []ToolResultBlock{{
+				ToolUseID: firstNonEmpty(data.ToolCallID, data.ToolID, data.ID),
+				Content:   content,
+				IsError:   !success || data.Error != "",
+			}},
+		}}, nil
+
+	case "result", "session.idle", "session.completed", "turn.completed", "run.completed":
+		r := &ClaudeResult{
+			SessionID:   sessionID,
+			Text:        firstNonEmpty(raw.Content, raw.Text, raw.Message),
+			ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake),
+			ErrorStatus: firstNonZero(raw.Code, raw.ExitCode),
+		}
+		if raw.Usage != nil {
+			r.InputTokens = raw.Usage.inputTokens()
+			r.OutputTokens = raw.Usage.outputTokens()
+			r.CacheReadInputTokens = raw.Usage.cacheReadInputTokens()
+			r.ReasoningTokens = raw.Usage.reasoningTokens()
+			r.CostUSD = raw.Usage.costUSD()
+		}
+		subtype := ""
+		if raw.Subtype != "" {
+			subtype = raw.Subtype
+		} else if r.ErrorStatus != 0 || r.ErrorType != "" || raw.Error != "" {
+			subtype = "error"
+			if r.Text == "" {
+				r.Text = raw.Error
+			}
+		}
+		r.Subtype = subtype
+		return OpenCodeEvent{Type: "result", Subtype: subtype, SessionID: sessionID, Raw: rawCopy, Result: r}, nil
+
+	case "error":
+		status := firstNonZero(raw.Code, raw.ExitCode)
+		return OpenCodeEvent{
+			Type:    "result",
+			Subtype: "error",
+			Raw:     rawCopy,
+			Result: &ClaudeResult{
+				Subtype:     "error",
+				SessionID:   sessionID,
+				Text:        firstNonEmpty(raw.Error, raw.Message, raw.Content, raw.Text),
+				ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake, "error"),
+				ErrorStatus: status,
+			},
+		}, nil
+
+	case "session.created", "session.updated", "session":
+		return OpenCodeEvent{Type: "init", SessionID: sessionID, Raw: rawCopy}, nil
+
+	default:
+		return OpenCodeEvent{Raw: rawCopy}, nil
+	}
+}
+
+func parseOpenCodeData(raw json.RawMessage) opencodeData {
+	var data opencodeData
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &data)
+	}
+	return data
+}
+
+func opencodeToolCalls(calls []opencodeToolCall) []ToolUseBlock {
+	out := make([]ToolUseBlock, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, ToolUseBlock{
+			ID:    firstNonEmpty(c.ToolCallID, c.ID),
+			Name:  opencodeToolDisplayName(firstNonEmpty(c.ToolName, c.Name)),
+			Input: opencodeInputMap(firstRaw(c.Arguments, c.Input)),
+		})
+	}
+	return out
+}
+
+func opencodeInputMap(raw json.RawMessage) map[string]any {
+	out := map[string]any{}
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return out
+	}
+	if json.Unmarshal(raw, &out) == nil {
+		return out
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil && s != "" {
+		out["input"] = s
+		return out
+	}
+	out["input"] = string(raw)
+	return out
+}
+
+func opencodeRawContent(raw json.RawMessage) string {
+	return copilotResultContent(raw)
+}
+
+func opencodeToolDisplayName(name string) string {
+	if strings.EqualFold(name, "bash") || strings.EqualFold(name, "shell") {
+		return "Bash"
+	}
+	if name == "" {
+		return "Tool"
+	}
+	return name
+}
+
+func firstRaw(items ...json.RawMessage) json.RawMessage {
+	for _, item := range items {
+		if len(item) > 0 && !bytes.Equal(item, []byte("null")) {
+			return item
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(items ...string) string {
+	for _, item := range items {
+		if item != "" {
+			return item
+		}
+	}
+	return ""
+}
+
+func firstNonZero(items ...int) int {
+	for _, item := range items {
+		if item != 0 {
+			return item
+		}
+	}
+	return 0
+}
+
+func (u opencodeUsage) inputTokens() int {
+	if u.InputTokens != 0 {
+		return u.InputTokens
+	}
+	return u.InputTokensSnake
+}
+
+func (u opencodeUsage) outputTokens() int {
+	if u.OutputTokens != 0 {
+		return u.OutputTokens
+	}
+	return u.OutputTokensSnake
+}
+
+func (u opencodeUsage) cacheReadInputTokens() int {
+	if u.CacheReadInputTokens != 0 {
+		return u.CacheReadInputTokens
+	}
+	return u.CacheReadInputTokensSnake
+}
+
+func (u opencodeUsage) reasoningTokens() int {
+	if u.ReasoningTokens != 0 {
+		return u.ReasoningTokens
+	}
+	return u.ReasoningTokensSnake
+}
+
+func (u opencodeUsage) costUSD() float64 {
+	if u.CostUSD != 0 {
+		return u.CostUSD
+	}
+	return u.CostUSDSnake
 }
 
 // copilotToolInput builds the ToolUseBlock.Input map from a Copilot tool's

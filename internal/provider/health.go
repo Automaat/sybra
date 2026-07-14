@@ -22,14 +22,16 @@ type Status struct {
 
 // Config controls the Checker's probe schedule and failover policy.
 type Config struct {
-	Interval          time.Duration
-	ClaudeEnabled     bool
-	CodexEnabled      bool
-	CopilotEnabled    bool
-	AutoFailover      bool
-	ClaudeRLCooldown  time.Duration
-	CodexRLCooldown   time.Duration
-	CopilotRLCooldown time.Duration
+	Interval           time.Duration
+	ClaudeEnabled      bool
+	CodexEnabled       bool
+	CopilotEnabled     bool
+	OpenCodeEnabled    bool
+	AutoFailover       bool
+	ClaudeRLCooldown   time.Duration
+	CodexRLCooldown    time.Duration
+	CopilotRLCooldown  time.Duration
+	OpenCodeRLCooldown time.Duration
 	// ProbeErrorThreshold is the number of consecutive generic probe_error
 	// results required before a provider is marked unhealthy. Auth and
 	// rate-limit states still apply immediately.
@@ -87,10 +89,11 @@ type Checker struct {
 	emit   func(event string, data any)
 	logger *slog.Logger
 
-	probeClaude  func(ctx context.Context) (Status, error)
-	probeCodex   func(ctx context.Context) (Status, error)
-	probeCopilot func(ctx context.Context) (Status, error)
-	now          func() time.Time
+	probeClaude   func(ctx context.Context) (Status, error)
+	probeCodex    func(ctx context.Context) (Status, error)
+	probeCopilot  func(ctx context.Context) (Status, error)
+	probeOpenCode func(ctx context.Context) (Status, error)
+	now           func() time.Time
 }
 
 // New constructs a Checker. Zero-value config fields are filled with defaults.
@@ -106,6 +109,9 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	}
 	if cfg.CopilotRLCooldown <= 0 {
 		cfg.CopilotRLCooldown = 15 * time.Minute
+	}
+	if cfg.OpenCodeRLCooldown <= 0 {
+		cfg.OpenCodeRLCooldown = 15 * time.Minute
 	}
 	if cfg.ProbeErrorThreshold <= 0 {
 		cfg.ProbeErrorThreshold = defaultProbeErrorThreshold
@@ -125,12 +131,14 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		probeClaude:   ProbeClaude,
 		probeCodex:    ProbeCodex,
 		probeCopilot:  ProbeCopilot,
+		probeOpenCode: ProbeOpenCode,
 		now:           time.Now,
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
 	c.statuses["claude"] = &Status{Provider: "claude", Healthy: cfg.ClaudeEnabled, Reason: initialReason(cfg.ClaudeEnabled)}
 	c.statuses["codex"] = &Status{Provider: "codex", Healthy: cfg.CodexEnabled, Reason: initialReason(cfg.CodexEnabled)}
 	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: cfg.CopilotEnabled, Reason: initialReason(cfg.CopilotEnabled)}
+	c.statuses["opencode"] = &Status{Provider: "opencode", Healthy: cfg.OpenCodeEnabled, Reason: initialReason(cfg.OpenCodeEnabled)}
 	return c
 }
 
@@ -159,14 +167,15 @@ func (c *Checker) Run(ctx context.Context) {
 
 func (c *Checker) checkAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	var claudeStatus, codexStatus, copilotStatus Status
-	var claudeErr, codexErr, copilotErr error
-	var doClaude, doCodex, doCopilot bool
+	var claudeStatus, codexStatus, copilotStatus, openCodeStatus Status
+	var claudeErr, codexErr, copilotErr, openCodeErr error
+	var doClaude, doCodex, doCopilot, doOpenCode bool
 
 	c.mu.RLock()
 	doClaude = c.cfg.ClaudeEnabled
 	doCodex = c.cfg.CodexEnabled
 	doCopilot = c.cfg.CopilotEnabled
+	doOpenCode = c.cfg.OpenCodeEnabled
 	c.mu.RUnlock()
 
 	if doClaude {
@@ -184,9 +193,14 @@ func (c *Checker) checkAll(ctx context.Context) {
 			copilotStatus, copilotErr = c.probeCopilot(ctx)
 		})
 	}
+	if doOpenCode {
+		wg.Go(func() {
+			openCodeStatus, openCodeErr = c.probeOpenCode(ctx)
+		})
+	}
 	wg.Wait()
 
-	results := make([]probeResult, 0, 3)
+	results := make([]probeResult, 0, 4)
 	if doClaude {
 		results = append(results, probeResult{provider: "claude", status: claudeStatus, err: claudeErr})
 	}
@@ -195,6 +209,9 @@ func (c *Checker) checkAll(ctx context.Context) {
 	}
 	if doCopilot {
 		results = append(results, probeResult{provider: "copilot", status: copilotStatus, err: copilotErr})
+	}
+	if doOpenCode {
+		results = append(results, probeResult{provider: "opencode", status: openCodeStatus, err: openCodeErr})
 	}
 	c.applyProbeResults(ctx, results)
 }
@@ -481,6 +498,8 @@ func (c *Checker) providerEnabledLocked(provider string) bool {
 		return c.cfg.CodexEnabled
 	case "copilot":
 		return c.cfg.CopilotEnabled
+	case "opencode":
+		return c.cfg.OpenCodeEnabled
 	default:
 		return false
 	}
@@ -515,6 +534,8 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 			cooldown = c.cfg.CodexRLCooldown
 		case "copilot":
 			cooldown = c.cfg.CopilotRLCooldown
+		case "opencode":
+			cooldown = c.cfg.OpenCodeRLCooldown
 		default:
 			cooldown = 15 * time.Minute
 		}
@@ -563,6 +584,8 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 		prev, c.cfg.CodexEnabled = c.cfg.CodexEnabled, v
 	case "copilot":
 		prev, c.cfg.CopilotEnabled = c.cfg.CopilotEnabled, v
+	case "opencode":
+		prev, c.cfg.OpenCodeEnabled = c.cfg.OpenCodeEnabled, v
 	default:
 		c.mu.Unlock()
 		return

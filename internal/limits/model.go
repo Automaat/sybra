@@ -3,9 +3,10 @@ package limits
 import "time"
 
 const (
-	ProviderClaude  = "claude"
-	ProviderCodex   = "codex"
-	ProviderCopilot = "copilot"
+	ProviderClaude   = "claude"
+	ProviderCodex    = "codex"
+	ProviderCopilot  = "copilot"
+	ProviderOpenCode = "opencode"
 
 	SourceStream       = "stream"
 	SourceSessionFiles = "session-files"
@@ -115,9 +116,10 @@ func DefaultPolicy() Policy {
 		PreferUnderused:         true,
 		SubscriptionMonthlyUSD:  map[string]float64{},
 		ProviderEnabled: map[string]bool{
-			ProviderClaude:  true,
-			ProviderCodex:   true,
-			ProviderCopilot: true,
+			ProviderClaude:   true,
+			ProviderCodex:    true,
+			ProviderCopilot:  true,
+			ProviderOpenCode: true,
 		},
 	}
 }

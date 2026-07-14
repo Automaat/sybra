@@ -473,7 +473,7 @@ must not start filing tasks before an operator opts in.
 ## ProvidersConfig (`providers`)
 
 ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
-copilot) and their background health-check loop. A missing block defaults to
+copilot, opencode) and their background health-check loop. A missing block defaults to
 "all providers enabled, health check on, auto-failover on, 300s interval".
 
 | YAML key | Type | Default | Description |
@@ -482,6 +482,7 @@ copilot) and their background health-check loop. A missing block defaults to
 | `providers.claude` | `ProviderEntryConfig` | _(see below)_ |  |
 | `providers.codex` | `ProviderEntryConfig` | _(see below)_ |  |
 | `providers.copilot` | `ProviderEntryConfig` | _(see below)_ |  |
+| `providers.opencode` | `ProviderEntryConfig` | _(see below)_ |  |
 | `providers.limits` | `ProviderLimitsConfig` | _(see below)_ |  |
 | `providers.auto_failover` | `bool` | `true` |  |
 
@@ -515,6 +516,14 @@ copilot) and their background health-check loop. A missing block defaults to
 | `providers.copilot.enabled` | `bool` | `true` |  |
 | `providers.copilot.rate_limit_cooldown_seconds` | `int` | `900` |  |
 | `providers.copilot.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
+
+## ProviderEntryConfig (`providers.opencode`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `providers.opencode.enabled` | `bool` | `true` |  |
+| `providers.opencode.rate_limit_cooldown_seconds` | `int` | `900` |  |
+| `providers.opencode.monthly_subscription_usd` | `float64` |  | MonthlySubscriptionUSD is optional and used only for Stats value comparison. Zero means "not configured". |
 
 ## ProviderLimitsConfig (`providers.limits`)
 

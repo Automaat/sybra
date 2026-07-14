@@ -120,9 +120,60 @@ func copilotEventToConvoEvent(e CopilotEvent) ConvoEvent {
 	return ev
 }
 
-// runPerTurnConversational runs a per-turn provider (codex/copilot) in
+// opencodeEventToConvoEvent converts OpenCode JSON output into the rich
+// conversational event shape. Tool results map to "user" for consistency with
+// Claude/Codex/Copilot streams.
+func opencodeEventToConvoEvent(e OpenCodeEvent) ConvoEvent {
+	ev := ConvoEvent{
+		Type:      e.Type,
+		Subtype:   e.Subtype,
+		SessionID: e.SessionID,
+		Timestamp: time.Now().UTC(),
+		Raw:       e.Raw,
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Text = e.Message.Text
+			ev.ToolUses = e.Message.ToolUses
+		}
+		ev.OutputTokens = e.OutputTokens
+	case "tool_use":
+		if e.Message != nil {
+			ev.ToolUses = e.Message.ToolUses
+		}
+	case "tool_result":
+		ev.Type = "user"
+		if e.Message != nil {
+			results := make([]ToolResultBlock, len(e.Message.ToolResults))
+			copy(results, e.Message.ToolResults)
+			for i := range results {
+				if len(results[i].Content) > 2000 {
+					results[i].Content = results[i].Content[:2000] + "..."
+				}
+			}
+			ev.ToolResults = results
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Text = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
+		}
+	}
+	return ev
+}
+
+// runPerTurnConversational runs a per-turn provider (codex/copilot/opencode) in
 // interactive conversational mode. Each turn spawns a fresh process
-// (`codex exec --json` or `copilot -p --output-format json`). After the turn's
+// (`codex exec --json`, `copilot -p --output-format json`, or
+// `opencode run --format json`). After the turn's
 // terminal result the agent transitions to StatePaused and waits for the next
 // prompt on promptCh. OneShot skips the wait and exits after the first turn.
 //
@@ -263,7 +314,8 @@ func (m *Manager) waitPerTurnPrompt(ctx context.Context, a *Agent) (string, bool
 }
 
 // runConvoTurn runs one per-turn provider process (`codex exec --json` or
-// `copilot -p --output-format json`) and streams output as ConvoEvents.
+// `copilot -p --output-format json`, or `opencode run --format json`) and
+// streams output as ConvoEvents.
 // Returns true only when the turn produced a terminal result and exited cleanly.
 func (m *Manager) runConvoTurn(ctx context.Context, a *Agent, cfg RunConfig, prompt string, logWriter io.Writer) bool {
 	bin, args, err := buildPerTurnConvoArgs(a, cfg, prompt)
@@ -488,7 +540,7 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 }
 
 // parseConvoEvent parses one per-turn NDJSON line into a ConvoEvent using the
-// provider-appropriate parser. Only codex/copilot use the per-turn path;
+// provider-appropriate parser. Only codex/copilot/opencode use the per-turn path;
 // claude conversational is handled in runner_convo.go.
 func parseConvoEvent(provider string, line []byte) (ConvoEvent, error) {
 	prov, err := lookupProvider(provider)
@@ -510,7 +562,7 @@ const convoProviderMarkerVersion = 1
 // can parse each segment of a mixed-provider log with the right parser
 // instead of guessing from the agent's current (possibly since-switched)
 // provider. The field name is namespaced so it can never collide with a
-// genuine codex/copilot JSON line.
+// genuine codex/copilot/opencode JSON line.
 type convoProviderMarker struct {
 	Marker   string `json:"__sybra_provider_marker__"`
 	Version  int    `json:"version"`
@@ -546,7 +598,7 @@ func parseProviderMarkerLine(line []byte) (string, bool) {
 	return mark.Provider, true
 }
 
-// rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot)
+// rehydratePerTurnConvoFromLog replays a per-turn (codex/copilot/opencode)
 // conversational agent's log into its convo buffer (and session id) without
 // emitting events, so a recreated agent shows its prior chat history after a
 // restart. The log may cover more than one provider if a mid-run switch
@@ -620,7 +672,7 @@ func rehydratePerTurnConvoFromLog(a *Agent, path string) {
 	a.SetSessionID(sessionID)
 }
 
-// sendConvoPrompt delivers a follow-up prompt to a per-turn (codex/copilot)
+// sendConvoPrompt delivers a follow-up prompt to a per-turn (codex/copilot/opencode)
 // conversational agent via its prompt channel.
 func (m *Manager) sendConvoPrompt(agentID, text string) error {
 	a, err := m.GetAgent(agentID)
