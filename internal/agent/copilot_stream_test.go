@@ -265,8 +265,8 @@ func TestNormalizeModelCopilot(t *testing.T) {
 	tests := map[string]string{
 		"":                copilotDefaultModel,
 		"sonnet":          copilotDefaultModel,
-		"opus":            copilotDefaultModel,
-		"haiku":           copilotDefaultModel,
+		"opus":            "gemini-3.1-pro-preview",
+		"haiku":           "gpt-5-mini",
 		"gpt-5.3-codex":   "gpt-5.3-codex",
 		"claude-opus-4.6": "claude-opus-4.6",
 		"auto":            "auto",

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
@@ -26,8 +27,8 @@ func (claudeProvider) NormalizeModel(model string) string {
 	// Stripping before safeArgRe keeps the validator strict — it intentionally
 	// rejects '[' and ']'. Scoped to the Claude path; Codex strings untouched.
 	model = stripContextSuffix(model)
-	if strings.TrimSpace(model) == "" {
-		return "sonnet"
+	if resolved, ok := modeltier.NormalizeAlias("claude", model); ok {
+		return resolved
 	}
 	return model
 }

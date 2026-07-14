@@ -57,7 +57,7 @@ func selfMonitorTier(model string) llmjob.Tier {
 	case strings.Contains(model, "opus"):
 		return llmjob.Deep
 	case strings.Contains(model, "haiku"):
-		return llmjob.Cheap
+		return llmjob.SuperCheap
 	default:
 		return llmjob.Standard
 	}

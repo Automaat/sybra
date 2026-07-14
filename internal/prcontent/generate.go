@@ -50,7 +50,7 @@ type FallbackGenerator struct {
 func (g *FallbackGenerator) Generate(ctx context.Context, req Request) (Content, error) {
 	c, _, err := llmjob.Run(ctx, buildPrompt(req), llmjob.Spec[Content]{
 		Name:     "pr-content",
-		Tier:     llmjob.Cheap,
+		Tier:     llmjob.SuperCheap,
 		Validate: validateContent,
 	}, llmexec.Options{
 		Logger: g.Logger,

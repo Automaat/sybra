@@ -529,7 +529,7 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 				"--json",
 				"--skip-git-repo-check",
 				"--dangerously-bypass-approvals-and-sandbox",
-				"--model\ngpt-5.5",
+				"--model\ngpt-5.4",
 			} {
 				if !strings.Contains(args, want) {
 					t.Errorf("expected %q in args:\n%s", want, args)

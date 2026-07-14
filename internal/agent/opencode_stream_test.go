@@ -3,9 +3,15 @@ package agent
 import "testing"
 
 func TestOpenCodeProviderNormalizeModel(t *testing.T) {
-	for _, in := range []string{"", "sonnet", "opus", "haiku"} {
-		if got := normalizeModel("opencode", in); got != opencodeDefaultModel {
-			t.Errorf("normalizeModel(opencode, %q) = %q, want %q", in, got, opencodeDefaultModel)
+	tests := map[string]string{
+		"":       opencodeDefaultModel,
+		"sonnet": opencodeDefaultModel,
+		"opus":   "openrouter/z-ai/glm-5.2",
+		"haiku":  "openrouter/qwen/qwen3-32b",
+	}
+	for in, want := range tests {
+		if got := normalizeModel("opencode", in); got != want {
+			t.Errorf("normalizeModel(opencode, %q) = %q, want %q", in, got, want)
 		}
 	}
 	if got := normalizeModel("opencode", "openrouter/qwen/qwen3-coder"); got != "openrouter/qwen/qwen3-coder" {

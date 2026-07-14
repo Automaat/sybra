@@ -195,7 +195,7 @@ func TestRunAvoidProviderExcludedFromOrder(t *testing.T) {
 
 func TestRunSetsTierModels(t *testing.T) {
 	restore := stubRunner(func(_ context.Context, _ string, opts llmexec.Options) (llmexec.Result, error) {
-		want := map[string]string{"claude": "haiku", "codex": "gpt-5.4-mini", "copilot": "gpt-5-mini"}
+		want := map[string]string{"claude": "sonnet", "codex": "gpt-5.4", "copilot": "claude-sonnet-4.6", "opencode": "openrouter/deepseek/deepseek-v4-flash"}
 		if !reflect.DeepEqual(opts.Models, want) {
 			t.Fatalf("models = %#v, want %#v", opts.Models, want)
 		}
@@ -208,9 +208,33 @@ func TestRunSetsTierModels(t *testing.T) {
 	}
 }
 
+func TestRunSetsSuperCheapTierModels(t *testing.T) {
+	restore := stubRunner(func(_ context.Context, _ string, opts llmexec.Options) (llmexec.Result, error) {
+		want := map[string]string{"claude": "haiku", "codex": "gpt-5.4-mini", "copilot": "gpt-5-mini", "opencode": "openrouter/qwen/qwen3-32b"}
+		if !reflect.DeepEqual(opts.Models, want) {
+			t.Fatalf("models = %#v, want %#v", opts.Models, want)
+		}
+		return llmexec.Result{Provider: "claude", Text: `{"ok":true}`}, nil
+	})
+	defer restore()
+
+	if _, _, err := Run(context.Background(), "prompt", Spec[testOut]{Name: "models", Tier: SuperCheap}, llmexec.Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestStandardTierIsCheapAlias(t *testing.T) {
+	if Standard != Cheap {
+		t.Fatalf("Standard = %d, want Cheap alias %d", Standard, Cheap)
+	}
+	if !reflect.DeepEqual(modelsFor(Standard), modelsFor(Cheap)) {
+		t.Fatalf("Standard models differ from Cheap models")
+	}
+}
+
 func TestRunPreservesExplicitModels(t *testing.T) {
 	restore := stubRunner(func(_ context.Context, _ string, opts llmexec.Options) (llmexec.Result, error) {
-		want := map[string]string{"claude": "opus", "codex": "gpt-5.4-mini", "copilot": "gpt-5-mini"}
+		want := map[string]string{"claude": "opus", "codex": "gpt-5.4", "copilot": "claude-sonnet-4.6", "opencode": "openrouter/deepseek/deepseek-v4-flash"}
 		if !reflect.DeepEqual(opts.Models, want) {
 			t.Fatalf("models = %#v, want %#v", opts.Models, want)
 		}
@@ -251,7 +275,7 @@ func TestModelsForClones(t *testing.T) {
 	got := modelsFor(Standard)
 	got["claude"] = "mutated"
 	again := modelsFor(Standard)
-	if again["claude"] != "sonnet" || again["codex"] != "gpt-5.5" || again["copilot"] != "claude-sonnet-4.6" {
+	if again["claude"] != "sonnet" || again["codex"] != "gpt-5.4" || again["copilot"] != "claude-sonnet-4.6" || again["opencode"] != "openrouter/deepseek/deepseek-v4-flash" {
 		t.Fatalf("modelsFor did not clone standard row: %#v", again)
 	}
 }
