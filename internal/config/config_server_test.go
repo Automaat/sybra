@@ -7,8 +7,15 @@ import (
 	"testing"
 )
 
+func clearServerEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SYBRA_AUTH_TOKEN", "")
+	t.Setenv("SYBRA_ALLOWED_ORIGINS", "")
+}
+
 func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
+	clearServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
 
 	cfg, err := Load()
@@ -42,6 +49,7 @@ func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 
 func TestLoadPreservesExplicitServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
+	clearServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
 
 	yaml := []byte("server:\n  auth_token: my-explicit-token\n")
@@ -60,6 +68,7 @@ func TestLoadPreservesExplicitServerAuthToken(t *testing.T) {
 
 func TestLoadServerAuthTokenEnvOverride(t *testing.T) {
 	dir := t.TempDir()
+	clearServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_AUTH_TOKEN", "env-token")
 
@@ -79,6 +88,7 @@ func TestLoadServerAuthTokenEnvOverride(t *testing.T) {
 
 func TestLoadServerAllowedOriginsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
+	clearServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_ALLOWED_ORIGINS", "https://a.example, https://b.example")
 
@@ -99,6 +109,7 @@ func TestLoadServerAllowedOriginsEnvOverride(t *testing.T) {
 
 func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
+	clearServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
 
 	yaml := []byte("server:\n  allowed_origins: [https://a.example]\n")
