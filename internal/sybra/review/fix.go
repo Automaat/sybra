@@ -449,6 +449,14 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 	}) {
 		prompt += holdSuffix
 	}
+	if slices.ContainsFunc(issues, func(i github.PRIssue) bool {
+		return prHasCurrentApproval(i.PR)
+	}) {
+		prompt += "\n\nApproval preservation:\n" +
+			"- This PR is already approved. Do not merge/rebase/update the base branch or push a clean/base-only merge that only changes the merge-base.\n" +
+			"- Push only if you make a substantive code, test, or documentation fix for the failing CI, conflict, or review feedback.\n" +
+			"- If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required` with the reason."
+	}
 	return prompt
 }
 
@@ -516,6 +524,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	if !opts.replaceActiveWorkflow &&
 		r.cfg != nil && r.cfg.GitHub.AutoResolveCleanMerges &&
 		len(handle) == 1 && handle[0].Kind == github.PRIssueConflict &&
+		!prHasCurrentApproval(primary.PR) &&
 		r.autoResolveConflict(ctx, t, primary.PR, dir) {
 		return true
 	}
@@ -526,6 +535,10 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
 	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+}
+
+func prHasCurrentApproval(pr github.PullRequest) bool {
+	return pr.ReviewDecision == "APPROVED" || pr.RESTApproved
 }
 
 func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
@@ -1388,8 +1401,12 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		wtErr error
 	)
 	// Conflict and comment fixes operate on the PR's existing branch, so check
-	// it out (PrepareForFix). A CI fix re-runs on a fresh worktree.
-	if issue.Kind == github.PRIssueConflict || issue.Kind == github.PRIssueComments {
+	// it out (PrepareForFix). A CI fix normally re-runs on a fresh worktree, but
+	// approved PRs must also use the branch-preserving fix path: PrepareForTask
+	// rebases onto base and can fall back to an additive merge before the agent
+	// starts, which changes the merge-base and can dismiss an existing approval
+	// even when the agent would make no substantive fix.
+	if issue.Kind == github.PRIssueConflict || issue.Kind == github.PRIssueComments || prHasCurrentApproval(issue.PR) {
 		d, wtErr = r.worktrees.PrepareForFix(ctx, t, issue.PR.Number)
 	} else {
 		d, wtErr = r.worktrees.PrepareForTask(ctx, t, nil)
