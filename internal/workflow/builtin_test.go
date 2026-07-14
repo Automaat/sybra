@@ -1305,6 +1305,36 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 	}
 }
 
+func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := SyncBuiltins(store); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	prePR := TaskInfo{ID: "pre-pr", Status: "ready-review"}
+	if got := engine.MatchWorkflow(prePR, "task.status_changed"); got == nil || got.ID != "simple-task-review" {
+		id := "<nil>"
+		if got != nil {
+			id = got.ID
+		}
+		t.Fatalf("pre-PR ready-review task matched %q, want simple-task-review", id)
+	}
+
+	linkedPR := TaskInfo{ID: "linked-pr", Status: "ready-review", PRNumber: 1981}
+	if got := engine.MatchWorkflow(linkedPR, "task.status_changed"); got != nil {
+		t.Fatalf("linked-PR ready-review task matched %q, want no pre-PR review workflow", got.ID)
+	}
+}
+
 // TestBuiltinBestOfN_DeclaresMechanicalSteps confirms the opt-in workflow
 // wires both new step types with the promote step correctly cross-referencing
 // the judge and best_of_n steps — a minimal regression net for the YAML

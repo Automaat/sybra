@@ -39,6 +39,18 @@ var ErrTestRunnerBusy = errors.New("test-runner concurrency cap reached")
 // transient "too many agents running" is not a dispatch fault.
 var ErrAgentPoolBusy = errors.New("agent pool concurrency cap reached")
 
+// ErrResourcePressure is returned by an agent-start path when
+// internal/pressure.Gate denies dispatch because the local host is short on
+// disk, memory, or CPU headroom. Unlike ErrDispatchInFlight/ErrTestRunnerBusy/
+// ErrAgentPoolBusy — which are suppressed to an empty status_reason because
+// the condition is invisible and self-explanatory — resource pressure is an
+// operator-actionable machine condition, so it DOES surface a status_reason
+// (see ClassifyAgentStartError) while still being excluded from the circuit
+// breaker (see isDeferredNotFailed): a host under sustained pressure would
+// otherwise trip the breaker and wrongly escalate to human-required for a
+// condition that resolves on its own once load drops.
+var ErrResourcePressure = errors.New("agent dispatch deferred: local resource pressure")
+
 // ErrNoProjectAssigned is returned by an agent-start path when a task needs
 // an isolated worktree but has no project_id, and auto-assignment could not
 // resolve one (no agent.default_project_id configured, and more than one
@@ -81,6 +93,13 @@ func ClassifyAgentStartError(err error) (reason string, permanent bool) {
 		return "", false
 	case errors.Is(err, ErrAgentPoolBusy):
 		return "", false
+	case errors.Is(err, ErrResourcePressure):
+		// Transient and self-healing once load drops — but unlike the benign
+		// dispatch-plumbing sentinels above, this names an operator-visible
+		// machine condition, so it DOES surface a status_reason (see
+		// isDeferredNotFailed for why it still never feeds the breaker).
+		reason = "work paused: machine under resource pressure — " + resourcePressureDetail(err)
+		return truncateReason(reason), false
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
 		// agent is still live in. The agent's own completion (or a later
@@ -147,13 +166,42 @@ func transientAgentStartError(err error) bool {
 	return errors.Is(err, ErrDispatchInFlight) ||
 		errors.Is(err, ErrTestRunnerBusy) ||
 		errors.Is(err, ErrAgentPoolBusy) ||
+		errors.Is(err, ErrResourcePressure) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 
+// isDeferredNotFailed reports whether err represents a benign defer that must
+// never feed the circuit breaker (see surfaceStartFailureClassified), even
+// though — unlike the other transient sentinels — it DOES surface a
+// status_reason via ClassifyAgentStartError. A host under sustained resource
+// pressure would otherwise accumulate breaker failures for every parked
+// dispatch attempt and wrongly escalate to human-required for a condition
+// that self-heals once load drops.
+func isDeferredNotFailed(err error) bool {
+	return errors.Is(err, ErrResourcePressure)
+}
+
 func isTransientFetchReason(reason string) bool {
 	return strings.TrimSpace(reason) == transientFetchStatusReason
+}
+
+func resourcePressureDetail(err error) string {
+	if err == nil {
+		return "local resource pressure"
+	}
+	msg := err.Error()
+	base := ErrResourcePressure.Error()
+	_, suffix, ok := strings.Cut(msg, base)
+	if !ok {
+		return "local resource pressure"
+	}
+	detail := strings.TrimSpace(strings.TrimPrefix(suffix, ":"))
+	if detail == "" {
+		return "local resource pressure"
+	}
+	return detail
 }
 
 // truncateReason caps a status_reason to startReasonMaxLen bytes with an

@@ -356,11 +356,13 @@ func (c *Config) TestingOpenPROnUnrunnableGateEnabled() bool {
 // PollDefaults exposes the resolved poll intervals (override-or-default) so the
 // poll handlers don't each re-implement the fallback logic.
 const (
-	DefaultReviewsFastSeconds  = 120 // was 60
-	DefaultReviewsSlowSeconds  = 600 // was 300
-	DefaultIssuesSeconds       = 600 // was 300
-	DefaultRenovateFastSeconds = 120 // was 60
-	DefaultRenovateSlowSeconds = 600 // was 300
+	DefaultReviewsFastSeconds           = 120 // was 60
+	DefaultReviewsSlowSeconds           = 600 // was 300
+	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewsStableBackoffMaxTicks = 8
+	DefaultIssuesSeconds                = 600 // was 300
+	DefaultRenovateFastSeconds          = 120 // was 60
+	DefaultRenovateSlowSeconds          = 600 // was 300
 )
 
 // RunsSearchPollers reports whether this machine owns the periodic GitHub
@@ -388,6 +390,41 @@ func (c GitHubConfig) reviewsFast() time.Duration {
 
 func (c GitHubConfig) reviewsSlow() time.Duration {
 	return secsOr(c.ReviewsSlowSeconds, DefaultReviewsSlowSeconds)
+}
+
+// ReviewsMaxPRsPerTick returns the configured per-tick linked-PR cap.
+// Zero falls back to DefaultReviewsMaxPRsPerTick; negative disables the cap.
+func (c *Config) ReviewsMaxPRsPerTick() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsMaxPRsPerTick
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsMaxPRsPerTick
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
+}
+
+// ReviewsStableBackoffMaxTicks returns the configured maximum skip window for
+// stable linked PRs. Zero falls back to DefaultReviewsStableBackoffMaxTicks;
+// negative disables the backoff.
+func (c *Config) ReviewsStableBackoffMaxTicks() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsStableBackoffMaxTicks
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsStableBackoffMaxTicks
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
 }
 
 // ReviewsFast/ReviewsSlow/Issues/RenovateFast/RenovateSlow return resolved poll
@@ -554,6 +591,19 @@ func DefaultConfig() *Config {
 		},
 		Cluster: ClusterConfig{
 			Role: ClusterRoleStandalone,
+		},
+		Orchestrator: OrchestratorConfig{
+			// Seed the pressure thresholds here (not in applyPressureDefaults) so
+			// an explicit `0` in YAML — the documented "disable this dimension"
+			// sentinel — survives loading. A config missing the block entirely
+			// keeps these seeds; a config that sets a threshold to 0 keeps its 0.
+			Pressure: PressureConfig{
+				Enabled:                true,
+				MinDiskFreePercent:     5,
+				MinMemAvailablePercent: 8,
+				MaxLoadPerCPU:          8.0,
+				SampleIntervalSeconds:  15,
+			},
 		},
 		TasksDir: defaultTasksDir(),
 	}
@@ -1167,6 +1217,25 @@ func applyOrchestratorDefaults(cfg *Config) {
 	}
 	if cfg.Orchestrator.MaintenanceIntervalSeconds <= 0 {
 		cfg.Orchestrator.MaintenanceIntervalSeconds = 60
+	}
+	applyPressureDefaults(cfg)
+}
+
+// applyPressureDefaults fills the Pressure block. The thresholds
+// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU) are seeded in
+// DefaultConfig, NOT here: their documented `<=0 disables this dimension`
+// sentinel means an explicit `0` in YAML must survive loading, so defaulting
+// them on `<=0` would silently re-enable a signal the operator turned off. A
+// config missing the block entirely keeps the DefaultConfig seeds; a config
+// that sets one threshold to 0 keeps its 0.
+//
+// SampleIntervalSeconds is different — its `<=0` means "fall back to the
+// default", not "disable" — so it is safe to normalize here (pressure.Gate
+// also falls back internally).
+func applyPressureDefaults(cfg *Config) {
+	p := &cfg.Orchestrator.Pressure
+	if p.SampleIntervalSeconds <= 0 {
+		p.SampleIntervalSeconds = 15
 	}
 }
 

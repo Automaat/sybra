@@ -10,13 +10,21 @@ import (
 	"strings"
 )
 
-func listProviderProcessesUnderRoots(_ context.Context, roots []string) []providerProcess {
+func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []providerProcess {
+	if ctx == nil {
+		return nil
+	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
 	}
 	out := make([]providerProcess, 0)
 	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			return out
+		default:
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -28,8 +36,8 @@ func listProviderProcessesUnderRoots(_ context.Context, roots []string) []provid
 		if err != nil || !pathWithinRoots(cwd, roots) {
 			continue
 		}
-		cmd := linuxProcessName(entry.Name())
-		owner := linuxMCPOwner(entry.Name())
+		cmd := linuxProcessName(ctx, entry.Name())
+		owner := linuxMCPOwner(ctx, entry.Name())
 		if owner.AgentID == "" && !isProviderProcessName(cmd) {
 			continue
 		}
@@ -38,7 +46,10 @@ func listProviderProcessesUnderRoots(_ context.Context, roots []string) []provid
 	return out
 }
 
-func linuxProcessName(pid string) string {
+func linuxProcessName(ctx context.Context, pid string) string {
+	if ctx == nil || ctx.Err() != nil {
+		return ""
+	}
 	data, err := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 	if err == nil && len(data) > 0 {
 		if idx := bytesIndexByte(data, 0); idx >= 0 {
@@ -47,6 +58,9 @@ func linuxProcessName(pid string) string {
 		if len(data) > 0 {
 			return filepath.Base(string(data))
 		}
+	}
+	if ctx.Err() != nil {
+		return ""
 	}
 	data, err = os.ReadFile(filepath.Join("/proc", pid, "comm"))
 	if err != nil {
@@ -64,7 +78,10 @@ func bytesIndexByte(data []byte, target byte) int {
 	return -1
 }
 
-func linuxMCPOwner(pid string) mcpOwner {
+func linuxMCPOwner(ctx context.Context, pid string) mcpOwner {
+	if ctx == nil || ctx.Err() != nil {
+		return mcpOwner{}
+	}
 	data, err := os.ReadFile(filepath.Join("/proc", pid, "environ"))
 	if err != nil || len(data) == 0 {
 		return mcpOwner{}

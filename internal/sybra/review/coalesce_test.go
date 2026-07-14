@@ -105,11 +105,12 @@ func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
 	}
 
 	r := &Handler{
-		logger:         logger,
-		tasks:          tasks,
-		agents:         agentMgr,
-		prTracker:      github.NewIssueTracker(time.Minute),
-		WorkflowEngine: engine,
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
 		// push mode: the agent pushes and would emit `continue`; the park var
 		// must still force human-required.
 		cfg: &config.Config{ReviewHold: config.ReviewHoldConfig{Enabled: true, Mode: config.ReviewHoldModePush}},
@@ -204,11 +205,12 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 	}
 
 	r := &Handler{
-		logger:         logger,
-		tasks:          tasks,
-		agents:         agentMgr,
-		prTracker:      github.NewIssueTracker(time.Minute),
-		WorkflowEngine: engine,
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       github.NewIssueTracker(time.Minute),
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 
 	pr := github.PullRequest{

@@ -76,6 +76,14 @@ type AgentLauncher interface {
 	// by a dispatcher outside the engine's own visibility (e.g. recovery) is
 	// never missed.
 	IsDispatching(taskID string) bool
+	// AdmitDispatch consults the local resource-pressure gate (internal/pressure)
+	// before a run_agent/best_of_n/parallel step spawns a new agent process.
+	// Interactive mode always admits (a human is waiting on it) and an
+	// implementation with no gate wired always admits — this is a Layer-1 peek
+	// called BEFORE the (potentially expensive) worktree-prep/StartAgent path,
+	// so a saturated host defers new work without ever touching the worktree.
+	// admit=false carries a human-readable reason for the caller to park with.
+	AdmitDispatch(taskID, role, mode string) (admit bool, reason string)
 }
 
 // DispatchClaim is the workflow-visible handle for a held per-task dispatch

@@ -8,6 +8,12 @@ trigger:
     - field: task.status
       operator: equals
       value: ready-review
+    # This workflow reviews the local diff before a PR exists. If a linked PR
+    # task is restored or mirrored at ready-review, leave it to the PR monitor
+    # instead of launching another local review agent.
+    - field: task.pr_number
+      operator: equals
+      value: ""
 steps:
   # Skip review when tagged noreview/trivial or already reviewed in a prior
   # run. On skip, jump straight to done_review so the task still advances to

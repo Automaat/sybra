@@ -1256,7 +1256,10 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	// task to human-required for something that self-heals when the cooldown
 	// window expires. Only genuine failures (bad worktree, missing project,
 	// crashes) — and auth failures that need a human login — feed the breaker.
-	if wf != nil && stepID != "" && !isTransientCapacityError(err) {
+	// isDeferredNotFailed excludes resource-pressure defers the same way: they
+	// surface a status_reason (unlike the fully-silent transient sentinels)
+	// but must never accumulate toward the breaker.
+	if wf != nil && stepID != "" && !isTransientCapacityError(err) && !isDeferredNotFailed(err) {
 		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
 		if trip {
 			// The status skip in resumeSkipReasonForStatus alone is not a

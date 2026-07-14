@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/executil"
@@ -37,6 +38,7 @@ const prFixWorkflowID = "pr-fix"
 
 const branchConflictRetryKind = github.PRIssueBranchConflictNoPR
 const branchRecreateKind = github.PRIssueBranchRecreate
+const ciInfraRerunKind = github.PRIssueKind("ci_infra_rerun")
 
 const wtFailureLimit = 5
 
@@ -338,6 +340,8 @@ func prFixPushPrompt(branch, intro string, fenced bool) string {
 	}
 	b.WriteString("PUSH_REMOTE=origin\n")
 	b.WriteString("if git config --get remote.fork.url >/dev/null; then PUSH_REMOTE=fork; fi\n")
+	b.WriteString("PUSH_URL=$(git remote get-url --push \"$PUSH_REMOTE\")\n")
+	b.WriteString("case \"$PUSH_URL\" in https://github.com/*|http://github.com/*|https://github.com:[0-9]*/*|http://github.com:[0-9]*/*) gh auth status --hostname github.com >/dev/null ;; esac\n")
 	fmt.Fprintf(&b, "git push \"$PUSH_REMOTE\" HEAD:%s", branch)
 	if fenced {
 		b.WriteString("\n```")
@@ -493,9 +497,20 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return false
 	}
 
+	if !opts.replaceActiveWorkflow &&
+		len(handle) == 1 &&
+		primary.Kind == github.PRIssueCIFailure &&
+		r.rerunCIFailure(t, primary) {
+		return true
+	}
+
 	dir, ok := r.prepareWorktree(ctx, t, primary)
 	if !ok {
 		return false
+	}
+
+	if admit, handled := r.preflightPushCredentials(ctx, t.ID, dir); !admit {
+		return handled
 	}
 
 	if !opts.replaceActiveWorkflow &&
@@ -511,6 +526,92 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
 	return r.dispatchPRIssueWithOptions(t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+}
+
+func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
+	preflight := r.pushPreflightFn
+	if preflight == nil {
+		preflight = project.PreflightPushCredentials
+	}
+	if err := preflight(ctx, dir); err != nil {
+		reason := "GitHub push credential preflight failed before starting PR fix: " + truncatePushPreflightReason(err.Error(), 240)
+		if _, updateErr := r.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); updateErr != nil {
+			r.logger.Error("pr-monitor.push-preflight.status", "task_id", taskID, "err", updateErr)
+			return false, false
+		}
+		r.logger.Warn("pr-monitor.push-preflight.failed", "task_id", taskID, "err", err)
+		return false, true
+	}
+	return true, false
+}
+
+func truncatePushPreflightReason(s string, limit int) string {
+	s = strings.ToValidUTF8(s, "")
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len()+utf8.RuneLen(r) > limit {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String()) + "..."
+}
+
+func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
+	if r.projects == nil || r.prTracker == nil || t.ProjectID == "" || issue.PR.Number <= 0 {
+		return false
+	}
+	proj, err := r.projects.Get(t.ProjectID)
+	if err != nil || proj.Type != project.ProjectTypePet {
+		return false
+	}
+	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, issue.PR.HeadSHA) {
+		return false
+	}
+
+	rerun := r.rerunFailedChecks
+	if rerun == nil {
+		rerun = github.RerunFailedChecks
+	}
+	if err := rerun(issue.PR.Repository, issue.PR.Number); err != nil {
+		if isRerunPermissionDenied(err) {
+			if _, updateErr := r.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: task.Ptr(ciInfraRerunPermissionReason),
+			}); updateErr != nil {
+				r.logger.Error("pr-monitor.ci-rerun.permission-status",
+					"task_id", t.ID, "pr", issue.PR.Number, "err", updateErr)
+				return false
+			}
+			r.logger.Warn("pr-monitor.ci-rerun.permission-denied",
+				"task_id", t.ID, "pr", issue.PR.Number, "err", err)
+			return true
+		}
+		r.logger.Warn("pr-monitor.ci-rerun.failed", "task_id", t.ID, "pr", issue.PR.Number, "err", err)
+		return false
+	}
+
+	r.prTracker.MarkHandled(t.ID, ciInfraRerunKind, issue.PR.HeadSHA)
+	r.evictReadyPRCache(issue.PR.Repository, issue.PR.Number)
+	r.logAudit(audit.EventPRCIFailureRerun, t.ID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository, "head_sha": issue.PR.HeadSHA,
+	})
+	r.logger.Info("pr-monitor.ci-rerun.started", "task_id", t.ID, "pr", issue.PR.Number)
+	return true
+}
+
+func isRerunPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "resource not accessible by integration")
 }
 
 // autoResolveConflict attempts the deterministic clean-merge fast-path for a
@@ -893,6 +994,9 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	}
 	if !r.allowPreparedWorktree(taskID, dir) {
 		return false
+	}
+	if admit, handled := r.preflightPushCredentials(ctx, taskID, dir); !admit {
+		return handled
 	}
 	// Refetch: PrepareForBranchFix's ensureBranch call may have just set
 	// t.Branch for the first time (a task whose worktree never got created

@@ -917,11 +917,12 @@ func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *te
 	}
 
 	r := &Handler{
-		logger:         logger,
-		tasks:          tasks,
-		agents:         agentMgr,
-		prTracker:      prTracker,
-		WorkflowEngine: engine,
+		logger:          logger,
+		tasks:           tasks,
+		agents:          agentMgr,
+		prTracker:       prTracker,
+		WorkflowEngine:  engine,
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 
 	pr := github.PullRequest{

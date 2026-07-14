@@ -122,6 +122,18 @@ func (f *fakePRContentGenerator) GeneratePRContent(context.Context, string, stri
 	return f.title, f.body, f.err
 }
 
+type fakePushPreflighter struct {
+	err   error
+	calls int
+	paths []string
+}
+
+func (f *fakePushPreflighter) PreflightPushCredentials(_ context.Context, wtPath string) error {
+	f.calls++
+	f.paths = append(f.paths, wtPath)
+	return f.err
+}
+
 func TestExecPushBranch_Success(t *testing.T) {
 	_, wtPath := newPRWorktree(t, "feat/existing-pr")
 	commitFile(t, wtPath, "change.txt", "feat: task work")
@@ -143,6 +155,41 @@ func TestExecPushBranch_Success(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "ready-pr" {
 		t.Errorf("task status = %q, want unchanged ready-pr", ti.Status)
+	}
+}
+
+func TestExecPushBranch_PreflightAuthFailureParksBeforePush(t *testing.T) {
+	wtPath := t.TempDir()
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	preflight := &fakePushPreflighter{err: errors.New("github push credential preflight failed: gh auth status: Bad credentials")}
+	engine.SetPushCredentialPreflighter(preflight)
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	_, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if preflight.calls != 1 {
+		t.Fatalf("preflight calls = %d, want 1", preflight.calls)
+	}
+	if got := preflight.paths[0]; got != wtPath {
+		t.Fatalf("preflight path = %q, want %q", got, wtPath)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "ready-pr" {
+		t.Fatalf("status = %q, want ready-pr", ti.Status)
+	}
+	if ti.StatusReason != prCreateAuthRetryReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, prCreateAuthRetryReason)
+	}
+	if wfExec.Variables[prCreateAuthAttemptsVar] != "1" {
+		t.Fatalf("%s = %q, want 1", prCreateAuthAttemptsVar, wfExec.Variables[prCreateAuthAttemptsVar])
 	}
 }
 

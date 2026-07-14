@@ -104,8 +104,14 @@ func TestMatchTaskPRs(t *testing.T) {
 			want: []PRIssue{{Kind: PRIssueCIFailure, TaskID: "t1", PR: PullRequest{Number: 42, HeadRefName: "feat/x", CIStatus: "FAILURE"}}},
 		},
 		{
-			name:  "changes requested → comments fix",
+			name:  "stale changes requested without actionable thread → no comments fix",
 			prs:   []PullRequest{{Number: 42, ReviewDecision: "CHANGES_REQUESTED"}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
+		},
+		{
+			name:  "changes requested with actionable thread → comments fix",
+			prs:   []PullRequest{{Number: 42, ReviewDecision: "CHANGES_REQUESTED", UnresolvedCount: 1, ActionableCount: 1}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
 			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
 		},
@@ -129,7 +135,7 @@ func TestMatchTaskPRs(t *testing.T) {
 		},
 		{
 			name:  "CI failure and comments both trigger",
-			prs:   []PullRequest{{Number: 42, CIStatus: "FAILURE", ReviewDecision: "CHANGES_REQUESTED"}},
+			prs:   []PullRequest{{Number: 42, CIStatus: "FAILURE", ReviewDecision: "CHANGES_REQUESTED", UnresolvedCount: 1, ActionableCount: 1}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
 			want: []PRIssue{
 				{Kind: PRIssueCIFailure, TaskID: "t1"},

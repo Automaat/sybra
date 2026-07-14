@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/project"
 )
 
@@ -60,29 +61,12 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 		taskID, wtPath, time.Now().UTC().Format(time.RFC3339), m.setupTimeout, len(commands),
 	))
 
-	// mise refuses to read an untrusted config, so a fresh worktree whose
-	// mise.toml has never been seen on this machine hard-fails `mise install`
-	// with "Config files ... are not trusted". Trust is persisted per-path in
-	// mise's state dir, so one call per worktree is enough and it is cheap
-	// when the file is already trusted. Skipped when the worktree has no
-	// mise config; failure is logged but non-fatal (the real setup command
-	// will raise a clearer error if mise is actually needed).
-	if hasMiseConfig(wtPath) {
-		trustCmd := exec.CommandContext(ctx, m.misePath, "trust", "--yes")
-		trustCmd.Dir = wtPath
-		setProcessGroupKill(trustCmd)
-		if logFile != nil {
-			trustCmd.Stdout = logFile
-			trustCmd.Stderr = logFile
-		}
-		writeLog(fmt.Sprintf("\n--- [pre] %s\n$ mise trust --yes\n", time.Now().UTC().Format(time.RFC3339)))
-		if trustErr := trustCmd.Run(); trustErr != nil {
-			writeLog(fmt.Sprintf("\n!!! mise trust exit err=%v (non-fatal)\n", trustErr))
-			m.logger.Warn("worktree.mise-trust",
-				"task_id", taskID, "path", wtPath, "err", trustErr)
-		} else {
-			writeLog("\n<<< ok\n")
-		}
+	cmdEnv, err := setupCommandEnv(taskID)
+	if err != nil {
+		return fmt.Errorf("setup env: %w", err)
+	}
+	if err := m.trustMiseConfig(ctx, taskID, wtPath, cmdEnv, logFile, writeLog); err != nil {
+		return err
 	}
 
 	for i, raw := range commands {
@@ -99,6 +83,7 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 
 		cmd := exec.CommandContext(ctx, "sh", "-c", raw)
 		cmd.Dir = wtPath
+		cmd.Env = cmdEnv
 		setProcessGroupKill(cmd)
 		if logFile != nil {
 			cmd.Stdout = logFile
@@ -130,6 +115,39 @@ func (m *Manager) runSetup(parent context.Context, taskID, wtPath string, comman
 		taskID, time.Now().UTC().Format(time.RFC3339)))
 	m.logger.Info("worktree.setup-complete",
 		"task_id", taskID, "path", wtPath, "commands", len(commands), "log", logPath)
+	return nil
+}
+
+func setupCommandEnv(taskID string) ([]string, error) {
+	return buildcache.PrepareGoEnv(taskID, os.Environ())
+}
+
+func (m *Manager) trustMiseConfig(ctx context.Context, taskID, wtPath string, cmdEnv []string, logFile *os.File, writeLog func(string)) error {
+	// mise refuses to read an untrusted config, so a fresh worktree whose
+	// mise.toml has never been seen on this machine hard-fails `mise install`
+	// with "Config files ... are not trusted". Trust is persisted per-path in
+	// mise's state dir, so one call per worktree is enough and it is cheap
+	// when the file is already trusted. Skipped when the worktree has no
+	// mise config; failure is logged but non-fatal (the real setup command
+	// will raise a clearer error if mise is actually needed).
+	if !hasMiseConfig(wtPath) {
+		return nil
+	}
+	trustCmd := exec.CommandContext(ctx, m.misePath, "trust", "--yes")
+	trustCmd.Dir = wtPath
+	trustCmd.Env = cmdEnv
+	setProcessGroupKill(trustCmd)
+	if logFile != nil {
+		trustCmd.Stdout = logFile
+		trustCmd.Stderr = logFile
+	}
+	writeLog(fmt.Sprintf("\n--- [pre] %s\n$ mise trust --yes\n", time.Now().UTC().Format(time.RFC3339)))
+	if trustErr := trustCmd.Run(); trustErr != nil {
+		writeLog(fmt.Sprintf("\n!!! mise trust exit err=%v (non-fatal)\n", trustErr))
+		m.logger.Warn("worktree.mise-trust", "task_id", taskID, "path", wtPath, "err", trustErr)
+		return nil
+	}
+	writeLog("\n<<< ok\n")
 	return nil
 }
 

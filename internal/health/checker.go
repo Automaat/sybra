@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/procstat"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -26,6 +27,8 @@ type Checker struct {
 	homeDir  string
 	logger   *slog.Logger
 	emit     func(string, any)
+	owned    func() OwnedProcesses
+	docker   dockerRunner
 
 	mu     sync.RWMutex
 	report *Report
@@ -38,6 +41,7 @@ func New(
 	homeDir string,
 	logger *slog.Logger,
 	emit func(string, any),
+	owned func() OwnedProcesses,
 ) *Checker {
 	return &Checker{
 		auditDir: auditDir,
@@ -45,13 +49,28 @@ func New(
 		homeDir:  homeDir,
 		logger:   logger,
 		emit:     emit,
+		owned:    owned,
 	}
+}
+
+// OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
+type OwnedProcesses struct {
+	PIDs          map[int]bool
+	ProcessGroups map[int]bool
+}
+
+// Owns reports whether pid is exact-owned or pgid is a trusted owned group.
+func (o OwnedProcesses) Owns(pid, pgid int) bool {
+	if pid > 0 && o.PIDs[pid] {
+		return true
+	}
+	return pgid > 0 && o.ProcessGroups[pgid]
 }
 
 // Run blocks until ctx is done, running checks every TickInterval.
 // Runs one check immediately on start.
 func (c *Checker) Run(ctx context.Context) {
-	c.check()
+	c.check(ctx)
 
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
@@ -61,7 +80,7 @@ func (c *Checker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.check()
+			c.check(ctx)
 		}
 	}
 }
@@ -73,7 +92,7 @@ func (c *Checker) LatestReport() *Report {
 	return c.report
 }
 
-func (c *Checker) check() {
+func (c *Checker) check(ctx context.Context) {
 	now := time.Now().UTC()
 	since := now.Add(-lookback)
 
@@ -106,12 +125,19 @@ func (c *Checker) check() {
 	findings = append(findings, checkAgentRetryLoops(dayEvents, now)...)
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
+	docker := sampleDockerDisk(ctx, c.docker, now)
+	findings = append(findings, checkDockerReclaimable(docker, now)...)
 
 	for i := range findings {
 		findings[i].Fingerprint = FingerprintFor(&findings[i])
 	}
 
 	stats := buildStats(dayEvents)
+	owned := OwnedProcesses{}
+	if c.owned != nil {
+		owned = c.owned()
+	}
+	processes := procstat.Sample(5, owned.Owns)
 
 	report := &Report{
 		GeneratedAt: now,
@@ -120,6 +146,10 @@ func (c *Checker) check() {
 		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
+		Processes:   &processes,
+	}
+	if docker.Available {
+		report.Docker = &docker
 	}
 
 	c.mu.Lock()

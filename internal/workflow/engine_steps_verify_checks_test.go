@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/buildcache"
 )
 
 type fakeCheckGetter struct {
@@ -277,6 +279,46 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	}
 	if failed != "" {
 		t.Errorf("failedCmd = %q, want empty (deadline is not a command failure)", failed)
+	}
+}
+
+func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	ctx := context.Background()
+	cmd := `printf '%s|%s' "$GOCACHE" "$GOMODCACHE"`
+
+	_, out1, err := engine.runVerifyCommands(ctx, "task-1", wt, []string{cmd})
+	if err != nil {
+		t.Fatalf("runVerifyCommands(task-1): %v", err)
+	}
+	_, out2, err := engine.runVerifyCommands(ctx, "task-2", wt, []string{cmd})
+	if err != nil {
+		t.Fatalf("runVerifyCommands(task-2): %v", err)
+	}
+
+	line1 := strings.TrimSpace(strings.TrimPrefix(out1, "$ "+cmd))
+	line2 := strings.TrimSpace(strings.TrimPrefix(out2, "$ "+cmd))
+	parts1 := strings.Split(line1, "|")
+	parts2 := strings.Split(line2, "|")
+	if len(parts1) != 2 || len(parts2) != 2 {
+		t.Fatalf("unexpected output: %q / %q", out1, out2)
+	}
+	if got, want := parts1[0], buildcache.TaskGoBuildDir("task-1"); got != want {
+		t.Fatalf("task-1 GOCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts2[0], buildcache.TaskGoBuildDir("task-2"); got != want {
+		t.Fatalf("task-2 GOCACHE = %q, want %q", got, want)
+	}
+	if parts1[0] == parts2[0] {
+		t.Fatalf("GOCACHE must differ per task, got shared %q", parts1[0])
+	}
+	if got, want := parts1[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("task-1 GOMODCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts2[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("task-2 GOMODCACHE = %q, want %q", got, want)
 	}
 }
 

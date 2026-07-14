@@ -92,6 +92,9 @@ type Handler struct {
 	// mergePR performs the actual squash-merge; overridable in tests.
 	// nil falls back to github.MergePR.
 	mergePR func(repo string, number int) error
+	// rerunFailedChecks requests a rerun of the failed checks on a PR;
+	// overridable in tests. nil falls back to github.RerunFailedChecks.
+	rerunFailedChecks func(repo string, number int) error
 	// enableAutoMergeFn arms GitHub's native auto-merge on a PR; overridable in
 	// tests. nil falls back to github.EnableAutoMerge.
 	enableAutoMergeFn func(repo string, number int) error
@@ -140,6 +143,9 @@ type Handler struct {
 	// readyPRCache holds known-ready PR snapshots keyed by "repo#number"; see
 	// readyPRState.
 	readyPRCache map[string]readyPRState
+	// prPollState tracks stable linked PRs across poll cycles so the known-PR
+	// fetch path can defer unchanged PRs with exponential backoff.
+	prPollState map[string]prPollEntry
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
@@ -164,6 +170,10 @@ type Handler struct {
 	// pushSyncFn pushes the fast-path's clean merge commit. Overridable in
 	// tests; nil falls back to project.PushSync.
 	pushSyncFn func(ctx context.Context, worktreePath, branch string) error
+	// pushPreflightFn validates the push credential path before push-dependent
+	// fix workflows spend agent turns or mutate worktrees. Overridable in
+	// tests; nil falls back to project.PreflightPushCredentials.
+	pushPreflightFn func(ctx context.Context, worktreePath string) error
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
@@ -218,6 +228,7 @@ func New(
 		dispatchFailures:    make(map[string]int),
 		authCircuit:         poll.NewAuthCircuit("reviews", logger),
 		mergePR:             github.MergePR,
+		rerunFailedChecks:   github.RerunFailedChecks,
 		enableAutoMergeFn:   github.EnableAutoMerge,
 		supportsAutoMergeFn: github.SupportsNativeAutoMerge,
 		mergePRViaREST:      github.MergePRViaREST,
@@ -225,10 +236,12 @@ func New(
 		resolveThread:       github.ResolveReviewThread,
 		fetchHeadStateFn:    github.FetchPRHeadState,
 		readyPRCache:        make(map[string]readyPRState),
+		prPollState:         make(map[string]prPollEntry),
 		cfg:                 cfg,
 		experience:          experienceStore,
 		tryCleanMergeFn:     project.TryCleanMerge,
 		pushSyncFn:          project.PushSync,
+		pushPreflightFn:     project.PreflightPushCredentials,
 	}
 }
 
@@ -256,25 +269,31 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		return r.pollSlow()
 	}
 
+	selection := r.selectKnownPRPoll(tasks)
+	r.logger.Info("reviews.poll.bounded",
+		"selected", selection.selectedPRs,
+		"deferred", selection.deferredPRs,
+		"capped", selection.cappedPRs)
+
 	var (
 		matchers          []github.TaskMatcher
 		closedMatchers    []github.TaskMatcher
 		reconcileMatchers []github.TaskMatcher
 	)
-	for i := range tasks {
+	for i := range selection.tasks {
 		m := github.TaskMatcher{
-			ID:        tasks[i].ID,
-			PRNumber:  tasks[i].PRNumber,
-			Branch:    tasks[i].Branch,
-			ProjectID: tasks[i].ProjectID,
+			ID:        selection.tasks[i].ID,
+			PRNumber:  selection.tasks[i].PRNumber,
+			Branch:    selection.tasks[i].Branch,
+			ProjectID: selection.tasks[i].ProjectID,
 		}
-		if prMonitorEligible(&tasks[i]) {
+		if prMonitorEligible(&selection.tasks[i]) {
 			matchers = append(matchers, m)
 			closedMatchers = append(closedMatchers, m)
-		} else if prClosedEligible(&tasks[i]) {
+		} else if prClosedEligible(&selection.tasks[i]) {
 			closedMatchers = append(closedMatchers, m)
 		}
-		if humanRequiredBlockerReconcileEligible(&tasks[i]) {
+		if humanRequiredBlockerReconcileEligible(&selection.tasks[i]) {
 			reconcileMatchers = append(reconcileMatchers, m)
 		}
 	}
@@ -283,9 +302,9 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	// excludes them), so their PR state is fetched separately here purely to feed
 	// reconcileHumanRequiredBlockers below — fetchMatchers must NOT be reused as
 	// the `matchers` passed to MatchTaskPRs for issue dispatch.
-	fetchMatchers := matchers
+	fetchMatchers := append([]github.TaskMatcher{}, matchers...)
 	if len(reconcileMatchers) > 0 {
-		fetchMatchers = append(append([]github.TaskMatcher{}, matchers...), reconcileMatchers...)
+		fetchMatchers = append(fetchMatchers, reconcileMatchers...)
 	}
 	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
@@ -465,18 +484,24 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 // gates a SourcedViaREST PR on the strict REST readiness check
 // (readyForRESTAutoMerge) rather than the Copilot/thread-based gate.
 func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []task.Task) {
+	selection := r.selectKnownPRPoll(tasks)
+	r.logger.Info("reviews.poll.bounded",
+		"selected", selection.selectedPRs,
+		"deferred", selection.deferredPRs,
+		"capped", selection.cappedPRs)
+
 	var matchers, closedMatchers []github.TaskMatcher
-	for i := range tasks {
+	for i := range selection.tasks {
 		m := github.TaskMatcher{
-			ID:        tasks[i].ID,
-			PRNumber:  tasks[i].PRNumber,
-			Branch:    tasks[i].Branch,
-			ProjectID: tasks[i].ProjectID,
+			ID:        selection.tasks[i].ID,
+			PRNumber:  selection.tasks[i].PRNumber,
+			Branch:    selection.tasks[i].Branch,
+			ProjectID: selection.tasks[i].ProjectID,
 		}
-		if prMonitorEligible(&tasks[i]) {
+		if prMonitorEligible(&selection.tasks[i]) {
 			matchers = append(matchers, m)
 			closedMatchers = append(closedMatchers, m)
-		} else if prClosedEligible(&tasks[i]) {
+		} else if prClosedEligible(&selection.tasks[i]) {
 			closedMatchers = append(closedMatchers, m)
 		}
 	}
@@ -657,6 +682,7 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 			sha, open, updatedAt, err := headStateFn(m.ProjectID, m.PRNumber)
 			if err == nil && open && sha != "" && sha == cached.HeadSHA && updatedAt == cached.UpdatedAt {
 				prs = append(prs, cached.PR)
+				r.noteKnownPRResult(m.ProjectID, m.PRNumber, cached.PR)
 				continue
 			}
 			delete(r.readyPRCache, key)
@@ -670,6 +696,7 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 			delete(r.readyPRCache, key)
 		}
 	}
+	r.pruneKnownPRState(seen)
 
 	if len(refs) == 0 {
 		return prs
@@ -699,6 +726,7 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 		}
 		prs = append(prs, res.PR)
 		r.updateReadyPRCache(res.Repo, res.Number, res.PR)
+		r.noteKnownPRResult(res.Repo, res.Number, res.PR)
 	}
 	if authErr != nil {
 		r.authCircuit.RecordFailure(authErr)

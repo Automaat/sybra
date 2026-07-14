@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/buildcache"
 )
 
 func newCodegenGateStep() *Step { return &Step{ID: "codegen_gate", Type: StepCodegenGate} }
@@ -143,6 +145,36 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	}
 	if len(rec.puts) != 1 || !strings.Contains(rec.puts[0].content, `"committed": true`) {
 		t.Fatalf("artifact content = %+v, want committed=true artifact", rec.puts)
+	}
+}
+
+func TestExecCodegenGate_UsesTaskScopedGoBuildCache(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{`printf '%s|%s' "$GOCACHE" "$GOMODCACHE" > cache-env.txt`})
+	tasks.Put(TaskInfo{ID: "task-1", Status: "in-progress"})
+
+	out, err := engine.execCodegenGate("task-1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "committed" {
+		t.Fatalf("Output = %q, want committed", out.Output)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wt, "cache-env.txt"))
+	if err != nil {
+		t.Fatalf("read cache-env.txt: %v", err)
+	}
+	parts := strings.Split(strings.TrimSpace(string(data)), "|")
+	if len(parts) != 2 {
+		t.Fatalf("cache env = %q, want GOCACHE|GOMODCACHE", data)
+	}
+	if got, want := parts[0], buildcache.TaskGoBuildDir("task-1"); got != want {
+		t.Fatalf("GOCACHE = %q, want %q", got, want)
+	}
+	if got, want := parts[1], buildcache.SharedGoModDir(); got != want {
+		t.Fatalf("GOMODCACHE = %q, want %q", got, want)
 	}
 }
 

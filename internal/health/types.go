@@ -1,6 +1,10 @@
 package health
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/procstat"
+)
 
 // Severity indicates how urgent a finding is.
 type Severity string
@@ -14,15 +18,16 @@ const (
 type Category string
 
 const (
-	CatFailureRate      Category = "failure_rate"
-	CatCostOutlier      Category = "cost_outlier"
-	CatStuckTask        Category = "stuck_task"
-	CatWorkflowLoop     Category = "workflow_loop"
-	CatStatusBounce     Category = "status_bounce"
-	CatCostDrift        Category = "cost_drift"
-	CatAgentRetryLoop   Category = "agent_retry_loop"
-	CatTriageMismatch   Category = "triage_mismatch"
-	CatStatusBottleneck Category = "status_bottleneck"
+	CatFailureRate       Category = "failure_rate"
+	CatCostOutlier       Category = "cost_outlier"
+	CatDockerReclaimable Category = "docker_reclaimable"
+	CatStuckTask         Category = "stuck_task"
+	CatWorkflowLoop      Category = "workflow_loop"
+	CatStatusBounce      Category = "status_bounce"
+	CatCostDrift         Category = "cost_drift"
+	CatAgentRetryLoop    Category = "agent_retry_loop"
+	CatTriageMismatch    Category = "triage_mismatch"
+	CatStatusBottleneck  Category = "status_bottleneck"
 )
 
 // Score is the rollup verdict across all findings in a report.
@@ -61,14 +66,25 @@ type Stats struct {
 	TotalCostUSD    float64            `json:"totalCostUsd"`
 }
 
+// DockerDiskUsage is the operator-facing Docker reclaimable-disk sample.
+type DockerDiskUsage struct {
+	Available        bool      `json:"available"`
+	ReclaimableBytes int64     `json:"reclaimableBytes"`
+	TotalBytes       int64     `json:"totalBytes,omitempty"`
+	ManualCommand    string    `json:"manualCommand,omitempty"`
+	SampledAt        time.Time `json:"sampledAt"`
+}
+
 // Report is the output of a single health check run.
 type Report struct {
-	GeneratedAt time.Time `json:"generatedAt"`
-	PeriodStart time.Time `json:"periodStart"`
-	PeriodEnd   time.Time `json:"periodEnd"`
-	Score       Score     `json:"score"`
-	Findings    []Finding `json:"findings"`
-	Stats       Stats     `json:"stats"`
+	GeneratedAt time.Time         `json:"generatedAt"`
+	PeriodStart time.Time         `json:"periodStart"`
+	PeriodEnd   time.Time         `json:"periodEnd"`
+	Score       Score             `json:"score"`
+	Findings    []Finding         `json:"findings"`
+	Stats       Stats             `json:"stats"`
+	Docker      *DockerDiskUsage  `json:"docker,omitempty"`
+	Processes   *procstat.Summary `json:"processes,omitempty"`
 }
 
 // RollupScore returns good if there are no findings, critical if any finding

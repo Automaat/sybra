@@ -76,11 +76,13 @@ type Manager struct {
 	// stdin/stream-json shape that accepts mid-run steer messages. See
 	// RunConfig.HeadlessSteerable.
 	headlessSteerable bool
-	gate              provider.HealthGate
-	limitGate         LimitGate
-	limitPolicy       limits.Policy
-	limitSink         func(limits.Snapshot)
-	evalPassed        abtest.EvalPassed
+
+	defaultSandboxMode string
+	gate               provider.HealthGate
+	limitGate          LimitGate
+	limitPolicy        limits.Policy
+	limitSink          func(limits.Snapshot)
+	evalPassed         abtest.EvalPassed
 
 	// liveByProvider tracks in-flight agent counts per provider, incremented
 	// and decremented in lockstep with liveCount (registerRunningAgent,
@@ -213,6 +215,7 @@ type ManagerRuntimeConfig struct {
 	FallbackModel   string
 	LimitGate       LimitGate
 	LimitPolicy     limits.Policy
+	SandboxMode     string
 	// MaxInFlightPerProvider caps concurrent in-flight agents per provider.
 	// 0 disables the cap.
 	MaxInFlightPerProvider int
@@ -259,6 +262,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
+		defaultSandboxMode:     cfg.Runtime.SandboxMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
 		deadAgentRetention:     defaultDeadAgentRetention,
@@ -377,6 +381,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
 	m.dispatchJitterMs = cfg.DispatchJitterMs
 	m.headlessSteerable = cfg.HeadlessSteerable
+	m.defaultSandboxMode = cfg.SandboxMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
 	m.mu.Unlock()

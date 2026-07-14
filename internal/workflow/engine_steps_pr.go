@@ -175,6 +175,10 @@ func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (Step
 func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath, branch string) (out StepOutput, err error, ok bool) {
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
+	if preflightErr := e.preflightPushCredentials(ctx, wtPath); preflightErr != nil {
+		out, err = e.classifyPRGitError(taskID, step, wfExec, t, preflightErr, "push credential preflight")
+		return out, err, false
+	}
 	pushErr := project.PushSync(ctx, wtPath, branch)
 	if pushErr == nil {
 		return StepOutput{}, nil, true
@@ -214,6 +218,13 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 
 	out, err = e.classifyPRGitError(taskID, step, wfExec, t, pushErr, "git push")
 	return out, err, false
+}
+
+func (e *Engine) preflightPushCredentials(ctx context.Context, wtPath string) error {
+	if e.pushPreflight != nil {
+		return e.pushPreflight.PreflightPushCredentials(ctx, wtPath)
+	}
+	return project.PreflightPushCredentials(ctx, wtPath)
 }
 
 // tryConflictRecovery attempts autonomous branch-conflict recovery for a

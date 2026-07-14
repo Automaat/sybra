@@ -120,6 +120,21 @@ func TestReapOrphanProviderProcesses_SkipsInteractiveOwnedMCPHelper(t *testing.T
 	}
 }
 
+func TestReapOrphanProviderProcesses_CanceledContextLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+
+	if got := m.ReapOrphanProviderProcesses(ctx, []string{t.TempDir()}); got != 0 {
+		t.Fatalf("reaped = %d, want 0 for canceled scan", got)
+	}
+}
+
 func TestOrphanSweepRootsForAgent_UsesResolvedSandboxHome(t *testing.T) {
 	t.Parallel()
 

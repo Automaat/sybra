@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
@@ -143,6 +144,10 @@ type Orchestrator struct {
 	bgops     *bgop.Tracker
 	logger    *slog.Logger
 	audit     *audit.Logger
+	// pressureGate defers new work when the local host is short on disk,
+	// memory, or CPU headroom. Late-bound via SetPressureGate so startup can
+	// construct it from config after New returns. Nil disables gating.
+	pressureGate *pressure.Gate
 	// queue is the admission queue a workflow implementation dispatch falls
 	// back to when the agent pool is saturated (see StartAgentWithAssignment's
 	// admissionGate). Late-bound via SetQueue once agentqueue.New succeeds at
@@ -193,6 +198,11 @@ func (o *Orchestrator) SetSandboxes(sandboxes *sandbox.Manager) {
 // SetBgops late-binds the background-operation tracker once it exists.
 func (o *Orchestrator) SetBgops(bgops *bgop.Tracker) {
 	o.bgops = bgops
+}
+
+// SetPressureGate late-binds the local resource-pressure admission gate.
+func (o *Orchestrator) SetPressureGate(gate *pressure.Gate) {
+	o.pressureGate = gate
 }
 
 // SetConflictRecovery late-binds the autonomous conflict-recovery callback
@@ -534,6 +544,12 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	}
 	effMode, dir, requirePerm, skipWT := ResolveExecution(t, mode, researchDir, o.cfg)
 	ignoreConcurrencyLimit := effMode == "interactive"
+	if !ignoreConcurrencyLimit && o.pressureGate != nil {
+		if admit, reason := o.pressureGate.Admit(); !admit {
+			o.LogAudit(audit.EventAgentDeferredPressure, taskID, "", map[string]any{"reason": reason})
+			return nil, "", fmt.Errorf("%w: %s", workflow.ErrResourcePressure, reason)
+		}
+	}
 
 	if ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, effMode, prompt, includeTaskDescription, skipWT, ignoreConcurrencyLimit, opts); handled {
 		return ag, baselineRef, err

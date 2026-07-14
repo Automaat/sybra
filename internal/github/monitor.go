@@ -113,11 +113,12 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		if pr.CIStatus == "FAILURE" && !pr.HasPendingChecks {
 			issues = append(issues, PRIssue{Kind: PRIssueCIFailure, TaskID: tm.ID, PR: *pr})
 		}
-		// Reviewers asked for changes or left actionable threads (a reviewer had
-		// the last word) — dispatch a fix-review agent. Threads the agent has
-		// already replied to are unresolved but NOT actionable, so they no longer
-		// re-trigger pr-fix. Skip drafts: the author is still iterating.
-		if !pr.IsDraft && (pr.ReviewDecision == "CHANGES_REQUESTED" || pr.ActionableCount > 0) {
+		// Dispatch a fix-review agent only for unresolved threads where a
+		// reviewer had the last word. GitHub's reviewDecision can remain
+		// CHANGES_REQUESTED after every thread was answered or resolved, and the
+		// fix-review skill has no live thread left to process in that state.
+		// Skip drafts: the author is still iterating.
+		if !pr.IsDraft && pr.ActionableCount > 0 {
 			issues = append(issues, PRIssue{Kind: PRIssueComments, TaskID: tm.ID, PR: *pr})
 		}
 		if !pr.IsDraft && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {

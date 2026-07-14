@@ -205,6 +205,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut)
+	case "doctor":
+		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -1632,17 +1634,86 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 		}
 		fmt.Printf("  [%s] %s: %s\n", f.Severity, f.Category, f.Title)
 	}
+	if report.Docker != nil {
+		fmt.Println()
+		printDockerBlock(*report.Docker)
+	}
+	if report.Processes == nil {
+		return 0
+	}
+	fmt.Println()
+	if !report.Processes.Available {
+		fmt.Println("Processes: unavailable")
+		return 0
+	}
+	printProcessBlock("Top CPU", report.Processes.TopCPU)
+	fmt.Println()
+	printProcessBlock("Top Memory", report.Processes.TopMem)
 	return 0
 }
 
 // healthReport mirrors the JSON structure without importing the health package.
 type healthReport struct {
-	GeneratedAt string            `json:"generatedAt"`
-	PeriodStart string            `json:"periodStart"`
-	PeriodEnd   string            `json:"periodEnd"`
-	Score       string            `json:"score"`
-	Findings    []json.RawMessage `json:"findings"`
-	Stats       json.RawMessage   `json:"stats"`
+	GeneratedAt string                 `json:"generatedAt"`
+	PeriodStart string                 `json:"periodStart"`
+	PeriodEnd   string                 `json:"periodEnd"`
+	Score       string                 `json:"score"`
+	Findings    []json.RawMessage      `json:"findings"`
+	Stats       json.RawMessage        `json:"stats"`
+	Docker      *healthDockerDiskUsage `json:"docker,omitempty"`
+	Processes   *healthProcessSummary  `json:"processes,omitempty"`
+}
+
+type healthDockerDiskUsage struct {
+	Available        bool   `json:"available"`
+	ReclaimableBytes int64  `json:"reclaimableBytes"`
+	TotalBytes       int64  `json:"totalBytes,omitempty"`
+	ManualCommand    string `json:"manualCommand,omitempty"`
+	SampledAt        string `json:"sampledAt"`
+}
+
+type healthProcessSummary struct {
+	TopCPU    []healthProcess `json:"topCpu"`
+	TopMem    []healthProcess `json:"topMem"`
+	SampledAt string          `json:"sampledAt"`
+	Available bool            `json:"available"`
+}
+
+type healthProcess struct {
+	PID        int     `json:"pid"`
+	Name       string  `json:"name"`
+	CPUPercent float64 `json:"cpuPercent"`
+	MemPercent float64 `json:"memPercent"`
+	Owned      bool    `json:"owned"`
+}
+
+func printProcessBlock(title string, processes []healthProcess) {
+	fmt.Printf("%s:\n", title)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "OWNER\tPID\tNAME\tCPU%\tMEM%")
+	for _, p := range processes {
+		owner := "[ext]"
+		if p.Owned {
+			owner = "[sybra]"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%.1f\t%.1f\n", owner, p.PID, p.Name, p.CPUPercent, p.MemPercent)
+	}
+	_ = w.Flush()
+}
+
+func printDockerBlock(docker healthDockerDiskUsage) {
+	fmt.Println("Docker:")
+	if !docker.Available {
+		fmt.Println("  unavailable")
+		return
+	}
+	fmt.Printf("  Reclaimable: %s\n", humanBytes(docker.ReclaimableBytes))
+	if docker.TotalBytes > 0 {
+		fmt.Printf("  Total: %s\n", humanBytes(docker.TotalBytes))
+	}
+	if docker.ManualCommand != "" {
+		fmt.Printf("  Manual cleanup: %s\n", docker.ManualCommand)
+	}
 }
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
@@ -1984,11 +2055,26 @@ Commands:
   config doctor                Sanity-check config: data dirs, agent.provider,
                                agent.headless_permission_mode,
                                agent.sandbox_mode, and enabled integrations
-                               missing required credentials.
+                               missing required credentials.%s
 
 Global flags:
   --json   Output as JSON
-`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList(), doctorUsageBlock())
+}
+
+func doctorUsageBlock() string {
+	return `
+
+  doctor cleanup [--apply] [--only b1,b2] [--worktrees] [--external] [--force]
+                 [--older-than DURATION] [--json]
+           Report (default: dry-run) or delete (--apply) reclaimable disk
+           usage: logs, audit, sandboxes, go-build-cache (safe, cleaned by
+           default under --apply) plus worktrees/shared-cache/external
+           (destructive — each needs its own --worktrees/--external
+           flag before --apply will touch it, or even include it in the
+           report; --force only bypasses dirty worktree protection).
+           Deletion is irreversible; dry-run first. Exit codes:
+           0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
 func cmdArtifact(args []string, jsonOut bool) int {

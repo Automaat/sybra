@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -146,6 +147,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 		cfg: &config.Config{GitHub: config.GitHubConfig{
 			AutoResolveCleanMerges: autoResolveEnabled,
 		}},
+		pushPreflightFn: stubPushPreflight(nil),
 	}
 	return &autoResolveHarness{
 		r:        r,
@@ -188,6 +190,10 @@ func stubPush(err error) func(context.Context, string, string) error {
 	return func(context.Context, string, string) error { return err }
 }
 
+func stubPushPreflight(err error) func(context.Context, string) error {
+	return func(context.Context, string) error { return err }
+}
+
 func currentHEAD(t *testing.T, dir string) string {
 	t.Helper()
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD").CombinedOutput()
@@ -195,6 +201,33 @@ func currentHEAD(t *testing.T, dir string) string {
 		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func TestDispatchFixIssues_PushPreflightFailureBlocksAgentDispatch(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	h.r.pushPreflightFn = stubPushPreflight(errors.New("github push credential preflight failed: gh auth status: Bad credentials"))
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (credential blocker handled)")
+	}
+
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want none; preflight must block before pr-fix agent dispatch", got.Workflow)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "GitHub push credential preflight failed before starting PR fix") {
+		t.Fatalf("status reason = %q, want push credential preflight reason", got.StatusReason)
+	}
 }
 
 // TestAutoResolveConflict_CreatedSkipsAgent is the acceptance criterion at the
