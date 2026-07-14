@@ -114,11 +114,13 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	}
 
 	siblingAdmin := h.gitPath(t, h.siblingWt, "--git-dir")
+	siblingBranchRef := h.gitRefPath(t, h.siblingWt)
 	outside := filepath.Join(h.base, "outside-probe")
 	denyScript := strings.Join([]string{
 		"set -e",
 		"(touch " + bashQuote(filepath.Join(h.siblingWt, "leak.txt")) + " 2>/dev/null && echo SIBLING_WT_LEAK) || echo SIBLING_WT_DENIED",
 		"(touch " + bashQuote(filepath.Join(siblingAdmin, "leak.lock")) + " 2>/dev/null && echo SIBLING_GIT_LEAK) || echo SIBLING_GIT_DENIED",
+		"(echo hacked > " + bashQuote(siblingBranchRef) + " 2>/dev/null && echo SIBLING_REF_LEAK) || echo SIBLING_REF_DENIED",
 		"(touch " + bashQuote(outside) + " 2>/dev/null && echo OUTSIDE_LEAK) || echo OUTSIDE_DENIED",
 	}, "\n")
 	denyCmd := newProviderCmd(context.Background(), &cfg, false, "bash", "-lc", denyScript)
@@ -128,7 +130,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		t.Fatalf("sandbox denial probe: %v\n%s", denyErr, denyOut)
 	}
 	got := string(denyOut)
-	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "OUTSIDE_DENIED"} {
+	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "SIBLING_REF_DENIED", "OUTSIDE_DENIED"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sandbox denial output missing %s:\n%s", want, got)
 		}
@@ -141,6 +143,9 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		if _, err := os.Stat(leaked); err == nil {
 			t.Fatalf("unexpected leaked file %q", leaked)
 		}
+	}
+	if gotRef := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "HEAD")); gotRef != strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")) {
+		t.Fatalf("sibling branch ref changed unexpectedly: HEAD=%s branch=%s", gotRef, strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")))
 	}
 }
 
@@ -260,6 +265,16 @@ func (h sandboxGitHarness) gitPath(t *testing.T, dir, arg string) string {
 		out = filepath.Join(dir, out)
 	}
 	return out
+}
+
+func (h sandboxGitHarness) gitRefPath(t *testing.T, dir string) string {
+	t.Helper()
+	ref := strings.TrimSpace(h.git(t, dir, "symbolic-ref", "-q", "HEAD"))
+	path := strings.TrimSpace(h.git(t, dir, "rev-parse", "--git-path", ref))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	return path
 }
 
 func (h sandboxGitHarness) gitRaw(t *testing.T, dir string, args ...string) string {

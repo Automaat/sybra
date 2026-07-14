@@ -59,16 +59,18 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		cfg.sandbox.sandboxHome,
 		cfg.sandbox.tmp,
 		cfg.sandbox.sharedCache,
-		cfg.sandbox.gitCommonDir,
 		cfg.sandbox.claudeState,
 		cfg.sandbox.codexState,
 		cfg.sandbox.copilotState,
 		cfg.sandbox.opencodeState,
 		cfg.sandbox.toolCache,
 	)
-	roots = dedupeRoots(append(roots, cfg.sandbox.gitMetadata...)...)
+	roots = dedupeRoots(append(roots, cfg.sandbox.gitShared...)...)
 	for _, root := range roots {
 		wrapped = append(wrapped, "--bind", root, root)
+	}
+	for _, root := range dedupeRoots(cfg.sandbox.gitReadonly...) {
+		wrapped = append(wrapped, "--ro-bind", root, root)
 	}
 	if cfg.sandbox.gitWorktrees != "" {
 		wrapped = append(wrapped, "--ro-bind", cfg.sandbox.gitWorktrees, cfg.sandbox.gitWorktrees)

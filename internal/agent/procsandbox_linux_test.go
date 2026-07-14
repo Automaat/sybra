@@ -13,9 +13,14 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		mode:          "enforce",
 		worktree:      "/data/wt",
 		gitMetadata:   []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
+		gitShared:     []string{"/data/clones/repo.git/objects", "/data/clones/repo.git/refs/remotes", "/data/clones/repo.git/refs/heads/fix"},
+		gitReadonly:   []string{"/data/clones/repo.git/refs/heads/fix/sibling"},
 		sandboxHome:   "/data/home",
 		tmp:           "/tmp",
 		sharedCache:   "/data/cache",
+		gitAdminDir:   "/data/clones/repo.git/worktrees/task",
+		gitCommonDir:  "/data/clones/repo.git",
+		gitWorktrees:  "/data/clones/repo.git/worktrees",
 		claudeState:   "/data/sybra/claude",
 		codexState:    "/data/sybra/codex",
 		copilotState:  "/data/sybra/copilot",
@@ -29,12 +34,25 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		t.Fatalf("expected read-only root + fresh dev/proc prefix, got: %s", joined)
 	}
 	for _, root := range []string{
-		"/data/wt", "/data/clones/repo.git/worktrees/task", "/data/clones/repo.git", "/data/home", "/tmp", "/data/cache",
+		"/data/wt", "/data/clones/repo.git/objects", "/data/clones/repo.git/refs/remotes", "/data/clones/repo.git/refs/heads/fix",
+		"/data/home", "/tmp", "/data/cache",
 		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
 		if !strings.Contains(joined, "--bind "+root+" "+root) {
 			t.Errorf("write root %q not bound read-write: %s", root, joined)
 		}
+	}
+	if strings.Contains(joined, "--bind /data/clones/repo.git /data/clones/repo.git") {
+		t.Fatalf("shared git common dir must not be reopened read-write: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind /data/clones/repo.git/worktrees/task /data/clones/repo.git/worktrees/task") {
+		t.Fatalf("task git admin dir must be reopened read-write: %s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind /data/clones/repo.git/worktrees /data/clones/repo.git/worktrees") {
+		t.Fatalf("shared worktrees dir must remain read-only: %s", joined)
+	}
+	if !strings.Contains(joined, "--ro-bind /data/clones/repo.git/refs/heads/fix/sibling /data/clones/repo.git/refs/heads/fix/sibling") {
+		t.Fatalf("sibling branch ref must be re-bound read-only: %s", joined)
 	}
 	sep := slices.Index(args, "--")
 	if sep < 0 || sep+1 >= len(args) || args[sep+1] != "claude" {

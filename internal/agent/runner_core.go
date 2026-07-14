@@ -52,6 +52,8 @@ type sandboxSpec struct {
 	mode         string
 	worktree     string
 	gitMetadata  []string
+	gitShared    []string
+	gitReadonly  []string
 	sandboxHome  string
 	tmp          string
 	sharedCache  string
