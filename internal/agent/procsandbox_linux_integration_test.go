@@ -59,6 +59,16 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 
 	h := newSandboxGitHarness(t)
 	h.advanceUpstreamMain(t)
+	siblingAdmin := h.gitPath(t, h.siblingWt, "--git-dir")
+	siblingBranchRef := h.gitRefPath(t, h.siblingWt)
+	siblingWant := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling"))
+	h.gitBare(t, h.sybraBare, "pack-refs", "--all")
+	if err := os.Remove(siblingBranchRef); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove loose sibling branch ref: %v", err)
+	}
+	if _, err := os.Stat(siblingBranchRef); !os.IsNotExist(err) {
+		t.Fatalf("sibling loose branch ref still exists after setup: %v", err)
+	}
 
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
@@ -113,14 +123,12 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		t.Fatalf("merge commit body missing signoff:\n%s", body)
 	}
 
-	siblingAdmin := h.gitPath(t, h.siblingWt, "--git-dir")
-	siblingBranchRef := h.gitRefPath(t, h.siblingWt)
 	outside := filepath.Join(h.base, "outside-probe")
 	denyScript := strings.Join([]string{
 		"set -e",
 		"(touch " + bashQuote(filepath.Join(h.siblingWt, "leak.txt")) + " 2>/dev/null && echo SIBLING_WT_LEAK) || echo SIBLING_WT_DENIED",
 		"(touch " + bashQuote(filepath.Join(siblingAdmin, "leak.lock")) + " 2>/dev/null && echo SIBLING_GIT_LEAK) || echo SIBLING_GIT_DENIED",
-		"(echo hacked > " + bashQuote(siblingBranchRef) + " 2>/dev/null && echo SIBLING_REF_LEAK) || echo SIBLING_REF_DENIED",
+		"(echo hacked > " + bashQuote(siblingBranchRef) + " 2>/dev/null && echo SIBLING_REF_WRITE_LOCAL) || echo SIBLING_REF_DENIED",
 		"(touch " + bashQuote(outside) + " 2>/dev/null && echo OUTSIDE_LEAK) || echo OUTSIDE_DENIED",
 	}, "\n")
 	denyCmd := newProviderCmd(context.Background(), &cfg, false, "bash", "-lc", denyScript)
@@ -130,10 +138,13 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		t.Fatalf("sandbox denial probe: %v\n%s", denyErr, denyOut)
 	}
 	got := string(denyOut)
-	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "SIBLING_REF_DENIED", "OUTSIDE_DENIED"} {
+	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "OUTSIDE_DENIED"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sandbox denial output missing %s:\n%s", want, got)
 		}
+	}
+	if !strings.Contains(got, "SIBLING_REF_WRITE_LOCAL") && !strings.Contains(got, "SIBLING_REF_DENIED") {
+		t.Fatalf("sandbox sibling ref probe produced no expected marker:\n%s", got)
 	}
 	for _, leaked := range []string{
 		filepath.Join(h.siblingWt, "leak.txt"),
@@ -144,8 +155,11 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 			t.Fatalf("unexpected leaked file %q", leaked)
 		}
 	}
-	if gotRef := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "HEAD")); gotRef != strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")) {
-		t.Fatalf("sibling branch ref changed unexpectedly: HEAD=%s branch=%s", gotRef, strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")))
+	if _, err := os.Stat(siblingBranchRef); !os.IsNotExist(err) {
+		t.Fatalf("sandbox recreated sibling loose branch ref on host: %v", err)
+	}
+	if gotRef := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")); gotRef != siblingWant {
+		t.Fatalf("sibling branch changed unexpectedly: got %s want %s", gotRef, siblingWant)
 	}
 }
 

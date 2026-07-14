@@ -78,9 +78,38 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitAdminDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitAdminDir, cfg.sandbox.gitAdminDir)
 	}
+	if cfg.sandbox.gitOverlayRefDir != "" && cfg.sandbox.gitBranchRefDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayRefDir, cfg.sandbox.gitBranchRefDir)
+	}
+	if cfg.sandbox.gitOverlayLogDir != "" && cfg.sandbox.gitBranchLogDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayLogDir, cfg.sandbox.gitBranchLogDir)
+	}
 	wrapped = append(wrapped, "--", name)
 	wrapped = append(wrapped, args...)
+	if cfg.sandbox.gitOverlayRefFile != "" && cfg.sandbox.gitBranchRef != "" && cfg.sandbox.worktree != "" {
+		return sandboxSyncShell(wrapped, cfg)
+	}
 	return bwrapPath, wrapped
+}
+
+func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
+	script := strings.Join([]string{
+		`"$@"`,
+		`status=$?`,
+		`sync_status=0`,
+		`new_ref=$(cat ` + shellQuote(cfg.sandbox.gitOverlayRefFile) + ` 2>/dev/null || true)`,
+		`if [ -n "$new_ref" ] && git -C ` + shellQuote(cfg.sandbox.worktree) + ` cat-file -e "$new_ref^{commit}" 2>/dev/null; then`,
+		`  git -C ` + shellQuote(cfg.sandbox.worktree) + ` update-ref ` + shellQuote(cfg.sandbox.gitBranchRef) + ` "$new_ref" || sync_status=$?`,
+		`fi`,
+		`if [ "$status" -eq 0 ] && [ "$sync_status" -ne 0 ]; then status=$sync_status; fi`,
+		`exit "$status"`,
+	}, "\n")
+	args := append([]string{"-c", script, "sybra-sandbox-sync", bwrapPath}, bwrapArgs...)
+	return "/bin/sh", args
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func dedupeRoots(roots ...string) []string {

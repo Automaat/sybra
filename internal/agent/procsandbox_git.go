@@ -16,8 +16,19 @@ type gitSandboxRoots struct {
 	adminDir       string
 	commonDir      string
 	worktreesDir   string
+	branchRef      string
+	branchRefDir   string
+	branchLogDir   string
 	sharedWritable []string
 	sharedReadonly []string
+}
+
+type gitSharedPaths struct {
+	writable     []string
+	readonly     []string
+	branchRef    string
+	branchRefDir string
+	branchLogDir string
 }
 
 func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoots, error) {
@@ -44,26 +55,31 @@ func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoo
 		return gitSandboxRoots{}, fmt.Errorf("resolve git worktrees dir: %w", err)
 	}
 	roots.worktreesDir = worktreesDir
-	sharedWritable, sharedReadonly, err := resolveGitSharedWritablePaths(ctx, worktree)
+	sharedPaths, err := resolveGitSharedWritablePaths(ctx, worktree)
 	if err != nil {
 		return gitSandboxRoots{}, err
 	}
-	roots.sharedWritable = sharedWritable
-	roots.sharedReadonly = sharedReadonly
+	roots.branchRef = sharedPaths.branchRef
+	roots.branchRefDir = sharedPaths.branchRefDir
+	roots.branchLogDir = sharedPaths.branchLogDir
+	roots.sharedWritable = sharedPaths.writable
+	roots.sharedReadonly = sharedPaths.readonly
 	return roots, nil
 }
 
-func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (shared, readonly []string, err error) {
+func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSharedPaths, error) {
+	var paths gitSharedPaths
 	branchRef, err := gitSymbolicRef(ctx, worktree)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve current branch ref: %w", err)
+		return gitSharedPaths{}, fmt.Errorf("resolve current branch ref: %w", err)
 	}
+	paths.branchRef = branchRef
 	addExisting := func(label string, args ...string) error {
 		path, err := gitPath(ctx, worktree, args...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
-		shared = append(shared, path)
+		paths.writable = append(paths.writable, path)
 		return nil
 	}
 	addDir := func(label string, rel string) error {
@@ -71,18 +87,9 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (shared
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
-		shared = append(shared, path)
+		paths.writable = append(paths.writable, path)
 		return nil
 	}
-	addSiblingReadonly := func(label, dir, keep string) error {
-		paths, err := siblingReadonlyEntries(dir, keep)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		readonly = append(readonly, paths...)
-		return nil
-	}
-
 	for _, spec := range []struct {
 		label string
 		args  []string
@@ -90,28 +97,22 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (shared
 		{label: "resolve git objects dir", args: []string{"--git-path", "objects"}},
 	} {
 		if err := addExisting(spec.label, spec.args...); err != nil {
-			return nil, nil, err
+			return gitSharedPaths{}, err
 		}
 	}
 	branchRefDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(branchRef))
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve current branch dir: %w", err)
+		return gitSharedPaths{}, fmt.Errorf("resolve current branch dir: %w", err)
 	}
-	shared = append(shared, branchRefDir)
-	if err := addSiblingReadonly("resolve sibling branch refs", branchRefDir, filepath.Base(branchRef)); err != nil {
-		return nil, nil, err
-	}
+	paths.branchRefDir = branchRefDir
 
 	branchLogDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(filepath.Join("logs", branchRef)))
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve current branch log dir: %w", err)
+		return gitSharedPaths{}, fmt.Errorf("resolve current branch log dir: %w", err)
 	}
-	shared = append(shared, branchLogDir)
-	if err := addSiblingReadonly("resolve sibling branch logs", branchLogDir, filepath.Base(branchRef)); err != nil {
-		return nil, nil, err
-	}
+	paths.branchLogDir = branchLogDir
 	if _, err := ensureGitPathFile(ctx, worktree, filepath.Join("logs", branchRef)); err != nil {
-		return nil, nil, fmt.Errorf("resolve current branch log: %w", err)
+		return gitSharedPaths{}, fmt.Errorf("resolve current branch log: %w", err)
 	}
 	for _, spec := range []struct {
 		label string
@@ -123,10 +124,90 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (shared
 		{label: "resolve tag logs dir", rel: filepath.Join("logs", "refs", "tags")},
 	} {
 		if err := addDir(spec.label, spec.rel); err != nil {
-			return nil, nil, err
+			return gitSharedPaths{}, err
 		}
 	}
-	return dedupeRoots(shared...), dedupeRoots(readonly...), nil
+	paths.writable = dedupeRoots(paths.writable...)
+	paths.readonly = dedupeRoots(paths.readonly...)
+	return paths, nil
+}
+
+type gitBranchOverlay struct {
+	refDir  string
+	logDir  string
+	refFile string
+}
+
+func prepareGitBranchOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitBranchOverlay, error) {
+	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
+		return gitBranchOverlay{}, nil
+	}
+	head, err := gitHeadCommit(ctx, worktree)
+	if err != nil {
+		return gitBranchOverlay{}, err
+	}
+	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
+	if err := os.RemoveAll(base); err != nil {
+		return gitBranchOverlay{}, fmt.Errorf("reset %s: %w", base, err)
+	}
+	refDir := filepath.Join(base, "refs")
+	logDir := filepath.Join(base, "logs")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		return gitBranchOverlay{}, fmt.Errorf("mkdir %s: %w", refDir, err)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return gitBranchOverlay{}, fmt.Errorf("mkdir %s: %w", logDir, err)
+	}
+	refFile := filepath.Join(refDir, filepath.Base(roots.branchRef))
+	if err := os.WriteFile(refFile, []byte(head+"\n"), 0o644); err != nil {
+		return gitBranchOverlay{}, fmt.Errorf("write %s: %w", refFile, err)
+	}
+	logFile := filepath.Join(logDir, filepath.Base(roots.branchRef))
+	if src, err := gitPathRaw(ctx, worktree, "--git-path", filepath.Join("logs", roots.branchRef)); err == nil {
+		if data, readErr := os.ReadFile(src); readErr == nil {
+			if writeErr := os.WriteFile(logFile, data, 0o644); writeErr != nil {
+				return gitBranchOverlay{}, fmt.Errorf("write %s: %w", logFile, writeErr)
+			}
+		}
+	}
+	if _, err := os.Stat(logFile); os.IsNotExist(err) {
+		if err := os.WriteFile(logFile, nil, 0o644); err != nil {
+			return gitBranchOverlay{}, fmt.Errorf("write %s: %w", logFile, err)
+		}
+	} else if err != nil {
+		return gitBranchOverlay{}, err
+	}
+	canonRefDir, err := canonicalizeRoot(refDir)
+	if err != nil {
+		return gitBranchOverlay{}, err
+	}
+	canonLogDir, err := canonicalizeRoot(logDir)
+	if err != nil {
+		return gitBranchOverlay{}, err
+	}
+	canonRefFile, err := canonicalizeRoot(refFile)
+	if err != nil {
+		return gitBranchOverlay{}, err
+	}
+	return gitBranchOverlay{refDir: canonRefDir, logDir: canonLogDir, refFile: canonRefFile}, nil
+}
+
+func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return "", fmt.Errorf("git rev-parse --verify HEAD: %w", err)
+		}
+		return "", fmt.Errorf("git rev-parse --verify HEAD: %w: %s", err, msg)
+	}
+	head := strings.TrimSpace(string(out))
+	if head == "" {
+		return "", fmt.Errorf("git rev-parse --verify HEAD: empty ref")
+	}
+	return head, nil
 }
 
 func gitPath(ctx context.Context, worktree string, args ...string) (string, error) {
@@ -227,25 +308,6 @@ func ensureGitPathFile(ctx context.Context, worktree, rel string) (string, error
 		return "", fmt.Errorf("canonicalize %s: %w", path, err)
 	}
 	return canon, nil
-}
-
-func siblingReadonlyEntries(dir, keepBase string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Name() == keepBase {
-			continue
-		}
-		canon, err := canonicalizeRoot(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		paths = append(paths, canon)
-	}
-	return paths, nil
 }
 
 func canonicalizeOptionalRoot(root string) (string, error) {
