@@ -1411,6 +1411,40 @@ func TestInstallHooks_PrePushInstalled(t *testing.T) {
 	}
 }
 
+func TestInstallHooks_ScrubsSybraControlPlaneEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{
+		PrePush: []string{
+			`test -z "$SYBRA_AUTH_TOKEN"`,
+			`test -z "$SYBRA_FOLLOWER_TOKEN"`,
+			`test -z "$__sybra_hook_env_name"`,
+		},
+	}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+	hook := exec.Command(hookPath)
+	hook.Dir = wtPath
+	hook.Env = append(os.Environ(),
+		"SYBRA_AUTH_TOKEN=server-secret",
+		"SYBRA_FOLLOWER_TOKEN=follower-secret",
+	)
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should scrub Sybra control-plane env: %v: %s", err, out)
+	}
+}
+
 func TestInstallHooks_Overwrites(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -1609,6 +1643,39 @@ func TestPushUpstream_RoutesToFork(t *testing.T) {
 	originOut, _ := exec.Command("git", "-c", "safe.bareRepository=all", "-C", originBare, "branch", "--list", "sybra/route-test").Output()
 	if strings.TrimSpace(string(originOut)) != "" {
 		t.Errorf("branch should not exist on origin; got %q", originOut)
+	}
+}
+
+func TestDeleteUpstreamBranchSkipsPrePushHook(t *testing.T) {
+	t.Parallel()
+	bare, wtPath := initWorktree(t)
+
+	branch := "synapse/delete-hook-skip"
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+		{"push", "origin", "HEAD:" + branch},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("FetchOrigin: %v", err)
+	}
+	if err := InstallHooks(context.Background(), wtPath, &ChecksConfig{PrePush: []string{"exit 1"}}); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	if err := DeleteUpstreamBranch(context.Background(), bare, branch); err != nil {
+		t.Fatalf("DeleteUpstreamBranch should bypass pre-push hooks: %v", err)
+	}
+
+	if out, err := exec.Command("git", "-C", wtPath, "ls-remote", "--heads", "origin", branch).CombinedOutput(); err != nil {
+		t.Fatalf("ls-remote after delete: %v: %s", err, out)
+	} else if strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("remote branch still exists after delete: %s", out)
 	}
 }
 

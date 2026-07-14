@@ -200,7 +200,10 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 			return nil
 		}
 		var sb strings.Builder
-		sb.WriteString("#!/bin/sh\nset -e\nunset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
+		sb.WriteString("#!/bin/sh\nset -e\n")
+		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
+		sb.WriteString("for __sybra_hook_env_name in $(env | sed -n 's/^\\(SYBRA_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$__sybra_hook_env_name\"; done\n")
+		sb.WriteString("unset __sybra_hook_env_name\n")
 		for _, c := range commands {
 			sb.WriteString(c)
 			sb.WriteByte('\n')
@@ -923,7 +926,7 @@ func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
 		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
 	}
 	if sha != "" {
-		if err := pushLocked(ctx, barePath, "push", remote, "--delete", branch); err != nil {
+		if err := pushLocked(ctx, barePath, "push", "--no-verify", remote, "--delete", branch); err != nil {
 			return fmt.Errorf("delete remote branch %s/%s: %w", remote, branch, err)
 		}
 	}
