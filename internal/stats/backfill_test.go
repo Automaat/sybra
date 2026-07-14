@@ -300,6 +300,46 @@ func TestBackfillReasoningTokens(t *testing.T) {
 	}
 }
 
+func TestBackfillTokenBreakdown(t *testing.T) {
+	s, _ := newTestStore(t)
+	auditDir := newAuditDir(t)
+
+	ts := time.Date(2024, 7, 2, 9, 0, 0, 0, time.UTC)
+	writeAuditFile(t, auditDir, "2024-07-02.ndjson", []audit.Event{
+		{
+			Timestamp: ts,
+			Type:      audit.EventAgentCompleted,
+			TaskID:    "t1",
+			AgentID:   "a1",
+			Data: map[string]any{
+				"state":                       "stopped",
+				"input_tokens":                float64(24),
+				"output_tokens":               float64(10656),
+				"cache_creation_input_tokens": float64(48071),
+				"cache_read_input_tokens":     float64(1070865),
+				"premium_requests":            float64(7.5),
+			},
+		},
+	})
+
+	if err := s.Backfill(auditDir); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := s.Query()
+	if got := resp.RecentRuns[0]; got.InputTokens != 24 ||
+		got.OutputTokens != 10656 ||
+		got.CacheCreationInputTokens != 48071 ||
+		got.CacheReadInputTokens != 1070865 ||
+		got.PremiumRequests != 7.5 {
+		t.Fatalf("backfilled run = %+v, want full token/cache/premium breakdown", got)
+	}
+	if resp.AllTime.TotalCacheCreationInputTokens != 48071 || resp.AllTime.TotalCacheReadInputTokens != 1070865 {
+		t.Fatalf("summary cache totals = write %d read %d, want 48071/1070865",
+			resp.AllTime.TotalCacheCreationInputTokens, resp.AllTime.TotalCacheReadInputTokens)
+	}
+}
+
 func TestBackfillMultipleFiles(t *testing.T) {
 	s, _ := newTestStore(t)
 	auditDir := newAuditDir(t)

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -37,7 +38,7 @@ func TestAggregateTasksDone(t *testing.T) {
 	list[1].ClosedAt = &t2ClosedAt
 
 	var resp stats.StatsResponse
-	aggregateTasksDone(&resp, list, now)
+	aggregateTasksDone(&resp, doneTaskClosures(list, "", now), now)
 
 	// AllTime: 5 done tasks
 	if resp.AllTime.TasksDone != 5 {
@@ -77,7 +78,7 @@ func TestClosedTasksDaily(t *testing.T) {
 		{Status: task.StatusInProgress, UpdatedAt: now},
 	}
 
-	got := closedTasksDaily(list, now)
+	got := closedTasksDaily(doneTaskClosures(list, "", now), now)
 	want := []stats.TaskSeriesPoint{
 		{Date: "2026-06-13", Count: 1},
 		{Date: "2026-06-14", Count: 2},
@@ -101,7 +102,7 @@ func TestClosedTasksDailyUsesBackendLocalDateKeys(t *testing.T) {
 	closed := time.Date(2026, 6, 1, 22, 30, 0, 0, time.UTC)
 	list := []task.Task{{Status: task.StatusDone, UpdatedAt: time.Date(2026, 6, 1, 1, 0, 0, 0, time.UTC), ClosedAt: &closed}}
 
-	got := closedTasksDaily(list, now)
+	got := closedTasksDaily(doneTaskClosures(list, "", now), now)
 	want := []stats.TaskSeriesPoint{{Date: "2026-06-02", Count: 1}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("closedTasksDaily() = %+v, want %+v", got, want)
@@ -151,6 +152,64 @@ func TestStatsServiceGetStatsAssignsClosedTasksDaily(t *testing.T) {
 	}
 }
 
+func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.T) {
+	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasksDir := t.TempDir()
+	taskStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(taskStore, nil)
+	auditDir := t.TempDir()
+
+	now := time.Now()
+	liveClosed := now.Add(-1 * time.Hour)
+	writeStatsTask(t, tasksDir, task.Task{
+		ID:        "live-done",
+		Title:     "live done task",
+		Status:    task.StatusDone,
+		TaskType:  task.TaskTypeNormal,
+		AgentMode: task.AgentModeHeadless,
+		CreatedAt: liveClosed.Add(-1 * time.Hour),
+		UpdatedAt: liveClosed,
+		ClosedAt:  &liveClosed,
+	})
+	deletedClosed := liveClosed.Add(-10 * time.Minute)
+	reopenedClosed := liveClosed.Add(-20 * time.Minute)
+	writeStatsAuditFile(t, auditDir, deletedClosed.Format(time.DateOnly)+".ndjson", []audit.Event{
+		{
+			Timestamp: deletedClosed,
+			Type:      audit.EventTaskStatusChanged,
+			TaskID:    "deleted-done",
+			Data:      map[string]any{"from": "in-review", "to": "done"},
+		},
+		{
+			Timestamp: reopenedClosed,
+			Type:      audit.EventTaskStatusChanged,
+			TaskID:    "reopened",
+			Data:      map[string]any{"from": "in-review", "to": "done"},
+		},
+		{
+			Timestamp: reopenedClosed.Add(time.Minute),
+			Type:      audit.EventTaskStatusChanged,
+			TaskID:    "reopened",
+			Data:      map[string]any{"from": "done", "to": "todo"},
+		},
+	})
+
+	resp := (&StatsService{stats: statsStore, tasks: taskMgr, auditDir: auditDir}).GetStats()
+	if resp.AllTime.TasksDone != 2 {
+		t.Fatalf("AllTime.TasksDone = %d, want 2 (live done + deleted done, excluding reopened)", resp.AllTime.TasksDone)
+	}
+	wantDay := liveClosed.In(time.Now().Location()).Format(time.DateOnly)
+	if len(resp.ClosedTasksDaily) != 1 || resp.ClosedTasksDaily[0].Date != wantDay || resp.ClosedTasksDaily[0].Count != 2 {
+		t.Fatalf("ClosedTasksDaily = %+v, want one %s bucket with 2", resp.ClosedTasksDaily, wantDay)
+	}
+}
+
 func TestStatsServiceGetStatsKeepsClosedTasksDailyArrayWhenTaskListFails(t *testing.T) {
 	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
 	if err != nil {
@@ -184,11 +243,15 @@ func TestAggregateByProjectType(t *testing.T) {
 		{Key: "Automaat/sybra", Stats: stats.Summary{
 			TotalCostUSD: 1.0, TotalRuns: 4, TotalDurationS: 200,
 			TotalInputTokens: 1000, TotalOutputTokens: 500,
-			AvgCostPerRun: 0.25, AvgDurationS: 50,
+			TotalCacheCreationInputTokens: 300, TotalCacheReadInputTokens: 400,
+			TotalPremiumRequests: 2.5,
+			AvgCostPerRun:        0.25, AvgDurationS: 50,
 		}},
 		{Key: "Automaat/zsh-clean-history", Stats: stats.Summary{
 			TotalCostUSD: 0.5, TotalRuns: 2, TotalDurationS: 100,
-			AvgCostPerRun: 0.25, AvgDurationS: 50,
+			TotalCacheCreationInputTokens: 30, TotalCacheReadInputTokens: 40,
+			TotalPremiumRequests: 1.5,
+			AvgCostPerRun:        0.25, AvgDurationS: 50,
 		}},
 		{Key: "kumahq/kuma", Stats: stats.Summary{
 			TotalCostUSD: 3.0, TotalRuns: 6, TotalDurationS: 600,
@@ -231,6 +294,12 @@ func TestAggregateByProjectType(t *testing.T) {
 	}
 	if pet.TotalInputTokens != 1000 || pet.TotalOutputTokens != 500 {
 		t.Errorf("pet tokens: got in=%d out=%d, want 1000/500", pet.TotalInputTokens, pet.TotalOutputTokens)
+	}
+	if pet.TotalCacheCreationInputTokens != 330 || pet.TotalCacheReadInputTokens != 440 {
+		t.Errorf("pet cache tokens: got write=%d read=%d, want 330/440", pet.TotalCacheCreationInputTokens, pet.TotalCacheReadInputTokens)
+	}
+	if !nearly(pet.TotalPremiumRequests, 4.0) {
+		t.Errorf("pet premium requests: got %f, want 4.0", pet.TotalPremiumRequests)
 	}
 
 	work := find(t, out, "work")
@@ -279,6 +348,22 @@ func writeStatsTask(t *testing.T, dir string, tk task.Task) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, tk.ID+".md"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeStatsAuditFile(t *testing.T, dir, name string, events []audit.Event) {
+	t.Helper()
+	var data []byte
+	for _, ev := range events {
+		line, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

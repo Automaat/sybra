@@ -61,6 +61,13 @@
     return String(n)
   }
 
+  function cacheTokenLine(cacheRead?: number, cacheWrite?: number): string {
+    const parts: string[] = []
+    if (cacheRead) parts.push(`${formatTokens(cacheRead)} cache read`)
+    if (cacheWrite) parts.push(`${formatTokens(cacheWrite)} cache write`)
+    return parts.join(' · ')
+  }
+
   function formatDate(ts: any): string {
     if (!ts) return ''
     const d = new Date(ts)
@@ -169,10 +176,15 @@
         <p class="mt-1 text-2xl font-bold">{formatDuration(summary.totalDurationS)}</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
-        <span class="text-xs font-medium text-surface-500">Tokens (In / Out)</span>
+        <span class="text-xs font-medium text-surface-500">Tokens (Input / Output)</span>
         <p class="mt-1 text-2xl font-bold">
           {formatTokens(summary.totalInputTokens)} / {formatTokens(summary.totalOutputTokens)}
         </p>
+        {#if summary.totalCacheReadInputTokens || summary.totalCacheCreationInputTokens}
+          <p class="mt-0.5 text-xs text-surface-400">
+            {cacheTokenLine(summary.totalCacheReadInputTokens, summary.totalCacheCreationInputTokens)}
+          </p>
+        {/if}
         {#if summary.totalReasoningTokens}
           <p class="mt-0.5 text-xs text-surface-400">{formatTokens(summary.totalReasoningTokens)} reasoning</p>
         {/if}
@@ -230,6 +242,7 @@
                 <p class="font-medium">{spendLine(p.sessionSpendUsd, p.weeklySpendUsd)}</p>
                 <p class="text-surface-500">
                   {formatTokens(p.weeklyInputTokens ?? 0)} in / {formatTokens(p.weeklyOutputTokens ?? 0)} out
+                  {#if p.weeklyCacheReadTokens} · {formatTokens(p.weeklyCacheReadTokens)} cache{/if}
                   {#if p.weeklyPremiumRequests} · {p.weeklyPremiumRequests} premium{/if}
                 </p>
                 {#if p.monthlySubscriptionUsd}
