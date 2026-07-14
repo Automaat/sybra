@@ -7,6 +7,7 @@ func (a *App) wireAgentService() {
 	a.agentSvc.cfg = a.cfg
 	a.agentSvc.logsDir = a.logDir
 	a.agentSvc.worktrees = a.worktrees
+	a.agentSvc.artifacts = a.artifacts
 }
 
 func (a *App) wireOrchestratorService(emit func(string, any)) {
