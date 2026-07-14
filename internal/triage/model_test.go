@@ -19,7 +19,7 @@ func TestNormalizeTags(t *testing.T) {
 		{"dedupe", []string{"backend", "backend", "BE"}, []string{"backend"}, false},
 		{"whitespace+case", []string{" Backend ", "SMALL"}, []string{"backend", "small"}, false},
 		{"empty", []string{}, []string{}, false},
-		{"escape-hatch kept", []string{"backend", "noplan", "nocritic", "trivial"}, []string{"backend", "noplan", "nocritic", "trivial"}, false},
+		{"escape-hatch kept", []string{"backend", "noplan", "nocritic", "trivial", "skip-testing"}, []string{"backend", "noplan", "nocritic", "trivial", "skip-testing"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,5 +135,18 @@ func TestValidateVerdictTrivialBugFloorIndependentOfNoplan(t *testing.T) {
 	}
 	if slices.Contains(v.Tags, "trivial") {
 		t.Errorf("expected trivial to be stripped on small bug fix, got %v", v.Tags)
+	}
+}
+
+func TestValidateVerdictStripsClassifierEmittedSkipTesting(t *testing.T) {
+	v := Verdict{
+		Title: "t", Size: "small", Type: "chore", Mode: "headless",
+		Tags: []string{"backend", "small", "chore", "skip-testing"},
+	}
+	if err := ValidateVerdict(&v); err != nil {
+		t.Fatalf("ValidateVerdict: %v", err)
+	}
+	if slices.Contains(v.Tags, "skip-testing") {
+		t.Errorf("expected classifier-emitted skip-testing to be stripped, got %v", v.Tags)
 	}
 }

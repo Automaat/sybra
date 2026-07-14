@@ -16,9 +16,8 @@ trigger:
 steps:
   # `notest`/docs/library scopes only exempt the app start; the test-runner
   # still has to provide CLI/test-harness evidence and always runs. `trivial`
-  # is the one tag that skips the tester entirely — it marks the task as
-  # trivially mechanical (see simple-task-review's maybe_review, which skips
-  # review the same way for the same tag).
+  # skips review + testing for trivially mechanical tasks. `skip-testing`
+  # skips only this tester, preserving the earlier code-review gate.
   - id: maybe_test
     name: Testing Decision
     type: condition
@@ -28,16 +27,21 @@ steps:
           operator: contains
           value: trivial
         goto: skip_testing
+      - when:
+          field: task.tags
+          operator: contains
+          value: skip-testing
+        goto: skip_testing
       - goto: run_test
 
-  # Skip target for trivial: go straight to ready-pr, same terminus a PASS
-  # verdict reaches via route_test below.
+  # Skip target: go straight to ready-pr, same terminus a PASS verdict reaches
+  # via route_test below.
   - id: skip_testing
-    name: Skip Testing (trivial)
+    name: Skip Testing
     type: set_status
     config:
       status: ready-pr
-      status_reason: trivial mechanical task — skipped testing
+      status_reason: testing skipped by task tag
     next:
       - goto: ""
 
