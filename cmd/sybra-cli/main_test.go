@@ -262,6 +262,13 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
   "score":"warning",
   "findings":[{"severity":"warning","category":"cost_drift","title":"Cost drift"}],
   "stats":{"totalAgentRuns":1},
+  "docker":{
+    "available":true,
+    "reclaimableBytes":26843545600,
+    "totalBytes":32212254720,
+    "manualCommand":"docker system prune",
+    "sampledAt":"2026-07-13T20:00:00Z"
+  },
   "processes":{
     "topCpu":[{"pid":123,"name":"sybra-server","cpuPercent":18.5,"memPercent":4.2,"owned":true}],
     "topMem":[{"pid":456,"name":"browser","cpuPercent":2.0,"memPercent":11.4,"owned":false}],
@@ -277,7 +284,7 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("health exit %d: %s", code, out)
 	}
-	for _, want := range []string{"Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
+	for _, want := range []string{"Docker:", "Reclaimable: 25.0GiB", "Total: 30.0GiB", "Manual cleanup: docker system prune", "Top CPU:", "Top Memory:", "[sybra]", "[ext]", "sybra-server", "browser"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("health output missing %q:\n%s", want, out)
 		}
@@ -288,6 +295,10 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 		t.Fatalf("json health exit %d: %s", code, out)
 	}
 	var got struct {
+		Docker struct {
+			ReclaimableBytes int64  `json:"reclaimableBytes"`
+			ManualCommand    string `json:"manualCommand"`
+		} `json:"docker"`
 		Processes struct {
 			TopCPU []struct {
 				PID   int  `json:"pid"`
@@ -296,8 +307,68 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 		} `json:"processes"`
 	}
 	mustUnmarshal(t, out, &got)
+	if got.Docker.ReclaimableBytes != 26_843_545_600 || got.Docker.ManualCommand != "docker system prune" {
+		t.Fatalf("json health docker = %+v", got.Docker)
+	}
 	if len(got.Processes.TopCPU) != 1 || got.Processes.TopCPU[0].PID != 123 || !got.Processes.TopCPU[0].Owned {
 		t.Fatalf("json health processes = %+v", got.Processes)
+	}
+}
+
+func TestHealthPrintsDockerWithoutProcesses(t *testing.T) {
+	setupStore(t)
+
+	report := `{
+  "generatedAt":"2026-07-13T20:00:00Z",
+  "periodStart":"2026-07-12T20:00:00Z",
+  "periodEnd":"2026-07-13T20:00:00Z",
+  "score":"warning",
+  "findings":[{"severity":"warning","category":"docker_reclaimable","title":"Docker reclaimable disk usage is high"}],
+  "stats":{"totalAgentRuns":1},
+  "docker":{
+    "available":true,
+    "reclaimableBytes":21474836480,
+    "manualCommand":"docker system prune",
+    "sampledAt":"2026-07-13T20:00:00Z"
+  }
+}`
+	if err := os.WriteFile(filepath.Join(config.HomeDir(), "health-report.json"), []byte(report), 0o644); err != nil {
+		t.Fatalf("write health report: %v", err)
+	}
+
+	code, out := runCLI(t, "health", "--category", "cost_drift")
+	if code != 0 {
+		t.Fatalf("health exit %d: %s", code, out)
+	}
+	for _, want := range []string{"Findings: 0", "Docker:", "Reclaimable: 20.0GiB", "Manual cleanup: docker system prune"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("health output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Top CPU:") {
+		t.Fatalf("unexpected process block in output:\n%s", out)
+	}
+
+	code, out = runCLI(t, "--json", "health", "--category", "cost_drift")
+	if code != 0 {
+		t.Fatalf("json health exit %d: %s", code, out)
+	}
+	var got struct {
+		Findings []json.RawMessage `json:"findings"`
+		Docker   *struct {
+			ReclaimableBytes int64 `json:"reclaimableBytes"`
+		} `json:"docker"`
+		Processes *json.RawMessage `json:"processes"`
+	}
+	mustUnmarshal(t, out, &got)
+	if len(got.Findings) != 0 {
+		t.Fatalf("json health findings = %d, want 0", len(got.Findings))
+	}
+	if got.Docker == nil || got.Docker.ReclaimableBytes != 20*(1<<30) {
+		t.Fatalf("json health docker = %+v", got.Docker)
+	}
+	if got.Processes != nil {
+		t.Fatalf("json health processes = %v, want nil", got.Processes)
 	}
 }
 
