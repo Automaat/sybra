@@ -28,6 +28,7 @@ type Checker struct {
 	logger   *slog.Logger
 	emit     func(string, any)
 	owned    func() OwnedProcesses
+	docker   dockerRunner
 
 	mu     sync.RWMutex
 	report *Report
@@ -69,7 +70,7 @@ func (o OwnedProcesses) Owns(pid, pgid int) bool {
 // Run blocks until ctx is done, running checks every TickInterval.
 // Runs one check immediately on start.
 func (c *Checker) Run(ctx context.Context) {
-	c.check()
+	c.check(ctx)
 
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
@@ -79,7 +80,7 @@ func (c *Checker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.check()
+			c.check(ctx)
 		}
 	}
 }
@@ -91,7 +92,7 @@ func (c *Checker) LatestReport() *Report {
 	return c.report
 }
 
-func (c *Checker) check() {
+func (c *Checker) check(ctx context.Context) {
 	now := time.Now().UTC()
 	since := now.Add(-lookback)
 
@@ -124,6 +125,8 @@ func (c *Checker) check() {
 	findings = append(findings, checkAgentRetryLoops(dayEvents, now)...)
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
+	docker := sampleDockerDisk(ctx, c.docker, now)
+	findings = append(findings, checkDockerReclaimable(docker, now)...)
 
 	for i := range findings {
 		findings[i].Fingerprint = FingerprintFor(&findings[i])
@@ -144,6 +147,9 @@ func (c *Checker) check() {
 		Findings:    findings,
 		Stats:       stats,
 		Processes:   &processes,
+	}
+	if docker.Available {
+		report.Docker = &docker
 	}
 
 	c.mu.Lock()
