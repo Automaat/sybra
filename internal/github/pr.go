@@ -63,10 +63,11 @@ func (s PRState) HasPendingChecks() bool {
 
 // ReadyToMerge reports whether the PR is open, has no conflicts, and CI passes.
 func (s PRState) ReadyToMerge() bool {
+	ciStatus, pending := rollupFromContexts(s.StatusCheckRollup)
 	return s.State == "OPEN" &&
 		s.Mergeable == "MERGEABLE" &&
-		!s.HasPendingChecks() &&
-		(s.CIStatus() == "SUCCESS" || s.CIStatus() == "")
+		!pending &&
+		(ciStatus == "SUCCESS" || ciStatus == "")
 }
 
 // Resolved reports whether this PR needs no further pr-fix action: it
