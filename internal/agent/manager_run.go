@@ -284,7 +284,8 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 }
 
 // injectProcessSandbox resolves this run's OS-level process-sandbox posture
-// and allowed write roots (worktree, per-task sandbox home, tmp) into
+// and allowed write roots (worktree, per-task sandbox home, tmp, task-scoped
+// git metadata) into
 // cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
 //
 // enforce fails closed — mirroring injectSandboxHome's discipline — when
@@ -317,10 +318,15 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	}
 	tmp := os.TempDir()
 	sharedCache := sharedBuildCacheDir()
+	gitCtx := context.Background()
+	if m.ctx != nil {
+		gitCtx = context.WithoutCancel(m.ctx)
+	}
+	gitRoots, gitErr := resolveGitSandboxRoots(gitCtx, worktree)
 
 	if !sandboxExecAvailable() {
 		if mode == "enforce" {
-			err := fmt.Errorf("agent.Run: enforce sandbox mode requires sandbox-exec, which is unavailable on this host")
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
 			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 			return err
 		}
@@ -330,7 +336,10 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	}
 
 	if mode != "enforce" {
-		m.logProcessSandboxReport(cfg.TaskID, worktree, sandboxHome, tmp, sharedCache)
+		if gitErr != nil {
+			m.logger.Warn("agent.sandbox.report.git_roots_failed", "task_id", cfg.TaskID, "err", gitErr)
+		}
+		m.logProcessSandboxReport(cfg.TaskID, worktree, sandboxHome, tmp, sharedCache, gitRoots)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
@@ -359,23 +368,28 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
 	}
+	if gitErr != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", gitErr)
+		return fmt.Errorf("agent.Run: sandbox git metadata roots: %w", gitErr)
+	}
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 
-	cfg.sandbox = enforceSpec(canonWorktree, canonSandboxHome, canonTmp, canonSharedCache, profilePath)
+	cfg.sandbox = enforceSpec(canonWorktree, canonSandboxHome, canonTmp, canonSharedCache, profilePath, gitRoots)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
-		"opencode_state", cfg.sandbox.opencodeState,
+		"opencode_state", cfg.sandbox.opencodeState, "git_admin", cfg.sandbox.gitAdminDir,
+		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
 }
 
-func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sharedCache string) {
+func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sharedCache string, gitRoots gitSandboxRoots) {
 	// report logs the resolved allowlist without wrapping the spawn, so the
 	// provider CLI's would-be write footprint is visible before enforce rollout.
 	logWorktree := m.reportSandboxRoot(taskID, "worktree", worktree)
@@ -383,7 +397,8 @@ func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sh
 	logTmp := m.reportSandboxRoot(taskID, "tmp", tmp)
 	logShared := m.reportSandboxRoot(taskID, "shared_cache", sharedCache)
 	m.logger.Info("agent.sandbox.report", "task_id", taskID,
-		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
+		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared,
+		"git_admin", gitRoots.adminDir, "git_common", gitRoots.commonDir, "git_worktrees", gitRoots.worktreesDir)
 }
 
 func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
@@ -395,7 +410,7 @@ func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
 	return root
 }
 
-func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
+func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string, gitRoots gitSandboxRoots) sandboxSpec {
 	return sandboxSpec{
 		mode:          "enforce",
 		worktree:      worktree,
@@ -403,6 +418,9 @@ func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sa
 		tmp:           tmp,
 		sharedCache:   sharedCache,
 		profilePath:   profilePath,
+		gitAdminDir:   gitRoots.adminDir,
+		gitCommonDir:  gitRoots.commonDir,
+		gitWorktrees:  gitRoots.worktreesDir,
 		claudeState:   agentStateRoot(".claude", sandboxHome),
 		codexState:    agentStateRoot(".codex", sandboxHome),
 		copilotState:  agentStateRoot(".copilot", sandboxHome),

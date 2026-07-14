@@ -24,6 +24,8 @@ func sandboxExecAvailable() bool {
 	return bwrapPath != ""
 }
 
+func sandboxWrapperName() string { return "bwrap" }
+
 func materializeSandboxProfile() (string, error) {
 	return "", nil
 }
@@ -53,11 +55,25 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		"--proc", "/proc",
 	}
 	roots := dedupeRoots(
-		cfg.sandbox.worktree, cfg.sandbox.sandboxHome, cfg.sandbox.tmp, cfg.sandbox.sharedCache,
-		cfg.sandbox.claudeState, cfg.sandbox.codexState, cfg.sandbox.copilotState, cfg.sandbox.opencodeState, cfg.sandbox.toolCache,
+		cfg.sandbox.worktree,
+		cfg.sandbox.sandboxHome,
+		cfg.sandbox.tmp,
+		cfg.sandbox.sharedCache,
+		cfg.sandbox.gitCommonDir,
+		cfg.sandbox.claudeState,
+		cfg.sandbox.codexState,
+		cfg.sandbox.copilotState,
+		cfg.sandbox.opencodeState,
+		cfg.sandbox.toolCache,
 	)
 	for _, root := range roots {
 		wrapped = append(wrapped, "--bind", root, root)
+	}
+	if cfg.sandbox.gitWorktrees != "" {
+		wrapped = append(wrapped, "--ro-bind", cfg.sandbox.gitWorktrees, cfg.sandbox.gitWorktrees)
+	}
+	if cfg.sandbox.gitAdminDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitAdminDir, cfg.sandbox.gitAdminDir)
 	}
 	wrapped = append(wrapped, "--", name)
 	wrapped = append(wrapped, args...)

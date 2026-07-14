@@ -100,13 +100,14 @@ type AgentDefaults struct {
 	// disable.
 	DispatchJitterMs int `yaml:"dispatch_jitter_ms" json:"dispatchJitterMs"`
 	// SandboxMode sets the default OS-level process-sandbox posture for agent
-	// subprocesses (darwin: sandbox-exec seatbelt). "off" spawns unwrapped
-	// with no validation. "report" (default) validates and logs the
-	// resolved write allowlist (worktree/sandbox-home/tmp) without ever
-	// wrapping the spawn, so a profile/wrapper defect can only affect an
-	// explicit "enforce" posture, never the default rollout posture.
-	// "enforce" actually wraps the spawn and blocks writes outside that
-	// allowlist, failing the spawn closed if the wrapper is unavailable.
+	// subprocesses (darwin: sandbox-exec seatbelt, linux: bwrap). "off"
+	// spawns unwrapped with no validation. "report" (default) validates and
+	// logs the resolved write allowlist (worktree/sandbox-home/tmp plus
+	// task-scoped git metadata) without ever wrapping the spawn, so a
+	// profile/wrapper defect can only affect an explicit "enforce" posture,
+	// never the default rollout posture. "enforce" actually wraps the spawn
+	// and blocks writes outside that allowlist, failing the spawn closed if
+	// the wrapper is unavailable.
 	// Empty treated as "report".
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
 	// HeadlessSteerable controls whether headless claude runs launch with the

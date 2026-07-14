@@ -36,6 +36,14 @@ if ! CGO_ENABLED=0 mise exec -- go build -trimpath -o "$BIN.new" ./cmd/sybra-ser
   keep_last_good_or_fail "go build"
 fi
 
+if command -v bwrap >/dev/null 2>&1; then
+  log "running linked-worktree sandbox smoke"
+  if ! mise exec -- go test ./internal/agent -run '^TestSandboxEnforce_LinkedWorktreeGitOps$' -count=1; then
+    rm -f "$BIN.new"
+    keep_last_good_or_fail "linux sandbox git smoke"
+  fi
+fi
+
 rm -rf "$WEB.new"
 if ! cp -a frontend/dist-web "$WEB.new"; then
   rm -f "$BIN.new"

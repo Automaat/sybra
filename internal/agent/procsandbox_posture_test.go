@@ -15,7 +15,7 @@ func TestInjectProcessSandbox_UnsetModeInheritsConfiguredPosture(t *testing.T) {
 
 	cfg := &RunConfig{Dir: t.TempDir()}
 	err := m.injectProcessSandbox(cfg)
-	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires sandbox-exec") {
+	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires") {
 		t.Fatalf("injectProcessSandbox: %v", err)
 	}
 
@@ -35,7 +35,7 @@ func TestReplaceRuntimeConfigUpdatesDefaultSandboxPosture(t *testing.T) {
 
 	cfg := &RunConfig{Dir: t.TempDir()}
 	err := m.injectProcessSandbox(cfg)
-	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires sandbox-exec") {
+	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires") {
 		t.Fatalf("injectProcessSandbox: %v", err)
 	}
 	if cfg.SandboxMode != "enforce" {
