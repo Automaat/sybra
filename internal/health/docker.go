@@ -23,11 +23,11 @@ const (
 type dockerRunner func(context.Context) ([]byte, error)
 
 type dockerDFRow struct {
-	Size        string
-	Reclaimable string
+	Size        string `json:"Size"`
+	Reclaimable string `json:"Reclaimable"`
 }
 
-var dockerSizeRe = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?i?b)$`)
+var dockerSizeRe = regexp.MustCompile(`(?i)^(\d+(?:\.\d+)?)\s*([kmgtpe]?i?b)$`)
 
 func defaultDockerRunner(ctx context.Context) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, dockerProbeTimeout)

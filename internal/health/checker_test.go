@@ -53,7 +53,7 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 		return []byte(`{"Size":"25GiB","Reclaimable":"20GiB (80%)"}`), nil
 	}
 
-	c.check()
+	c.check(t.Context())
 
 	report := c.LatestReport()
 	if report == nil {

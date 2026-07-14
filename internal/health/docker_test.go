@@ -77,7 +77,6 @@ func TestParseDockerSizeDecimalAndBinary(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.raw, func(t *testing.T) {
 			t.Parallel()
 			got, err := parseDockerSize(tt.raw)
@@ -180,7 +179,6 @@ func TestSampleDockerDiskUnavailable(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := sampleDockerDisk(context.Background(), tt.runner, now)
