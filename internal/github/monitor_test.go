@@ -83,10 +83,22 @@ func TestMatchTaskPRs(t *testing.T) {
 			want:  []PRIssue{{Kind: PRIssueReadyToMerge, TaskID: "t1", PR: PullRequest{Number: 42, CIStatus: "SUCCESS", Mergeable: "MERGEABLE"}}},
 		},
 		{
+			name:  "mergeable with CI success but pending checks is still building",
+			prs:   []PullRequest{{Number: 42, CIStatus: "SUCCESS", HasPendingChecks: true, Mergeable: "MERGEABLE"}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
+		},
+		{
 			name:  "mergeable no CI checks → ready to merge",
 			prs:   []PullRequest{{Number: 42, CIStatus: "", Mergeable: "MERGEABLE"}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
 			want:  []PRIssue{{Kind: PRIssueReadyToMerge, TaskID: "t1", PR: PullRequest{Number: 42, CIStatus: "", Mergeable: "MERGEABLE"}}},
+		},
+		{
+			name:  "mergeable no CI aggregate but pending checks is still building",
+			prs:   []PullRequest{{Number: 42, CIStatus: "", HasPendingChecks: true, Mergeable: "MERGEABLE"}},
+			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
+			want:  nil,
 		},
 		{
 			name:  "draft PR not ready to merge",
