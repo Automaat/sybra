@@ -9,6 +9,12 @@ restart_marker="$sybra_home/restart-requested"
 mkdir -p "$sybra_home"
 rm -f "$restart_marker"
 
+follower_token_file="$sybra_home/home-nas-follower.token"
+if [ -z "${HOME_NAS_SYBRA_TOKEN:-}" ] && [ -f "$follower_token_file" ]; then
+  HOME_NAS_SYBRA_TOKEN="$(cat "$follower_token_file")"
+  export HOME_NAS_SYBRA_TOKEN
+fi
+
 sync_deps() {
   mise install || return $?
   if [ -f frontend/package-lock.json ]; then
