@@ -311,7 +311,6 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	worktree := cfg.Dir
 	sandboxHome := cfg.resolvedSandboxHome
 	if sandboxHome == "" {
@@ -335,7 +334,6 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	if mode != "enforce" {
 		if gitErr != nil {
 			m.logger.Warn("agent.sandbox.report.git_roots_failed", "task_id", cfg.TaskID, "err", gitErr)
@@ -344,7 +342,6 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	canonWorktree, err := canonicalizeRoot(worktree)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -384,7 +381,6 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, gitRoots, gitOverlay)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
