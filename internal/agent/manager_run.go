@@ -117,6 +117,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+		return cfg, nil, err
+	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
@@ -564,6 +567,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		Provider:               prov.Name(),
 		Model:                  prov.NormalizeModel(cfg.Model),
 		ReasoningEffort:        cfg.ReasoningEffort,
+		SkillExecutionMode:     cfg.SkillExecutionMode,
 		Prompt:                 cfg.Prompt,
 		State:                  StateRunning,
 		StartedAt:              now,

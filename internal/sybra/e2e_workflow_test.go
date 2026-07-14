@@ -3254,10 +3254,193 @@ steps:
       - goto: ""
 `
 
+const testMandatorySkillWorkflowYAML = `id: test-mandatory-skill
+name: Test Mandatory Skill
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      allowed_tools: [Skill]
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testUnavailableSkillWorkflowYAML = `id: test-unavailable-skill
+name: Test Unavailable Skill
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      allowed_tools: [Skill]
+      prompt: "Run /missing-skill now."
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
 func writeWorkflowFixture(t *testing.T, env *e2eEnv, name, yaml string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), name+".yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write %s.yaml: %v", name, err)
+	}
+}
+
+func writeSkillFixture(t *testing.T, home, agentDir, name string) {
+	t.Helper()
+	dir := filepath.Join(home, agentDir, "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	data := []byte("---\nname: " + name + "\ndescription: test\n---\n\n# " + name + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), data, 0o644); err != nil {
+		t.Fatalf("write skill fixture: %v", err)
+	}
+}
+
+func TestE2E_WorkflowMandatorySkill_CodexNative(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".codex", "sybra-test")
+	argsLog := filepath.Join(t.TempDir(), "codex-native-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"success"})
+	writeWorkflowFixture(t, env, "test-mandatory-skill", testMandatorySkillWorkflowYAML)
+
+	created, err := env.tasks.Create("codex native mandatory skill", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read codex args log: %v", err)
+	}
+	if !strings.Contains(string(args), "Run $sybra-test now.") {
+		t.Fatalf("codex prompt missing native invocation rewrite:\n%s", args)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "native" {
+		t.Fatalf("AgentRuns = %+v, want one native skill run", tk.AgentRuns)
+	}
+}
+
+func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".claude", "sybra-test")
+	argsLog := filepath.Join(t.TempDir(), "codex-injected-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"success"})
+	writeWorkflowFixture(t, env, "test-mandatory-skill", testMandatorySkillWorkflowYAML)
+
+	created, err := env.tasks.Create("codex injected mandatory skill", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read codex args log: %v", err)
+	}
+	if !strings.Contains(string(args), "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("codex prompt missing injected skill block:\n%s", args)
+	}
+	if strings.Contains(string(args), "Run $sybra-test now.") {
+		t.Fatalf("codex prompt still used native invocation:\n%s", args)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "injected" {
+		t.Fatalf("AgentRuns = %+v, want one injected skill run", tk.AgentRuns)
+	}
+}
+
+func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	argsLog := filepath.Join(t.TempDir(), "codex-unavailable-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"success"})
+	writeWorkflowFixture(t, env, "test-unavailable-skill", testUnavailableSkillWorkflowYAML)
+
+	created, err := env.tasks.Create("codex unavailable mandatory skill", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-unavailable-skill"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read codex args log: %v", err)
+	}
+	if !strings.Contains(string(args), "no SKILL.md or bundled fallback was found") {
+		t.Fatalf("codex prompt missing unavailable skill note:\n%s", args)
+	}
+	if strings.Contains(string(args), "Run $missing-skill now.") {
+		t.Fatalf("codex prompt still used native invocation:\n%s", args)
+	}
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "unavailable" {
+		t.Fatalf("AgentRuns = %+v, want one unavailable skill run", tk.AgentRuns)
 	}
 }
 

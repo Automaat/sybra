@@ -1687,14 +1687,15 @@ type RunPatch struct {
 	ProtocolViolation      *string
 
 	// Identity
-	Provider        *string
-	Model           *string
-	ExperimentID    *string
-	VariantID       *string
-	AssignmentUnit  *string
-	AssignmentKey   *string
-	ReasoningEffort *string
-	SessionID       *string
+	Provider           *string
+	Model              *string
+	ExperimentID       *string
+	VariantID          *string
+	AssignmentUnit     *string
+	AssignmentKey      *string
+	ReasoningEffort    *string
+	SkillExecutionMode *string
+	SessionID          *string
 }
 
 func applyRunLifecycle(run *AgentRun, p RunPatch) {
@@ -1769,6 +1770,9 @@ func applyRunIdentity(run *AgentRun, p RunPatch) {
 	}
 	if p.ReasoningEffort != nil {
 		run.ReasoningEffort = *p.ReasoningEffort
+	}
+	if p.SkillExecutionMode != nil {
+		run.SkillExecutionMode = *p.SkillExecutionMode
 	}
 	if p.SessionID != nil && *p.SessionID != "" {
 		run.SessionID = *p.SessionID

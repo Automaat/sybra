@@ -39,6 +39,41 @@ func StripInvocations(prompt string, skillNames []string) string {
 	return rewriteWithPrefix(prompt, skillNames, "")
 }
 
+// InvokedNames returns every unique slash-invoked skill name found in prompt,
+// sorted by first appearance. Path-like segments such as /tmp/file are ignored.
+func InvokedNames(prompt string) []string {
+	if prompt == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for i := 0; i < len(prompt); i++ {
+		if prompt[i] != '/' || !validBefore(prompt, i) {
+			continue
+		}
+		afterSlash := i + 1
+		end := afterSlash
+		for end < len(prompt) && isNameRune(rune(prompt[end])) {
+			end++
+		}
+		if end == afterSlash || !validGenericAfter(prompt, end) {
+			continue
+		}
+		name, ok := NormalizeName(prompt[afterSlash:end])
+		if !ok {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			i = end - 1
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+		i = end - 1
+	}
+	return out
+}
+
 func rewriteWithPrefix(prompt string, skillNames []string, prefix string) string {
 	if prompt == "" || len(skillNames) == 0 {
 		return prompt
@@ -179,6 +214,14 @@ func validAfter(s string, idx int) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(s[idx:])
 	return !isNameRune(r)
+}
+
+func validGenericAfter(s string, idx int) bool {
+	if idx >= len(s) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(s[idx:])
+	return !isNameRune(r) && r != '/'
 }
 
 func isWord(r rune) bool {

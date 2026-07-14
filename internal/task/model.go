@@ -216,7 +216,11 @@ type AgentRun struct {
 	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
 	AssignmentKey   string `json:"assignmentKey,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	State           string `json:"state"`
+	// SkillExecutionMode records how a mandatory workflow skill actually ran:
+	// native invocation, injected SKILL.md, bundled fallback, or unavailable.
+	// Empty means the run had no mandatory workflow skill.
+	SkillExecutionMode string `json:"skillExecutionMode,omitempty"`
+	State              string `json:"state"`
 	// Outcome records the terminal result the completion handler actually
 	// observed (RunOutcomeSuccess/RunOutcomeFailure), independent of State
 	// ("stopped" covers both a clean finish and a failed one) and independent
