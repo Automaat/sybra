@@ -102,7 +102,8 @@ func TestLiveLimitAuthBackoff_Bounded(t *testing.T) {
 
 func countLogMessage(records []slog.Record, msg string) int {
 	count := 0
-	for _, record := range records {
+	for i := range records {
+		record := records[i]
 		if record.Message == msg {
 			count++
 		}

@@ -160,11 +160,11 @@ func liveLimitAuthBackoff(failures int) time.Duration {
 	return backoff
 }
 
-func liveLimitProviderEnabled(policy limits.Policy, provider string) bool {
+func liveLimitProviderEnabled(policy limits.Policy, providerName string) bool {
 	if len(policy.ProviderEnabled) == 0 {
 		return true
 	}
-	enabled, ok := policy.ProviderEnabled[provider]
+	enabled, ok := policy.ProviderEnabled[providerName]
 	return ok && enabled
 }
 
