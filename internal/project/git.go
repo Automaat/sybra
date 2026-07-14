@@ -58,6 +58,10 @@ var ErrRemoteAdvanced = errors.New("remote branch advanced past tracking ref")
 // the remote) so a later push can fast-forward.
 var ErrDivergedNeedsResolve = errors.New("branch diverged from remote; needs agent-driven resolution, not a force push")
 
+// ErrUpstreamDeletePreflight is returned when the dry-run probe for deleting a
+// published upstream branch fails before any destructive mutation runs.
+var ErrUpstreamDeletePreflight = errors.New("upstream branch delete preflight failed")
+
 func runBare(ctx context.Context, barePath string, args ...string) error {
 	return executil.Run(ctx, barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
@@ -935,6 +939,36 @@ func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
 			return runBare(ctx, barePath, "update-ref", "-d", trackingRef)
 		})
 	})
+}
+
+// PreflightDeleteUpstreamBranch dry-runs the exact upstream-branch deletion
+// push DeleteUpstreamBranch would issue. This exercises auth, transport, and
+// shared pre-push hook/toolchain setup before any local worktree/branch state
+// is discarded, so callers can fail closed on infrastructure issues.
+//
+// Missing remotes/branches remain a no-op, matching DeleteUpstreamBranch.
+func PreflightDeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
+	remote := PushRemote(ctx, barePath)
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote."+remote+".url")
+	cmd.Dir = barePath
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("resolve remote %s config: %w", remote, err)
+	}
+	sha, err := remoteBranchHead(ctx, barePath, remote, branch)
+	if err != nil {
+		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
+	}
+	if sha == "" {
+		return nil
+	}
+	if err := pushLocked(ctx, barePath, "push", "--dry-run", remote, "--delete", branch); err != nil {
+		return fmt.Errorf("%w: delete remote branch %s/%s: %w", ErrUpstreamDeletePreflight, remote, branch, err)
+	}
+	return nil
 }
 
 // BackupBranchRef points refs/sybra-backup/<branch> at the branch's current

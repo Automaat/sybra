@@ -947,6 +947,9 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		return false
 	}
 	if r.prTracker.AtCap(taskID, branchConflictRetryKind) {
+		if r.resumePublishedNoPRBranch(t) {
+			return true
+		}
 		if r.recreateExhaustedNoPRBranch(t) {
 			return true
 		}
@@ -1012,6 +1015,70 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
 	return r.dispatchBranchConflictRecovery(taskID, dir, base, t, headSHA, resume, hadActiveWorkflow)
+}
+
+func (r *Handler) resumePublishedNoPRBranch(t task.Task) bool {
+	taskID := t.ID
+	if r.WorkflowEngine == nil {
+		return false
+	}
+	resumePublished := r.resumePublishedBranchFn
+	if resumePublished == nil {
+		if r.worktrees == nil {
+			return false
+		}
+		resumePublished = r.worktrees.ResumePublishedBranch
+	}
+	ctx := context.Background()
+	ready, err := resumePublished(ctx, t)
+	if err != nil {
+		r.logger.Warn("pr-monitor.branch-remote-resume.failed", "task_id", taskID, "err", err)
+		return false
+	}
+	if !ready {
+		return false
+	}
+
+	resume := r.captureBranchConflictResumeState(t)
+	if r.WorkflowEngine.HasActiveWorkflow(taskID) {
+		if _, err := r.WorkflowEngine.CancelWorkflow(taskID, "branch already reconciled on remote"); err != nil {
+			r.logger.Error("pr-monitor.branch-remote-resume.cancel", "task_id", taskID, "err", err)
+			return false
+		}
+	}
+	if resume.status != "" {
+		if _, err := r.tasks.Update(taskID, task.Update{
+			Status:       task.Ptr(task.Status(resume.status)),
+			StatusReason: task.Ptr(resume.statusReason),
+		}); err != nil {
+			r.logger.Error("pr-monitor.branch-remote-resume.status", "task_id", taskID, "err", err)
+			return false
+		}
+	}
+
+	r.prTracker.Clear(taskID, branchConflictRetryKind)
+	r.clearDispatchFailure(taskID)
+	if resume.workflowID != "" {
+		var resumeVars map[string]string
+		if raw := strings.TrimSpace(resume.workflowVars); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &resumeVars); err != nil {
+				r.logger.Warn("pr-monitor.branch-remote-resume.vars", "task_id", taskID, "err", err)
+			}
+		}
+		if err := r.WorkflowEngine.StartWorkflowFromStepWithVars(taskID, resume.workflowID, resume.workflowStep, resumeVars); err != nil {
+			r.logger.Error("pr-monitor.branch-remote-resume.restart", "task_id", taskID, "workflow", resume.workflowID, "step", resume.workflowStep, "err", err)
+			return true
+		}
+	} else if resume.status != "" {
+		if _, err := r.WorkflowEngine.DispatchEvent(taskID, "task.status_changed", nil, nil); err != nil {
+			r.logger.Error("pr-monitor.branch-remote-resume.dispatch", "task_id", taskID, "status", resume.status, "err", err)
+			return true
+		}
+	}
+
+	r.logAudit(audit.EventBranchConflictAutoResolved, taskID, "", map[string]any{"remote_resumed": true})
+	r.logger.Info("pr-monitor.branch-remote-resume.done", "task_id", taskID)
+	return true
 }
 
 func (r *Handler) recreateExhaustedNoPRBranch(t task.Task) bool {

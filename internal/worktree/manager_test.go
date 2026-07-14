@@ -1389,6 +1389,178 @@ func TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail(t *testin
 	}
 }
 
+func TestPrepareForTask_RemoteOnlyBranchReusesPublishedBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("remote only branch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "remote.txt"), []byte("published branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "remote.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "publish branch")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+	if err := project.FetchOrigin(context.Background(), h.proj.ClonePath); err != nil {
+		t.Fatalf("FetchOrigin after push: %v", err)
+	}
+
+	if err := project.RemoveWorktreeReconcile(context.Background(), h.proj.ClonePath, wtPath); err != nil {
+		t.Fatalf("RemoveWorktreeReconcile: %v", err)
+	}
+	if err := project.DeleteBranch(context.Background(), h.proj.ClonePath, branch); err != nil {
+		t.Fatalf("DeleteBranch: %v", err)
+	}
+	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("local branch %s still exists after deletion", branch)
+	}
+	if !project.RefExists(context.Background(), h.proj.ClonePath, "refs/remotes/origin/"+branch) {
+		t.Fatalf("tracking ref refs/remotes/origin/%s missing", branch)
+	}
+
+	wtPath, err = h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask from remote-only branch: %v", err)
+	}
+	if got := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current")); got != branch {
+		t.Fatalf("branch = %q, want %q", got, branch)
+	}
+	got, err := os.ReadFile(filepath.Join(wtPath, "remote.txt"))
+	if err != nil {
+		t.Fatalf("read remote.txt: %v", err)
+	}
+	if string(got) != "published branch\n" {
+		t.Fatalf("remote.txt = %q, want published remote branch content", got)
+	}
+}
+
+func TestResumePublishedBranch_DropsOnlyLocalState(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("resume published branch", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "resume.txt"), []byte("remote branch ready\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "resume.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "publish")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+	if err := project.FetchOrigin(context.Background(), h.proj.ClonePath); err != nil {
+		t.Fatalf("FetchOrigin after push: %v", err)
+	}
+
+	ready, err := h.m.ResumePublishedBranch(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("ResumePublishedBranch: %v", err)
+	}
+	if !ready {
+		t.Fatal("ResumePublishedBranch = false, want true")
+	}
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree path %s still exists: %v", wtPath, statErr)
+	}
+	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("local branch %s still exists after resume", branch)
+	}
+	if !project.RefExists(context.Background(), h.proj.ClonePath, "refs/remotes/origin/"+branch) {
+		t.Fatalf("tracking ref refs/remotes/origin/%s missing after resume", branch)
+	}
+}
+
+func TestRecreateFromBase_DeletePreflightFailsClosed(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("recreate preflight", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "guard.txt"), []byte("published\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "guard.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "publish")
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+	if err := project.FetchOrigin(context.Background(), h.proj.ClonePath); err != nil {
+		t.Fatalf("FetchOrigin after push: %v", err)
+	}
+
+	hookPath := filepath.Join(h.proj.ClonePath, "hooks", "pre-push")
+	hook := "#!/bin/sh\n" +
+		"echo 'No version is set for shim: go' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatalf("write pre-push hook: %v", err)
+	}
+
+	err = h.m.RecreateFromBase(context.Background(), tk)
+	if err == nil {
+		t.Fatal("RecreateFromBase error = nil, want preflight failure")
+	}
+	if !strings.Contains(err.Error(), "preflight delete upstream branch") {
+		t.Fatalf("RecreateFromBase error = %v, want preflight delete upstream branch", err)
+	}
+	if !project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
+		t.Fatalf("local branch %s deleted despite preflight failure", branch)
+	}
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		t.Fatalf("worktree path %s missing after preflight failure: %v", wtPath, statErr)
+	}
+	if out, showErr := exec.Command("git", "-C", h.src, "rev-parse", "--verify", "refs/heads/"+branch).CombinedOutput(); showErr != nil {
+		t.Fatalf("remote branch %s missing after preflight failure: %v: %s", branch, showErr, out)
+	}
+}
+
 // TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed proves the fix for
 // the bug where a network blip during reconcileAndRebase's remote fetch was
 // indistinguishable from a genuine content conflict: both wrapped
