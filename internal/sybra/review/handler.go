@@ -174,6 +174,11 @@ type Handler struct {
 	// fix workflows spend agent turns or mutate worktrees. Overridable in
 	// tests; nil falls back to project.PreflightPushCredentials.
 	pushPreflightFn func(ctx context.Context, worktreePath string) error
+	// resumePublishedBranchFn probes whether a no-PR task's published remote
+	// branch is already healthy again and, when so, drops only stale local
+	// state so the interrupted workflow can resume from the remote branch.
+	// Overridable in tests; nil falls back to worktree.Manager.ResumePublishedBranch.
+	resumePublishedBranchFn func(ctx context.Context, t task.Task) (bool, error)
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.

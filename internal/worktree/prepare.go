@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -248,6 +250,26 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
 		m.logger.Info("worktree.reused-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
 		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
+			return "", err
+		}
+		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+	}
+	originBranchRef := "refs/remotes/origin/" + wtBranch
+	if project.RefExists(ctx, proj.ClonePath, originBranchRef) {
+		callPhase(onPhase, "Creating worktree…")
+		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, wtBranch, originBranchRef); err != nil {
+			return "", fmt.Errorf("checkout remote branch %s: %w", wtBranch, err)
+		}
+		if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+			m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+		}
+		if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
+			return "", err
+		}
+		callPhase(onPhase, "Syncing upstream…")
+		m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+		m.logger.Info("worktree.reused-remote-branch", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "remote branch", onPhase); err != nil {
 			return "", err
 		}
 		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
@@ -719,6 +741,9 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 	}
 	branch := branchNameForTask(t)
 	wtPath := m.PathFor(t)
+	if err := project.PreflightDeleteUpstreamBranch(ctx, proj.ClonePath, branch); err != nil {
+		return fmt.Errorf("preflight delete upstream branch: %w", err)
+	}
 	if project.BranchExists(ctx, proj.ClonePath, branch) {
 		if berr := project.BackupBranchRef(ctx, proj.ClonePath, branch); berr != nil {
 			m.logger.Warn("worktree.recreate.backup", "task_id", t.ID, "branch", branch, "err", berr)
@@ -736,6 +761,88 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 		return fmt.Errorf("delete upstream branch: %w", derr)
 	}
 	m.logger.Info("worktree.recreated-from-base", "task_id", t.ID, "branch", branch)
+	return nil
+}
+
+// ResumePublishedBranch checks whether a task's published remote branch is
+// already usable again (base already merged, or a clean merge from base is
+// possible) and, when so, drops the stale local worktree/local branch so the
+// next PrepareForTask recreates from the remote branch instead of from base.
+//
+// Returns (false, nil) when there is no published remote branch or it still
+// conflicts with base. No remote mutation occurs here.
+func (m *Manager) ResumePublishedBranch(ctx context.Context, t task.Task) (bool, error) {
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return false, fmt.Errorf("get project: %w", err)
+	}
+	if err := project.FetchOrigin(ctx, proj.ClonePath); err != nil {
+		return false, fmt.Errorf("fetch origin: %w", err)
+	}
+	branch := branchNameForTask(t)
+	originRef := "refs/remotes/origin/" + branch
+	if !project.RefExists(ctx, proj.ClonePath, originRef) {
+		return false, nil
+	}
+	base, err := project.DefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		return false, fmt.Errorf("default branch: %w", err)
+	}
+	baseRef := "refs/remotes/origin/" + base
+	ready, err := m.publishedBranchReady(ctx, proj.ClonePath, t.ID, originRef, baseRef)
+	if err != nil {
+		return false, err
+	}
+	if !ready {
+		return false, nil
+	}
+	if err := m.dropLocalBranchState(ctx, proj.ClonePath, m.PathFor(t), branch); err != nil {
+		return false, err
+	}
+	m.logger.Info("worktree.resume-published-branch", "task_id", t.ID, "branch", branch)
+	return true, nil
+}
+
+func (m *Manager) publishedBranchReady(ctx context.Context, clonePath, taskID, originRef, baseRef string) (bool, error) {
+	if project.IsAncestorInBare(ctx, clonePath, baseRef, originRef) {
+		return true, nil
+	}
+	probeBranch := "sybra/probe-" + taskID + "-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	probePath := filepath.Join(os.TempDir(), "sybra-branch-probe-"+taskID+"-"+strconv.FormatInt(time.Now().UTC().UnixNano(), 10))
+	if err := project.CreateWorktree(ctx, clonePath, probePath, probeBranch, originRef); err != nil {
+		return false, fmt.Errorf("create remote-branch probe worktree: %w", err)
+	}
+	defer func() {
+		if err := project.RemoveWorktreeReconcile(context.Background(), clonePath, probePath); err != nil {
+			m.logger.Warn("worktree.probe.cleanup", "task_id", taskID, "path", probePath, "err", err)
+		}
+		if project.BranchExists(context.Background(), clonePath, probeBranch) {
+			if err := project.DeleteBranch(context.Background(), clonePath, probeBranch); err != nil {
+				m.logger.Warn("worktree.probe.cleanup-branch", "task_id", taskID, "branch", probeBranch, "err", err)
+			}
+		}
+	}()
+	result, err := project.TryCleanMerge(ctx, probePath, baseRef)
+	if err != nil {
+		return false, fmt.Errorf("probe remote branch mergeability: %w", err)
+	}
+	return result == project.CleanMergeCreated || result == project.CleanMergeNoop, nil
+}
+
+func (m *Manager) dropLocalBranchState(ctx context.Context, clonePath, wtPath, branch string) error {
+	if project.BranchExists(ctx, clonePath, branch) {
+		if berr := project.BackupBranchRef(ctx, clonePath, branch); berr != nil {
+			m.logger.Warn("worktree.resume-published-branch.backup", "branch", branch, "err", berr)
+		}
+	}
+	if err := project.RemoveWorktreeReconcile(ctx, clonePath, wtPath); err != nil {
+		return fmt.Errorf("remove worktree: %w", err)
+	}
+	if project.BranchExists(ctx, clonePath, branch) {
+		if err := project.DeleteBranch(ctx, clonePath, branch); err != nil {
+			return fmt.Errorf("delete branch: %w", err)
+		}
+	}
 	return nil
 }
 

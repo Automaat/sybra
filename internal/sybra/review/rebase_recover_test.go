@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1057,6 +1058,49 @@ func TestRecoverBranchConflictNoPR_RecreatesWhenExhausted(t *testing.T) {
 	}
 	if n := r.prTracker.Retries(tk.ID, branchRecreateKind); n != 1 {
 		t.Errorf("recreate counter = %d, want 1", n)
+	}
+}
+
+func TestRecoverBranchConflictNoPR_ExhaustedResumesPublishedRemoteBranch(t *testing.T) {
+	priorWorkflow := &workflow.Execution{
+		WorkflowID:  "resume-target-test",
+		CurrentStep: "mark_resumed",
+		State:       workflow.ExecRunning,
+		Variables:   map[string]string{"attempt": "3"},
+	}
+	r, tk := setupBranchConflictNoPRHandler(t, task.StatusTesting, priorWorkflow)
+	for range github.MaxRetries {
+		r.prTracker.MarkHandled(tk.ID, branchConflictRetryKind, "")
+	}
+
+	var called int
+	r.resumePublishedBranchFn = func(ctx context.Context, got task.Task) (bool, error) {
+		called++
+		if got.ID != tk.ID {
+			t.Fatalf("resumePublishedBranchFn task = %q, want %q", got.ID, tk.ID)
+		}
+		return true, nil
+	}
+
+	if !r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("want true: healthy published branch should resume instead of recreating")
+	}
+	if called != 1 {
+		t.Fatalf("resumePublishedBranchFn calls = %d, want 1", called)
+	}
+
+	got, err := r.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review (resumed workflow ran)", got.Status)
+	}
+	if n := r.prTracker.Retries(tk.ID, branchConflictRetryKind); n != 0 {
+		t.Fatalf("conflict-recovery budget = %d, want 0 after remote resume", n)
+	}
+	if n := r.prTracker.Retries(tk.ID, branchRecreateKind); n != 0 {
+		t.Fatalf("recreate counter = %d, want 0 (no destructive recreate)", n)
 	}
 }
 
