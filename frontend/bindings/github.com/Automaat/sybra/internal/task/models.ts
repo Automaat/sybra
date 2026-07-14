@@ -36,6 +36,13 @@ export class AgentRun {
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
+
+    /**
+     * SkillExecutionMode records how a mandatory workflow skill actually ran:
+     * native invocation, injected SKILL.md, bundled fallback, or unavailable.
+     * Empty means the run had no mandatory workflow skill.
+     */
+    "skillExecutionMode"?: string;
     "state": string;
 
     /**
