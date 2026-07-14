@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"sync"
@@ -128,7 +129,7 @@ func TestAssignTaskIdenticalPushIsNoOp(t *testing.T) {
 	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
 		t.Fatalf("identical push rewrote task file: modtime %v -> %v", infoBefore.ModTime(), infoAfter.ModTime())
 	}
-	if string(bodyBefore) != string(bodyAfter) {
+	if !bytes.Equal(bodyBefore, bodyAfter) {
 		t.Fatal("identical push rewrote task contents")
 	}
 	mu.Lock()
