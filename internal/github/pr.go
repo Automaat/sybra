@@ -65,6 +65,7 @@ func (s PRState) HasPendingChecks() bool {
 func (s PRState) ReadyToMerge() bool {
 	return s.State == "OPEN" &&
 		s.Mergeable == "MERGEABLE" &&
+		!s.HasPendingChecks() &&
 		(s.CIStatus() == "SUCCESS" || s.CIStatus() == "")
 }
 

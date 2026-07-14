@@ -121,7 +121,7 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		if !pr.IsDraft && pr.ActionableCount > 0 {
 			issues = append(issues, PRIssue{Kind: PRIssueComments, TaskID: tm.ID, PR: *pr})
 		}
-		if !pr.IsDraft && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {
+		if !pr.IsDraft && !pr.HasPendingChecks && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {
 			issues = append(issues, PRIssue{Kind: PRIssueReadyToMerge, TaskID: tm.ID, PR: *pr})
 		}
 	}

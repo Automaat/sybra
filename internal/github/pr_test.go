@@ -161,6 +161,10 @@ func TestPRState_ReadyToMerge(t *testing.T) {
 	}{
 		{"open mergeable no ci", PRState{State: "OPEN", Mergeable: "MERGEABLE"}, true},
 		{"open mergeable ci success", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{{Typename: "StatusContext", State: "SUCCESS"}}}, true},
+		{"open mergeable success plus pending", PRState{State: "OPEN", Mergeable: "MERGEABLE", StatusCheckRollup: []gqlCheckContext{
+			{Typename: "StatusContext", State: "SUCCESS"},
+			{Typename: "StatusContext", State: "PENDING"},
+		}}, false},
 		{"not open", PRState{State: "MERGED", Mergeable: "MERGEABLE"}, false},
 		{"conflicting", PRState{State: "OPEN", Mergeable: "CONFLICTING"}, false},
 		{"unknown mergeable", PRState{State: "OPEN", Mergeable: "UNKNOWN"}, false},
