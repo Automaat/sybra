@@ -958,8 +958,13 @@ func PreflightDeleteUpstreamBranch(ctx context.Context, barePath, branch string)
 		}
 		return fmt.Errorf("resolve remote %s config: %w", remote, err)
 	}
+	trackingRef := "refs/remotes/" + remote + "/" + branch
+	trackingExists := RefExists(ctx, barePath, trackingRef)
 	sha, err := remoteBranchHead(ctx, barePath, remote, branch)
 	if err != nil {
+		if IsTransientNetworkError(err) && !trackingExists {
+			return nil
+		}
 		return fmt.Errorf("resolve remote branch %s/%s: %w", remote, branch, err)
 	}
 	if sha == "" {
