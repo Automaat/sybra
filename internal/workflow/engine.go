@@ -347,7 +347,9 @@ type Engine struct {
 	// dispatch scan, pruning admission-queue items whose task has gone
 	// missing, terminal, or already in-progress (agentqueue.Queue.Reconcile).
 	// nil disables reconciliation (no queue wired).
-	queueReconciler func()
+	queueReconciler                  func()
+	autoApprovePlansWithoutDecisions bool
+	planAutoApproveHook              func(TaskInfo, string)
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -392,6 +394,20 @@ func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
 // leader-follower mode a task homed on a remote follower executes there, and the
 // leader only mirrors its state. A nil gate (the default) runs every task.
 func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = gate }
+
+// SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
+// simple-task plans whose decision sidecar explicitly says there are no open
+// human decisions.
+func (e *Engine) SetAutoApprovePlansWithoutDecisions(enabled bool) {
+	e.autoApprovePlansWithoutDecisions = enabled
+}
+
+// SetPlanAutoApproveHook installs an observer for auto-approved plans. It is
+// used by the app layer to write audit events without making workflow import
+// the audit package.
+func (e *Engine) SetPlanAutoApproveHook(hook func(TaskInfo, string)) {
+	e.planAutoApproveHook = hook
+}
 
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }

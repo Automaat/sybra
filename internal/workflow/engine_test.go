@@ -4683,6 +4683,150 @@ func TestPlanReuse_ApproveAdvancesPastReviewPlan(t *testing.T) {
 	}
 }
 
+func TestAutoApprovePlanReview_NoOpenDecisionsAdvances(t *testing.T) {
+	engine, tasks := startAutoApprovePlanReview(t, TaskInfo{
+		ID:            "t1",
+		Status:        "planning",
+		PlanDecisions: "# Decisions\n\nNo open decisions. The recommended execution contract is fully specified.",
+		PlanContract:  validPlanContract("t1"),
+	})
+	engine.SetAutoApprovePlansWithoutDecisions(true)
+
+	step := autoApproveReviewStep()
+	wf := &Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "review_plan",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+	if err := engine.execWaitHuman("t1", step, wf); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTaskStatus(t, tasks, "t1", "in-progress")
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.State != ExecCompleted {
+		t.Errorf("State = %q, want ExecCompleted", ti.Workflow.State)
+	}
+	if got := ti.Workflow.Variables["human.auto_approved"]; got != "true" {
+		t.Errorf("human.auto_approved = %q, want true", got)
+	}
+}
+
+func TestAutoApprovePlanReview_OpenDecisionsStayWaiting(t *testing.T) {
+	engine, tasks := startAutoApprovePlanReview(t, TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		PlanDecisions: "# Decisions\n\n## Scope\nQuestion: Which scope?\nRecommended: Small\n\nOptions:\n" +
+			"- Small - Minimal change\n- Large - Broader change",
+		PlanContract: validPlanContract("t1"),
+	})
+	engine.SetAutoApprovePlansWithoutDecisions(true)
+
+	if err := engine.execWaitHuman("t1", autoApproveReviewStep(), &Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "review_plan",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "plan-review" {
+		t.Errorf("Status = %q, want plan-review", ti.Status)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
+	}
+}
+
+func TestAutoApprovePlanReview_InvalidContractStaysWaiting(t *testing.T) {
+	engine, tasks := startAutoApprovePlanReview(t, TaskInfo{
+		ID:            "t1",
+		Status:        "planning",
+		PlanDecisions: "# Decisions\n\nNo open decisions. The recommended execution contract is fully specified.",
+		PlanContract:  strings.Replace(validPlanContract("t1"), `"task_id": "t1"`, `"task_id": "other"`, 1),
+	})
+	engine.SetAutoApprovePlansWithoutDecisions(true)
+
+	if err := engine.execWaitHuman("t1", autoApproveReviewStep(), &Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "review_plan",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "plan-review" {
+		t.Errorf("Status = %q, want plan-review", ti.Status)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Errorf("State = %q, want ExecWaiting", ti.Workflow.State)
+	}
+}
+
+func startAutoApprovePlanReview(t *testing.T, task TaskInfo) (*Engine, *memTasks) {
+	t.Helper()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Definition{
+		ID: "simple-task-plan",
+		Steps: []Step{
+			{
+				ID:   "review_plan",
+				Type: StepWaitHuman,
+				Config: StepConfig{
+					Status:       "plan-review",
+					HumanActions: []string{"approve", "reject"},
+				},
+				Next: []Transition{{When: &Condition{Field: "vars.human_action", Operator: "equals", Value: "approve"}, GoTo: "done"}},
+			},
+			{
+				ID:     "done",
+				Type:   StepSetStatus,
+				Config: StepConfig{Status: "in-progress"},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tasks := newMemTasks()
+	tasks.Put(task)
+	return NewEngine(store, tasks, newMockAgents(), discardLogger()), tasks
+}
+
+func autoApproveReviewStep() *Step {
+	return &Step{
+		ID:   "review_plan",
+		Type: StepWaitHuman,
+		Config: StepConfig{
+			Status:       "plan-review",
+			HumanActions: []string{"approve", "reject"},
+		},
+	}
+}
+
+func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ti, err := tasks.GetTask(id)
+		if err == nil && ti.Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ti, _ := tasks.GetTask(id)
+	t.Fatalf("timed out waiting for status %q, got %q", want, ti.Status)
+}
+
 func TestPlanReuse_ApproveReconcilesMissedWaitForStatus(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()

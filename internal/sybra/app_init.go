@@ -882,9 +882,7 @@ func (a *App) initWorkflowEngine() {
 	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
 	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
 	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.configureTestingEscalation()
-	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
-	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	a.configureWorkflowPolicies()
 	if a.cfg.Evaluation.Offline.Enabled {
 		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
 		a.workflowEngine.SetEvalGate(gate)
@@ -962,6 +960,23 @@ func (a *App) initWorkflowEngine() {
 	}
 	// Workflow completion moves to wireServices so the callback closure binds
 	// to the completion.Handler constructed there.
+}
+
+func (a *App) configureWorkflowPolicies() {
+	a.configureTestingEscalation()
+	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
+	a.workflowEngine.SetABTestingConfig(a.cfg.ABTesting)
+	a.configurePlanAutoApproval()
+}
+
+func (a *App) configurePlanAutoApproval() {
+	a.workflowEngine.SetAutoApprovePlansWithoutDecisions(a.cfg.Orchestrator.AutoApprovePlansWithoutDecisions)
+	a.workflowEngine.SetPlanAutoApproveHook(func(t workflow.TaskInfo, reason string) {
+		a.logAudit(audit.EventPlanApproved, t.ID, "", map[string]any{
+			"auto":   true,
+			"reason": reason,
+		})
+	})
 }
 
 func (a *App) newWorkflowAgentLauncher() *agentAdapter {

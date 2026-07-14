@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/providerid"
@@ -585,7 +586,62 @@ func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) err
 
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.wait-human", "task_id", taskID, "step", step.ID, "actions", step.Config.HumanActions)
-	return e.tasks.SetWorkflow(taskID, wfExec)
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		return err
+	}
+	e.maybeAutoApprovePlanReview(taskID, step)
+	return nil
+}
+
+func (e *Engine) maybeAutoApprovePlanReview(taskID string, step *Step) {
+	if !e.autoApprovePlansWithoutDecisions || step.ID != "review_plan" {
+		return
+	}
+	if !slices.Contains(step.Config.HumanActions, "approve") {
+		return
+	}
+
+	go func() {
+		// Let the caller unwind first so workflow completion/cascade callbacks
+		// run outside StartWorkflow/DispatchEvent marker scopes.
+		time.Sleep(10 * time.Millisecond)
+		t, err := e.tasks.GetTask(taskID)
+		if err != nil {
+			e.logger.Warn("workflow.plan-auto-approve.get", "task_id", taskID, "err", err)
+			return
+		}
+		if !e.shouldAutoApprovePlanReview(t) {
+			return
+		}
+		e.logger.Info("workflow.plan-auto-approve", "task_id", taskID, "reason", "no_open_decisions")
+		err = e.HandleHumanAction(taskID, "approve", map[string]string{
+			"auto_approved":       "true",
+			"auto_approve_reason": "no_open_decisions",
+		})
+		if err != nil {
+			e.logger.Warn("workflow.plan-auto-approve.approve", "task_id", taskID, "err", err)
+			return
+		}
+		if e.planAutoApproveHook != nil {
+			e.planAutoApproveHook(t, "no_open_decisions")
+		}
+	}()
+}
+
+func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
+	if t.Status != "plan-review" || t.Workflow == nil ||
+		t.Workflow.WorkflowID != "simple-task-plan" ||
+		t.Workflow.State != ExecWaiting ||
+		t.Workflow.CurrentStep != "review_plan" {
+		return false
+	}
+	if PlanHasOpenDecisions(t.PlanDecisions) {
+		return false
+	}
+	if strings.TrimSpace(t.PlanContract) == "" {
+		return false
+	}
+	return len(ValidatePlanContractForTask(t.PlanContract, t.ID, t.Body)) == 0
 }
 
 func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {

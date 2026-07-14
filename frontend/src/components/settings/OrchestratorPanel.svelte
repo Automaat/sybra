@@ -2,6 +2,7 @@
   import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import Section from './fields/Section.svelte'
   import NumberField from './fields/NumberField.svelte'
+  import ToggleField from './fields/ToggleField.svelte'
   import AdvancedDisclosure from './fields/AdvancedDisclosure.svelte'
 
   interface Props {
@@ -28,5 +29,15 @@
         modified={o.maintenanceIntervalSeconds !== d.maintenanceIntervalSeconds}
         onreset={() => (settings.orchestrator.maintenanceIntervalSeconds = d.maintenanceIntervalSeconds)} />
     </div>
+  </AdvancedDisclosure>
+  <AdvancedDisclosure label="Plan review">
+    <ToggleField
+      label="Auto-approve plans without decisions"
+      description="Validated plans skip plan-review only when the planner explicitly recorded no open decisions."
+      keyPath="orchestrator.auto_approve_plans_without_decisions"
+      bind:checked={settings.orchestrator.autoApprovePlansWithoutDecisions}
+      modified={o.autoApprovePlansWithoutDecisions !== d.autoApprovePlansWithoutDecisions}
+      onreset={() => (settings.orchestrator.autoApprovePlansWithoutDecisions = d.autoApprovePlansWithoutDecisions)}
+    />
   </AdvancedDisclosure>
 </Section>
