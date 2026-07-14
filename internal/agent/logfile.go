@@ -45,7 +45,9 @@ func ParseLogFileWithArtifacts(path string, maxEvents int, provider, taskID, pro
 	}
 	var events []StreamEvent
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	// Match the live headless runner's line ceiling so replay/history doesn't
+	// silently drop oversized tool-result events that were accepted live.
+	sc.Buffer(make([]byte, 0, 256*1024), headlessScannerBuffer)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {

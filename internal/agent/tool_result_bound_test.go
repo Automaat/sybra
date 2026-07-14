@@ -124,3 +124,37 @@ func TestParseLogFileWithArtifacts_BoundsReplayedToolResults(t *testing.T) {
 		t.Fatalf("artifact count = %d, want 1", len(metas))
 	}
 }
+
+func TestParseLogFileWithArtifacts_BoundsOversizedLogLine(t *testing.T) {
+	store := artifact.New(t.TempDir())
+	raw := strings.Repeat("ok   pkg\n", 70000) +
+		"internal/sybra/app.go:217:13: undefined: oversizedReplaySymbol\n" +
+		strings.Repeat("postlude\n", 70000)
+	logPath := filepath.Join(t.TempDir(), "agent.ndjson")
+	line := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_huge","content":` +
+		strconv.Quote(raw) + `,"is_error":true}]}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := ParseLogFileWithArtifacts(logPath, 0, "claude", "task-huge", "", store)
+	if err != nil {
+		t.Fatalf("ParseLogFileWithArtifacts: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if !strings.Contains(events[0].Content, "artifact_name: tool-output-toolu_huge-") {
+		t.Fatalf("oversized replay missing artifact reference:\n%s", events[0].Content)
+	}
+	if !strings.Contains(events[0].Content, "oversizedReplaySymbol") {
+		t.Fatalf("oversized replay lost diagnostic:\n%s", events[0].Content)
+	}
+	metas, err := store.List("task-huge")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("artifact count = %d, want 1", len(metas))
+	}
+}
