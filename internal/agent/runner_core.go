@@ -51,6 +51,7 @@ type sandboxSpec struct {
 	// never the default rollout posture.
 	mode         string
 	worktree     string
+	gitMetadata  []string
 	sandboxHome  string
 	tmp          string
 	sharedCache  string

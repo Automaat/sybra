@@ -66,6 +66,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		cfg.sandbox.opencodeState,
 		cfg.sandbox.toolCache,
 	)
+	roots = dedupeRoots(append(roots, cfg.sandbox.gitMetadata...)...)
 	for _, root := range roots {
 		wrapped = append(wrapped, "--bind", root, root)
 	}
