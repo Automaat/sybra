@@ -594,7 +594,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		AssignmentUnit:          assignment.AssignmentUnit,
 		AssignmentKey:           assignment.AssignmentKey,
 		DisableProviderFailover: assignment.ExperimentID != "",
-		RequestedSkill:          requestedWorkflowSkill(prompt, t.AllowedTools),
+		RequestedSkill:          requestedWorkflowSkill(prompt),
 		RequirePermissions:      requirePerm,
 		HeadlessPermissionMode:  posture,
 		OneShot:                 oneShot,
@@ -623,10 +623,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	return ag, baselineRef, nil
 }
 
-func requestedWorkflowSkill(prompt string, allowedTools []string) string {
-	if !slices.Contains(allowedTools, "Skill") {
-		return ""
-	}
+func requestedWorkflowSkill(prompt string) string {
 	names := skillinvoke.InvokedNames(prompt)
 	if len(names) != 1 {
 		return ""

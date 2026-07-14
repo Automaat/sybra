@@ -677,7 +677,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Dir:                     dir,
 		OneShot:                 oneShot,
 		IgnoreConcurrencyLimit:  mode == "interactive",
-		RequestedSkill:          workflowRequestedSkill(prompt, allowedTools),
+		RequestedSkill:          workflowRequestedSkill(prompt),
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
@@ -731,10 +731,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	return ag.ID, cfg.Dir, baselineRef, nil
 }
 
-func workflowRequestedSkill(prompt string, allowedTools []string) string {
-	if !slices.Contains(allowedTools, "Skill") {
-		return ""
-	}
+func workflowRequestedSkill(prompt string) string {
 	names := skillinvoke.InvokedNames(prompt)
 	if len(names) != 1 {
 		return ""
