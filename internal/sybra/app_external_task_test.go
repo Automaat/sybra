@@ -200,7 +200,7 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *tes
 		return p
 	}
 
-	path := write(task.Task{
+	mirrored := task.Task{
 		ID:           "ext-remote",
 		Title:        "remote mirror",
 		Status:       task.StatusTodo,
@@ -209,7 +209,16 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *tes
 		AssignedNode: "pet-box",
 		CreatedAt:    time.Now().UTC(),
 		UpdatedAt:    time.Now().UTC(),
-	})
+	}
+	path := write(mirrored)
+	app.maybeStartWorkflowForExternalTask(path)
+	app.wg.Wait()
+
+	// Replaying the same follower-owned todo task must stay idle. This is the
+	// leader watcher path that previously fed assignment loops after mirror
+	// writes bounced back from the follower.
+	mirrored.UpdatedAt = mirrored.UpdatedAt.Add(time.Second)
+	path = write(mirrored)
 	app.maybeStartWorkflowForExternalTask(path)
 	app.wg.Wait()
 
