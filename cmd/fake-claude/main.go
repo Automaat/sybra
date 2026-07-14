@@ -409,12 +409,12 @@ func runToolResultLarge() {
 	emitToolUse("toolu_large", "Bash", map[string]any{"command": "go test ./... && golangci-lint run ./..."})
 
 	var b strings.Builder
-	for i := 0; i < 120; i++ {
+	for i := range 120 {
 		fmt.Fprintf(&b, "ok   github.com/Automaat/sybra/internal/pkg%d 0.0%ds\n", i%5, (i%9)+1)
 	}
 	b.WriteString("internal/sybra/app.go:217:13: undefined: missingDependency\n")
 	b.WriteString("internal/sybra/app.go:217:13: compile failed after refactor\n")
-	for i := 0; i < 120; i++ {
+	for i := range 120 {
 		fmt.Fprintf(&b, "lint note %03d: checked another file successfully\n", i)
 	}
 	emitToolResult("toolu_large", b.String(), true)
