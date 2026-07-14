@@ -4,15 +4,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
 // copilotDefaultModel is the model Copilot agents use when none is specified.
-// Per the integration decision the default is the latest GPT model available
-// in the installed Copilot binary's registry. If a user's Copilot plan lacks
-// this slug, `copilot --model` errors at exec time — pin a newer slug or
-// "auto" here when that happens.
-const copilotDefaultModel = "gpt-5.5"
+// It is Sybra's provider-specific cheap/sonnet-class Copilot model.
+var copilotDefaultModel = modeltier.Model(modeltier.Cheap, "copilot")
 
 type copilotProvider struct {
 	baseProvider
@@ -26,15 +24,13 @@ func (copilotProvider) Name() string { return "copilot" }
 
 func (copilotProvider) NormalizeModel(model string) string {
 	// The provider-agnostic short aliases (and the empty default the chat
-	// path passes) map to the latest GPT. Full Copilot slugs
+	// path passes) map through Sybra's shared model tiers. Full Copilot slugs
 	// (claude-opus-4.6, gpt-5.5, gemini-3.1-pro-preview, ...) selected
 	// in the model picker pass through untouched.
-	switch strings.TrimSpace(model) {
-	case "", "sonnet", "opus", "haiku", "fable":
-		return copilotDefaultModel
-	default:
-		return model
+	if resolved, ok := modeltier.NormalizeAlias("copilot", model); ok {
+		return resolved
 	}
+	return model
 }
 
 func (copilotProvider) BuildCommand(cfg RunConfig, model string) string {

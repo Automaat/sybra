@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
@@ -19,14 +20,10 @@ func (codexProvider) Name() string { return "codex" }
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
-	switch strings.TrimSpace(model) {
-	case "", "sonnet", "opus", "fable":
-		return "gpt-5.5"
-	case "haiku":
-		return "gpt-5.4-mini"
-	default:
-		return model
+	if resolved, ok := modeltier.NormalizeAlias("codex", model); ok {
+		return resolved
 	}
+	return model
 }
 
 func (p codexProvider) BuildCommand(cfg RunConfig, model string) string {

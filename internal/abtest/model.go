@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/modeltier"
 )
 
 // Config controls deterministic A/B assignment for workflow agent runs.
@@ -23,7 +25,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 5
+const CurrentBuiltinVersion = 6
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -130,8 +132,8 @@ type Assignment struct {
 // DefaultConfig returns the default A/B suite split by price bracket: code
 // author roles use cheap variants, while planning and review use premium ones.
 //
-// Every experiment enrolls all three providers at equal weight (1:1:1) so each
-// role is genuinely runnable on any provider and the evaluation scorecard sees
+// Every experiment enrolls each supported provider at equal weight so each role
+// is genuinely runnable on any provider and the evaluation scorecard sees
 // balanced samples. This is the deliberate "equal agents" posture: rather than
 // hardcoding scorecard-derived weights (which favoured codex on implementation
 // and excluded copilot from maintenance), selection is uniform and the
@@ -142,6 +144,8 @@ func DefaultConfig() Config {
 	enabled := true
 	expEnabled := true
 	builtinVersion := CurrentBuiltinVersion
+	cheap := modeltier.Models(modeltier.Cheap)
+	expensive := modeltier.Models(modeltier.Expensive)
 	return Config{
 		Enabled:              &enabled,
 		MinSamplesPerVariant: 20,
@@ -155,8 +159,9 @@ func DefaultConfig() Config {
 				Roles:          []string{"implementation"},
 				Variants: []Variant{
 					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: "claude-sonnet-4.6", Tier: "cheap", Weight: 1},
+					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
+					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
+					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
 				},
 			},
 			{
@@ -167,8 +172,9 @@ func DefaultConfig() Config {
 				Roles:          []string{"pr-fix", "test-runner"},
 				Variants: []Variant{
 					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: "gpt-5.4", Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: "claude-sonnet-4.6", Tier: "cheap", Weight: 1},
+					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
+					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
+					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
 				},
 			},
 			{
@@ -179,8 +185,9 @@ func DefaultConfig() Config {
 				Roles:          []string{"fix-review"},
 				Variants: []Variant{
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
 				},
 			},
 			{
@@ -191,8 +198,9 @@ func DefaultConfig() Config {
 				Roles:          []string{"plan"},
 				Variants: []Variant{
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
 				},
 			},
 			{
@@ -205,12 +213,13 @@ func DefaultConfig() Config {
 				Roles:          []string{"review"},
 				Variants: []Variant{
 					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: "gpt-5.5", Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: "gemini-3.1-pro-preview", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
 					{
 						ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
 						Provider: "codex",
-						Model:    "gpt-5.5",
+						Model:    expensive["codex"],
 						Tier:     "expensive",
 						Version:  "pl-a2d853b2c1d9",
 						Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),

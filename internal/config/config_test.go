@@ -266,8 +266,8 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 
 // TestLoadTriageModelDefaultsEmpty locks in that Triage.Model is left empty
 // by default rather than defaulted to "sonnet". An empty model lets
-// triage.FallbackClassifier fall through to its llmjob.Cheap tier (haiku);
-// a "sonnet" default here would silently override that cheap tier on every
+// triage.FallbackClassifier fall through to its llmjob.SuperCheap tier (haiku);
+// a "sonnet" default here would silently override that super-cheap tier on every
 // install (see internal/triage/classifier.go's claudeModelOverride).
 func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
 	dir := t.TempDir()
@@ -278,7 +278,7 @@ func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Triage.Model != "" {
-		t.Fatalf("triage.model = %q, want empty (cheap tier)", cfg.Triage.Model)
+		t.Fatalf("triage.model = %q, want empty (super-cheap tier)", cfg.Triage.Model)
 	}
 	if cfg.Triage.PollSeconds != 60 {
 		t.Fatalf("triage.poll_seconds = %d, want 60", cfg.Triage.PollSeconds)

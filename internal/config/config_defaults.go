@@ -799,7 +799,7 @@ func load(opts loadOptions) (*Config, error) {
 		cfg.Triage.PollSeconds = 60
 	}
 	// Triage.Model intentionally has no default override here: an empty
-	// model lets triage.FallbackClassifier fall through to its llmjob.Cheap
+	// model lets triage.FallbackClassifier fall through to its llmjob.SuperCheap
 	// tier (haiku), which is ~10x cheaper than sonnet for a structured
 	// classification job. A non-empty value (set explicitly by a user)
 	// still overrides the tier via claudeModelOverride.

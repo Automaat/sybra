@@ -93,9 +93,9 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 		experimentID string
 		variantIDs   []string
 	}{
-		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
-		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
-		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet"}},
+		{"implementation", "code-author-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet", "opencode-deepseek-v4-flash"}},
+		{"test-runner", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet", "opencode-deepseek-v4-flash"}},
+		{"pr-fix", "code-author-maintenance-cheap", []string{"claude-sonnet", "codex-gpt-5.4", "copilot-sonnet", "opencode-deepseek-v4-flash"}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.role, func(t *testing.T) {
@@ -116,8 +116,9 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 }
 
 // TestDefaultConfigEnrollsEveryProviderUniformly locks the "equal agents"
-// posture: every default experiment enrolls all three providers at weight 1 so
-// no role is shut out of any provider and the scorecard sees balanced samples.
+// posture: every default experiment enrolls every supported provider at weight
+// 1 so no role is shut out of any provider and the scorecard sees balanced
+// samples.
 func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 	cfg := DefaultConfig()
 	for _, exp := range cfg.Experiments {
@@ -128,7 +129,7 @@ func TestDefaultConfigEnrollsEveryProviderUniformly(t *testing.T) {
 			}
 			providers[v.Provider] = true
 		}
-		for _, p := range []string{"claude", "codex", "copilot"} {
+		for _, p := range []string{"claude", "codex", "copilot", "opencode"} {
 			if !providers[p] {
 				t.Errorf("experiment %q is missing provider %q", exp.ID, p)
 			}
@@ -147,7 +148,7 @@ func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
 			t.Fatalf("ExperimentID = %q, want fix-review-expensive", a.ExperimentID)
 		}
 		switch a.VariantID {
-		case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro":
+		case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "opencode-glm-5.2":
 		default:
 			t.Fatalf("VariantID = %q, want an expensive fix-review variant", a.VariantID)
 		}
@@ -171,7 +172,7 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, wantExp)
 				}
 				switch a.VariantID {
-				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "pl-a2d853b2c1d9-codex-gpt-5.5":
+				case "claude-opus", "codex-gpt-5.5", "copilot-gemini-3.1-pro", "opencode-glm-5.2", "pl-a2d853b2c1d9-codex-gpt-5.5":
 				default:
 					t.Fatalf("VariantID = %q, want expensive variant", a.VariantID)
 				}

@@ -31,7 +31,7 @@ type FallbackClassifier struct {
 func (c *FallbackClassifier) Classify(ctx context.Context, t task.Task, projects []project.Project) (Verdict, error) {
 	v, _, err := llmjob.Run(ctx, buildPrompt(t, projects), llmjob.Spec[Verdict]{
 		Name:     "triage",
-		Tier:     llmjob.Cheap,
+		Tier:     llmjob.SuperCheap,
 		Schema:   Schema,
 		Validate: ValidateVerdict,
 	}, llmexec.Options{

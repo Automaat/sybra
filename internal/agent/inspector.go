@@ -63,7 +63,7 @@ func Inspect(ctx context.Context, logger *slog.Logger, in InspectInput) (Inspect
 
 	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[InspectorVerdict]{
 		Name:     "inspect",
-		Tier:     llmjob.Cheap,
+		Tier:     llmjob.SuperCheap,
 		Schema:   inspectorVerdictSchema,
 		Validate: validateInspectorVerdict,
 	}, llmexec.Options{Logger: logger, Models: claudeModelOverride(in.Model)})

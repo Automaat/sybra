@@ -4,10 +4,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
 
-const opencodeDefaultModel = "openrouter/z-ai/glm-5.2"
+var opencodeDefaultModel = modeltier.Model(modeltier.Cheap, "opencode")
 
 type opencodeProvider struct {
 	baseProvider
@@ -20,12 +21,10 @@ func init() {
 func (opencodeProvider) Name() string { return "opencode" }
 
 func (opencodeProvider) NormalizeModel(model string) string {
-	switch strings.TrimSpace(model) {
-	case "", "sonnet", "opus", "haiku", "fable":
-		return opencodeDefaultModel
-	default:
-		return model
+	if resolved, ok := modeltier.NormalizeAlias("opencode", model); ok {
+		return resolved
 	}
+	return model
 }
 
 func (p opencodeProvider) BuildCommand(cfg RunConfig, model string) string {

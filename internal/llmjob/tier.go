@@ -1,33 +1,30 @@
 package llmjob
 
-import "maps"
+import (
+	"maps"
+
+	"github.com/Automaat/sybra/internal/modeltier"
+)
 
 // Tier describes the cost/capability class for a short structured LLM job.
 type Tier int
 
 const (
-	Cheap Tier = iota
+	// SuperCheap is the haiku/mini class for small structured jobs.
+	SuperCheap Tier = iota
+	// Cheap is the sonnet-class default for ordinary coding/reasoning jobs.
+	Cheap
+	// Standard is kept as a compatibility alias for Cheap.
 	Standard
+	// Deep is the opus/deep class for high-scrutiny jobs.
 	Deep
 )
 
 var tierModels = map[Tier]map[string]string{
-	Cheap: {
-		"claude": "haiku",
-		"codex":  "gpt-5.4-mini",
-		// GPT-5 mini and GPT-4.1 are Copilot's no-premium-request tiers.
-		"copilot": "gpt-5-mini",
-	},
-	Standard: {
-		"claude":  "sonnet",
-		"codex":   "gpt-5.5",
-		"copilot": "claude-sonnet-4.6",
-	},
-	Deep: {
-		"claude":  "opus",
-		"codex":   "gpt-5.5",
-		"copilot": "gemini-3.1-pro-preview",
-	},
+	SuperCheap: modeltier.Models(modeltier.SuperCheap),
+	Cheap:      modeltier.Models(modeltier.Cheap),
+	Standard:   modeltier.Models(modeltier.Cheap),
+	Deep:       modeltier.Models(modeltier.Expensive),
 }
 
 func modelsFor(t Tier) map[string]string {
@@ -35,6 +32,10 @@ func modelsFor(t Tier) map[string]string {
 	if !ok {
 		row = tierModels[Standard]
 	}
+	return cloneModels(row)
+}
+
+func cloneModels(row map[string]string) map[string]string {
 	out := make(map[string]string, len(row))
 	maps.Copy(out, row)
 	return out
