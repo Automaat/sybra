@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -340,6 +341,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox worktree root: %w", err)
 	}
+	gitMetadata := m.resolveGitMetadataRoots(cfg.TaskID, canonWorktree)
 	canonSandboxHome, err := canonicalizeRoot(sandboxHome)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -365,9 +367,10 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 
-	cfg.sandbox = enforceSpec(canonWorktree, canonSandboxHome, canonTmp, canonSharedCache, profilePath)
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"git_metadata", cfg.sandbox.gitMetadata,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
 		"opencode_state", cfg.sandbox.opencodeState,
@@ -395,10 +398,11 @@ func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
 	return root
 }
 
-func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
+func enforceSpec(worktree string, gitMetadata []string, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
 	return sandboxSpec{
 		mode:          "enforce",
 		worktree:      worktree,
+		gitMetadata:   slices.Clone(gitMetadata),
 		sandboxHome:   sandboxHome,
 		tmp:           tmp,
 		sharedCache:   sharedCache,
@@ -409,6 +413,92 @@ func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sa
 		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
 		toolCache:     agentStateRoot(".cache", sandboxHome),
 	}
+}
+
+func (m *Manager) resolveGitMetadataRoots(taskID, worktree string) []string {
+	roots, err := gitMetadataRoots(worktree)
+	if err != nil {
+		m.logger.Warn("agent.sandbox.git-metadata", "task_id", taskID, "err", err)
+		return nil
+	}
+	return roots
+}
+
+func gitMetadataRoots(worktree string) ([]string, error) {
+	gitPath := filepath.Join(worktree, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat .git: %w", err)
+	}
+	if info.IsDir() {
+		canon, err := canonicalizeRoot(gitPath)
+		if err != nil {
+			return nil, err
+		}
+		return []string{canon}, nil
+	}
+
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return nil, fmt.Errorf("read .git: %w", err)
+	}
+	firstLine, _, _ := strings.Cut(string(data), "\n")
+	gitDir, ok := strings.CutPrefix(strings.TrimSpace(firstLine), "gitdir:")
+	if !ok {
+		return nil, fmt.Errorf("unsupported .git file first line %q", strings.TrimSpace(firstLine))
+	}
+	gitDir = strings.TrimSpace(gitDir)
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktree, gitDir)
+	}
+	canonGitDir, err := canonicalizeRoot(gitDir)
+	if err != nil {
+		return nil, fmt.Errorf("gitdir: %w", err)
+	}
+
+	roots := []string{canonGitDir}
+	if common := gitCommonDir(canonGitDir); common != "" {
+		canonCommon, err := canonicalizeRoot(common)
+		if err != nil {
+			return nil, fmt.Errorf("commondir: %w", err)
+		}
+		roots = append(roots, canonCommon)
+	}
+	return dedupeGitRoots(roots), nil
+}
+
+func gitCommonDir(gitDir string) string {
+	data, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		return ""
+	}
+	common := strings.TrimSpace(string(data))
+	if common == "" {
+		return ""
+	}
+	if filepath.IsAbs(common) {
+		return common
+	}
+	return filepath.Join(gitDir, common)
+}
+
+func dedupeGitRoots(roots []string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		out = append(out, root)
+	}
+	return out
 }
 
 func agentStateRoot(sub, fallback string) string {
