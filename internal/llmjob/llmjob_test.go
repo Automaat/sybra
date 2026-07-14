@@ -223,6 +223,15 @@ func TestRunSetsSuperCheapTierModels(t *testing.T) {
 	}
 }
 
+func TestStandardTierIsCheapAlias(t *testing.T) {
+	if Standard != Cheap {
+		t.Fatalf("Standard = %d, want Cheap alias %d", Standard, Cheap)
+	}
+	if !reflect.DeepEqual(modelsFor(Standard), modelsFor(Cheap)) {
+		t.Fatalf("Standard models differ from Cheap models")
+	}
+}
+
 func TestRunPreservesExplicitModels(t *testing.T) {
 	restore := stubRunner(func(_ context.Context, _ string, opts llmexec.Options) (llmexec.Result, error) {
 		want := map[string]string{"claude": "opus", "codex": "gpt-5.4", "copilot": "claude-sonnet-4.6", "opencode": "openrouter/deepseek/deepseek-v4-flash"}

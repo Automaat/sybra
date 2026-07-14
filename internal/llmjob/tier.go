@@ -15,15 +15,14 @@ const (
 	// Cheap is the sonnet-class default for ordinary coding/reasoning jobs.
 	Cheap
 	// Standard is kept as a compatibility alias for Cheap.
-	Standard
+	Standard = Cheap
 	// Deep is the opus/deep class for high-scrutiny jobs.
-	Deep
+	Deep Tier = iota
 )
 
 var tierModels = map[Tier]map[string]string{
 	SuperCheap: modeltier.Models(modeltier.SuperCheap),
 	Cheap:      modeltier.Models(modeltier.Cheap),
-	Standard:   modeltier.Models(modeltier.Cheap),
 	Deep:       modeltier.Models(modeltier.Expensive),
 }
 

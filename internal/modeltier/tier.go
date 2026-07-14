@@ -59,14 +59,20 @@ func Model(tier Tier, provider string) string {
 // provider model. The boolean is false when model is already provider-specific
 // and should pass through unchanged.
 func NormalizeAlias(provider, model string) (string, bool) {
+	var tier Tier
 	switch strings.TrimSpace(model) {
 	case "", "sonnet":
-		return Model(Cheap, provider), true
+		tier = Cheap
 	case "haiku":
-		return Model(SuperCheap, provider), true
+		tier = SuperCheap
 	case "opus":
-		return Model(Expensive, provider), true
+		tier = Expensive
 	default:
 		return model, false
 	}
+	resolved := Model(tier, provider)
+	if strings.TrimSpace(resolved) == "" {
+		return model, false
+	}
+	return resolved, true
 }
