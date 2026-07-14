@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -580,6 +581,28 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 		return f.Severity == "error" && strings.Contains(f.Message, "agent.sandbox_mode")
 	}) {
 		t.Fatalf("expected agent.sandbox_mode error in report: %+v", report.Findings)
+	}
+}
+
+func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Agent.SandboxMode = "enforce"
+
+	code, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true)
+	})
+	if code != 0 {
+		t.Fatalf("expected supported-host enforce config to stay non-fatal, got %d:\n%s", code, out)
+	}
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return f.Severity == "error" && strings.Contains(f.Message, "agent.sandbox_mode")
+	}) {
+		t.Fatalf("did not expect sandbox_mode error on %s: %+v", runtime.GOOS, report.Findings)
 	}
 }
 
