@@ -12,6 +12,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	cfg := &RunConfig{sandbox: sandboxSpec{
 		mode:          "enforce",
 		worktree:      "/data/wt",
+		gitMetadata:   []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
 		sandboxHome:   "/data/home",
 		tmp:           "/tmp",
 		sharedCache:   "/data/cache",
@@ -28,7 +29,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		t.Fatalf("expected read-only root + fresh dev/proc prefix, got: %s", joined)
 	}
 	for _, root := range []string{
-		"/data/wt", "/data/home", "/tmp", "/data/cache",
+		"/data/wt", "/data/clones/repo.git/worktrees/task", "/data/clones/repo.git", "/data/home", "/tmp", "/data/cache",
 		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
 		if !strings.Contains(joined, "--bind "+root+" "+root) {
