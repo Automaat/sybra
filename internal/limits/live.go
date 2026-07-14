@@ -27,6 +27,87 @@ const (
 	codexWaitDelay      = 5 * time.Second
 )
 
+type LivePollErrorKind string
+
+const (
+	LivePollErrorKindAuth      LivePollErrorKind = "auth"
+	LivePollErrorKindTransient LivePollErrorKind = "transient"
+	LivePollErrorKindOther     LivePollErrorKind = "other"
+)
+
+type LivePollError struct {
+	Provider   string
+	Kind       LivePollErrorKind
+	StatusCode int
+	Op         string
+	Err        error
+}
+
+func (e *LivePollError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	msg := e.Op
+	if msg == "" {
+		msg = "live poll"
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("%s: HTTP %d", msg, e.StatusCode)
+	}
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", msg, e.Err)
+	}
+	return msg
+}
+
+func (e *LivePollError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type LiveProviderResult struct {
+	Attempted bool
+	Snapshot  bool
+	Err       error
+}
+
+type LiveRefreshResult struct {
+	Providers map[string]LiveProviderResult
+	ImportErr error
+}
+
+func (r LiveRefreshResult) Provider(provider string) LiveProviderResult {
+	if r.Providers == nil {
+		return LiveProviderResult{}
+	}
+	return r.Providers[provider]
+}
+
+func (r LiveRefreshResult) Err() error {
+	errs := make([]error, 0, len(r.Providers)+1)
+	for _, providerResult := range r.Providers {
+		if providerResult.Err != nil {
+			errs = append(errs, providerResult.Err)
+		}
+	}
+	if r.ImportErr != nil {
+		errs = append(errs, r.ImportErr)
+	}
+	return errors.Join(errs...)
+}
+
+func IsLivePollAuthError(err error, provider string) bool {
+	var liveErr *LivePollError
+	return errors.As(err, &liveErr) && liveErr.Provider == provider && liveErr.Kind == LivePollErrorKindAuth
+}
+
+var (
+	claudeCredentialsReader = readClaudeOAuthCredentials
+	claudeUsageHTTPClient   = http.DefaultClient
+)
+
 type claudeCredentials struct {
 	ClaudeAIOAuth struct {
 		AccessToken      string `json:"accessToken"`
@@ -76,47 +157,67 @@ type codexAppServerLimitWindow struct {
 // RefreshLiveSnapshots polls provider account quota APIs and persists any exact
 // snapshots they expose. Missing credentials/CLIs are non-fatal for the other
 // provider; callers can log the returned joined error for diagnostics.
-func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy) error {
+func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy, providers ...string) LiveRefreshResult {
 	now := s.now().UTC()
+	result := LiveRefreshResult{Providers: map[string]LiveProviderResult{}}
 	var snapshots []Snapshot
-	var errs []error
 
-	if providerEnabled(policy, ProviderClaude) {
+	for _, provider := range selectedLiveProviders(policy, providers) {
 		providerCtx, cancel := context.WithTimeout(ctx, liveFetchTimeout)
-		snapshot, ok, err := fetchClaudeLiveSnapshot(providerCtx, now)
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("claude: %w", err))
-		} else if ok {
-			snapshots = append(snapshots, snapshot)
+		providerResult := LiveProviderResult{Attempted: true}
+		switch provider {
+		case ProviderClaude:
+			snapshot, ok, err := fetchClaudeLiveSnapshot(providerCtx, now)
+			cancel()
+			if err != nil {
+				providerResult.Err = fmt.Errorf("%s: %w", ProviderClaude, err)
+			} else if ok {
+				providerResult.Snapshot = true
+				snapshots = append(snapshots, snapshot)
+			}
+		case ProviderCodex:
+			snapshot, ok, err := fetchCodexLiveSnapshot(providerCtx, now)
+			cancel()
+			if err != nil {
+				providerResult.Err = fmt.Errorf("%s: %w", ProviderCodex, err)
+			} else if ok {
+				providerResult.Snapshot = true
+				snapshots = append(snapshots, snapshot)
+			}
+		default:
+			cancel()
 		}
-	}
-
-	if providerEnabled(policy, ProviderCodex) {
-		providerCtx, cancel := context.WithTimeout(ctx, liveFetchTimeout)
-		snapshot, ok, err := fetchCodexLiveSnapshot(providerCtx, now)
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("codex: %w", err))
-		} else if ok {
-			snapshots = append(snapshots, snapshot)
-		}
+		result.Providers[provider] = providerResult
 	}
 
 	if len(snapshots) > 0 {
 		if err := s.Import(nil, snapshots); err != nil {
-			errs = append(errs, err)
+			result.ImportErr = err
 		}
 	}
-	return errors.Join(errs...)
+	return result
 }
 
 func fetchClaudeLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapshot, bool, error) {
-	credentials, ok, err := readClaudeOAuthCredentials(ctx)
+	credentials, ok, err := claudeCredentialsReader(ctx)
 	if err != nil || !ok {
 		return Snapshot{}, false, err
 	}
+	snapshot, ok, err := fetchClaudeUsageSnapshot(ctx, capturedAt, credentials)
+	if err == nil || !IsLivePollAuthError(err, ProviderClaude) {
+		return snapshot, ok, err
+	}
+	refreshed, refreshedOK, refreshErr := claudeCredentialsReader(ctx)
+	if refreshErr != nil {
+		return Snapshot{}, false, errors.Join(err, fmt.Errorf("refresh Claude OAuth credentials: %w", refreshErr))
+	}
+	if !refreshedOK || refreshed.ClaudeAIOAuth.AccessToken == "" || refreshed.ClaudeAIOAuth.AccessToken == credentials.ClaudeAIOAuth.AccessToken {
+		return Snapshot{}, false, err
+	}
+	return fetchClaudeUsageSnapshot(ctx, capturedAt, refreshed)
+}
 
+func fetchClaudeUsageSnapshot(ctx context.Context, capturedAt time.Time, credentials claudeCredentials) (Snapshot, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, claudeOAuthUsageURL, http.NoBody)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -125,13 +226,18 @@ func fetchClaudeLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapsho
 	req.Header.Set("anthropic-beta", claudeOAuthBeta)
 	req.Header.Set("User-Agent", claudeUserAgent)
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := claudeUsageHTTPClient.Do(req)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, false, &LivePollError{
+			Provider: ProviderClaude,
+			Kind:     LivePollErrorKindTransient,
+			Op:       "fetch Claude usage snapshot",
+			Err:      err,
+		}
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return Snapshot{}, false, fmt.Errorf("usage endpoint returned HTTP %d", res.StatusCode)
+		return Snapshot{}, false, classifyClaudeUsageHTTPError(res.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
@@ -146,6 +252,22 @@ func fetchClaudeLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapsho
 		snapshot.PlanType = credentials.ClaudeAIOAuth.RateLimitTier
 	}
 	return snapshot, true, nil
+}
+
+func classifyClaudeUsageHTTPError(statusCode int) error {
+	kind := LivePollErrorKindOther
+	switch {
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		kind = LivePollErrorKindAuth
+	case statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError:
+		kind = LivePollErrorKindTransient
+	}
+	return &LivePollError{
+		Provider:   ProviderClaude,
+		Kind:       kind,
+		StatusCode: statusCode,
+		Op:         "fetch Claude usage snapshot",
+	}
 }
 
 func readClaudeOAuthCredentials(ctx context.Context) (claudeCredentials, bool, error) {
@@ -412,4 +534,25 @@ func clampPercent(v float64) float64 {
 		return 100
 	}
 	return v
+}
+
+func selectedLiveProviders(policy Policy, providers []string) []string {
+	if len(providers) == 0 {
+		providers = []string{ProviderClaude, ProviderCodex}
+	}
+	out := make([]string, 0, len(providers))
+	seen := map[string]struct{}{}
+	for _, provider := range providers {
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		switch provider {
+		case ProviderClaude, ProviderCodex:
+			if providerEnabled(policy, provider) {
+				out = append(out, provider)
+			}
+		}
+	}
+	return out
 }

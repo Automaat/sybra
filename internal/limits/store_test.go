@@ -89,3 +89,37 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 		t.Fatalf("expected only the fresh event on disk, got %+v", p.Events)
 	}
 }
+
+func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceLivePoll,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 88, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.InvalidateLiveExactSnapshot(ProviderClaude); err != nil {
+		t.Fatalf("InvalidateLiveExactSnapshot: %v", err)
+	}
+
+	snap, ok := s.Snapshot(ProviderClaude)
+	if !ok {
+		t.Fatal("snapshot missing after invalidation")
+	}
+	if snap.Confidence != ConfidenceEstimated {
+		t.Fatalf("confidence = %q, want estimated", snap.Confidence)
+	}
+	if snap.Primary == nil || snap.Primary.UsedPercent != 88 {
+		t.Fatalf("primary cycle changed unexpectedly: %+v", snap.Primary)
+	}
+}

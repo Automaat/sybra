@@ -125,6 +125,31 @@ func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 	return s.flushLocked()
 }
 
+// InvalidateLiveExactSnapshot demotes a current live-poll snapshot to
+// estimated confidence so routing falls back to event-based usage counters
+// instead of trusting a now-unreadable exact quota sample.
+func (s *Store) InvalidateLiveExactSnapshot(provider string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	unlock, err := fsutil.LockFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unlock() }()
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	snap, ok := s.snapshots[provider]
+	if !ok || snap.Source != SourceLivePoll || snap.Confidence != ConfidenceExact {
+		return nil
+	}
+	snap.Confidence = ConfidenceEstimated
+	s.snapshots[provider] = snap
+	return s.flushLocked()
+}
+
 // reloadLocked re-reads s.path into s.snapshots/s.events/s.seen.
 // Read-modify-write callers (UpdateSnapshot, RecordUsage, Import) must hold
 // both s.mu and the cross-process file lock across the whole critical

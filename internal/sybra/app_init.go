@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -43,7 +44,129 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-const liveLimitPollInterval = 15 * time.Minute
+const (
+	liveLimitPollInterval       = 15 * time.Minute
+	liveLimitPollAuthBackoffMax = 2 * time.Hour
+)
+
+type liveLimitPollState struct {
+	next               map[string]time.Time
+	claudeAuthFailures int
+	claudeAuthOpen     bool
+}
+
+func newLiveLimitPollState(now time.Time) liveLimitPollState {
+	return liveLimitPollState{
+		next: map[string]time.Time{
+			limits.ProviderClaude: now,
+			limits.ProviderCodex:  now,
+		},
+	}
+}
+
+func (s *liveLimitPollState) dueProviders(now time.Time, policy limits.Policy) []string {
+	out := make([]string, 0, 2)
+	for _, provider := range []string{limits.ProviderClaude, limits.ProviderCodex} {
+		if !liveLimitProviderEnabled(policy, provider) {
+			continue
+		}
+		next := s.next[provider]
+		if next.IsZero() || !next.After(now) {
+			out = append(out, provider)
+		}
+	}
+	return out
+}
+
+func (s *liveLimitPollState) nextWait(now time.Time, policy limits.Policy) time.Duration {
+	next := time.Time{}
+	for _, provider := range []string{limits.ProviderClaude, limits.ProviderCodex} {
+		if !liveLimitProviderEnabled(policy, provider) {
+			continue
+		}
+		candidate := s.next[provider]
+		if candidate.IsZero() || candidate.Before(next) || next.IsZero() {
+			next = candidate
+		}
+	}
+	if next.IsZero() {
+		return liveLimitPollInterval
+	}
+	if !next.After(now) {
+		return 0
+	}
+	return next.Sub(now)
+}
+
+func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefreshResult, limitStore *limits.Store, logger *slog.Logger) {
+	if result.ImportErr != nil {
+		logger.Warn("limits.live_poll", "err", result.ImportErr)
+	}
+	if codex := result.Provider(limits.ProviderCodex); codex.Attempted {
+		s.next[limits.ProviderCodex] = now.Add(liveLimitPollInterval)
+		if codex.Err != nil {
+			logger.Warn("limits.live_poll", "provider", limits.ProviderCodex, "err", codex.Err)
+		}
+	}
+
+	claude := result.Provider(limits.ProviderClaude)
+	if !claude.Attempted {
+		return
+	}
+	if claude.Err == nil {
+		s.next[limits.ProviderClaude] = now.Add(liveLimitPollInterval)
+		if s.claudeAuthOpen {
+			logger.Info("limits.live_poll.claude_auth_recovered")
+		}
+		s.claudeAuthFailures = 0
+		s.claudeAuthOpen = false
+		return
+	}
+	if limits.IsLivePollAuthError(claude.Err, limits.ProviderClaude) {
+		if err := limitStore.InvalidateLiveExactSnapshot(limits.ProviderClaude); err != nil {
+			logger.Warn("limits.live_poll.invalidate", "provider", limits.ProviderClaude, "err", err)
+		}
+		s.claudeAuthFailures++
+		backoff := liveLimitAuthBackoff(s.claudeAuthFailures)
+		s.next[limits.ProviderClaude] = now.Add(backoff)
+		if !s.claudeAuthOpen {
+			logger.Warn("limits.live_poll.claude_auth", "backoff", backoff, "err", claude.Err)
+			s.claudeAuthOpen = true
+		}
+		return
+	}
+	if s.claudeAuthOpen && s.claudeAuthFailures > 0 {
+		s.next[limits.ProviderClaude] = now.Add(liveLimitAuthBackoff(s.claudeAuthFailures))
+	} else {
+		s.next[limits.ProviderClaude] = now.Add(liveLimitPollInterval)
+	}
+	logger.Warn("limits.live_poll", "provider", limits.ProviderClaude, "err", claude.Err)
+}
+
+func liveLimitAuthBackoff(failures int) time.Duration {
+	if failures <= 1 {
+		return liveLimitPollInterval
+	}
+	backoff := liveLimitPollInterval
+	for range failures - 1 {
+		if backoff >= liveLimitPollAuthBackoffMax {
+			return liveLimitPollAuthBackoffMax
+		}
+		backoff *= 2
+	}
+	if backoff > liveLimitPollAuthBackoffMax {
+		return liveLimitPollAuthBackoffMax
+	}
+	return backoff
+}
+
+func liveLimitProviderEnabled(policy limits.Policy, provider string) bool {
+	if len(policy.ProviderEnabled) == 0 {
+		return true
+	}
+	enabled, ok := policy.ProviderEnabled[provider]
+	return ok && enabled
+}
 
 type startupDegradedEvent struct {
 	Subsystem string `json:"subsystem"`
@@ -389,27 +512,36 @@ func (a *App) taskStatusForAgent(taskID string) (string, bool) {
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
 	a.wg.Go(func() {
-		a.refreshLiveLimits(ctx, limitStore, policy)
-		ticker := time.NewTicker(liveLimitPollInterval)
-		defer ticker.Stop()
+		state := newLiveLimitPollState(time.Now().UTC())
 		for {
+			if ctx.Err() != nil {
+				return
+			}
+			now := time.Now().UTC()
+			providers := state.dueProviders(now, policy)
+			if len(providers) > 0 {
+				result := a.refreshLiveLimits(ctx, limitStore, policy, providers...)
+				if ctx.Err() != nil {
+					return
+				}
+				state.recordResult(now, result, limitStore, a.logger)
+				continue
+			}
+			timer := time.NewTimer(state.nextWait(now, policy))
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
 				return
-			case <-ticker.C:
-				a.refreshLiveLimits(ctx, limitStore, policy)
+			case <-timer.C:
 			}
 		}
 	})
 }
 
-func (a *App) refreshLiveLimits(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
-	if err := limitStore.RefreshLiveSnapshots(ctx, policy); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		a.logger.Warn("limits.live_poll", "err", err)
-	}
+func (a *App) refreshLiveLimits(ctx context.Context, limitStore *limits.Store, policy limits.Policy, providers ...string) limits.LiveRefreshResult {
+	return limitStore.RefreshLiveSnapshots(ctx, policy, providers...)
 }
 
 func (a *App) limitPolicy() limits.Policy {
