@@ -13,13 +13,14 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		mode:                   "enforce",
 		worktree:               "/data/wt",
 		gitMetadata:            []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
-		gitShared:              []string{"/data/clones/repo.git/objects"},
+		gitReadonly:            []string{"/data/clones/repo.git/objects"},
 		sandboxHome:            "/data/home",
 		tmp:                    "/tmp",
 		sharedCache:            "/data/cache",
 		gitAdminDir:            "/data/clones/repo.git/worktrees/task",
 		gitCommonDir:           "/data/clones/repo.git",
 		gitWorktrees:           "/data/clones/repo.git/worktrees",
+		gitObjectDir:           "/data/clones/repo.git/objects",
 		claudeState:            "/data/sybra/claude",
 		codexState:             "/data/sybra/codex",
 		copilotState:           "/data/sybra/copilot",
@@ -32,6 +33,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		gitRemoteLogDir:        "/data/clones/repo.git/logs/refs/remotes",
 		gitTagRefDir:           "/data/clones/repo.git/refs/tags",
 		gitTagLogDir:           "/data/clones/repo.git/logs/refs/tags",
+		gitOverlayObjectDir:    "/data/home/.sybra-git-overlay/objects",
 		gitOverlayRefDir:       "/data/home/.sybra-git-overlay/refs",
 		gitOverlayLogDir:       "/data/home/.sybra-git-overlay/logs",
 		gitOverlayRefFile:      "/data/home/.sybra-git-overlay/refs/task",
@@ -50,7 +52,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		t.Fatalf("expected read-only root + fresh dev/proc bwrap args, got: %s", joined)
 	}
 	for _, root := range []string{
-		"/data/wt", "/data/clones/repo.git/objects",
+		"/data/wt",
 		"/data/home", "/tmp", "/data/cache",
 		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
@@ -58,14 +60,23 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 			t.Errorf("write root %q not bound read-write: %s", root, joined)
 		}
 	}
+	if !strings.Contains(joined, "--ro-bind /data/clones/repo.git/objects /data/clones/repo.git/objects") {
+		t.Fatalf("shared object dir must stay read-only: %s", joined)
+	}
 	if strings.Contains(joined, "--bind /data/clones/repo.git /data/clones/repo.git") {
 		t.Fatalf("shared git common dir must not be reopened read-write: %s", joined)
+	}
+	if strings.Contains(joined, "--bind /data/clones/repo.git/objects /data/clones/repo.git/objects") {
+		t.Fatalf("shared object dir must not be reopened read-write: %s", joined)
 	}
 	if strings.Contains(joined, "--bind /data/clones/repo.git/refs/heads/fix /data/clones/repo.git/refs/heads/fix") {
 		t.Fatalf("shared branch ref dir must not be reopened read-write: %s", joined)
 	}
 	if !strings.Contains(joined, "--bind /data/clones/repo.git/worktrees/task /data/clones/repo.git/worktrees/task") {
 		t.Fatalf("task git admin dir must be reopened read-write: %s", joined)
+	}
+	if !strings.Contains(joined, "sync_git_objects") || !strings.Contains(joined, shellQuote("/data/home/.sybra-git-overlay/objects")) || !strings.Contains(joined, shellQuote("/data/clones/repo.git/objects")) {
+		t.Fatalf("sync wrapper must merge task-private objects back into the shared clone: %s", joined)
 	}
 	if !strings.Contains(joined, "--ro-bind /data/clones/repo.git/worktrees /data/clones/repo.git/worktrees") {
 		t.Fatalf("shared worktrees dir must remain read-only: %s", joined)

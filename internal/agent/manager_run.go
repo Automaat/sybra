@@ -375,6 +375,10 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox git branch overlay: %w", err)
 	}
+	if err := injectSandboxGitEnv(cfg, gitRoots, gitOverlay); err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox git object env: %w", err)
+	}
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -443,6 +447,7 @@ func enforceSpec(
 		gitAdminDir:            gitRoots.adminDir,
 		gitCommonDir:           gitRoots.commonDir,
 		gitWorktrees:           gitRoots.worktreesDir,
+		gitObjectDir:           gitRoots.objectDir,
 		gitBranchRef:           gitRoots.branchRef,
 		gitBranchRefDir:        gitRoots.branchRefDir,
 		gitBranchLogDir:        gitRoots.branchLogDir,
@@ -450,6 +455,7 @@ func enforceSpec(
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
 		gitTagLogDir:           gitRoots.tagLogDir,
+		gitOverlayObjectDir:    gitOverlay.objectDir,
 		gitOverlayRefDir:       gitOverlay.branchRefDir,
 		gitOverlayLogDir:       gitOverlay.branchLogDir,
 		gitOverlayRefFile:      gitOverlay.branchRefFile,
@@ -463,6 +469,21 @@ func enforceSpec(
 		opencodeState:          agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
 		toolCache:              agentStateRoot(".cache", sandboxHome),
 	}
+}
+
+func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
+	if roots.objectDir == "" && overlay.objectDir == "" {
+		return nil
+	}
+	if roots.objectDir == "" || overlay.objectDir == "" {
+		return fmt.Errorf("incomplete sandbox git object paths: shared=%q overlay=%q", roots.objectDir, overlay.objectDir)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"GIT_OBJECT_DIRECTORY="+overlay.objectDir,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+roots.objectDir,
+	)
+	return nil
 }
 
 func (m *Manager) resolveGitMetadataRoots(taskID, worktree string) []string {

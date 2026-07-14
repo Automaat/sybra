@@ -18,6 +18,7 @@ type gitSandboxRoots struct {
 	adminDir       string
 	commonDir      string
 	worktreesDir   string
+	objectDir      string
 	branchRef      string
 	branchRefDir   string
 	branchLogDir   string
@@ -30,8 +31,8 @@ type gitSandboxRoots struct {
 }
 
 type gitSharedPaths struct {
-	writable     []string
 	readonly     []string
+	objectDir    string
 	branchRef    string
 	branchRefDir string
 	branchLogDir string
@@ -69,6 +70,7 @@ func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoo
 	if err != nil {
 		return gitSandboxRoots{}, err
 	}
+	roots.objectDir = sharedPaths.objectDir
 	roots.branchRef = sharedPaths.branchRef
 	roots.branchRefDir = sharedPaths.branchRefDir
 	roots.branchLogDir = sharedPaths.branchLogDir
@@ -76,7 +78,6 @@ func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoo
 	roots.remoteLogDir = sharedPaths.remoteLogDir
 	roots.tagRefDir = sharedPaths.tagRefDir
 	roots.tagLogDir = sharedPaths.tagLogDir
-	roots.sharedWritable = sharedPaths.writable
 	roots.sharedReadonly = sharedPaths.readonly
 	return roots, nil
 }
@@ -88,12 +89,12 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 		return gitSharedPaths{}, fmt.Errorf("resolve current branch ref: %w", err)
 	}
 	paths.branchRef = branchRef
-	addExisting := func(label string, args ...string) error {
+	addReadonlyExisting := func(label string, args ...string) error {
 		path, err := gitPath(ctx, worktree, args...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
-		paths.writable = append(paths.writable, path)
+		paths.readonly = append(paths.readonly, path)
 		return nil
 	}
 	resolveDir := func(label string, rel string) (string, error) {
@@ -109,8 +110,11 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 	}{
 		{label: "resolve git objects dir", args: []string{"--git-path", "objects"}},
 	} {
-		if err := addExisting(spec.label, spec.args...); err != nil {
+		if err := addReadonlyExisting(spec.label, spec.args...); err != nil {
 			return gitSharedPaths{}, err
+		}
+		if spec.label == "resolve git objects dir" {
+			paths.objectDir = paths.readonly[len(paths.readonly)-1]
 		}
 	}
 	branchRefDir, err := ensureGitPathDir(ctx, worktree, filepath.Dir(branchRef))
@@ -143,12 +147,12 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 		}
 		*spec.dst = path
 	}
-	paths.writable = dedupeRoots(paths.writable...)
 	paths.readonly = dedupeRoots(paths.readonly...)
 	return paths, nil
 }
 
 type gitSandboxOverlay struct {
+	objectDir     string
 	branchRefDir  string
 	branchLogDir  string
 	branchRefFile string
@@ -159,18 +163,24 @@ type gitSandboxOverlay struct {
 }
 
 func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
-	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
-		return gitSandboxOverlay{}, nil
-	}
-	head, err := gitHeadCommit(ctx, worktree)
-	if err != nil {
-		return gitSandboxOverlay{}, err
-	}
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
 	if err := os.RemoveAll(base); err != nil {
 		return gitSandboxOverlay{}, fmt.Errorf("reset %s: %w", base, err)
 	}
 	overlay := gitSandboxOverlay{}
+	if roots.objectDir != "" {
+		var err error
+		if overlay.objectDir, err = prepareGitObjectOverlay(base); err != nil {
+			return gitSandboxOverlay{}, err
+		}
+	}
+	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
+		return overlay, nil
+	}
+	head, err := gitHeadCommit(ctx, worktree)
+	if err != nil {
+		return gitSandboxOverlay{}, err
+	}
 	if overlay.branchRefDir, err = seedGitOverlayDir(base, "branch-refs", roots.branchRefDir); err != nil {
 		return gitSandboxOverlay{}, err
 	}
@@ -207,6 +217,20 @@ func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string,
 	}
 	overlay.branchRefFile = canonRefFile
 	return overlay, nil
+}
+
+func prepareGitObjectOverlay(base string) (string, error) {
+	dst := filepath.Join(base, "objects")
+	for _, dir := range []string{dst, filepath.Join(dst, "info"), filepath.Join(dst, "pack")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+	canon, err := canonicalizeRoot(dst)
+	if err != nil {
+		return "", err
+	}
+	return canon, nil
 }
 
 func seedGitOverlayDir(base, name, src string) (string, error) {

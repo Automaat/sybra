@@ -61,6 +61,7 @@ type sandboxSpec struct {
 	gitAdminDir  string
 	gitCommonDir string
 	gitWorktrees string
+	gitObjectDir string
 
 	gitBranchRef           string
 	gitBranchRefDir        string
@@ -69,6 +70,7 @@ type sandboxSpec struct {
 	gitRemoteLogDir        string
 	gitTagRefDir           string
 	gitTagLogDir           string
+	gitOverlayObjectDir    string
 	gitOverlayRefDir       string
 	gitOverlayLogDir       string
 	gitOverlayRefFile      string
