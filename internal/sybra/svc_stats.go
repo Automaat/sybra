@@ -52,17 +52,22 @@ func aggregateTasksDone(resp *stats.StatsResponse, done []doneTaskClosure, now t
 
 func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTaskClosure {
 	byID := map[string]doneTaskClosure{}
+	liveIDs := map[string]struct{}{}
 	for i := range list {
-		if list[i].Status != task.StatusDone {
-			continue
-		}
 		id := list[i].ID
 		if id == "" {
 			id = "__live_empty_id_" + time.Duration(i).String()
 		}
+		liveIDs[id] = struct{}{}
+		if list[i].Status != task.StatusDone {
+			continue
+		}
 		byID[id] = doneTaskClosure{id: id, closedAt: taskCloseTime(list[i])}
 	}
 	for _, d := range auditDoneTaskClosures(auditDir, now) {
+		if _, ok := liveIDs[d.id]; ok {
+			continue
+		}
 		if _, ok := byID[d.id]; !ok {
 			byID[d.id] = d
 		}

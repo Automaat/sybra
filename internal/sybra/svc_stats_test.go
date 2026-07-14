@@ -177,6 +177,15 @@ func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.
 		UpdatedAt: liveClosed,
 		ClosedAt:  &liveClosed,
 	})
+	writeStatsTask(t, tasksDir, task.Task{
+		ID:        "live-reopened",
+		Title:     "live reopened task",
+		Status:    task.StatusTodo,
+		TaskType:  task.TaskTypeNormal,
+		AgentMode: task.AgentModeHeadless,
+		CreatedAt: liveClosed.Add(-2 * time.Hour),
+		UpdatedAt: liveClosed,
+	})
 	deletedClosed := liveClosed.Add(-10 * time.Minute)
 	reopenedClosed := liveClosed.Add(-20 * time.Minute)
 	writeStatsAuditFile(t, auditDir, deletedClosed.Format(time.DateOnly)+".ndjson", []audit.Event{
@@ -198,13 +207,19 @@ func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.
 			TaskID:    "reopened",
 			Data:      map[string]any{"from": "done", "to": "todo"},
 		},
+		{
+			Timestamp: liveClosed.Add(-30 * time.Minute),
+			Type:      audit.EventTaskStatusChanged,
+			TaskID:    "live-reopened",
+			Data:      map[string]any{"from": "in-review", "to": "done"},
+		},
 	})
 
 	resp := (&StatsService{stats: statsStore, tasks: taskMgr, auditDir: auditDir}).GetStats()
 	if resp.AllTime.TasksDone != 2 {
-		t.Fatalf("AllTime.TasksDone = %d, want 2 (live done + deleted done, excluding reopened)", resp.AllTime.TasksDone)
+		t.Fatalf("AllTime.TasksDone = %d, want 2 (live done + deleted done, excluding reopened/live non-done)", resp.AllTime.TasksDone)
 	}
-	wantDay := liveClosed.In(time.Now().Location()).Format(time.DateOnly)
+	wantDay := liveClosed.In(now.Location()).Format(time.DateOnly)
 	if len(resp.ClosedTasksDaily) != 1 || resp.ClosedTasksDaily[0].Date != wantDay || resp.ClosedTasksDaily[0].Count != 2 {
 		t.Fatalf("ClosedTasksDaily = %+v, want one %s bucket with 2", resp.ClosedTasksDaily, wantDay)
 	}
