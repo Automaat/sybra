@@ -1187,8 +1187,8 @@ func isCodexObjectSchema(schema map[string]any) bool {
 
 // TestBuiltinTestingTask_NotestStillRunsTester asserts the real invariant:
 // notest only downgrades evidence requirements (app-start exemption), it
-// must never bypass the test-runner. skip_testing exists (for `trivial`) but
-// notest-tagged tasks must still route to run_test.
+// must never bypass the test-runner. skip_testing exists for explicit skip
+// tags, but notest-tagged tasks must still route to run_test.
 func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 	t.Parallel()
 
@@ -1240,6 +1240,29 @@ func TestBuiltinTestingTask_TrivialSkipsTester(t *testing.T) {
 	}
 	if skip.Type != "set_status" || skip.Config.Status != "ready-pr" {
 		t.Fatalf("skip_testing = %+v, want set_status to ready-pr", skip)
+	}
+}
+
+func TestBuiltinTestingTask_SkipTestingSkipsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	maybe := testingDef.StepByID("maybe_test")
+	if maybe == nil {
+		t.Fatal("maybe_test step not found in testing-task")
+		return
+	}
+	var gotBranch bool
+	for _, n := range maybe.Next {
+		if n.When != nil && n.When.Field == "task.tags" && n.When.Operator == "contains" && n.When.Value == "skip-testing" {
+			gotBranch = true
+			if n.GoTo != "skip_testing" {
+				t.Fatalf("skip-testing branch goto = %q, want skip_testing", n.GoTo)
+			}
+		}
+	}
+	if !gotBranch {
+		t.Fatal("maybe_test has no branch for task.tags contains skip-testing")
 	}
 }
 

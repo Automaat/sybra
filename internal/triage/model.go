@@ -55,14 +55,17 @@ var (
 	// trivial has a materially larger blast radius than noplan — a false
 	// positive skips the only two verification gates (review + test) before a
 	// PR opens, and a "small" bug fix is exactly the case where a subtle
-	// regression is likely to slip past both. `notest` is deliberately not in
+	// regression is likely to slip past both. `skip-testing` skips only the
+	// testing workflow and preserves the prior review gate; it is accepted and
+	// preserved only when set by a human/orchestrator, and ValidateVerdict
+	// strips classifier-emitted instances. `notest` is deliberately not in
 	// this list — it only downgrades evidence requirements (app-start
 	// exemption); it never skips the tester. `notumbrella` opts a task out of
 	// the ☂️-title umbrella guard (see Apply) for the rare genuine case where a
 	// task legitimately keeps task_type=normal despite an umbrella-shaped title
 	// or "umbrella" tag. It is accepted/preserved when already present on the
 	// task, but the classifier prompt never emits it.
-	escapeHatchTags = []string{"noplan", "nocritic", "trivial", "notumbrella"}
+	escapeHatchTags = []string{"noplan", "nocritic", "trivial", "skip-testing", "notumbrella"}
 
 	// tagAliases normalize common abbreviations into the canonical tag.
 	tagAliases = map[string]string{
@@ -140,6 +143,10 @@ func ValidateVerdict(v *Verdict) error {
 	// the caller can log them but the verdict is still usable.
 	norm, _ := NormalizeTags(v.Tags)
 	v.Tags = norm
+
+	// skip-testing is a manual/orchestrator escape hatch, not classifier
+	// output. Existing task tags are preserved in Apply; verdict tags are not.
+	v.Tags = slices.DeleteFunc(v.Tags, func(tag string) bool { return tag == "skip-testing" })
 
 	// Deterministic floor on classifier-emitted noplan. The prompt tells the
 	// model to add noplan only for small, non-feature work, but the model is

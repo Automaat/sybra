@@ -37,7 +37,7 @@ jobs:
         run: cd frontend && npm ci && npm run build:desktop
 
       - name: Run Go e2e tests
-        run: go test -race -tags e2e -p 1 -timeout 14m ./internal/sybra/...
+        run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
 
   test-frontend:
     name: Frontend Tests

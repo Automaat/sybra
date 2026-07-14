@@ -111,6 +111,32 @@ func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
 	}
 }
 
+func TestApplyPreservesHumanSetSkipTestingTag(t *testing.T) {
+	mgr := newTestManager(t)
+	created, err := mgr.Create("remove obsolete flag", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A human/orchestrator wants review to run but adversarial testing skipped.
+	created.Tags = []string{"skip-testing"}
+
+	// This verdict omits skip-testing; Apply must preserve the pre-set escape hatch.
+	v := Verdict{
+		Title: "chore(config): remove obsolete flag",
+		Tags:  []string{"backend", "small", "chore"},
+		Size:  "small",
+		Type:  "chore",
+		Mode:  "headless",
+	}
+	updated, err := Apply(mgr, created, v, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !slices.Contains(updated.Tags, "skip-testing") {
+		t.Errorf("skip-testing escape-hatch tag dropped by triage; got %v", updated.Tags)
+	}
+}
+
 func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	mgr := newTestManager(t)
 	created, err := mgr.Create("gated child task", "", task.AgentModeHeadless)
