@@ -188,13 +188,21 @@ func extractAcceptanceCriteria(body string) []string {
 			current.WriteString(item)
 			continue
 		}
-		if current.Len() > 0 && trimmed != "" {
+		if current.Len() > 0 && trimmed != "" && isIndentedMarkdownContinuation(line) {
 			current.WriteByte(' ')
 			current.WriteString(trimmed)
+			continue
+		}
+		if trimmed != "" {
+			flush()
 		}
 	}
 	flush()
 	return criteria
+}
+
+func isIndentedMarkdownContinuation(line string) bool {
+	return strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")
 }
 
 func isMarkdownHeading(line string) bool {
@@ -214,7 +222,7 @@ func isAcceptanceCriteriaHeading(line string) bool {
 func listItemText(line string) (string, bool) {
 	for _, prefix := range []string{"- ", "* ", "+ "} {
 		if text, ok := strings.CutPrefix(line, prefix); ok {
-			return strings.TrimSpace(text), true
+			return normalizeListItemText(text), true
 		}
 	}
 	for i, r := range line {
@@ -222,11 +230,21 @@ func listItemText(line string) (string, bool) {
 			continue
 		}
 		if r == '.' && i > 0 && len(line) > i+1 && line[i+1] == ' ' {
-			return strings.TrimSpace(line[i+2:]), true
+			return normalizeListItemText(line[i+2:]), true
 		}
 		break
 	}
 	return "", false
+}
+
+func normalizeListItemText(text string) string {
+	text = strings.TrimSpace(text)
+	for _, marker := range []string{"[ ]", "[x]", "[X]"} {
+		if rest, ok := strings.CutPrefix(text, marker); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return text
 }
 
 func criterionCovered(source string, contractCriteria []string) bool {

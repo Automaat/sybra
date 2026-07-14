@@ -203,6 +203,37 @@ func TestValidatePlanContractForTask_AcceptsCopiedSourceAcceptanceCriteria(t *te
 	}
 }
 
+func TestValidatePlanContractForTask_AcceptsTaskCheckboxCriteria(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"- [ ] Stats can group cost, duration, failures, and outcomes by actual skill execution mode.\n" +
+		"- [ ] No work-derived content or absolute work paths are exposed publicly.\n" +
+		"- [ ] Legacy data remains readable.\n\n" +
+		"**Test approach:** Add focused unit tests for the decision logic.\n"
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+		`"acceptance_criteria": [`+
+			`"Stats can group cost, duration, failures, and outcomes by actual skill execution mode.", `+
+			`"No work-derived content or absolute work paths are exposed publicly.", `+
+			`"Legacy data remains readable."]`, 1)
+
+	if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+}
+
+func TestValidatePlanContractForTask_DoesNotFoldLooselyIndentedParagraphIntoCriterion(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"- [ ] Legacy data remains readable.\n" +
+		" This is a note paragraph, not part of the criterion.\n"
+	contract := strings.Replace(validPlanContract("fa6919fc"),
+		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+		`"acceptance_criteria": ["Legacy data remains readable."]`, 1)
+
+	if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+}
+
 func TestValidatePlanContractForTask_RequiresVerbatimSourceAcceptanceCriteria(t *testing.T) {
 	taskBody := "## Acceptance Criteria\n\n" +
 		"- Preserve Case exactly.\n"
