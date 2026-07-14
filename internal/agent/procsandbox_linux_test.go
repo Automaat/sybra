@@ -10,27 +10,35 @@ import (
 
 func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	cfg := &RunConfig{sandbox: sandboxSpec{
-		mode:              "enforce",
-		worktree:          "/data/wt",
-		gitMetadata:       []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
-		gitShared:         []string{"/data/clones/repo.git/objects", "/data/clones/repo.git/refs/remotes"},
-		sandboxHome:       "/data/home",
-		tmp:               "/tmp",
-		sharedCache:       "/data/cache",
-		gitAdminDir:       "/data/clones/repo.git/worktrees/task",
-		gitCommonDir:      "/data/clones/repo.git",
-		gitWorktrees:      "/data/clones/repo.git/worktrees",
-		claudeState:       "/data/sybra/claude",
-		codexState:        "/data/sybra/codex",
-		copilotState:      "/data/sybra/copilot",
-		opencodeState:     "/data/sybra/opencode",
-		toolCache:         "/home/sybra/.cache",
-		gitBranchRef:      "refs/heads/fix/task",
-		gitBranchRefDir:   "/data/clones/repo.git/refs/heads/fix",
-		gitBranchLogDir:   "/data/clones/repo.git/logs/refs/heads/fix",
-		gitOverlayRefDir:  "/data/home/.sybra-git-overlay/refs",
-		gitOverlayLogDir:  "/data/home/.sybra-git-overlay/logs",
-		gitOverlayRefFile: "/data/home/.sybra-git-overlay/refs/task",
+		mode:                   "enforce",
+		worktree:               "/data/wt",
+		gitMetadata:            []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
+		gitShared:              []string{"/data/clones/repo.git/objects"},
+		sandboxHome:            "/data/home",
+		tmp:                    "/tmp",
+		sharedCache:            "/data/cache",
+		gitAdminDir:            "/data/clones/repo.git/worktrees/task",
+		gitCommonDir:           "/data/clones/repo.git",
+		gitWorktrees:           "/data/clones/repo.git/worktrees",
+		claudeState:            "/data/sybra/claude",
+		codexState:             "/data/sybra/codex",
+		copilotState:           "/data/sybra/copilot",
+		opencodeState:          "/data/sybra/opencode",
+		toolCache:              "/home/sybra/.cache",
+		gitBranchRef:           "refs/heads/fix/task",
+		gitBranchRefDir:        "/data/clones/repo.git/refs/heads/fix",
+		gitBranchLogDir:        "/data/clones/repo.git/logs/refs/heads/fix",
+		gitRemoteRefDir:        "/data/clones/repo.git/refs/remotes",
+		gitRemoteLogDir:        "/data/clones/repo.git/logs/refs/remotes",
+		gitTagRefDir:           "/data/clones/repo.git/refs/tags",
+		gitTagLogDir:           "/data/clones/repo.git/logs/refs/tags",
+		gitOverlayRefDir:       "/data/home/.sybra-git-overlay/refs",
+		gitOverlayLogDir:       "/data/home/.sybra-git-overlay/logs",
+		gitOverlayRefFile:      "/data/home/.sybra-git-overlay/refs/task",
+		gitOverlayRemoteRefDir: "/data/home/.sybra-git-overlay/remote-refs",
+		gitOverlayRemoteLogDir: "/data/home/.sybra-git-overlay/remote-logs",
+		gitOverlayTagRefDir:    "/data/home/.sybra-git-overlay/tag-refs",
+		gitOverlayTagLogDir:    "/data/home/.sybra-git-overlay/tag-logs",
 	}}
 	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
 	if name != "/bin/sh" {
@@ -42,7 +50,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		t.Fatalf("expected read-only root + fresh dev/proc bwrap args, got: %s", joined)
 	}
 	for _, root := range []string{
-		"/data/wt", "/data/clones/repo.git/objects", "/data/clones/repo.git/refs/remotes",
+		"/data/wt", "/data/clones/repo.git/objects",
 		"/data/home", "/tmp", "/data/cache",
 		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
@@ -67,6 +75,28 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--bind /data/home/.sybra-git-overlay/logs /data/clones/repo.git/logs/refs/heads/fix") {
 		t.Fatalf("task branch log overlay must cover the shared branch log dir: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind /data/home/.sybra-git-overlay/remote-refs /data/clones/repo.git/refs/remotes") {
+		t.Fatalf("remote refs must be isolated behind a task-private overlay: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind /data/home/.sybra-git-overlay/remote-logs /data/clones/repo.git/logs/refs/remotes") {
+		t.Fatalf("remote logs must be isolated behind a task-private overlay: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind /data/home/.sybra-git-overlay/tag-refs /data/clones/repo.git/refs/tags") {
+		t.Fatalf("tag refs must be isolated behind a task-private overlay: %s", joined)
+	}
+	if !strings.Contains(joined, "--bind /data/home/.sybra-git-overlay/tag-logs /data/clones/repo.git/logs/refs/tags") {
+		t.Fatalf("tag logs must be isolated behind a task-private overlay: %s", joined)
+	}
+	for _, root := range []string{
+		"/data/clones/repo.git/refs/remotes",
+		"/data/clones/repo.git/logs/refs/remotes",
+		"/data/clones/repo.git/refs/tags",
+		"/data/clones/repo.git/logs/refs/tags",
+	} {
+		if strings.Contains(joined, "--bind "+root+" "+root) {
+			t.Fatalf("shared git refs dir %q must not be reopened read-write: %s", root, joined)
+		}
 	}
 	if !strings.Contains(joined, "update-ref 'refs/heads/fix/task'") {
 		t.Fatalf("sync wrapper must update only the current branch ref: %s", joined)

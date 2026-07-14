@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,10 @@ type gitSandboxRoots struct {
 	branchRef      string
 	branchRefDir   string
 	branchLogDir   string
+	remoteRefDir   string
+	remoteLogDir   string
+	tagRefDir      string
+	tagLogDir      string
 	sharedWritable []string
 	sharedReadonly []string
 }
@@ -29,6 +35,10 @@ type gitSharedPaths struct {
 	branchRef    string
 	branchRefDir string
 	branchLogDir string
+	remoteRefDir string
+	remoteLogDir string
+	tagRefDir    string
+	tagLogDir    string
 }
 
 func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoots, error) {
@@ -62,6 +72,10 @@ func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoo
 	roots.branchRef = sharedPaths.branchRef
 	roots.branchRefDir = sharedPaths.branchRefDir
 	roots.branchLogDir = sharedPaths.branchLogDir
+	roots.remoteRefDir = sharedPaths.remoteRefDir
+	roots.remoteLogDir = sharedPaths.remoteLogDir
+	roots.tagRefDir = sharedPaths.tagRefDir
+	roots.tagLogDir = sharedPaths.tagLogDir
 	roots.sharedWritable = sharedPaths.writable
 	roots.sharedReadonly = sharedPaths.readonly
 	return roots, nil
@@ -82,13 +96,12 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 		paths.writable = append(paths.writable, path)
 		return nil
 	}
-	addDir := func(label string, rel string) error {
+	resolveDir := func(label string, rel string) (string, error) {
 		path, err := ensureGitPathDir(ctx, worktree, rel)
 		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
+			return "", fmt.Errorf("%s: %w", label, err)
 		}
-		paths.writable = append(paths.writable, path)
-		return nil
+		return path, nil
 	}
 	for _, spec := range []struct {
 		label string
@@ -117,79 +130,157 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 	for _, spec := range []struct {
 		label string
 		rel   string
+		dst   *string
 	}{
-		{label: "resolve remote refs dir", rel: filepath.Join("refs", "remotes")},
-		{label: "resolve remote logs dir", rel: filepath.Join("logs", "refs", "remotes")},
-		{label: "resolve tag refs dir", rel: filepath.Join("refs", "tags")},
-		{label: "resolve tag logs dir", rel: filepath.Join("logs", "refs", "tags")},
+		{label: "resolve remote refs dir", rel: filepath.Join("refs", "remotes"), dst: &paths.remoteRefDir},
+		{label: "resolve remote logs dir", rel: filepath.Join("logs", "refs", "remotes"), dst: &paths.remoteLogDir},
+		{label: "resolve tag refs dir", rel: filepath.Join("refs", "tags"), dst: &paths.tagRefDir},
+		{label: "resolve tag logs dir", rel: filepath.Join("logs", "refs", "tags"), dst: &paths.tagLogDir},
 	} {
-		if err := addDir(spec.label, spec.rel); err != nil {
+		path, err := resolveDir(spec.label, spec.rel)
+		if err != nil {
 			return gitSharedPaths{}, err
 		}
+		*spec.dst = path
 	}
 	paths.writable = dedupeRoots(paths.writable...)
 	paths.readonly = dedupeRoots(paths.readonly...)
 	return paths, nil
 }
 
-type gitBranchOverlay struct {
-	refDir  string
-	logDir  string
-	refFile string
+type gitSandboxOverlay struct {
+	branchRefDir  string
+	branchLogDir  string
+	branchRefFile string
+	remoteRefDir  string
+	remoteLogDir  string
+	tagRefDir     string
+	tagLogDir     string
 }
 
-func prepareGitBranchOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitBranchOverlay, error) {
+func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
 	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
-		return gitBranchOverlay{}, nil
+		return gitSandboxOverlay{}, nil
 	}
 	head, err := gitHeadCommit(ctx, worktree)
 	if err != nil {
-		return gitBranchOverlay{}, err
+		return gitSandboxOverlay{}, err
 	}
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
 	if err := os.RemoveAll(base); err != nil {
-		return gitBranchOverlay{}, fmt.Errorf("reset %s: %w", base, err)
+		return gitSandboxOverlay{}, fmt.Errorf("reset %s: %w", base, err)
 	}
-	refDir := filepath.Join(base, "refs")
-	logDir := filepath.Join(base, "logs")
-	if err := os.MkdirAll(refDir, 0o755); err != nil {
-		return gitBranchOverlay{}, fmt.Errorf("mkdir %s: %w", refDir, err)
+	overlay := gitSandboxOverlay{}
+	if overlay.branchRefDir, err = seedGitOverlayDir(base, "branch-refs", roots.branchRefDir); err != nil {
+		return gitSandboxOverlay{}, err
 	}
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return gitBranchOverlay{}, fmt.Errorf("mkdir %s: %w", logDir, err)
+	if overlay.branchLogDir, err = seedGitOverlayDir(base, "branch-logs", roots.branchLogDir); err != nil {
+		return gitSandboxOverlay{}, err
 	}
-	refFile := filepath.Join(refDir, filepath.Base(roots.branchRef))
-	if err := os.WriteFile(refFile, []byte(head+"\n"), 0o644); err != nil {
-		return gitBranchOverlay{}, fmt.Errorf("write %s: %w", refFile, err)
+	overlay.branchRefFile = filepath.Join(overlay.branchRefDir, filepath.Base(roots.branchRef))
+	if err := os.WriteFile(overlay.branchRefFile, []byte(head+"\n"), 0o644); err != nil {
+		return gitSandboxOverlay{}, fmt.Errorf("write %s: %w", overlay.branchRefFile, err)
 	}
-	logFile := filepath.Join(logDir, filepath.Base(roots.branchRef))
-	if src, err := gitPathRaw(ctx, worktree, "--git-path", filepath.Join("logs", roots.branchRef)); err == nil {
-		if data, readErr := os.ReadFile(src); readErr == nil {
-			if writeErr := os.WriteFile(logFile, data, 0o644); writeErr != nil {
-				return gitBranchOverlay{}, fmt.Errorf("write %s: %w", logFile, writeErr)
-			}
-		}
-	}
+	logFile := filepath.Join(overlay.branchLogDir, filepath.Base(roots.branchRef))
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		if err := os.WriteFile(logFile, nil, 0o644); err != nil {
-			return gitBranchOverlay{}, fmt.Errorf("write %s: %w", logFile, err)
+			return gitSandboxOverlay{}, fmt.Errorf("write %s: %w", logFile, err)
 		}
 	} else if err != nil {
-		return gitBranchOverlay{}, err
+		return gitSandboxOverlay{}, err
 	}
-	canonRefDir, err := canonicalizeRoot(refDir)
+	if overlay.remoteRefDir, err = seedGitOverlayDir(base, "remote-refs", roots.remoteRefDir); err != nil {
+		return gitSandboxOverlay{}, err
+	}
+	if overlay.remoteLogDir, err = seedGitOverlayDir(base, "remote-logs", roots.remoteLogDir); err != nil {
+		return gitSandboxOverlay{}, err
+	}
+	if overlay.tagRefDir, err = seedGitOverlayDir(base, "tag-refs", roots.tagRefDir); err != nil {
+		return gitSandboxOverlay{}, err
+	}
+	if overlay.tagLogDir, err = seedGitOverlayDir(base, "tag-logs", roots.tagLogDir); err != nil {
+		return gitSandboxOverlay{}, err
+	}
+	canonRefFile, err := canonicalizeRoot(overlay.branchRefFile)
 	if err != nil {
-		return gitBranchOverlay{}, err
+		return gitSandboxOverlay{}, err
 	}
-	canonLogDir, err := canonicalizeRoot(logDir)
+	overlay.branchRefFile = canonRefFile
+	return overlay, nil
+}
+
+func seedGitOverlayDir(base, name, src string) (string, error) {
+	dst := filepath.Join(base, name)
+	if err := copyGitOverlayTree(src, dst); err != nil {
+		return "", fmt.Errorf("seed %s overlay from %s: %w", name, src, err)
+	}
+	canon, err := canonicalizeRoot(dst)
 	if err != nil {
-		return gitBranchOverlay{}, err
+		return "", err
 	}
-	canonRefFile, err := canonicalizeRoot(refFile)
+	return canon, nil
+}
+
+func copyGitOverlayTree(src, dst string) error {
+	info, err := os.Stat(src)
 	if err != nil {
-		return gitBranchOverlay{}, err
+		return err
 	}
-	return gitBranchOverlay{refDir: canonRefDir, logDir: canonLogDir, refFile: canonRefFile}, nil
+	if !info.IsDir() {
+		return fmt.Errorf("%q is not a directory", src)
+	}
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst, err)
+	}
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("mkdir %s: %w", target, err)
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsupported symlinked git metadata entry %s", path)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported git metadata entry %s", path)
+		}
+		return copyGitOverlayFile(path, target, info.Mode().Perm())
+	})
+}
+
+func copyGitOverlayFile(src, dst string, mode fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+	}
+	return nil
 }
 
 func gitHeadCommit(ctx context.Context, worktree string) (string, error) {

@@ -59,6 +59,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 
 	h := newSandboxGitHarness(t)
 	h.advanceUpstreamMain(t)
+	h.pushUpstreamTag(t, "upstream-v1")
 	siblingAdmin := h.gitPath(t, h.siblingWt, "--git-dir")
 	siblingBranchRef := h.gitRefPath(t, h.siblingWt)
 	siblingWant := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling"))
@@ -91,7 +92,9 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		"echo task > task.txt",
 		"git add task.txt",
 		"git commit -m 'task change'",
-		"git fetch origin",
+		"git fetch --tags origin",
+		"git show-ref --verify --quiet refs/tags/upstream-v1",
+		`echo "FETCH_TAG_LOCAL"`,
 		"git merge --no-edit origin/main",
 		"git push -u origin HEAD",
 		`echo "GIT_OK"`,
@@ -102,7 +105,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sandboxed git ops: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "GIT_OK") {
+	if !strings.Contains(string(out), "GIT_OK") || !strings.Contains(string(out), "FETCH_TAG_LOCAL") {
 		t.Fatalf("sandboxed git ops output missing marker:\n%s", out)
 	}
 
@@ -128,6 +131,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		"set -e",
 		"(touch " + bashQuote(filepath.Join(h.siblingWt, "leak.txt")) + " 2>/dev/null && echo SIBLING_WT_LEAK) || echo SIBLING_WT_DENIED",
 		"(touch " + bashQuote(filepath.Join(siblingAdmin, "leak.lock")) + " 2>/dev/null && echo SIBLING_GIT_LEAK) || echo SIBLING_GIT_DENIED",
+		"(git tag manual-leak HEAD >/dev/null 2>&1 && git show-ref --verify --quiet refs/tags/manual-leak && echo TAG_LOCAL_ONLY) || echo TAG_CREATE_FAILED",
 		"(echo hacked > " + bashQuote(siblingBranchRef) + " 2>/dev/null && echo SIBLING_REF_WRITE_LOCAL) || echo SIBLING_REF_DENIED",
 		"(touch " + bashQuote(outside) + " 2>/dev/null && echo OUTSIDE_LEAK) || echo OUTSIDE_DENIED",
 	}, "\n")
@@ -138,7 +142,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 		t.Fatalf("sandbox denial probe: %v\n%s", denyErr, denyOut)
 	}
 	got := string(denyOut)
-	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "OUTSIDE_DENIED"} {
+	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "TAG_LOCAL_ONLY", "OUTSIDE_DENIED"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("sandbox denial output missing %s:\n%s", want, got)
 		}
@@ -160,6 +164,11 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	}
 	if gotRef := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")); gotRef != siblingWant {
 		t.Fatalf("sibling branch changed unexpectedly: got %s want %s", gotRef, siblingWant)
+	}
+	for _, ref := range []string{"refs/tags/manual-leak", "refs/tags/upstream-v1"} {
+		if h.gitShowRefExists(t, h.sybraBare, ref) {
+			t.Fatalf("shared clone unexpectedly exposes sandbox-only tag %s", ref)
+		}
 	}
 }
 
@@ -262,6 +271,12 @@ func (h sandboxGitHarness) advanceUpstreamMain(t *testing.T) {
 	h.gitRaw(t, h.src, "push", "origin", "main")
 }
 
+func (h sandboxGitHarness) pushUpstreamTag(t *testing.T, name string) {
+	t.Helper()
+	h.gitRaw(t, h.src, "tag", name, "HEAD")
+	h.gitRaw(t, h.src, "push", "origin", "refs/tags/"+name)
+}
+
 func (h sandboxGitHarness) git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return h.gitRaw(t, dir, args...)
@@ -289,6 +304,13 @@ func (h sandboxGitHarness) gitRefPath(t *testing.T, dir string) string {
 		path = filepath.Join(dir, path)
 	}
 	return path
+}
+
+func (h sandboxGitHarness) gitShowRefExists(t *testing.T, gitDir, ref string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "--git-dir="+gitDir, "show-ref", "--verify", "--quiet", ref)
+	err := cmd.Run()
+	return err == nil
 }
 
 func (h sandboxGitHarness) gitRaw(t *testing.T, dir string, args ...string) string {

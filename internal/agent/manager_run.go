@@ -370,7 +370,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", gitErr)
 		return fmt.Errorf("agent.Run: sandbox git metadata roots: %w", gitErr)
 	}
-	gitOverlay, err := prepareGitBranchOverlay(gitCtx, worktree, canonSandboxHome, gitRoots)
+	gitOverlay, err := prepareGitSandboxOverlay(gitCtx, worktree, canonSandboxHome, gitRoots)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox git branch overlay: %w", err)
@@ -428,32 +428,40 @@ func enforceSpec(
 	gitMetadata []string,
 	sandboxHome, tmp, sharedCache, profilePath string,
 	gitRoots gitSandboxRoots,
-	gitOverlay gitBranchOverlay,
+	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
 	return sandboxSpec{
-		mode:              "enforce",
-		worktree:          worktree,
-		gitMetadata:       slices.Clone(gitMetadata),
-		gitShared:         slices.Clone(gitRoots.sharedWritable),
-		gitReadonly:       slices.Clone(gitRoots.sharedReadonly),
-		sandboxHome:       sandboxHome,
-		tmp:               tmp,
-		sharedCache:       sharedCache,
-		profilePath:       profilePath,
-		gitAdminDir:       gitRoots.adminDir,
-		gitCommonDir:      gitRoots.commonDir,
-		gitWorktrees:      gitRoots.worktreesDir,
-		gitBranchRef:      gitRoots.branchRef,
-		gitBranchRefDir:   gitRoots.branchRefDir,
-		gitBranchLogDir:   gitRoots.branchLogDir,
-		gitOverlayRefDir:  gitOverlay.refDir,
-		gitOverlayLogDir:  gitOverlay.logDir,
-		gitOverlayRefFile: gitOverlay.refFile,
-		claudeState:       agentStateRoot(".claude", sandboxHome),
-		codexState:        agentStateRoot(".codex", sandboxHome),
-		copilotState:      agentStateRoot(".copilot", sandboxHome),
-		opencodeState:     agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
-		toolCache:         agentStateRoot(".cache", sandboxHome),
+		mode:                   "enforce",
+		worktree:               worktree,
+		gitMetadata:            slices.Clone(gitMetadata),
+		gitShared:              slices.Clone(gitRoots.sharedWritable),
+		gitReadonly:            slices.Clone(gitRoots.sharedReadonly),
+		sandboxHome:            sandboxHome,
+		tmp:                    tmp,
+		sharedCache:            sharedCache,
+		profilePath:            profilePath,
+		gitAdminDir:            gitRoots.adminDir,
+		gitCommonDir:           gitRoots.commonDir,
+		gitWorktrees:           gitRoots.worktreesDir,
+		gitBranchRef:           gitRoots.branchRef,
+		gitBranchRefDir:        gitRoots.branchRefDir,
+		gitBranchLogDir:        gitRoots.branchLogDir,
+		gitRemoteRefDir:        gitRoots.remoteRefDir,
+		gitRemoteLogDir:        gitRoots.remoteLogDir,
+		gitTagRefDir:           gitRoots.tagRefDir,
+		gitTagLogDir:           gitRoots.tagLogDir,
+		gitOverlayRefDir:       gitOverlay.branchRefDir,
+		gitOverlayLogDir:       gitOverlay.branchLogDir,
+		gitOverlayRefFile:      gitOverlay.branchRefFile,
+		gitOverlayRemoteRefDir: gitOverlay.remoteRefDir,
+		gitOverlayRemoteLogDir: gitOverlay.remoteLogDir,
+		gitOverlayTagRefDir:    gitOverlay.tagRefDir,
+		gitOverlayTagLogDir:    gitOverlay.tagLogDir,
+		claudeState:            agentStateRoot(".claude", sandboxHome),
+		codexState:             agentStateRoot(".codex", sandboxHome),
+		copilotState:           agentStateRoot(".copilot", sandboxHome),
+		opencodeState:          agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
+		toolCache:              agentStateRoot(".cache", sandboxHome),
 	}
 }
 

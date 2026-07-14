@@ -84,6 +84,18 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitOverlayLogDir != "" && cfg.sandbox.gitBranchLogDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayLogDir, cfg.sandbox.gitBranchLogDir)
 	}
+	if cfg.sandbox.gitOverlayRemoteRefDir != "" && cfg.sandbox.gitRemoteRefDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayRemoteRefDir, cfg.sandbox.gitRemoteRefDir)
+	}
+	if cfg.sandbox.gitOverlayRemoteLogDir != "" && cfg.sandbox.gitRemoteLogDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayRemoteLogDir, cfg.sandbox.gitRemoteLogDir)
+	}
+	if cfg.sandbox.gitOverlayTagRefDir != "" && cfg.sandbox.gitTagRefDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagRefDir, cfg.sandbox.gitTagRefDir)
+	}
+	if cfg.sandbox.gitOverlayTagLogDir != "" && cfg.sandbox.gitTagLogDir != "" {
+		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagLogDir, cfg.sandbox.gitTagLogDir)
+	}
 	wrapped = append(wrapped, "--", name)
 	wrapped = append(wrapped, args...)
 	if cfg.sandbox.gitOverlayRefFile != "" && cfg.sandbox.gitBranchRef != "" && cfg.sandbox.worktree != "" {

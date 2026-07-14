@@ -62,12 +62,20 @@ type sandboxSpec struct {
 	gitCommonDir string
 	gitWorktrees string
 
-	gitBranchRef      string
-	gitBranchRefDir   string
-	gitBranchLogDir   string
-	gitOverlayRefDir  string
-	gitOverlayLogDir  string
-	gitOverlayRefFile string
+	gitBranchRef           string
+	gitBranchRefDir        string
+	gitBranchLogDir        string
+	gitRemoteRefDir        string
+	gitRemoteLogDir        string
+	gitTagRefDir           string
+	gitTagLogDir           string
+	gitOverlayRefDir       string
+	gitOverlayLogDir       string
+	gitOverlayRefFile      string
+	gitOverlayRemoteRefDir string
+	gitOverlayRemoteLogDir string
+	gitOverlayTagRefDir    string
+	gitOverlayTagLogDir    string
 
 	claudeState   string
 	codexState    string
