@@ -107,6 +107,29 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	}
 }
 
+func TestRunJSONPassesOpenCodeModel(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "opencode"), `#!/bin/bash
+if [[ "$*" != *"--model openrouter/z-ai/glm-5.2"* ]]; then
+  echo "missing model flag: $*" >&2
+  exit 7
+fi
+printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
+`)
+	t.Setenv("PATH", dir)
+
+	res, err := RunJSON(context.Background(), "classify", Options{
+		Provider: "opencode",
+		Models:   map[string]string{"opencode": "openrouter/z-ai/glm-5.2"},
+	})
+	if err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	if res.Provider != "opencode" {
+		t.Fatalf("provider = %q, want opencode", res.Provider)
+	}
+}
+
 func TestRunJSONFallsBackOnCodexUsageLimit(t *testing.T) {
 	dir := t.TempDir()
 	writeExe(t, filepath.Join(dir, "claude"), `#!/bin/sh
@@ -154,6 +177,19 @@ func TestParseCopilotTextAllowsLargeStreamLine(t *testing.T) {
 	got, err := parseCopilotText(raw)
 	if err != nil {
 		t.Fatalf("parseCopilotText: %v", err)
+	}
+	if got != text {
+		t.Fatalf("text length = %d, want %d", len(got), len(text))
+	}
+}
+
+func TestParseOpenCodeTextAllowsLargeStreamLine(t *testing.T) {
+	text := strings.Repeat("x", 2*1024*1024)
+	raw := fmt.Appendf(nil, `{"type":"assistant.message","data":{"content":"%s"}}`, text)
+
+	got, err := parseOpenCodeText(raw)
+	if err != nil {
+		t.Fatalf("parseOpenCodeText: %v", err)
 	}
 	if got != text {
 		t.Fatalf("text length = %d, want %d", len(got), len(text))
@@ -308,14 +344,18 @@ exit 1
 echo "rate limit exceeded" >&2
 exit 1
 `)
+	writeExe(t, filepath.Join(dir, "opencode"), `#!/bin/sh
+echo "rate limit exceeded" >&2
+exit 1
+`)
 	t.Setenv("PATH", dir)
 
 	res, err := RunJSON(context.Background(), "classify", Options{})
 	if err == nil {
 		t.Fatal("RunJSON: want error when every provider fails")
 	}
-	if res.Provider != "copilot" {
-		t.Fatalf("provider = %q, want copilot (last candidate tried)", res.Provider)
+	if res.Provider != "opencode" {
+		t.Fatalf("provider = %q, want opencode (last candidate tried)", res.Provider)
 	}
 }
 

@@ -39,6 +39,7 @@
         { value: 'claude', label: 'Claude' },
         { value: 'codex', label: 'Codex' },
         { value: 'copilot', label: 'Copilot' },
+        { value: 'opencode', label: 'OpenCode' },
       ]}
       bind:value={settings.agent.provider}
       modified={a.provider !== d.provider}

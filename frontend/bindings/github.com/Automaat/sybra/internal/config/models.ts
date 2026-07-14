@@ -1009,7 +1009,7 @@ export class ProviderLimitsConfig {
 
 /**
  * ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
- * copilot) and their background health-check loop. A missing block defaults to
+ * copilot, opencode) and their background health-check loop. A missing block defaults to
  * "all providers enabled, health check on, auto-failover on, 300s interval".
  */
 export class ProvidersConfig {
@@ -1017,6 +1017,7 @@ export class ProvidersConfig {
     "claude": ProviderEntryConfig;
     "codex": ProviderEntryConfig;
     "copilot": ProviderEntryConfig;
+    "opencode": ProviderEntryConfig;
     "limits": ProviderLimitsConfig;
     "autoFailover": boolean;
 
@@ -1033,6 +1034,9 @@ export class ProvidersConfig {
         }
         if (!("copilot" in $$source)) {
             this["copilot"] = (new ProviderEntryConfig());
+        }
+        if (!("opencode" in $$source)) {
+            this["opencode"] = (new ProviderEntryConfig());
         }
         if (!("limits" in $$source)) {
             this["limits"] = (new ProviderLimitsConfig());
@@ -1052,7 +1056,8 @@ export class ProvidersConfig {
         const $$createField1_0 = $$createType8;
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType9;
+        const $$createField4_0 = $$createType8;
+        const $$createField5_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1066,8 +1071,11 @@ export class ProvidersConfig {
         if ("copilot" in $$parsedSource) {
             $$parsedSource["copilot"] = $$createField3_0($$parsedSource["copilot"]);
         }
+        if ("opencode" in $$parsedSource) {
+            $$parsedSource["opencode"] = $$createField4_0($$parsedSource["opencode"]);
+        }
         if ("limits" in $$parsedSource) {
-            $$parsedSource["limits"] = $$createField4_0($$parsedSource["limits"]);
+            $$parsedSource["limits"] = $$createField5_0($$parsedSource["limits"]);
         }
         return new ProvidersConfig($$parsedSource as Partial<ProvidersConfig>);
     }

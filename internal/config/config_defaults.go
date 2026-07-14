@@ -576,9 +576,10 @@ func DefaultConfig() *Config {
 				Enabled:         true,
 				IntervalSeconds: 300,
 			},
-			Claude:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Codex:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
-			Copilot: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
 			Limits: ProviderLimitsConfig{
 				Enabled:                 true,
 				SessionThresholdPercent: 85,
@@ -1310,6 +1311,9 @@ func applyProvidersDefaults(cfg *Config) {
 	}
 	if cfg.Providers.Copilot.RateLimitCooldownSeconds <= 0 {
 		cfg.Providers.Copilot.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.OpenCode.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.OpenCode.RateLimitCooldownSeconds = 900
 	}
 	if cfg.Providers.Limits.SessionThresholdPercent <= 0 {
 		cfg.Providers.Limits.SessionThresholdPercent = 85

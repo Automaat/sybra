@@ -54,7 +54,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	}
 	roots := dedupeRoots(
 		cfg.sandbox.worktree, cfg.sandbox.sandboxHome, cfg.sandbox.tmp, cfg.sandbox.sharedCache,
-		cfg.sandbox.claudeState, cfg.sandbox.codexState, cfg.sandbox.copilotState, cfg.sandbox.toolCache,
+		cfg.sandbox.claudeState, cfg.sandbox.codexState, cfg.sandbox.copilotState, cfg.sandbox.opencodeState, cfg.sandbox.toolCache,
 	)
 	for _, root := range roots {
 		wrapped = append(wrapped, "--bind", root, root)

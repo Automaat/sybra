@@ -103,6 +103,15 @@
     { value: 'auto', label: 'Auto' },
   ]
   let copilotDynamicModels = $state<ModelOption[]>([])
+  const opencodeFallbackModels: ModelOption[] = [
+    { value: '', label: 'Default (OpenRouter GLM 5.2)' },
+    { value: 'openrouter/z-ai/glm-5.2', label: 'OpenRouter: Z.ai GLM 5.2' },
+    { value: 'openrouter/deepseek/deepseek-v4-pro', label: 'OpenRouter: DeepSeek V4 Pro' },
+    { value: 'openrouter/deepseek/deepseek-v4-flash', label: 'OpenRouter: DeepSeek V4 Flash' },
+    { value: 'openrouter/z-ai/glm-4.5', label: 'OpenRouter: Z.ai GLM 4.5' },
+    { value: 'openrouter/qwen/qwen3-coder', label: 'OpenRouter: Qwen3 Coder' },
+    { value: 'ollama/qwen3-coder', label: 'Ollama: Qwen3 Coder' },
+  ]
   let providerHealthEnabled = $state(false)
 
   $effect(() => { load() })
@@ -189,6 +198,7 @@
     if (!settings) return [] as ModelOption[]
     if (settings.agent.provider === 'codex') return codexDynamicModels.length > 0 ? codexDynamicModels : codexFallbackModels
     if (settings.agent.provider === 'copilot') return copilotDynamicModels.length > 0 ? copilotDynamicModels : copilotFallbackModels
+    if (settings.agent.provider === 'opencode') return opencodeFallbackModels
     return [{ value: '', label: 'Default (Sonnet)' }, ...CLAUDE_MODEL_OPTIONS]
   })
 
@@ -220,7 +230,7 @@
       { id: 'notifications', label: 'Notifications', keywords: 'desktop macos notify', keys: ['notification'] },
     ] },
     { label: 'Agents', items: [
-      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot log retention gzip compression size', keys: ['agent'] },
+      { id: 'agent', label: 'Defaults', keywords: 'provider model mode concurrent permissions fallback turns cost claude codex copilot opencode openrouter glm log retention gzip compression size', keys: ['agent'] },
       ...(providerHealthEnabled ? [{ id: 'provider-health' as TabId, label: 'Providers', keywords: 'health limits failover subscription', keys: ['providers'] as (keyof AppSettings)[] }] : []),
     ] },
     { label: 'Automation', items: [

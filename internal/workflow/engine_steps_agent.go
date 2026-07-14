@@ -551,6 +551,8 @@ func normalizeWorkflowProvider(provider string) string {
 		return "codex"
 	case "copilot":
 		return "copilot"
+	case "opencode":
+		return "opencode"
 	default:
 		return ""
 	}

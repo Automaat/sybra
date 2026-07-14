@@ -10,15 +10,16 @@ import (
 
 func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	cfg := &RunConfig{sandbox: sandboxSpec{
-		mode:         "enforce",
-		worktree:     "/data/wt",
-		sandboxHome:  "/data/home",
-		tmp:          "/tmp",
-		sharedCache:  "/data/cache",
-		claudeState:  "/data/sybra/claude",
-		codexState:   "/data/sybra/codex",
-		copilotState: "/data/sybra/copilot",
-		toolCache:    "/home/sybra/.cache",
+		mode:          "enforce",
+		worktree:      "/data/wt",
+		sandboxHome:   "/data/home",
+		tmp:           "/tmp",
+		sharedCache:   "/data/cache",
+		claudeState:   "/data/sybra/claude",
+		codexState:    "/data/sybra/codex",
+		copilotState:  "/data/sybra/copilot",
+		opencodeState: "/data/sybra/opencode",
+		toolCache:     "/home/sybra/.cache",
 	}}
 	_, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
 
@@ -28,7 +29,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 	for _, root := range []string{
 		"/data/wt", "/data/home", "/tmp", "/data/cache",
-		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/home/sybra/.cache",
+		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
 		if !strings.Contains(joined, "--bind "+root+" "+root) {
 			t.Errorf("write root %q not bound read-write: %s", root, joined)

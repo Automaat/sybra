@@ -483,7 +483,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	mode := fs.String("mode", "headless", "agent mode: headless|interactive")
 	stage := fs.String("stage", "implement", "workflow entry stage: "+handoffStageCompactList())
 	rawStatus := fs.String("status", "", "raw task status to create without starting a workflow")
-	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot")
+	sourceProvider := fs.String("source-provider", "", "provider that produced the handed-off work: claude|codex|copilot|opencode")
 	pr := fs.Int("pr", 0, "existing PR number to link when using --stage ready-pr")
 	extraTags := fs.String("tags", "", "extra comma-separated tags")
 	if err := fs.Parse(args); err != nil {
@@ -501,7 +501,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 		return fatal(jsonOut, "%v", srcErr)
 	}
 	if !rawStatusMode && handoffSource == "" && handoffStageRequiresSource(stageCfg.name) {
-		return fatal(jsonOut, "--stage %s requires --source-provider <claude|codex|copilot> so cross-provider review/testing is deterministic", *stage)
+		return fatal(jsonOut, "--stage %s requires --source-provider <claude|codex|copilot|opencode> so cross-provider review/testing is deterministic", *stage)
 	}
 
 	dir, dErr := resolveWorktreeDir(*wtDir)
@@ -1038,7 +1038,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 		branch:            fs.String("branch", "", "Git branch name"),
 		pr:                fs.Int("pr", 0, "GitHub PR number"),
 		issue:             fs.String("issue", "", "ad-hoc reference issue URL annotation — does not affect PR auto-close linkage (see task.Issue, set only at creation)"),
-		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|none"),
+		sourceProvider:    fs.String("source-provider", "", "handoff source provider: claude|codex|copilot|opencode|none"),
 		statusReason:      fs.String("status-reason", "", "reason for status change"),
 		maxTurns:          fs.Int("max-turns", -1, "per-task max turns override (0 clears override, >0 sets limit)"),
 		reasoningEffort:   fs.String("reasoning-effort", "", "reasoning effort (all providers): low|medium|high|xhigh ('default' or 'none' clears the override)"),
@@ -1974,7 +1974,7 @@ Commands:
   get      [--compact] <id>
   create   --title TITLE [--body BODY] [--plan PLAN] [--plan-contract JSON] [--mode MODE] [--type TYPE] [--tags t1,t2] [--project ID] [--branch B] [--pr N] [--issue URL] [--allow-dup]
            TYPE: normal|debug|research
-  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot] [--pr N] [--mode MODE] [--tags t1,t2]
+  handoff  --title TITLE [--body BODY] [--plan PLAN | --plan-file PATH] [--project ID] [--worktree-dir DIR] [--stage STAGE | --status STATUS] [--source-provider claude|codex|copilot|opencode] [--pr N] [--mode MODE] [--tags t1,t2]
            Hand a task to Sybra at a workflow entry point, reusing the given git worktree
            (default: cwd). Project is derived from the worktree's origin remote
            when --project is omitted. STAGE (default implement):

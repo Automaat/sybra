@@ -115,6 +115,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		"-D", "CLAUDE_STATE="+sandboxRootOr(cfg.sandbox.claudeState, home),
 		"-D", "CODEX_STATE="+sandboxRootOr(cfg.sandbox.codexState, home),
 		"-D", "COPILOT_STATE="+sandboxRootOr(cfg.sandbox.copilotState, home),
+		"-D", "OPENCODE_STATE="+sandboxRootOr(cfg.sandbox.opencodeState, home),
 		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
 		name,
 	)

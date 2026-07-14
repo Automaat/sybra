@@ -10,7 +10,7 @@ import (
 )
 
 // newProviderCmd is the sole constructor for a provider CLI subprocess. Every
-// exec.CommandContext spawn of a provider binary (claude/codex/copilot, in
+// exec.CommandContext spawn of a provider binary (claude/codex/copilot/opencode, in
 // any of headless-pipe, headless-survive, persistent-convo, convo-survive,
 // or per-turn-convo mode) must go through here so a single seam can wrap the
 // invocation for OS-level sandboxing (see wrapInvocation in
@@ -56,10 +56,11 @@ type sandboxSpec struct {
 	sharedCache string
 	profilePath string
 
-	claudeState  string
-	codexState   string
-	copilotState string
-	toolCache    string
+	claudeState   string
+	codexState    string
+	copilotState  string
+	opencodeState string
+	toolCache     string
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,

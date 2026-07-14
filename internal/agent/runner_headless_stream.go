@@ -201,6 +201,51 @@ func copilotEventToStreamEvent(e CopilotEvent) StreamEvent {
 	return ev
 }
 
+// opencodeEventToStreamEvent converts OpenCode JSON output into the same
+// lightweight event shape used by the headless runner.
+func opencodeEventToStreamEvent(e OpenCodeEvent) StreamEvent {
+	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID}
+	switch e.Type {
+	case "assistant":
+		if e.Message != nil {
+			ev.Content = e.Message.Text
+			ev.ToolCalls = len(e.Message.ToolUses)
+			ev.toolSig = toolSignature(e.Message.ToolUses)
+			ev.toolUses = e.Message.ToolUses
+		}
+		ev.OutputTokens = e.OutputTokens
+	case "tool_use":
+		if e.Message != nil && len(e.Message.ToolUses) > 0 {
+			cmd, _ := e.Message.ToolUses[0].Input["command"].(string)
+			if cmd == "" {
+				cmd, _ = e.Message.ToolUses[0].Input["input"].(string)
+			}
+			ev.Content = cmd
+			ev.ToolCalls = len(e.Message.ToolUses)
+			ev.toolSig = toolSignature(e.Message.ToolUses)
+			ev.toolUses = e.Message.ToolUses
+		}
+	case "tool_result":
+		if e.Message != nil && len(e.Message.ToolResults) > 0 {
+			ev.Content = e.Message.ToolResults[0].Content
+			ev.toolResults = e.Message.ToolResults
+		}
+	case "result":
+		if e.Result != nil {
+			ev.Content = e.Result.Text
+			ev.SessionID = e.Result.SessionID
+			ev.CostUSD = e.Result.CostUSD
+			ev.InputTokens = e.Result.InputTokens
+			ev.OutputTokens = e.Result.OutputTokens
+			ev.CacheReadInputTokens = e.Result.CacheReadInputTokens
+			ev.ReasoningTokens = e.Result.ReasoningTokens
+			ev.ErrorType = e.Result.ErrorType
+			ev.ErrorStatus = e.Result.ErrorStatus
+		}
+	}
+	return ev
+}
+
 // formatHeadlessAssistant produces the flat content string for headless assistant
 // events: joined text parts followed by "[name] cmd/desc" tool use lines.
 func formatHeadlessAssistant(msg *ClaudeMessage) string {

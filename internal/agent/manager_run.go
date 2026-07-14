@@ -330,36 +330,7 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	}
 
 	if mode != "enforce" {
-		// report: log the resolved allowlist without wrapping the spawn, so
-		// the opaque provider CLI's would-be write footprint is visible from
-		// live runs before flipping this task/fleet to enforce. Canonicalize
-		// the roots the same way enforce mode would, so the report output is
-		// representative of what enforce would allow — but never fail the
-		// run closed on a canonicalization error; fall back to logging the
-		// raw (unresolved) roots instead.
-		logWorktree, logSandboxHome, logTmp, logShared := worktree, sandboxHome, tmp, sharedCache
-		if canon, err := canonicalizeRoot(worktree); err == nil {
-			logWorktree = canon
-		} else {
-			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "worktree", "err", err)
-		}
-		if canon, err := canonicalizeRoot(sandboxHome); err == nil {
-			logSandboxHome = canon
-		} else {
-			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "sandbox_home", "err", err)
-		}
-		if canon, err := canonicalizeRoot(tmp); err == nil {
-			logTmp = canon
-		} else {
-			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "tmp", "err", err)
-		}
-		if canon, err := canonicalizeRoot(sharedCache); err == nil {
-			logShared = canon
-		} else {
-			m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", cfg.TaskID, "root", "shared_cache", "err", err)
-		}
-		m.logger.Info("agent.sandbox.report", "task_id", cfg.TaskID,
-			"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
+		m.logProcessSandboxReport(cfg.TaskID, worktree, sandboxHome, tmp, sharedCache)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
@@ -399,22 +370,44 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
+		"opencode_state", cfg.sandbox.opencodeState,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
 }
 
+func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sharedCache string) {
+	// report logs the resolved allowlist without wrapping the spawn, so the
+	// provider CLI's would-be write footprint is visible before enforce rollout.
+	logWorktree := m.reportSandboxRoot(taskID, "worktree", worktree)
+	logSandboxHome := m.reportSandboxRoot(taskID, "sandbox_home", sandboxHome)
+	logTmp := m.reportSandboxRoot(taskID, "tmp", tmp)
+	logShared := m.reportSandboxRoot(taskID, "shared_cache", sharedCache)
+	m.logger.Info("agent.sandbox.report", "task_id", taskID,
+		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
+}
+
+func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
+	canon, err := canonicalizeRoot(root)
+	if err == nil {
+		return canon
+	}
+	m.logger.Warn("agent.sandbox.report.canonicalize_failed", "task_id", taskID, "root", name, "err", err)
+	return root
+}
+
 func enforceSpec(worktree, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
 	return sandboxSpec{
-		mode:         "enforce",
-		worktree:     worktree,
-		sandboxHome:  sandboxHome,
-		tmp:          tmp,
-		sharedCache:  sharedCache,
-		profilePath:  profilePath,
-		claudeState:  agentStateRoot(".claude", sandboxHome),
-		codexState:   agentStateRoot(".codex", sandboxHome),
-		copilotState: agentStateRoot(".copilot", sandboxHome),
-		toolCache:    agentStateRoot(".cache", sandboxHome),
+		mode:          "enforce",
+		worktree:      worktree,
+		sandboxHome:   sandboxHome,
+		tmp:           tmp,
+		sharedCache:   sharedCache,
+		profilePath:   profilePath,
+		claudeState:   agentStateRoot(".claude", sandboxHome),
+		codexState:    agentStateRoot(".codex", sandboxHome),
+		copilotState:  agentStateRoot(".copilot", sandboxHome),
+		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
+		toolCache:     agentStateRoot(".cache", sandboxHome),
 	}
 }
 
@@ -530,9 +523,9 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 	case "headless":
 		go m.runHeadless(ctx, a, cfg)
 	case "interactive":
-		// codex and copilot use the per-turn conversational runner (each turn
+		// codex, copilot, and opencode use the per-turn conversational runner (each turn
 		// spawns a fresh process); claude uses the persistent approval-hook
-		// runner. Copilot's permission model is CLI-flag based (no HTTP
+		// runner. Copilot/OpenCode permission models are CLI-flag based (no HTTP
 		// approval hook), so the per-turn shape fits it like codex.
 		if prov.UsesPerTurnConvo() {
 			a.setPromptChannel(make(chan string, 1))

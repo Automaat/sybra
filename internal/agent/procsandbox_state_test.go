@@ -44,8 +44,9 @@ func TestEnforceSpec_FallsBackWhenStateDirAbsent(t *testing.T) {
 	spec := enforceSpec("/wt", sandboxHome, "/tmp", "/cache", "/profile")
 
 	for name, got := range map[string]string{
-		"codexState":   spec.codexState,
-		"copilotState": spec.copilotState,
+		"codexState":    spec.codexState,
+		"copilotState":  spec.copilotState,
+		"opencodeState": spec.opencodeState,
 	} {
 		if got != sandboxHome {
 			t.Errorf("%s = %q, want fallback to sandboxHome %q — an absent state dir must not produce an empty write root", name, got, sandboxHome)

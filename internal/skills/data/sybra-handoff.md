@@ -3,7 +3,7 @@ name: sybra-handoff
 description: Hand a researched, already-decided task off to Sybra for autonomous implementation or cross-provider review/testing. Use after you have explored a problem in an Orca (or any) git worktree, agreed on the approach, and want Sybra to skip its own planning and start at the right stage — reusing this exact worktree. Triggers on "hand this off to Sybra", "let Sybra implement this", "ship this to Sybra", "handoff to sybra". Works under Claude Code, Codex, and Copilot.
 allowed-tools: Bash
 user-invocable: true
-argument-hint: "[--stage STAGE | --status STATUS] [--title \"...\"] [--plan-file PATH] [--worktree-dir DIR] [--source-provider claude|codex|copilot] [--pr N]"
+argument-hint: "[--stage STAGE | --status STATUS] [--title \"...\"] [--plan-file PATH] [--worktree-dir DIR] [--source-provider claude|codex|copilot|opencode] [--pr N]"
 ---
 
 # Sybra Handoff
@@ -122,7 +122,7 @@ such as `review`; handoff tasks must stay in the internal simple-task workflow.
    sybra-cli handoff \
      --title "feat(auth): add jwt refresh middleware" \
      --body  "One-paragraph problem statement + the research context Sybra needs." \
-     --source-provider "<claude|codex|copilot>" \
+     --source-provider "<claude|codex|copilot|opencode>" \
      --plan-file ./.sybra-handoff-plan.md
    ```
    Set `--source-provider` to the provider running this skill: Claude Code uses

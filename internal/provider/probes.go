@@ -119,6 +119,30 @@ func ProbeCopilot(ctx context.Context) (Status, error) {
 	return st, nil
 }
 
+// ProbeOpenCode checks OpenCode CLI liveness. Provider-specific credentials
+// (OpenRouter, Z.AI, local OpenAI-compatible endpoints, etc.) are selected by
+// the model/config for a run, so this probe deliberately avoids spending an LLM
+// request. Auth and rate-limit failures are learned from passive run signals.
+func ProbeOpenCode(ctx context.Context) (Status, error) {
+	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "opencode", "--version")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if isLoggedOutStderr(stderr.String()) {
+			return Status{Provider: "opencode", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+		}
+		return Status{Provider: "opencode", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+	}
+	st := Status{Provider: "opencode", Healthy: true, Reason: "ok", LastCheck: time.Now()}
+	if v := strings.TrimSpace(stdout.String()); v != "" {
+		st.Detail = v
+	}
+	return st, nil
+}
+
 // copilotTokenEnvVar returns the name of the first set, non-empty Copilot auth
 // token env var, or "" if none is set.
 func copilotTokenEnvVar() string {

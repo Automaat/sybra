@@ -230,7 +230,7 @@ func (s *Store) Summary(policy Policy) Summary {
 	defer s.mu.Unlock()
 
 	now := s.now().UTC()
-	providers := []string{ProviderClaude, ProviderCodex, ProviderCopilot}
+	providers := []string{ProviderClaude, ProviderCodex, ProviderCopilot, ProviderOpenCode}
 	out := make([]ProviderSummary, 0, len(providers))
 	for _, provider := range providers {
 		snap := s.snapshots[provider]
