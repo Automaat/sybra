@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/stats"
@@ -18,22 +19,24 @@ type StatsService struct {
 	limits   *limits.Store
 	projects *project.Store
 	tasks    *task.Manager
+	auditDir string
 	policy   func() limits.Policy
 }
 
-func aggregateTasksDone(resp *stats.StatsResponse, list []task.Task, now time.Time) {
+type doneTaskClosure struct {
+	id       string
+	closedAt time.Time
+}
+
+func aggregateTasksDone(resp *stats.StatsResponse, done []doneTaskClosure, now time.Time) {
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 
-	for i := range list {
-		if list[i].Status != task.StatusDone {
-			continue
-		}
-
+	for i := range done {
 		resp.AllTime.TasksDone++
 
-		t := taskCloseTime(list[i])
+		t := done[i].closedAt
 
 		if !t.Before(todayStart) {
 			resp.Today.TasksDone++
@@ -47,6 +50,76 @@ func aggregateTasksDone(resp *stats.StatsResponse, list []task.Task, now time.Ti
 	}
 }
 
+func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTaskClosure {
+	byID := map[string]doneTaskClosure{}
+	liveIDs := map[string]struct{}{}
+	for i := range list {
+		id := list[i].ID
+		if id == "" {
+			id = "__live_empty_id_" + time.Duration(i).String()
+		}
+		liveIDs[id] = struct{}{}
+		if list[i].Status != task.StatusDone {
+			continue
+		}
+		byID[id] = doneTaskClosure{id: id, closedAt: taskCloseTime(list[i])}
+	}
+	for _, d := range auditDoneTaskClosures(auditDir, now) {
+		if _, ok := liveIDs[d.id]; ok {
+			continue
+		}
+		if _, ok := byID[d.id]; !ok {
+			byID[d.id] = d
+		}
+	}
+	out := make([]doneTaskClosure, 0, len(byID))
+	for _, d := range byID {
+		out = append(out, d)
+	}
+	return out
+}
+
+type auditTaskStatus struct {
+	status    string
+	changedAt time.Time
+}
+
+func auditDoneTaskClosures(auditDir string, now time.Time) []doneTaskClosure {
+	if auditDir == "" {
+		return nil
+	}
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		Until: now.Add(24 * time.Hour),
+		Type:  audit.EventTaskStatusChanged,
+	})
+	if err != nil {
+		slog.Warn("stats: failed to read task status audit", "err", err)
+		return nil
+	}
+	last := map[string]auditTaskStatus{}
+	for _, ev := range events {
+		if ev.TaskID == "" {
+			continue
+		}
+		to, ok := ev.Data["to"].(string)
+		if !ok || to == "" {
+			continue
+		}
+		if prev, ok := last[ev.TaskID]; ok && ev.Timestamp.Before(prev.changedAt) {
+			continue
+		}
+		last[ev.TaskID] = auditTaskStatus{status: to, changedAt: ev.Timestamp}
+	}
+	out := make([]doneTaskClosure, 0, len(last))
+	for id, st := range last {
+		if st.status == string(task.StatusDone) {
+			out = append(out, doneTaskClosure{id: id, closedAt: st.changedAt})
+		}
+	}
+	return out
+}
+
 func taskCloseTime(t task.Task) time.Time {
 	if t.ClosedAt != nil {
 		return *t.ClosedAt
@@ -54,13 +127,10 @@ func taskCloseTime(t task.Task) time.Time {
 	return t.UpdatedAt
 }
 
-func closedTasksDaily(list []task.Task, now time.Time) []stats.TaskSeriesPoint {
+func closedTasksDaily(done []doneTaskClosure, now time.Time) []stats.TaskSeriesPoint {
 	buckets := map[string]int{}
-	for i := range list {
-		if list[i].Status != task.StatusDone {
-			continue
-		}
-		key := taskCloseTime(list[i]).In(now.Location()).Format(time.DateOnly)
+	for i := range done {
+		key := done[i].closedAt.In(now.Location()).Format(time.DateOnly)
 		buckets[key]++
 	}
 
@@ -89,8 +159,9 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 
 	if s.tasks != nil {
 		if list, err := s.tasks.List(); err == nil {
-			aggregateTasksDone(&resp, list, now)
-			resp.ClosedTasksDaily = closedTasksDaily(list, now)
+			done := doneTaskClosures(list, s.auditDir, now)
+			aggregateTasksDone(&resp, done, now)
+			resp.ClosedTasksDaily = closedTasksDaily(done, now)
 		} else {
 			slog.Warn("stats: failed to list tasks", "err", err)
 		}
@@ -154,12 +225,15 @@ func aggregateByProjectType(byProject []stats.GroupedStat, types map[string]stri
 
 func addSummary(a, b stats.Summary) stats.Summary {
 	return stats.Summary{
-		TotalCostUSD:         a.TotalCostUSD + b.TotalCostUSD,
-		TotalRuns:            a.TotalRuns + b.TotalRuns,
-		TotalDurationS:       a.TotalDurationS + b.TotalDurationS,
-		TotalInputTokens:     a.TotalInputTokens + b.TotalInputTokens,
-		TotalOutputTokens:    a.TotalOutputTokens + b.TotalOutputTokens,
-		TotalReasoningTokens: a.TotalReasoningTokens + b.TotalReasoningTokens,
-		TasksDone:            a.TasksDone + b.TasksDone,
+		TotalCostUSD:                  a.TotalCostUSD + b.TotalCostUSD,
+		TotalRuns:                     a.TotalRuns + b.TotalRuns,
+		TotalDurationS:                a.TotalDurationS + b.TotalDurationS,
+		TotalInputTokens:              a.TotalInputTokens + b.TotalInputTokens,
+		TotalOutputTokens:             a.TotalOutputTokens + b.TotalOutputTokens,
+		TotalCacheCreationInputTokens: a.TotalCacheCreationInputTokens + b.TotalCacheCreationInputTokens,
+		TotalCacheReadInputTokens:     a.TotalCacheReadInputTokens + b.TotalCacheReadInputTokens,
+		TotalReasoningTokens:          a.TotalReasoningTokens + b.TotalReasoningTokens,
+		TotalPremiumRequests:          a.TotalPremiumRequests + b.TotalPremiumRequests,
+		TasksDone:                     a.TasksDone + b.TasksDone,
 	}
 }

@@ -79,6 +79,21 @@ func (s *Store) Backfill(auditDir string) error {
 		if v, ok := ev.Data["reasoning_tokens"].(float64); ok {
 			r.ReasoningTokens = int(v)
 		}
+		if v, ok := ev.Data["input_tokens"].(float64); ok {
+			r.InputTokens = int(v)
+		}
+		if v, ok := ev.Data["output_tokens"].(float64); ok {
+			r.OutputTokens = int(v)
+		}
+		if v, ok := ev.Data["cache_creation_input_tokens"].(float64); ok {
+			r.CacheCreationInputTokens = int(v)
+		}
+		if v, ok := ev.Data["cache_read_input_tokens"].(float64); ok {
+			r.CacheReadInputTokens = int(v)
+		}
+		if v, ok := ev.Data["premium_requests"].(float64); ok {
+			r.PremiumRequests = v
+		}
 
 		s.runs = append(s.runs, r)
 	}

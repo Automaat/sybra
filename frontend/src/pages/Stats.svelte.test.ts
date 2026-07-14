@@ -96,7 +96,7 @@ describe('Stats', () => {
     expect(screen.getByText('Total Runs')).toBeDefined()
     expect(screen.getByText('Avg Cost / Run')).toBeDefined()
     expect(screen.getByText('Total Duration')).toBeDefined()
-    expect(screen.getByText('Tokens (In / Out)')).toBeDefined()
+    expect(screen.getByText('Tokens (Input / Output)')).toBeDefined()
   })
 
   it('shows total cost formatted', () => {
@@ -210,6 +210,21 @@ describe('Stats', () => {
     })
     render(Stats, { props: {} })
     expect(screen.getByText('1.5K reasoning')).toBeDefined()
+  })
+
+  it('shows cached tokens when set', () => {
+    const s = makeSummary({
+      totalCacheReadInputTokens: 1_070_865,
+      totalCacheCreationInputTokens: 48_071,
+    })
+    mockStatsStore.data = StatsResponse.createFrom({
+      today: s, thisWeek: s, thisMonth: s, allTime: s,
+      byProject: [], byProjectType: [], byRole: [], byMode: [], byModel: [],
+      closedTasksDaily: [],
+      recentRuns: [],
+    })
+    render(Stats, { props: {} })
+    expect(screen.getByText('1.1M cache read · 48.1K cache write')).toBeDefined()
   })
 
   it('switches period when tab clicked', async () => {

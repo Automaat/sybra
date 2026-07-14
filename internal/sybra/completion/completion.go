@@ -163,6 +163,10 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	premiumRequests := ag.GetPremiumRequests()
 	cost = estimatedRunCost(ag, cost, premiumRequests)
 	exitErr := ag.GetExitErr()
+	input := ag.GetInputTokens()
+	output := ag.GetOutputTokens()
+	cacheCreate := ag.GetCacheCreationInputTokens()
+	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 
 	// Audit logging always fires — orchestrator brain agents have no
@@ -182,6 +186,18 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	}
 	if reasoning > 0 {
 		auditData["reasoning_tokens"] = reasoning
+	}
+	if input > 0 {
+		auditData["input_tokens"] = input
+	}
+	if output > 0 {
+		auditData["output_tokens"] = output
+	}
+	if cacheCreate > 0 {
+		auditData["cache_creation_input_tokens"] = cacheCreate
+	}
+	if cacheRead > 0 {
+		auditData["cache_read_input_tokens"] = cacheRead
 	}
 	if premiumRequests > 0 {
 		auditData["premium_requests"] = premiumRequests
