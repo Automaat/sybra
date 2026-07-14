@@ -1634,6 +1634,10 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 		}
 		fmt.Printf("  [%s] %s: %s\n", f.Severity, f.Category, f.Title)
 	}
+	if report.Docker != nil {
+		fmt.Println()
+		printDockerBlock(*report.Docker)
+	}
 	if report.Processes == nil {
 		return 0
 	}
@@ -1650,13 +1654,22 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 
 // healthReport mirrors the JSON structure without importing the health package.
 type healthReport struct {
-	GeneratedAt string                `json:"generatedAt"`
-	PeriodStart string                `json:"periodStart"`
-	PeriodEnd   string                `json:"periodEnd"`
-	Score       string                `json:"score"`
-	Findings    []json.RawMessage     `json:"findings"`
-	Stats       json.RawMessage       `json:"stats"`
-	Processes   *healthProcessSummary `json:"processes,omitempty"`
+	GeneratedAt string                 `json:"generatedAt"`
+	PeriodStart string                 `json:"periodStart"`
+	PeriodEnd   string                 `json:"periodEnd"`
+	Score       string                 `json:"score"`
+	Findings    []json.RawMessage      `json:"findings"`
+	Stats       json.RawMessage        `json:"stats"`
+	Docker      *healthDockerDiskUsage `json:"docker,omitempty"`
+	Processes   *healthProcessSummary  `json:"processes,omitempty"`
+}
+
+type healthDockerDiskUsage struct {
+	Available        bool   `json:"available"`
+	ReclaimableBytes int64  `json:"reclaimableBytes"`
+	TotalBytes       int64  `json:"totalBytes,omitempty"`
+	ManualCommand    string `json:"manualCommand,omitempty"`
+	SampledAt        string `json:"sampledAt"`
 }
 
 type healthProcessSummary struct {
@@ -1686,6 +1699,21 @@ func printProcessBlock(title string, processes []healthProcess) {
 		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\t%.1f\t%.1f\n", owner, p.PID, p.Name, p.CPUPercent, p.MemPercent)
 	}
 	_ = w.Flush()
+}
+
+func printDockerBlock(docker healthDockerDiskUsage) {
+	fmt.Println("Docker:")
+	if !docker.Available {
+		fmt.Println("  unavailable")
+		return
+	}
+	fmt.Printf("  Reclaimable: %s\n", humanBytes(docker.ReclaimableBytes))
+	if docker.TotalBytes > 0 {
+		fmt.Printf("  Total: %s\n", humanBytes(docker.TotalBytes))
+	}
+	if docker.ManualCommand != "" {
+		fmt.Printf("  Manual cleanup: %s\n", docker.ManualCommand)
+	}
 }
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {

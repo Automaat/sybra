@@ -28,6 +28,7 @@ type Checker struct {
 	logger   *slog.Logger
 	emit     func(string, any)
 	owned    func() OwnedProcesses
+	docker   dockerRunner
 
 	mu     sync.RWMutex
 	report *Report
@@ -124,6 +125,8 @@ func (c *Checker) check() {
 	findings = append(findings, checkAgentRetryLoops(dayEvents, now)...)
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
+	docker := sampleDockerDisk(context.Background(), c.docker, now)
+	findings = append(findings, checkDockerReclaimable(docker, now)...)
 
 	for i := range findings {
 		findings[i].Fingerprint = FingerprintFor(&findings[i])
@@ -144,6 +147,9 @@ func (c *Checker) check() {
 		Findings:    findings,
 		Stats:       stats,
 		Processes:   &processes,
+	}
+	if docker.Available {
+		report.Docker = &docker
 	}
 
 	c.mu.Lock()

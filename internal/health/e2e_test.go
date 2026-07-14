@@ -14,9 +14,10 @@ import (
 )
 
 // TestE2E_NewChecksFireThroughChecker drives the full Checker.check pipeline
-// against a freshly seeded audit dir and asserts that the three new detectors
-// (agent_retry_loop, triage_mismatch, status_bottleneck) and the score rollup
-// surface in the persisted health-report.json that the CLI consumes.
+// against a freshly seeded audit dir and asserts that the detectors
+// (agent_retry_loop, triage_mismatch, status_bottleneck, docker_reclaimable)
+// and the score rollup surface in the persisted health-report.json that the
+// CLI consumes.
 func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +63,9 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 
 	silent := slog.New(slog.DiscardHandler)
 	c := New(auditDir, tasks, home, silent, nil, nil)
+	c.docker = func(context.Context) ([]byte, error) {
+		return []byte(`{"Size":"30GiB","Reclaimable":"24GiB (80%)"}`), nil
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -87,6 +91,9 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	if _, ok := categories[CatStatusBottleneck]; !ok {
 		t.Errorf("expected CatStatusBottleneck finding, got categories=%v", findingCategories(report.Findings))
 	}
+	if _, ok := categories[CatDockerReclaimable]; !ok {
+		t.Errorf("expected CatDockerReclaimable finding, got categories=%v", findingCategories(report.Findings))
+	}
 
 	if retry, ok := categories[CatAgentRetryLoop]; ok {
 		if retry.TaskID != "task-retry" {
@@ -111,7 +118,12 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 		t.Fatalf("read persisted report: %v", err)
 	}
 	var persisted struct {
-		Score     string `json:"score"`
+		Score  string `json:"score"`
+		Docker *struct {
+			Available        bool   `json:"available"`
+			ReclaimableBytes int64  `json:"reclaimableBytes"`
+			ManualCommand    string `json:"manualCommand"`
+		} `json:"docker"`
 		Processes *struct {
 			Available bool `json:"available"`
 		} `json:"processes"`
@@ -128,11 +140,23 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	if persisted.Processes == nil {
 		t.Fatal("persisted processes = nil, want object")
 	}
+	if persisted.Docker == nil {
+		t.Fatal("persisted docker = nil, want object")
+	}
+	if !persisted.Docker.Available {
+		t.Fatal("persisted docker available = false, want true")
+	}
+	if persisted.Docker.ReclaimableBytes != 24*(1<<30) {
+		t.Errorf("persisted docker reclaimable = %d, want %d", persisted.Docker.ReclaimableBytes, 24*(1<<30))
+	}
+	if persisted.Docker.ManualCommand != dockerManualCommand {
+		t.Errorf("persisted docker manualCommand = %q, want %q", persisted.Docker.ManualCommand, dockerManualCommand)
+	}
 	gotPersisted := map[string]bool{}
 	for _, f := range persisted.Findings {
 		gotPersisted[f.Category] = true
 	}
-	for _, want := range []Category{CatAgentRetryLoop, CatTriageMismatch, CatStatusBottleneck} {
+	for _, want := range []Category{CatAgentRetryLoop, CatTriageMismatch, CatStatusBottleneck, CatDockerReclaimable} {
 		if !gotPersisted[string(want)] {
 			t.Errorf("persisted report missing category %q", want)
 		}
