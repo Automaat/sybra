@@ -549,7 +549,6 @@ func DefaultConfig() *Config {
 			Author:  "app/renovate",
 		},
 		GitHub: GitHubConfig{
-			Enabled:        true,
 			IssuesEnabled:  true,
 			ReviewsEnabled: true,
 		},
@@ -735,6 +734,7 @@ func load(opts loadOptions) (*Config, error) {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
+		applyLegacyGitHubDefault(data, cfg)
 	} else if os.IsNotExist(err) {
 		if writeErr := writeDefaultConfig(path); writeErr != nil {
 			return nil, writeErr
@@ -967,6 +967,44 @@ func applyAutoUpdateDefaults(cfg *Config) {
 	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
 		cfg.AutoUpdate.RestartDelaySeconds = 2
 	}
+}
+
+// applyLegacyGitHubDefault keeps sparse configs created before GitHub became
+// opt-in from silently disabling an existing setup. Fresh configs written by
+// writeDefaultConfig include github.enabled: false explicitly.
+func applyLegacyGitHubDefault(data []byte, cfg *Config) {
+	if cfg == nil || hasYAMLPath(data, "github", "enabled") {
+		return
+	}
+	cfg.GitHub.Enabled = true
+}
+
+func hasYAMLPath(data []byte, path ...string) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	node := &root
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	for _, key := range path {
+		if node.Kind != yaml.MappingNode {
+			return false
+		}
+		found := false
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				node = node.Content[i+1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // applyABTestingDefaults fills zero-value A/B testing config and reconciles
@@ -1348,7 +1386,7 @@ func writeDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte("# Sybra configuration\n# All values are optional — defaults apply when omitted.\n"), configFilePerm)
+	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600

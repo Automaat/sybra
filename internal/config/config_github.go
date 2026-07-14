@@ -2,8 +2,10 @@ package config
 
 type GitHubConfig struct {
 	// Enabled is the top-level kill-switch: false forces every GitHub
-	// automation off regardless of the sub-toggles below, so existing configs
-	// need no migration. true defers to IssuesEnabled/ReviewsEnabled.
+	// automation off regardless of the sub-toggles below. Fresh generated
+	// configs set this to false so first-run GitHub polling is opt-in. Legacy
+	// configs that omit this key keep the old enabled behavior during load.
+	// true defers to IssuesEnabled/ReviewsEnabled.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// IssuesEnabled gates the GitHub Issues fetcher specifically. Defaults to
 	// true (see DefaultConfig). Effective state is Enabled && IssuesEnabled —
