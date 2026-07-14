@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/sysopen"
 	"github.com/Automaat/sybra/internal/task"
@@ -27,6 +28,7 @@ type AgentService struct {
 	cfg       *config.Config
 	logsDir   string
 	worktrees *worktree.Manager
+	artifacts *artifact.Store
 }
 
 // StopAgent sends a stop signal to the given agent.
@@ -87,11 +89,11 @@ func (s *AgentService) GetAgentRunLog(taskID, agentID string) ([]agent.StreamEve
 		}
 	}
 
-	logFile, provider, err := s.findAgentLogFile(taskID, agentID)
+	logFile, provider, role, err := s.findAgentLogFile(taskID, agentID)
 	if err != nil {
 		return nil, err
 	}
-	return agent.ParseLogFile(logFile, s.cfg.DefaultMaxLogEvents(), provider)
+	return agent.ParseLogFileWithArtifacts(logFile, s.cfg.DefaultMaxLogEvents(), provider, taskID, role, s.artifacts)
 }
 
 // GetAgentRunConvoLog returns conversation events for a past or running
@@ -109,7 +111,7 @@ func (s *AgentService) GetAgentRunConvoLog(taskID, agentID string) ([]agent.Conv
 		}
 	}
 
-	logFile, _, err := s.findAgentLogFile(taskID, agentID)
+	logFile, _, _, err := s.findAgentLogFile(taskID, agentID)
 	if err != nil {
 		s.logger.Warn("agent.convo-log.not-found",
 			"task_id", taskID, "agent_id", agentID, "err", err)
@@ -133,10 +135,10 @@ func (s *AgentService) GetAgentRunConvoLog(taskID, agentID string) ([]agent.Conv
 // "" if the run could not be located on the task) so callers can pick the
 // matching stream-json parser. Shared by GetAgentRunLog /
 // GetAgentRunConvoLog.
-func (s *AgentService) findAgentLogFile(taskID, agentID string) (logFile, provider string, err error) {
+func (s *AgentService) findAgentLogFile(taskID, agentID string) (logFile, provider, role string, err error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return "", "", fmt.Errorf("task %s: %w", taskID, err)
+		return "", "", "", fmt.Errorf("task %s: %w", taskID, err)
 	}
 
 	for i := range t.AgentRuns {
@@ -144,17 +146,18 @@ func (s *AgentService) findAgentLogFile(taskID, agentID string) (logFile, provid
 			continue
 		}
 		provider = t.AgentRuns[i].Provider
+		role = t.AgentRuns[i].Role
 		if t.AgentRuns[i].LogFile != "" {
-			return t.AgentRuns[i].LogFile, provider, nil
+			return t.AgentRuns[i].LogFile, provider, role, nil
 		}
 		break
 	}
 
 	path, err := agent.FindLogFile(s.logsDir, agentID)
 	if err != nil {
-		return "", provider, err
+		return "", provider, role, err
 	}
-	return path, provider, nil
+	return path, provider, role, nil
 }
 
 // RespondEscalation sends a human decision to a guardrail-paused agent.

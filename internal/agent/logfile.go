@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/artifact"
 )
 
 // ParseLogFile reads an NDJSON agent log written by the headless runner and
@@ -24,6 +26,13 @@ import (
 //
 // Malformed lines are skipped silently.
 func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, error) {
+	return ParseLogFileWithArtifacts(path, maxEvents, provider, "", "", nil)
+}
+
+// ParseLogFileWithArtifacts mirrors ParseLogFile but applies the same bounded
+// tool-result rewrite the live runner uses, optionally persisting oversized
+// raw outputs into the task artifact store while it replays history.
+func ParseLogFileWithArtifacts(path string, maxEvents int, provider, taskID, producerRole string, store *artifact.Store) ([]StreamEvent, error) {
 	f, err := openAgentLogReader(path)
 	if err != nil {
 		return nil, err
@@ -49,6 +58,7 @@ func ParseLogFile(path string, maxEvents int, provider string) ([]StreamEvent, e
 		if ev.Type == "" {
 			continue
 		}
+		ev = bindToolResultEvent(taskID, producerRole, store, ev)
 		events = append(events, ev)
 	}
 	if err := sc.Err(); err != nil {

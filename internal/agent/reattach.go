@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/events"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
@@ -116,7 +117,7 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		// duplication.
 		var startOffset int64
 		if r.LogPath != "" {
-			startOffset = rehydrateFromLog(a, r.LogPath)
+			startOffset = m.rehydrateFromLog(a, r.LogPath)
 		}
 
 		ctx, cancel := context.WithCancel(ctx)
@@ -155,7 +156,7 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 		return false
 	}
 	a := fromRecord(r)
-	rehydrateFromLog(a, r.LogPath)
+	m.rehydrateFromLog(a, r.LogPath)
 	if mt, ok := logActivityTime(r.LogPath); ok {
 		a.SetLastEventAt(mt)
 	}
@@ -477,7 +478,15 @@ func watchPID(ctx context.Context, pid int, procStart string, done chan struct{}
 // (and cost/session stats) WITHOUT emitting events or running guardrails,
 // and returns the byte offset just past the last complete line — the point
 // from which live tailing should resume.
+func (m *Manager) rehydrateFromLog(a *Agent, path string) int64 {
+	return rehydrateFromLogWithArtifacts(a, path, a.TaskID, string(RoleFromName(a.Name)), m.artifacts)
+}
+
 func rehydrateFromLog(a *Agent, path string) int64 {
+	return rehydrateFromLogWithArtifacts(a, path, "", "", nil)
+}
+
+func rehydrateFromLogWithArtifacts(a *Agent, path, taskID, producerRole string, store *artifact.Store) int64 {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0
@@ -506,6 +515,7 @@ func rehydrateFromLog(a *Agent, path string) int64 {
 		if perr != nil || ev.Type == "" {
 			continue
 		}
+		ev = bindToolResultEvent(taskID, producerRole, store, ev)
 		ev.Timestamp = time.Now().UTC()
 		a.applyStreamEventState(ev)
 		a.AppendOutput(ev)

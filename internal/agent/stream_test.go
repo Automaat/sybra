@@ -727,9 +727,9 @@ func TestClaudeEventToStreamEvent(t *testing.T) {
 			want: StreamEvent{Type: "assistant", Content: "[Unknown]"},
 		},
 		{
-			name: "user tool result truncated at 500",
+			name: "user tool result stays raw in parser",
 			line: `{"type":"user","message":{"content":[{"type":"tool_result","content":"` + strings.Repeat("x", 600) + `"}]}}`,
-			want: StreamEvent{Type: "user", Content: strings.Repeat("x", 500) + "..."},
+			want: StreamEvent{Type: "user", Content: strings.Repeat("x", 600)},
 		},
 	}
 	for _, tt := range tests {
