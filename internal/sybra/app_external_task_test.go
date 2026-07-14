@@ -1,12 +1,19 @@
 package sybra
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/promptlab"
+	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -128,6 +135,95 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	}
 	if pk.Workflow != nil {
 		t.Errorf("pr-fix task: expected no task.created workflow, got %+v", pk.Workflow)
+	}
+}
+
+func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *testing.T) {
+	taskSvc, app := setupTaskService(t)
+	app.workflowEngine = taskSvc.workflowEngine
+	app.ctx = t.Context()
+
+	var (
+		mu       sync.Mutex
+		assigned []task.Task
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/api/TaskService/AssignTask":
+			var args []task.Task
+			_ = json.Unmarshal(body, &args)
+			if len(args) == 1 {
+				mu.Lock()
+				assigned = append(assigned, args[0])
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+		case "/api/TaskService/ListTasks":
+			_ = json.NewEncoder(w).Encode([]task.Task{})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role: config.ClusterRoleLeader,
+		Followers: []config.Follower{{
+			Name:      "pet-box",
+			Endpoints: []string{srv.URL},
+			Homes:     []string{"owner/pet"},
+		}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewRoster: %v", err)
+	}
+	app.cfg = cfg
+	app.assigner = clusterlead.NewAssigner(cfg, app.tasks, roster, func(string) bool { return false }, nil, app.logger)
+
+	write := func(tk task.Task) string {
+		data, err := task.Marshal(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(app.tasksDir, tk.ID+".md")
+		if err := fsutil.AtomicWrite(p, data); err != nil {
+			t.Fatal(err)
+		}
+		app.tasks.OnExternalUpdate(p)
+		return p
+	}
+
+	path := write(task.Task{
+		ID:           "ext-remote",
+		Title:        "remote mirror",
+		Status:       task.StatusTodo,
+		AgentMode:    task.AgentModeHeadless,
+		ProjectID:    "owner/pet",
+		AssignedNode: "pet-box",
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	})
+	app.maybeStartWorkflowForExternalTask(path)
+	app.wg.Wait()
+
+	got, err := app.tasks.Get("ext-remote")
+	if err != nil {
+		t.Fatalf("Get ext-remote: %v", err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("remote mirror must not start a local workflow, got %+v", got.Workflow)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(assigned) != 0 {
+		t.Fatalf("remote mirror re-routed %d times, want 0", len(assigned))
 	}
 }
 
