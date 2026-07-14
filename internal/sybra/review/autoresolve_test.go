@@ -298,6 +298,73 @@ func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 	}
 }
 
+func TestAutoResolveConflict_ApprovedPRSkipsCleanMergeAndDispatchesAgent(t *testing.T) {
+	h := newAutoResolveHarness(t, true)
+	tk, pr := h.newConflictTask(t)
+	pr.ReviewDecision = "APPROVED"
+	mergeCalled := false
+	pushCalled := false
+	h.r.tryCleanMergeFn = func(context.Context, string, string) (project.CleanMergeResult, error) {
+		mergeCalled = true
+		return project.CleanMergeCreated, nil
+	}
+	h.r.pushSyncFn = func(context.Context, string, string) error {
+		pushCalled = true
+		return nil
+	}
+
+	ok := h.r.dispatchFixIssues(context.Background(), tk.ID, []github.PRIssue{
+		{Kind: github.PRIssueConflict, TaskID: tk.ID, PR: pr},
+	})
+	if !ok {
+		t.Fatal("dispatchFixIssues = false, want true (agent dispatched)")
+	}
+	if mergeCalled {
+		t.Fatal("tryCleanMergeFn called; approved PR must skip clean-merge auto-resolve")
+	}
+	if pushCalled {
+		t.Fatal("pushSyncFn called; approved PR must not receive a branch-mutating push")
+	}
+	got, err := h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no workflow dispatched; approved PR should still get a fix agent")
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want agent dispatch instead of parking", got.Status)
+	}
+	prompt := got.Workflow.Variables["prompt"]
+	if !strings.Contains(prompt, "Approval preservation") {
+		t.Fatalf("prompt missing approval-preservation guard:\n%s", prompt)
+	}
+}
+
+func TestPrepareWorktree_ApprovedCIFailureUsesPRHeadCheckout(t *testing.T) {
+	h := newAutoResolveHarness(t, false)
+	tk, pr := h.newConflictTask(t)
+	pr.CIStatus = "FAILURE"
+	pr.Mergeable = "MERGEABLE"
+	pr.ReviewDecision = "APPROVED"
+
+	dir, ok := h.r.prepareWorktree(context.Background(), tk, github.PRIssue{
+		Kind:   github.PRIssueCIFailure,
+		TaskID: tk.ID,
+		PR:     pr,
+	})
+	if !ok {
+		t.Fatal("prepareWorktree rejected approved CI fix")
+	}
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --show-current: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != pr.HeadRefName {
+		t.Fatalf("checked-out branch = %q, want PR head %q", got, pr.HeadRefName)
+	}
+}
+
 // TestAutoResolveConflict_ConflictFallsThroughToAgent covers a merge that
 // genuinely reports conflicting hunks: the fast-path must not mark anything
 // handled and the normal pr-fix workflow must still be dispatched.

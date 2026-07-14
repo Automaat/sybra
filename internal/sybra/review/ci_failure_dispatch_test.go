@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,62 @@ func TestPollAndMonitorPRs_CIFailureDispatchesFix(t *testing.T) {
 	}
 	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueCIFailure) {
 		t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueCIFailure)
+	}
+}
+
+func TestPollAndMonitorPRs_ApprovedCIFailureDispatchesFixAgent(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusInReview),
+		PRNumber: task.Ptr(4242),
+		Branch:   task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingPR := github.PullRequest{
+		Number:         4242,
+		Repository:     "o/r",
+		HeadRefName:    "feat/x",
+		HeadSHA:        "sha-fail",
+		URL:            "https://github.com/o/r/pull/4242",
+		Mergeable:      "MERGEABLE",
+		CIStatus:       "FAILURE",
+		ReviewDecision: "APPROVED",
+		Author:         "me",
+	}
+
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+
+	r.pollAndMonitorPRs(context.Background())
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("no pr-fix workflow dispatched for an approved failing-CI PR")
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("status = %q, want agent dispatch instead of parking", got.Status)
+	}
+	prompt := got.Workflow.Variables["prompt"]
+	if !strings.Contains(prompt, "Approval preservation") {
+		t.Fatalf("prompt missing approval-preservation guard:\n%s", prompt)
+	}
+	if retries := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); retries != 1 {
+		t.Fatalf("ci_failure retries = %d, want 1; fix was dispatched", retries)
 	}
 }
 
