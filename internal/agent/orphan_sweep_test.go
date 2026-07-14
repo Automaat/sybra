@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -74,6 +76,29 @@ func TestReapOrphanProviderProcesses_ReapsOwnedHeadlessMCPHelper(t *testing.T) {
 	waitForProcessExit(t, proc.Process.Pid)
 }
 
+func TestReapOrphanProviderProcesses_ReapsOwnedNonProviderDescendantAfterProviderExit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	childPID := spawnOwnedProviderDescendantProcess(t, root, processOwner{
+		AgentID: "agent-1",
+		TaskID:  "task-1",
+		Mode:    "headless",
+	})
+
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 1 {
+		t.Fatalf("reaped = %d, want 1", got)
+	}
+	waitForProcessExit(t, childPID)
+}
+
 func TestReapOrphanProviderProcesses_SkipsTrackedOwnedHeadlessMCPHelper(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("linux-only process enumeration test")
@@ -118,6 +143,29 @@ func TestReapOrphanProviderProcesses_SkipsInteractiveOwnedMCPHelper(t *testing.T
 	if !processAlive(proc.Process.Pid) {
 		t.Fatal("interactive helper was killed")
 	}
+}
+
+func TestReapOrphanProviderProcesses_ReapsDeletedCWDOrphan(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{})
+	root := t.TempDir()
+	proc, cwd := spawnGenericProcess(t, root, "sleep")
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatalf("remove cwd: %v", err)
+	}
+	waitForDeletedCWD(t, proc.Process.Pid)
+
+	if got := m.ReapOrphanProviderProcesses(context.Background(), []string{root}); got != 1 {
+		t.Fatalf("reaped = %d, want 1", got)
+	}
+	waitForProcessExit(t, proc.Process.Pid)
 }
 
 func TestReapOrphanProviderProcesses_CanceledContextLinux(t *testing.T) {
@@ -183,6 +231,36 @@ func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	return cmd
 }
 
+func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner processOwner) int {
+	t.Helper()
+
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write provider script: %v", err)
+	}
+	cwd := filepath.Join(root, "worktrees", "task-1")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	cmd := exec.Command(script)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), processOwnerAssignments(owner)...)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start provider script: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait provider script: %v", err)
+	}
+	childPID := waitForOwnedProcessUnderRoot(t, []string{cwd}, owner, "sleep")
+	t.Cleanup(func() {
+		if processAlive(childPID) {
+			_ = syscall.Kill(childPID, syscall.SIGKILL)
+		}
+	})
+	return childPID
+}
+
 func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner) *exec.Cmd {
 	t.Helper()
 
@@ -208,6 +286,59 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()
 	return cmd
+}
+
+func spawnGenericProcess(t *testing.T, root, name string) (*exec.Cmd, string) {
+	t.Helper()
+
+	bin, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s not found: %v", name, err)
+	}
+	cwd := filepath.Join(root, "worktrees", "task-1")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	cmd := exec.Command(bin, "30")
+	cmd.Dir = cwd
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start generic process: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	go func() { _ = cmd.Wait() }()
+	return cmd, cwd
+}
+
+func waitForOwnedProcessUnderRoot(t *testing.T, roots []string, owner processOwner, wantCommand string) int {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		procs := listProviderProcessesUnderRoots(context.Background(), roots)
+		for _, proc := range procs {
+			if proc.Owner == owner && proc.Command == wantCommand {
+				return proc.PID
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("owned process %q under %v not observed", wantCommand, roots)
+	return 0
+}
+
+func waitForDeletedCWD(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	link := filepath.Join("/proc", strconv.Itoa(pid), "cwd")
+	for time.Now().Before(deadline) {
+		cwd, err := os.Readlink(link)
+		if err == nil && normalizeObservedProcessPath(cwd) != cwd {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d cwd never showed deleted suffix", pid)
 }
 
 func waitForProcessExit(t *testing.T, pid int) {

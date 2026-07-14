@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +208,65 @@ func TestRunStartupCleanup_GcOrphanChatIsTrashedNotLost(t *testing.T) {
 	if len(entries) != 1 || entries[0].ID != chat.ID {
 		t.Fatalf("ListTrash() = %+v, want the gc'd chat task preserved in trash", entries)
 	}
+}
+
+func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only process enumeration test")
+	}
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	logger := discardLogger()
+	agents := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	worktreesDir := t.TempDir()
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: worktreesDir,
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	orphanCWD := filepath.Join(worktreesDir, "orphan-task")
+	if err := os.MkdirAll(orphanCWD, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := exec.Command(sleepBin, "30")
+	proc.Dir = orphanCWD
+	if err := proc.Start(); err != nil {
+		t.Fatalf("start orphan process: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Process.Kill() })
+	go func() { _ = proc.Wait() }()
+
+	if err := os.RemoveAll(orphanCWD); err != nil {
+		t.Fatalf("remove orphan cwd: %v", err)
+	}
+	waitForDeletedRecoveryCWD(t, proc.Process.Pid)
+
+	var wg sync.WaitGroup
+	r := &recovery.Recovery{
+		Tasks:       tasks,
+		Agents:      agents,
+		Worktrees:   wm,
+		Logger:      logger,
+		Throttle:    logging.NewErrorThrottle(),
+		WG:          &wg,
+		LogDir:      t.TempDir(),
+		OrphanRoots: []string{worktreesDir},
+	}
+	r.RunStartupCleanup(context.Background())
+	wg.Wait()
+	waitForRecoveryProcessExit(t, proc.Process.Pid)
 }
 
 // TestRunStartupCleanup_PruneTrashRemovesExpiredGenerations verifies
@@ -1571,4 +1633,33 @@ func TestPruneTrash_NilCommitBeforePruneIsSafe(t *testing.T) {
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
 	r.PruneTrash(context.Background())
+}
+
+func waitForDeletedRecoveryCWD(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	link := filepath.Join("/proc", strconv.Itoa(pid), "cwd")
+	for time.Now().Before(deadline) {
+		cwd, err := os.Readlink(link)
+		if err == nil && strings.HasSuffix(cwd, " (deleted)") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d cwd never showed deleted suffix", pid)
+}
+
+func waitForRecoveryProcessExit(t *testing.T, pid int) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	procDir := filepath.Join("/proc", strconv.Itoa(pid))
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(procDir); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d still alive after startup cleanup", pid)
 }
