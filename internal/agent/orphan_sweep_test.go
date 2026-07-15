@@ -288,18 +288,18 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 	return cmd
 }
 
-func spawnGenericProcess(t *testing.T, root, name string) (*exec.Cmd, string) {
+func spawnGenericProcess(t *testing.T, root, name string) (cmd *exec.Cmd, cwd string) {
 	t.Helper()
 
 	bin, err := exec.LookPath(name)
 	if err != nil {
 		t.Fatalf("%s not found: %v", name, err)
 	}
-	cwd := filepath.Join(root, "worktrees", "task-1")
+	cwd = filepath.Join(root, "worktrees", "task-1")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
-	cmd := exec.Command(bin, "30")
+	cmd = exec.Command(bin, "30")
 	cmd.Dir = cwd
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start generic process: %v", err)

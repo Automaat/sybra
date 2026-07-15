@@ -75,11 +75,7 @@ func processOwnerFromAnyEnv(assignments []string) processOwner {
 		return owner
 	}
 	if owner := mcpOwnerFromEnvAssignments(assignments); owner != (mcpOwner{}) {
-		return processOwner{
-			AgentID: owner.AgentID,
-			TaskID:  owner.TaskID,
-			Mode:    owner.Mode,
-		}
+		return processOwner(owner)
 	}
 	return processOwner{}
 }
