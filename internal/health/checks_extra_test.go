@@ -79,6 +79,18 @@ func TestCheckAgentRetryLoopsIgnoresSuccesses(t *testing.T) {
 	}
 }
 
+func TestCheckAgentRetryLoopsDedupesLegacyFailedCompatibilityEvent(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	events := []audit.Event{
+		{Type: audit.EventAgentCompleted, AgentID: "a1", TaskID: "t1", Timestamp: now, Data: map[string]any{"state": "error", "role": ""}},
+		{Type: audit.EventAgentFailed, AgentID: "a1", TaskID: "t1", Timestamp: now.Add(time.Second)},
+	}
+	if got := checkAgentRetryLoops(events, now); len(got) != 0 {
+		t.Fatalf("compat duplicate must count as one failed run, got %d findings", len(got))
+	}
+}
+
 func TestCheckTriageMismatch(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()

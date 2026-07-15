@@ -171,19 +171,20 @@ func (c *Checker) check(ctx context.Context) {
 
 func buildStats(events []audit.Event) Stats {
 	s := Stats{CostByRole: make(map[string]float64)}
-
-	for _, e := range events {
-		switch e.Type {
-		case audit.EventAgentCompleted:
-			s.TotalAgentRuns++
-			cost, _ := e.Data["cost_usd"].(float64)
-			s.TotalCostUSD += cost
-			role, _ := e.Data["role"].(string)
-			s.CostByRole[roleLabel(role)] += cost
-		case audit.EventAgentFailed:
-			s.TotalAgentRuns++
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal {
+			continue
+		}
+		s.TotalAgentRuns++
+		if run.Failed {
 			s.FailedAgentRuns++
 		}
+		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
+		s.TotalCostUSD += cost
+		role, _ := run.TerminalEvent.Data["role"].(string)
+		s.CostByRole[roleLabel(role)] += cost
 	}
 
 	if s.TotalAgentRuns > 0 {

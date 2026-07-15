@@ -31,12 +31,16 @@ const (
 // checkFailureRate flags when agent failure rate exceeds 30% with 5+ runs.
 func checkFailureRate(events []audit.Event, now time.Time) []Finding {
 	var completed, failed int
-	for _, e := range events {
-		switch e.Type {
-		case audit.EventAgentCompleted:
-			completed++
-		case audit.EventAgentFailed:
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal {
+			continue
+		}
+		if run.Failed {
 			failed++
+		} else {
+			completed++
 		}
 	}
 
@@ -70,12 +74,14 @@ func checkCostOutliers(events []audit.Event, now time.Time) []Finding {
 	var findings []Finding
 	var dailyTotal float64
 
-	for _, e := range events {
-		if e.Type != audit.EventAgentCompleted {
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal {
 			continue
 		}
-		cost, _ := e.Data["cost_usd"].(float64)
-		role, _ := e.Data["role"].(string)
+		cost, _ := run.TerminalEvent.Data["cost_usd"].(float64)
+		role, _ := run.TerminalEvent.Data["role"].(string)
 		dailyTotal += cost
 
 		threshold, ok := costThresholds[role]
@@ -86,14 +92,14 @@ func checkCostOutliers(events []audit.Event, now time.Time) []Finding {
 			continue
 		}
 
-		logFile, _ := e.Data["log_file"].(string)
+		logFile, _ := run.TerminalEvent.Data["log_file"].(string)
 		findings = append(findings, Finding{
 			Category:    CatCostOutlier,
 			Severity:    SeverityWarning,
 			Title:       fmt.Sprintf("%s agent cost $%.2f (threshold $%.2f)", roleLabel(role), cost, threshold),
-			Description: fmt.Sprintf("Agent run on task %s cost $%.2f, exceeding the $%.2f threshold for %s agents", e.TaskID, cost, threshold, roleLabel(role)),
-			TaskID:      e.TaskID,
-			AgentID:     e.AgentID,
+			Description: fmt.Sprintf("Agent run on task %s cost $%.2f, exceeding the $%.2f threshold for %s agents", run.TaskID, cost, threshold, roleLabel(role)),
+			TaskID:      run.TaskID,
+			AgentID:     run.AgentID,
 			Role:        role,
 			LogFile:     logFile,
 			Evidence: map[string]any{
@@ -126,9 +132,11 @@ func checkCostOutliers(events []audit.Event, now time.Time) []Finding {
 func checkStuckTasks(events []audit.Event, tasks []task.Task, now time.Time) []Finding {
 	// Build set of tasks that had a completion/failure event.
 	resolved := make(map[string]bool)
-	for _, e := range events {
-		if e.Type == audit.EventAgentCompleted || e.Type == audit.EventAgentFailed {
-			resolved[e.TaskID] = true
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if run.Terminal && run.TaskID != "" {
+			resolved[run.TaskID] = true
 		}
 	}
 
@@ -282,11 +290,13 @@ func checkCostDrift(todayEvents, weekEvents []audit.Event, now time.Time) []Find
 func avgCost(events []audit.Event) (avg float64, n int) {
 	var total float64
 	var count int
-	for _, e := range events {
-		if e.Type != audit.EventAgentCompleted {
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal {
 			continue
 		}
-		if cost, ok := e.Data["cost_usd"].(float64); ok {
+		if cost, ok := run.TerminalEvent.Data["cost_usd"].(float64); ok {
 			total += cost
 			count++
 		}

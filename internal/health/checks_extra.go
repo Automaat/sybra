@@ -26,17 +26,9 @@ var statusDwellThresholds = map[string]float64{
 // emits failures as agent.completed with state != "stopped"; the legacy
 // agent.failed type is also accepted for forward/test compatibility.
 func isAgentFailure(e audit.Event) bool {
-	if e.Type == audit.EventAgentFailed {
-		return true
-	}
-	if e.Type != audit.EventAgentCompleted {
-		return false
-	}
-	state, _ := e.Data["state"].(string)
-	return state != "" && state != string(stoppedState)
+	runs := audit.NormalizeAgentRuns([]audit.Event{e})
+	return len(runs) == 1 && runs[0].Terminal && runs[0].Failed
 }
-
-const stoppedState = "stopped"
 
 // checkAgentRetryLoops flags tasks that have 2+ failed agent runs in the
 // window — an indicator that headless retries are not converging and the task
@@ -44,16 +36,15 @@ const stoppedState = "stopped"
 func checkAgentRetryLoops(events []audit.Event, now time.Time) []Finding {
 	failuresPerTask := make(map[string]int)
 	lastRole := make(map[string]string)
-	for _, e := range events {
-		if !isAgentFailure(e) {
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal || !run.Failed || run.TaskID == "" {
 			continue
 		}
-		if e.TaskID == "" {
-			continue
-		}
-		failuresPerTask[e.TaskID]++
-		if role, ok := e.Data["role"].(string); ok {
-			lastRole[e.TaskID] = role
+		failuresPerTask[run.TaskID]++
+		if role, ok := run.TerminalEvent.Data["role"].(string); ok {
+			lastRole[run.TaskID] = role
 		}
 	}
 

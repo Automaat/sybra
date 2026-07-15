@@ -184,6 +184,7 @@ func TestBackfillOutcomes(t *testing.T) {
 		{"completed_stopped", audit.EventAgentCompleted, "stopped", "completed"},
 		{"completed_other_state", audit.EventAgentCompleted, "error", "failed"},
 		{"failed_event", audit.EventAgentFailed, "error", "failed"},
+		{"completed_missing_state", audit.EventAgentCompleted, "", "completed"},
 	}
 
 	for _, tc := range tests {
@@ -192,12 +193,16 @@ func TestBackfillOutcomes(t *testing.T) {
 			auditDir := newAuditDir(t)
 
 			ts := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+			data := map[string]any{}
+			if tc.state != "" {
+				data["state"] = tc.state
+			}
 			writeAuditFile(t, auditDir, "2024-03-01.ndjson", []audit.Event{
 				{
 					Timestamp: ts,
 					Type:      tc.eventType,
 					AgentID:   "a1",
-					Data:      map[string]any{"state": tc.state},
+					Data:      data,
 				},
 			})
 
@@ -213,6 +218,44 @@ func TestBackfillOutcomes(t *testing.T) {
 				t.Errorf("outcome: got %s, want %s", resp.RecentRuns[0].Outcome, tc.wantOutcome)
 			}
 		})
+	}
+}
+
+func TestBackfillDedupesLegacyFailedCompatibilityEvent(t *testing.T) {
+	s, _ := newTestStore(t)
+	auditDir := newAuditDir(t)
+
+	ts := time.Date(2024, 3, 2, 12, 0, 0, 0, time.UTC)
+	writeAuditFile(t, auditDir, "2024-03-02.ndjson", []audit.Event{
+		{
+			Timestamp: ts,
+			Type:      audit.EventAgentCompleted,
+			AgentID:   "a1",
+			TaskID:    "t1",
+			Data:      map[string]any{"state": "error", "cost_usd": 0.2},
+		},
+		{
+			Timestamp: ts.Add(time.Minute),
+			Type:      audit.EventAgentFailed,
+			AgentID:   "a1",
+			TaskID:    "t1",
+			Data:      map[string]any{"cost_usd": 9.9},
+		},
+	})
+
+	if err := s.Backfill(auditDir); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := s.Query()
+	if len(resp.RecentRuns) != 1 {
+		t.Fatalf("expected 1 deduped run, got %d", len(resp.RecentRuns))
+	}
+	if resp.RecentRuns[0].Outcome != "failed" {
+		t.Fatalf("outcome = %q, want failed", resp.RecentRuns[0].Outcome)
+	}
+	if resp.RecentRuns[0].CostUSD != 0.2 {
+		t.Fatalf("cost = %v, want canonical completed-event cost 0.2", resp.RecentRuns[0].CostUSD)
 	}
 }
 

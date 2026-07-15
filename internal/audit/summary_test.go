@@ -14,12 +14,13 @@ func TestSummarize(t *testing.T) {
 		{Timestamp: base.Add(time.Minute), Type: EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "new", "to": "todo"}},
 		{Timestamp: base.Add(2 * time.Minute), Type: EventAgentStarted, TaskID: "t1", AgentID: "a1"},
 		{Timestamp: base.Add(3 * time.Minute), Type: EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "todo", "to": "in-progress"}},
-		{Timestamp: base.Add(time.Hour), Type: EventAgentCompleted, TaskID: "t1", AgentID: "a1", Data: map[string]any{"cost_usd": 0.15, "duration_s": 3420.0}},
+		{Timestamp: base.Add(time.Hour), Type: EventAgentCompleted, TaskID: "t1", AgentID: "a1", Data: map[string]any{"cost_usd": 0.15, "duration_s": 3420.0, "state": "stopped"}},
 		{Timestamp: base.Add(time.Hour + time.Minute), Type: EventTaskStatusChanged, TaskID: "t1", Data: map[string]any{"from": "in-progress", "to": "done"}},
 
 		{Timestamp: base, Type: EventTaskCreated, TaskID: "t2"},
 		{Timestamp: base.Add(time.Minute), Type: EventAgentStarted, TaskID: "t2", AgentID: "a2"},
-		{Timestamp: base.Add(5 * time.Minute), Type: EventAgentFailed, TaskID: "t2", AgentID: "a2", Data: map[string]any{"cost_usd": 0.05}},
+		{Timestamp: base.Add(5 * time.Minute), Type: EventAgentCompleted, TaskID: "t2", AgentID: "a2", Data: map[string]any{"cost_usd": 0.05, "state": "error"}},
+		{Timestamp: base.Add(6 * time.Minute), Type: EventAgentFailed, TaskID: "t2", AgentID: "a2", Data: map[string]any{"cost_usd": 9.99}},
 
 		{Timestamp: base.Add(10 * time.Minute), Type: EventPlanApproved, TaskID: "t3"},
 		{Timestamp: base.Add(11 * time.Minute), Type: EventPlanRejected, TaskID: "t4"},
