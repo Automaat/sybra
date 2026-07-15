@@ -17,7 +17,9 @@ steps:
   # `notest`/docs/library scopes only exempt the app start; the test-runner
   # still has to provide CLI/test-harness evidence and always runs. `trivial`
   # skips review + testing for trivially mechanical tasks. `skip-testing`
-  # skips only this tester, preserving the earlier code-review gate.
+  # skips only this tester, preserving the earlier code-review gate. Small,
+  # non-test chores also skip this tester after code review; larger chores and
+  # chores that touch tests still get adversarial testing.
   - id: maybe_test
     name: Testing Decision
     type: condition
@@ -32,7 +34,34 @@ steps:
           operator: contains
           value: skip-testing
         goto: skip_testing
+      - when:
+          field: task.tags
+          operator: contains
+          value: chore
+        goto: maybe_skip_chore_size
       - goto: run_test
+
+  - id: maybe_skip_chore_size
+    name: Chore Testing Size Decision
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: small
+        goto: maybe_skip_chore_test_tag
+      - goto: run_test
+
+  - id: maybe_skip_chore_test_tag
+    name: Chore Testing Risk Decision
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: test
+        goto: run_test
+      - goto: skip_testing
 
   # Skip target: go straight to ready-pr, same terminus a PASS verdict reaches
   # via route_test below.
