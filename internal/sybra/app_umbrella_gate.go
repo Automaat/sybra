@@ -156,7 +156,6 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 		st.anyCancelled = true
 	case task.StatusHumanRequired:
 		st.anyHR = true
-		st.active++ // a stuck child still occupies a slot until resolved
 	case task.StatusBlocked:
 		if slices.Contains(t.Tags, umbrellaGatedTag) {
 			// Gate-blocked, awaiting its dependencies — not stuck, handled by
@@ -167,9 +166,10 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 		// a human-review flip for a contained Sybra bug). depsSatisfied requires
 		// a dependency to reach Done, so a dependent chain waiting on this child
 		// would otherwise stall forever with no escalation. Surface it like any
-		// other stuck child.
+		// other stuck child, but do not count it against the parallelism cap:
+		// blocked work cannot make progress, and consuming all slots would freeze
+		// unrelated ready children under the same umbrella.
 		st.anyBlocked = true
-		st.active++ // a stuck child still occupies a slot until resolved
 	default:
 		if isRunningChild(t.Status) && !slices.Contains(t.Tags, umbrellaGatedTag) {
 			st.active++
@@ -181,7 +181,7 @@ func accumulateChild(st *umbrellaState, t *task.Task) {
 // i.e. it has been released and is somewhere in the pipeline but not finished.
 func isRunningChild(s task.Status) bool {
 	switch s {
-	case task.StatusBlocked, task.StatusNew, task.StatusDone, task.StatusCancelled:
+	case task.StatusBlocked, task.StatusNew, task.StatusHumanRequired, task.StatusDone, task.StatusCancelled:
 		return false
 	default:
 		return true
