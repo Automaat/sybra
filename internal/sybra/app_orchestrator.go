@@ -166,7 +166,10 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 	if skipTaskCreatedWorkflow(t) {
 		return
 	}
-	if boardReconcileWorkflowActive(t) || a.agents.HasRunningAgentForTask(taskID) {
+	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
+		return
+	}
+	if a.agents.HasRunningAgentForTask(taskID) {
 		return
 	}
 	if err := a.workflowEngine.StartWorkflow(taskID, "simple-task-plan"); err != nil &&
