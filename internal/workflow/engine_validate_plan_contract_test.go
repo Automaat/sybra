@@ -226,15 +226,26 @@ func TestValidatePlanContractForTask_AcceptsCopiedContractCheckboxCriteria(t *te
 		"- [ ] Stats can group cost, duration, failures, and outcomes by actual skill execution mode.\n" +
 		"- [ ] No work-derived content or absolute work paths are exposed publicly.\n" +
 		"- [ ] Legacy data remains readable.\n"
-	contract := strings.Replace(validPlanContract("fa6919fc"),
-		`"acceptance_criteria": ["implementation prompt includes the contract"]`,
-		`"acceptance_criteria": [`+
-			`"[ ] Stats can group cost, duration, failures, and outcomes by actual skill execution mode.", `+
-			`"[ ] No work-derived content or absolute work paths are exposed publicly.", `+
-			`"[ ] Legacy data remains readable."]`, 1)
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "checkbox marker", prefix: "[ ] "},
+		{name: "list checkbox marker", prefix: "- [ ] "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contract := strings.Replace(validPlanContract("fa6919fc"),
+				`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+				`"acceptance_criteria": [`+
+					fmt.Sprintf("%q, ", tc.prefix+"Stats can group cost, duration, failures, and outcomes by actual skill execution mode.")+
+					fmt.Sprintf("%q, ", tc.prefix+"No work-derived content or absolute work paths are exposed publicly.")+
+					fmt.Sprintf("%q", tc.prefix+"Legacy data remains readable.")+
+					`]`, 1)
 
-	if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
-		t.Fatalf("problems = %v, want none", problems)
+			if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+				t.Fatalf("problems = %v, want none", problems)
+			}
+		})
 	}
 }
 

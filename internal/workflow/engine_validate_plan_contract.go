@@ -261,6 +261,9 @@ func criterionCovered(source string, contractCriteria []string) bool {
 }
 
 func normalizeCriterionText(s string) string {
+	if item, ok := listItemText(strings.TrimSpace(s)); ok {
+		return normalizeCriterionWhitespace(item)
+	}
 	return normalizeCriterionWhitespace(normalizeListItemText(s))
 }
 
