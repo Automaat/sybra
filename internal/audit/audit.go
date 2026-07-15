@@ -84,6 +84,13 @@ const (
 	// EventAgentPermissionDenied is emitted once per auto-mode classifier denial
 	// observed during a headless claude run. Batched at completion time.
 	EventAgentPermissionDenied = "agent.permission_denied"
+	// EventAgentMalformedToolCorrected is emitted once per malformed tool call
+	// that Sybra recovered in-session by sending a bounded correction turn.
+	EventAgentMalformedToolCorrected = "agent.malformed_tool_corrected"
+	// EventAgentMalformedToolUnrecoverable is emitted once per malformed tool
+	// call that exhausted in-session recovery and was handed off to workflow
+	// reschedule/failover.
+	EventAgentMalformedToolUnrecoverable = "agent.malformed_tool_unrecoverable"
 	// EventAgentSandboxDisabled is emitted once per dispatch when a task's
 	// per-task Sandbox escape hatch (sandbox: false) overrides the configured
 	// OS-level process-sandbox default to "off", so an operator reviewing the

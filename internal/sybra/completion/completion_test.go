@@ -209,10 +209,10 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint")
 
-		stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, nil)
-		if !stalled || rateLimited || stopStalled || !checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, stopStalled, checkpointStopped)
+		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
+		if !stalled || rateLimited || malformedTool || stopStalled || !checkpointStopped {
+			t.Fatalf("classifyStall(checkpoint) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
+				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
 		}
 	})
 
@@ -221,10 +221,21 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		ag.MarkStopped()
 		ag.SetEscalationReason("checkpoint_failed")
 
-		stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, errors.New("checkpoint commit failed"))
-		if stalled || rateLimited || stopStalled || checkpointStopped {
-			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v stopStalled=%v checkpointStopped=%v",
-				stalled, rateLimited, stopStalled, checkpointStopped)
+		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, errors.New("checkpoint commit failed"))
+		if stalled || rateLimited || malformedTool || stopStalled || checkpointStopped {
+			t.Fatalf("classifyStall(checkpoint_failed) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
+				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
+		}
+	})
+
+	t.Run("malformed tool call stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError("malformed_tool_call", "tool rejected malformed input")
+
+		stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, nil)
+		if !stalled || rateLimited || !malformedTool || stopStalled || checkpointStopped {
+			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v stopStalled=%v checkpointStopped=%v",
+				stalled, rateLimited, malformedTool, stopStalled, checkpointStopped)
 		}
 	})
 }

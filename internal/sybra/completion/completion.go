@@ -227,6 +227,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	}
 
 	h.emitPermissionDenialAudits(ag)
+	h.emitMalformedToolCallAudits(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
@@ -311,6 +312,31 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 	}
 }
 
+func (h *Handler) emitMalformedToolCallAudits(ag *agent.Agent) {
+	for _, record := range ag.GetMalformedToolCalls() {
+		eventType := audit.EventAgentMalformedToolCorrected
+		if record.Outcome == "" {
+			continue
+		}
+		if record.Outcome == "unrecoverable" {
+			eventType = audit.EventAgentMalformedToolUnrecoverable
+		}
+		tool := record.Tool
+		if tool == "" {
+			tool = "unknown"
+		}
+		toolID := record.ToolUseID
+		if toolID == "" {
+			toolID = "unknown"
+		}
+		h.logAudit(eventType, ag.TaskID, ag.ID, map[string]any{
+			"provider":    ag.Provider,
+			"tool":        tool,
+			"tool_use_id": toolID,
+		})
+	}
+}
+
 func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ExperimentID != "" {
 		updates.ExperimentID = task.Ptr(ag.ExperimentID)
@@ -366,9 +392,10 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
 // Returns false if the caller should return immediately. Signal kills and
-// Sybra-initiated stops stall for recovery; rate limits immediately re-drive
-// the same step so provider failover can choose a healthy peer. Auth failures
-// fall through (need human login) — they take the normal failed path.
+// Sybra-initiated stops stall for recovery; rate limits and malformed tool
+// calls immediately re-drive the same step so provider failover can choose a
+// healthy peer. Auth failures fall through (need human login) — they take the
+// normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
@@ -386,15 +413,15 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if h.workflowEngine == nil {
 		return true
 	}
-	stalled, rateLimited, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
+	stalled, rateLimited, malformedTool, stopStalled, checkpointStopped := classifyStall(ag, exitErr)
 	if stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "checkpoint", checkpointStopped)
+			"signaled", isSignalKill(exitErr), "stopped", stopStalled, "rate_limited", rateLimited, "malformed_tool", malformedTool, "checkpoint", checkpointStopped)
 		switch {
 		case checkpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
-		case rateLimited:
+		case rateLimited || malformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
 			h.workflowEngine.ClearAgentStep(ag.ID)
@@ -411,14 +438,15 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	return true
 }
 
-// classifyStall reports whether a completion is an infra stall — signal kill,
-// stop-before-result, or provider rate limit — rather than the agent's actual
-// terminal outcome. buildRunPatch and notifyWorkflowEngine both key off this
-// so the persisted AgentRun.Outcome and the workflow's Success signal can
-// never diverge: a stalled run is retried, so it must be neither a persisted
-// success nor a persisted failure.
-func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopStalled, checkpointStopped bool) {
+// classifyStall reports whether a completion is a retryable stall — signal
+// kill, stop-before-result, provider rate limit, or malformed tool call —
+// rather than the agent's actual terminal outcome. buildRunPatch and
+// notifyWorkflowEngine both key off this so the persisted AgentRun.Outcome and
+// the workflow's Success signal can never diverge: a stalled run is retried,
+// so it must be neither a persisted success nor a persisted failure.
+func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malformedTool, stopStalled, checkpointStopped bool) {
 	rateLimited = isRateLimitedRun(ag, exitErr)
+	malformedTool = ag.GetErrorKind() == "malformed_tool_call"
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
@@ -426,8 +454,8 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopSt
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == "checkpoint_failed"
 	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == "checkpoint"
 	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
-	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || checkpointStopped
-	return stalled, rateLimited, stopStalled, checkpointStopped
+	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || checkpointStopped
+	return stalled, rateLimited, malformedTool, stopStalled, checkpointStopped
 }
 
 // runTerminalOutcome derives the AgentRun.Outcome value for a completed run:
@@ -435,7 +463,7 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, stopSt
 // otherwise success/failure keyed off the same exitErr notifyWorkflowEngine
 // uses for AgentCompletion.Success.
 func runTerminalOutcome(ag *agent.Agent, exitErr error) string {
-	if stalled, _, _, _ := classifyStall(ag, exitErr); stalled {
+	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
 		return ""
 	}
 	if exitErr == nil {

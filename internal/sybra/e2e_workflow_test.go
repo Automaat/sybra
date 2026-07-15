@@ -870,6 +870,117 @@ func setupE2EMultiProvider(t *testing.T, provider string, scenarios []string) *e
 	return env
 }
 
+const testMalformedToolWorkflowYAML = `id: test-malformed-tool
+name: Test Malformed Tool
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      provider: claude
+      model: sonnet
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+func TestE2E_MalformedToolCall_RecoversInSession(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"malformed_tool_call_once"})
+	writeWorkflowFixture(t, env, "test-malformed-tool", testMalformedToolWorkflowYAML)
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("malformed tool recovers", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-malformed-tool"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "single-run malformed tool workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusDone
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.AgentRuns) != 1 {
+		t.Fatalf("AgentRuns len = %d, want 1 (no restart after malformed tool call)", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].Provider != "claude" {
+		t.Fatalf("AgentRuns[0].Provider = %q, want claude", tk.AgentRuns[0].Provider)
+	}
+}
+
+func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{"malformed_tool_call_repeat", "success"})
+	writeWorkflowFixture(t, env, "test-malformed-tool", testMalformedToolWorkflowYAML)
+	if err := env.agents.ReplaceRuntimeConfig(agent.ManagerRuntimeConfig{
+		DefaultProvider:   "claude",
+		HeadlessSteerable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.agents.SetHealthGate(newCooldownGate())
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("malformed tool failover", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-malformed-tool"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "repeated malformed tool call fails over and completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted && tk.Status == task.StatusDone
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2 (claude malformed run + codex fallback)", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].Provider != "claude" || tk.AgentRuns[1].Provider != "codex" {
+		t.Fatalf("AgentRun providers = [%s %s], want [claude codex]", tk.AgentRuns[0].Provider, tk.AgentRuns[1].Provider)
+	}
+	if tk.Status == task.StatusHumanRequired {
+		t.Fatal("task escalated to human-required; want automatic provider fallback")
+	}
+}
+
 func TestE2E_FullLifecycle_TriageThenImplement(t *testing.T) {
 	forEachProvider(t, func(t *testing.T, p providerSpec) {
 		env := setupE2EMultiProvider(t, p.provider, []string{"triage", "success", "success"})
