@@ -347,7 +347,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		t.Fatal(err)
 	}
 	staleInboundReview := idle("stale-inbound-review", task.StatusInReview)
-	staleReviewCompletedAt := staleInboundReview.StatusChangedAt.Add(time.Second)
+	staleReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
 	staleInboundReview, err = a.tasks.UpdateMap(staleInboundReview.ID, map[string]any{
 		"tags":         []string{"review"},
 		"project_id":   "Automaat/lightroom-mcp",
@@ -370,6 +370,24 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		"project_id":   "Automaat/lightroom-mcp",
 		"pr_number":    152,
 		"review_phase": "approved",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recentInboundReview := idle("recent-inbound-review", task.StatusInReview)
+	recentReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown / 2)
+	recentInboundReview, err = a.tasks.UpdateMap(recentInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    153,
+		"review_phase": "needs-approval",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "pr-review",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &recentReviewCompletedAt,
+			Variables:   map[string]string{},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -521,6 +539,15 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	}
 	if gotApprovedInboundReview.Workflow != nil {
 		t.Fatalf("approved inbound review should stay idle, got %+v", gotApprovedInboundReview.Workflow)
+	}
+	gotRecentInboundReview, err := a.tasks.Get(recentInboundReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRecentInboundReview.Workflow == nil ||
+		gotRecentInboundReview.Workflow.WorkflowID != "pr-review" ||
+		gotRecentInboundReview.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("recent completed inbound review should not re-dispatch, got %+v", gotRecentInboundReview.Workflow)
 	}
 	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
 	if err != nil {
