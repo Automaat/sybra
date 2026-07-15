@@ -91,7 +91,11 @@ func NormalizeAgentRuns(events []Event) []RunLifecycle {
 
 	out := make([]RunLifecycle, 0, len(order))
 	for _, key := range order {
-		run := *runs[key]
+		runp := runs[key]
+		if runp == nil {
+			continue
+		}
+		run := *runp
 		run.Reattached = run.Terminal && !run.Started
 		run.Lost = run.Started && !run.Terminal
 		run.Compatibility = runCompatibility(run)
