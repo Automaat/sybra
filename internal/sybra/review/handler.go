@@ -770,7 +770,9 @@ func (r *Handler) evictReadyPRCache(repo string, number int) {
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
 // stamping the terminal outcome and emitting the audit + task.landed events the
-// evaluation scorecard reads. Skips tasks with a still-running agent.
+// evaluation scorecard reads. If an agent is still running for a task whose PR
+// already landed, the terminal GitHub state wins: stop the agent first, then
+// close the task.
 func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
@@ -783,8 +785,8 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
-			r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
-			continue
+			r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+			r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
 		}
 		// Flip to done immediately with the base outcome — the status transition
 		// must never wait on GitHub enrichment.

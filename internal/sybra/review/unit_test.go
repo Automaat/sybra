@@ -2189,6 +2189,60 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	}
 }
 
+func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+
+	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeInteractive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(1445),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	claim, ok := agentMgr.TryClaimDispatch(created.ID)
+	if !ok {
+		t.Fatal("claim dispatch")
+	}
+	defer claim.Release()
+	if !agentMgr.HasRunningAgentForTask(created.ID) {
+		t.Fatal("test setup: task should read as running")
+	}
+
+	r := &Handler{
+		logger: logger, emit: func(string, any) {},
+		tasks:     tasks,
+		agents:    agentMgr,
+		prTracker: github.NewIssueTracker(time.Minute),
+	}
+
+	r.advanceClosedTaskPRsWithFetch(
+		context.Background(),
+		nil,
+		[]github.TaskMatcher{{ID: created.ID, PRNumber: 1445, ProjectID: "o/r"}},
+		func(string, int) (github.PRState, error) { return github.PRState{State: "MERGED"}, nil },
+	)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone || got.Outcome != "merged" {
+		t.Fatalf("status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
+	}
+}
+
 func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
