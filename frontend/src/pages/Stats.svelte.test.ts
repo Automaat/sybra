@@ -42,6 +42,7 @@ function makeStatsData(): StatsResponse {
     byRole: [],
     byMode: [],
     byModel: [],
+    bySkillExecutionMode: [],
     closedTasksDaily: [],
     recentRuns: [],
   })
@@ -119,6 +120,7 @@ describe('Stats', () => {
     expect(screen.getByText('By Role')).toBeDefined()
     expect(screen.getByText('By Mode')).toBeDefined()
     expect(screen.getByText('By Model')).toBeDefined()
+    expect(screen.getByText('By Skill Execution')).toBeDefined()
   })
 
   it('shows no data message for empty breakdowns', () => {
@@ -263,12 +265,16 @@ describe('Stats', () => {
       ],
       byMode: [],
       byModel: [],
+      bySkillExecutionMode: [
+        { key: 'native', stats: makeSummary({ totalRuns: 2, totalCostUsd: 0.1, totalDurationS: 10 }) },
+      ],
       closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
     expect(screen.getByText('triage')).toBeDefined()
     expect(screen.getByText('plan')).toBeDefined()
+    expect(screen.getByText('Native')).toBeDefined()
   })
 
   it('renders recent runs rows', () => {
@@ -283,6 +289,11 @@ describe('Stats', () => {
           taskId: 'task-1',
           role: 'triage',
           mode: 'headless',
+          requestedSkill: 'sybra-test',
+          skillExecutionMode: 'injected',
+          resolvedSkillSourceHash: 'deadbeefcafebabe',
+          skillConformance: 'exact',
+          subagentCallCount: 2,
           model: 'sonnet',
           costUsd: 0.05,
           durationS: 60,
@@ -309,6 +320,8 @@ describe('Stats', () => {
     expect(screen.getByText('task-2')).toBeDefined()
     expect(screen.getByText('triage')).toBeDefined()
     expect(screen.getByText('eval')).toBeDefined()
+    expect(screen.getByText('sybra-test')).toBeDefined()
+    expect(screen.getByText('Injected · exact · src deadbeefcafebabe · 2 subagents')).toBeDefined()
     expect(screen.getByText('completed')).toBeDefined()
     expect(screen.getByText('failed')).toBeDefined()
   })

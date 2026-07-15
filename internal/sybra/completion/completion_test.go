@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -90,6 +91,45 @@ func TestIsRateLimitedRun(t *testing.T) {
 				t.Errorf("isRateLimitedRun = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleImplementation.AgentName("Impl"),
+		Model:                   "gpt-5",
+		Provider:                "codex",
+		LogPath:                 "/tmp/agent.log",
+		RequestedSkill:          "sybra-test",
+		SkillExecutionMode:      skillattr.ExecutionModeInjected,
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.SetSessionID("sess-1")
+	ag.NoteSubagentCall("tool-1")
+	ag.NoteSubagentCall("tool-1")
+	ag.NoteSubagentCall("tool-2")
+
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 1.25, 0, "done", nil)
+
+	if patch.RequestedSkill == nil || *patch.RequestedSkill != "sybra-test" {
+		t.Fatalf("RequestedSkill = %v, want sybra-test", patch.RequestedSkill)
+	}
+	if patch.SkillExecutionMode == nil || *patch.SkillExecutionMode != skillattr.ExecutionModeInjected {
+		t.Fatalf("SkillExecutionMode = %v, want %q", patch.SkillExecutionMode, skillattr.ExecutionModeInjected)
+	}
+	if patch.ResolvedSkillSourceHash == nil || *patch.ResolvedSkillSourceHash != "deadbeefcafebabe" {
+		t.Fatalf("ResolvedSkillSourceHash = %v, want deadbeefcafebabe", patch.ResolvedSkillSourceHash)
+	}
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
+	}
+	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
+		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
 	}
 }
 

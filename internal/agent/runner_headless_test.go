@@ -1251,6 +1251,9 @@ func TestGuardrails_SubagentAssistantTurnsExcluded(t *testing.T) {
 	if got := a.GetTurnCount(); got != 2 {
 		t.Errorf("TurnCount = %d, want 2 (only top-level assistant events count)", got)
 	}
+	if got := a.GetSubagentCallCount(); got != 1 {
+		t.Errorf("SubagentCallCount = %d, want 1 distinct parent_tool_use_id", got)
+	}
 }
 
 // TestGuardrails_SetMidRunVisibleToStream verifies SetGuardrails picks up

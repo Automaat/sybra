@@ -62,6 +62,10 @@ export class RunRecord {
     "variantId"?: string;
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
+    "requestedSkill"?: string;
+    "skillExecutionMode"?: string;
+    "resolvedSkillSourceHash"?: string;
+    "skillConformance"?: string;
     "costUsd": number;
     "durationS": number;
     "inputTokens"?: number;
@@ -78,6 +82,7 @@ export class RunRecord {
      */
     "turnCount"?: number;
     "toolCalls"?: number;
+    "subagentCallCount"?: number;
     "outcome": string;
     "timestamp": string;
 
@@ -134,6 +139,7 @@ export class StatsResponse {
     "byRole": GroupedStat[];
     "byModel": GroupedStat[];
     "byProvider": GroupedStat[];
+    "bySkillExecutionMode": GroupedStat[];
     "recentRuns": RunRecord[];
     "closedTasksDaily": TaskSeriesPoint[];
     "limits"?: limits$0.Summary | null;
@@ -170,6 +176,9 @@ export class StatsResponse {
         if (!("byProvider" in $$source)) {
             this["byProvider"] = [];
         }
+        if (!("bySkillExecutionMode" in $$source)) {
+            this["bySkillExecutionMode"] = [];
+        }
         if (!("recentRuns" in $$source)) {
             this["recentRuns"] = [];
         }
@@ -194,9 +203,10 @@ export class StatsResponse {
         const $$createField7_0 = $$createType2;
         const $$createField8_0 = $$createType2;
         const $$createField9_0 = $$createType2;
-        const $$createField10_0 = $$createType4;
-        const $$createField11_0 = $$createType6;
-        const $$createField12_0 = $$createType8;
+        const $$createField10_0 = $$createType2;
+        const $$createField11_0 = $$createType4;
+        const $$createField12_0 = $$createType6;
+        const $$createField13_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("today" in $$parsedSource) {
             $$parsedSource["today"] = $$createField0_0($$parsedSource["today"]);
@@ -228,14 +238,17 @@ export class StatsResponse {
         if ("byProvider" in $$parsedSource) {
             $$parsedSource["byProvider"] = $$createField9_0($$parsedSource["byProvider"]);
         }
+        if ("bySkillExecutionMode" in $$parsedSource) {
+            $$parsedSource["bySkillExecutionMode"] = $$createField10_0($$parsedSource["bySkillExecutionMode"]);
+        }
         if ("recentRuns" in $$parsedSource) {
-            $$parsedSource["recentRuns"] = $$createField10_0($$parsedSource["recentRuns"]);
+            $$parsedSource["recentRuns"] = $$createField11_0($$parsedSource["recentRuns"]);
         }
         if ("closedTasksDaily" in $$parsedSource) {
-            $$parsedSource["closedTasksDaily"] = $$createField11_0($$parsedSource["closedTasksDaily"]);
+            $$parsedSource["closedTasksDaily"] = $$createField12_0($$parsedSource["closedTasksDaily"]);
         }
         if ("limits" in $$parsedSource) {
-            $$parsedSource["limits"] = $$createField12_0($$parsedSource["limits"]);
+            $$parsedSource["limits"] = $$createField13_0($$parsedSource["limits"]);
         }
         return new StatsResponse($$parsedSource as Partial<StatsResponse>);
     }
