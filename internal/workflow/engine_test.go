@@ -6037,6 +6037,22 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	return dir
 }
 
+func runGitAt(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := gitCombinedAt(dir, args...)
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return out
+}
+
+func gitCombinedAt(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 func withFakeGit(t *testing.T, script string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
@@ -6581,6 +6597,74 @@ exec "{{REAL_GIT}}" "$@"
 	}
 	if got := strings.TrimSpace(readFile(t, countFile)); got != "3" {
 		t.Errorf("git log calls = %q, want 3", got)
+	}
+}
+
+func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+	verifyCommitsRetrySleep = func(time.Duration) {}
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond}
+
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+
+	wtDir := t.TempDir()
+	runGitAt(t, wtDir, "init", "-b", "main")
+	runGitAt(t, wtDir, "config", "user.email", "test@test.com")
+	runGitAt(t, wtDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtDir, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "README.md")
+	runGitAt(t, wtDir, "commit", "-m", "init")
+	runGitAt(t, wtDir, "remote", "add", "origin", remote)
+	runGitAt(t, wtDir, "push", "-u", "origin", "main")
+	runGitAt(t, wtDir, "checkout", "-b", "fix/missing-object")
+	if err := os.WriteFile(filepath.Join(wtDir, "change.txt"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, wtDir, "add", "change.txt")
+	runGitAt(t, wtDir, "commit", "-m", "feat: task work")
+	head := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "HEAD"))
+	runGitAt(t, wtDir, "push", "-u", "origin", "HEAD:fix/missing-object")
+	runGitAt(t, wtDir, "fetch", "origin",
+		"+refs/heads/fix/missing-object:refs/remotes/origin/fix/missing-object",
+		"+refs/heads/main:refs/remotes/origin/main")
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "rev-parse", "refs/remotes/origin/fix/missing-object")); got != head {
+		t.Fatalf("origin/fix/missing-object = %q, want %q", got, head)
+	}
+
+	objectPath := filepath.Join(wtDir, ".git", "objects", head[:2], head[2:])
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatalf("remove local head object %s: %v", objectPath, err)
+	}
+	if out, err := gitCombinedAt(wtDir, "status", "--short", "--branch"); err == nil || !strings.Contains(out, "bad object HEAD") {
+		t.Fatalf("git status after object removal err=%v out=%q, want bad object HEAD", err, out)
+	}
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Branch: "fix/missing-object"})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: "fix/missing-object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Fatalf("Output = %q, reason = %q, want commits verified after fetch recovery", out.Output, tasks.Reason("t1"))
+	}
+	if got := strings.TrimSpace(runGitAt(t, wtDir, "cat-file", "-t", head)); got != "commit" {
+		t.Fatalf("recovered object type = %q, want commit", got)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
+		t.Fatalf("task status = %q, want unchanged in-progress", ti.Status)
 	}
 }
 

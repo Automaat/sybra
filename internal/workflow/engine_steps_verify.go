@@ -279,7 +279,7 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		}
 	}
 
-	output, err := e.gitLogAheadOfBaseWithRetry(taskID, wtPath)
+	output, err := e.gitLogAheadOfBaseWithRetry(taskID, wtPath, t)
 	if err != nil {
 		// Context cancellation indicates engine shutdown, not a worktree
 		// problem — leave task status alone so it resumes on next boot.
@@ -373,8 +373,11 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
-func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string) ([]byte, error) {
+func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string, t TaskInfo) ([]byte, error) {
 	output, err := e.gitLogAheadOfBase(wtPath)
+	if err != nil && shouldRetryVerifyCommitsGitError(err, output) && e.recoverVerifyCommitsRefs(taskID, wtPath, t) {
+		output, err = e.gitLogAheadOfBase(wtPath)
+	}
 	for attempt := 0; err != nil && shouldRetryVerifyCommitsGitError(err, output); attempt++ {
 		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 			break
@@ -439,6 +442,7 @@ func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
 		"fatal: bad object",
 		"not a valid object name",
 		"invalid object",
+		"invalid revision range",
 		"missing object",
 		"unable to read sha1 file",
 		"object file",
@@ -452,6 +456,54 @@ func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
 		}
 	}
 	return false
+}
+
+func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) bool {
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	branch := strings.TrimSpace(t.Branch)
+	if branch == "" || strings.HasPrefix(branch, "-") || strings.Contains(branch, "..") || strings.Contains(branch, " ") {
+		e.logger.Warn("workflow.verify-commits.ref-recovery.skip", "task_id", taskID, "branch", branch)
+		return false
+	}
+
+	baseRef := resolveOriginBase(ctx, wtPath)
+	refspecs := []string{"+" + "refs/heads/" + branch + ":refs/remotes/origin/" + branch}
+	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
+		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
+	}
+
+	deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+branch)
+	deleteCmd.Dir = wtPath
+	_ = deleteCmd.Run()
+	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
+		deleteBaseCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
+		deleteBaseCmd.Dir = wtPath
+		_ = deleteBaseCmd.Run()
+	}
+
+	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}
+	if baseRef != "" && revParseRef(ctx, wtPath, baseRef) {
+		args = append(args, "--negotiation-tip="+baseRef)
+	}
+	args = append(args, "origin")
+	args = append(args, refspecs...)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		e.logger.Warn("workflow.verify-commits.ref-recovery.failed", "task_id", taskID, "branch", branch, "err", err, "output", strings.TrimSpace(string(out)))
+		return false
+	}
+	e.logger.Warn("workflow.verify-commits.ref-recovery.fetched", "task_id", taskID, "branch", branch, "base", baseRef)
+	return true
+}
+
+func revParseRef(ctx context.Context, wtPath, ref string) bool {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
+	cmd.Dir = wtPath
+	return cmd.Run() == nil
 }
 
 // diagnoseWorktreeState produces a short human-readable hint about why a
