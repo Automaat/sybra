@@ -339,6 +339,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	requeuedPlanning := idle("requeued-planning", task.StatusPlanning)
 	requeuedCompletedAt := requeuedPlanning.StatusChangedAt.Add(-time.Hour)
 	requeuedPlanning, err := a.tasks.UpdateMap(requeuedPlanning.ID, map[string]any{
+		"tags": []string{"backend", "review"},
 		"workflow": &workflow.Execution{
 			WorkflowID:  "old-workflow",
 			CurrentStep: "",
@@ -367,6 +368,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	gatedTodo := idle("gated-todo", task.StatusTodo)
 	if _, err := a.tasks.UpdateMap(gatedTodo.ID, map[string]any{
 		"tags": []string{umbrella.GatedTag},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prPlanning := idle("pr-planning", task.StatusPlanning)
+	if _, err := a.tasks.UpdateMap(prPlanning.ID, map[string]any{
+		"pr_number": 123,
+		"tags":      []string{"backend", "review"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,6 +437,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	}
 	if gotGated.Workflow != nil {
 		t.Fatalf("umbrella-gated todo task should be left for releaseUnblockedChildren, got %+v", gotGated.Workflow)
+	}
+	gotPRPlanning, err := a.tasks.Get(prPlanning.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPRPlanning.Workflow != nil {
+		t.Fatalf("planning task with PR should not start simple-task-plan, got %+v", gotPRPlanning.Workflow)
 	}
 	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
 	if err != nil {

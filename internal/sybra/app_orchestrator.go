@@ -135,15 +135,43 @@ func (a *App) reconcileRunnableBoardTasks() {
 			continue
 		}
 		switch t.Status {
-		case task.StatusNew, task.StatusTodo, task.StatusPlanning:
+		case task.StatusNew, task.StatusTodo:
 			if skipTaskCreatedWorkflow(t) {
 				continue
 			}
 			a.dispatchTaskCreatedWorkflow(t.ID)
+		case task.StatusPlanning:
+			a.dispatchPlanningWorkflow(t.ID)
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
 			a.dispatchStatusWorkflow(t.ID, t.Status)
 		default:
 		}
+	}
+}
+
+func (a *App) dispatchPlanningWorkflow(taskID string) {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if t.Status != task.StatusPlanning {
+		return
+	}
+	if !a.runsTaskLocally(t) {
+		return
+	}
+	if skipTaskCreatedWorkflow(t) {
+		return
+	}
+	if boardReconcileWorkflowActive(t) || a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	if err := a.workflowEngine.StartWorkflow(taskID, "simple-task-plan"); err != nil &&
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		a.logger.Error("workflow.dispatch.planning", "task_id", taskID, "err", err)
 	}
 }
 
