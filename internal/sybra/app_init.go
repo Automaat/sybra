@@ -280,6 +280,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		TaskExists:  a.taskExistsForAgent,
 		TaskStatus:  a.taskStatusForAgent,
 		LimitSink:   a.recordLimitSnapshot,
+		Artifacts:   a.artifacts,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
 	}
