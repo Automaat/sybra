@@ -7,7 +7,7 @@
     SetProviderEnabled,
   } from '$lib/api'
   import * as ev from '../../lib/events.js'
-  import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import type { AppSettings, RuntimeInfo } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 
   interface Props {
     settings: AppSettings
@@ -15,10 +15,11 @@
     // parent (Settings) so the rail entry and this pane share one source of
     // truth — the tab is never shown while the panel renders blank.
     enabled: boolean
+    runtimes: RuntimeInfo[]
     onsettingschange: () => void
   }
 
-  const { settings, enabled, onsettingschange }: Props = $props()
+  const { settings, enabled, runtimes, onsettingschange }: Props = $props()
 
   function ensureProviderLimitDefaults() {
     const providers = settings.providers as any
@@ -82,6 +83,15 @@
   }
 
   type ProviderName = 'claude' | 'codex' | 'copilot' | 'opencode'
+  const providerNames: ProviderName[] = ['claude', 'codex', 'copilot', 'opencode']
+  const runtimeProviderNames = new Set<ProviderName>(['claude', 'codex', 'opencode'])
+
+  const runtimeMap = $derived.by(() => {
+    const next: Record<string, RuntimeInfo> = {}
+    for (const runtime of runtimes) next[runtime.id] = runtime
+    return next
+  })
+  const hermesRuntime = $derived.by(() => runtimeMap.hermes)
 
   async function onProviderEnabledChange(name: ProviderName, e: Event) {
     const value = (e.target as HTMLInputElement).checked
@@ -136,6 +146,10 @@
     if (p.reason === 'disabled') return 'bg-surface-300 text-surface-600 dark:bg-surface-600 dark:text-surface-300'
     return 'bg-error-500/20 text-error-600 dark:text-error-300'
   }
+
+  function showRuntime(name: ProviderName): boolean {
+    return runtimeProviderNames.has(name)
+  }
 </script>
 
 {#if enabled}
@@ -145,8 +159,9 @@
       <div class="mb-3 text-xs text-error-500">{error}</div>
     {/if}
     <div class="flex flex-col gap-3">
-      {#each ['claude', 'codex', 'copilot', 'opencode'] as name (name)}
+      {#each providerNames as name (name)}
         {@const p = map[name]}
+        {@const runtime = runtimeMap[name]}
         <div class="flex items-center justify-between gap-3 rounded border border-surface-200 bg-white px-3 py-2 dark:border-surface-700 dark:bg-surface-900">
           <div class="flex flex-col">
             <div class="flex items-center gap-2">
@@ -159,6 +174,17 @@
             </div>
             {#if p?.detail}
               <span class="text-xs text-surface-500 dark:text-surface-400">{p.detail}</span>
+            {/if}
+            {#if showRuntime(name) && runtime}
+              <span class="font-mono text-[11px] text-surface-500 dark:text-surface-400">
+                {runtime.installed ? runtime.path : 'CLI not found on PATH'}
+              </span>
+              {#if runtime.version}
+                <span class="text-xs text-surface-500 dark:text-surface-400">version: {runtime.version}</span>
+              {/if}
+              {#if runtime.error}
+                <span class="text-xs text-warning-700 dark:text-warning-300">probe: {runtime.error}</span>
+              {/if}
             {/if}
             {#if p?.lastCheck}
               <span class="text-xs text-surface-500 dark:text-surface-400">last check: {new Date(p.lastCheck).toLocaleTimeString()}</span>
@@ -189,6 +215,26 @@
           </div>
         </div>
       {/each}
+      {#if hermesRuntime}
+        <div class="flex items-center justify-between gap-3 rounded border border-dashed border-surface-300 bg-surface-100 px-3 py-2 dark:border-surface-700 dark:bg-surface-900/60">
+          <div class="flex flex-col">
+            <div class="flex items-center gap-2">
+              <span class="font-medium text-surface-800 dark:text-surface-100">{hermesRuntime.name}</span>
+              <span class="rounded px-1.5 py-0.5 text-xs bg-primary-500/10 text-primary-700 dark:text-primary-300">informational only</span>
+            </div>
+            <span class="font-mono text-[11px] text-surface-500 dark:text-surface-400">
+              {hermesRuntime.installed ? hermesRuntime.path : 'CLI not found on PATH'}
+            </span>
+            {#if hermesRuntime.version}
+              <span class="text-xs text-surface-500 dark:text-surface-400">version: {hermesRuntime.version}</span>
+            {/if}
+            {#if hermesRuntime.error}
+              <span class="text-xs text-warning-700 dark:text-warning-300">probe: {hermesRuntime.error}</span>
+            {/if}
+          </div>
+          <span class="text-xs text-surface-500 dark:text-surface-400">No provider toggle</span>
+        </div>
+      {/if}
       <label class="flex cursor-pointer items-center gap-3 pt-2">
         <input
           type="checkbox"

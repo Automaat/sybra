@@ -10,6 +10,7 @@ const mockSaveRawConfig = vi.fn()
 const mockGetVersion = vi.fn()
 const mockGetCodexModels = vi.fn()
 const mockGetCopilotModels = vi.fn()
+const mockGetAvailableRuntimes = vi.fn()
 const mockProviderHealthEnabled = vi.fn()
 const mockGetProviderHealth = vi.fn()
 const mockSetProviderAutoFailover = vi.fn()
@@ -26,6 +27,7 @@ vi.mock('$lib/api', () => ({
   GetVersion: (...args: unknown[]) => mockGetVersion(...args),
   GetCodexModels: (...args: unknown[]) => mockGetCodexModels(...args),
   GetCopilotModels: (...args: unknown[]) => mockGetCopilotModels(...args),
+  GetAvailableRuntimes: (...args: unknown[]) => mockGetAvailableRuntimes(...args),
   ProviderHealthEnabled: (...args: unknown[]) => mockProviderHealthEnabled(...args),
   GetProviderHealth: (...args: unknown[]) => mockGetProviderHealth(...args),
   SetProviderAutoFailover: (...args: unknown[]) => mockSetProviderAutoFailover(...args),
@@ -109,6 +111,13 @@ describe('Settings', () => {
     mockGetVersion.mockResolvedValue({ server: 'v1.0.0', client: 'v1.0.0' })
     mockGetCodexModels.mockResolvedValue([])
     mockGetCopilotModels.mockResolvedValue([])
+    mockGetAvailableRuntimes.mockReset()
+    mockGetAvailableRuntimes.mockResolvedValue([
+      { id: 'claude', name: 'Claude Code', installed: true, path: '/tmp/claude', version: 'Claude 1.2.3' },
+      { id: 'codex', name: 'Codex', installed: false, path: '', version: '', error: '' },
+      { id: 'opencode', name: 'OpenCode', installed: true, path: '/tmp/opencode', version: '', error: 'version probe timed out after 1.5s' },
+      { id: 'hermes', name: 'Hermes', installed: true, path: '/tmp/hermes', version: 'Hermes 0.8.0', informationalOnly: true },
+    ])
     mockProviderHealthEnabled.mockResolvedValue(false)
     mockGetProviderHealth.mockResolvedValue([])
     mockEventsOn.mockReturnValue(vi.fn())
@@ -350,6 +359,30 @@ describe('Settings', () => {
     await vi.waitFor(() => expect(mockProviderHealthEnabled).toHaveBeenCalled())
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Defaults' })).toBeDefined())
     expect(screen.queryByRole('button', { name: 'Providers' })).toBeNull()
+  })
+
+  it('loads available runtimes on mount even when provider health is disabled', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    mockProviderHealthEnabled.mockResolvedValue(false)
+    render(Settings)
+    await vi.waitFor(() => expect(mockGetAvailableRuntimes).toHaveBeenCalled())
+    await goTo('Defaults')
+    await vi.waitFor(() => {
+      expect(screen.getByText('Detected runtimes')).toBeDefined()
+      expect(screen.getByText('Version: Claude 1.2.3')).toBeDefined()
+    })
+  })
+
+  it('tolerates runtime discovery failure without blocking Settings load', async () => {
+    mockGetSettings.mockResolvedValue(baseSettings())
+    mockGetAvailableRuntimes.mockRejectedValue(new Error('runtime unavailable'))
+    render(Settings)
+    await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
+    await goTo('Defaults')
+    await vi.waitFor(() => {
+      expect(screen.getByText('Agent defaults')).toBeDefined()
+      expect(screen.getByText('Runtime scan unavailable.')).toBeDefined()
+    })
   })
 
   it('renders Color Scheme options (system, light, dark)', () => {

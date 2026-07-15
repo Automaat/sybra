@@ -2,10 +2,10 @@
   import { onMount } from 'svelte'
   import {
     GetSettings, GetDefaultSettings, UpdateSettings, UpdateTodoistToken,
-    GetVersion, GetCodexModels, GetCopilotModels, ProviderHealthEnabled,
+    GetVersion, GetCodexModels, GetCopilotModels, GetAvailableRuntimes, ProviderHealthEnabled,
   } from '$lib/api'
   import { CLAUDE_MODEL_OPTIONS } from '$lib/claude-models'
-  import type { AppSettings } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import type { AppSettings, RuntimeInfo } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import ProviderHealthPanel from '../components/settings/ProviderHealthPanel.svelte'
   import LoggingPanel from '../components/settings/LoggingPanel.svelte'
   import TodoistPanel from '../components/settings/TodoistPanel.svelte'
@@ -113,6 +113,8 @@
     { value: 'ollama/qwen3-coder', label: 'Ollama: Qwen3 Coder' },
   ]
   let providerHealthEnabled = $state(false)
+  let availableRuntimes = $state<RuntimeInfo[]>([])
+  let runtimeStatus = $state<'loading' | 'ready' | 'failed'>('loading')
 
   $effect(() => { load() })
 
@@ -129,6 +131,13 @@
     GetCopilotModels().then(models => {
       if (models && models.length > 0) copilotDynamicModels = models.map(m => ({ value: m.slug, label: m.display_name }))
     }).catch(() => {})
+    GetAvailableRuntimes().then(runtimes => {
+      availableRuntimes = runtimes ?? []
+      runtimeStatus = 'ready'
+    }).catch(() => {
+      availableRuntimes = []
+      runtimeStatus = 'failed'
+    })
     ProviderHealthEnabled().then(v => { providerHealthEnabled = v }).catch(() => {})
   })
 
@@ -403,10 +412,10 @@
           {/if}
 
           {#if active === 'agent'}
-            <AgentPanel bind:settings {defaults} {modelOptions} advancedOpen={query.trim().length > 0} />
+            <AgentPanel bind:settings {defaults} {modelOptions} runtimes={availableRuntimes} {runtimeStatus} advancedOpen={query.trim().length > 0} />
           {/if}
           {#if active === 'provider-health'}
-            <ProviderHealthPanel {settings} enabled={providerHealthEnabled} onsettingschange={syncOriginal} />
+            <ProviderHealthPanel {settings} enabled={providerHealthEnabled} runtimes={availableRuntimes} onsettingschange={syncOriginal} />
           {/if}
           {#if active === 'orchestrator'}
             <OrchestratorPanel bind:settings {defaults} />

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"slices"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/version"
@@ -29,8 +30,11 @@ type CopilotModel struct {
 
 // InfoService exposes build metadata to the frontend.
 type InfoService struct {
-	once        sync.Once
-	codexModels []CodexModel
+	once              sync.Once
+	codexModels       []CodexModel
+	runtimeOnce       sync.Once
+	availableRuntimes []RuntimeInfo
+	detectRuntimes    func() []RuntimeInfo
 }
 
 // GetVersion returns version information for the running server binary.
@@ -46,6 +50,14 @@ func (s *InfoService) GetCodexModels() []CodexModel {
 		s.codexModels = fetchCodexModels()
 	})
 	return s.codexModels
+}
+
+// GetAvailableRuntimes returns the cached PATH snapshot for known AI runtimes.
+// The snapshot is warmed eagerly during app startup and lazily guarded here so
+// zero-value InfoService instances stay usable in tests.
+func (s *InfoService) GetAvailableRuntimes() []RuntimeInfo {
+	s.primeRuntimeSnapshot()
+	return slices.Clone(s.availableRuntimes)
 }
 
 func fetchCodexModels() []CodexModel {
