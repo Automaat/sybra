@@ -307,6 +307,97 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 	})
 }
 
+func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	idle := func(id string, status task.Status) task.Task {
+		t.Helper()
+		tk, err := a.tasks.Create(id, "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+			"status": string(status),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	todo := idle("idle-todo", task.StatusTodo)
+	planning := idle("idle-planning", task.StatusPlanning)
+	inProgress := idle("idle-in-progress", task.StatusInProgress)
+	umbrellaTask := idle("synthetic-umbrella", task.StatusInProgress)
+	if _, err := a.tasks.UpdateMap(umbrellaTask.ID, map[string]any{
+		"task_type": string(task.TaskTypeUmbrella),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "old-step",
+			State:       workflow.ExecFailed,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	active := idle("active-todo", task.StatusTodo)
+	if _, err := a.tasks.UpdateMap(active.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "triage",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.reconcileRunnableBoardTasks()
+	a.wg.Wait()
+
+	assertWorkflow := func(id, want string) {
+		t.Helper()
+		got, err := a.tasks.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil || got.Workflow.WorkflowID != want {
+			t.Fatalf("%s workflow = %+v, want %s", id, got.Workflow, want)
+		}
+		if got.Workflow.State == workflow.ExecFailed {
+			t.Fatalf("%s kept stale failed workflow: %+v", id, got.Workflow)
+		}
+	}
+	assertWorkflow(todo.ID, "simple-task-plan")
+	assertWorkflow(planning.ID, "simple-task-plan")
+	assertWorkflow(inProgress.ID, "simple-task-implement")
+
+	gotActive, err := a.tasks.Get(active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotActive.Workflow == nil || gotActive.Workflow.WorkflowID != "simple-task-plan" || gotActive.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("active workflow should be left alone, got %+v", gotActive.Workflow)
+	}
+	gotUmbrella, err := a.tasks.Get(umbrellaTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
+		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
+	}
+	if launcher.startCalls != 1 {
+		t.Fatalf("startCalls = %d, want 1 for stale in-progress only", launcher.startCalls)
+	}
+}
+
 func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)
