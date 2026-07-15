@@ -798,9 +798,9 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
 	// Feed the tool-call fingerprint into the real-time loop detector. An empty
-	// signature (non-tool event) is a no-op, so the streak survives reasoning
-	// between identical calls and the watchdog can spot an active loop.
-	a.NoteToolSignature(event.toolSig)
+	// signature (non-tool event) is a no-op, so the low-progress window survives
+	// reasoning between repeated actions and the watchdog can spot an active loop.
+	a.NoteToolAction(event.toolSig, event.toolLoopLabel)
 	// Record any auto-mode classifier denials observed in this event's tool results.
 	for _, d := range event.permissionDenials {
 		a.NotePermissionDenial(d.ToolUseID, d.Reason)

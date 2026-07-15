@@ -6,6 +6,13 @@ func TestToolSignature(t *testing.T) {
 	bash := func(cmd string) ToolUseBlock {
 		return ToolUseBlock{Name: "Bash", Input: map[string]any{"command": cmd}}
 	}
+	read := func(path string, offset, limit int) ToolUseBlock {
+		return ToolUseBlock{Name: "Read", Input: map[string]any{
+			"file_path": path,
+			"offset":    offset,
+			"limit":     limit,
+		}}
+	}
 
 	t.Run("empty for no tools", func(t *testing.T) {
 		if got := toolSignature(nil); got != "" {
@@ -13,24 +20,33 @@ func TestToolSignature(t *testing.T) {
 		}
 	})
 
-	t.Run("identical calls share a signature", func(t *testing.T) {
-		a := toolSignature([]ToolUseBlock{bash("ls -la")})
-		b := toolSignature([]ToolUseBlock{bash("ls -la")})
+	t.Run("identical semantic calls share a signature", func(t *testing.T) {
+		a := toolSignature([]ToolUseBlock{bash("mise run verify 2>&1 | tail -n 200")})
+		b := toolSignature([]ToolUseBlock{bash("mise run verify 2>&1 | tail -n 20")})
 		if a == "" || a != b {
 			t.Fatalf("identical calls: %q vs %q, want equal non-empty", a, b)
 		}
 	})
 
-	t.Run("different input differs", func(t *testing.T) {
-		if toolSignature([]ToolUseBlock{bash("ls")}) == toolSignature([]ToolUseBlock{bash("pwd")}) {
+	t.Run("different command families differ", func(t *testing.T) {
+		if toolSignature([]ToolUseBlock{bash("go test ./...")}) == toolSignature([]ToolUseBlock{bash("pwd")}) {
 			t.Fatal("different commands hashed to the same signature")
 		}
 	})
 
-	t.Run("different tool name differs", func(t *testing.T) {
-		read := ToolUseBlock{Name: "Read", Input: map[string]any{"command": "ls"}}
-		if toolSignature([]ToolUseBlock{bash("ls")}) == toolSignature([]ToolUseBlock{read}) {
-			t.Fatal("different tool names hashed to the same signature")
+	t.Run("equivalent read tools can converge semantically", func(t *testing.T) {
+		a := toolSignature([]ToolUseBlock{bash("cat app.log | tail -n 20")})
+		b := toolSignature([]ToolUseBlock{read("app.log", 200, 20)})
+		if a == "" || a != b {
+			t.Fatalf("read signatures = %q vs %q, want equal non-empty", a, b)
+		}
+	})
+
+	t.Run("read ranges collapse by path", func(t *testing.T) {
+		a := toolSignature([]ToolUseBlock{read("internal/watchdog/agent.go", 0, 200)})
+		b := toolSignature([]ToolUseBlock{read("internal/watchdog/agent.go", 200, 200)})
+		if a == "" || a != b {
+			t.Fatalf("read signatures = %q vs %q, want equal non-empty", a, b)
 		}
 	})
 
@@ -74,6 +90,36 @@ func TestAgentNoteToolSignature(t *testing.T) {
 			t.Fatalf("resumed streak = %d, want 3 (interleaved reasoning did not reset)", got)
 		}
 	})
+
+	t.Run("two-family low-progress cycle accumulates over the window", func(t *testing.T) {
+		a := &Agent{}
+		wantScores := []int{1, 1, 1, 4, 5, 6}
+		for i, sig := range []string{"build", "read", "build", "read", "build", "read"} {
+			if got := a.NoteToolAction(sig, sig); got != wantScores[i] {
+				t.Fatalf("note %d score = %d, want %d", i, got, wantScores[i])
+			}
+		}
+		ev := a.ToolLoopEvidence()
+		if ev.UniqueFamilies != 2 {
+			t.Fatalf("UniqueFamilies = %d, want 2", ev.UniqueFamilies)
+		}
+		if ev.Count != 6 || ev.Window != 6 {
+			t.Fatalf("evidence = %+v, want count/window 6", ev)
+		}
+	})
+
+	t.Run("successful progress resets the low-progress window", func(t *testing.T) {
+		a := &Agent{}
+		a.NoteToolAction("check:go test ./...", "check:go test ./...")
+		a.NoteToolAction("check:go test ./...", "check:go test ./...")
+		a.NoteToolProgress()
+		if got := a.ToolLoopStreak(); got != 0 {
+			t.Fatalf("ToolLoopStreak after progress = %d, want 0", got)
+		}
+		if got := a.NoteToolAction("check:go test ./...", "check:go test ./..."); got != 1 {
+			t.Fatalf("new post-progress score = %d, want 1", got)
+		}
+	})
 }
 
 func TestAgentToolLoopAcknowledge(t *testing.T) {
@@ -107,4 +153,26 @@ func TestAgentToolLoopAcknowledge(t *testing.T) {
 			t.Fatal("empty signature must never read as acknowledged")
 		}
 	})
+}
+
+func TestApplyStreamEventState_ResetsLoopWindowOnSuccessfulEditResult(t *testing.T) {
+	a := &Agent{}
+	a.NoteToolAction("check:go test ./...", "check:go test ./...")
+	a.NoteToolAction("check:go test ./...", "check:go test ./...")
+	a.applyStreamEventState(StreamEvent{
+		toolUses: []ToolUseBlock{{
+			ID:    "tu-1",
+			Name:  "Write",
+			Input: map[string]any{"file_path": "internal/watchdog/agent.go"},
+		}},
+	})
+	a.applyStreamEventState(StreamEvent{
+		toolResults: []ToolResultBlock{{
+			ToolUseID: "tu-1",
+			Content:   "ok",
+		}},
+	})
+	if got := a.ToolLoopStreak(); got != 0 {
+		t.Fatalf("ToolLoopStreak after successful edit = %d, want 0", got)
+	}
 }
