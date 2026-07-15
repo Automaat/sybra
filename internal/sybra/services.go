@@ -9,7 +9,7 @@ import (
 // wireServices populates the Wails-bound service structs that were pre-allocated
 // in NewApp(). Must be called after all dependencies are initialized.
 func (a *App) wireServices(emit func(string, any)) {
-	a.infoSvc.primeRuntimeSnapshot()
+	go a.infoSvc.primeRuntimeSnapshot()
 	a.wireReviewServices()
 	a.wireTaskService()
 	a.wirePlanningService()

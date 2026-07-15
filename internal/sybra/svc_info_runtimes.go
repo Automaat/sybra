@@ -94,7 +94,21 @@ func formatRuntimeProbeError(ctx context.Context, err error, output []byte, time
 	}
 	msg = strings.Join(strings.Fields(msg), " ")
 	if len(msg) > runtimeProbeErrorMax {
-		msg = msg[:runtimeProbeErrorMax-1] + "…"
+		msg = truncateRuntimeProbeError(msg)
 	}
 	return msg
+}
+
+func truncateRuntimeProbeError(msg string) string {
+	const suffix = "..."
+	limit := runtimeProbeErrorMax - len(suffix)
+	var b strings.Builder
+	for _, r := range msg {
+		next := string(r)
+		if b.Len()+len(next) > limit {
+			break
+		}
+		b.WriteString(next)
+	}
+	return b.String() + suffix
 }

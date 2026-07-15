@@ -11,11 +11,12 @@
     defaults: AppSettings
     modelOptions: { value: string; label: string }[]
     runtimes: RuntimeInfo[]
+    runtimeStatus?: 'loading' | 'ready' | 'failed'
     /** Force the advanced disclosure open (search/modified-filter match). */
     advancedOpen?: boolean
   }
 
-  let { settings = $bindable(), defaults, modelOptions, runtimes, advancedOpen = false }: Props = $props()
+  let { settings = $bindable(), defaults, modelOptions, runtimes, runtimeStatus = 'ready', advancedOpen = false }: Props = $props()
   const a = $derived(settings.agent)
   const d = $derived(defaults.agent)
 
@@ -73,8 +74,12 @@
         <span class="text-xs text-surface-500 dark:text-surface-400">Read-only startup snapshot from PATH</span>
       </div>
     </div>
-    {#if runtimes.length === 0}
+    {#if runtimeStatus === 'loading'}
+      <p class="text-xs text-surface-500 dark:text-surface-400">Runtime scan loading.</p>
+    {:else if runtimeStatus === 'failed'}
       <p class="text-xs text-surface-500 dark:text-surface-400">Runtime scan unavailable.</p>
+    {:else if runtimes.length === 0}
+      <p class="text-xs text-surface-500 dark:text-surface-400">No known runtimes found.</p>
     {:else}
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {#each runtimes as runtime (runtime.id)}

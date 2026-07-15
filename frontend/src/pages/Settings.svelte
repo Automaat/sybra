@@ -114,6 +114,7 @@
   ]
   let providerHealthEnabled = $state(false)
   let availableRuntimes = $state<RuntimeInfo[]>([])
+  let runtimeStatus = $state<'loading' | 'ready' | 'failed'>('loading')
 
   $effect(() => { load() })
 
@@ -131,8 +132,12 @@
       if (models && models.length > 0) copilotDynamicModels = models.map(m => ({ value: m.slug, label: m.display_name }))
     }).catch(() => {})
     GetAvailableRuntimes().then(runtimes => {
-      if (runtimes && runtimes.length > 0) availableRuntimes = runtimes
-    }).catch(() => {})
+      availableRuntimes = runtimes ?? []
+      runtimeStatus = 'ready'
+    }).catch(() => {
+      availableRuntimes = []
+      runtimeStatus = 'failed'
+    })
     ProviderHealthEnabled().then(v => { providerHealthEnabled = v }).catch(() => {})
   })
 
@@ -407,7 +412,7 @@
           {/if}
 
           {#if active === 'agent'}
-            <AgentPanel bind:settings {defaults} {modelOptions} runtimes={availableRuntimes} advancedOpen={query.trim().length > 0} />
+            <AgentPanel bind:settings {defaults} {modelOptions} runtimes={availableRuntimes} {runtimeStatus} advancedOpen={query.trim().length > 0} />
           {/if}
           {#if active === 'provider-health'}
             <ProviderHealthPanel {settings} enabled={providerHealthEnabled} runtimes={availableRuntimes} onsettingschange={syncOriginal} />

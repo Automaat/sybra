@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestDetectAvailableRuntimes(t *testing.T) {
@@ -79,6 +80,20 @@ func TestRuntimeProbeTimeout(t *testing.T) {
 	}
 	if !strings.Contains(probeErr, "timed out") {
 		t.Fatalf("probeErr = %q", probeErr)
+	}
+}
+
+func TestRuntimeProbeErrorTruncationStaysWithinByteLimit(t *testing.T) {
+	longErr := strings.Repeat("failure ", 40) + "ą"
+	got := truncateRuntimeProbeError(longErr)
+	if len(got) > runtimeProbeErrorMax {
+		t.Fatalf("truncated error length = %d, want <= %d", len(got), runtimeProbeErrorMax)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated error = %q, want ASCII suffix", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated error is not valid UTF-8: %q", got)
 	}
 }
 
