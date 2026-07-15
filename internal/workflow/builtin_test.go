@@ -1266,6 +1266,66 @@ func TestBuiltinTestingTask_SkipTestingSkipsTester(t *testing.T) {
 	}
 }
 
+func TestBuiltinTestingTask_SmallNonTestChoreSkipsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	maybe := testingDef.StepByID("maybe_test")
+	if maybe == nil {
+		t.Fatal("maybe_test step not found in testing-task")
+		return
+	}
+	if got, err := ResolveTransition(maybe.Next, map[string]string{"task.tags": "backend,chore,small"}); err != nil || got != "maybe_skip_chore_size" {
+		t.Fatalf("maybe_test transition = %q, %v; want maybe_skip_chore_size, nil", got, err)
+	}
+
+	size := testingDef.StepByID("maybe_skip_chore_size")
+	if size == nil {
+		t.Fatal("maybe_skip_chore_size step not found in testing-task")
+		return
+	}
+	if got, err := ResolveTransition(size.Next, map[string]string{"task.tags": "backend,chore,small"}); err != nil || got != "maybe_skip_chore_test_tag" {
+		t.Fatalf("maybe_skip_chore_size transition = %q, %v; want maybe_skip_chore_test_tag, nil", got, err)
+	}
+
+	risk := testingDef.StepByID("maybe_skip_chore_test_tag")
+	if risk == nil {
+		t.Fatal("maybe_skip_chore_test_tag step not found in testing-task")
+		return
+	}
+	if got, err := ResolveTransition(risk.Next, map[string]string{"task.tags": "backend,chore,small"}); err != nil || got != "skip_testing" {
+		t.Fatalf("maybe_skip_chore_test_tag transition = %q, %v; want skip_testing, nil", got, err)
+	}
+}
+
+func TestBuiltinTestingTask_MediumChoreStillRunsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	size := testingDef.StepByID("maybe_skip_chore_size")
+	if size == nil {
+		t.Fatal("maybe_skip_chore_size step not found in testing-task")
+		return
+	}
+	if got, err := ResolveTransition(size.Next, map[string]string{"task.tags": "backend,chore,medium"}); err != nil || got != "run_test" {
+		t.Fatalf("maybe_skip_chore_size transition = %q, %v; want run_test, nil", got, err)
+	}
+}
+
+func TestBuiltinTestingTask_TestChoreStillRunsTester(t *testing.T) {
+	t.Parallel()
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	risk := testingDef.StepByID("maybe_skip_chore_test_tag")
+	if risk == nil {
+		t.Fatal("maybe_skip_chore_test_tag step not found in testing-task")
+		return
+	}
+	if got, err := ResolveTransition(risk.Next, map[string]string{"task.tags": "backend,test,chore,small"}); err != nil || got != "run_test" {
+		t.Fatalf("maybe_skip_chore_test_tag transition = %q, %v; want run_test, nil", got, err)
+	}
+}
+
 func mustBuiltinDefinition(t *testing.T, id string) *Definition {
 	t.Helper()
 	defs, err := BuiltinDefinitions()
