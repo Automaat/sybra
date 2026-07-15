@@ -13,6 +13,8 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+const inboundReviewRedispatchCooldown = 10 * time.Minute
+
 // orchestratorLoop runs two cadences. The cheap, latency-sensitive dispatch pass
 // (start the orchestrator, release unblocked children) fires on a fast ticker and
 // on demand via dispatchNudge, so a freshly-ready task isn't left idle. The
@@ -245,8 +247,13 @@ func boardReconcileWorkflowActive(t task.Task) bool {
 
 func inboundReviewNeedsAgent(t task.Task) bool {
 	switch t.ReviewPhase {
-	case "", "needs-approval":
+	case "":
 		return true
+	case "needs-approval":
+		if t.Workflow == nil || t.Workflow.CompletedAt == nil {
+			return true
+		}
+		return time.Since(*t.Workflow.CompletedAt) >= inboundReviewRedispatchCooldown
 	default:
 		return false
 	}
