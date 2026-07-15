@@ -32,8 +32,8 @@ func Summarize(events []Event, since, until time.Time) Summary {
 	statusCount := make(map[string]int)
 
 	var cycleTimes []float64
-	var completedAgents, failedAgents int
 	var planApproved, planRejected int
+	runs := NormalizeAgentRuns(events)
 
 	for _, e := range events {
 		switch e.Type {
@@ -60,21 +60,6 @@ func Summarize(events []Event, since, until time.Time) Summary {
 				}
 			}
 
-		case EventAgentStarted:
-			s.AgentRuns++
-
-		case EventAgentCompleted:
-			completedAgents++
-			if cost, ok := e.Data["cost_usd"].(float64); ok {
-				s.TotalCostUSD += cost
-			}
-
-		case EventAgentFailed:
-			failedAgents++
-			if cost, ok := e.Data["cost_usd"].(float64); ok {
-				s.TotalCostUSD += cost
-			}
-
 		case EventTriageCompleted, EventPlanCompleted, EventEvalCompleted:
 			if cost, ok := e.Data["cost_usd"].(float64); ok {
 				s.TotalCostUSD += cost
@@ -96,9 +81,21 @@ func Summarize(events []Event, since, until time.Time) Summary {
 		s.AvgCycleTimeHours = round2(sum / float64(len(cycleTimes)))
 	}
 
-	total := completedAgents + failedAgents
-	if total > 0 {
-		s.FailureRate = round2(float64(failedAgents) / float64(total))
+	var failedRuns int
+	for i := range runs {
+		if !runs[i].Terminal {
+			continue
+		}
+		s.AgentRuns++
+		if runs[i].Failed {
+			failedRuns++
+		}
+		if cost, ok := runs[i].TerminalEvent.Data["cost_usd"].(float64); ok {
+			s.TotalCostUSD += cost
+		}
+	}
+	if s.AgentRuns > 0 {
+		s.FailureRate = round2(float64(failedRuns) / float64(s.AgentRuns))
 	}
 
 	planTotal := planApproved + planRejected
