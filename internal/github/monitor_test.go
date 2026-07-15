@@ -140,10 +140,10 @@ func TestMatchTaskPRs(t *testing.T) {
 			want:  nil,
 		},
 		{
-			name:  "draft with comments is not fixed",
-			prs:   []PullRequest{{Number: 42, IsDraft: true, ReviewDecision: "CHANGES_REQUESTED", UnresolvedCount: 3}},
+			name:  "draft with comments is fixed",
+			prs:   []PullRequest{{Number: 42, IsDraft: true, ReviewDecision: "CHANGES_REQUESTED", UnresolvedCount: 3, ActionableCount: 1}},
 			tasks: []TaskMatcher{{ID: "t1", PRNumber: 42}},
-			want:  nil,
+			want:  []PRIssue{{Kind: PRIssueComments, TaskID: "t1"}},
 		},
 		{
 			name:  "CI failure and comments both trigger",

@@ -44,9 +44,9 @@ func TestComputePRPhase(t *testing.T) {
 			want: PRPhaseAwaitingApproval,
 		},
 		{
-			name: "draft with comments stays draft (comment-fix is skipped on drafts)",
+			name: "draft with comments → changes-requested",
 			sig:  prSignals{IsDraft: true, UnresolvedCount: 1, ActionableCount: 1},
-			want: PRPhaseDraft,
+			want: PRPhaseChangesRequested,
 		},
 		{
 			name: "draft with CI failure still shows fixing (CI-fix runs on drafts)",
