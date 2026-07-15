@@ -600,8 +600,10 @@ func (a *App) initStatusHook() {
 		}
 
 		switch to {
-		case string(task.StatusTodo), string(task.StatusPlanning):
+		case string(task.StatusTodo):
 			a.dispatchTaskCreatedWorkflow(taskID)
+		case string(task.StatusPlanning):
+			a.dispatchPlanningWorkflow(taskID)
 		case string(task.StatusInProgress):
 			a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
 		case string(task.StatusInReview):

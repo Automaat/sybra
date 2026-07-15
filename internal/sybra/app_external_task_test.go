@@ -244,6 +244,9 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
 			}
+			if target == task.StatusPlanning {
+				tk.Tags = []string{"backend", "review"}
+			}
 			path := filepath.Join(app.tasksDir, tk.ID+".md")
 			write := func(in task.Task) {
 				t.Helper()
