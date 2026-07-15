@@ -184,6 +184,11 @@ func boardReconcileWorkflowActive(t task.Task) bool {
 	}
 	switch t.Workflow.State {
 	case workflow.ExecCompleted, workflow.ExecFailed:
+		switch t.Status {
+		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+			return false
+		default:
+		}
 		return t.Workflow.CompletedAt == nil ||
 			t.StatusChangedAt.IsZero() ||
 			!t.StatusChangedAt.After(*t.Workflow.CompletedAt)
