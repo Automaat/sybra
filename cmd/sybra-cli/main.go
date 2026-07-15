@@ -2539,8 +2539,8 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		mode, err := config.NormalizeSandboxMode(cfg.Agent.SandboxMode)
 		if err != nil {
 			add("error", "agent.sandbox_mode: %v", err)
-		} else if mode == "enforce" && runtime.GOOS != "darwin" {
-			add("error", "agent.sandbox_mode=enforce requires darwin; current host is %s", runtime.GOOS)
+		} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+			add("error", "agent.sandbox_mode=enforce requires darwin or linux; current host is %s", runtime.GOOS)
 		}
 	}
 

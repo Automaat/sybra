@@ -42,6 +42,8 @@ func sandboxExecAvailable() bool {
 	return sandboxExecPath != ""
 }
 
+func sandboxWrapperName() string { return "sandbox-exec" }
+
 // materializeSandboxProfile writes the embedded seatbelt profile to a stable
 // temp file once per process and returns its path, for both the -f flag and
 // operator-facing log/error messages. The profile content is fixed at build
