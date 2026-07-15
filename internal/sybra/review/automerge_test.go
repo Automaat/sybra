@@ -133,6 +133,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 		name       string
 		projectID  string
 		tags       []string
+		reviewed   bool
 		pr         github.PullRequest
 		wantMerged bool
 	}{
@@ -175,7 +176,17 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			wantMerged: false,
 		},
 		{
-			name:      "pet, copilot not reviewed -> holds",
+			name:      "pet, sybra-reviewed without copilot -> merges",
+			projectID: "pet-owner/pet-repo",
+			reviewed:  true,
+			pr: github.PullRequest{
+				Repository: "pet-owner/pet-repo", Number: 18,
+				Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: false,
+			},
+			wantMerged: true,
+		},
+		{
+			name:      "pet, not sybra-reviewed and no copilot -> holds",
 			projectID: "pet-owner/pet-repo",
 			pr: github.PullRequest{
 				Repository: "pet-owner/pet-repo", Number: 12,
@@ -226,6 +237,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 				Status:    task.Ptr(task.StatusInReview),
 				PRNumber:  task.Ptr(tt.pr.Number),
 				ProjectID: task.Ptr(tt.projectID),
+				Reviewed:  task.Ptr(tt.reviewed),
 			}
 			if tt.tags != nil {
 				upd.Tags = &tt.tags

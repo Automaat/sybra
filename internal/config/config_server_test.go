@@ -14,9 +14,10 @@ func isolateServerEnv(t *testing.T) {
 }
 
 func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
-	isolateServerEnv(t)
 	dir := t.TempDir()
+	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
+	isolateServerEnv(t)
 
 	cfg, err := Load()
 	if err != nil {
@@ -48,9 +49,10 @@ func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 }
 
 func TestLoadPreservesExplicitServerAuthToken(t *testing.T) {
-	isolateServerEnv(t)
 	dir := t.TempDir()
+	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
+	isolateServerEnv(t)
 
 	yaml := []byte("server:\n  auth_token: my-explicit-token\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
@@ -67,9 +69,10 @@ func TestLoadPreservesExplicitServerAuthToken(t *testing.T) {
 }
 
 func TestLoadServerAuthTokenEnvOverride(t *testing.T) {
-	isolateServerEnv(t)
 	dir := t.TempDir()
+	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_ALLOWED_ORIGINS", "")
 	t.Setenv("SYBRA_AUTH_TOKEN", "env-token")
 
 	yaml := []byte("server:\n  auth_token: file-token\n")
@@ -87,9 +90,10 @@ func TestLoadServerAuthTokenEnvOverride(t *testing.T) {
 }
 
 func TestLoadServerAllowedOriginsEnvOverride(t *testing.T) {
-	isolateServerEnv(t)
 	dir := t.TempDir()
+	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
+	t.Setenv("SYBRA_AUTH_TOKEN", "")
 	t.Setenv("SYBRA_ALLOWED_ORIGINS", "https://a.example, https://b.example")
 
 	cfg, err := Load()
@@ -108,9 +112,10 @@ func TestLoadServerAllowedOriginsEnvOverride(t *testing.T) {
 }
 
 func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
-	isolateServerEnv(t)
 	dir := t.TempDir()
+	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
+	isolateServerEnv(t)
 
 	yaml := []byte("server:\n  allowed_origins: [https://a.example]\n")
 	cfgPath := filepath.Join(dir, "config.yaml")

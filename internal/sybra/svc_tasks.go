@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -503,6 +504,10 @@ func (s *TaskService) AssignTask(t task.Task) error {
 			return validationError(err.Error())
 		}
 	}
+	if current, err := s.tasks.Get(t.ID); err == nil && assignedTaskNoOp(current, t) {
+		s.logger.Debug("cluster.task.assign.noop", "task", current.ID, "assigned_node", current.AssignedNode, "status", string(current.Status))
+		return nil
+	}
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
 		return fmt.Errorf("assign task: %w", err)
@@ -516,6 +521,50 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	}
 	s.logger.Info("cluster.task.assigned", "task", saved.ID, "created", created, "status", string(saved.Status), "assigned_node", saved.AssignedNode)
 	return nil
+}
+
+func assignedTaskNoOp(current, pushed task.Task) bool {
+	cur := normalizeAssignedTaskForCompare(current, &current)
+	next := normalizeAssignedTaskForCompare(pushed, &current)
+	curData, err := task.MarshalStored(cur)
+	if err != nil {
+		return false
+	}
+	nextData, err := task.MarshalStored(next)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(curData, nextData)
+}
+
+func normalizeAssignedTaskForCompare(t task.Task, fallback *task.Task) task.Task {
+	if t.TaskType == "" {
+		t.TaskType = task.TaskTypeNormal
+	}
+	// Ignore leader-owned mirror bookkeeping when deciding whether a pushed
+	// follower task would change local semantics; otherwise a mirror-only bump
+	// (timestamps / mirror rev) rewrites the file and re-triggers watchers.
+	t.UpdatedAt = time.Time{}
+	t.StatusChangedAt = time.Time{}
+	t.MirrorRev = 0
+	t.MirrorUpdatedAt = nil
+	if t.CreatedAt.IsZero() && fallback != nil {
+		t.CreatedAt = fallback.CreatedAt
+	}
+	if t.AgentRuns == nil {
+		t.AgentRuns = []task.AgentRun{}
+	}
+	t.Plan = ""
+	t.PlanContract = ""
+	t.PlanCritique = ""
+	t.PlanResearch = ""
+	t.PlanDecisions = ""
+	t.PlanBrief = ""
+	t.CodeReview = ""
+	t.PlanDrafts = nil
+	t.FilePath = ""
+	t.TamperFlagged = false
+	return t
 }
 
 // CreateTaskWithInit is CreateTask plus caller-supplied initial field

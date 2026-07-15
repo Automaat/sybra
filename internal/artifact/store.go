@@ -68,6 +68,27 @@ func (s *Store) taskDir(taskID string) (string, error) {
 	return dir, nil
 }
 
+// Path returns the canonical blob path for a validated artifact name under a
+// task, without checking whether the artifact exists.
+func (s *Store) Path(taskID, name string) (string, error) {
+	if !validTaskID.MatchString(taskID) {
+		return "", fmt.Errorf("artifact: invalid task id %q", taskID)
+	}
+	if !validName.MatchString(name) {
+		return "", fmt.Errorf("artifact: invalid artifact name %q", name)
+	}
+	dir, err := s.taskDir(taskID)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name)
+	if !strings.HasPrefix(filepath.Clean(path)+string(filepath.Separator), filepath.Clean(dir)+string(filepath.Separator)) &&
+		filepath.Clean(path) != filepath.Clean(dir) {
+		return "", fmt.Errorf("artifact: name %q escapes task dir", name)
+	}
+	return path, nil
+}
+
 // Put writes a blob artifact atomically. Bytes are written before the meta
 // companion so a crash leaves an ignorable orphan, never a meta pointing at
 // missing bytes.

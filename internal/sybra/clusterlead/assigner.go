@@ -91,6 +91,9 @@ func (a *Assigner) Route(ctx context.Context, t task.Task) (routed bool, err err
 	if home.Local {
 		return false, nil
 	}
+	if t.AssignedNode == home.Name {
+		return false, nil
+	}
 	if a.isWorkProject(t.ProjectID) && (!home.Trusted || !home.Encrypted) {
 		return false, a.blockForConfidentiality(t, home)
 	}
