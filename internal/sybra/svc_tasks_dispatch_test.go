@@ -337,6 +337,23 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	planning := idle("idle-planning", task.StatusPlanning)
 	inProgress := idle("idle-in-progress", task.StatusInProgress)
 	var err error
+	inboundReview := idle("inbound-review", task.StatusInReview)
+	inboundReview, err = a.tasks.UpdateMap(inboundReview.ID, map[string]any{
+		"tags":       []string{"review"},
+		"project_id": "Automaat/lightroom-mcp",
+		"pr_number":  151,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownPRReview := idle("own-pr-review", task.StatusInReview)
+	ownPRReview, err = a.tasks.UpdateMap(ownPRReview.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"pr_number":  2037,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	postPlanInProgress := idle("post-plan-in-progress", task.StatusInProgress)
 	postPlanCompletedAt := postPlanInProgress.StatusChangedAt.Add(time.Second)
 	postPlanInProgress, err = a.tasks.UpdateMap(postPlanInProgress.ID, map[string]any{
@@ -439,6 +456,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	assertWorkflow(requeuedPlanning.ID, "simple-task-plan")
 	assertWorkflow(inProgress.ID, "simple-task-implement")
 	assertWorkflow(postPlanInProgress.ID, "simple-task-implement")
+	assertWorkflow(inboundReview.ID, "pr-review")
 
 	gotActive, err := a.tasks.Get(active.ID)
 	if err != nil {
@@ -461,6 +479,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotPRPlanning.Workflow != nil {
 		t.Fatalf("planning task with PR should not start simple-task-plan, got %+v", gotPRPlanning.Workflow)
 	}
+	gotOwnPRReview, err := a.tasks.Get(ownPRReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOwnPRReview.Workflow != nil {
+		t.Fatalf("ordinary in-review task should stay on PR monitor, got %+v", gotOwnPRReview.Workflow)
+	}
 	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -475,8 +500,8 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 2 {
-		t.Fatalf("startCalls = %d, want 2 for idle and post-plan in-progress tasks", launcher.startCalls)
+	if launcher.startCalls != 3 {
+		t.Fatalf("startCalls = %d, want 3 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
 	}
 }
 

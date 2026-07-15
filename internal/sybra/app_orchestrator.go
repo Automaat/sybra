@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -142,10 +143,45 @@ func (a *App) reconcileRunnableBoardTasks() {
 			a.dispatchTaskCreatedWorkflow(t.ID)
 		case task.StatusPlanning:
 			a.dispatchPlanningWorkflow(t.ID)
+		case task.StatusInReview:
+			if isInboundReviewTask(t) {
+				a.dispatchInboundReviewWorkflow(t.ID)
+				continue
+			}
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
 			a.dispatchStatusWorkflow(t.ID, t.Status)
 		default:
 		}
+	}
+}
+
+func isInboundReviewTask(t task.Task) bool {
+	return slices.Contains(t.Tags, "review") && t.ProjectID != "" && t.PRNumber != 0
+}
+
+func (a *App) dispatchInboundReviewWorkflow(taskID string) {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if t.Status != task.StatusInReview || !isInboundReviewTask(t) {
+		return
+	}
+	if !a.runsTaskLocally(t) {
+		return
+	}
+	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
+		return
+	}
+	if a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
 	}
 }
 
