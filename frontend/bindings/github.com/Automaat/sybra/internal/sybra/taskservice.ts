@@ -170,6 +170,16 @@ export function ReconcilePendingEnrichment(): $CancellablePromise<void> {
 }
 
 /**
+ * RecoverLostAgent is a follower RPC the leader uses after it has
+ * authoritatively detected a lost-agent anomaly on a follower-owned task.
+ * It mirrors the local monitor path: best-effort stop the stale running run,
+ * then hand the task to recovery for a targeted restart.
+ */
+export function RecoverLostAgent(taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(340379341, taskID);
+}
+
+/**
  * UpdateTask applies field updates to a task. The workflow engine drives
  * all status-based transitions; this method only handles cleanup on done.
  * 

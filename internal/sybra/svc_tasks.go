@@ -42,6 +42,7 @@ type TaskService struct {
 	logger              *slog.Logger
 	audit               *audit.Logger
 	cfg                 *config.Config
+	recoverLostAgent    func(context.Context, string) error
 	fetchPR             func(repo string, number int) (github.PullRequest, error)
 	fetchIssue          func(repo string, number int) (github.Issue, error)
 	fetchIssueLinkedPRs func(repo string, issueNumber int) ([]github.PullRequest, error)
@@ -521,6 +522,37 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	}
 	s.logger.Info("cluster.task.assigned", "task", saved.ID, "created", created, "status", string(saved.Status), "assigned_node", saved.AssignedNode)
 	return nil
+}
+
+// RecoverLostAgent is a follower RPC the leader uses after it has
+// authoritatively detected a lost-agent anomaly on a follower-owned task.
+// It mirrors the local monitor path: best-effort stop the stale running run,
+// then hand the task to recovery for a targeted restart.
+func (s *TaskService) RecoverLostAgent(taskID string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return validationError("task id is required")
+	}
+	if s.recoverLostAgent == nil {
+		return errors.New("lost-agent recovery unavailable")
+	}
+	reason := "monitor: agent lost; recovery will resume"
+	if _, err := s.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
+		s.logger.Warn("cluster.task.recover.status-reason.failed", "task_id", taskID, "err", err)
+	}
+	if t, err := s.tasks.Get(taskID); err == nil {
+		for i := range slices.Backward(t.AgentRuns) {
+			if t.AgentRuns[i].State != string(agent.StateRunning) {
+				continue
+			}
+			if err := s.tasks.UpdateRun(taskID, t.AgentRuns[i].AgentID, task.RunPatch{
+				State: task.Ptr(string(agent.StateStopped)),
+			}); err != nil && s.logger != nil {
+				s.logger.Warn("cluster.task.recover.update-run.failed", "task_id", taskID, "agent_id", t.AgentRuns[i].AgentID, "err", err)
+			}
+			break
+		}
+	}
+	return s.recoverLostAgent(context.Background(), taskID)
 }
 
 func assignedTaskNoOp(current, pushed task.Task) bool {

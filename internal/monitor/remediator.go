@@ -23,10 +23,10 @@ type taskAPI interface {
 // orchestration.
 type remediator struct {
 	tasks            taskAPI
-	recoverLostAgent func(context.Context)
+	recoverLostAgent func(context.Context, string)
 }
 
-func newRemediator(t taskAPI, recoverLostAgent func(context.Context)) *remediator {
+func newRemediator(t taskAPI, recoverLostAgent func(context.Context, string)) *remediator {
 	return &remediator{tasks: t, recoverLostAgent: recoverLostAgent}
 }
 
@@ -70,7 +70,7 @@ func (r *remediator) resetLostAgent(ctx context.Context, a Anomaly) (string, err
 		return "", fmt.Errorf("mark lost_agent task %s for recovery: %w", a.TaskID, err)
 	}
 	if r.recoverLostAgent != nil {
-		r.recoverLostAgent(ctx)
+		r.recoverLostAgent(ctx, a.TaskID)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
 }

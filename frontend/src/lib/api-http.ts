@@ -200,6 +200,7 @@ export function ListTasks(): Promise<Array<Task>> { return call('TaskService', '
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }
+export function RecoverLostAgent(arg1: string): Promise<void> { return call('TaskService', 'RecoverLostAgent', arg1) }
 
 // WorkflowService
 export function DeleteWorkflow(arg1: string): Promise<void> { return call('WorkflowService', 'DeleteWorkflow', arg1) }

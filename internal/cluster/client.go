@@ -305,6 +305,13 @@ func (c *Client) AssignTask(ctx context.Context, t task.Task) error {
 	return err
 }
 
+// RecoverLostAgent asks the follower to resume a specific task after the
+// leader has authoritatively detected a lost-agent anomaly for it.
+func (c *Client) RecoverLostAgent(ctx context.Context, taskID string) error {
+	_, err := c.Call(ctx, "TaskService", "RecoverLostAgent", taskID)
+	return err
+}
+
 // GetTask fetches a task's current state from the follower.
 func (c *Client) GetTask(ctx context.Context, id string) (task.Task, error) {
 	raw, err := c.callIdempotent(ctx, "TaskService", "GetTask", id)

@@ -21,7 +21,7 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 		mkTask("task1", task.StatusInProgress, withRun),
 	}}
 	var recoverCalls int
-	rem := newRemediator(ft, func(context.Context) { recoverCalls++ })
+	rem := newRemediator(ft, func(context.Context, string) { recoverCalls++ })
 	a := Anomaly{Kind: KindLostAgent, TaskID: "task1"}
 
 	label, err := rem.Apply(context.Background(), a)

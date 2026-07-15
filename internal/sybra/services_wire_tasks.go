@@ -1,6 +1,8 @@
 package sybra
 
 import (
+	"context"
+
 	"github.com/Automaat/sybra/internal/umbrella"
 )
 
@@ -15,6 +17,12 @@ func (a *App) wireTaskService() {
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
 	a.taskSvc.cfg = a.cfg
+	a.taskSvc.recoverLostAgent = func(ctx context.Context, taskID string) error {
+		if a.recovery == nil {
+			return nil
+		}
+		return a.recovery.RestartTaskIfStale(ctx, taskID)
+	}
 
 	// Expand a manually-added umbrella issue into a gated child DAG instead of
 	// a flat task. Wired unconditionally; enrichFromIssue gates the call on
