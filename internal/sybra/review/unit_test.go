@@ -1303,6 +1303,66 @@ func TestMonitoredPRs(t *testing.T) {
 	}
 }
 
+func TestIncludeKnownTaskPRsAddsLinkedPRsMissingFromSearch(t *testing.T) {
+	searchPR := github.PullRequest{Repository: "owner/repo", Number: 1, Author: "me"}
+	searchLinkedPR := github.PullRequest{Repository: "Automaat/sybra", Number: 99, Author: "me"}
+	knownPR := github.PullRequest{
+		Repository: "Automaat/sybra",
+		Number:     2047,
+		HeadSHA:    "known-sha",
+		UpdatedAt:  "2026-07-15T05:00:00Z",
+	}
+
+	var fetched []github.PRRef
+	r := &Handler{
+		fetchKnownPRsFn: func(refs []github.PRRef) []github.MonitorPRResult {
+			fetched = append([]github.PRRef(nil), refs...)
+			return []github.MonitorPRResult{{
+				Repo:   "Automaat/sybra",
+				Number: 99,
+				PR:     searchLinkedPR,
+				Open:   true,
+			}, {
+				Repo:   "Automaat/sybra",
+				Number: 2047,
+				PR:     knownPR,
+				Open:   true,
+			}}
+		},
+	}
+
+	got := r.includeKnownTaskPRs([]task.Task{
+		{
+			ID:        "already-search",
+			Status:    task.StatusInReview,
+			ProjectID: "Automaat/sybra",
+			PRNumber:  99,
+			UpdatedAt: time.Date(2026, 7, 15, 5, 1, 0, 0, time.UTC),
+		},
+		{
+			ID:        "40420f5e",
+			Status:    task.StatusInReview,
+			ProjectID: "Automaat/sybra",
+			PRNumber:  2047,
+			UpdatedAt: time.Date(2026, 7, 15, 5, 0, 0, 0, time.UTC),
+		},
+	}, []github.PullRequest{searchPR, searchLinkedPR})
+
+	if len(fetched) != 2 {
+		t.Fatalf("fetched refs = %+v, want two known linked PR refs", fetched)
+	}
+	if fetched[0].Repo != "Automaat/sybra" || fetched[0].Number != 99 ||
+		fetched[1].Repo != "Automaat/sybra" || fetched[1].Number != 2047 {
+		t.Fatalf("fetched refs = %+v, want Automaat/sybra#99 and Automaat/sybra#2047", fetched)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (got %+v)", len(got), got)
+	}
+	if got[0].Number != 1 || got[1].Number != 99 || got[2].Number != 2047 {
+		t.Fatalf("numbers = [%d %d %d], want [1 99 2047]", got[0].Number, got[1].Number, got[2].Number)
+	}
+}
+
 // TestTriageReviewSmall guards the reviewSmallAdditions (40) and
 // reviewSmallFiles (5) thresholds. Both conditions must hold for the PR to be
 // routed to human-required; if either meets or exceeds its limit the review

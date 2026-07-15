@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -150,6 +152,7 @@ type e2eEnv struct {
 	worktreesDir string
 	scenarioFile string
 	provider     string
+	artifacts    *artifact.Store
 	cancel       context.CancelFunc
 	// pendingCompletions counts agent-completion callbacks currently executing
 	// (between the onComplete wrapper's enter and exit). The chaos settle
@@ -241,6 +244,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		t.Fatal(err)
 	}
 	taskMgr := task.NewManager(store, nil)
+	artifactStore := artifact.New(config.ArtifactsDir())
 
 	logger := e2eLogger()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -256,6 +260,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		Artifacts:   artifactStore,
 		ControlHome: taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			env.pendingCompletions.Add(1)
@@ -319,6 +324,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		agentDir:     agentDir,
 		worktreesDir: wtDir,
 		provider:     provider,
+		artifacts:    artifactStore,
 		cancel:       cancel,
 		classifier:   classifier,
 	}
@@ -2144,6 +2150,90 @@ func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T)
 	}
 }
 
+func TestE2E_WorkflowLargeToolResultIsBoundedAndArtifacted(t *testing.T) {
+	env := setupE2EMulti(t, []string{"triage", "tool_result_large"})
+
+	created, err := env.tasks.Create("large tool result", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 20*time.Second, "workflow completes", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+	})
+
+	tk, _ := env.tasks.Get(created.ID)
+	var implRun task.AgentRun
+	foundRun := false
+	for i := range tk.AgentRuns {
+		if tk.AgentRuns[i].Role == "" || tk.AgentRuns[i].Role == string(agent.RoleImplementation) {
+			implRun = tk.AgentRuns[i]
+			foundRun = true
+		}
+	}
+	if !foundRun {
+		t.Fatalf("implementation run missing: %+v", tk.AgentRuns)
+	}
+
+	ag, err := env.agents.GetAgent(implRun.AgentID)
+	if err != nil {
+		t.Fatalf("GetAgent(%s): %v", implRun.AgentID, err)
+	}
+	var toolSummary string
+	for _, ev := range ag.Output() {
+		if (ev.Type == "user" || ev.Type == "tool_result") && strings.Contains(ev.Content, "artifact_name: tool-output-toolu_large-") {
+			toolSummary = ev.Content
+			break
+		}
+	}
+	if toolSummary == "" {
+		t.Fatalf("bounded tool summary missing from output: %+v", ag.Output())
+	}
+	if !strings.Contains(toolSummary, "[tool output truncated]") {
+		t.Fatalf("tool summary missing truncation marker:\n%s", toolSummary)
+	}
+	if !strings.Contains(toolSummary, "undefined: missingDependency") {
+		t.Fatalf("tool summary lost primary diagnostic:\n%s", toolSummary)
+	}
+	if len(toolSummary) >= 5000 {
+		t.Fatalf("tool summary len = %d, want bounded summary", len(toolSummary))
+	}
+
+	metas, err := env.artifacts.List(created.ID)
+	if err != nil {
+		t.Fatalf("artifact list: %v", err)
+	}
+	var toolMeta artifact.Meta
+	foundArtifact := false
+	for i := range metas {
+		if strings.HasPrefix(metas[i].Name, "tool-output-toolu_large-") {
+			toolMeta = metas[i]
+			foundArtifact = true
+			break
+		}
+	}
+	if !foundArtifact {
+		t.Fatalf("tool output artifact missing: %+v", metas)
+	}
+	raw, _, err := env.artifacts.Read(created.ID, toolMeta.Name)
+	if err != nil {
+		t.Fatalf("artifact read: %v", err)
+	}
+	if !strings.Contains(string(raw), "undefined: missingDependency") {
+		t.Fatalf("artifact lost diagnostic:\n%s", string(raw))
+	}
+	if len(raw) <= len(toolSummary) {
+		t.Fatalf("artifact bytes = %d, want larger than bounded summary %d", len(raw), len(toolSummary))
+	}
+}
+
 // TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement verifies a FAIL verdict
 // routes the task back to in-progress for re-implementation, marks it reviewed
 // (so the re-loop skips code review), and stays under the attempt cap.
@@ -3507,6 +3597,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, e2eLogger(), logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: env.provider},
+		Artifacts:   env.artifacts,
 		ControlHome: env.taskDir,
 		OnComplete: func(ag *agent.Agent) {
 			var result string

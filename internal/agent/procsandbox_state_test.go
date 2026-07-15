@@ -19,7 +19,7 @@ func TestEnforceSpec_ResolvesAgentStateRoots(t *testing.T) {
 	}
 
 	sandboxHome := t.TempDir()
-	spec := enforceSpec("/wt", sandboxHome, "/tmp", "/cache", "/profile")
+	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "/cache", "/profile")
 
 	wantClaude, err := canonicalizeRoot(claude)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestEnforceSpec_FallsBackWhenStateDirAbsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	sandboxHome := t.TempDir()
 
-	spec := enforceSpec("/wt", sandboxHome, "/tmp", "/cache", "/profile")
+	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "/cache", "/profile")
 
 	for name, got := range map[string]string{
 		"codexState":    spec.codexState,

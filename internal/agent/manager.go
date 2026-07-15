@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/provider"
@@ -139,6 +140,7 @@ type Manager struct {
 	controlHome string
 
 	ghAppToken func() string
+	artifacts  *artifact.Store
 
 	// deadAgentRetention bounds how long a completed agent stays in agents
 	// after markAgentDone before being evicted. <= 0 evicts synchronously
@@ -192,6 +194,7 @@ type ManagerConfig struct {
 	TaskExists        func(taskID string) bool
 	TaskStatus        func(taskID string) (string, bool)
 	LimitSink         func(limits.Snapshot)
+	Artifacts         *artifact.Store
 
 	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
 	// task-scoped run. Required for every fresh agent subprocess so it never
@@ -256,6 +259,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitGate:              cfg.Runtime.LimitGate,
 		limitPolicy:            copyLimitPolicy(cfg.Runtime.LimitPolicy),
 		limitSink:              cfg.LimitSink,
+		artifacts:              cfg.Artifacts,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
 		taskStatus:             cfg.TaskStatus,

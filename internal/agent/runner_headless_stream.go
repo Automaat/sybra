@@ -39,8 +39,9 @@ func toolSignature(toolUses []ToolUseBlock) string {
 }
 
 // claudeEventToStreamEvent converts a shared ClaudeEvent into a StreamEvent
-// for the headless runner. Tool uses are formatted as "[name] cmd/desc" strings.
-// Tool results are truncated to 500 chars.
+// for the headless runner. Tool uses are formatted as "[name] cmd/desc"
+// strings. Tool results stay raw here; processHeadlessLine applies the shared
+// bounded/artifact-backed rewrite before Sybra stores the event.
 func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 	ev := StreamEvent{Type: e.Type, Subtype: e.Subtype, SessionID: e.SessionID, parentToolUseID: e.ParentToolUseID}
 	switch e.Type {
@@ -272,16 +273,13 @@ func formatHeadlessAssistant(msg *ClaudeMessage) string {
 	return strings.Join(parts, "\n")
 }
 
-// formatHeadlessToolResults joins tool result contents, truncating each to 500 chars.
+// formatHeadlessToolResults joins tool result contents without truncation.
+// processHeadlessLine applies the bounded/artifact-backed rewrite later.
 func formatHeadlessToolResults(results []ToolResultBlock) string {
 	var parts []string
 	for _, tr := range results {
-		content := tr.Content
-		if len(content) > 500 {
-			content = content[:500] + "..."
-		}
-		if content != "" {
-			parts = append(parts, content)
+		if tr.Content != "" {
+			parts = append(parts, tr.Content)
 		}
 	}
 	return strings.Join(parts, "\n")
