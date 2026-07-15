@@ -111,6 +111,31 @@ func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
 	}
 }
 
+func TestBuildHeadlessInvocation_CodexLoadsUserConfigForOperatorSkills(t *testing.T) {
+	for _, skill := range []string{"sybra-plan", "sybra-tasks"} {
+		t.Run(skill, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			resetCodexSkillsCache(t)
+			mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), skill)
+			withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+			inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Run /" + skill + " now"})
+			if err != nil {
+				t.Fatalf("BuildHeadlessInvocation: %v", err)
+			}
+			if slices.Contains(inv.args, "--ignore-user-config") {
+				t.Fatalf("Codex operator skill args included --ignore-user-config: %v", inv.args)
+			}
+			got := inv.args[len(inv.args)-1]
+			want := "Run $" + skill + " now"
+			if got != want {
+				t.Fatalf("prompt arg = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestBuildHeadlessInvocation_CodexKeepsUserConfigIgnoredWithoutSkill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -140,6 +165,54 @@ func TestBuildCodexConvoArgsWithProvider_LoadsUserConfigForSkill(t *testing.T) {
 	}
 	if got := args[len(args)-1]; got != "Run $staff-code-review" {
 		t.Fatalf("prompt arg = %q, want Codex dollar invocation", got)
+	}
+}
+
+func TestBuildCodexConvoArgsWithProvider_LoadsUserConfigForOperatorSkills(t *testing.T) {
+	for _, skill := range []string{"sybra-plan", "sybra-tasks"} {
+		t.Run(skill, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			resetCodexSkillsCache(t)
+			mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), skill)
+			withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+			args := buildCodexConvoArgs(&Agent{ID: "a", Provider: "codex"}, RunConfig{}, "Run /"+skill)
+			if slices.Contains(args, "--ignore-user-config") {
+				t.Fatalf("Codex convo operator skill args included --ignore-user-config: %v", args)
+			}
+			got := args[len(args)-1]
+			want := "Run $" + skill
+			if got != want {
+				t.Fatalf("prompt arg = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestBuildHeadlessInvocation_CopilotStripsOperatorSkillSlashInvocation(t *testing.T) {
+	for _, skill := range []string{"sybra-plan", "sybra-tasks"} {
+		t.Run(skill, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			mkLocalSkill(t, filepath.Join(home, ".copilot", "skills"), skill)
+
+			inv, err := (copilotProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "copilot"}, RunConfig{Prompt: "Run /" + skill + " now"})
+			if err != nil {
+				t.Fatalf("BuildHeadlessInvocation: %v", err)
+			}
+			if len(inv.args) < 2 {
+				t.Fatalf("unexpected Copilot args: %v", inv.args)
+			}
+			got := inv.args[1]
+			want := "Run " + skill + " now"
+			if got != want {
+				t.Fatalf("prompt arg = %q, want %q", got, want)
+			}
+			if strings.Contains(got, "/"+skill) {
+				t.Fatalf("Copilot prompt retained slash invocation: %q", got)
+			}
+		})
 	}
 }
 

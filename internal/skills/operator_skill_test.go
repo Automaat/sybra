@@ -19,7 +19,6 @@ func TestOperatorSkillsStayUserInvocableButDisableImplicitInvocation(t *testing.
 	t.Parallel()
 
 	for _, name := range []string{"sybra-plan", "sybra-tasks"} {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
