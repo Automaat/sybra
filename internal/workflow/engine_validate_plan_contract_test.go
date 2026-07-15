@@ -221,6 +221,34 @@ func TestValidatePlanContractForTask_AcceptsTaskCheckboxCriteria(t *testing.T) {
 	}
 }
 
+func TestValidatePlanContractForTask_AcceptsCopiedContractCheckboxCriteria(t *testing.T) {
+	taskBody := "## Acceptance Criteria\n\n" +
+		"- [ ] Stats can group cost, duration, failures, and outcomes by actual skill execution mode.\n" +
+		"- [ ] No work-derived content or absolute work paths are exposed publicly.\n" +
+		"- [ ] Legacy data remains readable.\n"
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "checkbox marker", prefix: "[ ] "},
+		{name: "list checkbox marker", prefix: "- [ ] "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contract := strings.Replace(validPlanContract("fa6919fc"),
+				`"acceptance_criteria": ["implementation prompt includes the contract"]`,
+				`"acceptance_criteria": [`+
+					fmt.Sprintf("%q, ", tc.prefix+"Stats can group cost, duration, failures, and outcomes by actual skill execution mode.")+
+					fmt.Sprintf("%q, ", tc.prefix+"No work-derived content or absolute work paths are exposed publicly.")+
+					fmt.Sprintf("%q", tc.prefix+"Legacy data remains readable.")+
+					`]`, 1)
+
+			if problems := ValidatePlanContractForTask(contract, "fa6919fc", taskBody); len(problems) != 0 {
+				t.Fatalf("problems = %v, want none", problems)
+			}
+		})
+	}
+}
+
 func TestValidatePlanContractForTask_DoesNotFoldLooselyIndentedParagraphIntoCriterion(t *testing.T) {
 	taskBody := "## Acceptance Criteria\n\n" +
 		"- [ ] Legacy data remains readable.\n" +
