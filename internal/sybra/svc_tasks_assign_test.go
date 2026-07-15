@@ -1,9 +1,12 @@
 package sybra
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -70,6 +73,75 @@ func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("upsert produced %d copies of leader-02, want 1", count)
+	}
+}
+
+func TestAssignTaskSemanticallyIdenticalPushIsNoOp(t *testing.T) {
+	svc, _ := setupTaskService(t)
+
+	var (
+		mu    sync.Mutex
+		fired []string
+	)
+	svc.tasks.SetStatusChangeHook(func(_, _, to string) {
+		mu.Lock()
+		fired = append(fired, to)
+		mu.Unlock()
+	})
+
+	pushed := task.Task{
+		ID:           "leader-noop",
+		Title:        "t",
+		Status:       task.StatusTodo,
+		AgentMode:    task.AgentModeHeadless,
+		ProjectID:    "owner/repo",
+		AssignedNode: "pet-box",
+	}
+	if err := svc.AssignTask(pushed); err != nil {
+		t.Fatalf("first AssignTask: %v", err)
+	}
+	got, err := svc.GetTask("leader-noop")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	infoBefore, err := os.Stat(got.FilePath)
+	if err != nil {
+		t.Fatalf("Stat before second push: %v", err)
+	}
+	bodyBefore, err := os.ReadFile(got.FilePath)
+	if err != nil {
+		t.Fatalf("ReadFile before second push: %v", err)
+	}
+
+	mirrorUpdatedAt := time.Now().UTC().Add(2 * time.Minute)
+	pushed.UpdatedAt = time.Now().UTC().Add(time.Minute)
+	pushed.StatusChangedAt = pushed.UpdatedAt
+	pushed.MirrorRev = 7
+	pushed.MirrorUpdatedAt = &mirrorUpdatedAt
+
+	time.Sleep(10 * time.Millisecond)
+	if err := svc.AssignTask(pushed); err != nil {
+		t.Fatalf("second semantically identical AssignTask: %v", err)
+	}
+	infoAfter, err := os.Stat(got.FilePath)
+	if err != nil {
+		t.Fatalf("Stat after second push: %v", err)
+	}
+	bodyAfter, err := os.ReadFile(got.FilePath)
+	if err != nil {
+		t.Fatalf("ReadFile after second push: %v", err)
+	}
+
+	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
+		t.Fatalf("identical push rewrote task file: modtime %v -> %v", infoBefore.ModTime(), infoAfter.ModTime())
+	}
+	if !bytes.Equal(bodyBefore, bodyAfter) {
+		t.Fatal("identical push rewrote task contents")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fired) != 1 || fired[0] != string(task.StatusTodo) {
+		t.Fatalf("status hook fired %v, want one create-time todo transition", fired)
 	}
 }
 

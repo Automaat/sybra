@@ -715,6 +715,12 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 			return
 		}
 		if !a.runsTaskLocally(t) {
+			// A follower-owned mirror write already carries AssignedNode; sending
+			// it back through the leader's route path turns a no-op watcher wakeup
+			// into unnecessary remote assignment traffic.
+			if t.AssignedNode != "" {
+				return
+			}
 			if a.assigner != nil {
 				if _, err := a.assigner.Route(a.ctx, t); err != nil {
 					a.logger.Warn("cluster.assign.failed", "task_id", id, "err", err)

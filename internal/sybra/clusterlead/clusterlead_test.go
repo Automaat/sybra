@@ -110,6 +110,39 @@ func TestAssignerRoutesRemoteAndStamps(t *testing.T) {
 	}
 }
 
+func TestAssignerRouteIsIdempotentOnceStamped(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
+
+	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := mgr.Get("task-pet")
+	if routed, err := assigner.Route(context.Background(), cur); err != nil || !routed {
+		t.Fatalf("first Route: routed=%v err=%v", routed, err)
+	}
+
+	stamped, _ := mgr.Get("task-pet")
+	if routed, err := assigner.Route(context.Background(), stamped); err != nil {
+		t.Fatalf("second Route: %v", err)
+	} else if routed {
+		t.Fatal("second Route should no-op once AssignedNode already matches home")
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.assigned) != 1 {
+		t.Fatalf("Route pushed %d times, want 1", len(stub.assigned))
+	}
+}
+
 func TestAssignerLeavesLocalTaskAlone(t *testing.T) {
 	stub := &followerStub{}
 	srv := stub.server(t)
