@@ -1,0 +1,32 @@
+id: simple-task-handoff-review
+name: Simple Task — Handoff (Review)
+description: >-
+  A task handed off from an external tool (e.g. Orca) that is already
+  implemented in its worktree and needs review + manual testing + PR creation.
+  Skip triage/planning/implementation; flip straight to ready-review so
+  simple-task-review reviews the adopted worktree, then it flows through the
+  testing gate (testing-task) and the PR is opened by simple-task-pr once tests
+  pass. The cascade in OnWorkflowComplete picks up each status_changed event.
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: handoff-review
+    # A PR-review task (tag `review`) is its own lane; never collide with it.
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  # No triage, planning, or implementation agent — a single deterministic status
+  # flip into the review lane. simple-task-review runs its review agents in the
+  # adopted worktree (worktree_dir); the PR is created later by simple-task-pr
+  # after the testing gate passes.
+  - id: set_ready_review
+    name: Hand Off to Review
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""

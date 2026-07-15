@@ -1,0 +1,37 @@
+package executil
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// EscapeAppleScript escapes a string for safe embedding inside an AppleScript
+// double-quoted string literal. It escapes backslashes first, then double quotes.
+func EscapeAppleScript(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
+// Run executes a command in dir, returning a formatted error with stderr on failure.
+func Run(ctx context.Context, dir, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, string(out))
+	}
+	return nil
+}
+
+// Output executes a command in dir and returns its trimmed stdout.
+func Output(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}

@@ -1,0 +1,103 @@
+id: branch-conflict-fix
+name: Branch Conflict Fix (no PR)
+description: >-
+  Recover a worktree-prep merge conflict for a task with no linked PR yet by
+  merging the project's base branch into the task's own branch (a bounded
+  headless pr-fix sub-run), then resume the task's original interrupted
+  workflow/stage. Contains no PR-tail steps (link_pr_and_review,
+  ensure_pr_closes_issue, rerequest_review, route_pr_fix_result's PR-relink
+  path) since there is no PR yet.
+builtin: true
+trigger:
+  # Started directly by ID via ReviewHandler.recoverBranchConflictNoPR ->
+  # workflowEngine.StartWorkflowWithVars, never dispatched through a matched
+  # trigger. This condition references a tag no task ever carries, so
+  # DispatchEvent/matchWorkflow can never accidentally pick this workflow.
+  on: task.status_changed
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: __never_dispatch_branch_conflict_fix__
+steps:
+  # Visible status during recovery. Does not permanently change task_type or
+  # agent_mode — only THIS step's sub-run is headless (config.mode below);
+  # the resumed original workflow keeps the task's own agent_mode, restored by
+  # resume_original's resume_status var before it re-enters.
+  - id: set_recovering
+    name: Mark Recovering
+    type: set_status
+    config:
+      status: in-progress
+      status_reason: "recovering from a branch conflict (no PR yet)"
+    next:
+      - goto: fix
+
+  - id: fix
+    name: Fix Branch Conflict
+    type: run_agent
+    config:
+      role: pr-fix
+      mode: headless
+      model: sonnet
+      prompt: >-
+        {{ getvar .Vars "prompt" }}
+    next:
+      - goto: route_result
+
+  # Mechanical check (no LLM): same escalation contract as pr-fix.yaml's
+  # route_pr_fix_result — if the agent deliberately stopped and requested a
+  # human, preserve that escalation before anything else can move the task on.
+  - id: route_result
+    name: Route Fix Result
+    type: route_pr_fix_result
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify_commits
+
+  # Mechanical check (no LLM): verifies the branch has at least one commit
+  # ahead of origin/main. Skips gracefully when there is no worktree.
+  - id: verify_commits
+    name: Verify Commits
+    type: verify_commits
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
+      - goto: detect_tampering
+
+  # Mechanical check (no LLM): scans the diff for test/CI tampering before
+  # letting the task move on. A high-severity finding flips to human-required.
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: resume_original
+
+  # Mechanical step (no LLM): restores the task's pre-recovery status and, if
+  # a specific workflow was captured before recovery began, resumes it
+  # directly — this is what re-enters the interrupted review/testing stage
+  # instead of skipping to a terminal status. With no captured workflow, ends
+  # normally: the task's restored status drives the ordinary status-based
+  # cascade (completion.Handler.OnWorkflowComplete) to pick the right
+  # workflow back up.
+  - id: resume_original
+    name: Resume Interrupted Workflow
+    type: resume_workflow
+    next:
+      - goto: ""

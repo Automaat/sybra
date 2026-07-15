@@ -1,0 +1,72 @@
+# Repo-level sybra config. Every machine that checks out this repo applies
+# the `setup` commands in each new worktree and wires the `checks` as git
+# hooks — no per-machine UI tweaks required.
+
+# Setup commands run (in order) in every newly created worktree root with a
+# 5-min batch timeout; failures abort worktree creation so agents never
+# start on a broken toolchain. Repo-declared commands run first, then any
+# machine-local SetupCommands from ~/.sybra/projects/<id>.yaml.
+setup:
+  - mise install
+  - (cd frontend && npm ci)
+  - (cd frontend && npm run build:desktop)
+
+# Black-box testing guidance for the testing workflow. Test-runners must prefer
+# this runnable surface over static inspection: start the server, wait for
+# health, then drive at least one user/operator-facing probe.
+manual_test:
+  kind: server
+  command: export SYBRA_HOST=127.0.0.1; export SYBRA_PORT=${SYBRA_MANUAL_TEST_PORT:-$((49152 + RANDOM % 10000))}; printf '%s\n' "$SYBRA_PORT" > .sybra-manual-test-port; go run ./cmd/sybra-server
+  health_url: http://127.0.0.1:$SYBRA_PORT/health
+  probe_commands:
+    - PORT=$(cat .sybra-manual-test-port); curl -fsS "http://127.0.0.1:${PORT}/health"
+
+# Git hooks installed by sybra into every worktree on creation.
+#
+# Every command is routed through `mise exec --` so the hook resolves tools
+# via the project's mise.toml even when PATH isn't set up in the agent's
+# shell (e.g. on the headless server container, where mise activation is
+# not done per-invocation). For this to work the project's
+# SetupCommands must include `mise install` AND `(cd frontend && npm ci)` —
+# otherwise the hook fails with "tool not found" at commit time, which was
+# the aa9ba123 failure mode (see CLAUDE.md Server Deployment section).
+checks:
+  pre_commit:
+    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./...'
+    - (cd frontend && npx oxlint .)
+    - mise exec -- hadolint Dockerfile
+  pre_push:
+    - mise exec -- go test ./...
+    - (cd frontend && npm run check)
+  # Mutation pass run by the codegen_gate workflow step before tamper/verify/
+  # review/testing so generated files, goimports, and go.mod drift are fixed
+  # in the worktree and committed before downstream validation.
+  codegen:
+    - mise exec -- go run ./cmd/gen-api-shim
+    - mise exec -- go generate ./internal/config/...
+    - mise exec -- golangci-lint fmt ./...
+    - mise exec -- go mod tidy
+  # Verify suite run by the verify_checks workflow step (reward-hacking
+  # phase 2): runs on the agent's branch HEAD before review so an
+  # implementation that does not pass its own tests cannot reach a PR. This
+  # is a portable, deterministic, read-only, sub-10-minute subset of the CI
+  # gate (.github/workflows/ci.yml) — chosen to catch the CI failure classes
+  # that dominate first-pass failures (api-shim drift, frontend coverage
+  # thresholds, and the e2e suite that plain `go test ./...` skips) without
+  # depending on darwin-only tooling or mutating tracked files. CI remains
+  # the source of truth for what this list excludes: Wails bindings
+  # generation (darwin/wails3-only), `-race` and full e2e (too slow for a
+  # pre-review gate), `go mod tidy`/npm lockfile drift, security scans, and
+  # browser-driven Playwright e2e. `hadolint` and `npm run check` are already
+  # covered by pre_commit/pre_push above and are not duplicated here.
+  # Ordered cheap-to-expensive; measured all-pass wall-clock on a dev
+  # machine is ~3 minutes, well under the shared 10-minute
+  # verifyChecksDefaultTimeout.
+  verify:
+    - mise exec -- bash scripts/check-api-shim-sync.sh
+    - mise exec -- bash scripts/check-no-home-fallback.sh
+    - 'GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-$(basename "$(pwd)")" mise exec -- golangci-lint run ./internal/... ./cmd/...'
+    - mise exec -- go test ./internal/... ./cmd/...
+    - (cd frontend && mise exec -- npm run build:web)
+    - (cd frontend && mise exec -- npm run test:coverage)
+    - mise exec -- go test -tags e2e -short -timeout 4m ./internal/sybra/...

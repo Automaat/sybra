@@ -1,0 +1,125 @@
+# Sybra
+
+Autonomous Claude Code orchestrator. Local desktop app that manages a swarm of AI agents: triage incoming work, spawn agents, monitor progress, handle failures — all through a markdown-based task board.
+
+## What it does
+
+You create tasks. Sybra triages them, spawns Claude Code agents to implement them, monitors progress, reviews results, and keeps the board healthy. Each agent gets an isolated git worktree so parallel work never steps on itself.
+
+```
+new → todo → in-progress → in-review → done
+              ↑
+         planning → plan-review → [human approves] → todo
+```
+
+Complex tasks go through a planning phase. Simple tasks go straight to execution.
+
+## Features
+
+- **Task board** — drag-and-drop Kanban with status swimlanes, priority, tags, agent mode
+- **Dual execution modes** — headless (`claude -p` with NDJSON streaming) or interactive (persistent conversational sessions)
+- **Worktree isolation** — each agent gets a per-task git worktree from a bare clone; no conflicts between concurrent agents
+- **GitHub integration** — link tasks to repos; agents clone, commit, and open PRs automatically
+- **Eval agents** — post-implementation verification: confirm commits exist, PRs are open, quality gates pass
+- **Chat UI** — VS Code-like conversation view per agent with real-time output streaming
+- **Planning workflow** — complex tasks get a plan that humans review before implementation starts
+- **Spotlight** — keyboard-driven task creation from anywhere in the app
+- **Todoist sync** — bidirectional sync with configurable polling
+- **Audit log** — structured NDJSON event log for failure analysis and cycle-time tracking
+- **CLI** (`sybra-cli`) — task CRUD from the terminal, used by Claude Code skills
+
+## Tech stack
+
+| Layer | Stack |
+|-------|-------|
+| Backend | Go (see `mise.toml`), Wails v3 alpha (see `go.mod`) — darwin desktop |
+| Frontend | Svelte 5, TypeScript 6, Skeleton UI v4, Tailwind v4 |
+| IPC | Wails v3 services + typed events (no HTTP, no WebSocket on desktop) |
+| File format | YAML frontmatter + GFM markdown |
+| Tooling | mise, golangci-lint v2, oxlint, GitHub Actions |
+
+## Getting started
+
+**Prerequisites:** Go and Node (pinned versions in `mise.toml`), [mise](https://mise.jdx.dev/). Desktop builds run on macOS only (Wails v3 alpha needs gtk3/webkit2gtk-4.1 on Linux, which CI does not install).
+
+```bash
+# Trust the repo's mise config, then install tool versions
+mise trust
+mise install
+
+# Install frontend deps (mise run dev/build do NOT do this for you)
+cd frontend && npm ci && cd ..
+
+# Rebuild frontend + run the desktop app (no hot reload — restart to pick up changes)
+mise run dev
+
+# Production build
+mise run build
+
+# Install CLI
+go install ./cmd/sybra-cli
+```
+
+## CLI
+
+```bash
+sybra-cli [--json] <command> [flags]
+
+list     [--status STATUS] [--tag TAG] [--project PROJECT]
+get      <id>
+create   --title TITLE [--body BODY] [--mode MODE] [--tags t1,t2]
+update   <id> [--title T] [--status S] [--body B] [--mode M] [--tags T]
+delete   <id>
+project  list|get|create|delete
+audit    [--since 7d] [--summary]
+```
+
+Use `--json` for machine-readable output (required by Claude Code skills).
+
+## Task format
+
+```yaml
+---
+id: task-abc123
+title: Implement auth middleware
+status: todo
+agent_mode: headless      # headless | interactive
+tags: [backend, auth, medium]
+project_id: owner/repo
+---
+## Description
+What needs to be done.
+```
+
+Tasks live in `~/.sybra/tasks/`. The app watches for file changes and updates the board in real time.
+
+## Projects
+
+Projects mirror GitHub repos as bare clones. Assign a `project_id` to a task and Sybra automatically creates an isolated worktree when the agent starts.
+
+```bash
+sybra-cli project create --url https://github.com/owner/repo
+sybra-cli create --title "Add feature" --project "owner/repo"
+```
+
+## Orchestrator
+
+Sybra ships with a Claude Code system prompt (`orchestrator/CLAUDE.md`) that turns a Claude Code session into the orchestration brain — triage, dispatch, monitor, resolve. Load it in any Claude Code session pointed at `~/.sybra/`.
+
+Claude Code skills (`sybra-tasks`, `sybra-triage`, `sybra-plan`, `sybra-evaluate`) are auto-installed to `~/.claude/skills/` on app startup, laid out as `<skill-name>/SKILL.md` subdirectories — the format Claude Code's skill loader requires.
+
+## File naming conventions
+
+Files at the repo root follow two prefixes:
+
+- **`svc_*.go`** — stateless service handlers. Each file declares a `*Service` struct that takes one or more internal managers as dependencies and exposes domain operations. No Wails coupling; these can be unit-tested without a running app.
+- **`app_*.go`** — lifecycle methods and adapters on `*App`. These files bind Wails IPC, handle event emission, run background loops, and wire `*Service` objects into the desktop runtime. Methods here call into `svc_*` types rather than duplicating logic.
+
+## Quality gates
+
+```bash
+mise run lint      # golangci-lint + oxlint
+go test ./...
+cd frontend && npm run check   # svelte-check
+mise run build     # confirms embed + compilation
+```

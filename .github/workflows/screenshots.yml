@@ -1,0 +1,138 @@
+name: Screenshots
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    name: Generate & Sync Screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SYBRA_HOME: /tmp/sybra-screenshots
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install chromium
+
+      - name: Seed fixtures
+        run: |
+          mkdir -p "$SYBRA_HOME/tasks" "$SYBRA_HOME/workflows"
+          cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
+          cp frontend/e2e/fixtures/wf-editor-e2e.yaml "$SYBRA_HOME/workflows/"
+          # Marker proving this is a disposable e2e home; the suite refuses
+          # destructive task cleanup without it (#1576).
+          touch "$SYBRA_HOME/.sybra-e2e-home"
+          cat > "$SYBRA_HOME/config.yaml" <<EOF
+          server:
+            auth_token: e2e-test-token
+          EOF
+
+      - name: Build web frontend
+        run: cd frontend && npm run build:web
+        env:
+          VITE_API_TOKEN: e2e-test-token
+
+      - name: Build sybra-server
+        run: go build -o bin/sybra-server ./cmd/sybra-server
+
+      - name: Start sybra-server
+        run: |
+          SYBRA_STATIC_DIR=frontend/dist-web ./bin/sybra-server > /tmp/sybra-server.log 2>&1 &
+          echo "Waiting for sybra-server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::sybra-server timed out"
+              cat /tmp/sybra-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Generate screenshots
+        run: cd frontend && npx playwright test e2e/screenshots.spec.ts --reporter=github
+        env:
+          PLAYWRIGHT_SCREENSHOTS: '1'
+
+      - name: Dump server log
+        if: failure()
+        run: cat /tmp/sybra-server.log || true
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshots
+          path: docs/screenshots/
+          retention-days: 3
+
+      - name: Checkout sybra-website
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: Automaat/sybra-website
+          path: sybra-website
+          token: ${{ secrets.WEBSITE_DEPLOY_PAT }}
+
+      - name: Open or update PR if changed
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_PAT }}
+        run: |
+          cd sybra-website
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="screenshots/sync"
+          git fetch origin "$BRANCH" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+          mkdir -p public/screenshots
+          rm -rf public/screenshots
+          cp -r ../docs/screenshots public/screenshots
+
+          git add public/screenshots/
+          if git diff --cached --quiet; then
+            echo "No screenshot changes vs $BRANCH — skipping PR"
+            exit 0
+          fi
+
+          SYBRA_SHA=$(git -C .. rev-parse --short HEAD)
+          git commit -m "chore(screenshots): sync from sybra@${SYBRA_SHA}"
+          git push --force-with-lease origin "$BRANCH"
+
+          PR_URL=$(gh pr list \
+            --repo Automaat/sybra-website \
+            --head "$BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url // ""')
+          if [ -n "$PR_URL" ]; then
+            gh pr edit "$PR_URL" \
+              --repo Automaat/sybra-website \
+              --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
+              --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
+          else
+            gh pr create \
+              --repo Automaat/sybra-website \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(screenshots): sync from sybra@${SYBRA_SHA}" \
+              --body "Automated screenshot sync from automaat/sybra@${SYBRA_SHA}."
+          fi

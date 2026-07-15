@@ -1,0 +1,117 @@
+id: simple-task-pr
+name: Simple Task — Open PR
+description: Create (or push to) the GitHub PR after manual testing passes, link it to the task, and ensure it closes any linked issue. Triggered by the cascade after testing-task flips status to ready-pr.
+builtin: true
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-pr
+steps:
+  # Proactive, best-effort branch sync with origin/main right before the PR
+  # handoff — shrinks the window in which the branch can go stale between the
+  # last reactive sync (at agent dispatch) and PR creation. Never blocks: a
+  # missing worktree/syncer, a conflict, or a transient failure are all
+  # recorded and the workflow still continues to maybe_create_pr.
+  - id: sync_branch
+    name: Sync Branch
+    type: sync_branch
+    next:
+      - goto: maybe_create_pr
+
+  # Guard: when the task already has a PR number (retries), skip create_pr
+  # entirely and just push. Prevents duplicate PRs.
+  - id: maybe_create_pr
+    name: Maybe Create PR
+    type: condition
+    next:
+      - when:
+          field: task.pr_number
+          operator: exists
+        goto: push_existing_pr
+      - goto: create_pr
+
+  # Push commits to the existing PR branch. Reached only when the task already
+  # has a pr_number. create_pr handles push for new PRs. Deterministic Go
+  # (internal/project.PushSync) — no agent/LLM involved. Never force-pushes;
+  # a genuine divergence or missing local branch flips straight to
+  # human-required instead of continuing to link_pr_and_review, so the
+  # specific push failure reason isn't overwritten by a generic one.
+  - id: push_existing_pr
+    name: Push to Existing PR
+    type: push_branch
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: link_pr_and_review
+
+  # Create the GitHub PR. The branch already passed code review AND manual
+  # testing, so this is the ship step. Deterministic Go: pushes the branch
+  # (internal/project.PushSync), checks for an existing PR first to stay
+  # idempotent on retries, then opens one via `gh pr create`, drafting the
+  # title/body with a single cheap LLM job (internal/prcontent). Closing-issue
+  # linking and the attribution footer are handled by the mechanical steps
+  # further down the chain, not here.
+  - id: create_pr
+    name: Create PR
+    type: create_pr
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: link_pr_and_review
+
+  # Non-LLM step: recover PR number from task, agent result history, or
+  # gh pr list. Sets task to in-review and skips the LLM eval when a PR
+  # is unambiguously found. Falls through to evaluate only when all three
+  # sources fail to find a PR.
+  - id: link_pr_and_review
+    name: Link PR and Review
+    type: link_pr_and_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ensure_pr_closes_issue
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: evaluate
+
+  # Mechanical fallback (no LLM): reached only when link_pr_and_review failed
+  # to find a PR. Walks step history for the last run_agent record and flips
+  # the task to human-required with a truncated reason.
+  - id: evaluate
+    name: Evaluate
+    type: evaluate
+    next:
+      - goto: ""
+
+  # Mechanical check (no LLM): if the task is linked to a GitHub issue,
+  # make sure the PR's body carries a `Closes <issue-url>` reference so
+  # merging the PR auto-closes the issue. Auto-appends the reference if
+  # missing; flips to human-required if the edit/verification fails.
+  - id: ensure_pr_closes_issue
+    name: Ensure PR Closes Issue
+    type: ensure_pr_closes_issue
+    next:
+      - goto: stamp_pr_attribution
+
+  # Mechanical floor (no LLM): append the harness attribution footer to the PR
+  # body so every Sybra-opened PR is identifiable as machine-generated, matching
+  # the footer stamped on Sybra-authored issue/PR comments. Idempotent and
+  # non-blocking; runs last so the footer lands below any `Closes <issue>` line.
+  - id: stamp_pr_attribution
+    name: Stamp PR Attribution
+    type: stamp_pr_attribution
+    next:
+      - goto: ""

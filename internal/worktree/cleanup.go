@@ -1,0 +1,191 @@
+package worktree
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/task"
+)
+
+// Remove cleans up the worktree for a task via git worktree remove.
+func (m *Manager) Remove(ctx context.Context, taskID string) {
+	t, err := m.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" {
+		return
+	}
+	// Never touch an externally-adopted worktree: the tool that created it
+	// (e.g. Orca) owns its lifecycle. Removing it would delete the user's
+	// checkout from under them.
+	if t.WorktreeDir != "" {
+		return
+	}
+	wtPath := filepath.Join(m.dir, t.DirName())
+	if _, err := os.Stat(wtPath); err != nil {
+		return
+	}
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return
+	}
+	if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
+		m.logger.Error("worktree.cleanup", "path", wtPath, "err", err)
+	} else {
+		m.logger.Info("worktree.cleaned", "path", wtPath)
+	}
+}
+
+// CleanupOrphaned removes worktree directories for deleted or completed tasks
+// that have no running agent.
+func (m *Manager) CleanupOrphaned(ctx context.Context) {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	tasks, err := m.tasks.List()
+	if err != nil {
+		return
+	}
+
+	active := make(map[string]*task.Task, len(tasks))
+	for i := range tasks {
+		active[tasks[i].DirName()] = &tasks[i]
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		wtPath := filepath.Join(m.dir, name)
+
+		t, exists := active[name]
+		switch {
+		case !exists:
+			// Task deleted — remove worktree directory.
+		case t.Status != task.StatusDone:
+			continue
+		case m.hasAgent != nil && m.hasAgent(t.ID):
+			continue
+		}
+
+		removed := false
+		if exists && t.ProjectID != "" {
+			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
+				if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
+					m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+				} else {
+					removed = true
+				}
+			}
+		}
+		if !removed {
+			// Task deleted or project lookup failed — force-remove and prune after.
+			if err := os.RemoveAll(wtPath); err != nil {
+				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+				continue
+			}
+		}
+		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+	}
+
+	// Prune dangling admin entries across all projects.
+	if m.projects == nil {
+		return
+	}
+	projects, err := m.projects.List()
+	if err != nil {
+		return
+	}
+	for i := range projects {
+		if err := project.PruneWorktrees(ctx, projects[i].ClonePath); err != nil {
+			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
+		}
+	}
+}
+
+// List returns all git worktrees for the given project.
+func (m *Manager) List(ctx context.Context, projectID string) ([]project.Worktree, error) {
+	proj, err := m.projects.Get(projectID)
+	if err != nil {
+		return nil, err
+	}
+	return project.ListWorktrees(ctx, proj.ClonePath)
+}
+
+// RepairAll runs `git worktree repair` against every project's bare clone.
+// Designed for boot-time invocation: a container redeploy that moves the
+// in-container mount point of the bare clone leaves every worktree with a
+// stale absolute back-pointer. `git worktree repair` rewrites both sides of
+// the pointer pair and is a no-op when paths are already correct.
+func (m *Manager) RepairAll(ctx context.Context) {
+	if m.projects == nil {
+		return
+	}
+	projects, err := m.projects.List()
+	if err != nil {
+		m.logger.Warn("worktree.repair-all.list", "err", err)
+		return
+	}
+	for i := range projects {
+		if err := project.RepairWorktrees(ctx, projects[i].ClonePath); err != nil {
+			m.logger.Warn("worktree.repair-all", "project", projects[i].ID, "err", err)
+			continue
+		}
+		m.logger.Info("worktree.repair-all", "project", projects[i].ID)
+	}
+}
+
+// healOrRecreate ensures the worktree at wtPath has resolvable git metadata
+// and sits on wantBranch. Returns (true, nil) if the worktree is usable on
+// return, (false, nil) if it was wiped and the caller should re-create it, or
+// (_, err) on a hard error.
+func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath, wantBranch string) (bool, error) {
+	healthy := project.WorktreeHealthy(ctx, wtPath)
+	onBranch := onExpectedBranch(ctx, wtPath, wantBranch)
+	if healthy && onBranch {
+		return true, nil
+	}
+	if healthy {
+		m.logger.Warn("worktree.branch-mismatch-recreate", "task_id", taskID, "path", wtPath, "branch", wantBranch)
+		m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
+		_ = project.RemoveWorktree(ctx, clonePath, wtPath)
+		if err := os.RemoveAll(wtPath); err != nil {
+			return false, fmt.Errorf("remove mismatched-branch worktree %s: %w", wtPath, err)
+		}
+		_ = project.PruneWorktrees(ctx, clonePath)
+		return false, nil
+	}
+	m.logger.Warn("worktree.unhealthy", "task_id", taskID, "path", wtPath)
+	if err := project.RepairWorktrees(ctx, clonePath); err != nil {
+		m.logger.Warn("worktree.repair", "task_id", taskID, "err", err)
+	}
+	if project.WorktreeHealthy(ctx, wtPath) && onExpectedBranch(ctx, wtPath, wantBranch) {
+		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
+		return true, nil
+	}
+	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
+	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
+	if err := os.RemoveAll(wtPath); err != nil {
+		return false, fmt.Errorf("remove unhealthy worktree %s: %w", wtPath, err)
+	}
+	_ = project.PruneWorktrees(ctx, clonePath)
+	return false, nil
+}
+
+// onExpectedBranch reports whether wtPath is currently checked out on
+// wantBranch. A reused worktree directory can be left on a leftover HEAD from
+// a prior run or aborted rebase (e.g. a detached HEAD from an interrupted
+// operation) while still passing WorktreeHealthy — reusing it as-is would let
+// a stale HEAD get captured downstream as the tamper-detection baseline,
+// producing a diff range that spans unrelated history instead of the current
+// task's actual change.
+func onExpectedBranch(ctx context.Context, wtPath, wantBranch string) bool {
+	current, err := project.CurrentBranch(ctx, wtPath)
+	if err != nil {
+		return false
+	}
+	return current == wantBranch
+}

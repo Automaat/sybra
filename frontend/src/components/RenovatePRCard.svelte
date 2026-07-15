@@ -1,0 +1,154 @@
+<script lang="ts">
+  import { timeAgo } from '$lib/dates.js'
+  import type { RenovatePR } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
+  import {
+    MergeRenovatePR,
+    ApproveRenovatePR,
+    RerunRenovateChecks,
+    FixRenovateCI,
+  } from '$lib/api'
+  import { isRenovatePRReadyToMerge } from '$lib/renovate.js'
+  import { renovateStore } from '../stores/renovate.svelte.js'
+
+  interface Props {
+    pr: RenovatePR
+    onselect: () => void
+  }
+
+  const { pr, onselect }: Props = $props()
+  let busy = $state('')
+
+
+  const isEligible = $derived(isRenovatePRReadyToMerge(pr))
+
+  async function approve(e: Event) {
+    e.stopPropagation()
+    busy = 'approve'
+    try {
+      await ApproveRenovatePR(pr.repository, pr.number)
+      await renovateStore.load()
+    } finally {
+      busy = ''
+    }
+  }
+
+  async function merge(e: Event) {
+    e.stopPropagation()
+    busy = 'merge'
+    try {
+      await MergeRenovatePR(pr.repository, pr.number)
+      await renovateStore.load()
+    } finally {
+      busy = ''
+    }
+  }
+
+  async function rerun(e: Event) {
+    e.stopPropagation()
+    busy = 'rerun'
+    try {
+      await RerunRenovateChecks(pr.repository, pr.number)
+      await renovateStore.load()
+    } finally {
+      busy = ''
+    }
+  }
+
+  async function fix(e: Event) {
+    e.stopPropagation()
+    busy = 'fix'
+    try {
+      await FixRenovateCI(pr.repository, pr.number, pr.headRefName, pr.title)
+      await renovateStore.load()
+    } finally {
+      busy = ''
+    }
+  }
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  role="link"
+  tabindex="0"
+  class="w-full cursor-pointer rounded-lg border border-surface-300 bg-surface-50 p-3 text-left transition-colors hover:bg-surface-100 dark:border-surface-600 dark:bg-surface-800 dark:hover:bg-surface-700"
+  onclick={onselect}
+  onkeydown={(e) => { if (e.key === 'Enter') onselect() }}
+>
+  <div class="flex items-start justify-between gap-2">
+    <div class="flex items-center gap-2">
+      {#if pr.ciStatus}
+        <span
+          class="inline-block h-2.5 w-2.5 shrink-0 rounded-full {pr.ciStatus === 'SUCCESS' ? 'bg-success-500' : pr.ciStatus === 'FAILURE' ? 'bg-error-500' : 'bg-warning-500'}"
+          title="CI: {pr.ciStatus.toLowerCase()}"
+        ></span>
+      {/if}
+      <h3 class="text-sm font-semibold leading-tight">{pr.title}</h3>
+    </div>
+    <div class="flex shrink-0 items-center gap-1.5">
+      {#if pr.waitingForStability}
+        <span class="rounded bg-warning-500/15 px-1.5 py-0.5 text-xs font-medium text-warning-700 dark:text-warning-400" title="Waiting for Renovate stability days (minimum release age) before this PR can be merged">Stability days</span>
+      {/if}
+      {#if pr.reviewDecision === 'APPROVED'}
+        <span class="rounded bg-success-500/15 px-1.5 py-0.5 text-xs font-medium text-success-700 dark:text-success-400">Approved</span>
+      {/if}
+      {#if pr.mergeable === 'CONFLICTING'}
+        <span class="rounded bg-error-500/15 px-1.5 py-0.5 text-xs font-medium text-error-700 dark:text-error-400">Conflicts</span>
+      {/if}
+    </div>
+  </div>
+
+  <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-surface-500">
+    <span class="font-mono">{pr.repository}#{pr.number}</span>
+
+    {#if pr.labels?.length}
+      {#each pr.labels as label}
+        <span class="rounded bg-surface-200 px-1.5 py-0.5 dark:bg-surface-700">{label}</span>
+      {/each}
+    {/if}
+
+    <span class="ml-auto opacity-60">{timeAgo(pr.updatedAt)}</span>
+  </div>
+
+  <div class="mt-2 flex gap-1.5">
+    {#if !pr.viewerHasApproved && pr.reviewDecision !== 'APPROVED'}
+      <button
+        type="button"
+        class="rounded bg-success-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-success-700 disabled:opacity-50"
+        onclick={approve}
+        disabled={busy !== ''}
+      >
+        {busy === 'approve' ? '...' : 'Approve'}
+      </button>
+    {/if}
+
+    {#if isEligible}
+      <button
+        type="button"
+        class="rounded bg-primary-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
+        onclick={merge}
+        disabled={busy !== ''}
+      >
+        {busy === 'merge' ? '...' : 'Merge'}
+      </button>
+    {/if}
+
+    {#if pr.ciStatus === 'FAILURE'}
+      <button
+        type="button"
+        class="rounded bg-warning-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-warning-700 disabled:opacity-50"
+        onclick={rerun}
+        disabled={busy !== ''}
+      >
+        {busy === 'rerun' ? '...' : 'Rerun'}
+      </button>
+      <button
+        type="button"
+        class="rounded bg-error-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-error-700 disabled:opacity-50"
+        onclick={fix}
+        disabled={busy !== ''}
+      >
+        {busy === 'fix' ? '...' : 'Fix'}
+      </button>
+    {/if}
+  </div>
+</div>

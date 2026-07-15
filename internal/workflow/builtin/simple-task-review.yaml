@@ -1,0 +1,265 @@
+id: simple-task-review
+name: Simple Task — Review
+description: Triage the review depth, run code review (simple or staff), apply fixes, then hand the task to the testing phase (status → testing). PR creation now lives in simple-task-pr, which runs after testing passes. Triggered by the cascade after simple-task-implement flips status to ready-review.
+builtin: true
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-review
+    # This workflow reviews the local diff before a PR exists. If a linked PR
+    # task is restored or mirrored at ready-review, leave it to the PR monitor
+    # instead of launching another local review agent.
+    - field: task.pr_number
+      operator: equals
+      value: ""
+steps:
+  # Skip review when tagged noreview/trivial or already reviewed in a prior
+  # run. On skip, jump straight to done_review so the task still advances to
+  # testing — trivial-tagged tasks then also skip testing (see
+  # testing-task.yaml's maybe_test), landing directly on ready-pr.
+  - id: maybe_review
+    name: Review Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: noreview
+    next:
+      - when:
+          field: task.reviewed
+          operator: equals
+          value: "true"
+        goto: done_review
+      - when:
+          field: task.tags
+          operator: contains
+          value: trivial
+        goto: done_review
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: noreview
+        goto: triage_review
+      - goto: done_review
+
+  # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
+  # "simple" or "staff" so pick_review_method below can pick between the
+  # lightweight /pr-review skill and the deeper /staff-code-review skill.
+  # Force-staff-review tag is checked by the picker, not here, so the
+  # decision rationale is still logged for tagged tasks.
+  - id: triage_review
+    name: Triage Review
+    type: triage_review
+    next:
+      - goto: pick_review_method
+
+  # Routes to the simple or staff review based on:
+  #   - task.tags contains force-staff-review → always staff (escape hatch)
+  #   - vars.step.triage_review.output equals skip → trivial diff, skip review
+  #   - vars.step.triage_review.output equals simple → /pr-review
+  #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
+  - id: pick_review_method
+    name: Pick Review Method
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: force-staff-review
+        goto: code_review_staff
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: skip
+        goto: done_review
+      - when:
+          field: vars.step.triage_review.output
+          operator: equals
+          value: simple
+        goto: code_review_simple
+      - goto: code_review_staff
+
+  # Lightweight review for small, low-risk diffs. Writes to the same
+  # sidecar path as code_review_staff so fix_review reads either one
+  # transparently.
+  - id: code_review_simple
+    name: Code Review (simple)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          2. Run /pr-review against that patch and the worktree source
+          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        verdict marker:
+          - `Review Verdict: CLEAN` when /pr-review found no bug-risk,
+            correctness, reliability, security, data-loss, test-breaking,
+            or otherwise actionable implementation issue that should be fixed
+            before PR creation. Style-only comments, simplification ideas,
+            unused-code observations that do not affect behavior, and optional
+            consistency suggestions stay CLEAN.
+          - `Review Verdict: NEEDS_FIXES` when any /pr-review finding should
+            trigger code changes before PR creation.
+        This line gates whether a fix-review agent runs next — get it right.
+
+        Do NOT submit anything to GitHub. Sybra will ingest
+        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        after you exit — you do not need to call sybra-cli yourself.
+        The review file is git-excluded and remains for the next step (fix_review) to
+        read directly.
+      import_sidecar:
+        kind: code_review
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+    next:
+      - goto: require_code_review
+
+  # Deep review for non-trivial diffs. Same sidecar contract as
+  # code_review_simple. Used by default whenever triage cannot prove a
+  # diff is small + low-risk.
+  - id: code_review_staff
+    name: Code Review (staff)
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      # Routed through the A/B suite (review-expensive) for provider equality.
+      # Historically pinned to claude because codex review failed ~2x more often
+      # on staff-level diffs (scorecard: 17% vs 9%); uniform weights plus the
+      # eval scorecard are expected to re-balance this — watch the review
+      # breakdown per provider after rollout.
+      provider: ab
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Review the changes on the current branch vs origin/main.
+        The PR has not been created yet — review the local diff.
+
+        Steps:
+          1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
+          2. Run /staff-code-review against that patch and the worktree source
+          3. Save the full review to .sybra-review-{{.Task.ID}}.md
+
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
+        verdict marker, mapped from /staff-code-review's native verdict:
+          - `Review Verdict: CLEAN` for APPROVE, and for
+            APPROVE_WITH_COMMENTS only when every comment is low-severity,
+            style-only, optional, or non-actionable before PR creation.
+          - `Review Verdict: NEEDS_FIXES` for REQUEST_CHANGES, or for
+            APPROVE_WITH_COMMENTS when any critical/high/medium severity
+            finding should trigger code changes before PR creation.
+        This line gates whether a fix-review agent runs next — get it right.
+
+        Do NOT submit anything to GitHub. Sybra will ingest
+        .sybra-review-{{.Task.ID}}.md as the code_review sidecar
+        after you exit — you do not need to call sybra-cli yourself.
+        The review file is git-excluded and remains for the next step (fix_review) to
+        read directly.
+      import_sidecar:
+        kind: code_review
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+    next:
+      - goto: require_code_review
+
+  # Guard: mirrors require_plan_critique in simple-task-plan. Flips task
+  # to human-required when the review sidecar is empty (e.g. agent never
+  # wrote .sybra-review-…md, or its sandbox blocked the path).
+  # Without this, fix_review reads the sidecar file and the GUI never sees what
+  # the reviewer wrote.
+  - id: require_code_review
+    name: Require Code Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: route_review_verdict
+
+  # Mirrors route_critique_verdict in simple-task-plan: a clean review (zero
+  # actionable findings) skips the fix_review agent entirely — the exact
+  # analog of #1490, which gated address_critique on the plan-critique
+  # verdict but left review ungated (#1524). Saves ~1 wasted agent run per
+  # clean-review task, which is nearly every landing.
+  - id: route_review_verdict
+    name: Route on Review Verdict
+    type: condition
+    config:
+      check:
+        field: task.code_review
+        operator: starts_with
+        value: 'Review Verdict: CLEAN'
+    next:
+      - when:
+          field: task.code_review
+          operator: starts_with
+          value: 'Review Verdict: CLEAN'
+        goto: done_review
+      - goto: fix_review
+
+  - id: fix_review
+    name: Fix Review Comments
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Read the code review at .sybra-review-{{.Task.ID}}.md
+
+        For each actionable finding (critical/high/medium severity), fix the code.
+        Skip low-severity nitpicks and style-only comments.
+
+        When done, commit your changes (do NOT push yet — push happens with PR
+        creation). Sign commits with `git commit -s -S`.
+        Use conventional commit format: `fix(review): address review comments`.
+
+        Never weaken, skip, delete, or hardcode tests to satisfy a review
+        comment — fix the underlying code. Tampering is checked and blocks the
+        task.
+    next:
+      - goto: detect_tampering
+
+  # Mechanical check (no LLM): re-scan the full diff for test/CI tampering after
+  # the review-fix agent has added commits (the implement-stage scan only saw
+  # the original diff). A high-severity finding flips the task to
+  # human-required. Skips gracefully without a worktree.
+  - id: detect_tampering
+    name: Detect Test Tampering
+    type: detect_tampering
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: done_review
+
+  # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
+  # created here — testing-task validates the feature first, then simple-task-pr
+  # opens the PR only once tests pass. A task tagged `notest` may skip app
+  # startup, but still needs CLI/test-harness evidence before PASS.
+  - id: done_review
+    name: Hand to Testing
+    type: set_status
+    config:
+      status: testing
+      status_reason: code reviewed — running manual tests
+    next:
+      - goto: ""

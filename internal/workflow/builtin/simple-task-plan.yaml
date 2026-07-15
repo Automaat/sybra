@@ -1,0 +1,653 @@
+id: simple-task-plan
+name: Simple Task — Plan
+description: Triage a new task and (when planning is required) drive the plan / critique / human-review loop. Hands off to simple-task-implement via task.status=in-progress on completion.
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: not_contains
+      value: review
+    # Handoff tasks arrive with a finished plan from an external tool (e.g.
+    # Orca) and are driven by simple-task-handoff straight to implementation.
+    # Excluding them here keeps triage/planning from also firing on create.
+    - field: task.tags
+      operator: not_contains
+      value: handoff
+    # renovate-fix tasks are driven by pr.event (pr-fix workflow) and must
+    # never enter the plan/implement/review pipeline — that would open a
+    # duplicate PR and burn ~$7 + ~70 min on a trivial CI fix.
+    - field: task.tags
+      operator: not_contains
+      value: renovate-fix
+    # Prompt Lab proposals are advanced by PromptLabService approval/rejection,
+    # not by the ordinary task.created triage/planning pipeline.
+    - field: task.tags
+      operator: not_contains
+      value: prompt-lab-proposal
+steps:
+  # Deterministic classification: calls the Go triage classifier
+  # (internal/triage) directly, no agent session involved. Previously this
+  # was a run_agent step that spawned a full Sonnet agent whose entire job
+  # was to invoke the /sybra-triage skill, which just calls this same
+  # classifier via `sybra-cli triage classify` — a second LLM call wrapping
+  # the first for no benefit.
+  - id: triage
+    name: Triage
+    type: classify_task
+    next:
+      # Short-circuit when triage determined the task is already past
+      # implementation (e.g. PR already open, escalated, or done). Without
+      # these guards the workflow would clobber the status in
+      # set_in_progress_and_end and dispatch a duplicate implement step.
+      - when:
+          field: task.status
+          operator: equals
+          value: in-review
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - when:
+          field: task.status
+          operator: equals
+          value: done
+        goto: ""
+      # noplan escape hatch: skip the plan/critique/human-review pipeline and
+      # hand straight to implementation. Checked before the planning route so
+      # it wins even if triage set status=planning. The terminal guards above
+      # still take precedence, so a noplan task triage finished is not forced
+      # into implement.
+      - when:
+          field: task.tags
+          operator: contains
+          value: noplan
+        goto: set_in_progress_and_end
+      - when:
+          field: task.status
+          operator: equals
+          value: planning
+        goto: plan
+      - goto: set_in_progress_and_end
+
+  # Terminal hand-off to simple-task-implement: flip status to in-progress
+  # and complete this workflow. The cascade in OnWorkflowComplete picks up
+  # the status_changed event and dispatches simple-task-implement.
+  - id: set_in_progress_and_end
+    name: Hand Off to Implement
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: ""
+
+  # Single plan step: one opus agent does the research/council work, but writes
+  # separate artifacts. The canonical plan sidecar is now a compact execution
+  # contract only; research, decisions, and human-review brief stay separate so
+  # implementation agents do not ingest council/critique history.
+  - id: plan
+    name: Plan
+    type: run_agent
+    config:
+      role: plan
+      provider: ab
+      mode: headless
+      model: opus
+      needs_worktree: true
+      max_retries: 1
+      prompt: >-
+        Plan task {{.Task.ID}} by producing separate planning artifacts.
+
+        IDENTITY (read first, before anything else):
+          - Your task ID is {{.Task.ID}}.
+          - Your worktree is your current working directory (`pwd`).
+          - Your branch is the checked-out branch
+            (`git rev-parse --abbrev-ref HEAD`).
+          - For the canonical source of truth, read `./.sybra-context.md` —
+            this file is auto-written by Sybra into every task worktree.
+
+        DO NOT reference any other task ID, branch, or worktree path in
+        your plan. If `git branch -a` reveals sibling branches like
+        `<type>/<other-slug>-<other-id>`, IGNORE them — they belong to
+        other concurrent tasks against the same project repo and have
+        nothing to do with you.
+
+        Process:
+          1. Run: sybra-cli --json get {{.Task.ID}}
+          2. Read the relevant source files so the plan is grounded in the
+             real code (name files and symbols you will touch).
+          3. Convene the council on the implementation approach: run
+             `/council core-eng` and pass it a concise task summary plus the
+             approach options you are weighing, grounded in the files you read.
+             The personas will debate tradeoffs and surface risks from opposed
+             engineering lenses. If /council is unavailable in this
+             environment, plan directly using the same multi-lens scrutiny.
+          4. Write these FIVE files:
+
+             A. .sybra-plan-research-{{.Task.ID}}.md
+                Raw research/evidence. Put file/symbol notes, council synthesis,
+                rejected alternatives, assumptions, and detailed rationale here.
+                This can be long. It is for audit/debug, not implementation.
+
+             B. .sybra-plan-decisions-{{.Task.ID}}.md
+                Human decision brief. Keep it short. Use this exact shape for
+                each decision that needs or may benefit from human choice:
+
+                # Decisions
+
+                ## <decision title>
+                Question: <one concrete question>
+                Recommended: <option label>
+
+                Options:
+                - <option label> - <tradeoff / consequence>
+                - <option label> - <tradeoff / consequence>
+
+                If there are no meaningful choices, write:
+                # Decisions
+
+                No open decisions. The recommended execution contract is fully
+                specified.
+
+             C. .sybra-plan-{{.Task.ID}}.md
+                The human-readable compact execution plan. Target 60-120 lines, hard
+                max 180 lines unless the task truly cannot fit. Use only:
+
+                # Execution Plan
+
+                ## Decision
+                <one paragraph with the chosen approach>
+
+                ## Scope
+                - In: ...
+                - Out: ...
+
+                ## Files
+                - `path` - change purpose
+
+                ## Steps
+                1. ...
+
+                ## Verification
+                - `command` - expected signal
+
+                For sweep/refactor tasks ("everywhere", "all", "single
+                utility", "unified", "no raw X remains"), include at least one
+                cheap acceptance probe such as a repo-wide `rg` invariant that
+                would catch missed call sites. If no mechanical probe is
+                possible, say why.
+
+                ## Stop Conditions
+                - Stop/replan if ...
+
+                Do NOT include council synthesis, plan-critic history,
+                persona names, disagreement logs, acceptance traceability tables,
+                or long risk matrices in this file.
+
+             D. .sybra-plan-brief-{{.Task.ID}}.md
+                Human approval brief. Keep it under ~40 lines. Summarize final
+                shape, important decisions, unresolved choices (if any), and why
+                the execution contract is safe to approve.
+
+             E. .sybra-plan-contract-{{.Task.ID}}.json
+                Executable plan contract consumed by implementation agents and
+                validated mechanically. Write valid JSON with exactly this shape:
+
+                {
+                  "task_id": "{{.Task.ID}}",
+                  "branch": "<current branch>",
+                  "worktree": "<current working directory>",
+                  "files": [
+                    {"path": "repo/relative/path.go", "purpose": "inspect|edit", "symbols": ["optionalSymbol"]}
+                  ],
+                  "steps": ["ordered implementation step"],
+                  "verification": [
+                    {"command": "go test ./...", "expected": "tests pass"},
+                    {"manual": "manual inspection or smoke test", "expected": "observable result"}
+                  ],
+                  "acceptance_criteria": ["observable criterion"],
+                  "risk_tier": "low|medium|high",
+                  "permission_tier": "read-only|repo-write|network|privileged",
+                  "rollback": "how to recover or revert safely"
+                }
+
+                File paths MUST be repository-relative clean paths, not absolute
+                paths and not ../ escapes. Verification and acceptance arrays
+                must be non-empty. Each verification item needs command and/or
+                manual plus expected. Supplemental fields are accepted only for
+                forward compatibility, are not instructions, and are stripped
+                before implementation agents see the contract. Keep the full
+                contract under 64 KiB. If the task body has a "## Acceptance
+                Criteria" section, copy every criterion from that section into
+                acceptance_criteria verbatim (wrapped lines joined). Do not
+                silently drop, narrow, defer, or mark any source criterion out
+                of scope; if a source criterion needs a human scope decision,
+                record that in .sybra-plan-decisions and keep it in the
+                contract.
+
+        Do NOT call sybra-cli update — Sybra will ingest your file as the
+        task sidecars after you exit. Do NOT modify task fields directly.
+        Do NOT change the task status.
+      allowed_tools:
+        - Bash
+        - Read
+        - Grep
+        - Glob
+        - Write
+        - Skill
+        - Agent
+      import_sidecars:
+        - kind: plan_research
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-research-{{.Task.ID}}.md'
+        - kind: plan_decisions
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-decisions-{{.Task.ID}}.md'
+        - kind: plan
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+        - kind: plan_brief
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-brief-{{.Task.ID}}.md'
+        - kind: plan_contract
+          from: '{{getvar .Vars "_dir"}}/.sybra-plan-contract-{{.Task.ID}}.json'
+          required: true
+    next:
+      - goto: require_plan
+
+  # Guard: the plan agent can exit cleanly without producing a plan (e.g. the
+  # council/plan flow failed or the agent skipped the write). Mirrors
+  # require_plan_critique below: flips to human-required so the failure is
+  # visible instead of silently advancing into critique_plan with an empty plan.
+  - id: require_plan
+    name: Require Plan
+    type: require_sidecar
+    config:
+      sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_decisions
+
+  - id: require_plan_decisions
+    name: Require Plan Decisions
+    type: require_sidecar
+    config:
+      sidecar: plan_decisions
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_brief
+
+  - id: require_plan_brief
+    name: Require Plan Brief
+    type: require_sidecar
+    config:
+      sidecar: plan_brief
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_research
+
+  - id: require_plan_research
+    name: Require Plan Research
+    type: require_sidecar
+    config:
+      sidecar: plan_research
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_refs
+
+  # Cross-task contamination guard: rejects plans that reference branches or
+  # worktree paths belonging to OTHER tasks. A plan agent against a shared
+  # project repo can confabulate a sibling task's identity (branch/worktree)
+  # into the plan; the impl agent then commits to the wrong branch. Flipping
+  # to human-required keeps the failure visible.
+  - id: validate_plan_refs
+    name: Validate Plan References
+    type: validate_plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_contract
+
+  - id: validate_plan_contract
+    name: Validate Plan Contract
+    type: validate_plan_contract
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: maybe_critique
+
+  # Branch around critique_plan when the task is tagged `nocritic`, and also
+  # on replan iterations after a human reject — the plan has already been
+  # critiqued and addressed once; re-critiquing each revision just burns
+  # tokens and delays the human review loop. `vars.step.review_plan.output`
+  # only exists after the wait_human step has produced a verdict, which is
+  # the reliable marker for "this is a replan, not the first pass".
+  - id: maybe_critique
+    name: Critique Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: nocritic
+    next:
+      - when:
+          field: vars.step.review_plan.output
+          operator: exists
+        goto: review_plan
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+
+  - id: critique_plan
+    name: Critique Plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      model: sonnet
+      provider: cross
+      needs_worktree: true
+      max_retries: 2
+      prompt: >-
+        Critique the execution contract for task {{.Task.ID}} using the
+        /plan-critic skill. Use the planning research, decisions, and brief as
+        context, but judge whether the compact execution contract is safe to
+        implement.
+
+        Steps:
+          1. Run: sybra-cli --json get {{.Task.ID}}
+          2. Read .planContract, .plan, .planResearch, .planDecisions, and .planBrief.
+          3. Write .sybra-plan-contract-review-{{.Task.ID}}.md with the
+             executable JSON contract FIRST, followed by the human-readable
+             .plan as secondary context. The contract is the artifact
+             implementation consumes, so critique it directly for missing files,
+             weak verification, acceptance gaps, risk, permission posture, and
+             rollback/recovery coverage.
+          4. Invoke: /plan-critic .sybra-plan-contract-review-{{.Task.ID}}.md
+          5. As soon as each persona/result is available, append a concise
+             grounded finding summary to .sybra-critique-{{.Task.ID}}.md.
+             Do not wait for the final synthesis before writing the first
+             useful content.
+          6. Capture the final markdown Plan Review report you produce and
+             overwrite .sybra-critique-{{.Task.ID}}.md with it.
+
+        Do NOT modify the plan. Do NOT change the task status. Sybra
+        will ingest .sybra-critique-{{.Task.ID}}.md as the task's
+        plan_critique sidecar after you exit — you do not need to call
+        sybra-cli yourself.
+      allowed_tools:
+        - Bash
+        - Read
+        - Grep
+        - Glob
+        - Write
+        - Skill
+        - Agent
+      import_sidecar:
+        kind: plan_critique
+        from: '{{getvar .Vars "_dir"}}/.sybra-critique-{{.Task.ID}}.md'
+    next:
+      - goto: require_plan_critique
+
+  # Guard: the critic agent above can exit cleanly even when it never
+  # produced its output file (e.g. shell blocked by a sandbox). Without
+  # this check the workflow silently advances to address_critique with
+  # an empty sidecar, and the human sees only the plan — no critique —
+  # in the review UI. This gate soft-skips missing critique output so planning
+  # can still reach human review instead of getting stranded.
+  - id: require_plan_critique
+    name: Require Plan Critique
+    type: require_sidecar
+    config:
+      sidecar: plan_critique
+      allow_missing: true
+    next:
+      - when:
+          field: vars.step.require_plan_critique.output
+          operator: contains
+          value: skipped
+        goto: review_plan
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: route_critique_verdict
+
+  # The critic's own output format (see the plan-critic skill) is
+  # `# Plan Review: <APPROVE|REFINE|REJECT>`. An APPROVE verdict means the
+  # plan is executable as-is — routing straight to human review skips a
+  # second full opus address_critique run that would otherwise revise a
+  # plan the critic already signed off on.
+  - id: route_critique_verdict
+    name: Route on Critique Verdict
+    type: condition
+    config:
+      check:
+        field: task.plan_critique
+        operator: contains
+        value: 'Plan Review: APPROVE'
+    next:
+      - when:
+          field: task.plan_critique
+          operator: contains
+          value: 'Plan Review: APPROVE'
+        goto: review_plan
+      - goto: reset_for_address
+
+  - id: reset_for_address
+    name: Reset for Critique Address
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: address_critique
+
+  - id: address_critique
+    name: Address Critique
+    type: run_agent
+    config:
+      role: plan
+      # headless, like every other planning step: this runs autonomously with no
+      # human attached. An interactive-mode agent escapes the watchdog
+      # (internal/watchdog skips ag.Mode != "headless"), so a hang here wedges the
+      # workflow in `waiting` forever with no stall recovery.
+      mode: headless
+      model: opus
+      reuse_agent: true
+      wait_for_status: plan-review
+      prompt: >-
+        The plan critic has reviewed your plan for task {{.Task.ID}}.
+
+        Steps:
+          1. sybra-cli --json get {{.Task.ID}} — read .planCritique plus the
+             current .plan, .planContract, .planResearch, .planDecisions, and .planBrief fields
+          2. For each blocking concern, revise the appropriate artifact. Keep
+             .plan as a compact execution plan and .planContract as the
+             executable JSON contract. Do NOT
+             paste critique history, council synthesis, or "refinements applied"
+             into the plan. If the task body has a "## Acceptance Criteria"
+             section, .planContract acceptance_criteria must keep every source
+             criterion verbatim; do not drop, narrow, defer, or mark source
+             criteria out of scope.
+          3. Write revised files in the worktree:
+             - .sybra-plan-research-{{.Task.ID}}.md
+             - .sybra-plan-decisions-{{.Task.ID}}.md
+             - .sybra-plan-{{.Task.ID}}.md
+             - .sybra-plan-brief-{{.Task.ID}}.md
+             - .sybra-plan-contract-{{.Task.ID}}.json
+          4. sybra-cli update {{.Task.ID}} \
+               --plan-file .sybra-plan-{{.Task.ID}}.md \
+               --plan-contract-file .sybra-plan-contract-{{.Task.ID}}.json \
+               --plan-research-file .sybra-plan-research-{{.Task.ID}}.md \
+               --plan-decisions-file .sybra-plan-decisions-{{.Task.ID}}.md \
+               --plan-brief-file .sybra-plan-brief-{{.Task.ID}}.md
+          5. sybra-cli update {{.Task.ID}} --status plan-review
+
+        Then STOP and wait. Do NOT implement.
+    next:
+      - goto: require_plan_after_address
+
+  - id: require_plan_after_address
+    name: Require Revised Plan
+    type: require_sidecar
+    config:
+      sidecar: plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_decisions_after_address
+
+  - id: require_plan_decisions_after_address
+    name: Require Revised Plan Decisions
+    type: require_sidecar
+    config:
+      sidecar: plan_decisions
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_brief_after_address
+
+  - id: require_plan_brief_after_address
+    name: Require Revised Plan Brief
+    type: require_sidecar
+    config:
+      sidecar: plan_brief
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: require_plan_research_after_address
+
+  - id: require_plan_research_after_address
+    name: Require Revised Plan Research
+    type: require_sidecar
+    config:
+      sidecar: plan_research
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_refs_after_address
+
+  - id: validate_plan_refs_after_address
+    name: Validate Revised Plan References
+    type: validate_plan
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: validate_plan_contract_after_address
+
+  - id: validate_plan_contract_after_address
+    name: Validate Revised Plan Contract
+    type: validate_plan_contract
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: review_plan
+
+  - id: review_plan
+    name: Review Plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_in_progress_and_end
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: check_replan_cap
+
+  # The human-reject loop (review_plan reject -> start_replan -> plan) is
+  # gated only by a human clicking reject each time; the engine's per-advance
+  # cycle detector can't span wait_human suspensions. task.replan_count is
+  # start_replan's own step-history count as of this reject, so 0/1/2 means
+  # start_replan has run at most twice before — allow one more full opus
+  # replan cycle (cap: 3 total). Past that, stop burning opus runs on a plan
+  # a human keeps rejecting and hand it to a human directly.
+  - id: check_replan_cap
+    name: Check Replan Cap
+    type: condition
+    config:
+      check:
+        field: task.replan_count
+        operator: in
+        value: '0,1,2'
+    next:
+      - when:
+          field: task.replan_count
+          operator: in
+          value: '0,1,2'
+        goto: start_replan
+      - goto: replan_cap_exceeded
+
+  - id: replan_cap_exceeded
+    name: Replan Cap Exceeded
+    type: set_status
+    config:
+      status: human-required
+      status_reason: >-
+        Plan rejected by human 3 times in a row — stopping the automated
+        replan loop before a 4th opus run. Needs a human to re-plan directly.
+    next:
+      - goto: ""
+
+  # Reset status before re-entering `plan` so the plan-review status-change
+  # hook fires again when the agent delivers a revised plan. Without this
+  # reset the second iteration would already be at plan-review and no
+  # transition event would be emitted to advance the workflow.
+  - id: start_replan
+    name: Prepare Replan
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: plan

@@ -1,0 +1,159 @@
+import type { Node, Edge } from '@xyflow/svelte'
+import { Condition, Definition, Position, Step, Trigger } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
+import { layoutGraph } from './graph-layout.js'
+
+const NODE_SPACING_X = 250
+const NODE_SPACING_Y = 120
+
+export const TRIGGER_NODE_ID = '__trigger'
+
+type StepNodeData = {
+  step: Step
+  label: string
+  stepType: string
+}
+
+type TriggerNodeData = {
+  trigger: Trigger
+}
+
+const stepTypeColors: Record<string, string> = {
+  run_agent: '#3b82f6',   // blue
+  wait_human: '#f59e0b',  // amber
+  set_status: '#10b981',  // green
+  condition: '#8b5cf6',   // purple
+  shell: '#6b7280',       // gray
+  parallel: '#ec4899',    // pink
+}
+
+export function definitionToGraph(def: Definition): { nodes: Node[], edges: Edge[] } {
+  const nodes: Node[] = []
+  const edges: Edge[] = []
+  const steps = def.steps ?? []
+
+  // Auto-layout unless EVERY node already has a stored position. Gating on "all"
+  // (not "any") means a partially-positioned def — e.g. a hand-edited YAML with
+  // only the trigger placed, or a fresh step added — still gets a clean layered
+  // layout instead of dropping the position-less nodes onto the naive grid.
+  const allPositioned = !!def.trigger?.position && steps.every((s) => s.position)
+
+  // Synthesize the trigger node — always present, even when empty.
+  const triggerPos = def.trigger?.position
+    ? { x: def.trigger.position.x, y: def.trigger.position.y }
+    : { x: 0, y: -150 }
+  nodes.push({
+    id: TRIGGER_NODE_ID,
+    type: 'triggerNode',
+    position: triggerPos,
+    data: {
+      trigger: def.trigger ?? new Trigger({ on: '', conditions: [] }),
+    } satisfies TriggerNodeData,
+  })
+  if (steps.length > 0) {
+    edges.push({
+      id: `${TRIGGER_NODE_ID}->${steps[0].id}`,
+      source: TRIGGER_NODE_ID,
+      target: steps[0].id,
+      animated: true,
+    })
+  }
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i]
+    const pos = step.position
+      ? { x: step.position.x, y: step.position.y }
+      : { x: NODE_SPACING_X * (i % 4), y: NODE_SPACING_Y * Math.floor(i / 4) }
+
+    nodes.push({
+      id: step.id,
+      type: 'stepNode',
+      position: pos,
+      data: {
+        step,
+        label: step.name || step.id,
+        stepType: step.type as string,
+      } satisfies StepNodeData,
+    })
+
+    const transitions = step.next ?? []
+    for (let j = 0; j < transitions.length; j++) {
+      const t = transitions[j]
+      if (!t.goto && t.goto !== '') continue
+      if (t.goto === '') {
+        // End node — create a virtual end node
+        const endId = `__end_${step.id}_${j}`
+        if (!nodes.find(n => n.id === endId)) {
+          nodes.push({
+            id: endId,
+            type: 'endNode',
+            position: { x: pos.x + NODE_SPACING_X, y: pos.y + j * 60 },
+            data: { label: 'End' },
+          })
+        }
+        edges.push({
+          id: `${step.id}->${endId}`,
+          source: step.id,
+          target: endId,
+          label: t.when ? formatCondition(t.when) : '',
+          animated: !t.when,
+        })
+      } else {
+        edges.push({
+          id: `${step.id}->${t.goto}`,
+          source: step.id,
+          target: t.goto,
+          label: t.when ? formatCondition(t.when) : '',
+          animated: !t.when,
+        })
+      }
+    }
+  }
+
+  return { nodes: allPositioned ? nodes : layoutGraph(nodes, edges), edges }
+}
+
+export function graphToDefinition(
+  original: Definition,
+  nodes: Node[],
+  _edges: Edge[],
+): Definition {
+  // Transitions are authoritative on step.next (edited via StepConfigPanel).
+  // Edges are a visual projection only; we rebuild them on load via definitionToGraph.
+  const steps: Step[] = []
+  let trigger = original.trigger
+
+  for (const node of nodes) {
+    if (node.type === 'endNode') continue
+    if (node.type === 'triggerNode' || node.id === TRIGGER_NODE_ID) {
+      trigger = new Trigger({
+        ...(original.trigger ?? { on: '', conditions: [] }),
+        position: new Position({ x: node.position.x, y: node.position.y }),
+      })
+      continue
+    }
+
+    const data = node.data as StepNodeData
+    const src = data.step
+
+    steps.push(new Step({
+      ...src,
+      position: new Position({ x: node.position.x, y: node.position.y }),
+      next: src.next ?? [],
+    }))
+  }
+
+  return new Definition({
+    ...original,
+    trigger,
+    steps,
+  })
+}
+
+function formatCondition(c: Condition): string {
+  if (!c) return ''
+  const field = c.field?.split('.').pop() ?? c.field
+  return `${field} ${c.operator} ${c.value}`
+}
+
+export { stepTypeColors }
+export type { StepNodeData, TriggerNodeData }

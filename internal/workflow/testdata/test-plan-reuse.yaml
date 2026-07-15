@@ -1,0 +1,58 @@
+id: test-plan-reuse
+name: Test Plan Reuse
+description: Minimal workflow exercising wait_for_status + start_replan
+trigger:
+  on: task.created
+steps:
+  - id: plan
+    name: Plan
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: opus
+      reuse_agent: true
+      wait_for_status: plan-review
+      prompt: >-
+        {{- $feedback := getvar .Vars "human.feedback" }}
+        {{- if $feedback }}Plan rejected. Feedback: {{ $feedback }}
+        {{- else }}Plan {{.Task.ID}}
+        {{- end }}
+    next:
+      - goto: review_plan
+
+  - id: review_plan
+    name: Review Plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+        - reject
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: done
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: reject
+        goto: start_replan
+
+  - id: start_replan
+    name: Prepare Replan
+    type: set_status
+    config:
+      status: planning
+    next:
+      - goto: plan
+
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: ""

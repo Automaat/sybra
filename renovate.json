@@ -1,0 +1,132 @@
+{
+  "automerge": true,
+  "platformAutomerge": true,
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    ":gitSignOff",
+    ":dependencyDashboard",
+    ":label(dependencies)",
+    ":rebaseStalePrs",
+    ":enableVulnerabilityAlertsWithAdditionalLabel(security)",
+    ":automergeMinor",
+    ":automergeLinters",
+    ":automergeTesters",
+    ":prConcurrentLimit20",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "schedule": ["after 10pm every weekday"],
+  "osvVulnerabilityAlerts": true,
+  "automergeStrategy": "squash",
+  "packageRules": [
+    {
+      "description": "GitHub Actions dependencies",
+      "matchManagers": ["github-actions"],
+      "addLabels": ["area/ci"],
+      "semanticCommitType": "ci",
+      "commitMessageTopic": "{{depName}} action"
+    },
+    {
+      "description": "Group patch updates",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "groupName": "patch dependencies"
+    },
+    {
+      "description": "Frontend build/test toolchain — exact pin (drift causes silent breakage). Mirrored by frontend/scripts/check-pin-strategy.mjs.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "vite",
+        "vitest",
+        "typescript",
+        "svelte",
+        "svelte-check",
+        "oxlint",
+        "tailwindcss",
+        "jsdom",
+        "@vitest/*",
+        "@playwright/*",
+        "@skeletonlabs/*",
+        "@sveltejs/*",
+        "@tailwindcss/*",
+        "@testing-library/*",
+        "@types/*"
+      ],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Pre-release runtime libs — exact pin (caret on alpha/beta has no semver guarantee)",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@wailsio/runtime"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Stable UI/runtime libs — keep caret, take semver-compatible bumps",
+      "matchManagers": ["npm"],
+      "matchPackageNames": [
+        "@lucide/svelte",
+        "@xyflow/svelte",
+        "dompurify",
+        "highlight.js",
+        "js-yaml",
+        "marked",
+        "marked-highlight",
+        "snarkdown"
+      ],
+      "rangeStrategy": "replace"
+    },
+    {
+      "description": "Group vitest packages",
+      "matchPackageNames": ["vitest", "@vitest/*"],
+      "groupName": "vitest"
+    },
+    {
+      "description": "Group Playwright packages",
+      "matchPackageNames": ["@playwright/*"],
+      "groupName": "playwright"
+    },
+    {
+      "description": "Group golang.org/x updates",
+      "matchPackageNames": ["/^golang\\.org/x//"],
+      "groupName": "golang.org/x updates"
+    },
+    {
+      "description": "Enable Go version updates in go.mod",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Group Go version updates across mise and go.mod",
+      "groupName": "Go",
+      "matchPackageNames": ["go"],
+      "matchDatasources": ["golang-version"]
+    },
+    {
+      "description": "klaudiush — auto-merge any update",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["smykla-skalski/klaudiush"],
+      "automerge": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update ARGs annotated with `# renovate: datasource=… depName=…` in Dockerfiles",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\nARG\\s+[A-Z0-9_]+=(?<currentValue>[^\\s]+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Update pinned analyzer tool versions annotated with `# renovate: datasource=… depName=…` in the CI workflow",
+      "managerFilePatterns": ["/(^|/)\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\n\\s*run:.*@(?<currentValue>[^\\s]+)",
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)(\\s+versioning=(?<versioning>[a-z-]+?))?\\s*\\n\\s*version:\\s*(?<currentValue>[^\\s]+)"
+      ]
+    }
+  ]
+}

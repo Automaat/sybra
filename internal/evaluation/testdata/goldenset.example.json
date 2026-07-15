@@ -1,0 +1,23 @@
+[
+  {
+    "id": "go-add-flag",
+    "title": "Add a --json flag to an existing CLI command",
+    "projectId": "Automaat/sybra",
+    "prompt": "Add a --json flag to the `board` CLI command that prints the board as machine-readable JSON, matching how other commands handle --json. Add a table-driven test.",
+    "expect": { "testsPass": true, "minQuality": 7, "maxTurns": 40 }
+  },
+  {
+    "id": "go-fix-nil-guard",
+    "title": "Fix a nil-pointer guard in a store method",
+    "projectId": "Automaat/sybra",
+    "prompt": "A store method dereferences an optional field without a nil check, panicking when it is unset. Add the guard and a regression test reproducing the panic.",
+    "expect": { "testsPass": true, "minQuality": 7, "maxTurns": 25 }
+  },
+  {
+    "id": "frontend-empty-state",
+    "title": "Add an empty state to a Svelte list page",
+    "projectId": "Automaat/sybra",
+    "prompt": "A list page renders nothing when the list is empty. Add a friendly empty-state message, matching the conventions of the other pages. svelte-check and oxlint must pass.",
+    "expect": { "testsPass": true, "minQuality": 6, "maxTurns": 30 }
+  }
+]

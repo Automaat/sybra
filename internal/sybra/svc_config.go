@@ -1,0 +1,309 @@
+package sybra
+
+import (
+	"fmt"
+	"log/slog"
+	"regexp"
+	"sync"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/notification"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/workflow"
+)
+
+// modelNameRe restricts the agent model identifier to characters safe to embed
+// on a CLI argument without quoting. Compiled once — recompiling per call
+// allocates ~1KB of regex state each time UpdateSettings runs.
+var modelNameRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
+// ConfigService exposes settings read/write as Wails-bound methods.
+type ConfigService struct {
+	mu             sync.RWMutex
+	cfg            *config.Config
+	logLevel       *slog.LevelVar
+	notifier       *notification.Emitter
+	agents         *agent.Manager
+	limits         *limits.Store
+	workflowEngine *workflow.Engine
+	logger         *slog.Logger
+	policy         func() limits.Policy
+	reloadHook     func() // called after todoist config changes
+}
+
+// GetSettings returns the current app settings for the config UI.
+// Secret fields (e.g. Todoist.APIToken) are redacted — callers must use
+// dedicated write-only methods (UpdateTodoistToken) to rotate them.
+func (s *ConfigService) GetSettings() AppSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c := s.cfg
+	todoist := c.Todoist
+	tokenSet := todoist.APIToken != ""
+	todoist.APIToken = "" // never leak the token over the read API
+	return AppSettings{
+		Agent:        c.Agent,
+		Notification: c.Notification,
+		Orchestrator: c.Orchestrator,
+		Logging: LoggingSettings{
+			Level:     c.Logging.Level,
+			MaxSizeMB: c.Logging.MaxSizeMB,
+			MaxFiles:  c.Logging.MaxFiles,
+		},
+		Audit:           c.Audit,
+		Todoist:         todoist,
+		Renovate:        c.Renovate,
+		Providers:       c.Providers,
+		GitHub:          c.GitHub,
+		Monitor:         c.Monitor,
+		SelfMonitor:     c.SelfMonitor,
+		Triage:          c.Triage,
+		Umbrella:        c.Umbrella,
+		Testing:         c.Testing,
+		Experience:      c.Experience,
+		Metrics:         c.Metrics,
+		Browser:         c.Browser,
+		ProjectTypes:    c.ProjectTypes,
+		Directories:     c.Directories(),
+		TodoistTokenSet: tokenSet,
+	}
+}
+
+// UpdateTodoistToken sets or clears the Todoist API token and persists the config.
+// Pass an empty string to remove the stored token.
+// This is the only write path for the token — GetSettings never returns it.
+func (s *ConfigService) UpdateTodoistToken(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Todoist.APIToken = token
+	if err := s.cfg.Save(); err != nil {
+		return err
+	}
+	if s.reloadHook != nil {
+		s.reloadHook()
+	}
+	return nil
+}
+
+// GetDefaultSettings returns the settings a fresh install would have. The UI
+// diffs live values against these to flag "modified from default" fields and to
+// power per-field reset-to-default, without hardcoding defaults in TypeScript.
+func (s *ConfigService) GetDefaultSettings() AppSettings {
+	return configToSettings(config.DefaultConfig())
+}
+
+// GetRawConfig returns the raw config.yaml text for the Advanced (YAML) editor.
+// Unlike GetSettings this is NOT redacted — it is the user's own local file,
+// surfaced behind an explicit Advanced disclosure with a secrets warning.
+func (s *ConfigService) GetRawConfig() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return config.ReadRawConfig()
+}
+
+// SaveRawConfig validates raw YAML, atomically writes it (preserving the user's
+// formatting and comments), then hot-reloads. Invalid YAML or a value that
+// fails validation is rejected without touching disk.
+func (s *ConfigService) SaveRawConfig(raw string) error {
+	parsed := config.DefaultConfig()
+	if err := yaml.Unmarshal([]byte(raw), parsed); err != nil {
+		return validationError(fmt.Sprintf("invalid YAML: %s", err))
+	}
+	// validateSettings reads s.cfg (stored-token check); guard it. ReloadFromDisk
+	// below takes the write lock itself, so release before calling it.
+	s.mu.RLock()
+	err := s.validateSettings(configToSettings(parsed))
+	s.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if err := config.WriteRawConfig([]byte(raw)); err != nil {
+		return err
+	}
+	_, err = s.ReloadFromDisk()
+	return err
+}
+
+// UpdateSettings validates, persists, and hot-reloads the provided settings.
+func (s *ConfigService) UpdateSettings(settings AppSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.validateSettings(settings); err != nil {
+		return err
+	}
+	if err := s.applyFromConfig(settingsToConfig(s.cfg, settings)); err != nil {
+		return err
+	}
+	return s.cfg.Save()
+}
+
+// validateSettings checks all editable fields for validity.
+func (s *ConfigService) validateSettings(settings AppSettings) error {
+	if settings.Agent.Provider != "" && !providerid.IsKnown(settings.Agent.Provider) {
+		return validationError(fmt.Sprintf("invalid provider: %q", settings.Agent.Provider))
+	}
+	if settings.Agent.Model != "" && !modelNameRe.MatchString(settings.Agent.Model) {
+		return validationError(fmt.Sprintf("invalid model: %q", settings.Agent.Model))
+	}
+	if settings.Agent.FallbackModel != "" && !modelNameRe.MatchString(settings.Agent.FallbackModel) {
+		return validationError(fmt.Sprintf("invalid fallback model: %q", settings.Agent.FallbackModel))
+	}
+	validModes := map[string]bool{"": true, "headless": true, "interactive": true}
+	if !validModes[settings.Agent.Mode] {
+		return validationError(fmt.Sprintf("invalid mode: %q", settings.Agent.Mode))
+	}
+	if settings.Agent.MaxConcurrent < 1 || settings.Agent.MaxConcurrent > 100 {
+		return validationError("maxConcurrent must be 1–100")
+	}
+	if settings.Agent.LogRetentionDays < -1 {
+		return validationError("logRetentionDays must be -1 or greater")
+	}
+	if settings.Agent.LogGzipAfterDays < -1 {
+		return validationError("logGzipAfterDays must be -1 or greater")
+	}
+	if settings.Agent.LogRetentionMaxSizeMB < -1 {
+		return validationError("logRetentionMaxSizeMb must be -1 or greater")
+	}
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	if !validLevels[settings.Logging.Level] {
+		return validationError(fmt.Sprintf("invalid log level: %q", settings.Logging.Level))
+	}
+	if settings.Logging.MaxSizeMB < 1 || settings.Logging.MaxSizeMB > 500 {
+		return validationError("maxSizeMB must be 1–500")
+	}
+	if settings.Logging.MaxFiles < 1 || settings.Logging.MaxFiles > 50 {
+		return validationError("maxFiles must be 1–50")
+	}
+	if settings.Audit.RetentionDays < 1 || settings.Audit.RetentionDays > 365 {
+		return validationError("retentionDays must be 1–365")
+	}
+	if settings.Todoist.Enabled && settings.Todoist.APIToken == "" && s.cfg.Todoist.APIToken == "" {
+		return validationError("todoist API token required when enabled")
+	}
+	// 0 means "use the default" (config.Load coerces it to 120); any other
+	// out-of-range value is rejected. AppSettings is passed by value, so we
+	// cannot silently coerce here — the caller would never see the change.
+	if settings.Todoist.PollSeconds != 0 &&
+		(settings.Todoist.PollSeconds < 30 || settings.Todoist.PollSeconds > 3600) {
+		return validationError("todoist poll interval must be 30–3600 seconds")
+	}
+	return nil
+}
+
+// applyFromConfig assigns all hot-reloadable fields from next into s.cfg and
+// pushes the manager settings that are intentionally live. s.mu must be held by the caller.
+// This never writes to disk — callers that need persistence must call s.cfg.Save().
+func (s *ConfigService) applyFromConfig(next config.Config) error {
+	s.cfg.Agent = next.Agent
+	s.cfg.Notification = next.Notification
+	s.cfg.Orchestrator = next.Orchestrator
+	s.cfg.Logging.Level = next.Logging.Level
+	s.cfg.Logging.MaxSizeMB = next.Logging.MaxSizeMB
+	s.cfg.Logging.MaxFiles = next.Logging.MaxFiles
+	s.cfg.Audit = next.Audit
+	s.cfg.Todoist = next.Todoist
+	// In-place field assignment: the renovate coordinator holds &s.cfg.Renovate.
+	s.cfg.Renovate.Enabled = next.Renovate.Enabled
+	s.cfg.Renovate.Author = next.Renovate.Author
+	s.cfg.Providers = next.Providers
+	s.cfg.GitHub = next.GitHub
+	s.cfg.Triage = next.Triage
+	s.cfg.Monitor = next.Monitor
+	s.cfg.SelfMonitor = next.SelfMonitor
+	s.cfg.Umbrella = next.Umbrella
+	s.cfg.Testing = next.Testing
+	s.cfg.Experience = next.Experience
+	s.cfg.Browser = next.Browser
+	s.cfg.ABTesting = next.ABTesting
+	s.cfg.Metrics = next.Metrics
+	s.cfg.ProjectTypes = next.ProjectTypes
+	s.notifier.SetDesktop(next.Notification.Desktop)
+	if err := s.refreshAgentRuntimeConfig(next); err != nil {
+		return err
+	}
+	if s.agents != nil {
+		s.agents.SetGuardrails(agent.Guardrails{
+			MaxCostUSD:              next.Agent.MaxCostUSD,
+			MaxTurns:                next.Agent.MaxTurns,
+			MaxCheckpoints:          next.MaxCheckpoints(),
+			TurnCostFraction:        next.Agent.TurnCostFraction,
+			TurnMultiplier:          next.Agent.TurnMultiplier,
+			CheckpointOnTurnCeiling: next.CheckpointOnTurnCeilingEnabled(),
+		})
+	}
+	if s.workflowEngine != nil {
+		s.workflowEngine.SetMaxCheckpoints(next.MaxCheckpoints())
+	}
+	if s.logLevel != nil {
+		s.logLevel.Set(s.cfg.Logging.SlogLevel())
+	}
+	if s.reloadHook != nil {
+		s.reloadHook()
+	}
+	return nil
+}
+
+func (s *ConfigService) refreshAgentRuntimeConfig(next config.Config) error {
+	if s.agents == nil {
+		return nil
+	}
+	return s.agents.ReplaceRuntimeConfig(s.managerRuntimeConfig(next))
+}
+
+func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRuntimeConfig {
+	policy := limits.DefaultPolicy()
+	if s.policy != nil {
+		policy = s.policy()
+	}
+	return agent.ManagerRuntimeConfig{
+		MaxConcurrent:          cfg.Agent.MaxConcurrent,
+		DefaultProvider:        cfg.Agent.Provider,
+		BashTimeoutMs:          cfg.BashTimeoutMs(),
+		RetryWatchdog:          cfg.RetryWatchdog(),
+		FallbackModel:          cfg.Agent.FallbackModel,
+		LimitGate:              agent.LimitGateOrNil(s.limits),
+		LimitPolicy:            policy,
+		MaxInFlightPerProvider: cfg.Providers.Limits.MaxInFlightPerProvider,
+		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
+		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
+		SandboxMode:            cfg.DefaultSandboxMode(),
+		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
+		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
+	}
+}
+
+// settingsToConfig converts AppSettings into a config.Config overlay, filling
+// fields not present in AppSettings from the existing cfg.
+func settingsToConfig(existing *config.Config, settings AppSettings) config.Config {
+	next := *existing
+	next.Agent = settings.Agent
+	next.Notification = settings.Notification
+	next.Orchestrator = settings.Orchestrator
+	next.Logging.Level = settings.Logging.Level
+	next.Logging.MaxSizeMB = settings.Logging.MaxSizeMB
+	next.Logging.MaxFiles = settings.Logging.MaxFiles
+	next.Audit = settings.Audit
+	next.Todoist = settings.Todoist
+	// Preserve the stored token when the caller sends a blank (redacted) value.
+	if settings.Todoist.APIToken == "" {
+		next.Todoist.APIToken = existing.Todoist.APIToken
+	}
+	next.Renovate = settings.Renovate
+	next.Providers = settings.Providers
+	next.GitHub = settings.GitHub
+	next.Monitor = settings.Monitor
+	next.SelfMonitor = settings.SelfMonitor
+	next.Triage = settings.Triage
+	next.Umbrella = settings.Umbrella
+	next.Testing = settings.Testing
+	next.Experience = settings.Experience
+	next.Metrics = settings.Metrics
+	next.Browser = settings.Browser
+	next.ProjectTypes = settings.ProjectTypes
+	return next
+}

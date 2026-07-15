@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+
+# 1. package-lock parity + pin strategy when package.json is staged.
+if git diff --cached --name-only | grep -q "^frontend/package\.json$"; then
+  echo "frontend/package.json staged — verifying pin strategy..."
+  if ! (cd "$repo_root/frontend" && node scripts/check-pin-strategy.mjs); then
+    echo "ERROR: frontend pin strategy violated. See CONTRIBUTING.md."
+    exit 1
+  fi
+
+  echo "frontend/package.json staged — verifying package-lock.json is in sync..."
+  _lock="$repo_root/frontend/package-lock.json"
+  _tmp=$(mktemp)
+  cp "$_lock" "$_tmp"
+  trap 'cp "$_tmp" "$_lock"; rm -f "$_tmp"' EXIT
+  (cd "$repo_root/frontend" && npm install --package-lock-only --ignore-scripts --quiet 2>/dev/null)
+  if ! git diff --quiet "$_lock"; then
+    echo "ERROR: frontend/package-lock.json is out of sync with package.json."
+    echo "Run 'cd frontend && npm install' and stage the updated lockfile."
+    exit 1
+  fi
+fi
+
+# 2. Go formatting on staged .go files (skip generated bindings).
+staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.go$' | grep -v '^frontend/bindings/' || true)
+if [ -n "$staged_go" ]; then
+  unformatted=$(echo "$staged_go" | xargs gofmt -l 2>/dev/null || true)
+  if [ -n "$unformatted" ]; then
+    echo "ERROR: gofmt would reformat these files:"
+    echo "$unformatted" | sed 's/^/  /'
+    echo "Run: gofmt -w \\"
+    echo "$unformatted" | sed 's/^/  /;$!s/$/ \\/'
+    exit 1
+  fi
+
+  if command -v goimports >/dev/null 2>&1; then
+    misordered=$(echo "$staged_go" | xargs goimports -l 2>/dev/null || true)
+    if [ -n "$misordered" ]; then
+      echo "ERROR: goimports would reorder imports in:"
+      echo "$misordered" | sed 's/^/  /'
+      echo "Run: goimports -w <files>"
+      exit 1
+    fi
+  fi
+fi
+
+# 3. golangci-lint on changed lines only — fast feedback, no full repo scan.
+if [ -n "$staged_go" ] && command -v golangci-lint >/dev/null 2>&1; then
+  # --new-from-rev compares against the merge-base with main so the hook
+  # only flags newly introduced issues, never pre-existing ones.
+  if ! golangci-lint run --new-from-rev=origin/main --timeout 2m ./... 2>&1 | tail -50; then
+    echo "ERROR: golangci-lint flagged new issues on changed lines."
+    exit 1
+  fi
+fi

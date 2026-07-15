@@ -1,0 +1,141 @@
+[tools]
+go = "1.26.5"
+node = "24"
+hadolint = "2.14.0"
+golangci-lint = "2.12.2"
+
+[tasks."hooks:install"]
+run = "git config core.hooksPath .githooks"
+description = "Configure git to use project hooks from .githooks/"
+
+[tasks.dev]
+run = [
+  "go install ./cmd/sybra-cli",
+  "sybra-cli install-skills || true",
+  "cd frontend && npm run build:desktop",
+  "go run .",
+]
+description = "Install CLI, refresh agent skills, rebuild frontend, run the desktop app on Wails v3 (darwin-only)."
+env = { SYBRA_PPROF = "127.0.0.1:6060" }
+
+[tasks."dev:auto"]
+run = "scripts/sybra-dev-supervisor.sh"
+description = "Run dev mode under an auto-update supervisor; restarts only when Sybra requests it."
+env = { SYBRA_PPROF = "127.0.0.1:6060" }
+
+[tasks."dev:mock"]
+run = "scripts/dev-mock/backend.sh"
+description = "Run sybra-server against an isolated, seeded dev home with fake providers (no credits). Pair with 'dev:web'. Pass --reset to wipe/re-seed."
+
+[tasks."dev:mock:seed"]
+run = "SYBRA_HOME=${DEV_HOME:-.dev-mock/home} scripts/dev-mock/seed.sh"
+description = "Re-seed the dev-mock home with mock tasks/projects (server picks up changes via the file watcher)."
+
+[tasks."dev:web"]
+run = "cd frontend && VITE_MODE=web npm run dev"
+description = "Vite dev server (HMR) in web mode; proxies /api + /events to the mock backend (run 'dev:mock' first)."
+
+[tasks.build]
+run = ["cd frontend && npm run build:desktop", "go build -o build/bin/sybra ."]
+description = "Build production desktop binary."
+
+[tasks."build:cli"]
+run = "go build -o build/bin/sybra-cli ./cmd/sybra-cli"
+description = "Build CLI binary"
+
+[tasks.lint]
+run = [
+  "golangci-lint run ./...",
+  "cd frontend && npx oxlint .",
+  "cd frontend && npm run lint:pins",
+  "hadolint Dockerfile",
+]
+description = "Run all linters"
+
+# Mirrors every deterministic, CI-aligned gate so a local pass predicts a
+# green CI run. "Deterministic" here doesn't mean no network access — npm ci
+# and Go module resolution may still hit the network — it means the gate's
+# outcome depends only on repo state, not on ambient CI infra. Intentionally
+# excludes gates that need external advisory DBs or a browser and so cannot
+# run reliably as a pre-commit loop: lint-nilaway (installs nilaway),
+# security (govulncheck + npm audit hit the advisory DBs), and the e2e job
+# (Playwright + chromium + a live server). CI remains the source of truth for
+# those three.
+[tasks.verify]
+run = [
+  "cd frontend && npm ci && npm run build:desktop",
+  "go build ./...",
+  "go mod verify",
+  "go mod tidy && git diff --exit-code go.mod go.sum",
+  "go test -race -timeout 5m ./...",
+  "go test -race -tags e2e -timeout 10m ./internal/sybra/...",
+  "golangci-lint run ./...",
+  "cd frontend && npm run check",
+  "cd frontend && npm run build:web",
+  "cd frontend && npm run test:coverage",
+  "cd frontend && npx oxlint .",
+  "cd frontend && node scripts/check-pin-strategy.mjs",
+  "bash scripts/check-api-shim-sync.sh",
+  "bash scripts/check-no-home-fallback.sh",
+  "bash scripts/resolve-release-version.test.sh",
+  "bash scripts/generate-release-notes.test.sh",
+  "command -v wails3 >/dev/null 2>&1 || (echo 'wails3 not found — install with: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.87 (see .github/workflows/ci.yml for the full workaround)' && exit 1)",
+  "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
+  "hadolint Dockerfile",
+]
+description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+
+[tasks."build:frontend:desktop"]
+run = "cd frontend && npm run build:desktop"
+description = "Build frontend for desktop (output: frontend/dist/)"
+
+[tasks."build:frontend:web"]
+run = "cd frontend && npm run build:web"
+description = "Build frontend for web (output: frontend/dist-web/)"
+
+[tasks."build:server"]
+run = ["cd frontend && npm run build:web", "go build -o bin/sybra-server ./cmd/sybra-server"]
+description = "Build HTTP server binary (builds web frontend first)"
+
+[tasks."dev:server"]
+run = ["cd frontend && npm run build:web", "SYBRA_STATIC_DIR=frontend/dist-web go run ./cmd/sybra-server"]
+description = "Build web frontend then run HTTP server"
+env = { SYBRA_PORT = "8080" }
+
+[tasks."test:e2e"]
+run = [
+  "mkdir -p /tmp/sybra-e2e/tasks",
+  "cp frontend/e2e/fixtures/*.md /tmp/sybra-e2e/tasks/",
+  # Marker proving this is a disposable e2e home; the suite refuses destructive
+  # task cleanup without it (#1576).
+  "touch /tmp/sybra-e2e/.sybra-e2e-home",
+  "cd frontend && npx playwright test",
+]
+description = "Run e2e tests (run 'mise run dev:server' in another terminal first)"
+env = { SYBRA_HOME = "/tmp/sybra-e2e" }
+
+[tasks."perf:bench"]
+run = "go test -run XXX -bench . -benchmem -benchtime=2s ./internal/task/ ./internal/agent/ ./internal/sse/ ./internal/watcher/"
+description = "Run Go benchmarks for perf-critical backend packages"
+
+[tasks."perf:build"]
+run = [
+  "go build -o bin/fake-claude ./cmd/fake-claude",
+  "go build -o bin/sybra-perf ./cmd/sybra-perf",
+]
+description = "Build the sybra-perf harness and fake-claude test double (sybra-server is spawned via go run)"
+
+[tasks."perf:load"]
+run = "./bin/sybra-perf -scenario steady -duration 30s -concurrency 8 -events 200 -event-interval 10ms -fake-claude ./bin/fake-claude"
+depends = ["perf:build"]
+description = "Run the steady end-to-end perf scenario against a throwaway sybra-server"
+
+[tasks."perf:churn"]
+run = "./bin/sybra-perf -scenario churn -duration 30s -concurrency 4 -churn-rate 200 -fake-claude ./bin/fake-claude"
+depends = ["perf:build"]
+description = "Run the task-store CRUD churn scenario"
+
+[tasks."perf:soak"]
+run = "./bin/sybra-perf -scenario soak -duration 5m -concurrency 4 -event-interval 200ms -fake-claude ./bin/fake-claude -pprof-dir ./perf-profiles"
+depends = ["perf:build"]
+description = "Long-running soak scenario with heap/goroutine profiles for leak detection"

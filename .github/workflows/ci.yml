@@ -1,0 +1,436 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-go:
+    name: Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - name: Run Go tests
+        run: go test -race -timeout 5m ./...
+
+  test-go-e2e:
+    name: Go E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - name: Run Go e2e tests
+        run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install dependencies
+        run: cd frontend && npm ci
+
+      - name: Type-check
+        run: cd frontend && npm run check
+
+      - name: Build desktop variant
+        run: cd frontend && npm run build:desktop
+
+      - name: Build web variant
+        run: cd frontend && npm run build:web
+
+      - name: Run unit tests with coverage
+        run: cd frontend && npm run test:coverage
+
+  lint-go:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        with:
+          # renovate: datasource=github-releases depName=golangci/golangci-lint
+          version: v2.12.2
+
+  lint-nilaway:
+    name: Nilaway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm ci && npm run build:desktop
+
+      - name: Install nilaway
+        # renovate: datasource=go depName=go.uber.org/nilaway
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260710181136-2378218750e4
+
+      - name: Run nilaway
+        run: |
+          NILAWAY_BASELINE=0
+          set +e
+          nilaway -include-pkgs="github.com/Automaat/sybra" ./... > nilaway.out 2>&1
+          NILAWAY_EXIT=$?
+          FINDING_COUNT=$(grep -c '^/' nilaway.out)
+          set -e
+          if [ "$NILAWAY_EXIT" -ne 0 ] && [ "$FINDING_COUNT" -eq 0 ]; then
+            echo "::error::Nilaway exited ${NILAWAY_EXIT} with no parseable findings — crash or package-load failure."
+            cat nilaway.out >&2
+            exit "$NILAWAY_EXIT"
+          fi
+          {
+            echo "### Nilaway findings"
+            echo
+            if [ "$FINDING_COUNT" -eq 0 ]; then
+              echo "_No issues._"
+            else
+              echo "<details><summary>${FINDING_COUNT} findings (baseline: ${NILAWAY_BASELINE})</summary>"
+              echo
+              echo '```'
+              cat nilaway.out
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FINDING_COUNT" -gt "$NILAWAY_BASELINE" ]; then
+            echo "::error::Nilaway: ${FINDING_COUNT} findings exceeds baseline of ${NILAWAY_BASELINE}. Fix new nil-safety regressions before merging."
+            exit 1
+          fi
+          echo "Nilaway: ${FINDING_COUNT}/${NILAWAY_BASELINE} findings — OK"
+
+  lint-dockerfile:
+    name: Dockerfile Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+  check-wailsjs:
+    name: Wails Bindings Sync
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Only same-repo PRs check out the head branch (so regenerated files
+          # can be pushed back). Fork PRs and push/tag events resolve to an
+          # empty ref and use the default checkout — a fork branch name would
+          # not resolve in this repo, and a fork cannot be pushed to.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
+          persist-credentials: true
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install wails3 CLI
+        # Upstream v3 module has a relative `replace` directive that breaks a
+        # plain `go install ...@version`. Pulling the deps via `go get` first
+        # (so they land in the local module cache without the replace), then
+        # installing, is the workaround. The Wails version is read from go.mod
+        # so the bindings job follows the app's pinned module version.
+        # go.mod/go.sum may shift here but we only diff frontend/bindings/
+        # below, so it does not poison the check.
+        run: |
+          WAILS_VERSION="$(go list -m -f '{{ .Version }}' github.com/wailsapp/wails/v3)"
+          go get "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/internal/commands@${WAILS_VERSION}"
+          go get "github.com/wailsapp/wails/v3/pkg/doctor-ng/tui@${WAILS_VERSION}"
+          go install github.com/wailsapp/wails/v3/cmd/wails3
+
+      - name: Regenerate bindings
+        run: wails3 generate bindings -ts -clean -d frontend/bindings ./...
+
+      - name: Regenerate api transport shims
+        # gen-api-shim consumes the freshly regenerated bindings, so a new
+        # Wails service gets both its binding and its api.ts/api-http.ts shims
+        # produced in the same pass.
+        run: go run ./cmd/gen-api-shim
+
+      - name: Commit and push regenerated bindings and shims
+        # Restricted to same-repo PRs — a fork PR's GITHUB_TOKEN is read-only
+        # and falls through to the drift gate. A GITHUB_TOKEN push never
+        # re-triggers workflows, so no loop; the generated files ride into the
+        # squash-merge.
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if git diff --quiet -- frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts; then
+            echo "bindings and api shims already in sync"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts
+          git commit -s -m "chore(bindings): regenerate wails bindings and api shims"
+          git push origin HEAD:"$HEAD_REF"
+
+      - name: Check for drift
+        # Fork PRs and push/tag events cannot auto-commit, so the hard gate
+        # stays as the backstop and any drift there still fails red.
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          git diff --exit-code frontend/bindings/ frontend/src/lib/api.ts frontend/src/lib/api-http.ts || \
+            (echo "::error::Wails bindings / api shims out of sync. Run 'wails3 generate bindings -ts -d frontend/bindings ./...' and 'go run ./cmd/gen-api-shim'." && exit 1)
+
+  check-api-shim-sync:
+    name: API Shim Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check HTTP-allowlisted methods have api.ts/api-http.ts shims
+        run: bash scripts/check-api-shim-sync.sh
+
+  check-no-home-fallback:
+    name: No Operator-Home Fallbacks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check for ~/.sybra fallbacks outside internal/config
+        run: bash scripts/check-no-home-fallback.sh
+
+  test-release-scripts:
+    name: Release Scripts Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run resolve-release-version.sh tests
+        run: bash scripts/resolve-release-version.test.sh
+
+      - name: Run generate-release-notes.sh tests
+        run: bash scripts/generate-release-notes.test.sh
+
+  build:
+    name: Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Lint frontend
+        run: cd frontend && npm ci && npx oxlint .
+
+      - name: Build frontend (needed for go:embed)
+        run: cd frontend && npm run build:desktop
+
+      - name: Build desktop binary
+        # The repo-root main.go is darwin-gated; macos-15 runner exercises
+        # it alongside cmd/sybra-server and the CLIs.
+        run: go build ./...
+
+  doc-version-sync:
+    name: Doc Version Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - run: |
+          GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
+          MISE_GO_VERSION=$(grep '^go = ' mise.toml | awk -F'"' '{print $2}')
+          [ "$GO_VERSION" = "$MISE_GO_VERSION" ] || \
+            (echo "mise.toml Go version stale (go.mod=$GO_VERSION, mise.toml=$MISE_GO_VERSION)" && exit 1)
+          NODE_VERSION=$(grep '^node = ' mise.toml | awk -F'"' '{print $2}')
+          grep -q "\"node\": \"$NODE_VERSION\"" frontend/package.json || \
+            (echo "frontend/package.json engines.node stale (want $NODE_VERSION)" && exit 1)
+          WAILS_RUNTIME_VERSION=$(node -p "require('./frontend/package.json').dependencies['@wailsio/runtime']")
+          grep -q "$WAILS_RUNTIME_VERSION" CONTRIBUTING.md || \
+            (echo "CONTRIBUTING.md @wailsio/runtime example stale (want $WAILS_RUNTIME_VERSION)" && exit 1)
+          MISE_GOLANGCI_LINT_VERSION=$(grep '^golangci-lint = ' mise.toml | awk -F'"' '{print $2}')
+          CI_GOLANGCI_LINT_VERSION=$(grep -A1 '^[[:space:]]*# renovate: datasource=github-releases depName=golangci/golangci-lint$' .github/workflows/ci.yml | grep 'version:' | awk '{print $2}' | tr -d 'v')
+          [ "$MISE_GOLANGCI_LINT_VERSION" = "$CI_GOLANGCI_LINT_VERSION" ] || \
+            (echo "golangci-lint version mismatch (mise.toml=$MISE_GOLANGCI_LINT_VERSION, ci.yml=$CI_GOLANGCI_LINT_VERSION)" && exit 1)
+
+  go-mod-integrity:
+    name: Go Module Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: Check for go.mod/go.sum drift
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || \
+            (echo "::error::go.mod or go.sum is out of sync. Run 'go mod tidy'." && exit 1)
+
+  npm-lockfile-integrity:
+    name: npm Lockfile Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Verify lockfile is in sync with package.json
+        run: |
+          cd frontend && npm install --package-lock-only --ignore-scripts
+          git diff --exit-code package-lock.json || \
+            (echo "::error::frontend/package-lock.json out of sync. Run 'cd frontend && npm install' and commit the lockfile." && exit 1)
+
+      - name: Enforce frontend pin strategy
+        run: cd frontend && node scripts/check-pin-strategy.mjs
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Run govulncheck
+        # renovate: datasource=go depName=golang.org/x/vuln
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0 && govulncheck ./...
+
+      - name: Run npm audit
+        run: cd frontend && npm ci && npm audit --audit-level moderate
+
+  e2e:
+    name: E2E Tests (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [claude, codex]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install chromium
+
+      - name: Seed e2e fixtures
+        run: |
+          mkdir -p "$SYBRA_HOME/tasks"
+          cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
+          # Marker proving this is a disposable e2e home; the suite refuses
+          # destructive task cleanup without it (#1576).
+          touch "$SYBRA_HOME/.sybra-e2e-home"
+          cat > "$SYBRA_HOME/config.yaml" <<EOF
+          agent:
+            provider: ${{ matrix.provider }}
+          server:
+            auth_token: e2e-test-token
+          monitor:
+            stuck_human_hours: 99999
+          EOF
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+
+      - name: Build web frontend
+        run: cd frontend && npm run build:web
+        env:
+          VITE_API_TOKEN: e2e-test-token
+
+      - name: Build sybra-server
+        run: go build -o bin/sybra-server ./cmd/sybra-server
+
+      - name: Start sybra-server
+        run: |
+          SYBRA_HOME=/tmp/sybra-e2e \
+          SYBRA_STATIC_DIR=frontend/dist-web \
+          ./bin/sybra-server > /tmp/sybra-server.log 2>&1 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+          echo "Waiting for sybra-server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::sybra-server timed out"
+              cat /tmp/sybra-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run fast e2e tests (target ≤5 min)
+        run: cd frontend && npx playwright test --grep-invert "@integration"
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+          SYBRA_E2E_PROVIDER: ${{ matrix.provider }}
+
+      - name: Write fast test timing summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "### Fast Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Clear results before integration phase
+        if: always()
+        run: rm -f frontend/test-results/results.json
+
+      - name: Run integration e2e tests (target ≤10 min)
+        run: cd frontend && npx playwright test --grep "@integration"
+        env:
+          SYBRA_HOME: /tmp/sybra-e2e
+          SYBRA_E2E_PROVIDER: ${{ matrix.provider }}
+
+      - name: Write integration test timing summary
+        if: always()
+        working-directory: frontend
+        run: |
+          echo "### Integration Tests (${{ matrix.provider }})" >> "$GITHUB_STEP_SUMMARY"
+          if test -f test-results/results.json; then node e2e/timing-summary.mjs >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Dump server log
+        if: failure()
+        run: cat /tmp/sybra-server.log || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: playwright-report-${{ matrix.provider }}
+          path: frontend/test-results/
+          retention-days: 7

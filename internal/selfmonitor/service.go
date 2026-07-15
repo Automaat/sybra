@@ -1,0 +1,473 @@
+package selfmonitor
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/health"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/task"
+)
+
+// minInterval is the smallest tick interval the Run loop will honor. Anything
+// below this gets clamped to prevent a misconfigured YAML from pegging the
+// CPU at 6×/second when someone writes `interval_hours: 0.0001`.
+const minInterval = time.Hour
+
+// ErrNoHealthReport is returned by HealthReader implementations when the
+// backing source hasn't produced a report yet — e.g. the health.Checker
+// hasn't ticked since startup. Callers should treat it as an expected
+// "nothing to do" signal, not a hard error.
+var ErrNoHealthReport = errors.New("selfmonitor: no health report available")
+
+// EmitFunc is the Wails event emitter shape. Passed in so the service can
+// broadcast selfmonitor:report without importing Wails runtime.
+type EmitFunc func(name string, payload any)
+
+// TaskAPI is the slice of task.Manager the service needs. Defining a tiny
+// interface lets unit tests inject a fake without a filesystem-backed store.
+type TaskAPI interface {
+	Get(id string) (task.Task, error)
+	List() ([]task.Task, error)
+}
+
+// HealthReader abstracts the source of the latest health.Report. The
+// production impl is DiskHealthReader (reads the file the Checker persists);
+// tests inject in-memory stubs.
+type HealthReader interface {
+	LatestReport() (*health.Report, error)
+}
+
+// DiskHealthReader reads the JSON file health.Checker persists each tick.
+// Shared between the in-process service and the CLI so both see the same
+// snapshot without coupling to the Checker instance.
+type DiskHealthReader struct {
+	Path string
+}
+
+// LatestReport reads and decodes the health report. Missing file surfaces
+// as ErrNoHealthReport so the service can treat it as an expected empty
+// state instead of a hard failure.
+func (r DiskHealthReader) LatestReport() (*health.Report, error) {
+	data, err := os.ReadFile(r.Path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNoHealthReport
+		}
+		return nil, fmt.Errorf("read health report: %w", err)
+	}
+	var rep health.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return nil, fmt.Errorf("decode health report: %w", err)
+	}
+	return &rep, nil
+}
+
+// Deps groups service construction inputs. Grouping via a struct keeps the
+// call site at app wiring declarative and lets tests inject targeted fakes.
+type Deps struct {
+	Cfg              config.SelfMonitorConfig
+	Tasks            TaskAPI
+	Health           HealthReader
+	Ledger           *Ledger
+	LogsDir          string // used as fallback for FindLogFile when Finding.LogFile is empty
+	LastReportPath   string // persisted to this path each tick (disk cache for CLI)
+	Emit             EmitFunc
+	Logger           *slog.Logger
+	Now              func() time.Time
+	AllowsProject    func(projectID string) bool
+	MaxLogEventsHint int // caps loganalyzer.Analyze; 0 → default
+
+	// Judge is the LLM classifier for Phase C verdict generation.
+	// nil disables verdict generation (tests, opt-out).
+	Judge Judge
+	// Actor is the autonomous remediator for Phase D actions.
+	// nil disables remediation.
+	Actor *Actor
+	// ProviderGate receives passive rate-limit signals derived from log analysis.
+	// nil disables provider feedback.
+	ProviderGate provider.HealthGate
+}
+
+// Service is the in-process self-monitor loop. Each tick snapshots the
+// latest health.Report, distills per-finding agent logs into a LogSummary
+// via the analyzer, applies ledger-based triage (auto-suppress chronic false
+// positives), persists the resulting Report to disk, and emits a Wails
+// event. Phase C/D will bolt the LLM judge and autonomous actor onto this
+// skeleton without reshaping the tick loop.
+type Service struct {
+	deps  Deps
+	state *runState
+}
+
+// NewService wires a Service with sensible defaults for any optional Deps.
+// The function never panics on nil fields — fakes and partial mocks are
+// acceptable for unit tests.
+func NewService(d Deps) *Service {
+	if d.Logger == nil {
+		d.Logger = slog.Default()
+	}
+	if d.Now == nil {
+		d.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if d.Emit == nil {
+		d.Emit = func(string, any) {}
+	}
+	return &Service{
+		deps:  d,
+		state: newRunState(),
+	}
+}
+
+// Run blocks until ctx is done, executing a tick on start and then every
+// cfg.IntervalHours. Returns immediately when cfg.Enabled is false so the
+// wiring in app.go can call it unconditionally without gating.
+func (s *Service) Run(ctx context.Context) {
+	if !s.deps.Cfg.Enabled {
+		s.deps.Logger.Info("selfmonitor.disabled")
+		return
+	}
+	interval := max(time.Duration(s.deps.Cfg.IntervalHours*float64(time.Hour)), minInterval)
+	s.deps.Logger.Info("selfmonitor.start", "interval", interval)
+	s.tickAndLog(ctx)
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.tickAndLog(ctx)
+		}
+	}
+}
+
+// Scan runs one pipeline pass and returns the Report without persisting or
+// emitting. Used by `sybra-cli selfmonitor investigate` and tests.
+func (s *Service) Scan(ctx context.Context) (Report, error) {
+	return s.tick(ctx)
+}
+
+// LastReport returns the most recent in-memory report and whether a tick
+// has completed since startup.
+func (s *Service) LastReport() (Report, time.Time, bool) {
+	return s.state.snapshot()
+}
+
+func (s *Service) tickAndLog(ctx context.Context) {
+	report, err := s.tick(ctx)
+	if err != nil {
+		s.deps.Logger.Error("selfmonitor.tick", "err", err)
+		return
+	}
+	s.state.recordReport(report, s.deps.Now())
+	if err := s.persistReport(report); err != nil {
+		s.deps.Logger.Warn("selfmonitor.persist", "err", err)
+	}
+	s.deps.Emit(events.SelfMonitorReport, report)
+	s.deps.Logger.Info("selfmonitor.tick.done",
+		"findings", len(report.Findings),
+		"suppressed", report.Suppressed,
+		"duration_ms", report.DurationMS,
+	)
+}
+
+func (s *Service) tick(ctx context.Context) (Report, error) {
+	start := s.deps.Now()
+	report := Report{
+		SchemaVersion: ReportSchemaVersion,
+		GeneratedAt:   start,
+	}
+
+	if s.deps.Health == nil {
+		return s.finalize(report, start), nil
+	}
+
+	hr, err := s.deps.Health.LatestReport()
+	if err != nil {
+		if errors.Is(err, ErrNoHealthReport) {
+			s.deps.Logger.Info("selfmonitor.no_health_report")
+			return s.finalize(report, start), nil
+		}
+		return report, fmt.Errorf("latest health report: %w", err)
+	}
+	if hr == nil {
+		s.deps.Logger.Info("selfmonitor.no_health_report")
+		return s.finalize(report, start), nil
+	}
+
+	report.HealthScore = hr.Score
+	report.PeriodStart = hr.PeriodStart
+	report.PeriodEnd = hr.PeriodEnd
+
+	for i := range hr.Findings {
+		inv, skipped := s.investigate(ctx, &hr.Findings[i])
+		if skipped {
+			report.Suppressed++
+			continue
+		}
+		report.Findings = append(report.Findings, inv)
+	}
+
+	// Cross-finding correlations (pure Go, no I/O).
+	if s.deps.Tasks != nil && len(report.Findings) > 1 {
+		report.Correlations = Correlate(report.Findings, s.deps.Tasks.Get)
+	}
+
+	// Phase D: act on confirmed findings in allowed categories.
+	if s.deps.Actor != nil {
+		for i := range report.Findings {
+			cat := string(report.Findings[i].Finding.Category)
+			if !slices.Contains(s.deps.Cfg.AutoActCategories, cat) {
+				continue
+			}
+			if !s.canTakeAutoAction(len(report.ActionsTaken)) {
+				s.deps.Logger.Info("selfmonitor.actor.budget_reached",
+					"max_auto_actions_per_day", s.deps.Cfg.MaxAutoActionsPerDay)
+				break
+			}
+			if rec := s.deps.Actor.Act(ctx, report.Findings[i]); rec.Kind != "" {
+				report.ActionsTaken = append(report.ActionsTaken, rec)
+				s.recordAction(report.Findings[i], rec)
+			}
+		}
+	}
+
+	return s.finalize(report, start), nil
+}
+
+// investigate runs the per-finding distillation pipeline. Returns skipped=true
+// when the ledger auto-suppresses the fingerprint or the AllowsProject gate
+// rejects the task's project.
+func (s *Service) investigate(ctx context.Context, f *health.Finding) (InvestigatedFinding, bool) {
+	if !s.projectAllowed(f) {
+		return InvestigatedFinding{}, true
+	}
+	if s.autoSuppressed(f.Fingerprint) {
+		s.deps.Logger.Info("selfmonitor.suppress", "fp", f.Fingerprint, "category", string(f.Category))
+		return InvestigatedFinding{}, true
+	}
+
+	inv := InvestigatedFinding{
+		Finding:     *f,
+		Fingerprint: f.Fingerprint,
+		Verdict:     Verdict{Classification: VerdictPending},
+	}
+	if path := s.resolveLogFile(f); path != "" {
+		summary, err := Analyze(path, s.deps.MaxLogEventsHint)
+		if err != nil {
+			s.deps.Logger.Warn("selfmonitor.analyze", "path", path, "err", err)
+		} else {
+			inv.LogSummary = &summary
+		}
+	}
+
+	// Phase C: LLM judge — fill Verdict when a LogSummary is available.
+	if s.deps.Judge != nil && inv.LogSummary != nil {
+		var tp *task.Task
+		if f.TaskID != "" && s.deps.Tasks != nil {
+			if t, err := s.deps.Tasks.Get(f.TaskID); err == nil {
+				tp = &t
+			}
+		}
+		if v, err := s.deps.Judge.Judge(ctx, *f, inv.LogSummary, tp); err != nil {
+			s.deps.Logger.Warn("selfmonitor.judge", "fp", f.Fingerprint, "err", err)
+		} else {
+			inv.Verdict = v
+		}
+	}
+
+	// Provider feedback: passive rate-limit signal from retry-loop logs.
+	s.reportProviderSignal(f, inv.LogSummary)
+
+	return inv, false
+}
+
+// reportProviderSignal calls ReportRateLimit on the provider gate when an
+// agent_retry_loop finding's log shows overloaded or rate-limit errors. This
+// lets the provider health system trigger failover without waiting for a probe.
+func (s *Service) reportProviderSignal(f *health.Finding, ls *LogSummary) {
+	if s.deps.ProviderGate == nil || ls == nil {
+		return
+	}
+	if f.Category != health.CatAgentRetryLoop {
+		return
+	}
+	providerName := s.resolveProvider(f)
+	if providerName == "" {
+		providerName = "claude"
+	}
+	for _, ec := range ls.ErrorClasses {
+		if ec.Class == "overloaded_error" || ec.Class == "rate_limit" {
+			s.deps.ProviderGate.ReportRateLimit(providerName, 15*time.Minute,
+				"selfmonitor: agent_retry_loop with "+ec.Class)
+			s.deps.Logger.Info("selfmonitor.provider_signal",
+				"class", ec.Class, "task", f.TaskID, "provider", providerName)
+			return
+		}
+	}
+}
+
+func (s *Service) resolveProvider(f *health.Finding) string {
+	if f == nil || f.TaskID == "" || s.deps.Tasks == nil {
+		return ""
+	}
+	t, err := s.deps.Tasks.Get(f.TaskID)
+	if err != nil {
+		return ""
+	}
+
+	latestByTime := ""
+	latestByTimeAt := time.Time{}
+	latestAny := ""
+	for i := range t.AgentRuns {
+		run := t.AgentRuns[i]
+		if run.Provider == "" {
+			continue
+		}
+		if latestAny == "" {
+			latestAny = run.Provider
+		}
+		if f.AgentID != "" && run.AgentID == f.AgentID {
+			return run.Provider
+		}
+		if f.LogFile != "" && run.LogFile != "" && run.LogFile == f.LogFile {
+			return run.Provider
+		}
+		if run.StartedAt.After(latestByTimeAt) {
+			latestByTimeAt = run.StartedAt
+			latestByTime = run.Provider
+		}
+	}
+	if latestByTime != "" {
+		return latestByTime
+	}
+	return latestAny
+}
+
+func (s *Service) canTakeAutoAction(takenThisTick int) bool {
+	maxActions := s.deps.Cfg.MaxAutoActionsPerDay
+	if maxActions <= 0 {
+		return true
+	}
+	alreadyTaken := takenThisTick
+	if s.deps.Ledger != nil {
+		alreadyTaken += s.deps.Ledger.ActionsInWindow(24 * time.Hour)
+	}
+	return alreadyTaken < maxActions
+}
+
+func (s *Service) recordAction(inv InvestigatedFinding, rec ActionRecord) {
+	if s.deps.Ledger == nil {
+		return
+	}
+	entry := LedgerEntry{
+		Fingerprint: inv.Fingerprint,
+		Category:    string(inv.Finding.Category),
+		TaskID:      inv.Finding.TaskID,
+		Verdict:     inv.Verdict.Classification,
+		Action:      rec.Kind,
+		ActionRef:   rec.Reference,
+		DryRun:      rec.DryRun,
+		Confidence:  inv.Verdict.Confidence,
+		Summary:     inv.Verdict.RootCause,
+		CreatedAt:   rec.TakenAt,
+	}
+	if err := s.deps.Ledger.Append(entry); err != nil {
+		s.deps.Logger.Warn("selfmonitor.ledger.append_action",
+			"fingerprint", inv.Fingerprint, "action", rec.Kind, "err", err)
+	}
+}
+
+func (s *Service) projectAllowed(f *health.Finding) bool {
+	if s.deps.AllowsProject == nil || s.deps.Tasks == nil || f.TaskID == "" {
+		return true
+	}
+	t, err := s.deps.Tasks.Get(f.TaskID)
+	if err != nil {
+		return true
+	}
+	if t.ProjectID == "" {
+		return true
+	}
+	return s.deps.AllowsProject(t.ProjectID)
+}
+
+func (s *Service) autoSuppressed(fp string) bool {
+	if fp == "" || s.deps.Ledger == nil {
+		return false
+	}
+	days := s.deps.Cfg.SuppressionDays
+	threshold := s.deps.Cfg.SuppressionThreshold
+	if days <= 0 || threshold <= 0 {
+		return false
+	}
+	window := time.Duration(days) * 24 * time.Hour
+	return s.deps.Ledger.ShouldAutoSuppress(fp, window, threshold)
+}
+
+// resolveLogFile walks three sources in order: (1) the Finding's own
+// LogFile, (2) the task's AgentRuns[].LogFile for the matching agent, and
+// (3) a glob on LogsDir/agents/{agentID}-*.ndjson. Returns "" when nothing
+// resolves — the analyzer skip path handles that gracefully.
+func (s *Service) resolveLogFile(f *health.Finding) string {
+	if f.LogFile != "" {
+		if _, err := os.Stat(f.LogFile); err == nil {
+			return f.LogFile
+		}
+	}
+	if f.TaskID != "" && s.deps.Tasks != nil {
+		if t, err := s.deps.Tasks.Get(f.TaskID); err == nil {
+			for i := range t.AgentRuns {
+				run := &t.AgentRuns[i]
+				if run.LogFile == "" {
+					continue
+				}
+				if f.AgentID != "" && run.AgentID != f.AgentID {
+					continue
+				}
+				if _, err := os.Stat(run.LogFile); err == nil {
+					return run.LogFile
+				}
+			}
+		}
+	}
+	if f.AgentID != "" && s.deps.LogsDir != "" {
+		if path, err := agent.FindLogFile(s.deps.LogsDir, f.AgentID); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func (s *Service) finalize(r Report, start time.Time) Report {
+	end := s.deps.Now()
+	r.DurationMS = end.Sub(start).Milliseconds()
+	return r
+}
+
+func (s *Service) persistReport(r Report) error {
+	path := s.deps.LastReportPath
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}

@@ -1,0 +1,54 @@
+# Build
+build/bin/
+frontend/dist/
+frontend/dist-web/
+frontend/node_modules/
+frontend/package.json.md5
+
+# v3 binary populates its embed dir from frontend/dist at build time
+cmd/sybra-v3/dist/*
+!cmd/sybra-v3/dist/.gitkeep
+
+# Runtime data (lives in ~/.sybra at runtime)
+tasks/
+
+# Claude Code
+.claude/settings.local.json
+.klaudiush/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+frontend/test-results/
+frontend/playwright-report/
+frontend/coverage/
+
+# Binary
+/sybra
+/sybra-cli
+/sybra-server
+/sybra-perf
+/fake-claude
+/synapse-server
+core.*
+/fake-codex
+/fake-copilot
+
+# Perf artifacts
+/perf-profiles/
+
+# Manual testing artifacts
+.sybra-manual-test-port*
+.sybra-bad-*
+.sybra-manual-*
+
+# Web-mode dev mock backend home + fake CLIs
+.dev-mock/

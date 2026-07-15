@@ -1,0 +1,194 @@
+import {
+  ListTasks,
+  GetTask,
+  BlessTampering,
+  CreateTask,
+  UpdateTask,
+  DeleteTask,
+  ApprovePlan,
+  ApprovePlanOnNode,
+  ReassignTask,
+  RejectPlanOnNode,
+  RejectPlan,
+  SendPlanMessage,
+  HasLivePlanAgent,
+  DispatchFromHumanRequired,
+  ApproveProposal,
+  RejectProposal,
+} from '$lib/api'
+import { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { EntityStore } from './entity-store.svelte.js'
+import { needsPlanApproval } from '../lib/statuses.js'
+
+class TaskStore extends EntityStore<Task> {
+  // Per-id operation counter guarding the async patchOne against its own
+  // out-of-order completion. patchOne re-reads it after GetTask resolves and
+  // drops the result if a newer op (a delete, or a later patch) has since run —
+  // otherwise a slow in-flight fetch could resurrect a just-deleted task or
+  // overwrite newer state, since the Map is last-write-wins. IDs are never
+  // reused, so a monotonic per-id counter is sufficient.
+  #opSeq = new Map<string, number>()
+
+  #bumpSeq(id: string): number {
+    const n = (this.#opSeq.get(id) ?? 0) + 1
+    this.#opSeq.set(id, n)
+    return n
+  }
+
+  // Task-keyed bless-in-flight guard, shared by every "Bless & send to
+  // review" button (header bar + status banner). A local $state flag per
+  // component can't stop two buttons for the same task racing each other.
+  #blessing = $state<Set<string>>(new Set())
+
+  isBlessing(id: string): boolean {
+    return this.#blessing.has(id)
+  }
+
+  constructor() {
+    super(
+      () => ListTasks(),
+      (a, b) => {
+        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0
+        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0
+        return tb - ta
+      },
+    )
+  }
+
+  get tasks() {
+    return this.items
+  }
+  set tasks(v: Map<string, Task>) {
+    this.items = v
+  }
+
+  byStatus(status: string): Task[] {
+    if (status === 'all') return this.list
+    return this.list.filter((t) => t.status === status)
+  }
+
+  // Tasks genuinely waiting on a plan approve/reject decision — keyed off the
+  // workflow engine's own currentStep/state rather than solely the top-level
+  // status, so a manual status update that desyncs from an active workflow
+  // (issue #1642) can't hide a pending decision from the review surfaces.
+  tasksNeedingPlanApproval(): Task[] {
+    return this.list.filter(needsPlanApproval)
+  }
+
+  async get(id: string): Promise<Task> {
+    const result = await GetTask(id)
+    this.set(result.id, result)
+    return result
+  }
+
+  // Fetch one task and upsert it into the reactive Map without rebuilding the
+  // whole Map. Drives the live task:created/updated event handler so a single
+  // changed file re-renders one card instead of forcing a full reload + total
+  // re-render. Swallows errors: the id may have just vanished, or be derived
+  // from a sidecar whose parent is gone — the trailing delete event or the
+  // background poll reconciles.
+  async patchOne(id: string): Promise<void> {
+    const mine = this.#bumpSeq(id)
+    try {
+      const result = await GetTask(id)
+      // Superseded by a later remove/patch while this fetch was in flight —
+      // applying it now would resurrect a deleted task or clobber newer state.
+      if (this.#opSeq.get(id) !== mine) return
+      if (result?.id) this.set(result.id, result)
+    } catch {
+      // Task unreadable/removed — leave the Map untouched.
+    }
+  }
+
+  // Drop one task from the reactive Map (pure local, no fetch). Drives the
+  // task:deleted handler. Bumps the op counter so any in-flight patchOne for
+  // this id is discarded when it resolves.
+  removeOne(id: string): void {
+    this.#bumpSeq(id)
+    this.delete(id)
+  }
+
+  async create(title: string, body: string, mode: string): Promise<Task> {
+    const result = await CreateTask(title, body, mode)
+    this.set(result.id, result)
+    return result
+  }
+
+  async update(id: string, updates: Record<string, any>): Promise<Task> {
+    const result = await UpdateTask(id, updates)
+    this.set(result.id, result)
+    return result
+  }
+
+  async blessTampering(id: string): Promise<Task> {
+    if (this.#blessing.has(id)) throw new Error('bless already in flight')
+    this.#blessing = new Set(this.#blessing).add(id)
+    try {
+      const result = await BlessTampering(id)
+      this.set(result.id, result)
+      return result
+    } finally {
+      const next = new Set(this.#blessing)
+      next.delete(id)
+      this.#blessing = next
+    }
+  }
+
+  async remove(id: string): Promise<void> {
+    await DeleteTask(id)
+    this.delete(id)
+  }
+
+  async approvePlan(id: string): Promise<void> {
+    const node = this.tasks.get(id)?.assignedNode
+    if (node) {
+      await ApprovePlanOnNode(node, id)
+      return
+    }
+    const result = await ApprovePlan(id)
+    this.set(result.id, result)
+  }
+
+  async rejectPlan(id: string, feedback: string): Promise<void> {
+    const node = this.tasks.get(id)?.assignedNode
+    if (node) {
+      await RejectPlanOnNode(node, id, feedback)
+      return
+    }
+    const result = await RejectPlan(id, feedback)
+    this.set(result.id, result)
+  }
+
+  async reassign(id: string, node: string): Promise<void> {
+    await ReassignTask(id, node)
+    await this.patchOne(id)
+  }
+
+  async sendPlanMessage(id: string, message: string): Promise<void> {
+    await SendPlanMessage(id, message)
+  }
+
+  async hasLivePlanAgent(id: string): Promise<boolean> {
+    return HasLivePlanAgent(id)
+  }
+
+  async approveProposal(id: string): Promise<Task> {
+    const result = await ApproveProposal(id)
+    this.set(result.id, result)
+    return result
+  }
+
+  async rejectProposal(id: string, feedback: string): Promise<Task> {
+    const result = await RejectProposal(id, feedback)
+    this.set(result.id, result)
+    return result
+  }
+
+  async dispatchFromHumanRequired(id: string, target: string, reason: string): Promise<Task> {
+    const result = await DispatchFromHumanRequired(id, target, reason)
+    this.set(result.id, result)
+    return result
+  }
+}
+
+export const taskStore = new TaskStore()

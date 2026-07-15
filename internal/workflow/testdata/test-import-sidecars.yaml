@@ -1,0 +1,21 @@
+id: test-import-sidecars
+name: Test Import Sidecars
+builtin: false
+steps:
+  - id: plan
+    type: run_agent
+    config:
+      role: plan
+      mode: headless
+      prompt: plan
+      import_sidecars:
+        - kind: plan_research
+          from: "{{.Vars.research_path}}"
+        - kind: plan_decisions
+          from: "{{.Vars.decisions_path}}"
+        - kind: plan
+          from: "{{.Vars.plan_path}}"
+        - kind: plan_brief
+          from: "{{.Vars.brief_path}}"
+        - kind: plan_contract
+          from: "{{.Vars.contract_path}}"

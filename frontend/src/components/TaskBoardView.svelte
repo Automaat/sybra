@@ -1,0 +1,217 @@
+<script lang="ts">
+  import { ChevronDown } from '@lucide/svelte'
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+  import type { BoardColumn } from '../lib/statuses.js'
+  import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
+  import TaskCard from './TaskCard.svelte'
+  import InlineTaskAdd from './InlineTaskAdd.svelte'
+  import ClusterHealth from './ClusterHealth.svelte'
+  import { clusterStore } from '../stores/cluster.svelte.js'
+  import { agentStore } from '../stores/agents.svelte.js'
+  import { viewport } from '../lib/viewport.svelte.js'
+  import { fly } from 'svelte/transition'
+  import { flip } from 'svelte/animate'
+  import { cubicOut } from 'svelte/easing'
+
+  interface Props {
+    visibleColumns: BoardColumn[]
+    /** Tasks for a given column's statuses. Caller filters; we render. */
+    columnTasks: (col: BoardColumn) => Task[]
+    umbrellaProgress?: (task: Task) => UmbrellaProgress | null
+    focusedTaskId: string | null
+    collapsedColumns: Set<string>
+    onselect: (id: string) => void
+    onmove: (taskId: string, status: string) => void
+    ontogglecolumn: (status: string) => void
+  }
+
+  const {
+    visibleColumns,
+    columnTasks,
+    umbrellaProgress = () => null,
+    focusedTaskId,
+    collapsedColumns,
+    onselect,
+    onmove,
+    ontogglecolumn,
+  }: Props = $props()
+
+  let dragOverStatus = $state<string | null>(null)
+  // Empty desktop columns collapse to a thin rail; clicking one expands it so
+  // tasks can still be added there.
+  let expandedEmpty = $state<Set<string>>(new Set())
+
+  // Scroll-shadow: when the board overflows horizontally (e.g. 6 columns at
+  // laptop width), fade the right edge so it's obvious a column is off-screen
+  // and scrollable — the Human Required column must never be silently hidden.
+  let scrollEl = $state<HTMLDivElement | null>(null)
+  let canScrollLeft = $state(false)
+  let canScrollRight = $state(false)
+
+  function updateScroll() {
+    const el = scrollEl
+    if (!el) return
+    canScrollLeft = el.scrollLeft > 1
+    canScrollRight = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+  }
+
+  // Fade whichever edge(s) have off-screen columns, so it's always visible that
+  // the board scrolls (and which way) — no column is silently hidden.
+  const maskStyle = $derived.by(() => {
+    if (!canScrollLeft && !canScrollRight) return undefined
+    const left = canScrollLeft ? 'transparent, #000 3rem' : '#000'
+    const right = canScrollRight ? '#000 calc(100% - 3rem), transparent' : '#000'
+    const grad = `linear-gradient(to right, ${left}, ${right})`
+    // no-repeat: a gradient ending in transparent must not tile and leave
+    // transparent seams mid-board.
+    return `mask-image: ${grad}; -webkit-mask-image: ${grad}; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat`
+  })
+
+  $effect(() => {
+    // Recompute on mount and whenever layout changes the board's scrollWidth
+    // without a scroll event: the column set, or an empty rail expanding /
+    // auto-collapsing. (Plus viewport resize via the listener.)
+    if (visibleColumns && expandedEmpty && collapsedColumns) updateScroll()
+    window.addEventListener('resize', updateScroll)
+    return () => window.removeEventListener('resize', updateScroll)
+  })
+
+  function expandEmpty(status: string) {
+    expandedEmpty = new Set(expandedEmpty).add(status)
+  }
+
+  // Drop the expand override once a column has tasks, so it re-collapses to a
+  // thin rail if it later empties out again (rather than staying expanded).
+  $effect(() => {
+    let changed = false
+    const next = new Set(expandedEmpty)
+    for (const status of expandedEmpty) {
+      const col = visibleColumns.find((c) => c.status === status)
+      if (col && columnTasks(col).length > 0) {
+        next.delete(status)
+        changed = true
+      }
+    }
+    if (changed) expandedEmpty = next
+  })
+
+  // Task IDs with at least one running agent — built once per agent-list change
+  // so the per-column count is an O(tasks) membership test, not O(tasks×agents).
+  const runningTaskIds = $derived(
+    new Set((agentStore.list ?? []).filter((a) => a.state === 'running').map((a) => a.taskId)),
+  )
+
+  // A static "tasks with an agent working" count per column — the live activity
+  // cue the board otherwise lacks, without a pulse keeping a swarm in motion.
+  function runningCount(tasks: Task[]): number {
+    return tasks.filter((t) => runningTaskIds.has(t.id)).length
+  }
+
+  async function handleDrop(e: DragEvent, targetStatus: string) {
+    e.preventDefault()
+    dragOverStatus = null
+    const taskId = e.dataTransfer?.getData('text/plain')
+    if (!taskId) return
+    onmove(taskId, targetStatus)
+  }
+</script>
+
+<div class="flex min-h-0 flex-1 flex-col">
+{#if clusterStore.enabled}
+  <div class="shrink-0 border-b border-surface-200 px-3 py-1.5 dark:border-surface-700 md:px-6">
+    <ClusterHealth />
+  </div>
+{/if}
+<div
+  bind:this={scrollEl}
+  onscroll={updateScroll}
+  class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:gap-4 md:overflow-x-auto md:overflow-y-hidden md:p-6"
+  style={maskStyle}
+>
+  {#each visibleColumns as col}
+    {@const tasks = columnTasks(col)}
+    {@const rc = runningCount(tasks)}
+    {@const isCollapsed = !viewport.isDesktop && collapsedColumns.has(col.status)}
+    {@const isThin = viewport.isDesktop && tasks.length === 0 && !expandedEmpty.has(col.status)}
+    {#if isThin}
+      <!-- Thin rail for an empty desktop column — stays a drop target; click to expand. -->
+      <button
+        type="button"
+        data-col-status={col.status}
+        onclick={() => expandEmpty(col.status)}
+        ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
+        ondragleave={() => { dragOverStatus = null }}
+        ondrop={(e) => handleDrop(e, col.status)}
+        title="{col.label} (empty) — click to expand"
+        class="hidden shrink-0 flex-col items-center gap-2 rounded-lg border-t-4 bg-surface-200 py-3 transition-colors hover:bg-surface-300 dark:bg-surface-900 dark:hover:bg-surface-800 md:flex md:w-10 {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      >
+        <span class="rounded-full bg-surface-300 px-1.5 py-0.5 text-[10px] font-medium text-surface-600 dark:bg-surface-700 dark:text-surface-400">0</span>
+        <span role="heading" aria-level="2" class="text-xs font-medium text-surface-600 dark:text-surface-400 [writing-mode:vertical-rl]">{col.label}</span>
+      </button>
+    {:else}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      data-col-status={col.status}
+      class="flex w-full shrink-0 flex-col rounded-lg border-t-4 bg-surface-200 transition-shadow dark:bg-surface-900 md:min-w-[200px] md:flex-1 md:shrink {col.border} {dragOverStatus === col.status ? 'ring-2 ring-primary-400 dark:ring-primary-500' : ''}"
+      ondragover={(e) => { e.preventDefault(); dragOverStatus = col.status }}
+      ondragleave={() => { dragOverStatus = null }}
+      ondrop={(e) => handleDrop(e, col.status)}
+    >
+      <button
+        type="button"
+        onclick={() => ontogglecolumn(col.status)}
+        class="tap flex w-full items-center justify-between gap-2 px-3 py-2 text-left active:bg-surface-300 dark:active:bg-surface-800 md:cursor-default md:active:bg-transparent dark:md:active:bg-transparent"
+      >
+        <span class="flex items-center gap-2">
+          <ChevronDown size={16} class="transition-transform md:hidden {isCollapsed ? '-rotate-90' : ''}" aria-hidden="true" />
+          <h2 class="text-sm font-semibold">{col.label}</h2>
+        </span>
+        <span class="flex items-center gap-1.5">
+          {#if rc > 0}
+            <span
+              class="inline-flex items-center gap-1 text-xs font-medium text-success-700 dark:text-success-400"
+              title="{rc} task(s) with an agent working in this column"
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-success-500"></span>
+              {rc}
+            </span>
+          {/if}
+          <span class="rounded-full bg-surface-300 px-2 py-0.5 text-xs font-medium dark:bg-surface-700">
+            {tasks.length}
+          </span>
+        </span>
+      </button>
+      {#if !isCollapsed}
+        <div class="flex flex-col gap-2 px-2 pb-2 md:flex-1 md:overflow-y-auto">
+          {#each tasks as t (t.id)}
+            <div
+              in:fly={{ y: -12, duration: 150, easing: cubicOut }}
+              out:fly={{ y: 12, duration: 200, easing: cubicOut }}
+              animate:flip={{ duration: 200, easing: cubicOut }}
+            >
+              <TaskCard
+                task={t}
+                umbrellaProgress={umbrellaProgress(t)}
+                onclick={() => onselect(t.id)}
+                focused={focusedTaskId === t.id}
+              />
+            </div>
+          {/each}
+        </div>
+        {#if col.kind === 'review'}
+          {#if tasks.length === 0}
+            <p class="px-3 pb-3 text-xs text-surface-500 dark:text-surface-400">
+              Nothing to review.
+            </p>
+          {/if}
+        {:else if col.kind !== 'umbrella'}
+          <div class="px-2 pb-2">
+            <InlineTaskAdd status={col.status} />
+          </div>
+        {/if}
+      {/if}
+    </div>
+    {/if}
+  {/each}
+</div>
+</div>

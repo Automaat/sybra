@@ -1,0 +1,45 @@
+id: simple-task-handoff
+name: Simple Task — Handoff
+description: >-
+  A task handed off from an external tool (e.g. Orca) that already carries the
+  approved plan in its body/plan. Skip triage and planning entirely; flip the
+  task straight to in-progress so simple-task-implement runs the implementation
+  agent. The cascade in OnWorkflowComplete picks up the status_changed event.
+builtin: true
+trigger:
+  on: task.created
+  conditions:
+    - field: task.tags
+      operator: contains
+      value: handoff
+    # The review-stage handoff (handoff-review) is handled by
+    # simple-task-handoff-review; this workflow owns the implement stage only.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-review
+    # The testing-stage handoff (handoff-testing) is handled by
+    # simple-task-handoff-testing; never start implementation for it.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-testing
+    # The ready-pr handoff (handoff-ready-pr) is handled by
+    # simple-task-handoff-ready-pr; never start implementation for it.
+    - field: task.tags
+      operator: not_contains
+      value: handoff-ready-pr
+    # A PR-review task (tag `review`) is its own lane; never collide with it.
+    - field: task.tags
+      operator: not_contains
+      value: review
+steps:
+  # No triage, no planning agent — a single deterministic status flip. The
+  # implementation agent receives the handed-off plan via {{.Task.Plan}} in
+  # simple-task-implement. The agent runs in the adopted worktree when the
+  # task carries an explicit worktree_dir.
+  - id: set_in_progress
+    name: Hand Off to Implement
+    type: set_status
+    config:
+      status: in-progress
+    next:
+      - goto: ""

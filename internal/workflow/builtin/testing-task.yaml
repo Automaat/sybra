@@ -1,0 +1,237 @@
+id: testing-task
+name: Manual Testing
+description: >-
+  Adversarially test the implemented feature against the task description by
+  running the real app/cluster in an isolated per-task sandbox. Goal: PROVE the
+  feature does not behave as the task requires. Pass → ready-pr (a PR is opened).
+  Fail → back to in-progress for re-implementation, until the attempt cap, then
+  human-required. No human in the loop and no test-plan review.
+builtin: true
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: testing
+steps:
+  # `notest`/docs/library scopes only exempt the app start; the test-runner
+  # still has to provide CLI/test-harness evidence and always runs. `trivial`
+  # skips review + testing for trivially mechanical tasks. `skip-testing`
+  # skips only this tester, preserving the earlier code-review gate. Small,
+  # non-test chores also skip this tester after code review; larger chores and
+  # chores that touch tests still get adversarial testing.
+  - id: maybe_test
+    name: Testing Decision
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: trivial
+        goto: skip_testing
+      - when:
+          field: task.tags
+          operator: contains
+          value: skip-testing
+        goto: skip_testing
+      - when:
+          field: task.tags
+          operator: contains
+          value: chore
+        goto: maybe_skip_chore_size
+      - goto: run_test
+
+  - id: maybe_skip_chore_size
+    name: Chore Testing Size Decision
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: small
+        goto: maybe_skip_chore_test_tag
+      - goto: run_test
+
+  - id: maybe_skip_chore_test_tag
+    name: Chore Testing Risk Decision
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: contains
+          value: test
+        goto: run_test
+      - goto: skip_testing
+
+  # Skip target: go straight to ready-pr, same terminus a PASS verdict reaches
+  # via route_test below.
+  - id: skip_testing
+    name: Skip Testing
+    type: set_status
+    config:
+      status: ready-pr
+      status_reason: testing skipped by task tag
+    next:
+      - goto: ""
+
+  # A single headless adversarial test-runner. Its sandbox (Docker compose
+  # project / k3d cluster, keyed by task id) is started on demand by the agent
+  # launcher and exposed via SANDBOX_URL / KUBECONFIG. Concurrency across tasks
+  # is capped by config.testing.max_concurrent (default 3); when saturated the
+  # step parks and ResumeStalled retries once a slot frees.
+  - id: run_test
+    name: Adversarial Testing
+    type: run_agent
+    config:
+      role: test-runner
+      mode: headless
+      model: sonnet
+      provider: cross
+      needs_worktree: true
+      max_retries: 1
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"outcome":{"type":"string","enum":["pass","product_bug","infra_failure","ambiguous_requirement","missing_evidence"]},"failures_markdown":{"type":"string"},"surface_kind":{"type":"string","enum":["web","cli","server","desktop","k8s","library","docs","none"]},"app_started":{"type":"boolean"},"start_command":{"type":"string"},"readiness_probe":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"}},"required":["command","expected","actual","observed","output","status","url"],"additionalProperties":false},"manual_probes":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"expected":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","expected","actual","observed","output","status"],"additionalProperties":false}},"automated_checks":{"type":"array","items":{"type":"object","properties":{"command":{"type":"string"},"actual":{"type":"string"},"observed":{"type":"string"},"output":{"type":"string"},"status":{"type":"string"}},"required":["command","actual","observed","output","status"],"additionalProperties":false}},"unable_to_run_reason":{"type":"string"}},"required":["verdict","outcome","failures_markdown","surface_kind","app_started","start_command","readiness_probe","manual_probes","automated_checks","unable_to_run_reason"],"additionalProperties":false}
+      prompt: >-
+        Adversarially test task {{.Task.ID}} using the /sybra-test skill.
+        {{if getvar .Vars "testing_reask_note"}}
+        RETRY GUIDANCE — your previous test report was rejected:
+        {{getvar .Vars "testing_reask_note"}}
+        {{end}}
+        Your goal is to PROVE the implementation does NOT satisfy the task —
+        exercise the happy path AND edge cases, boundary inputs, and failure
+        modes. Test ONLY behaviour the task description states or directly
+        implies; attack the edges OF those requirements. Do NOT invent new
+        requirements the task never stated (e.g. legacy/back-compat behaviour,
+        an API the task did not promise) and fail the implementation on them —
+        that escalates correct work to a human. If the task's own stated
+        requirements contradict each other or are too ambiguous to verify, that
+        is not an implementation defect: say so plainly in `## Test Failures`
+        and still emit FAIL (a human resolves the spec). You decide how to start
+        and drive the real app/cluster (read the repo: README, .sybra.yaml, mise
+        tasks, package.json, compose, Makefile).
+        {{if .Task.ManualTest.Kind}}This project's .sybra.yaml declares a manual_test surface:
+          - kind: {{.Task.ManualTest.Kind}}
+          - command: {{.Task.ManualTest.Command}}
+          - health_url: {{.Task.ManualTest.HealthURL}}
+          - probe_commands:
+        {{range .Task.ManualTest.ProbeCommands}}    - {{.}}
+        {{end}}Prefer this surface for black-box testing unless the task scope clearly makes it irrelevant.
+        {{end}}
+        Existing `## Test Failures` sections in the task body are historical
+        context only. Reproduce them against the CURRENT worktree before counting
+        them; if the current code no longer exhibits that behavior, ignore the
+        stale report instead of emitting FAIL.
+        {{if acceptanceledger .Task.Body}}
+        The task body carries a persistent acceptance ledger of distinct prior
+        product bugs. Reproduce and re-verify EVERY ledger entry against the
+        CURRENT worktree on every pass. PASS only if all ledger entries hold
+        simultaneously, plus your normal manual-testing evidence says you could
+        not break the feature.
+
+        {{acceptanceledger .Task.Body}}
+        {{end}}
+        If SANDBOX_URL / KUBECONFIG are set in your environment, an isolated
+        sandbox is already running for this task — use it. Bind only ephemeral
+        ports and tear down anything you start.
+
+        SYBRA_HOME is always set to your per-task sandbox — test servers, e2e
+        suites, and scratch data all belong there by default.
+
+        If the project under test is Sybra itself, never point a second Sybra
+        process at the real ~/.sybra — two instances sharing one home fight
+        over task files, agent state, and pollers. Point the app-under-test at
+        your sandbox explicitly (e.g. SYBRA_HOME=$SYBRA_HOME go run
+        ./cmd/sybra-server). To inspect that app-under-test's own task/config
+        state from the CLI, pass --home "$SYBRA_HOME" explicitly — bare
+        sybra-cli calls with no --home are the control channel back to the
+        real operator board and will not see the sandboxed data. If SYBRA_HOME
+        is somehow unset, follow docs/manual-testing.md: point SYBRA_HOME at a
+        fresh temp directory with the fake-provider harness before starting
+        anything.
+
+        Manual testing is mandatory by default. Before PASS, run at least one
+        product-level probe that a user/operator would recognize: start the
+        web/server surface and hit it with curl/browser/devtools; run the real
+        CLI/workflow command in an isolated temp home/project; use kubectl
+        against the sandbox; or drive the desktop task's headless HTTP/server
+        equivalent. Automated tests, lint, builds, diff review, and grep are
+        support evidence only — they do NOT count as manual testing by
+        themselves. For a web surface, if mcp__playwright__* tools are
+        available, use them to load pages, click through the flow, and
+        capture screenshots/console errors as visual evidence — stronger than
+        curl/status-code checks alone for anything that renders. The MCP is
+        opt-in and not attached to every run; when unavailable, fall back to
+        curl/browser/devtools without treating its absence as a defect.
+
+        Set surface_kind to exactly ONE canonical token: web, cli, server,
+        desktop, k8s, library, docs, or none. Use library for internal
+        package/component/refactor changes with no runnable product surface (put
+        the detail in unable_to_run_reason, not in surface_kind). Do NOT write a
+        free-form description — the router only recognizes these tokens.
+
+        Exception: for pure refactors, internal-library changes, docs-only work,
+        or changes with no runnable product surface, do not force an app start.
+        Instead, state the exception in your final PASS summary and run the
+        strongest behavioral regression evidence available: a CLI/test harness
+        probe (for example go test, package tests, npm run check, or the real
+        CLI command) plus grep/invariant probes when useful for sweep wording.
+        Static review or grep alone is not enough. If you cannot justify the
+        exception from task scope, missing manual testing is missing_evidence
+        -> FAIL.
+        If manual testing is impossible, say exactly why in your response. In
+        JSON output, put the reason in `unable_to_run_reason`; in plain text,
+        add `Unable to run manual test: <reason>`.
+
+        Before looking for defects, derive a cheap acceptance probe from the
+        task when possible. For sweep/refactor wording like "everywhere",
+        "all", "single utility", "unified", or "no raw X remains", run a
+        repo-wide grep/test invariant that would catch missed call sites. Include
+        that command in the failure report when it fails.
+
+        For each claimed defect you MUST have: (1) a real command you ran
+        and its verbatim output, and (2) when claiming a specific code bug,
+        a line quoted from the CURRENT file read with Read/cat/grep — not
+        from diff memory. Exclude any claimed defect you cannot back with
+        both. An ungrounded claim is not a defect. If the runner or provider
+        fails before you can gather this evidence, do not invent a product
+        failure; report the infrastructure failure plainly.
+
+        When done:
+          - Do NOT call `sybra-cli update` or mutate the task. Sybra ingests
+            your final report and appends it to the task atomically.
+          - If you found ANY deviation from the task's intent, include a
+            "## Test Failures" markdown report listing per-defect: the exact
+            command run, verbatim output, expected behaviour (cite the task),
+            and the quoted code line when relevant. Classify each defect as
+            product_bug, infra_failure, ambiguous_requirement, or
+            missing_evidence in prose. Do NOT suggest fixes — describe
+            symptoms only.
+          - Prefer a single JSON object as your final response. Set `verdict`,
+            `outcome`, and `failures_markdown`; use `outcome: "pass"` and an
+            empty `failures_markdown` on PASS. PASS is valid only with manual
+            testing evidence, or with a justified refactor/library/no-surface
+            exception plus regression evidence. For JSON, return
+            `readiness_probe` as an object and `manual_probes` /
+            `automated_checks` as arrays of objects. Use string values only;
+            leave unused object fields as empty strings. Probe objects may use
+            `actual`, `observed`, `output`, or `status` for the observed
+            result. If you cannot return JSON, your
+            plain-text PASS must include the same evidence labels:
+            `surface_kind`, `app_started`, `start_command`, `readiness_probe`,
+            `manual_probes`, `automated_checks`, and `unable_to_run_reason`;
+            otherwise it is a tester protocol failure. For plain text, print
+            the report, then print the verdict as the FINAL line exactly:
+            `TEST_VERDICT: PASS`  (only if you could not break it)
+            or
+            `TEST_VERDICT: FAIL`  (if any case failed)
+    next:
+      - goto: route_test
+
+  # Non-LLM router: reads run_test's verdict. PASS → ready-pr (simple-task-pr
+  # opens the PR). FAIL → in-progress to re-implement, until the per-task
+  # attempt cap (config.testing.max_attempts), then human-required.
+  - id: route_test
+    name: Route Test Result
+    type: route_test_result
+    next:
+      - goto: ""

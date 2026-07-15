@@ -1,0 +1,52 @@
+id: test-review-fix
+name: Test Review Fix
+description: Minimal workflow for testing cross-provider review + fix cycle
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "Implement {{.Task.ID}}"
+    next:
+      - goto: maybe_review
+
+  - id: maybe_review
+    name: Review Decision
+    type: condition
+    config:
+      check:
+        field: task.tags
+        operator: not_contains
+        value: noreview
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: noreview
+        goto: code_review
+      - goto: ""
+
+  - id: code_review
+    name: Code Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: cross
+      prompt: "Review {{.Task.ID}}"
+    next:
+      - goto: fix_review
+
+  - id: fix_review
+    name: Fix Review Comments
+    type: run_agent
+    config:
+      role: fix-review
+      mode: headless
+      prompt: "Fix review comments for {{.Task.ID}}"
+    next:
+      - goto: ""

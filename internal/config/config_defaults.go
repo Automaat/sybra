@@ -1,0 +1,1531 @@
+package config
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/Automaat/sybra/internal/abtest"
+	"gopkg.in/yaml.v3"
+)
+
+// AllowsProjectType reports whether automations on this machine should act on
+// projects of the given type. An empty ProjectTypes list means "all types".
+func (c *Config) AllowsProjectType(t string) bool {
+	if c == nil || len(c.ProjectTypes) == 0 {
+		return true
+	}
+	return slices.Contains(c.ProjectTypes, t)
+}
+
+// DefaultBashTimeoutSeconds is the per-bash-tool-call timeout used when
+// BashTimeoutSeconds is not set in config.
+const DefaultBashTimeoutSeconds = 300
+
+// DefaultRetryWatchdog is the CLAUDE_CODE_RETRY_WATCHDOG value used when
+// RetryWatchdog is not set in config. Exceeds the old CLAUDE_CODE_MAX_RETRIES
+// cap of 15, appropriate for unattended server runs.
+const DefaultRetryWatchdog = 30
+
+// BashTimeoutMs returns the bash tool timeout in milliseconds, exported into
+// the claude subprocess as BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS.
+func (c *Config) BashTimeoutMs() int {
+	if c != nil && c.Agent.BashTimeoutSeconds > 0 {
+		return c.Agent.BashTimeoutSeconds * 1000
+	}
+	return DefaultBashTimeoutSeconds * 1000
+}
+
+// RetryWatchdog returns the configured watchdog value, DefaultRetryWatchdog
+// when unset (0), or 0 when explicitly disabled (negative value).
+func (c *Config) RetryWatchdog() int {
+	if c != nil && c.Agent.RetryWatchdog < 0 {
+		return 0
+	}
+	if c != nil && c.Agent.RetryWatchdog > 0 {
+		return c.Agent.RetryWatchdog
+	}
+	return DefaultRetryWatchdog
+}
+
+// DefaultMaxCheckpoints bounds how many checkpoint handoffs a single workflow
+// step may spend before Sybra parks the task human-required instead of
+// redispatching forever.
+const DefaultMaxCheckpoints = 3
+
+// MaxCheckpoints returns the configured checkpoint-handoff cap or
+// DefaultMaxCheckpoints when unset/non-positive.
+func (c *Config) MaxCheckpoints() int {
+	if c != nil && c.Agent.MaxCheckpoints > 0 {
+		return c.Agent.MaxCheckpoints
+	}
+	return DefaultMaxCheckpoints
+}
+
+// CheckpointOnTurnCeilingEnabled reports whether eligible code-author
+// headless runs should checkpoint-and-handoff at the turn ceiling instead of
+// using the legacy raise-MaxTurns auto-continue. Nil/unset defaults to true.
+func (c *Config) CheckpointOnTurnCeilingEnabled() bool {
+	if c != nil && c.Agent.CheckpointOnTurnCeiling != nil {
+		return *c.Agent.CheckpointOnTurnCeiling
+	}
+	return true
+}
+
+// DefaultMaxLogEvents returns the configured cap or 500 if unset.
+func (c *Config) DefaultMaxLogEvents() int {
+	if c != nil && c.Agent.MaxLogEvents > 0 {
+		return c.Agent.MaxLogEvents
+	}
+	return 500
+}
+
+// DefaultLogRetentionDays returns the configured retention window for
+// per-agent NDJSON logs, or 14 days if unset. A negative value disables
+// age-based pruning (0-byte files are still removed).
+func (c *Config) DefaultLogRetentionDays() int {
+	if c == nil {
+		return 14
+	}
+	if c.Agent.LogRetentionDays < 0 {
+		return c.Agent.LogRetentionDays
+	}
+	if c.Agent.LogRetentionDays == 0 {
+		return 14
+	}
+	return c.Agent.LogRetentionDays
+}
+
+// DefaultLogGzipAfterDays returns the configured age (in days) after which a
+// retained per-agent NDJSON log is gzip-compressed, or 3 if unset. A
+// negative value disables compression.
+func (c *Config) DefaultLogGzipAfterDays() int {
+	if c == nil {
+		return 3
+	}
+	if c.Agent.LogGzipAfterDays < 0 {
+		return c.Agent.LogGzipAfterDays
+	}
+	if c.Agent.LogGzipAfterDays == 0 {
+		return 3
+	}
+	return c.Agent.LogGzipAfterDays
+}
+
+// DefaultLogRetentionMaxSizeMB returns the configured total size cap, in MB,
+// for the per-agent NDJSON log directory, or 1024 (1 GiB) if unset. A
+// negative value disables size-based enforcement.
+func (c *Config) DefaultLogRetentionMaxSizeMB() int {
+	if c == nil {
+		return 1024
+	}
+	if c.Agent.LogRetentionMaxSizeMB < 0 {
+		return c.Agent.LogRetentionMaxSizeMB
+	}
+	if c.Agent.LogRetentionMaxSizeMB == 0 {
+		return 1024
+	}
+	return c.Agent.LogRetentionMaxSizeMB
+}
+
+// DefaultTrashRetentionDays returns the configured retention window for
+// soft-deleted tasks under ~/.sybra/trash, or 14 days if unset. A negative
+// value disables age-based pruning entirely.
+func (c *Config) DefaultTrashRetentionDays() int {
+	if c == nil {
+		return 14
+	}
+	if c.Trash.RetentionDays < 0 {
+		return c.Trash.RetentionDays
+	}
+	if c.Trash.RetentionDays == 0 {
+		return 14
+	}
+	return c.Trash.RetentionDays
+}
+
+// DefaultSandboxRetentionHours is the fallback retention window (in hours)
+// for done/cancelled/blocked task sandbox dirs when Sandbox.RetentionHours
+// is unset.
+const DefaultSandboxRetentionHours = 24
+
+// DefaultSandboxRetention resolves the configured sandbox retention window.
+// disabled reports whether age-based pruning should be skipped entirely
+// (Sandbox.RetentionHours < 0); window is meaningless when disabled is true.
+// 0 (unset) resolves to DefaultSandboxRetentionHours; a positive value is
+// used verbatim.
+func (c *Config) DefaultSandboxRetention() (window time.Duration, disabled bool) {
+	hours := DefaultSandboxRetentionHours
+	if c != nil {
+		switch {
+		case c.Sandbox.RetentionHours < 0:
+			return 0, true
+		case c.Sandbox.RetentionHours > 0:
+			hours = c.Sandbox.RetentionHours
+		}
+	}
+	return time.Duration(hours) * time.Hour, false
+}
+
+// DefaultTaskSnapshotIntervalSeconds is the fallback commit interval for the
+// tasks-dir git snapshotter when TaskSnapshot.IntervalSeconds is unset.
+const DefaultTaskSnapshotIntervalSeconds = 30
+
+// DefaultTaskSnapshotInterval returns the configured commit interval in
+// seconds, falling back to DefaultTaskSnapshotIntervalSeconds when unset or
+// non-positive.
+func (c *Config) DefaultTaskSnapshotInterval() int {
+	if c != nil && c.TaskSnapshot.IntervalSeconds > 0 {
+		return c.TaskSnapshot.IntervalSeconds
+	}
+	return DefaultTaskSnapshotIntervalSeconds
+}
+
+// TaskSnapshotEnabled reports whether the background git snapshotter should
+// run. nil (unset) defaults to true.
+func (c *Config) TaskSnapshotEnabled() bool {
+	if c == nil || c.TaskSnapshot.Enabled == nil {
+		return true
+	}
+	return *c.TaskSnapshot.Enabled
+}
+
+// DefaultRequirePermissions returns the configured default, or true if unset.
+func (c *Config) DefaultRequirePermissions() bool {
+	if c != nil && c.Agent.RequirePermissions != nil {
+		return *c.Agent.RequirePermissions
+	}
+	return true
+}
+
+// DefaultHeadlessSteerable returns the configured agent.headless_steerable
+// default, or true if unset.
+func (c *Config) DefaultHeadlessSteerable() bool {
+	if c != nil && c.Agent.HeadlessSteerable != nil {
+		return *c.Agent.HeadlessSteerable
+	}
+	return true
+}
+
+// NormalizeHeadlessPermissionMode canonicalizes a headless permission mode value.
+// Empty string maps to "bypass". "bypass" and "auto" pass through unchanged.
+// Any other value is rejected with an error.
+func NormalizeHeadlessPermissionMode(s string) (string, error) {
+	// Trim + lowercase first: a formatting slip (`auto `, `Auto`) must not
+	// silently fall through to the permissive bypass default and disable the
+	// guardrail this feature exists to provide.
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "bypass":
+		return "bypass", nil
+	case "auto":
+		return "auto", nil
+	default:
+		return "", fmt.Errorf("invalid headless_permission_mode %q (valid: bypass, auto)", s)
+	}
+}
+
+// DefaultHeadlessPermissionMode returns the configured default headless permission
+// mode, or "bypass" if unset. An invalid config value is logged and treated as
+// "bypass" so a misconfigured server never silently switches posture.
+func (c *Config) DefaultHeadlessPermissionMode() string {
+	if c == nil || c.Agent.HeadlessPermissionMode == "" {
+		return "bypass"
+	}
+	mode, err := NormalizeHeadlessPermissionMode(c.Agent.HeadlessPermissionMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.headless_permission_mode; falling back to bypass", "value", c.Agent.HeadlessPermissionMode)
+		return "bypass"
+	}
+	return mode
+}
+
+// NormalizeSandboxMode canonicalizes an OS-level process-sandbox posture
+// value. Empty string maps to "report" (the safe, non-blocking rollout
+// default). "off", "report", and "enforce" pass through unchanged. Any other
+// value is rejected with an error.
+func NormalizeSandboxMode(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "report":
+		return "report", nil
+	case "off":
+		return "off", nil
+	case "enforce":
+		return "enforce", nil
+	default:
+		return "", fmt.Errorf("invalid sandbox_mode %q (valid: off, report, enforce)", s)
+	}
+}
+
+// DefaultSandboxMode returns the configured default OS-level process-sandbox
+// posture, or "report" if unset. An invalid config value is logged and
+// treated as "report" so a misconfigured server never silently drops to
+// unwrapped ("off") or fail-closed ("enforce") posture.
+func (c *Config) DefaultSandboxMode() string {
+	if c == nil || c.Agent.SandboxMode == "" {
+		return "report"
+	}
+	mode, err := NormalizeSandboxMode(c.Agent.SandboxMode)
+	if err != nil {
+		slog.Warn("config: invalid agent.sandbox_mode; falling back to report", "value", c.Agent.SandboxMode)
+		return "report"
+	}
+	return mode
+}
+
+// PlaywrightMCPEnabled reports whether test-runner runs should attach a
+// headless Playwright MCP server for visual/console verification. Default
+// false — an operator must opt in.
+func (c *Config) PlaywrightMCPEnabled() bool {
+	return c != nil && c.Agent.PlaywrightMCP.Enabled
+}
+
+// PlaywrightMCPExtraArgs returns the configured extra Playwright MCP launcher
+// args, appended verbatim after --output-dir.
+func (c *Config) PlaywrightMCPExtraArgs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Agent.PlaywrightMCP.ExtraArgs
+}
+
+// SurviveRestartEnabled reports whether agent subprocesses should be
+// detached to survive an app restart and reattached on the next startup.
+// Defaults to true when unset.
+func (c *Config) SurviveRestartEnabled() bool {
+	if c != nil && c.Agent.SurviveRestart != nil {
+		return *c.Agent.SurviveRestart
+	}
+	return true
+}
+
+// InAppBrowserEnabled reports whether the desktop app should open external
+// links in the in-app Sybra Browser webview. Defaults to true when unset so
+// existing installs keep their current behavior without migration.
+func (c *Config) InAppBrowserEnabled() bool {
+	if c != nil && c.Browser.InApp != nil {
+		return *c.Browser.InApp
+	}
+	return true
+}
+
+// DefaultTestingMaxConcurrent bounds concurrent test-runner agents (each owns
+// an isolated sandbox) when TestingConfig.MaxConcurrent is unset.
+const DefaultTestingMaxConcurrent = 3
+
+// DefaultTestingMaxAttempts bounds the testing → in-progress re-implementation
+// loop when TestingConfig.MaxAttempts is unset. Recurring grounded failure
+// fingerprints remain the primary non-convergence detector — route_test_result
+// escalates immediately when the same fingerprint returns after an intervening
+// code-author run. This numeric cap is a generous safety-net backstop only for
+// loops that keep surfacing distinct grounded defects without converging.
+const DefaultTestingMaxAttempts = 25
+
+// TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
+func (c *Config) TestingMaxConcurrent() int {
+	if c != nil && c.Testing.MaxConcurrent > 0 {
+		return c.Testing.MaxConcurrent
+	}
+	return DefaultTestingMaxConcurrent
+}
+
+// TestingMaxAttempts returns the configured cap or DefaultTestingMaxAttempts.
+func (c *Config) TestingMaxAttempts() int {
+	if c != nil && c.Testing.MaxAttempts > 0 {
+		return c.Testing.MaxAttempts
+	}
+	return DefaultTestingMaxAttempts
+}
+
+// TestingOpenPROnUnrunnableGateEnabled reports whether an exhausted
+// infra_failure testing outcome (the manual gate could not be run) should
+// open a PR (ready-pr) instead of escalating to human-required. Nil/unset
+// defaults to true.
+func (c *Config) TestingOpenPROnUnrunnableGateEnabled() bool {
+	if c != nil && c.Testing.OpenPROnUnrunnableGate != nil {
+		return *c.Testing.OpenPROnUnrunnableGate
+	}
+	return true
+}
+
+// PollDefaults exposes the resolved poll intervals (override-or-default) so the
+// poll handlers don't each re-implement the fallback logic.
+const (
+	DefaultReviewsFastSeconds           = 120 // was 60
+	DefaultReviewsSlowSeconds           = 600 // was 300
+	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewsStableBackoffMaxTicks = 8
+	DefaultIssuesSeconds                = 600 // was 300
+	DefaultRenovateFastSeconds          = 120 // was 60
+	DefaultRenovateSlowSeconds          = 600 // was 300
+)
+
+// RunsSearchPollers reports whether this machine owns the periodic GitHub
+// search pollers. Secondary instances skip them to avoid double-billing a
+// shared token.
+func (c GitHubConfig) RunsSearchPollers() bool {
+	return !strings.EqualFold(strings.TrimSpace(c.PollerRole), "secondary")
+}
+
+// RunsIssuesFetcher reports the effective state of the GitHub Issues fetcher:
+// the top-level kill-switch AND the issues-specific sub-toggle.
+func (c GitHubConfig) RunsIssuesFetcher() bool {
+	return c.Enabled && c.IssuesEnabled
+}
+
+// RunsReviewer reports the effective state of PR reviewer poll registration:
+// the top-level kill-switch AND the reviews-specific sub-toggle.
+func (c GitHubConfig) RunsReviewer() bool {
+	return c.Enabled && c.ReviewsEnabled
+}
+
+func (c GitHubConfig) reviewsFast() time.Duration {
+	return secsOr(c.ReviewsFastSeconds, DefaultReviewsFastSeconds)
+}
+
+func (c GitHubConfig) reviewsSlow() time.Duration {
+	return secsOr(c.ReviewsSlowSeconds, DefaultReviewsSlowSeconds)
+}
+
+// ReviewsMaxPRsPerTick returns the configured per-tick linked-PR cap.
+// Zero falls back to DefaultReviewsMaxPRsPerTick; negative disables the cap.
+func (c *Config) ReviewsMaxPRsPerTick() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsMaxPRsPerTick
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsMaxPRsPerTick
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
+}
+
+// ReviewsStableBackoffMaxTicks returns the configured maximum skip window for
+// stable linked PRs. Zero falls back to DefaultReviewsStableBackoffMaxTicks;
+// negative disables the backoff.
+func (c *Config) ReviewsStableBackoffMaxTicks() int {
+	v := 0
+	if c != nil {
+		v = c.GitHub.ReviewsStableBackoffMaxTicks
+	}
+	switch {
+	case v == 0:
+		return DefaultReviewsStableBackoffMaxTicks
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
+}
+
+// ReviewsFast/ReviewsSlow/Issues/RenovateFast/RenovateSlow return resolved poll
+// intervals (override or raised default).
+func (c GitHubConfig) ReviewsFast() time.Duration { return c.reviewsFast() }
+func (c GitHubConfig) ReviewsSlow() time.Duration { return c.reviewsSlow() }
+func (c GitHubConfig) Issues() time.Duration {
+	return secsOr(c.IssuesSeconds, DefaultIssuesSeconds)
+}
+func (c GitHubConfig) RenovateFast() time.Duration {
+	return secsOr(c.RenovateFastSeconds, DefaultRenovateFastSeconds)
+}
+func (c GitHubConfig) RenovateSlow() time.Duration {
+	return secsOr(c.RenovateSlowSeconds, DefaultRenovateSlowSeconds)
+}
+
+func secsOr(v, def int) time.Duration {
+	if v <= 0 {
+		v = def
+	}
+	return time.Duration(v) * time.Second
+}
+
+// DefaultHumanReviewMaxPerHour is the fallback rate-limit cap used when
+// HumanReviewConfig.MaxPerHour is zero.
+const DefaultHumanReviewMaxPerHour = 6
+
+const (
+	HumanReviewSybraBugActionFileIssue = "file_issue"
+	HumanReviewSybraBugActionLocalTask = "local_task"
+	HumanReviewSybraBugActionBlockOnly = "block_only"
+	HumanReviewSybraBugActionNoteOnly  = "note_only"
+)
+
+// HumanReviewMaxPerHour returns the configured cap or the package default.
+func (c *Config) HumanReviewMaxPerHour() int {
+	if c != nil && c.HumanReview.MaxPerHour > 0 {
+		return c.HumanReview.MaxPerHour
+	}
+	return DefaultHumanReviewMaxPerHour
+}
+
+// HumanReviewRepo returns the configured target repo or "Automaat/sybra".
+func (c *Config) HumanReviewRepo() string {
+	if c != nil && c.HumanReview.Repo != "" {
+		return c.HumanReview.Repo
+	}
+	return "Automaat/sybra"
+}
+
+// HumanReviewModel returns the configured model name or alias, defaulting to
+// "claude-haiku-4-5-20251001". Same diagnosis shape as the watchdog
+// inspector (applyWatchdogDefaults): classifying why a task stalled, not
+// authoring a fix.
+func (c *Config) HumanReviewModel() string {
+	if c != nil && c.HumanReview.Model != "" {
+		return c.HumanReview.Model
+	}
+	return "claude-haiku-4-5-20251001"
+}
+
+// HumanReviewIssueLabel returns the configured label or "sybra-bug".
+func (c *Config) HumanReviewIssueLabel() string {
+	if c != nil && c.HumanReview.IssueLabel != "" {
+		return c.HumanReview.IssueLabel
+	}
+	return "sybra-bug"
+}
+
+func (c *Config) HumanReviewSybraBugAction() string {
+	if c == nil {
+		return HumanReviewSybraBugActionFileIssue
+	}
+	switch strings.ToLower(strings.TrimSpace(c.HumanReview.SybraBugAction)) {
+	case "", HumanReviewSybraBugActionFileIssue:
+		return HumanReviewSybraBugActionFileIssue
+	case HumanReviewSybraBugActionLocalTask:
+		return HumanReviewSybraBugActionLocalTask
+	case HumanReviewSybraBugActionBlockOnly:
+		return HumanReviewSybraBugActionBlockOnly
+	case HumanReviewSybraBugActionNoteOnly:
+		return HumanReviewSybraBugActionNoteOnly
+	default:
+		slog.Warn("config: invalid human_review.sybra_bug_action; falling back to file_issue", "value", c.HumanReview.SybraBugAction)
+		return HumanReviewSybraBugActionFileIssue
+	}
+}
+
+func HomeDir() string {
+	if dir := os.Getenv("SYBRA_HOME"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".sybra")
+}
+
+func DefaultConfig() *Config {
+	return &Config{
+		Logging: LoggingConfig{
+			Level:     "info",
+			Dir:       defaultLogDir(),
+			MaxSizeMB: 50,
+			MaxFiles:  5,
+		},
+		Audit: AuditConfig{
+			Enabled:       true,
+			RetentionDays: 30,
+		},
+		Agent: AgentDefaults{
+			Provider:         "claude",
+			MaxConcurrent:    25,
+			MaxCostUSD:       5.0,
+			MaxTurns:         150,
+			MaxCheckpoints:   DefaultMaxCheckpoints,
+			DispatchJitterMs: 1000,
+		},
+		Notification: NotificationConfig{
+			Desktop: true,
+		},
+		Renovate: RenovateConfig{
+			Enabled: true,
+			Author:  "app/renovate",
+		},
+		GitHub: GitHubConfig{
+			IssuesEnabled:  true,
+			ReviewsEnabled: true,
+		},
+		Monitor: MonitorConfig{
+			Enabled: true,
+		},
+		HarnessEvolve: HarnessEvolveConfig{
+			Enabled: true,
+		},
+		Watchdog: WatchdogConfig{
+			Enabled:       true,
+			LoopThreshold: 6,
+		},
+		ABTesting: abtest.DefaultConfig(),
+		AutoUpdate: AutoUpdateConfig{
+			Remote:              "origin",
+			Branch:              "main",
+			Mode:                "notify",
+			PollSeconds:         300,
+			RestartDelaySeconds: 2,
+		},
+		Providers: ProvidersConfig{
+			HealthCheck: ProviderHealthCheckConfig{
+				Enabled:         true,
+				IntervalSeconds: 300,
+			},
+			Claude:   ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Codex:    ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Copilot:  ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			OpenCode: ProviderEntryConfig{Enabled: true, RateLimitCooldownSeconds: 900},
+			Limits: ProviderLimitsConfig{
+				Enabled:                 true,
+				SessionThresholdPercent: 85,
+				WeeklyThresholdPercent:  90,
+				PreferUnderused:         true,
+				BackfillDays:            14,
+				MaxInFlightPerProvider:  0,
+			},
+			AutoFailover: true,
+		},
+		Cluster: ClusterConfig{
+			Role: ClusterRoleStandalone,
+		},
+		Orchestrator: OrchestratorConfig{
+			// Seed the pressure thresholds here (not in applyPressureDefaults) so
+			// an explicit `0` in YAML — the documented "disable this dimension"
+			// sentinel — survives loading. A config missing the block entirely
+			// keeps these seeds; a config that sets a threshold to 0 keeps its 0.
+			Pressure: PressureConfig{
+				Enabled:                true,
+				MinDiskFreePercent:     5,
+				MinMemAvailablePercent: 8,
+				MaxLoadPerCPU:          8.0,
+				SampleIntervalSeconds:  15,
+			},
+		},
+		TasksDir: defaultTasksDir(),
+	}
+}
+
+func (c *Config) AuditDir() string {
+	return filepath.Join(c.Logging.Dir, "audit")
+}
+
+// Save writes the current config to disk.
+func (c *Config) Save() error {
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return WriteRawConfig(data)
+}
+
+// ConfigPath is the absolute path of the config file on disk
+// (~/.sybra/config.yaml, or $SYBRA_HOME/config.yaml).
+func ConfigPath() string {
+	return configPath()
+}
+
+// ReadRawConfig returns config.yaml verbatim from disk, preserving user
+// formatting and comments. Falls back to marshalled defaults when the file is
+// absent so the editor is never handed an empty buffer on first run.
+func ReadRawConfig() (string, error) {
+	data, err := os.ReadFile(configPath())
+	if err == nil {
+		return string(data), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	data, err = yaml.Marshal(DefaultConfig())
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// WriteRawConfig persists bytes to config.yaml through a temp file + rename, so
+// the file watcher and concurrent readers never observe a partial write.
+func WriteRawConfig(data []byte) error {
+	path := configPath()
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // harmless once the rename below consumes it
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(configFilePerm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// Directories returns the resolved paths for all sybra data directories.
+func (c *Config) Directories() map[string]string {
+	return map[string]string{
+		"tasks":       c.TasksDir,
+		"skills":      c.SkillsDir,
+		"projects":    c.ProjectsDir,
+		"clones":      c.ClonesDir,
+		"worktrees":   c.WorktreesDir,
+		"logs":        c.Logging.Dir,
+		"audit":       c.AuditDir(),
+		"loop_agents": c.LoopAgentsDir,
+		"artifacts":   ArtifactsDir(),
+		"experiences": c.ExperiencesDir(),
+		"agentqueue":  AgentQueueDir(),
+		"learning":    LearningDir(),
+	}
+}
+
+// AgentQueueDir is the directory under ~/.sybra that persists agent queue items.
+func AgentQueueDir() string {
+	return filepath.Join(HomeDir(), "agentqueue")
+}
+
+// LearningDir is the directory under ~/.sybra that holds persisted Learning
+// Digests (see internal/learning). Layout: <dir>/<hash>.json + latest.json.
+func LearningDir() string {
+	return filepath.Join(HomeDir(), "learning")
+}
+
+func (c *Config) ExperiencesDir() string {
+	return filepath.Join(HomeDir(), "experience")
+}
+
+func Load() (*Config, error) {
+	return load(loadOptions{persistLoadReconciles: true})
+}
+
+// LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
+// without writing any migration back to disk. Reload paths use this to keep
+// their read-only contract and to preserve raw-editor formatting/comments.
+func LoadNoPersist() (*Config, error) {
+	return load(loadOptions{})
+}
+
+type loadOptions struct {
+	persistLoadReconciles bool
+}
+
+func load(opts loadOptions) (*Config, error) {
+	cfg := DefaultConfig()
+
+	path := configPath()
+	data, err := os.ReadFile(path)
+	existingFile := err == nil
+	if existingFile {
+		// Keep the rest of DefaultConfig pre-seeded, but let builtin_version
+		// reflect the document exactly: nil means "key absent" on older files.
+		cfg.ABTesting.BuiltinVersion = nil
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, err
+		}
+		applyLegacyGitHubDefault(data, cfg)
+	} else if os.IsNotExist(err) {
+		if writeErr := writeDefaultConfig(path); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	if opts.persistLoadReconciles {
+		tightenConfigPerms(path, existingFile)
+	}
+
+	if v := os.Getenv("SYBRA_LOG_LEVEL"); v != "" {
+		cfg.Logging.Level = v
+	}
+	if v := os.Getenv("SYBRA_LOG_DIR"); v != "" {
+		cfg.Logging.Dir = v
+	}
+
+	if cfg.Logging.Dir == "" {
+		cfg.Logging.Dir = defaultLogDir()
+	}
+	if cfg.TasksDir == "" {
+		cfg.TasksDir = defaultTasksDir()
+	}
+	if v := os.Getenv("SYBRA_TASKS_DIR"); v != "" {
+		cfg.TasksDir = v
+	}
+
+	if cfg.SkillsDir == "" {
+		cfg.SkillsDir = defaultSkillsDir()
+	}
+
+	// Migration: previous releases defaulted to ~/.sybra/skills which Claude
+	// Code never reads. Silently retarget the old default so users with stale
+	// configs get the fix without manual intervention. cdb6dc5 changed the
+	// default but did not migrate persisted overrides.
+	if cfg.SkillsDir == filepath.Join(HomeDir(), "skills") {
+		cfg.SkillsDir = defaultSkillsDir()
+	}
+	if cfg.ProjectsDir == "" {
+		cfg.ProjectsDir = defaultProjectsDir()
+	}
+	if cfg.ClonesDir == "" {
+		cfg.ClonesDir = defaultClonesDir()
+	}
+	if cfg.WorktreesDir == "" {
+		cfg.WorktreesDir = defaultWorktreesDir()
+	}
+	if cfg.LoopAgentsDir == "" {
+		cfg.LoopAgentsDir = defaultLoopAgentsDir()
+	}
+
+	if v := os.Getenv("SYBRA_TODOIST_TOKEN"); v != "" {
+		cfg.Todoist.APIToken = v
+	}
+	if cfg.Todoist.PollSeconds <= 0 {
+		cfg.Todoist.PollSeconds = 120
+	}
+
+	if cfg.Renovate.Author == "" {
+		cfg.Renovate.Author = "app/renovate"
+	}
+	if cfg.Triage.PollSeconds <= 0 {
+		cfg.Triage.PollSeconds = 60
+	}
+	// Triage.Model intentionally has no default override here: an empty
+	// model lets triage.FallbackClassifier fall through to its llmjob.SuperCheap
+	// tier (haiku), which is ~10x cheaper than sonnet for a structured
+	// classification job. A non-empty value (set explicitly by a user)
+	// still overrides the tier via claudeModelOverride.
+	if cfg.Agent.Provider == "" {
+		cfg.Agent.Provider = "claude"
+	}
+
+	applyProvidersDefaults(cfg)
+	applyMonitorDefaults(cfg)
+	applyWatchdogDefaults(cfg)
+	applySelfMonitorDefaults(cfg)
+	applyEvaluationDefaults(cfg)
+	applyLearningDigestDefaults(cfg)
+	applyHarnessEvolveDefaults(cfg)
+	applyPromptLabDefaults(cfg)
+	applyExperienceDefaults(cfg)
+	abTestingReconciled := applyABTestingDefaults(cfg, opts.persistLoadReconciles)
+	applyOrchestratorDefaults(cfg)
+	applyAutoUpdateDefaults(cfg)
+	applyReviewHoldDefaults(cfg)
+	serverTokenGenerated := applyServerDefaults(cfg, opts.persistLoadReconciles)
+
+	persistLoadReconciles(cfg, opts, existingFile, abTestingReconciled, serverTokenGenerated)
+
+	return cfg, nil
+}
+
+// persistLoadReconciles writes back in-memory-only changes made during load()
+// that must survive a restart: the ab_testing builtin reconcile (existing
+// files only) and a freshly generated server auth token (even for a
+// brand-new install — sybra-server reads Server.AuthToken once at startup,
+// so an unsaved token would silently rotate on every restart and lock
+// operators out).
+func persistLoadReconciles(cfg *Config, opts loadOptions, existingFile, abTestingReconciled, serverTokenGenerated bool) {
+	if opts.persistLoadReconciles && existingFile && abTestingReconciled {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist ab_testing builtin reconcile", "err", saveErr)
+		}
+	}
+	if opts.persistLoadReconciles && serverTokenGenerated {
+		if saveErr := cfg.Save(); saveErr != nil {
+			slog.Warn("config: failed to persist generated server auth token", "err", saveErr)
+		}
+	}
+}
+
+// applyServerDefaults resolves sybra-server's auth token and CORS allowlist:
+// env vars win when set, otherwise a missing token is auto-generated so the
+// HTTP control plane always fails closed instead of silently running
+// unauthenticated. Returns true when a new token was generated (the caller
+// must persist it — see load()). Read-only config loads pass allowGenerate=false
+// so they never invent an in-memory-only secret that diverges from disk.
+func applyServerDefaults(cfg *Config, allowGenerate bool) bool {
+	if v := os.Getenv("SYBRA_AUTH_TOKEN"); v != "" {
+		cfg.Server.AuthToken = v
+	}
+	if v := os.Getenv("SYBRA_ALLOWED_ORIGINS"); v != "" {
+		origins := strings.Split(v, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		cfg.Server.AllowedOrigins = origins
+	}
+	if cfg.Server.AuthToken != "" {
+		return false
+	}
+	if !allowGenerate {
+		return false
+	}
+	token, err := generateAuthToken()
+	if err != nil {
+		slog.Warn("config: failed to generate server auth token", "err", err)
+		return false
+	}
+	cfg.Server.AuthToken = token
+	return true
+}
+
+// generateAuthToken returns a random 256-bit hex-encoded shared secret for
+// sybra-server's bearer-token auth.
+func generateAuthToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// Review-hold modes control how far the hold extends to the fix-review agent's
+// own code changes once its replies are drafted into a pending review.
+const (
+	ReviewHoldModePush     = "push"      // reply held; code still pushed
+	ReviewHoldModePushNits = "push_nits" // reply held; code pushed only when a nit
+	ReviewHoldModeHold     = "hold"      // reply held; code held too (no push)
+
+	DefaultReviewHoldMode        = ReviewHoldModePush
+	DefaultReviewHoldNitMaxLines = 10
+)
+
+// applyReviewHoldDefaults fills the mode/threshold only when the hold is
+// enabled, so a disabled block stays at its zero value (and off).
+func applyReviewHoldDefaults(cfg *Config) {
+	if !cfg.ReviewHold.Enabled {
+		return
+	}
+	if !validReviewHoldMode(cfg.ReviewHold.Mode) {
+		cfg.ReviewHold.Mode = DefaultReviewHoldMode
+	}
+	if cfg.ReviewHold.NitMaxLines <= 0 {
+		cfg.ReviewHold.NitMaxLines = DefaultReviewHoldNitMaxLines
+	}
+}
+
+func validReviewHoldMode(mode string) bool {
+	switch mode {
+	case ReviewHoldModePush, ReviewHoldModePushNits, ReviewHoldModeHold:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReviewHoldEnabled reports whether Sybra must draft PR comment replies as a
+// pending review instead of posting them live. Nil-safe for test construction.
+func (c *Config) ReviewHoldEnabled() bool {
+	return c != nil && c.ReviewHold.Enabled
+}
+
+// ReviewHoldMode returns the resolved hold mode, falling back to the default for
+// empty/unknown values so callers never branch on an invalid mode.
+func (c *Config) ReviewHoldMode() string {
+	if c == nil || !validReviewHoldMode(c.ReviewHold.Mode) {
+		return DefaultReviewHoldMode
+	}
+	return c.ReviewHold.Mode
+}
+
+// ReviewHoldNitMaxLines returns the resolved nit ceiling for push_nits mode.
+func (c *Config) ReviewHoldNitMaxLines() int {
+	if c == nil || c.ReviewHold.NitMaxLines <= 0 {
+		return DefaultReviewHoldNitMaxLines
+	}
+	return c.ReviewHold.NitMaxLines
+}
+
+func applyExperienceDefaults(cfg *Config) {
+	if cfg.Experience.MaxRecords <= 0 {
+		cfg.Experience.MaxRecords = 5
+	}
+}
+
+func applyAutoUpdateDefaults(cfg *Config) {
+	if cfg.AutoUpdate.Remote == "" {
+		cfg.AutoUpdate.Remote = "origin"
+	}
+	if cfg.AutoUpdate.Branch == "" {
+		cfg.AutoUpdate.Branch = "main"
+	}
+	if cfg.AutoUpdate.Mode == "" {
+		cfg.AutoUpdate.Mode = "notify"
+	}
+	if cfg.AutoUpdate.PollSeconds <= 0 {
+		cfg.AutoUpdate.PollSeconds = 300
+	}
+	if cfg.AutoUpdate.RestartDelaySeconds <= 0 {
+		cfg.AutoUpdate.RestartDelaySeconds = 2
+	}
+}
+
+// applyLegacyGitHubDefault keeps sparse configs created before GitHub became
+// opt-in from silently disabling an existing setup. Fresh configs written by
+// writeDefaultConfig include github.enabled: false explicitly.
+func applyLegacyGitHubDefault(data []byte, cfg *Config) {
+	if cfg == nil || hasYAMLPath(data, "github", "enabled") {
+		return
+	}
+	cfg.GitHub.Enabled = true
+}
+
+func hasYAMLPath(data []byte, path ...string) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	node := &root
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		node = node.Content[0]
+	}
+	for _, key := range path {
+		if node.Kind != yaml.MappingNode {
+			return false
+		}
+		found := false
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				node = node.Content[i+1]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// applyABTestingDefaults fills zero-value A/B testing config and reconciles
+// built-in experiments against the current code defaults. Returns true when
+// a builtin experiment reconcile actually rewrote cfg.ABTesting.Experiments,
+// so the caller knows whether the change needs persisting.
+func applyABTestingDefaults(cfg *Config, persist bool) bool {
+	if cfg == nil {
+		return false
+	}
+	def := abtest.DefaultConfig()
+	if cfg.ABTesting.Enabled == nil {
+		cfg.ABTesting.Enabled = def.Enabled
+	}
+	if cfg.ABTesting.MinSamplesPerVariant <= 0 {
+		cfg.ABTesting.MinSamplesPerVariant = def.MinSamplesPerVariant
+	}
+	if len(cfg.ABTesting.Experiments) == 0 {
+		cfg.ABTesting.Experiments = def.Experiments
+		cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+		return false
+	}
+	return reconcileBuiltinExperiments(cfg, def, persist)
+}
+
+// reconcileBuiltinExperiments refreshes a persisted config's built-in A/B
+// experiments (see abtest.BuiltinExperimentIDs) when they lag the code's
+// current defaults. Experiments outside that ID set — i.e. user-authored —
+// are left untouched. A one-generation backup of the prior experiment list is
+// written before the built-ins are replaced, so a same-ID hand-tuned built-in
+// is recoverable even though reconcile treats the ID as Sybra-owned.
+func reconcileBuiltinExperiments(cfg *Config, def abtest.Config, persist bool) bool {
+	priorVersion := cfg.ABTesting.BuiltinVersionValue()
+	if priorVersion >= def.BuiltinVersionValue() {
+		return false
+	}
+	if persist {
+		if err := backupABTestingExperiments(cfg.ABTesting.Experiments, priorVersion); err != nil {
+			slog.Warn("config: ab_testing builtin reconcile backup failed; skipping refresh", "err", err)
+			return false
+		}
+	}
+	builtin := make(map[string]bool, len(abtest.BuiltinExperimentIDs))
+	for _, id := range abtest.BuiltinExperimentIDs {
+		builtin[id] = true
+	}
+	kept := make([]abtest.Experiment, 0, len(cfg.ABTesting.Experiments)+len(def.Experiments))
+	for i := range cfg.ABTesting.Experiments {
+		if exp := cfg.ABTesting.Experiments[i]; !builtin[exp.ID] {
+			kept = append(kept, exp)
+		}
+	}
+	kept = append(kept, def.Experiments...)
+	cfg.ABTesting.Experiments = kept
+	cfg.ABTesting.BuiltinVersion = def.BuiltinVersion
+	slog.Info("config: ab_testing builtin experiments reconciled", "builtin_version", def.BuiltinVersionValue())
+	return true
+}
+
+// abTestingBackupPath returns the version-stamped backup path written before a
+// builtin reconcile overwrites persisted experiments. Each prior builtin
+// version keeps its own snapshot so successive builtin-version bumps do not
+// destroy the true pre-migration original.
+func abTestingBackupPath(priorVersion int) string {
+	return filepath.Join(HomeDir(), fmt.Sprintf("config.ab_testing.backup.v%d.yaml", priorVersion))
+}
+
+type abTestingBackup struct {
+	PriorBuiltinVersion int                 `yaml:"prior_builtin_version"`
+	Experiments         []abtest.Experiment `yaml:"experiments"`
+}
+
+func backupABTestingExperiments(experiments []abtest.Experiment, priorVersion int) error {
+	data, err := yaml.Marshal(abTestingBackup{PriorBuiltinVersion: priorVersion, Experiments: experiments})
+	if err != nil {
+		return err
+	}
+	path := abTestingBackupPath(priorVersion)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// applyWatchdogDefaults fills the Watchdog model default. Enabled and
+// LoopThreshold are seeded by DefaultConfig (true / 6), so a config missing the
+// watchdog block keeps the always-on default while an explicit `enabled: false`
+// or `loop_threshold: 0` survives — the latter being the documented way to keep
+// the watchdog running with the real-time loop trigger off. LoopThreshold is
+// deliberately NOT defaulted here so an explicit 0 is not clobbered back to 6.
+func applyWatchdogDefaults(cfg *Config) {
+	w := &cfg.Watchdog
+	if w.Model == "" {
+		w.Model = "claude-haiku-4-5-20251001"
+	}
+}
+
+// applyEvaluationDefaults fills zero values for the Evaluation block so older
+// configs behave deterministically. Enabled stays false until operators opt in.
+func applyEvaluationDefaults(cfg *Config) {
+	e := &cfg.Evaluation
+	if e.IntervalHours < 1 {
+		e.IntervalHours = 24
+	}
+	if e.WindowDays <= 0 {
+		e.WindowDays = 30
+	}
+	if e.Offline.Runner == "" {
+		e.Offline.Runner = "auto"
+	}
+	if e.Offline.MinScore <= 0 {
+		e.Offline.MinScore = 1.0
+	}
+	if e.Offline.UnavailablePolicy == "" {
+		e.Offline.UnavailablePolicy = "fail"
+	}
+}
+
+// applyLearningDigestDefaults fills zero values for the LearningDigest block.
+// Enabled stays false until operators opt in.
+func applyLearningDigestDefaults(cfg *Config) {
+	d := &cfg.LearningDigest
+	if d.IntervalHours < 1 {
+		d.IntervalHours = 24
+	}
+	if d.WindowDays <= 0 {
+		d.WindowDays = 7
+	}
+	if d.MaxWindowDays <= 0 {
+		d.MaxWindowDays = 30
+	}
+	if d.Model == "" {
+		d.Model = "sonnet"
+	}
+	if d.MinRuns <= 0 {
+		d.MinRuns = 20
+	}
+	if d.MinLandings <= 0 {
+		d.MinLandings = 3
+	}
+}
+
+// applyHarnessEvolveDefaults fills zero values while preserving Enabled from
+// DefaultConfig or an explicit YAML override.
+func applyHarnessEvolveDefaults(cfg *Config) {
+	h := &cfg.HarnessEvolve
+	if h.IntervalHours < 1 {
+		h.IntervalHours = 24
+	}
+	if h.LookbackHours <= 0 {
+		h.LookbackHours = 168
+	}
+	if h.MinClusterSize <= 0 {
+		h.MinClusterSize = 2
+	}
+	if h.Sink == "" {
+		h.Sink = "local-task"
+	}
+}
+
+// applyPromptLabDefaults fills zero values while preserving Enabled from an
+// explicit YAML override — the zero value (false) is exactly the desired
+// default, so no DefaultConfig entry is needed.
+func applyPromptLabDefaults(cfg *Config) {
+	p := &cfg.PromptLab
+	if p.IntervalHours < 1 {
+		p.IntervalHours = 24
+	}
+	if p.LookbackHours <= 0 {
+		p.LookbackHours = 168
+	}
+	if p.MinSamples <= 0 {
+		p.MinSamples = 5
+	}
+	if p.MinEffectSize <= 0 {
+		p.MinEffectSize = 0.15
+	}
+	if p.MaxProposalsPerRun <= 0 {
+		p.MaxProposalsPerRun = 3
+	}
+}
+
+// applySelfMonitorDefaults fills zero values for the SelfMonitor block so
+// older configs behave deterministically and the service can rely on every
+// field. Enabled stays false until operators opt in.
+func applySelfMonitorDefaults(cfg *Config) {
+	s := &cfg.SelfMonitor
+	if s.IntervalHours < 1 {
+		s.IntervalHours = 6
+	}
+	if s.JudgeModel == "" {
+		s.JudgeModel = "claude-haiku-4-5-20251001"
+	}
+	if s.SynthesizerModel == "" {
+		s.SynthesizerModel = "claude-sonnet-4-6"
+	}
+	if s.MaxIssuesPerRun <= 0 {
+		s.MaxIssuesPerRun = 5
+	}
+	if s.MaxAutoActionsPerDay <= 0 {
+		s.MaxAutoActionsPerDay = 3
+	}
+	if len(s.AutoActCategories) == 0 {
+		s.AutoActCategories = []string{
+			"stuck_task",
+			"workflow_loop",
+			"cost_outlier",
+			"triage_mismatch",
+		}
+	}
+
+	// DryRun defaults to true as the first-week safety net. Operators flip
+	// it to false once the ledger shows clean ActionRecords. Because bool
+	// zero-values are indistinguishable from explicit false, we only flip
+	// to true when the whole SelfMonitor block is freshly populated — i.e.
+	// when none of the user-facing knobs were set. This avoids silently
+	// re-enabling DryRun on an operator who explicitly disabled it.
+	//
+	// Proxy for "freshly populated": IssueLabel is the last field the
+	// operator typically edits; if it's empty after the above defaults
+	// ran, we know nothing in the block was user-specified.
+	if s.IssueCooldownHours <= 0 {
+		s.IssueCooldownHours = 24
+	}
+	if s.IssueLabel == "" {
+		s.IssueLabel = "selfmonitor"
+		s.DryRun = true
+	}
+	if s.MaxCostPerTickUSD <= 0 {
+		s.MaxCostPerTickUSD = 2.0
+	}
+	if s.JudgeParallelism <= 0 {
+		s.JudgeParallelism = 4
+	}
+	if s.SuppressionDays <= 0 {
+		s.SuppressionDays = 7
+	}
+	if s.SuppressionThreshold <= 0 {
+		s.SuppressionThreshold = 3
+	}
+}
+
+// applyOrchestratorDefaults fills zero values for the Orchestrator block so the
+// dispatch loop has a fast scheduling cadence and a slower maintenance cadence
+// even on configs that predate the split.
+func applyOrchestratorDefaults(cfg *Config) {
+	if cfg.Orchestrator.DispatchIntervalSeconds <= 0 {
+		cfg.Orchestrator.DispatchIntervalSeconds = 10
+	}
+	if cfg.Orchestrator.MaintenanceIntervalSeconds <= 0 {
+		cfg.Orchestrator.MaintenanceIntervalSeconds = 60
+	}
+	applyPressureDefaults(cfg)
+}
+
+// applyPressureDefaults fills the Pressure block. The thresholds
+// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU) are seeded in
+// DefaultConfig, NOT here: their documented `<=0 disables this dimension`
+// sentinel means an explicit `0` in YAML must survive loading, so defaulting
+// them on `<=0` would silently re-enable a signal the operator turned off. A
+// config missing the block entirely keeps the DefaultConfig seeds; a config
+// that sets one threshold to 0 keeps its 0.
+//
+// SampleIntervalSeconds is different — its `<=0` means "fall back to the
+// default", not "disable" — so it is safe to normalize here (pressure.Gate
+// also falls back internally).
+func applyPressureDefaults(cfg *Config) {
+	p := &cfg.Orchestrator.Pressure
+	if p.SampleIntervalSeconds <= 0 {
+		p.SampleIntervalSeconds = 15
+	}
+}
+
+// applyMonitorDefaults fills zero values for the Monitor block so older
+// configs behave deterministically and the service can rely on every field.
+// Enabled stays false until users opt in.
+func applyMonitorDefaults(cfg *Config) {
+	if cfg.Monitor.IntervalSeconds < 60 {
+		cfg.Monitor.IntervalSeconds = 300
+	}
+	if cfg.Monitor.Model == "" {
+		// Same diagnosis shape as the watchdog inspector (applyWatchdogDefaults):
+		// classifying an anomaly, not authoring a fix.
+		cfg.Monitor.Model = "claude-haiku-4-5-20251001"
+	}
+	if cfg.Monitor.IssueCooldownMinutes <= 0 {
+		cfg.Monitor.IssueCooldownMinutes = 30
+	}
+	if cfg.Monitor.DispatchLimit <= 0 {
+		cfg.Monitor.DispatchLimit = cfg.Agent.MaxConcurrent
+	}
+	if cfg.Monitor.StuckHumanHours <= 0 {
+		cfg.Monitor.StuckHumanHours = 8
+	}
+	if cfg.Monitor.LostAgentMinutes <= 0 {
+		cfg.Monitor.LostAgentMinutes = 15
+	}
+	if cfg.Monitor.PRGapGraceMinutes <= 0 {
+		cfg.Monitor.PRGapGraceMinutes = 15
+	}
+	if cfg.Monitor.FailureRateThreshold <= 0 {
+		cfg.Monitor.FailureRateThreshold = 0.3
+	}
+	if cfg.Monitor.IssueLabel == "" {
+		cfg.Monitor.IssueLabel = "monitor"
+	}
+	if cfg.Monitor.IssueRepo == "" {
+		cfg.Monitor.IssueRepo = "Automaat/sybra"
+	}
+	if cfg.Monitor.BottleneckHours == nil {
+		cfg.Monitor.BottleneckHours = map[string]float64{}
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["plan-review"]; !ok {
+		cfg.Monitor.BottleneckHours["plan-review"] = 4
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["human-required"]; !ok {
+		cfg.Monitor.BottleneckHours["human-required"] = 8
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["in-progress"]; !ok {
+		cfg.Monitor.BottleneckHours["in-progress"] = 6
+	}
+	if _, ok := cfg.Monitor.BottleneckHours["default"]; !ok {
+		cfg.Monitor.BottleneckHours["default"] = 12
+	}
+}
+
+// applyProvidersDefaults fills zero values for the Providers block so older
+// configs (which predate the block entirely) behave identically to the
+// DefaultConfig factory.
+func applyProvidersDefaults(cfg *Config) {
+	if cfg.Providers.HealthCheck.IntervalSeconds <= 0 {
+		cfg.Providers.HealthCheck.IntervalSeconds = 300
+	}
+	if cfg.Providers.HealthCheck.IntervalSeconds < 60 {
+		cfg.Providers.HealthCheck.IntervalSeconds = 60
+	}
+	if cfg.Providers.Claude.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Claude.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.Codex.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Codex.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.Copilot.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.Copilot.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.OpenCode.RateLimitCooldownSeconds <= 0 {
+		cfg.Providers.OpenCode.RateLimitCooldownSeconds = 900
+	}
+	if cfg.Providers.Limits.SessionThresholdPercent <= 0 {
+		cfg.Providers.Limits.SessionThresholdPercent = 85
+	}
+	if cfg.Providers.Limits.WeeklyThresholdPercent <= 0 {
+		cfg.Providers.Limits.WeeklyThresholdPercent = 90
+	}
+	if cfg.Providers.Limits.BackfillDays <= 0 {
+		cfg.Providers.Limits.BackfillDays = 14
+	}
+}
+
+func (c *LoggingConfig) SlogLevel() slog.Level {
+	switch c.Level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+const (
+	configDirPerm  os.FileMode = 0o700
+	configFilePerm os.FileMode = 0o600
+)
+
+func writeDefaultConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("# Sybra configuration\n# GitHub automations are opt-in on first run.\ngithub:\n  enabled: false\n"), configFilePerm)
+}
+
+// tightenConfigPerms retrofits the config directory and file to 0o700/0o600
+// on installs created before those became the write-time default (config.yaml
+// holds the plaintext Todoist token). Best-effort: a failed chmod is logged,
+// not fatal — Load must still succeed on read-only or restricted filesystems.
+func tightenConfigPerms(path string, existingFile bool) {
+	tightenPathPerm(filepath.Dir(path), configDirPerm, "home dir")
+	if existingFile {
+		tightenPathPerm(path, configFilePerm, "config file")
+	}
+}
+
+func tightenPathPerm(path string, target os.FileMode, label string) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("config: failed to inspect perms", "path", path, "kind", label, "err", err)
+		}
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		slog.Warn("config: refusing to chmod symlink", "path", path, "kind", label)
+		return
+	}
+	current := info.Mode().Perm()
+	if current&^target == 0 {
+		return
+	}
+	if err := os.Chmod(path, target); err != nil && !os.IsNotExist(err) {
+		slog.Warn("config: failed to tighten perms", "path", path, "kind", label, "err", err)
+	}
+}
+
+func configPath() string {
+	return filepath.Join(HomeDir(), "config.yaml")
+}
+
+func defaultLogDir() string {
+	return filepath.Join(HomeDir(), "logs")
+}
+
+func defaultTasksDir() string {
+	return filepath.Join(HomeDir(), "tasks")
+}
+
+func defaultSkillsDir() string {
+	return filepath.Join(HomeDir(), ".claude", "skills")
+}
+
+func defaultProjectsDir() string {
+	return filepath.Join(HomeDir(), "projects")
+}
+
+func defaultClonesDir() string {
+	return filepath.Join(HomeDir(), "clones")
+}
+
+func defaultWorktreesDir() string {
+	return filepath.Join(HomeDir(), "worktrees")
+}
+
+func defaultLoopAgentsDir() string {
+	return filepath.Join(HomeDir(), "loop-agents")
+}
+
+func WorkflowsDir() string {
+	return filepath.Join(HomeDir(), "workflows")
+}
+
+// AgentsDir is the directory under ~/.sybra that holds the live-agent
+// registry (one YAML file per running agent) used to reattach to
+// subprocesses that survived an app restart.
+func AgentsDir() string {
+	return filepath.Join(HomeDir(), "agents")
+}
+
+func StatsFile() string {
+	return filepath.Join(HomeDir(), "stats.json")
+}
+
+func LimitsFile() string {
+	return filepath.Join(HomeDir(), "limits.json")
+}
+
+// ArtifactsDir is the directory under ~/.sybra that holds per-task harness
+// artifacts (plan snapshots, trace events, generic intermediate outputs).
+// Layout: <dir>/<task-id>/<name> + <name>.meta.json.
+func ArtifactsDir() string {
+	return filepath.Join(HomeDir(), "artifacts")
+}
+
+// SelfMonitorDir is the directory under ~/.sybra that holds the
+// selfmonitor ledger, last-report snapshot, and any other persisted state
+// the service owns.
+func SelfMonitorDir() string {
+	return filepath.Join(HomeDir(), "selfmonitor")
+}
+
+// HarnessEvolveDir is the local store for governed harness-evolution proposal
+// records and run snapshots.
+func HarnessEvolveDir() string {
+	return filepath.Join(HomeDir(), "harness-evolution")
+}
+
+// PromptLabDir is the local store for promptlab run snapshots and scaffolded
+// proposal records. It never holds authored prompt/skill text — see
+// internal/promptlab.
+func PromptLabDir() string {
+	return filepath.Join(HomeDir(), "prompt-lab")
+}
+
+// PromptEvalDir is the local store for offline prompt/skill eval verdicts
+// (internal/prompteval). Layout: <dir>/<variantID>/<digest>.json.
+func PromptEvalDir() string {
+	return filepath.Join(HomeDir(), "prompteval")
+}
+
+// SelfMonitorLedgerPath is the append-only ledger file selfmonitor.Open uses.
+func SelfMonitorLedgerPath() string {
+	return filepath.Join(SelfMonitorDir(), "ledger.jsonl")
+}
+
+// EvaluationReportPath is where the background evaluation service persists its
+// most recent scorecard as JSON for the dashboard and inspection. The CLI
+// `sybra-cli evaluation scan` recomputes a fresh report rather than reading it.
+func EvaluationReportPath() string {
+	return filepath.Join(HomeDir(), "evaluation-report.json")
+}
+
+// SelfMonitorLastReportPath is where the service writes the most recent
+// Report as JSON. The CLI `sybra-cli selfmonitor scan` reads from here.
+func SelfMonitorLastReportPath() string {
+	return filepath.Join(SelfMonitorDir(), "last-report.json")
+}
+
+// HealthReportPath is the canonical path the health.Checker persists its
+// rollup report to. Exposed here so CLI commands (and the selfmonitor
+// service) can read it without hardcoding the layout.
+func HealthReportPath() string {
+	return filepath.Join(HomeDir(), "health-report.json")
+}

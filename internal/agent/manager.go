@@ -1,0 +1,837 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"sync"
+	"time"
+
+	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
+)
+
+type EmitFunc func(event string, data any)
+
+// ErrSurvivalRegistry marks failures initializing restart-survival persistence.
+var ErrSurvivalRegistry = errors.New("agent survival registry")
+
+// defaultDeadAgentRetention is how long a completed agent's registry entry
+// (output buffer, prompt, convo buffer) survives after markAgentDone runs,
+// before Manager.deadAgentRetention evicts it. Bounds long-run memory growth
+// (#1532) while leaving a window for callers to read final state
+// (GetAgent/GetConvoOutput/Output) right after a terminal transition.
+const defaultDeadAgentRetention = 10 * time.Minute
+
+// ErrMaxConcurrentReached is returned by registerRunningAgent when the live
+// agent count is already at MaxConcurrent. It is a transient, self-healing
+// capacity condition (a slot frees when any running agent completes), so
+// callers must park-and-retry rather than escalate — the workflow layer maps
+// it to workflow.ErrAgentPoolBusy. Kept a sentinel (not a bare fmt.Errorf) so
+// that mapping is errors.Is-based, not string-matched.
+var ErrMaxConcurrentReached = errors.New("max concurrent agents reached")
+
+// Guardrails defines per-agent execution limits.
+type Guardrails struct {
+	MaxCostUSD float64
+	MaxTurns   int
+	// MaxCheckpoints bounds how many checkpoint handoffs a single workflow step
+	// may spend before the workflow parks human-required. Stored here so
+	// guardrail reads reflect live config reloads in tests/UI snapshots.
+	MaxCheckpoints int
+	// TurnCostFraction is the fraction of MaxCostUSD below which a turns
+	// escalation is auto-continued without human approval. Default 0.8.
+	// Only effective when MaxCostUSD > 0.
+	TurnCostFraction float64
+	// TurnMultiplier scales the turn limit on each auto-continuation so
+	// the agent gets progressively more turns. Default 2.
+	TurnMultiplier float64
+	// CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for
+	// a checkpoint-and-handoff on eligible code-author headless runs.
+	CheckpointOnTurnCeiling bool
+}
+
+type Manager struct {
+	agents        map[string]*Agent
+	mu            sync.RWMutex
+	liveCount     int
+	ctx           context.Context
+	emit          EmitFunc
+	onComplete    func(ag *Agent)
+	logger        *slog.Logger
+	logDir        string
+	maxConcurrent int
+	defaultProv   string
+	approvalAddr  string // localhost:port for the HTTP tool approval server
+	guardrails    Guardrails
+	bashTimeoutMs int
+	retryWatchdog int
+	fallbackModel string
+	// headlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	headlessSteerable bool
+
+	defaultSandboxMode string
+	gate               provider.HealthGate
+	limitGate          LimitGate
+	limitPolicy        limits.Policy
+	limitSink          func(limits.Snapshot)
+	evalPassed         abtest.EvalPassed
+
+	// liveByProvider tracks in-flight agent counts per provider, incremented
+	// and decremented in lockstep with liveCount (registerRunningAgent,
+	// markAgentDone, and the three ReattachAll restart paths) so
+	// sum(liveByProvider) == liveCount always holds. Read by gateProvider to
+	// steer dispatch away from an at-cap provider.
+	liveByProvider map[string]int
+	// maxInFlightPerProvider caps concurrent in-flight agents per provider.
+	// 0 disables the cap (soft cap: never blocks dispatch, only redirects).
+	maxInFlightPerProvider int
+	// dispatchJitterMs bounds a uniform random delay applied before headless
+	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
+	dispatchJitterMs int
+	// playwrightMCPEnabled mirrors config.PlaywrightMCPEnabled. Default-off:
+	// see Manager.preparePlaywrightMCP for the full attach decision.
+	playwrightMCPEnabled bool
+	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
+	// verbatim to the Playwright MCP launch command.
+	playwrightMCPExtraArgs []string
+	// warnInertCapOnce guards the one-time inert-cap warning across both New
+	// and every subsequent ReplaceRuntimeConfig call for this manager's
+	// lifetime.
+	warnInertCapOnce sync.Once
+
+	// reg persists live-agent records so subprocesses can be reattached
+	// after an app restart. nil disables survival (legacy behaviour).
+	// Manager.mu guards only this pointer and survival config; registryStore
+	// owns serialization of its on-disk Save/List/Delete operations.
+	reg               survivalRegistry
+	surviveRestart    bool
+	surviveRestartDir string
+
+	// sessionSink, when set, persists a crashed agent's captured session id
+	// to its task's AgentRun on dead-reattach, so restart-stale recovery can
+	// resume the conversation via --resume instead of cold-restarting. A
+	// non-nil error means persistence failed and the registry record should
+	// be retained for a later retry.
+	sessionSink func(taskID, agentID, sessionID string) error
+
+	// taskExists, when set, reports whether a task still exists. Used to
+	// avoid recreating a zombie codex agent whose chat task was deleted.
+	taskExists func(taskID string) bool
+
+	taskStatus func(taskID string) (string, bool)
+
+	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
+	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
+	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
+	// system/probe run with an empty TaskID (tests, health checks).
+	sandboxHome func(taskID string) (string, error)
+	// controlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into every
+	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
+	// real operator store even though SYBRA_HOME points at the task's sandbox.
+	controlHome string
+
+	ghAppToken func() string
+	artifacts  *artifact.Store
+
+	// deadAgentRetention bounds how long a completed agent stays in agents
+	// after markAgentDone before being evicted. <= 0 evicts synchronously
+	// (used by tests that need deterministic immediate eviction).
+	deadAgentRetention time.Duration
+
+	// dispatchClaims serializes agent dispatch per task. A claim is held for
+	// the full duration of a StartAgent call — across the (multi-second)
+	// worktree-preparation window during which the agent is not yet registered
+	// in `agents`. Without it, two independent dispatchers (the workflow
+	// cascade and the recovery loop) can both observe "no running agent" and
+	// each start an agent on the same worktree. This is a pure in-flight lock:
+	// it intentionally does NOT inspect running agents, so a step transition
+	// dispatching its next agent inside the prior agent's onComplete (whose
+	// `done` channel is not yet closed) is never blocked.
+	dispatchClaims map[string]struct{}
+
+	// queueNudge is a buffer-1 coalescing signal mirroring App.dispatchNudge:
+	// at most one pending nudge is retained, so a burst of completions that
+	// each free a slot collapses into a single pending wake-up for whatever
+	// dispatch loop reads QueueNudge.
+	queueNudge chan struct{}
+}
+
+type LimitGate interface {
+	ProviderAvailable(provider string, policy limits.Policy) (bool, string)
+	ChooseProvider(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
+	ChooseSoftLimitedPeer(requested string, candidates []string, healthy func(string) bool, policy limits.Policy) (string, string)
+}
+
+// LimitGateOrNil wraps store as a LimitGate, returning a genuine nil
+// interface when store is nil. Assigning a nil *limits.Store directly to a
+// LimitGate field produces a non-nil interface holding a nil pointer, which
+// defeats `== nil` guards and panics on the first method call.
+func LimitGateOrNil(store *limits.Store) LimitGate {
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
+// ManagerConfig contains startup-only wiring. Values that are intentionally
+// live-editable are grouped in Runtime and updated via ReplaceRuntimeConfig.
+type ManagerConfig struct {
+	Runtime ManagerRuntimeConfig
+
+	OnComplete        func(ag *Agent)
+	ApprovalAddr      string
+	SurviveRestartDir string
+	SessionSink       func(taskID, agentID, sessionID string) error
+	TaskExists        func(taskID string) bool
+	TaskStatus        func(taskID string) (string, bool)
+	LimitSink         func(limits.Snapshot)
+	Artifacts         *artifact.Store
+
+	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
+	// task-scoped run. Required for every fresh agent subprocess so it never
+	// inherits an unset or operator SYBRA_HOME by default — see
+	// Manager.prepareRunConfig. May be nil only when the manager is used
+	// exclusively for system/probe runs with an empty TaskID.
+	SandboxHome func(taskID string) (string, error)
+	// ControlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into
+	// every task-scoped agent subprocess so sybra-cli task commands reach the
+	// real operator store (typically config.HomeDir()).
+	ControlHome string
+}
+
+// ManagerRuntimeConfig holds settings that affect future runs and may change
+// on config reload without rebuilding the manager.
+type ManagerRuntimeConfig struct {
+	MaxConcurrent   int
+	DefaultProvider string
+	BashTimeoutMs   int
+	RetryWatchdog   int
+	FallbackModel   string
+	LimitGate       LimitGate
+	LimitPolicy     limits.Policy
+	SandboxMode     string
+	// MaxInFlightPerProvider caps concurrent in-flight agents per provider.
+	// 0 disables the cap.
+	MaxInFlightPerProvider int
+	// DispatchJitterMs bounds a uniform random delay applied before headless
+	// dispatch. 0 disables jitter.
+	DispatchJitterMs int
+	// HeadlessSteerable gates whether headless claude runs launch with the
+	// stdin/stream-json shape that accepts mid-run steer messages. See
+	// RunConfig.HeadlessSteerable.
+	HeadlessSteerable bool
+	// PlaywrightMCPEnabled mirrors config.PlaywrightMCPEnabled(). Default-off.
+	PlaywrightMCPEnabled bool
+	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
+	PlaywrightMCPExtraArgs []string
+}
+
+func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
+	defaultProv, err := normalizeProviderName(cfg.Runtime.DefaultProvider)
+	if err != nil {
+		return nil, fmt.Errorf("default provider: %w", err)
+	}
+	m := &Manager{
+		agents:                 make(map[string]*Agent),
+		dispatchClaims:         make(map[string]struct{}),
+		queueNudge:             make(chan struct{}, 1),
+		liveByProvider:         make(map[string]int),
+		ctx:                    ctx,
+		emit:                   emit,
+		onComplete:             cfg.OnComplete,
+		logger:                 logger,
+		logDir:                 logDir,
+		approvalAddr:           cfg.ApprovalAddr,
+		defaultProv:            defaultProv,
+		maxConcurrent:          cfg.Runtime.MaxConcurrent,
+		bashTimeoutMs:          cfg.Runtime.BashTimeoutMs,
+		retryWatchdog:          cfg.Runtime.RetryWatchdog,
+		fallbackModel:          cfg.Runtime.FallbackModel,
+		limitGate:              cfg.Runtime.LimitGate,
+		limitPolicy:            copyLimitPolicy(cfg.Runtime.LimitPolicy),
+		limitSink:              cfg.LimitSink,
+		artifacts:              cfg.Artifacts,
+		sessionSink:            cfg.SessionSink,
+		taskExists:             cfg.TaskExists,
+		taskStatus:             cfg.TaskStatus,
+		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
+		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
+		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
+		defaultSandboxMode:     cfg.Runtime.SandboxMode,
+		sandboxHome:            cfg.SandboxHome,
+		controlHome:            cfg.ControlHome,
+		deadAgentRetention:     defaultDeadAgentRetention,
+		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
+		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
+	}
+	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
+	if cfg.SurviveRestartDir != "" {
+		s, err := newRegistryStore(cfg.SurviveRestartDir)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrSurvivalRegistry, err)
+		}
+		m.reg = s
+		m.surviveRestart = true
+		m.surviveRestartDir = cfg.SurviveRestartDir
+	}
+	return m, nil
+}
+
+// ClaimTaskDispatch reserves the right to dispatch an agent for taskID,
+// returning false when a dispatch is already in flight for the same task. The
+// caller MUST NOT start an agent on a false return, and MUST ReleaseTaskDispatch
+// once dispatch finishes (success or failure) on a true return. This closes the
+// window between dispatch start and agent registration where a concurrent
+// dispatcher would otherwise see no running agent and start a duplicate.
+func (m *Manager) ClaimTaskDispatch(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, held := m.dispatchClaims[taskID]; held {
+		return false
+	}
+	if m.dispatchClaims == nil {
+		m.dispatchClaims = make(map[string]struct{})
+	}
+	m.dispatchClaims[taskID] = struct{}{}
+	return true
+}
+
+// ReleaseTaskDispatch releases a claim acquired by ClaimTaskDispatch. Safe to
+// call for a task with no outstanding claim.
+func (m *Manager) ReleaseTaskDispatch(taskID string) {
+	m.mu.Lock()
+	delete(m.dispatchClaims, taskID)
+	m.mu.Unlock()
+}
+
+// IsDispatching reports whether a dispatch claim is currently held for
+// taskID, by any caller of ClaimTaskDispatch/TryClaimDispatch — the workflow
+// engine's execRunAgent, recovery.RestartStaleInProgress (via
+// agentorch.Orchestrator), or a direct non-workflow StartAgent call. This is
+// the single ground-truth answer to "is this task's next run already
+// owned?" that every dispatcher can consult before deciding to redispatch,
+// instead of each maintaining its own separate view of dispatch-in-flight
+// state.
+func (m *Manager) IsDispatching(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, held := m.dispatchClaims[taskID]
+	return held
+}
+
+// DispatchClaim is a held per-task dispatch claim returned by
+// TryClaimDispatch. It centralizes the release-at-most-once bookkeeping every
+// dispatch call site used to hand-roll individually (a local `released bool`
+// guarding a deferred delete): releasing early to unblock a nested
+// same-task dispatch (e.g. branch-conflict recovery) can never race a
+// deferred second release into clobbering a claim a different dispatcher has
+// since acquired.
+type DispatchClaim struct {
+	manager  *Manager
+	taskID   string
+	released bool
+}
+
+// TryClaimDispatch reserves the right to dispatch an agent for taskID. On a
+// true ok, the caller MUST release the returned claim exactly once dispatch
+// finishes (success or failure) — typically via `defer claim.Release()` —
+// and MAY call Release earlier to unblock a nested same-task dispatch before
+// the deferred call runs, since Release is idempotent. On ok=false a dispatch
+// is already in flight for the same task and the caller MUST NOT start an
+// agent.
+func (m *Manager) TryClaimDispatch(taskID string) (claim *DispatchClaim, ok bool) {
+	if !m.ClaimTaskDispatch(taskID) {
+		return nil, false
+	}
+	return &DispatchClaim{manager: m, taskID: taskID}, true
+}
+
+// Release releases the claim. Idempotent and nil-safe: a second call (or a
+// call on a nil claim) is a no-op, so an early manual release followed by a
+// deferred Release never double-deletes a claim a different dispatcher has
+// since acquired.
+func (c *DispatchClaim) Release() {
+	if c == nil || c.released {
+		return
+	}
+	c.released = true
+	c.manager.ReleaseTaskDispatch(c.taskID)
+}
+
+// ReplaceRuntimeConfig replaces the complete live runtime snapshot. Settings
+// affect future Run calls and config reloads without mutating startup-only callbacks.
+func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
+	defaultProv, err := normalizeProviderName(cfg.DefaultProvider)
+	if err != nil {
+		return fmt.Errorf("default provider: %w", err)
+	}
+	m.mu.Lock()
+	m.maxConcurrent = cfg.MaxConcurrent
+	m.defaultProv = defaultProv
+	m.bashTimeoutMs = cfg.BashTimeoutMs
+	m.retryWatchdog = cfg.RetryWatchdog
+	m.fallbackModel = cfg.FallbackModel
+	m.limitGate = cfg.LimitGate
+	m.limitPolicy = copyLimitPolicy(cfg.LimitPolicy)
+	m.maxInFlightPerProvider = cfg.MaxInFlightPerProvider
+	m.dispatchJitterMs = cfg.DispatchJitterMs
+	m.headlessSteerable = cfg.HeadlessSteerable
+	m.defaultSandboxMode = cfg.SandboxMode
+	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
+	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
+	m.mu.Unlock()
+	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
+	return nil
+}
+
+// warnInertCap logs once, across this manager's whole lifetime, when
+// MaxInFlightPerProvider is configured but no LimitGate is wired up (e.g.
+// limits.NewStore failed at startup), since gateProvider then skips the
+// cap-redirect logic entirely and the cap has zero effect for as long as the
+// gate stays nil.
+func (m *Manager) warnInertCap(logger *slog.Logger, maxInFlightPerProvider int, limitGate LimitGate) {
+	if maxInFlightPerProvider > 0 && limitGate == nil {
+		m.warnInertCapOnce.Do(func() {
+			logger.Warn("agent.max_in_flight_per_provider.inert", "max_in_flight_per_provider", maxInFlightPerProvider)
+		})
+	}
+}
+
+// InFlightByProvider returns a snapshot of in-flight agent counts by
+// provider, kept in lockstep with RunningCount's liveCount.
+func (m *Manager) InFlightByProvider() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return maps.Clone(m.liveByProvider)
+}
+
+func (m *Manager) sessionSinkFn() func(taskID, agentID, sessionID string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessionSink
+}
+
+func (m *Manager) taskExistsFn() func(taskID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskExists
+}
+
+func (m *Manager) taskStatusFn() func(taskID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.taskStatus
+}
+
+// survives reports whether restart survival is active.
+func (m *Manager) survives() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.surviveRestart && m.reg != nil
+}
+
+// willDetach reports whether a run survives a restart. Headless and
+// interactive Claude survive as detached processes (Claude one-shot passes
+// its prompt as an argument, no stdin). Interactive codex "survives" by
+// recreate-on-restart: it has no persistent process between its independent
+// per-turn `codex exec` invocations, so the agent record persists and the
+// idle agent is rebuilt on the next startup. Single source of truth
+// mirrored by the runner branches.
+func willDetach(cfg RunConfig) bool {
+	switch cfg.Mode {
+	case "headless", "interactive":
+		return true
+	default:
+		return false
+	}
+}
+
+// registry returns the survival registry (nil when survival is disabled).
+func (m *Manager) registry() survivalRegistry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.reg
+}
+
+func (m *Manager) registryDir() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.surviveRestartDir
+}
+
+// saveRegistry snapshots the agent to disk. No-op when survival is off.
+func (m *Manager) saveRegistry(ctx context.Context, a *Agent) {
+	reg := m.registry()
+	if reg == nil || a == nil {
+		return
+	}
+	rec := a.toRecord()
+	rec.ProcStartedAt = processStartString(ctx, rec.PID)
+	if err := reg.Save(rec); err != nil {
+		m.logger.Warn(
+			"agent.registry.save",
+			"id", rec.ID,
+			"task_id", rec.TaskID,
+			"mode", rec.Mode,
+			"pid", rec.PID,
+			"log_path", rec.LogPath,
+			"err", err,
+		)
+	}
+}
+
+// signalKill terminates an agent's subprocess. Prefers the *exec.Cmd
+// handle (live this lifetime); falls back to the PID for reattached
+// agents that have no handle.
+func (m *Manager) signalKill(a *Agent) {
+	if cmd := a.GetCmd(); cmd != nil && cmd.Process != nil {
+		stopWithSIGINT(cmd, a.done, stopSIGINTGrace)
+		return
+	}
+	signalPID(a.GetPID(), stopSIGINTGrace)
+}
+
+// SetHealthGate wires in a provider health checker so Run() can refuse or
+// failover when the requested provider is unhealthy. A nil gate disables the
+// check entirely (tests, feature-disabled mode).
+func (m *Manager) SetHealthGate(g provider.HealthGate) {
+	m.mu.Lock()
+	m.gate = g
+	m.mu.Unlock()
+}
+
+// SetEvalPassed wires the offline-eval enrollment predicate consulted by
+// ApplyABVariant, so ad-hoc A/B dispatch sites gate digested variants on their
+// stored eval verdict exactly like the workflow engine. A nil predicate (the
+// default) leaves eval gating off.
+func (m *Manager) SetEvalPassed(fn abtest.EvalPassed) {
+	m.mu.Lock()
+	m.evalPassed = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghAppToken = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) LimitPolicy() limits.Policy {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return copyLimitPolicy(m.limitPolicy)
+}
+
+func copyLimitPolicy(policy limits.Policy) limits.Policy {
+	if policy.SubscriptionMonthlyUSD != nil {
+		policy.SubscriptionMonthlyUSD = copyStringFloatMap(policy.SubscriptionMonthlyUSD)
+	}
+	if policy.ProviderEnabled != nil {
+		policy.ProviderEnabled = copyStringBoolMap(policy.ProviderEnabled)
+	}
+	return policy
+}
+
+func copyStringFloatMap(in map[string]float64) map[string]float64 {
+	return maps.Clone(in)
+}
+
+func copyStringBoolMap(in map[string]bool) map[string]bool {
+	return maps.Clone(in)
+}
+
+// ProviderRateLimited reports whether the named provider is currently in a
+// rate-limit cooldown — distinct from logged-out / auth failure. A nil health
+// gate (checks disabled, tests) reports false. An empty name resolves to the
+// default provider. Recovery loops consult this to wait out a transient rate
+// limit; auth failures deliberately do NOT count here so they keep taking the
+// human-required path (a human must log in) instead of waiting indefinitely.
+func (m *Manager) ProviderRateLimited(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	if g == nil {
+		return false
+	}
+	return g.RateLimited(name)
+}
+
+// ProviderHealthy reports whether the named provider is currently usable —
+// false for a probe-detected outage (health gate) or a config-disabled
+// provider (providers.<name>.enabled=false, via limitPolicy.ProviderEnabled).
+// The config-disabled check is independent of the health gate so it still
+// holds when providers.health_check.enabled=false and the gate is nil (checks
+// disabled, tests) — otherwise ProviderHealthy would report true for a
+// provider the admin explicitly disabled. Empty name resolves to the default
+// provider. A/B variant selection consults this so a disabled or unhealthy
+// provider is never picked as an eligible weighted variant.
+func (m *Manager) ProviderHealthy(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	lp := m.limitPolicy
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	if enabled, ok := lp.ProviderEnabled[name]; ok && !enabled {
+		return false
+	}
+	if g == nil {
+		return true
+	}
+	return g.IsHealthy(name)
+}
+
+// ProviderCanFailover reports whether the health/limit gates can route work
+// away from the named provider right now.
+func (m *Manager) ProviderCanFailover(name string) bool {
+	m.mu.RLock()
+	g := m.gate
+	lg := m.limitGate
+	lp := m.limitPolicy
+	if name == "" {
+		name = m.defaultProv
+	}
+	m.mu.RUnlock()
+	prov, err := lookupProvider(name)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("agent.failover.provider", "provider", name, "err", err)
+		}
+		return false
+	}
+	resolved := prov.Name()
+	healthy := func(p string) bool {
+		return g == nil || g.IsHealthy(p)
+	}
+	if g != nil && g.Failover(resolved) != "" {
+		return true
+	}
+	if lg == nil {
+		return false
+	}
+	candidates := providerid.All()
+	if alt, _ := lg.ChooseProvider(resolved, candidates, healthy, lp); alt != "" {
+		return true
+	}
+	available, reason := lg.ProviderAvailable(resolved, lp)
+	if available || limits.IsSoftThresholdReason(reason) {
+		return false
+	}
+	// Mirror resolveProviderDecision's last-resort path: when no fully
+	// available peer exists, a soft-threshold-limited peer is still a usable
+	// failover target for a hard-blocked provider (e.g. rate limit reached).
+	alt, _ := lg.ChooseSoftLimitedPeer(resolved, candidates, healthy, lp)
+	return alt != ""
+}
+
+// ReportProviderSignal forwards a runner-side passive signal (rate-limit or
+// auth failure) to the health gate. Safe to call with a nil gate.
+func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration) {
+	m.mu.RLock()
+	g := m.gate
+	m.mu.RUnlock()
+	if g == nil {
+		return
+	}
+	switch sig {
+	case provider.SignalAuthFailure:
+		g.ReportAuthFailure(name, reason)
+	case provider.SignalRateLimit:
+		g.ReportRateLimit(name, retryAfter, reason)
+	case provider.SignalNone:
+		// no-op: caller decided not to escalate this run.
+	}
+}
+
+// DefaultProvider returns the current default provider name.
+func (m *Manager) DefaultProvider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.defaultProv
+}
+
+// SetGuardrails configures cost and turn limits applied to all agents.
+func (m *Manager) SetGuardrails(g Guardrails) {
+	m.mu.Lock()
+	m.guardrails = g
+	m.mu.Unlock()
+}
+
+// Guardrails returns the current guardrail limits.
+func (m *Manager) Guardrails() Guardrails {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.guardrails
+}
+
+// canAutoContinueTurns returns true when the agent's current cost is below
+// TurnCostFraction * MaxCostUSD, meaning there is still meaningful budget left
+// and the turns limit can be auto-bumped without human approval.
+// If MaxCostUSD == 0, auto-continue is always allowed (cost is unlimited).
+// Verifier roles (review/test-runner/eval, see Role.IsVerifier) never
+// auto-continue: cost only updates on "result" events, so a fan-out can hold
+// it at a stale $0 for the whole run, and a verifier stuck in a loop should
+// escalate rather than silently get 2x/4x/8x the turn budget.
+func (m *Manager) canAutoContinueTurns(a *Agent) bool {
+	if RoleFromName(a.Name).IsVerifier() {
+		return false
+	}
+	m.mu.RLock()
+	maxCost := m.guardrails.MaxCostUSD
+	fraction := m.guardrails.TurnCostFraction
+	m.mu.RUnlock()
+	if maxCost == 0 {
+		return true
+	}
+	if fraction <= 0 {
+		fraction = 0.8
+	}
+	return a.GetCostUSD() < maxCost*fraction
+}
+
+func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
+	if !RoleFromName(a.Name).AuthorsCode() {
+		return false
+	}
+	m.mu.RLock()
+	enabled := m.guardrails.CheckpointOnTurnCeiling
+	m.mu.RUnlock()
+	return enabled
+}
+
+// effectiveTurnMultiplier returns the configured TurnMultiplier, defaulting to 2.
+func (m *Manager) effectiveTurnMultiplier() float64 {
+	m.mu.RLock()
+	v := m.guardrails.TurnMultiplier
+	m.mu.RUnlock()
+	if v <= 0 {
+		return 2
+	}
+	return v
+}
+
+// RespondEscalation sends a human decision to a paused agent.
+// continueRun=true lets the agent keep running; false kills it.
+func (m *Manager) RespondEscalation(agentID string, continueRun bool) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	if a.escalationCh == nil {
+		return fmt.Errorf("agent %s has no pending escalation", agentID)
+	}
+	select {
+	case a.escalationCh <- continueRun:
+	default:
+		return fmt.Errorf("agent %s escalation channel full or closed", agentID)
+	}
+	return nil
+}
+
+// recordCompletion records duration + result into the metrics pipeline.
+// Call through fireComplete — do not call directly from runner terminal sites.
+//
+// Duration is measured against the last observed stream activity, not against
+// this call's own wall-clock time: fireComplete can run long after the
+// process actually finished (reattach/stop recovering a run the app missed
+// while it was down), and time.Since(a.StartedAt) would then count that idle
+// gap as run time.
+func (m *Manager) recordCompletion(ctx context.Context, a *Agent, ok bool) {
+	dur := max(a.GetLastEventAt().Sub(a.StartedAt), 0)
+	result := "ok"
+	if !ok {
+		result = "error"
+	}
+	metrics.AgentCompleted(ctx, result, dur)
+}
+
+// fireComplete records completion metrics and fires onComplete exactly once
+// per agent. The guard prevents a second runner goroutine (e.g.
+// runner_convo_survive whose tail is still live when runner_convo exits) from
+// calling onComplete a second time and double-advancing the workflow.
+func (m *Manager) fireComplete(ctx context.Context, a *Agent, ok bool) {
+	a.completedOnce.Do(func() {
+		m.recordCompletion(ctx, a, ok)
+		if m.onComplete != nil {
+			m.onComplete(a)
+		}
+	})
+}
+
+// RunningCount returns the number of currently running agents.
+func (m *Manager) RunningCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.liveCount
+}
+
+// TryReserveSlot is an advisory peek at capacity: it reports whether a slot
+// is currently available (liveCount below maxConcurrent, or the cap
+// disabled) without claiming or mutating anything. registerRunningAgent
+// remains the sole authoritative slot claim — it re-checks the cap under the
+// same lock at registration time and additionally enforces
+// IgnoreConcurrencyLimit, which TryReserveSlot cannot honor since it has no
+// RunConfig to consult. Callers should treat a true result as "worth
+// attempting dispatch", not as a held reservation.
+func (m *Manager) TryReserveSlot() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxConcurrent <= 0 || m.liveCount < m.maxConcurrent
+}
+
+// AvailableQueueDrainSlots returns how many queued manual items can be drained
+// immediately, bounded by the caller's current manual-queue depth. This is a
+// read-only helper for the app-level queue drain: it never claims capacity,
+// and registerRunningAgent still re-checks the cap authoritatively.
+func (m *Manager) AvailableQueueDrainSlots(queueDepth int) int {
+	if queueDepth <= 0 {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.maxConcurrent <= 0 {
+		return queueDepth
+	}
+	free := m.maxConcurrent - m.liveCount
+	if free <= 0 {
+		return 0
+	}
+	if free > queueDepth {
+		return queueDepth
+	}
+	return free
+}
+
+// signalQueueNudge fires a non-blocking, coalescing signal on queueNudge. If
+// a nudge is already pending (buffer full), the send is dropped — one
+// pending nudge is sufficient to prompt a dispatcher to re-scan.
+func (m *Manager) signalQueueNudge() {
+	if m.queueNudge == nil {
+		return
+	}
+	select {
+	case m.queueNudge <- struct{}{}:
+	default:
+	}
+}
+
+// QueueNudge returns a channel that receives a signal each time a slot frees
+// (see markAgentDone), so an external dispatch loop can react promptly
+// instead of waiting for its next poll tick. Mirrors App.dispatchNudge's
+// buffer-1 coalescing contract.
+func (m *Manager) QueueNudge() <-chan struct{} {
+	return m.queueNudge
+}

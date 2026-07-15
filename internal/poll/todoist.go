@@ -1,0 +1,197 @@
+package poll
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/todoist"
+)
+
+// TaskCreator creates a new task with optional initial field overrides applied
+// atomically in the same first write as creation. Matches
+// TaskService.CreateTaskWithInit's signature.
+type TaskCreator func(title, body, mode string, init task.Update) (task.Task, error)
+
+// TodoistHandler syncs tasks between Todoist and Sybra.
+type TodoistHandler struct {
+	tasks      *task.Manager
+	createTask TaskCreator
+	client     *todoist.Client
+	cfg        config.TodoistConfig
+	audit      *audit.Logger
+	logger     *slog.Logger
+	emit       func(string, any)
+	throttle   *logging.ErrorThrottle
+}
+
+// NewTodoistHandler creates a TodoistHandler.
+func NewTodoistHandler(
+	tasks *task.Manager,
+	createTask TaskCreator,
+	client *todoist.Client,
+	al *audit.Logger,
+	logger *slog.Logger,
+	emit func(string, any),
+	cfg config.TodoistConfig,
+) *TodoistHandler {
+	return &TodoistHandler{
+		tasks:      tasks,
+		createTask: createTask,
+		client:     client,
+		cfg:        cfg,
+		audit:      al,
+		logger:     logger,
+		emit:       emit,
+		throttle:   logging.NewErrorThrottle(),
+	}
+}
+
+func (h *TodoistHandler) Name() string { return "todoist" }
+
+func (h *TodoistHandler) Poll(ctx context.Context) time.Duration {
+	return h.PollAndSync(ctx)
+}
+
+// PollAndSync runs one import+completion cycle and returns the next poll interval.
+func (h *TodoistHandler) PollAndSync(ctx context.Context) time.Duration {
+	interval := time.Duration(h.cfg.PollSeconds) * time.Second
+
+	imported, importErr := h.ImportNewTasks(ctx)
+	h.throttle.Log(h.logger, "todoist.import", "import", importErr)
+	metrics.TodoistPoll(ctx, importErr == nil)
+	metrics.TodoistImported(ctx, imported)
+
+	completed, compErr := h.syncCompletions(ctx)
+	h.throttle.Log(h.logger, "todoist.complete", "complete", compErr)
+	metrics.TodoistCompleted(ctx, completed)
+
+	if imported > 0 || completed > 0 {
+		h.logger.Info("todoist.synced", "imported", imported, "completed", completed)
+		h.emit(events.TodoistSynced, map[string]any{
+			"imported":  imported,
+			"completed": completed,
+		})
+	}
+
+	return interval
+}
+
+// ImportNewTasks fetches active Todoist tasks and creates missing ones in Sybra.
+func (h *TodoistHandler) ImportNewTasks(ctx context.Context) (int, error) {
+	remote, err := h.client.ListActiveTasks(ctx, h.cfg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+
+	seen, err := h.buildSeenIndex()
+	if err != nil {
+		return 0, fmt.Errorf("build seen index: %w", err)
+	}
+
+	var imported int
+	for i := range remote {
+		rt := &remote[i]
+		if seen[rt.ID] {
+			continue
+		}
+		if rt.Due != nil && rt.Due.IsRecurring {
+			continue
+		}
+
+		body := rt.Description
+		if rt.URL != "" {
+			if body != "" {
+				body += "\n\n"
+			}
+			body += "Source: " + rt.URL
+		}
+
+		todoID := rt.ID
+		init := task.Update{TodoistID: &todoID}
+		if h.cfg.DefaultProjectID != "" {
+			projectID := h.cfg.DefaultProjectID
+			init.ProjectID = &projectID
+		}
+		// The dedupe key (TodoistID) is written atomically in the same op as
+		// task creation — a crash between create and a second update would
+		// otherwise leave the task without its dedupe key, and the next poll
+		// would re-import the same Todoist item as a duplicate.
+		t, createErr := h.createTask(rt.Content, body, "headless", init)
+		if createErr != nil {
+			h.logger.Error("todoist.create-task", "todoist_id", rt.ID, "err", createErr)
+			continue
+		}
+
+		h.logAudit(audit.EventTodoistImported, t.ID, "", map[string]any{
+			"todoist_id": rt.ID,
+			"title":      rt.Content,
+		})
+		imported++
+	}
+
+	return imported, nil
+}
+
+func (h *TodoistHandler) syncCompletions(ctx context.Context) (int, error) {
+	tasks, err := h.tasks.List()
+	if err != nil {
+		return 0, err
+	}
+
+	var completed int
+	for i := range tasks {
+		t := &tasks[i]
+		if t.TodoistID == "" || t.Status != task.StatusDone {
+			continue
+		}
+		closeErr := h.client.CloseTask(ctx, t.TodoistID)
+		h.throttle.Log(h.logger, "todoist.close", "close:"+t.TodoistID, closeErr,
+			"task_id", t.ID, "todoist_id", t.TodoistID)
+		if closeErr != nil {
+			continue
+		}
+		h.logAudit(audit.EventTodoistCompleted, t.ID, "", map[string]any{
+			"todoist_id": t.TodoistID,
+		})
+		completed++
+	}
+
+	return completed, nil
+}
+
+func (h *TodoistHandler) buildSeenIndex() (map[string]bool, error) {
+	tasks, err := h.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(tasks))
+	for i := range tasks {
+		t := &tasks[i]
+		if t.TodoistID != "" {
+			seen[t.TodoistID] = true
+		}
+	}
+	return seen, nil
+}
+
+func (h *TodoistHandler) logAudit(eventType, taskID, agentID string, data map[string]any) {
+	if h.audit == nil {
+		return
+	}
+	if err := h.audit.Log(audit.Event{
+		Type:    eventType,
+		TaskID:  taskID,
+		AgentID: agentID,
+		Data:    data,
+	}); err != nil {
+		h.logger.Error("audit.log", "type", eventType, "err", err)
+	}
+}

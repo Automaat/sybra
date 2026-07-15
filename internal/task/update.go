@@ -1,0 +1,370 @@
+package task
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Automaat/sybra/internal/workflow"
+)
+
+// Update carries optional field changes for Store.Update.
+// A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
+// For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+type Update struct {
+	Title                 *string
+	Slug                  *string
+	Status                *Status
+	StatusReason          *string
+	BlockedByIssue        *string
+	UmbrellaIssue         *string
+	DependsOn             *[]string
+	AgentMode             *string
+	TaskType              *TaskType
+	Body                  *string
+	Tags                  *[]string
+	ProjectID             *string
+	Branch                *string
+	WorktreeDir           *string
+	HandoffSourceProvider *string
+	PRNumber              *int
+	Issue                 *string
+	RefIssue              *string
+	Reviewed              *bool
+	RunRole               *string
+	SupervisorSteer       *string
+	ReviewPhase           *string
+	PRPhase               *string
+	TodoistID             *string
+	Priority              *Priority
+	DueDate               **time.Time
+	Workflow              **workflow.Execution
+	Plan                  *string
+	PlanContract          *string
+	PlanCritique          *string
+	PlanResearch          *string
+	PlanDecisions         *string
+	PlanBrief             *string
+	CodeReview            *string
+	MaxTurns              *int
+	ForkSubagent          *bool
+	Sandbox               *bool
+	ReasoningEffort       *string
+	Outcome               *string
+	MergeCommit           *string
+	TestingCycleStartedAt *time.Time
+}
+
+func (u Update) writesSidecar() bool {
+	return u.Plan != nil ||
+		u.PlanContract != nil ||
+		u.PlanCritique != nil ||
+		u.PlanResearch != nil ||
+		u.PlanDecisions != nil ||
+		u.PlanBrief != nil ||
+		u.CodeReview != nil
+}
+
+// Ptr returns a pointer to v. Convenience for building Update literals.
+func Ptr[T any](v T) *T {
+	p := new(T)
+	*p = v
+	return p
+}
+
+// UpdateFromMap converts a map[string]any to a typed Update.
+// Returns an error if any key is unknown or the value has the wrong type.
+// This is the boundary adapter for CLI and Wails callers that receive raw maps.
+func UpdateFromMap(raw map[string]any) (Update, error) {
+	var u Update
+	for k, v := range raw {
+		if err := applyMapField(&u, k, v); err != nil {
+			return Update{}, err
+		}
+	}
+	return u, nil
+}
+
+func applyMapField(u *Update, k string, v any) error {
+	switch k {
+	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
+		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
+		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
+		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
+		return applyPlainStringField(u, k, v)
+	case "depends_on":
+		return applyDependsOnField(u, k, v)
+	case "handoff_source_provider":
+		return applyAgentProviderField(u, k, v)
+	case "priority":
+		return applyPriorityField(u, v)
+	case "status":
+		return applyStatusField(u, k, v)
+	case "agent_mode":
+		return applyAgentModeField(u, k, v)
+	case "task_type":
+		return applyTaskTypeField(u, k, v)
+	case "tags":
+		return applyTagsField(u, k, v)
+	case "pr_number":
+		return applyPRNumberField(u, k, v)
+	case "max_turns":
+		return applyMaxTurnsField(u, v)
+	case "fork_subagent":
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", k, v)
+		}
+		u.ForkSubagent = &b
+	case "sandbox":
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", k, v)
+		}
+		u.Sandbox = &b
+	case "reasoning_effort":
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("field %q: want string, got %T", k, v)
+		}
+		eff, err := ValidateReasoningEffort(s)
+		if err != nil {
+			return err
+		}
+		u.ReasoningEffort = &eff
+	case "due_date":
+		return applyDueDateField(u, v)
+	case "reviewed":
+		b, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("field %q: want bool, got %T", k, v)
+		}
+		u.Reviewed = &b
+	case "workflow":
+		wf, ok := v.(*workflow.Execution)
+		if !ok {
+			return fmt.Errorf("field %q: want *workflow.Execution, got %T", k, v)
+		}
+		u.Workflow = &wf
+	default:
+		return fmt.Errorf("unknown task field %q", k)
+	}
+	return nil
+}
+
+func applyPlainStringField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	switch k {
+	case "title":
+		u.Title = &s
+	case "slug":
+		u.Slug = &s
+	case "status_reason":
+		u.StatusReason = &s
+	case "blocked_by_issue":
+		u.BlockedByIssue = &s
+	case "umbrella_issue":
+		u.UmbrellaIssue = &s
+	case "body":
+		u.Body = &s
+	case "project_id":
+		u.ProjectID = &s
+	case "branch":
+		u.Branch = &s
+	case "worktree_dir":
+		u.WorktreeDir = &s
+	case "issue":
+		u.Issue = &s
+	case "ref_issue":
+		u.RefIssue = &s
+	case "run_role":
+		u.RunRole = &s
+	case "supervisor_steer":
+		u.SupervisorSteer = &s
+	case "todoist_id":
+		u.TodoistID = &s
+	case "plan":
+		u.Plan = &s
+	case "plan_contract":
+		u.PlanContract = &s
+	case "plan_critique":
+		u.PlanCritique = &s
+	case "plan_research":
+		u.PlanResearch = &s
+	case "plan_decisions":
+		u.PlanDecisions = &s
+	case "plan_brief":
+		u.PlanBrief = &s
+	case "code_review":
+		u.CodeReview = &s
+	case "review_phase":
+		u.ReviewPhase = &s
+	case "pr_phase":
+		u.PRPhase = &s
+	case "outcome":
+		u.Outcome = &s
+	case "merge_commit":
+		u.MergeCommit = &s
+	}
+	return nil
+}
+
+func applyAgentProviderField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	prov, err := ValidateAgentProvider(strings.ToLower(strings.TrimSpace(s)))
+	if err != nil {
+		return err
+	}
+	u.HandoffSourceProvider = &prov
+	return nil
+}
+
+func applyStatusField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	st, err := ValidateStatus(s)
+	if err != nil {
+		return err
+	}
+	u.Status = &st
+	return nil
+}
+
+func applyAgentModeField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	mode, err := ValidateAgentMode(s)
+	if err != nil {
+		return err
+	}
+	u.AgentMode = &mode
+	return nil
+}
+
+func applyTaskTypeField(u *Update, k string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field %q: want string, got %T", k, v)
+	}
+	tt, err := ValidateTaskType(s)
+	if err != nil {
+		return err
+	}
+	u.TaskType = &tt
+	return nil
+}
+
+func applyTagsField(u *Update, k string, v any) error {
+	switch tv := v.(type) {
+	case []string:
+		cp := make([]string, len(tv))
+		copy(cp, tv)
+		u.Tags = &cp
+	case string:
+		parts := strings.Split(tv, ",")
+		u.Tags = &parts
+	default:
+		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyDependsOnField(u *Update, k string, v any) error {
+	switch dv := v.(type) {
+	case []string:
+		cp := make([]string, len(dv))
+		copy(cp, dv)
+		u.DependsOn = &cp
+	case string:
+		// Comma-separated shorthand from the CLI; trim and drop empties so a
+		// trailing comma or stray space cannot inject a blank dependency ref
+		// (which would otherwise resolve to "" and never satisfy).
+		var parts []string
+		for p := range strings.SplitSeq(dv, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				parts = append(parts, p)
+			}
+		}
+		u.DependsOn = &parts
+	default:
+		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyPRNumberField(u *Update, k string, v any) error {
+	switch n := v.(type) {
+	case int:
+		u.PRNumber = &n
+	case float64:
+		i := int(n)
+		u.PRNumber = &i
+	default:
+		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
+	}
+	return nil
+}
+
+func applyPriorityField(u *Update, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field \"priority\": want string, got %T", v)
+	}
+	p, err := ValidatePriority(s)
+	if err != nil {
+		return err
+	}
+	u.Priority = &p
+	return nil
+}
+
+func applyDueDateField(u *Update, v any) error {
+	if v == nil {
+		var nilTime *time.Time
+		u.DueDate = &nilTime
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("field \"due_date\": want string or nil, got %T", v)
+	}
+	if s == "" {
+		var nilTime *time.Time
+		u.DueDate = &nilTime
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return fmt.Errorf("field \"due_date\": invalid RFC3339 date %q: %w", s, err)
+	}
+	tp := &parsed
+	u.DueDate = &tp
+	return nil
+}
+
+func applyMaxTurnsField(u *Update, v any) error {
+	var n int
+	switch val := v.(type) {
+	case int:
+		n = val
+	case float64:
+		n = int(val)
+	default:
+		return fmt.Errorf("field \"max_turns\": want int, got %T", v)
+	}
+	if n < 0 {
+		return fmt.Errorf("field \"max_turns\": must be >= 0, got %d", n)
+	}
+	u.MaxTurns = &n
+	return nil
+}

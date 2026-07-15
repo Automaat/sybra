@@ -1,0 +1,8 @@
+---
+# Pinning every apt package version (gh, git, curl, gpg, ca-certificates) is
+# impractical: debian stable rolls security patches on its own cadence and
+# pinning would break builds the moment a CVE bump lands. The base image
+# already locks the package universe via its tag.
+ignored:
+  - DL3008
+failure-threshold: warning

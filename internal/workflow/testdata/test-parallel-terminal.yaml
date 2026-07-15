@@ -1,0 +1,26 @@
+id: test-parallel-terminal
+name: Test Parallel Terminal
+description: Parallel block with no next step — exercises spawn-fail finalization
+trigger:
+  on: task.created
+steps:
+  - id: plan
+    name: Plan (parallel, terminal)
+    type: parallel
+    parallel:
+      - id: plan_a
+        type: run_agent
+        config:
+          role: plan
+          provider: claude
+          mode: headless
+          prompt: "Plan A {{.Task.ID}}"
+      - id: plan_b
+        type: run_agent
+        config:
+          role: plan
+          provider: codex
+          mode: headless
+          prompt: "Plan B {{.Task.ID}}"
+    next:
+      - goto: ""

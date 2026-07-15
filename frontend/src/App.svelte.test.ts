@@ -1,0 +1,136 @@
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
+import { TaskCreated, TaskUpdated, TaskDeleted } from './lib/events.js'
+import { render, cleanup } from '@testing-library/svelte'
+
+const mockLoad = vi.fn()
+const mockAgentLoad = vi.fn()
+const mockStartPolling = vi.fn()
+const mockStopPolling = vi.fn()
+const mockEventsOn = vi.fn((..._args: any[]) => vi.fn())
+
+vi.mock('$lib/api', () => ({
+  EventsOn: (...args: any[]) => mockEventsOn(...args),
+  GetProviderHealth: vi.fn().mockResolvedValue([]),
+  ProviderHealthEnabled: vi.fn().mockResolvedValue(false),
+}))
+
+vi.mock('./stores/tasks.svelte.js', () => ({
+  taskStore: {
+    load: (...args: unknown[]) => mockLoad(...args),
+    startPolling: () => {},
+    stopPolling: () => {},
+    loading: false,
+    error: '',
+    list: [],
+    byStatus: () => [],
+    tasksNeedingPlanApproval: () => [],
+  },
+}))
+
+vi.mock('./stores/agents.svelte.js', () => ({
+  agentStore: {
+    load: (...args: unknown[]) => mockAgentLoad(...args),
+    startPolling: (...args: unknown[]) => mockStartPolling(...args),
+    stopPolling: (...args: unknown[]) => mockStopPolling(...args),
+    loading: false,
+    error: '',
+    list: [],
+    byState: () => [],
+    agents: new Map(),
+  },
+}))
+
+vi.mock('./stores/bgops.svelte.js', () => ({
+  bgopStore: {
+    load: vi.fn().mockResolvedValue(undefined),
+    listen: vi.fn(() => vi.fn()),
+    ops: [],
+    activeCount: 0,
+    hasActive: false,
+  },
+}))
+
+vi.mock('./stores/notifications.svelte.js', () => ({
+  notificationStore: {
+    load: vi.fn().mockResolvedValue(undefined),
+    listen: vi.fn(() => vi.fn()),
+    notifications: [],
+  },
+}))
+
+vi.mock('@skeletonlabs/skeleton-svelte', () => ({
+  Navigation: Object.assign(() => {}, {
+    Header: () => {},
+    Content: () => {},
+    Trigger: () => {},
+    TriggerText: () => {},
+  }),
+  AppBar: Object.assign(() => {}, {
+    Toolbar: () => {},
+    Lead: () => {},
+    Trail: () => {},
+  }),
+  SegmentedControl: Object.assign(() => {}, {
+    Control: () => {},
+    Indicator: () => {},
+    Item: Object.assign(() => {}, {
+      ItemText: () => {},
+      ItemHiddenInput: () => {},
+    }),
+  }),
+  Dialog: Object.assign(() => {}, {
+    Backdrop: () => {},
+    Positioner: () => {},
+    Content: () => {},
+    Title: () => {},
+    CloseTrigger: () => {},
+  }),
+}))
+
+const App = (await import('./App.svelte')).default
+
+beforeAll(() => {
+  if (!globalThis.ResizeObserver) {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  }
+})
+
+describe('App', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    cleanup()
+  })
+
+  it('renders without errors', () => {
+    render(App)
+  })
+
+  it('loads tasks and agents on mount', async () => {
+    render(App)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockLoad).toHaveBeenCalled()
+    expect(mockAgentLoad).toHaveBeenCalled()
+  })
+
+  it('starts agent polling on mount', async () => {
+    render(App)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockStartPolling).toHaveBeenCalled()
+  })
+
+  it('subscribes to task events', async () => {
+    render(App)
+    await new Promise((r) => setTimeout(r, 0))
+
+    const eventNames = mockEventsOn.mock.calls.map((c: unknown[]) => c[0])
+    expect(eventNames).toContain(TaskCreated)
+    expect(eventNames).toContain(TaskUpdated)
+    expect(eventNames).toContain(TaskDeleted)
+  })
+})

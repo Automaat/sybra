@@ -1,0 +1,93 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/svelte'
+
+const mockByState = vi.fn()
+const mockAgentStoreData = {
+  loading: false,
+  error: '',
+  byState: (...args: unknown[]) => mockByState(...args),
+  list: [],
+  stepTexts: new Map<string, string>(),
+  setStepText: vi.fn(),
+}
+
+vi.mock('../stores/agents.svelte.js', () => ({
+  agentStore: mockAgentStoreData,
+}))
+
+vi.mock('@skeletonlabs/skeleton-svelte', () => ({
+  SegmentedControl: Object.assign(() => {}, {
+    Control: () => {},
+    Indicator: () => {},
+    Item: Object.assign(() => {}, {
+      ItemText: () => {},
+      ItemHiddenInput: () => {},
+    }),
+  }),
+}))
+
+const AgentList = (await import('./AgentList.svelte')).default
+
+function makeAgent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'a1',
+    taskId: 'task-1',
+    mode: 'headless',
+    state: 'running',
+    sessionId: '',
+    costUsd: 0,
+    startedAt: '2026-04-01T00:00:00Z',
+    external: false,
+    pid: 0,
+    command: '',
+    name: '',
+    project: 'test',
+    ...overrides,
+  }
+}
+
+describe('AgentList', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentStoreData.loading = false
+    mockAgentStoreData.error = ''
+    mockByState.mockReturnValue([])
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('shows loading message when loading', () => {
+    mockAgentStoreData.loading = true
+    render(AgentList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('Loading agents...')).toBeDefined()
+  })
+
+  it('shows error message when error is set', () => {
+    mockAgentStoreData.error = 'Failed to fetch agents'
+    render(AgentList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('Failed to fetch agents')).toBeDefined()
+  })
+
+  it('shows empty state when filtered returns empty array', () => {
+    mockByState.mockReturnValue([])
+    render(AgentList, { props: { onselect: vi.fn() } })
+    expect(screen.getByText('No agents')).toBeDefined()
+    expect(screen.getByText('Start an agent from a task to see it here')).toBeDefined()
+  })
+
+  it('renders agents in a dense list (not a card grid)', () => {
+    const agents = [
+      makeAgent({ id: 'a1', state: 'running' }),
+      makeAgent({ id: 'a2', state: 'idle' }),
+    ]
+    mockByState.mockReturnValue(agents)
+    const { container } = render(AgentList, { props: { onselect: vi.fn() } })
+    expect(screen.queryByText('No agents')).toBeNull()
+    expect(mockByState).toHaveBeenCalledWith('all')
+    // Shared list layout: a vertical flex stack of rows, not a 3-col grid.
+    expect(container.querySelector('.flex.flex-col.gap-1\\.5')).not.toBeNull()
+    expect(container.querySelector('.grid')).toBeNull()
+  })
+})

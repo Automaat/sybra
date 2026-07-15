@@ -1,0 +1,49 @@
+name: Docker Build
+
+# Verifies the prod Dockerfile actually builds before it reaches main.
+# Catches URL 404s on pinned tool versions, apt/npm resolution failures,
+# and platform-specific build errors that hadolint can't detect — e.g.
+# the v2026.1.17 mise pin that landed on main and broke Docker Publish.
+#
+# Scope is deliberately narrow: only runs when the Dockerfile or
+# .dockerignore change. Source-only PRs skip this to avoid paying for a
+# full multi-stage build on every commit. The main-branch Docker Publish
+# workflow still covers the full image lifecycle on release.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

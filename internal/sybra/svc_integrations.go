@@ -1,0 +1,180 @@
+package sybra
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/todoist"
+	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
+)
+
+// IntegrationService exposes Todoist, Renovate, and GitHub issue operations
+// as Wails-bound methods.
+type IntegrationService struct {
+	tasks          *task.Manager
+	projects       *project.Store
+	agents         *agent.Manager
+	worktrees      *worktree.Manager
+	audit          *audit.Logger
+	cfg            *config.Config
+	logger         *slog.Logger
+	todoist        *todoistCoordinator
+	renovate       *renovateCoordinator
+	workflowEngine *workflow.Engine
+	providerHealth *provider.Checker
+	saveConfig     func() error
+}
+
+// SyncTodoist triggers an immediate Todoist sync.
+func (s *IntegrationService) SyncTodoist() error {
+	return s.todoist.syncNow()
+}
+
+// GetTodoistProjects returns Todoist projects for the settings UI.
+func (s *IntegrationService) GetTodoistProjects() ([]todoist.Project, error) {
+	token := s.cfg.Todoist.APIToken
+	if token == "" {
+		return nil, fmt.Errorf("todoist API token not configured")
+	}
+	c := todoist.NewClient(token)
+	return c.ListProjects(context.Background())
+}
+
+// TodoistEnabled returns whether the todoist handler is active.
+func (s *IntegrationService) TodoistEnabled() bool {
+	return s.todoist.enabled()
+}
+
+// FetchRenovatePRs returns Renovate PRs for manual refresh.
+func (s *IntegrationService) FetchRenovatePRs() ([]github.RenovatePR, error) {
+	repos := s.renovate.repos()
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	return github.FetchRenovatePRs(context.Background(), s.cfg.Renovate.Author, repos)
+}
+
+// MergeRenovatePR merges a Renovate PR.
+func (s *IntegrationService) MergeRenovatePR(repo string, number int) error {
+	return github.MergePR(repo, number)
+}
+
+// ApproveRenovatePR approves a Renovate PR.
+func (s *IntegrationService) ApproveRenovatePR(repo string, number int) error {
+	return github.ApprovePR(repo, number)
+}
+
+// RerunRenovateChecks reruns failed CI checks on a Renovate PR.
+func (s *IntegrationService) RerunRenovateChecks(repo string, number int) error {
+	return github.RerunFailedChecks(repo, number)
+}
+
+// FixRenovateCI spawns an agent to fix CI failures on a Renovate PR.
+func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, title string) error {
+	tasks, err := s.tasks.List()
+	if err != nil {
+		return fmt.Errorf("list tasks: %w", err)
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		if t.PRNumber == number && t.ProjectID == repo && slices.Contains(t.Tags, "renovate-fix") {
+			if !task.IsTerminalStatus(t.Status) && s.agents.HasRunningAgentForTask(t.ID) {
+				return nil // already being fixed
+			}
+		}
+	}
+
+	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
+	tags := []string{"renovate-fix"}
+	t, err := s.tasks.CreateFull("Fix CI: "+title, prURL, "headless", task.Update{
+		ProjectID: task.Ptr(repo),
+		PRNumber:  task.Ptr(number),
+		Tags:      &tags,
+		RunRole:   task.Ptr("pr-fix"),
+	})
+	if err != nil {
+		return fmt.Errorf("create task: %w", err)
+	}
+
+	dir := ""
+	if t.ProjectID != "" {
+		// context.Background(): FixRenovatePR is a Wails-bound method with no
+		// ctx parameter (see GetTodoistProjects above for the same pattern).
+		d, wtErr := s.worktrees.PrepareForFix(context.Background(), t, number)
+		if wtErr != nil {
+			s.logger.Error("renovate-fix.worktree", "task_id", t.ID, "err", wtErr)
+			// The task already exists (created above) but no agent will ever
+			// start on it now — flip to human-required instead of leaving it
+			// silently stranded in its initial status (issue #1454).
+			reason := fmt.Sprintf("renovate-fix: worktree prepare failed: %v", wtErr)
+			if _, uerr := s.tasks.Update(t.ID, task.Update{
+				Status:       task.Ptr(task.StatusHumanRequired),
+				StatusReason: &reason,
+			}); uerr != nil {
+				s.logger.Error("renovate-fix.worktree.escalate", "task_id", t.ID, "err", uerr)
+			}
+			return fmt.Errorf("prepare worktree: %w", wtErr)
+		}
+		dir = d
+	}
+
+	if s.workflowEngine == nil {
+		return fmt.Errorf("workflow engine not available")
+	}
+
+	prompt := fmt.Sprintf(
+		"# Task: Fix CI: %s\n\n"+
+			"Fix failing CI on branch `%s` (PR #%d). "+
+			"Check the failing run with `gh run view --log-failed`, "+
+			"fix the code, commit and push. No unrelated changes.%s",
+		title, branch, number,
+		review.PRFixResultContract,
+	)
+
+	ciFailure := string(github.PRIssueCIFailure)
+	vars := map[string]string{
+		"prompt":                prompt,
+		"pr_issue_kind":         ciFailure,
+		workflow.WorkflowVarDir: dir,
+	}
+	wfID, err := s.workflowEngine.DispatchEvent(t.ID, "pr.event",
+		map[string]string{"pr.issue_kind": ciFailure}, vars)
+	if err != nil {
+		if errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			s.logger.Info("renovate-fix.workflow-already-active", "task_id", t.ID)
+			return nil
+		}
+		return fmt.Errorf("dispatch pr.event: %w", err)
+	}
+	if wfID == "" {
+		return fmt.Errorf("no workflow matched pr.event for %s", ciFailure)
+	}
+
+	if s.audit != nil {
+		_ = s.audit.Log(audit.Event{
+			Type:   audit.EventRenovateCIFix,
+			TaskID: t.ID,
+			Data:   map[string]any{"pr": number, "repo": repo},
+		})
+	}
+
+	s.logger.Info("renovate-fix.started", "task_id", t.ID, "pr", number)
+	return nil
+}
+
+// FetchAssignedIssues returns GitHub issues assigned to the current user.
+func (s *IntegrationService) FetchAssignedIssues() ([]github.Issue, error) {
+	return github.FetchAssignedIssues()
+}

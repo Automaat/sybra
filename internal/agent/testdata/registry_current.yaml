@@ -1,0 +1,30 @@
+id: a-map
+task_id: task-map
+name: mapper
+mode: interactive
+provider: codex
+model: gpt-5.3-codex
+experiment_id: exp-1
+variant_id: variant-a
+assignment_unit: task
+assignment_key: task-map
+pid: 12345
+session_id: sess-map
+log_path: /tmp/sybra/agents/a-map.ndjson
+cwd: /tmp/sybra/worktrees/task-map
+sandbox_home_dir: /tmp/sybra/sandboxes/task-map
+started_at: 2026-06-28T20:30:00Z
+proc_started_at: Mon Jun 28 20:30:00 2026
+stdin_path: /tmp/sybra/agents/a-map.stdin
+pending_prompts:
+    - queued turn 1
+    - queued turn 2
+one_shot: true
+max_turns: 7
+require_permissions: true
+sandbox_mode: enforce
+reasoning_effort: high
+requested_skill: sybra-test
+skill_execution_mode: injected
+resolved_skill_source_hash: deadbeefcafebabe
+skill_conformance: exact

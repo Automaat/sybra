@@ -1,0 +1,47 @@
+name: Dockerfile Layers
+
+# Enforces the layer cache strategy documented at the top of the runtime
+# stage in Dockerfile. Hadolint lints individual instructions but cannot
+# detect *position* — e.g. a `RUN apt-get install ...` added to Layer F+G
+# would silently invalidate the apt cache on every sybra commit. This
+# workflow catches that and a handful of related invariants:
+#
+#   - Layer markers (A..F+G) appear in order, exactly once each
+#   - Heavy operations (apt, npm globals, COPY --from=<builder>) stay
+#     confined to the layer that owns them
+#   - HEALTHCHECK uses curl (portable) not node -e (fragile)
+#   - Every FROM is sha256-pinned (digest staleness handled by Renovate)
+#
+# Runs only when the Dockerfile or the checker script changes — same
+# narrow scope as docker-build.yml.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'scripts/check-dockerfile-layers.sh'
+      - '.github/workflows/dockerfile-layers.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'scripts/check-dockerfile-layers.sh'
+      - '.github/workflows/dockerfile-layers.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dockerfile-layers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-layers:
+    name: Layer Order & Digest Pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run layer linter
+        run: bash scripts/check-dockerfile-layers.sh Dockerfile

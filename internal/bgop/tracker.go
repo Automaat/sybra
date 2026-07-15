@@ -1,0 +1,203 @@
+package bgop
+
+import (
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/google/uuid"
+)
+
+// completionTTL is how long completed/failed ops are kept in memory and on disk.
+const completionTTL = 5 * time.Minute
+
+// Tracker manages in-memory background operations and persists them to disk so
+// the frontend can restore state after an app restart.
+type Tracker struct {
+	mu       sync.RWMutex
+	ops      map[string]*Operation
+	emit     func(string, any)
+	diskPath string
+	logger   *slog.Logger
+}
+
+// NewTracker creates a Tracker that broadcasts events via emit and persists to diskPath.
+// A nil logger falls back to slog.Default().
+func NewTracker(emit func(string, any), diskPath string, logger *slog.Logger) *Tracker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Tracker{
+		ops:      make(map[string]*Operation),
+		emit:     emit,
+		diskPath: diskPath,
+		logger:   logger,
+	}
+}
+
+// Start records a new running operation and returns its ID.
+func (t *Tracker) Start(opType Type, label, projectID, taskID string) string {
+	id := uuid.NewString()
+	op := &Operation{
+		ID:        id,
+		Type:      opType,
+		Label:     label,
+		Status:    StatusRunning,
+		ProjectID: projectID,
+		TaskID:    taskID,
+		StartedAt: time.Now().UTC(),
+	}
+	t.mu.Lock()
+	t.ops[id] = op
+	snapshot := *op
+	t.mu.Unlock()
+
+	t.emit(events.BgOpStarted, snapshot)
+	t.saveToDisk()
+	return id
+}
+
+// UpdatePhase updates the current phase text of a running operation. Phase is
+// in-memory/event-only — it is not persisted to disk, so a restart loses the
+// last phase text but keeps the operation's lifecycle status (see Start,
+// Complete, Fail).
+func (t *Tracker) UpdatePhase(id, phase string) {
+	t.mu.Lock()
+	op, ok := t.ops[id]
+	if !ok {
+		t.mu.Unlock()
+		return
+	}
+	op.Phase = phase
+	snapshot := *op
+	t.mu.Unlock()
+
+	t.emit(events.BgOpProgress, snapshot)
+}
+
+// Complete marks an operation as done.
+func (t *Tracker) Complete(id string) {
+	t.mu.Lock()
+	op, ok := t.ops[id]
+	if !ok {
+		t.mu.Unlock()
+		return
+	}
+	op.Status = StatusDone
+	op.CompletedAt = time.Now().UTC()
+	op.Phase = ""
+	snapshot := *op
+	t.mu.Unlock()
+
+	t.emit(events.BgOpCompleted, snapshot)
+	t.saveToDisk()
+}
+
+// Fail marks an operation as failed with the given error.
+func (t *Tracker) Fail(id string, err error) {
+	t.mu.Lock()
+	op, ok := t.ops[id]
+	if !ok {
+		t.mu.Unlock()
+		return
+	}
+	op.Status = StatusFailed
+	op.CompletedAt = time.Now().UTC()
+	op.Phase = ""
+	if err != nil {
+		op.Error = err.Error()
+	}
+	snapshot := *op
+	t.mu.Unlock()
+
+	t.emit(events.BgOpFailed, snapshot)
+	t.saveToDisk()
+}
+
+// List returns active operations and completed/failed ones within completionTTL.
+func (t *Tracker) List() []Operation {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	cutoff := time.Now().Add(-completionTTL)
+	out := make([]Operation, 0, len(t.ops))
+	for _, op := range t.ops {
+		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
+			continue
+		}
+		out = append(out, *op)
+	}
+	return out
+}
+
+// LoadFromDisk restores persisted operations on startup. Running ops that
+// survived a restart are marked failed (they cannot be resumed). Ops older
+// than completionTTL are discarded.
+func (t *Tracker) LoadFromDisk() {
+	data, err := os.ReadFile(t.diskPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.logger.Error("bgop.load.read", "path", t.diskPath, "err", err)
+		}
+		return
+	}
+	var ops []Operation
+	if err := json.Unmarshal(data, &ops); err != nil {
+		t.logger.Error("bgop.load.unmarshal", "path", t.diskPath, "err", err)
+		return
+	}
+	cutoff := time.Now().Add(-completionTTL)
+	now := time.Now().UTC()
+	changed := false
+	t.mu.Lock()
+	for i := range ops {
+		op := ops[i]
+		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
+			changed = true
+			continue
+		}
+		// Running ops at shutdown are now stale — mark failed.
+		if op.Status == StatusRunning {
+			op.Status = StatusFailed
+			op.Error = "interrupted by restart"
+			op.CompletedAt = now
+			op.Phase = ""
+			changed = true
+		}
+		t.ops[op.ID] = &op
+	}
+	t.mu.Unlock()
+
+	if changed {
+		t.saveToDisk()
+	}
+}
+
+func (t *Tracker) saveToDisk() {
+	cutoff := time.Now().Add(-completionTTL)
+	t.mu.Lock()
+	ops := make([]Operation, 0, len(t.ops))
+	for _, op := range t.ops {
+		if op.Status != StatusRunning && op.CompletedAt.Before(cutoff) {
+			delete(t.ops, op.ID)
+			continue
+		}
+		snapshot := *op
+		snapshot.Phase = ""
+		ops = append(ops, snapshot)
+	}
+	t.mu.Unlock()
+
+	data, err := json.MarshalIndent(ops, "", "  ")
+	if err != nil {
+		t.logger.Error("bgop.save.marshal", "path", t.diskPath, "err", err)
+		return
+	}
+	if err := fsutil.AtomicWrite(t.diskPath, data); err != nil {
+		t.logger.Error("bgop.save.write", "path", t.diskPath, "err", err)
+	}
+}

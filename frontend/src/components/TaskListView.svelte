@@ -1,0 +1,96 @@
+<script lang="ts">
+  import type { Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+  import { PRIORITY_OPTIONS } from '../lib/priorities.js'
+  import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
+  import StatusBadge from './StatusBadge.svelte'
+  import { formatShortDate } from '../lib/dates.js'
+
+  interface Props {
+    tasks: Task[]
+    focusedTaskId: string | null
+    umbrellaProgress?: (task: Task) => UmbrellaProgress | null
+    onselect: (id: string) => void
+    onhover: (rowIdx: number) => void
+  }
+
+  const { tasks, focusedTaskId, umbrellaProgress = () => null, onselect, onhover }: Props = $props()
+
+  function priorityIcon(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.icon ?? '–'
+  }
+
+  // The set of real (non-"None") priority values, derived from the options.
+  const SET_PRIORITIES = new Set(PRIORITY_OPTIONS.map((o) => o.value).filter(Boolean))
+
+  // Hide the Priority column entirely until at least one task has a priority,
+  // so it doesn't waste scarce width (notably on mobile) showing only "–".
+  const hasPriorities = $derived(tasks.some((t) => SET_PRIORITIES.has(t.priority ?? '')))
+  const colCount = $derived(hasPriorities ? 5 : 4)
+
+  function priorityLabel(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.label ?? 'None'
+  }
+
+  function priorityClasses(p: string | undefined): string {
+    return PRIORITY_OPTIONS.find(o => o.value === (p ?? ''))?.classes ?? 'text-surface-400'
+  }
+</script>
+
+<div class="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+  <table class="w-full text-sm">
+    <thead class="sticky top-0 z-10 border-b border-surface-200 bg-surface-100 dark:border-surface-700 dark:bg-surface-900">
+      <tr>
+        {#if hasPriorities}
+          <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider w-8">P</th>
+        {/if}
+        <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Title</th>
+        <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider">Status</th>
+        <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden md:table-cell">Project</th>
+        <th class="px-4 py-2 text-left font-semibold text-surface-500 text-xs uppercase tracking-wider hidden lg:table-cell">Updated</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each tasks as t, rowIdx (t.id)}
+        {@const isFocused = focusedTaskId === t.id}
+        {@const progress = umbrellaProgress(t)}
+        <tr
+          data-focused-task={isFocused ? '' : undefined}
+          class="cursor-pointer border-b border-surface-100 transition-colors dark:border-surface-800 {isFocused ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-surface-100 dark:hover:bg-surface-800'}"
+          onclick={() => onselect(t.id)}
+          onmouseenter={() => onhover(rowIdx)}
+        >
+          {#if hasPriorities}
+            <td class="px-4 py-2">
+              <span class="font-mono text-sm {priorityClasses(t.priority)}" title="Priority: {priorityLabel(t.priority)}">{priorityIcon(t.priority)}</span>
+            </td>
+          {/if}
+          <td class="px-4 py-2 font-medium">
+            <div class="flex items-center gap-2">
+              <span>{t.title}</span>
+              {#if t.taskType === 'umbrella' && progress && progress.total > 0}
+                <span
+                  class="inline-flex shrink-0 items-center rounded-full bg-surface-200 px-2 py-0.5 text-xs font-medium text-surface-600 dark:bg-surface-700 dark:text-surface-300"
+                  title="{progress.done}/{progress.total} subissues complete"
+                >
+                  {progress.done}/{progress.total}
+                </span>
+              {/if}
+            </div>
+          </td>
+          <td class="whitespace-nowrap px-4 py-2">
+            <StatusBadge status={t.status} />
+          </td>
+          <td class="hidden px-4 py-2 text-surface-500 md:table-cell">{t.projectId || '—'}</td>
+          <td class="hidden px-4 py-2 text-surface-400 text-xs lg:table-cell">
+            {formatShortDate(t.updatedAt)}
+          </td>
+        </tr>
+      {/each}
+      {#if tasks.length === 0}
+        <tr>
+          <td colspan={colCount} class="px-4 py-8 text-center text-surface-400">No tasks match your filters</td>
+        </tr>
+      {/if}
+    </tbody>
+  </table>
+</div>

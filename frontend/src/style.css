@@ -1,0 +1,126 @@
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+@import '@skeletonlabs/skeleton-svelte';
+@import './theme-amber.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@utility tap {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  touch-action: manipulation;
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+@utility h-safe-top {
+  height: env(safe-area-inset-top);
+}
+@utility h-safe-bottom {
+  height: env(safe-area-inset-bottom);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+@media (min-width: 768px) {
+  html, body {
+    font-size: 18px;
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 767px) {
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+#app {
+  min-height: 100dvh;
+  height: 100%;
+}
+
+/* Light-mode tertiary text (timestamps, hints, meta) uses surface-400, which on
+ * the near-white canvas reads at ~1.7:1 — far fainter than the same token on
+ * dark's near-black page (~10:1). Lift it one step in light only so secondary
+ * text is as legible as it is in dark. Scoped to :not(.dark) and to the literal
+ * `text-surface-400` class, so `dark:text-surface-400` and dark mode are
+ * untouched.
+ *
+ * Lives in the `utilities` layer (not unlayered) and wraps the mode guard in
+ * `:where()` so its specificity stays at one class: it beats the base
+ * `text-surface-400` utility by source order, but `hover:`/`focus:` text-colour
+ * variants (which add a pseudo-class) still win, keeping hover transitions on
+ * elements like `text-surface-400 hover:text-surface-600`. */
+@layer utilities {
+  :where(html:not(.dark)) .text-surface-400 {
+    color: var(--color-surface-500);
+  }
+}
+
+[data-active] {
+  background-color: var(--color-surface-200);
+}
+
+.dark [data-active] {
+  background-color: var(--color-surface-700);
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@utility animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Overlay elevation (dark theme): page (surface-950) < popover < modal.
+ * Both lift the surface to surface-900 off the near-black page and deepen the
+ * shadow so overlays read as distinct planes instead of a flat "sea of black";
+ * the modal goes further with a larger shadow and the blurred .modal-backdrop.
+ * Light theme keeps a near-white surface and leans on the shadow + border.
+ * Apply these instead of hand-rolling bg/border/shadow per overlay component.
+ * (On-page cards already sit on their own surface token, styled per-screen.)
+ * ────────────────────────────────────────────────────────────────────────── */
+.elevation-popover,
+.elevation-modal {
+  background-color: var(--color-surface-50);
+  border: 1px solid var(--color-surface-200);
+}
+.elevation-popover { box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.35), 0 4px 6px -4px rgb(0 0 0 / 0.35); }
+.elevation-modal   { box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5); }
+
+.dark .elevation-popover,
+.dark .elevation-modal {
+  background-color: var(--color-surface-900);
+  border-color: var(--color-surface-700);
+}
+
+/* Shared overlay scrim: dim + blur whatever sits behind a modal/popover. */
+.modal-backdrop {
+  background-color: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
