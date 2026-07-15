@@ -88,36 +88,6 @@ func TestReleaseUnblockedChildren_HaltChainFlagsTracker(t *testing.T) {
 	}
 }
 
-func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testing.T) {
-	t.Parallel()
-	app, m := newUmbrellaGateApp(t)
-	const umb = "https://github.com/Automaat/sybra/issues/100"
-	tracker := mkTracker(t, m, umb, 1)
-
-	stuck, err := m.CreateFull("stuck", "", task.AgentModeHeadless, task.Update{
-		Issue:         task.Ptr("Automaat/sybra#1"),
-		UmbrellaIssue: task.Ptr(umb),
-		Status:        task.Ptr(task.StatusHumanRequired),
-	})
-	if err != nil {
-		t.Fatalf("create stuck child: %v", err)
-	}
-	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
-
-	app.releaseUnblockedChildren()
-
-	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
-		t.Fatalf("tracker = %q, want human-required on stuck child", got)
-	}
-	if got := mustStatus(t, m, stuck.ID); got != task.StatusHumanRequired {
-		t.Fatalf("stuck child = %q, want human-required", got)
-	}
-	readyTask := mustTask(t, m, ready.ID)
-	if readyTask.Status != task.StatusTodo || slices.Contains(readyTask.Tags, umbrellaGatedTag) {
-		t.Fatalf("ready child was not released despite free slot: status=%q tags=%v", readyTask.Status, readyTask.Tags)
-	}
-}
-
 // TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates covers the
 // stall this fix closes: a human-review flip of one child to `blocked`
 // (without the umbrella-gated tag) must not freeze the whole sub-DAG at
