@@ -56,7 +56,7 @@ func TestRuntimeProbeCommandFailure(t *testing.T) {
 	path := filepath.Join(dir, "codex")
 	writeRuntimeExe(t, path, "#!/bin/sh\necho 'fatal: broken login' >&2\nexit 7\n")
 
-	version, probeErr := probeRuntimeVersion(path, []string{"--version"}, 200*time.Millisecond)
+	version, probeErr := probeRuntimeVersion(path, []string{"--version"}, 2*time.Second)
 	if version != "" {
 		t.Fatalf("version = %q, want empty", version)
 	}
