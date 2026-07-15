@@ -93,6 +93,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"ListTaskAuditEvents",
 			"GetTamperReport",
 			"GetTask",
+			"RecoverLostAgent",
 			"CreateTask",
 			"UpdateTask",
 			"DeleteTask",

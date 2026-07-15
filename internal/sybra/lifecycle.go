@@ -456,14 +456,15 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		})
 	}, a.logger)
 	svc := monitor.NewService(monitor.Deps{
-		Cfg:        a.cfg.Monitor,
-		Tasks:      a.tasks,
-		Audit:      monitor.AuditDirReader(a.cfg.AuditDir()),
-		Agents:     a.agents,
-		Dispatcher: disp,
-		Sink:       routingSink,
-		Emit:       emit,
-		Logger:     a.logger,
+		Cfg:          a.cfg.Monitor,
+		Tasks:        a.tasks,
+		Audit:        monitor.AuditDirReader(a.cfg.AuditDir()),
+		Agents:       newMonitorAgentLister(a.agents, a.clusterRoster, a.logger),
+		ObserverOnly: a.cfg.IsFollower(),
+		Dispatcher:   disp,
+		Sink:         routingSink,
+		Emit:         emit,
+		Logger:       a.logger,
 		AllowsProject: func(projectID string) bool {
 			if projectID == "" {
 				return true
@@ -481,14 +482,11 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 			return a.workScrubContextForTask(t.ProjectID) != nil
 		},
-		RecoverLostAgent: func(ctx context.Context) {
-			if a.recovery == nil {
-				return
-			}
-			// Keep the monitor tick responsive: the stale-agent sweep can scan
-			// all in-progress tasks and spawn recovery work.
+		RecoverLostAgent: func(ctx context.Context, taskID string) {
+			// Keep the monitor tick responsive: recovery may need to fan out to
+			// the assigned follower or spawn local restart work.
 			a.wg.Go(func() {
-				a.recovery.RestartStaleInProgress(ctx)
+				a.recoverLostAgentTask(ctx, taskID)
 			})
 		},
 	})
