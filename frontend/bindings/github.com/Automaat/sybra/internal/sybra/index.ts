@@ -48,6 +48,7 @@ export {
     LoggingSettings,
     LoopAgentRun,
     MonitorReportBinding,
+    RuntimeInfo,
     TamperFindingDTO,
     TamperReportDTO,
     TaskArtifactDTO,

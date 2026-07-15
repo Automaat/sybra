@@ -6,7 +6,7 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
@@ -112,6 +112,7 @@ export function GetRawConfig(): Promise<string> { return call('ConfigService', '
 export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
 // InfoService
+export function GetAvailableRuntimes(): Promise<RuntimeInfo[]> { return call('InfoService', 'GetAvailableRuntimes') }
 export function GetCodexModels(): Promise<CodexModel[]> { return call('InfoService', 'GetCodexModels') }
 export function GetCopilotModels(): Promise<CopilotModel[]> { return call('InfoService', 'GetCopilotModels') }
 export function GetVersion(): Promise<VersionInfo> { return call('InfoService', 'GetVersion') }

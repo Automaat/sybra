@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AppSettings } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+  import type { AppSettings, RuntimeInfo } from '../../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
   import Section from './fields/Section.svelte'
   import SelectField from './fields/SelectField.svelte'
   import NumberField from './fields/NumberField.svelte'
@@ -10,11 +10,12 @@
     settings: AppSettings
     defaults: AppSettings
     modelOptions: { value: string; label: string }[]
+    runtimes: RuntimeInfo[]
     /** Force the advanced disclosure open (search/modified-filter match). */
     advancedOpen?: boolean
   }
 
-  let { settings = $bindable(), defaults, modelOptions, advancedOpen = false }: Props = $props()
+  let { settings = $bindable(), defaults, modelOptions, runtimes, advancedOpen = false }: Props = $props()
   const a = $derived(settings.agent)
   const d = $derived(defaults.agent)
 
@@ -63,6 +64,45 @@
       bind:value={settings.agent.maxConcurrent}
       modified={a.maxConcurrent !== d.maxConcurrent}
       onreset={() => (settings.agent.maxConcurrent = d.maxConcurrent)} />
+  </div>
+
+  <div class="mt-4 rounded-lg border border-surface-200 bg-white p-4 dark:border-surface-700 dark:bg-surface-900">
+    <div class="mb-3 flex items-center justify-between gap-3">
+      <div class="flex flex-col">
+        <h3 class="text-sm font-medium text-surface-800 dark:text-surface-100">Detected runtimes</h3>
+        <span class="text-xs text-surface-500 dark:text-surface-400">Read-only startup snapshot from PATH</span>
+      </div>
+    </div>
+    {#if runtimes.length === 0}
+      <p class="text-xs text-surface-500 dark:text-surface-400">Runtime scan unavailable.</p>
+    {:else}
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {#each runtimes as runtime (runtime.id)}
+          <div class="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800">
+            <div class="flex items-center gap-2">
+              <span class="font-medium text-surface-800 dark:text-surface-100">{runtime.name}</span>
+              <span class="rounded px-1.5 py-0.5 text-xs {runtime.installed ? 'bg-success-500/15 text-success-700 dark:text-success-300' : 'bg-surface-300 text-surface-600 dark:bg-surface-700 dark:text-surface-300'}">
+                {runtime.installed ? 'installed' : 'missing'}
+              </span>
+              {#if runtime.informationalOnly}
+                <span class="rounded px-1.5 py-0.5 text-xs bg-primary-500/10 text-primary-700 dark:text-primary-300">info only</span>
+              {/if}
+            </div>
+            <div class="mt-2 flex flex-col gap-1">
+              <span class="font-mono text-[11px] text-surface-500 dark:text-surface-400">
+                {runtime.path || 'Not found on PATH'}
+              </span>
+              {#if runtime.version}
+                <span class="text-xs text-surface-600 dark:text-surface-300">Version: {runtime.version}</span>
+              {/if}
+              {#if runtime.error}
+                <span class="text-xs text-warning-700 dark:text-warning-300">Probe: {runtime.error}</span>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <AdvancedDisclosure open={advancedOpen}>
