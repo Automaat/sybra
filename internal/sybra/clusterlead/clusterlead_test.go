@@ -258,6 +258,73 @@ func TestMirrorClearsSidecarWhenFollowerClears(t *testing.T) {
 	}
 }
 
+func TestMirrorMirrorsPlanningSidecars(t *testing.T) {
+	cfg := leaderConfig("http://unused", []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
+
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	if _, _, err := mgr.Put(task.Task{ID: "task-pet", Status: task.StatusTodo, AssignedNode: "pet-box", UpdatedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+
+	follower := task.Task{
+		ID:            "task-pet",
+		Status:        task.StatusPlanReview,
+		AssignedNode:  "pet-box",
+		Plan:          "the plan",
+		PlanContract:  `{"task_id":"task-pet"}`,
+		PlanCritique:  "the critique",
+		PlanResearch:  "the research",
+		PlanDecisions: "# Decisions\n\nNo open decisions.",
+		PlanBrief:     "the brief",
+		CodeReview:    "the review",
+		UpdatedAt:     t0.Add(time.Hour),
+	}
+	if !mirror.applyFollowerTask("pet-box", follower) {
+		t.Fatal("apply follower sidecars")
+	}
+
+	got, err := mgr.Get("task-pet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Plan != follower.Plan ||
+		got.PlanContract != follower.PlanContract ||
+		got.PlanCritique != follower.PlanCritique ||
+		got.PlanResearch != follower.PlanResearch ||
+		got.PlanDecisions != follower.PlanDecisions ||
+		got.PlanBrief != follower.PlanBrief ||
+		got.CodeReview != follower.CodeReview {
+		t.Fatalf("mirrored sidecars mismatch:\n got: %+v\nwant: %+v", got, follower)
+	}
+
+	cleared := task.Task{
+		ID:           "task-pet",
+		Status:       task.StatusInProgress,
+		AssignedNode: "pet-box",
+		UpdatedAt:    t0.Add(2 * time.Hour),
+	}
+	if !mirror.applyFollowerTask("pet-box", cleared) {
+		t.Fatal("apply cleared follower sidecars")
+	}
+
+	got, err = mgr.Get("task-pet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Plan != "" ||
+		got.PlanContract != "" ||
+		got.PlanCritique != "" ||
+		got.PlanResearch != "" ||
+		got.PlanDecisions != "" ||
+		got.PlanBrief != "" ||
+		got.CodeReview != "" {
+		t.Fatalf("cleared follower sidecars should clear leader sidecars: %+v", got)
+	}
+}
+
 func TestMirrorIgnoresUnownedTask(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
