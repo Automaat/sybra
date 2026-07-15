@@ -336,9 +336,24 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	todo := idle("idle-todo", task.StatusTodo)
 	planning := idle("idle-planning", task.StatusPlanning)
 	inProgress := idle("idle-in-progress", task.StatusInProgress)
+	var err error
+	postPlanInProgress := idle("post-plan-in-progress", task.StatusInProgress)
+	postPlanCompletedAt := postPlanInProgress.StatusChangedAt.Add(time.Second)
+	postPlanInProgress, err = a.tasks.UpdateMap(postPlanInProgress.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &postPlanCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	requeuedPlanning := idle("requeued-planning", task.StatusPlanning)
 	requeuedCompletedAt := requeuedPlanning.StatusChangedAt.Add(-time.Hour)
-	requeuedPlanning, err := a.tasks.UpdateMap(requeuedPlanning.ID, map[string]any{
+	requeuedPlanning, err = a.tasks.UpdateMap(requeuedPlanning.ID, map[string]any{
 		"tags": []string{"backend", "review"},
 		"workflow": &workflow.Execution{
 			WorkflowID:  "old-workflow",
@@ -423,6 +438,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	assertWorkflow(planning.ID, "simple-task-plan")
 	assertWorkflow(requeuedPlanning.ID, "simple-task-plan")
 	assertWorkflow(inProgress.ID, "simple-task-implement")
+	assertWorkflow(postPlanInProgress.ID, "simple-task-implement")
 
 	gotActive, err := a.tasks.Get(active.ID)
 	if err != nil {
@@ -459,8 +475,8 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 1 {
-		t.Fatalf("startCalls = %d, want 1 for idle in-progress only", launcher.startCalls)
+	if launcher.startCalls != 2 {
+		t.Fatalf("startCalls = %d, want 2 for idle and post-plan in-progress tasks", launcher.startCalls)
 	}
 }
 
