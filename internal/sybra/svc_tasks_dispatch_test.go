@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -335,6 +336,34 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	todo := idle("idle-todo", task.StatusTodo)
 	planning := idle("idle-planning", task.StatusPlanning)
 	inProgress := idle("idle-in-progress", task.StatusInProgress)
+	requeuedPlanning := idle("requeued-planning", task.StatusPlanning)
+	requeuedCompletedAt := requeuedPlanning.StatusChangedAt.Add(-time.Hour)
+	requeuedPlanning, err := a.tasks.UpdateMap(requeuedPlanning.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &requeuedCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTerminal := idle("current-terminal", task.StatusTodo)
+	currentCompletedAt := currentTerminal.StatusChangedAt.Add(time.Hour)
+	currentTerminal, err = a.tasks.UpdateMap(currentTerminal.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &currentCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	gatedTodo := idle("gated-todo", task.StatusTodo)
 	if _, err := a.tasks.UpdateMap(gatedTodo.ID, map[string]any{
 		"tags": []string{umbrella.GatedTag},
@@ -384,6 +413,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	}
 	assertWorkflow(todo.ID, "simple-task-plan")
 	assertWorkflow(planning.ID, "simple-task-plan")
+	assertWorkflow(requeuedPlanning.ID, "simple-task-plan")
 	assertWorkflow(inProgress.ID, "simple-task-implement")
 
 	gotActive, err := a.tasks.Get(active.ID)
@@ -400,6 +430,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotGated.Workflow != nil {
 		t.Fatalf("umbrella-gated todo task should be left for releaseUnblockedChildren, got %+v", gotGated.Workflow)
 	}
+	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCurrentTerminal.Workflow == nil || gotCurrentTerminal.Workflow.WorkflowID != "old-workflow" || gotCurrentTerminal.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("current terminal workflow should be left alone, got %+v", gotCurrentTerminal.Workflow)
+	}
 	gotUmbrella, err := a.tasks.Get(umbrellaTask.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +445,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
 	if launcher.startCalls != 1 {
-		t.Fatalf("startCalls = %d, want 1 for stale in-progress only", launcher.startCalls)
+		t.Fatalf("startCalls = %d, want 1 for idle in-progress only", launcher.startCalls)
 	}
 }
 

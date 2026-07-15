@@ -131,7 +131,7 @@ func (a *App) reconcileRunnableBoardTasks() {
 		if a.agents.HasRunningAgentForTask(t.ID) {
 			continue
 		}
-		if t.Workflow != nil {
+		if boardReconcileWorkflowActive(t) {
 			continue
 		}
 		switch t.Status {
@@ -144,6 +144,20 @@ func (a *App) reconcileRunnableBoardTasks() {
 			a.dispatchStatusWorkflow(t.ID, t.Status)
 		default:
 		}
+	}
+}
+
+func boardReconcileWorkflowActive(t task.Task) bool {
+	if t.Workflow == nil {
+		return false
+	}
+	switch t.Workflow.State {
+	case workflow.ExecCompleted, workflow.ExecFailed:
+		return t.Workflow.CompletedAt == nil ||
+			t.StatusChangedAt.IsZero() ||
+			!t.StatusChangedAt.After(*t.Workflow.CompletedAt)
+	default:
+		return true
 	}
 }
 
