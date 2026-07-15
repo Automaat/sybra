@@ -1,6 +1,9 @@
 package skillinvoke
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestNormalizeName(t *testing.T) {
 	t.Parallel()
@@ -54,6 +57,15 @@ func TestContainsInvocation(t *testing.T) {
 	}
 	if ContainsInvocation("Ignore /tmp/sybra-test.md and /sybra-test-v2.", "sybra-test") {
 		t.Fatal("ContainsInvocation matched a path or longer skill name")
+	}
+}
+
+func TestInvokedNames(t *testing.T) {
+	t.Parallel()
+	got := InvokedNames("Run /plan-critic, then /sybra-test. Ignore /tmp/file and /plan-critic again.")
+	want := []string{"plan-critic", "sybra-test"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("InvokedNames = %v, want %v", got, want)
 	}
 }
 

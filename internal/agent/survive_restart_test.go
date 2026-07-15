@@ -168,22 +168,23 @@ func recordMappingStartedAt() time.Time {
 
 func recordMappingAgent(started time.Time) *Agent {
 	return &Agent{
-		ID:              "a-map",
-		TaskID:          "task-map",
-		Name:            "mapper",
-		Mode:            "interactive",
-		Provider:        "codex",
-		Model:           "gpt-5.3-codex",
-		ExperimentID:    "exp-1",
-		VariantID:       "variant-a",
-		AssignmentUnit:  "task",
-		AssignmentKey:   "task-map",
-		PID:             12345,
-		SessionID:       "sess-map",
-		LogPath:         "/tmp/sybra/agents/a-map.ndjson",
-		StartedAt:       started,
-		MaxTurns:        7,
-		ReasoningEffort: "high",
+		ID:                 "a-map",
+		TaskID:             "task-map",
+		Name:               "mapper",
+		Mode:               "interactive",
+		Provider:           "codex",
+		Model:              "gpt-5.3-codex",
+		ExperimentID:       "exp-1",
+		VariantID:          "variant-a",
+		AssignmentUnit:     "task",
+		AssignmentKey:      "task-map",
+		PID:                12345,
+		SessionID:          "sess-map",
+		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
+		StartedAt:          started,
+		MaxTurns:           7,
+		ReasoningEffort:    "high",
+		SkillExecutionMode: "injected",
 	}
 }
 
@@ -212,6 +213,7 @@ func recordMappingRecord(started time.Time) Record {
 		RequirePermissions: true,
 		SandboxMode:        "enforce",
 		ReasoningEffort:    "high",
+		SkillExecutionMode: "injected",
 	}
 }
 

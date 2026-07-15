@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
@@ -676,6 +677,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		Dir:                     dir,
 		OneShot:                 oneShot,
 		IgnoreConcurrencyLimit:  mode == "interactive",
+		RequestedSkill:          workflowRequestedSkill(prompt),
 		MaxTurns:                t.MaxTurns,
 		RequirePermissions:      agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode:  posture,
@@ -727,6 +729,14 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	a.recordSystemAgentStart(taskID, role, mode, cfg, ag)
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func workflowRequestedSkill(prompt string) string {
+	names := skillinvoke.InvokedNames(prompt)
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
 }
 
 func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID string, role agent.Role, t task.Task) {
@@ -850,20 +860,21 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
-		AgentID:         ag.ID,
-		Role:            role,
-		Mode:            mode,
-		Provider:        ag.Provider,
-		Model:           ag.Model,
-		ExperimentID:    ag.ExperimentID,
-		VariantID:       ag.VariantID,
-		AssignmentUnit:  ag.AssignmentUnit,
-		AssignmentKey:   ag.AssignmentKey,
-		ReasoningEffort: ag.ReasoningEffort,
-		OneShot:         cfg.OneShot,
-		State:           string(agent.StateRunning),
-		StartedAt:       ag.StartedAt,
-		Prompt:          cfg.Prompt,
+		AgentID:            ag.ID,
+		Role:               role,
+		Mode:               mode,
+		Provider:           ag.Provider,
+		Model:              ag.Model,
+		ExperimentID:       ag.ExperimentID,
+		VariantID:          ag.VariantID,
+		AssignmentUnit:     ag.AssignmentUnit,
+		AssignmentKey:      ag.AssignmentKey,
+		ReasoningEffort:    ag.ReasoningEffort,
+		SkillExecutionMode: ag.SkillExecutionMode,
+		OneShot:            cfg.OneShot,
+		State:              string(agent.StateRunning),
+		StartedAt:          ag.StartedAt,
+		Prompt:             cfg.Prompt,
 	}, nextStatus); addErr != nil {
 		if errors.Is(addErr, os.ErrNotExist) {
 			// A stale workflow dispatcher can lose the task underneath it

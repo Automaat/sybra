@@ -117,6 +117,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if providerErr != nil {
 		return cfg, nil, providerErr
 	}
+	if err := m.resolveWorkflowSkillPrompt(&cfg, prov.Name()); err != nil {
+		return cfg, nil, err
+	}
 	cfg.provider = prov
 	cfg.ReasoningEffort = defaultReasoningEffort(cfg.ReasoningEffort)
 	if cfg.Mode == "headless" {
@@ -285,7 +288,8 @@ func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 }
 
 // injectProcessSandbox resolves this run's OS-level process-sandbox posture
-// and allowed write roots (worktree, per-task sandbox home, tmp) into
+// and allowed write roots (worktree, per-task sandbox home, tmp, task-scoped
+// git metadata) into
 // cfg.sandbox, applied later by wrapInvocation at each provider spawn site.
 //
 // enforce fails closed — mirroring injectSandboxHome's discipline — when
@@ -310,7 +314,6 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	worktree := cfg.Dir
 	sandboxHome := cfg.resolvedSandboxHome
 	if sandboxHome == "" {
@@ -318,10 +321,15 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 	}
 	tmp := os.TempDir()
 	sharedCache := sharedBuildCacheDir()
+	gitCtx := context.Background()
+	if m.ctx != nil {
+		gitCtx = context.WithoutCancel(m.ctx)
+	}
+	gitRoots, gitErr := resolveGitSandboxRoots(gitCtx, worktree)
 
 	if !sandboxExecAvailable() {
 		if mode == "enforce" {
-			err := fmt.Errorf("agent.Run: enforce sandbox mode requires sandbox-exec, which is unavailable on this host")
+			err := fmt.Errorf("agent.Run: enforce sandbox mode requires %s, which is unavailable on this host", sandboxWrapperName())
 			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 			return err
 		}
@@ -329,13 +337,14 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	if mode != "enforce" {
-		m.logProcessSandboxReport(cfg.TaskID, worktree, sandboxHome, tmp, sharedCache)
+		if gitErr != nil {
+			m.logger.Warn("agent.sandbox.report.git_roots_failed", "task_id", cfg.TaskID, "err", gitErr)
+		}
+		m.logProcessSandboxReport(cfg.TaskID, worktree, sandboxHome, tmp, sharedCache, gitRoots)
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
 	}
-
 	canonWorktree, err := canonicalizeRoot(worktree)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -352,33 +361,44 @@ func (m *Manager) injectProcessSandbox(cfg *RunConfig) error {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox tmp root: %w", err)
 	}
-	if err := os.MkdirAll(sharedCache, 0o755); err != nil {
-		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
-		return fmt.Errorf("agent.Run: create sandbox shared-cache root: %w", err)
-	}
-	canonSharedCache, err := canonicalizeRoot(sharedCache)
+	canonSharedCache, err := canonicalizeCreatedRoot(sharedCache, 0o755)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox shared-cache root: %w", err)
+	}
+	if gitErr != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", gitErr)
+		return fmt.Errorf("agent.Run: sandbox git metadata roots: %w", gitErr)
+	}
+	gitOverlay, err := prepareGitSandboxOverlay(gitCtx, worktree, canonSandboxHome, gitRoots)
+	if err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox git branch overlay: %w", err)
+	}
+	if err := injectSandboxGitEnv(cfg, gitRoots, gitOverlay); err != nil {
+		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox git object env: %w", err)
 	}
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-
-	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath)
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, gitRoots, gitOverlay)
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"git_metadata", cfg.sandbox.gitMetadata,
+		"git_shared", cfg.sandbox.gitShared,
+		"git_readonly", cfg.sandbox.gitReadonly,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
-		"opencode_state", cfg.sandbox.opencodeState,
+		"opencode_state", cfg.sandbox.opencodeState, "git_admin", cfg.sandbox.gitAdminDir,
+		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
 }
 
-func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sharedCache string) {
+func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sharedCache string, gitRoots gitSandboxRoots) {
 	// report logs the resolved allowlist without wrapping the spawn, so the
 	// provider CLI's would-be write footprint is visible before enforce rollout.
 	logWorktree := m.reportSandboxRoot(taskID, "worktree", worktree)
@@ -386,7 +406,8 @@ func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sh
 	logTmp := m.reportSandboxRoot(taskID, "tmp", tmp)
 	logShared := m.reportSandboxRoot(taskID, "shared_cache", sharedCache)
 	m.logger.Info("agent.sandbox.report", "task_id", taskID,
-		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared)
+		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared,
+		"git_admin", gitRoots.adminDir, "git_common", gitRoots.commonDir, "git_worktrees", gitRoots.worktreesDir)
 }
 
 func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
@@ -398,21 +419,70 @@ func (m *Manager) reportSandboxRoot(taskID, name, root string) string {
 	return root
 }
 
-func enforceSpec(worktree string, gitMetadata []string, sandboxHome, tmp, sharedCache, profilePath string) sandboxSpec {
-	return sandboxSpec{
-		mode:          "enforce",
-		worktree:      worktree,
-		gitMetadata:   slices.Clone(gitMetadata),
-		sandboxHome:   sandboxHome,
-		tmp:           tmp,
-		sharedCache:   sharedCache,
-		profilePath:   profilePath,
-		claudeState:   agentStateRoot(".claude", sandboxHome),
-		codexState:    agentStateRoot(".codex", sandboxHome),
-		copilotState:  agentStateRoot(".copilot", sandboxHome),
-		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
-		toolCache:     agentStateRoot(".cache", sandboxHome),
+func canonicalizeCreatedRoot(root string, perm os.FileMode) (string, error) {
+	if err := os.MkdirAll(root, perm); err != nil {
+		return "", fmt.Errorf("create %s: %w", root, err)
 	}
+	return canonicalizeRoot(root)
+}
+
+func enforceSpec(
+	worktree string,
+	gitMetadata []string,
+	sandboxHome, tmp, sharedCache, profilePath string,
+	gitRoots gitSandboxRoots,
+	gitOverlay gitSandboxOverlay,
+) sandboxSpec {
+	return sandboxSpec{
+		mode:                   "enforce",
+		worktree:               worktree,
+		gitMetadata:            slices.Clone(gitMetadata),
+		gitShared:              slices.Clone(gitRoots.sharedWritable),
+		gitReadonly:            slices.Clone(gitRoots.sharedReadonly),
+		sandboxHome:            sandboxHome,
+		tmp:                    tmp,
+		sharedCache:            sharedCache,
+		profilePath:            profilePath,
+		gitAdminDir:            gitRoots.adminDir,
+		gitCommonDir:           gitRoots.commonDir,
+		gitWorktrees:           gitRoots.worktreesDir,
+		gitObjectDir:           gitRoots.objectDir,
+		gitBranchRef:           gitRoots.branchRef,
+		gitBranchRefDir:        gitRoots.branchRefDir,
+		gitBranchLogDir:        gitRoots.branchLogDir,
+		gitRemoteRefDir:        gitRoots.remoteRefDir,
+		gitRemoteLogDir:        gitRoots.remoteLogDir,
+		gitTagRefDir:           gitRoots.tagRefDir,
+		gitTagLogDir:           gitRoots.tagLogDir,
+		gitOverlayObjectDir:    gitOverlay.objectDir,
+		gitOverlayRefDir:       gitOverlay.branchRefDir,
+		gitOverlayLogDir:       gitOverlay.branchLogDir,
+		gitOverlayRefFile:      gitOverlay.branchRefFile,
+		gitOverlayRemoteRefDir: gitOverlay.remoteRefDir,
+		gitOverlayRemoteLogDir: gitOverlay.remoteLogDir,
+		gitOverlayTagRefDir:    gitOverlay.tagRefDir,
+		gitOverlayTagLogDir:    gitOverlay.tagLogDir,
+		claudeState:            agentStateRoot(".claude", sandboxHome),
+		codexState:             agentStateRoot(".codex", sandboxHome),
+		copilotState:           agentStateRoot(".copilot", sandboxHome),
+		opencodeState:          agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
+		toolCache:              agentStateRoot(".cache", sandboxHome),
+	}
+}
+
+func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
+	if roots.objectDir == "" && overlay.objectDir == "" {
+		return nil
+	}
+	if roots.objectDir == "" || overlay.objectDir == "" {
+		return fmt.Errorf("incomplete sandbox git object paths: shared=%q overlay=%q", roots.objectDir, overlay.objectDir)
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"GIT_OBJECT_DIRECTORY="+overlay.objectDir,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+roots.objectDir,
+	)
+	return nil
 }
 
 func (m *Manager) resolveGitMetadataRoots(taskID, worktree string) []string {
@@ -564,6 +634,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		Provider:               prov.Name(),
 		Model:                  prov.NormalizeModel(cfg.Model),
 		ReasoningEffort:        cfg.ReasoningEffort,
+		SkillExecutionMode:     cfg.SkillExecutionMode,
 		Prompt:                 cfg.Prompt,
 		State:                  StateRunning,
 		StartedAt:              now,

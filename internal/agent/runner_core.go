@@ -49,13 +49,35 @@ type sandboxSpec struct {
 	// validated and logged by injectProcessSandbox but always stored as "off"
 	// so a profile/SBPL defect can only affect an explicit enforce posture,
 	// never the default rollout posture.
-	mode        string
-	worktree    string
-	gitMetadata []string
-	sandboxHome string
-	tmp         string
-	sharedCache string
-	profilePath string
+	mode         string
+	worktree     string
+	gitMetadata  []string
+	gitShared    []string
+	gitReadonly  []string
+	sandboxHome  string
+	tmp          string
+	sharedCache  string
+	profilePath  string
+	gitAdminDir  string
+	gitCommonDir string
+	gitWorktrees string
+	gitObjectDir string
+
+	gitBranchRef           string
+	gitBranchRefDir        string
+	gitBranchLogDir        string
+	gitRemoteRefDir        string
+	gitRemoteLogDir        string
+	gitTagRefDir           string
+	gitTagLogDir           string
+	gitOverlayObjectDir    string
+	gitOverlayRefDir       string
+	gitOverlayLogDir       string
+	gitOverlayRefFile      string
+	gitOverlayRemoteRefDir string
+	gitOverlayRemoteLogDir string
+	gitOverlayTagRefDir    string
+	gitOverlayTagLogDir    string
 
 	claudeState   string
 	codexState    string

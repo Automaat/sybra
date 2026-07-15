@@ -906,6 +906,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		AssignmentUnit:         Ptr("task"),
 		AssignmentKey:          Ptr("task-abc123"),
 		ReasoningEffort:        Ptr("high"),
+		SkillExecutionMode:     Ptr("injected"),
 		SessionID:              Ptr("session-123"),
 		ProtocolViolation:      Ptr("missing-json"),
 		TestOutcome:            Ptr("product_bug"),
@@ -941,6 +942,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		AssignmentUnit:         "task",
 		AssignmentKey:          "task-abc123",
 		ReasoningEffort:        "high",
+		SkillExecutionMode:     "injected",
 		State:                  "done",
 		Outcome:                RunOutcomeSuccess,
 		EscalationReason:       "cost",
@@ -1001,6 +1003,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.ReasoningEffort != want.ReasoningEffort {
 		t.Errorf("ReasoningEffort = %q, want %q", got.ReasoningEffort, want.ReasoningEffort)
+	}
+	if got.SkillExecutionMode != want.SkillExecutionMode {
+		t.Errorf("SkillExecutionMode = %q, want %q", got.SkillExecutionMode, want.SkillExecutionMode)
 	}
 	if got.State != want.State {
 		t.Errorf("State = %q, want %q", got.State, want.State)

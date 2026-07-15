@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -576,9 +577,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-
 	extraEnv := o.SandboxEnvIfRunning(taskID)
-
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
 	ag, err := o.agents.Run(agent.RunConfig{
@@ -595,6 +594,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		AssignmentUnit:          assignment.AssignmentUnit,
 		AssignmentKey:           assignment.AssignmentKey,
 		DisableProviderFailover: assignment.ExperimentID != "",
+		RequestedSkill:          requestedWorkflowSkill(prompt),
 		RequirePermissions:      requirePerm,
 		HeadlessPermissionMode:  posture,
 		OneShot:                 oneShot,
@@ -621,6 +621,14 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+func requestedWorkflowSkill(prompt string) string {
+	names := skillinvoke.InvokedNames(prompt)
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
 }
 
 func (o *Orchestrator) handleSaturatedDispatch(t task.Task, taskID, mode, prompt string, includeTaskDescription, skipWT, ignoreConcurrencyLimit bool, opts startOptions) (*agent.Agent, string, error, bool) {
@@ -942,20 +950,21 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
 	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
-		AgentID:         ag.ID,
-		Role:            string(agent.RoleImplementation),
-		Mode:            effMode,
-		Provider:        ag.Provider,
-		Model:           ag.Model,
-		ExperimentID:    ag.ExperimentID,
-		VariantID:       ag.VariantID,
-		AssignmentUnit:  ag.AssignmentUnit,
-		AssignmentKey:   ag.AssignmentKey,
-		ReasoningEffort: ag.ReasoningEffort,
-		OneShot:         oneShot,
-		State:           string(agent.StateRunning),
-		StartedAt:       ag.StartedAt,
-		Prompt:          fullPrompt,
+		AgentID:            ag.ID,
+		Role:               string(agent.RoleImplementation),
+		Mode:               effMode,
+		Provider:           ag.Provider,
+		Model:              ag.Model,
+		ExperimentID:       ag.ExperimentID,
+		VariantID:          ag.VariantID,
+		AssignmentUnit:     ag.AssignmentUnit,
+		AssignmentKey:      ag.AssignmentKey,
+		ReasoningEffort:    ag.ReasoningEffort,
+		SkillExecutionMode: ag.SkillExecutionMode,
+		OneShot:            oneShot,
+		State:              string(agent.StateRunning),
+		StartedAt:          ag.StartedAt,
+		Prompt:             fullPrompt,
 	}, nextStatus); err != nil {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}

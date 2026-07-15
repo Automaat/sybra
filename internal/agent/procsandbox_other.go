@@ -4,22 +4,23 @@ package agent
 
 import "fmt"
 
-// sandboxExecAvailable always reports false on non-darwin: sandbox-exec is a
-// macOS-only mechanism. Server/Linux OS-level enforcement (e.g. bwrap or a
-// per-agent container) is out of scope here and tracked as a follow-up
-// (#1595).
+// sandboxExecAvailable always reports false on non-darwin/non-linux hosts:
+// Sybra only supports OS-level sandbox enforcement via sandbox-exec on macOS
+// and bwrap on Linux.
 func sandboxExecAvailable() bool { return false }
+
+func sandboxWrapperName() string { return "host sandbox wrapper" }
 
 // materializeSandboxProfile has nothing to materialize on non-darwin.
 func materializeSandboxProfile() (string, error) {
-	return "", fmt.Errorf("sandbox: sandbox-exec is darwin-only")
+	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")
 }
 
 // canonicalizeRoot is unused on non-darwin (injectProcessSandbox never
 // reaches canonicalization here: sandboxExecAvailable is always false, so
 // enforce mode fails closed before any root is resolved).
 func canonicalizeRoot(root string) (string, error) {
-	return "", fmt.Errorf("sandbox: sandbox-exec is darwin-only")
+	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")
 }
 
 // wrapInvocation is a no-op passthrough on non-darwin.
