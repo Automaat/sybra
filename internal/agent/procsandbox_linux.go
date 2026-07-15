@@ -143,19 +143,3 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
-
-func dedupeRoots(roots ...string) []string {
-	seen := make(map[string]struct{}, len(roots))
-	out := make([]string, 0, len(roots))
-	for _, r := range roots {
-		if strings.TrimSpace(r) == "" {
-			continue
-		}
-		if _, ok := seen[r]; ok {
-			continue
-		}
-		seen[r] = struct{}{}
-		out = append(out, r)
-	}
-	return out
-}

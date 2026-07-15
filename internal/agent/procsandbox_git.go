@@ -14,6 +14,22 @@ import (
 
 var errGitSandboxNotRepo = errors.New("sandbox git roots: worktree is not a git repository")
 
+func dedupeRoots(roots ...string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
 type gitSandboxRoots struct {
 	adminDir       string
 	commonDir      string

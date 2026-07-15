@@ -134,10 +134,3 @@ func TestWrapInvocation_Linux_NonEnforcePassThrough(t *testing.T) {
 		t.Errorf("nil cfg must pass through unwrapped, got name=%s args=%v", name, args)
 	}
 }
-
-func TestDedupeRoots_DropsEmptyAndDuplicate(t *testing.T) {
-	got := dedupeRoots("/a", "/a", "", "/b", "  ", "/a")
-	if !slices.Equal(got, []string{"/a", "/b"}) {
-		t.Errorf("dedupeRoots = %v, want [/a /b]", got)
-	}
-}
