@@ -227,19 +227,58 @@ func TestServiceTickEndToEnd(t *testing.T) {
 		t.Errorf("dispatched wrong kind: %s", disp.calls[0].Kind)
 	}
 
-	// Both deterministic anomalies should have been submitted to the sink
-	// (lost_agent and untriaged). pr_gap was dispatched so its issue is the
-	// LLM agent's responsibility — sink should not see it.
-	if got := len(sink.submissions); got != 2 {
-		t.Fatalf("want 2 sink submissions, got %d", got)
+	// lost_agent was recovered in-process, so only untriaged should still be
+	// filed deterministically. pr_gap was dispatched so its issue is the LLM
+	// agent's responsibility — sink should not see it.
+	if got := len(sink.submissions); got != 1 {
+		t.Fatalf("want 1 sink submission, got %d", got)
 	}
 	for _, a := range sink.submissions {
+		if a.Kind == KindLostAgent {
+			t.Errorf("sink got lost_agent: recovered anomalies must not still file an issue")
+		}
 		if a.Kind == KindPRGap {
 			t.Errorf("sink got pr_gap: should be dispatched, not filed deterministically")
 		}
 	}
-	if report.IssuesOpened != 2 || report.IssuesUpdated != 0 {
-		t.Errorf("want issuesOpened=2 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
+	if report.IssuesOpened != 1 || report.IssuesUpdated != 0 {
+		t.Errorf("want issuesOpened=1 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
+	}
+}
+
+func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("lost", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	var recoverCalls int
+	svc := NewService(Deps{
+		Cfg:    defaultCfg(),
+		Tasks:  tasks,
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Sink:   sink,
+		Logger: slog.Default(),
+		Now:    func() time.Time { return now },
+		RecoverLostAgent: func(context.Context) {
+			recoverCalls++
+		},
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if recoverCalls != 1 {
+		t.Fatalf("want 1 lost-agent recovery call, got %d", recoverCalls)
+	}
+	if len(report.Remediated) != 1 || report.Remediated[0] != "lost_agent:lost" {
+		t.Fatalf("remediated = %v, want [lost_agent:lost]", report.Remediated)
+	}
+	if len(sink.submissions) != 0 {
+		t.Fatalf("want 0 sink submissions after lost-agent recovery, got %d", len(sink.submissions))
+	}
+	if report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("want issuesOpened=0 issuesUpdated=0, got %d/%d", report.IssuesOpened, report.IssuesUpdated)
 	}
 }
 

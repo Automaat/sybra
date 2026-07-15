@@ -82,6 +82,11 @@ type Service struct {
 	rem                 *remediator
 }
 
+type remediationResult struct {
+	labels         []string
+	skipIssueForFP map[string]bool
+}
+
 // NewService validates dependencies and returns a Service ready for Run.
 func NewService(d Deps) *Service {
 	if d.Logger == nil {
@@ -190,9 +195,10 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
 
-	report.Remediated = s.applyRemediations(ctx, report.Anomalies)
+	rem := s.applyRemediations(ctx, report.Anomalies)
+	report.Remediated = rem.labels
 	report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
-	opened, updated := s.fileIssues(ctx, now, report.Anomalies, report.Dispatched)
+	opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
 	report.IssuesOpened = opened
 	report.IssuesUpdated = updated
 
@@ -291,8 +297,8 @@ func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 	}
 }
 
-func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) []string {
-	var out []string
+func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remediationResult {
+	res := remediationResult{skipIssueForFP: map[string]bool{}}
 	for i := range anoms {
 		a := anoms[i]
 		if a.RequiresLLM {
@@ -306,9 +312,12 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) []stri
 			s.logger.Warn("monitor.remediate.failed", "kind", a.Kind, "task_id", a.TaskID, "err", err)
 			continue
 		}
-		out = append(out, label)
+		res.labels = append(res.labels, label)
+		if a.Kind == KindLostAgent {
+			res.skipIssueForFP[a.Fingerprint] = true
+		}
 	}
-	return out
+	return res
 }
 
 func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms []Anomaly) []string {
@@ -339,14 +348,16 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 	return out
 }
 
-// fileIssues files deterministic-body issues for anomalies that were NOT
-// dispatched to an LLM (the dispatched ones file their own issue from the
-// agent prompt). Returns (opened, updated).
-func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, dispatched []string) (opened, updated int) {
+// fileIssues files deterministic-body issues for anomalies that were neither
+// dispatched to an LLM nor fully handled in-process. Returns (opened, updated).
+func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly, skipIssueForFP map[string]bool) (opened, updated int) {
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	for i := range anoms {
 		a := anoms[i]
 		if a.RequiresLLM || isHumanRequiredStuck(a) {
+			continue
+		}
+		if skipIssueForFP[a.Fingerprint] {
 			continue
 		}
 		if !s.state.canIssue(a.Fingerprint, now, cooldown) {
