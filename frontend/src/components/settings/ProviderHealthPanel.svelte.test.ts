@@ -21,10 +21,20 @@ function buildSettings() {
       claude: { enabled: true },
       codex: { enabled: false },
       copilot: { enabled: true },
+      opencode: { enabled: true },
       autoFailover: false,
       healthCheck: { intervalSeconds: 30 },
     },
   } as never
+}
+
+function buildRuntimes() {
+  return [
+    { id: 'claude', name: 'Claude Code', installed: true, path: '/tmp/claude', version: 'Claude 1.2.3' },
+    { id: 'codex', name: 'Codex', installed: false, path: '', version: '', error: '' },
+    { id: 'opencode', name: 'OpenCode', installed: true, path: '/tmp/opencode', version: '', error: 'version probe timed out after 1.5s' },
+    { id: 'hermes', name: 'Hermes', installed: true, path: '/tmp/hermes', version: 'Hermes 0.8.0', informationalOnly: true },
+  ]
 }
 
 describe('ProviderHealthPanel', () => {
@@ -45,7 +55,7 @@ describe('ProviderHealthPanel', () => {
 
   it('renders nothing when provider health is disabled', async () => {
     const { container } = render(ProviderHealthPanel, {
-      props: { settings: buildSettings(), enabled: false, onsettingschange: vi.fn() },
+      props: { settings: buildSettings(), enabled: false, runtimes: buildRuntimes(), onsettingschange: vi.fn() },
     })
     await waitFor(() => {
       expect(container.querySelector('h2')).toBeNull()
@@ -54,7 +64,7 @@ describe('ProviderHealthPanel', () => {
 
   it('renders Providers section with both rows when enabled', async () => {
     render(ProviderHealthPanel, {
-      props: { settings: buildSettings(), enabled: true, onsettingschange: vi.fn() },
+      props: { settings: buildSettings(), enabled: true, runtimes: buildRuntimes(), onsettingschange: vi.fn() },
     })
     await waitFor(() => {
       expect(screen.getByText('Providers')).toBeDefined()
@@ -65,7 +75,7 @@ describe('ProviderHealthPanel', () => {
 
   it('shows healthy badge for claude and rate-limited reason for codex', async () => {
     render(ProviderHealthPanel, {
-      props: { settings: buildSettings(), enabled: true, onsettingschange: vi.fn() },
+      props: { settings: buildSettings(), enabled: true, runtimes: buildRuntimes(), onsettingschange: vi.fn() },
     })
     await waitFor(() => {
       expect(screen.getByText('healthy')).toBeDefined()
@@ -76,7 +86,7 @@ describe('ProviderHealthPanel', () => {
   it('toggling auto-failover calls SetProviderAutoFailover + onsettingschange', async () => {
     const onsettingschange = vi.fn()
     render(ProviderHealthPanel, {
-      props: { settings: buildSettings(), enabled: true, onsettingschange },
+      props: { settings: buildSettings(), enabled: true, runtimes: buildRuntimes(), onsettingschange },
     })
     await waitFor(() => screen.getByText('Providers'))
     const cb = screen.getByLabelText(/Auto-failover/) as HTMLInputElement
@@ -89,10 +99,25 @@ describe('ProviderHealthPanel', () => {
 
   it('subscribes to ProviderHealth events on mount', async () => {
     render(ProviderHealthPanel, {
-      props: { settings: buildSettings(), enabled: true, onsettingschange: vi.fn() },
+      props: { settings: buildSettings(), enabled: true, runtimes: buildRuntimes(), onsettingschange: vi.fn() },
     })
     await waitFor(() => {
       expect(mockEventsOn).toHaveBeenCalled()
+    })
+  })
+
+  it('shows runtime path/version beside provider rows and Hermes as informational-only', async () => {
+    render(ProviderHealthPanel, {
+      props: { settings: buildSettings(), enabled: true, runtimes: buildRuntimes(), onsettingschange: vi.fn() },
+    })
+    await waitFor(() => {
+      expect(screen.getByText('/tmp/claude')).toBeDefined()
+      expect(screen.getByText('version: Claude 1.2.3')).toBeDefined()
+      expect(screen.getByText('CLI not found on PATH')).toBeDefined()
+      expect(screen.getByText('probe: version probe timed out after 1.5s')).toBeDefined()
+      expect(screen.getByText('Hermes')).toBeDefined()
+      expect(screen.getByText('informational only')).toBeDefined()
+      expect(screen.getByText('No provider toggle')).toBeDefined()
     })
   })
 })

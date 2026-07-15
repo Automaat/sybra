@@ -15,13 +15,24 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as $models from "./models.js";
 
 /**
+ * GetAvailableRuntimes returns the cached PATH snapshot for known AI runtimes.
+ * The snapshot is warmed eagerly during app startup and lazily guarded here so
+ * zero-value InfoService instances stay usable in tests.
+ */
+export function GetAvailableRuntimes(): $CancellablePromise<$models.RuntimeInfo[]> {
+    return $Call.ByID(626028529).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetCodexModels runs `codex debug models` once per session and returns the
  * parsed model catalog. Returns an empty slice when codex is unavailable or
  * the output cannot be parsed — callers should fall back to a built-in list.
  */
 export function GetCodexModels(): $CancellablePromise<$models.CodexModel[]> {
     return $Call.ByID(2281056322).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType3($result);
     });
 }
 
@@ -35,7 +46,7 @@ export function GetCodexModels(): $CancellablePromise<$models.CodexModel[]> {
  */
 export function GetCopilotModels(): $CancellablePromise<$models.CopilotModel[]> {
     return $Call.ByID(1155897229).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType5($result);
     });
 }
 
@@ -44,13 +55,15 @@ export function GetCopilotModels(): $CancellablePromise<$models.CopilotModel[]> 
  */
 export function GetVersion(): $CancellablePromise<$models.VersionInfo> {
     return $Call.ByID(2557760771).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType6($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = $models.CodexModel.createFrom;
+const $$createType0 = $models.RuntimeInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $models.CopilotModel.createFrom;
+const $$createType2 = $models.CodexModel.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = $models.VersionInfo.createFrom;
+const $$createType4 = $models.CopilotModel.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = $models.VersionInfo.createFrom;

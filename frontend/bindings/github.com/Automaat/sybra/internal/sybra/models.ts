@@ -505,6 +505,42 @@ export class MonitorReportBinding {
     }
 }
 
+/**
+ * RuntimeInfo is the read-only detected state for one known CLI runtime.
+ */
+export class RuntimeInfo {
+    "id": string;
+    "name": string;
+    "installed": boolean;
+    "path"?: string;
+    "version"?: string;
+    "error"?: string;
+    "informationalOnly"?: boolean;
+
+    /** Creates a new RuntimeInfo instance. */
+    constructor($$source: Partial<RuntimeInfo> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("installed" in $$source)) {
+            this["installed"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RuntimeInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RuntimeInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RuntimeInfo($$parsedSource as Partial<RuntimeInfo>);
+    }
+}
+
 export class TamperFindingDTO {
     "file": string;
     "category": string;
