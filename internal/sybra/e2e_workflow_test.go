@@ -3056,6 +3056,54 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	}
 }
 
+func TestE2E_BuiltinSimpleTask_PlanPromptAvoidsOperatorSkillInvocations(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{
+		"write_sidecar_success",
+	})
+	claudeArgsLog := filepath.Join(t.TempDir(), "claude-plan-args.log")
+	t.Setenv("FAKE_CLAUDE_ARGS_LOG", claudeArgsLog)
+	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large", "nocritic"}, Size: "large", Type: "feature", Mode: "headless"})
+	loadBuiltinWorkflow(t, env, "simple-task-plan")
+
+	created, err := env.tasks.Create("plan prompt skill isolation", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil {
+			return false
+		}
+		return tk.Workflow != nil &&
+			tk.Workflow.CurrentStep == "review_plan" &&
+			tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	waitFor(t, 10*time.Second, "claude args log written", func() bool {
+		_, err := os.Stat(claudeArgsLog)
+		return err == nil
+	})
+
+	data, err := os.ReadFile(claudeArgsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(data)
+	if !strings.Contains(args, "Plan task "+created.ID) {
+		t.Fatalf("planning prompt missing task directive:\n%s", args)
+	}
+	for _, forbidden := range []string{"/sybra-plan", "$sybra-plan", "/sybra-tasks", "$sybra-tasks"} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("planning prompt must not explicitly invoke %s:\n%s", forbidden, args)
+		}
+	}
+}
+
 // TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning verifies the noplan escape
 // hatch: a task triage tags `noplan` skips the entire plan/critique/review
 // pipeline and hands straight off to implementation, even though triage set
