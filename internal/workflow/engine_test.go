@@ -6676,6 +6676,14 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 		t.Fatalf("origin/fix/missing-object = %q, want %q", got, head)
 	}
 
+	badSiblingRef := filepath.Join(wtDir, ".git", "refs", "heads", "feat", "bad-sibling")
+	if err := os.MkdirAll(filepath.Dir(badSiblingRef), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badSiblingRef, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	objectPath := filepath.Join(wtDir, ".git", "objects", head[:2], head[2:])
 	if err := os.Remove(objectPath); err != nil {
 		t.Fatalf("remove local head object %s: %v", objectPath, err)
@@ -6699,6 +6707,9 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 	}
 	if got := strings.TrimSpace(runGitAt(t, wtDir, "cat-file", "-t", head)); got != "commit" {
 		t.Fatalf("recovered object type = %q, want commit", got)
+	}
+	if _, err := os.Stat(badSiblingRef); !os.IsNotExist(err) {
+		t.Fatalf("broken sibling ref still exists after recovery: stat err=%v", err)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Fatalf("task status = %q, want unchanged in-progress", ti.Status)
