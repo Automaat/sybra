@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	bundledskills "github.com/Automaat/sybra/internal/skills"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,6 +30,186 @@ func rewriteSkillInvocations(prompt string, skillNames []string) string {
 
 func stripSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.StripInvocations(prompt, skillNames)
+}
+
+const (
+	skillExecutionModeNative      = "native"
+	skillExecutionModeInjected    = "injected"
+	skillExecutionModeFallback    = "fallback"
+	skillExecutionModeUnavailable = "unavailable"
+)
+
+type workflowSkillResolution struct {
+	name          string
+	path          string
+	text          string
+	nativeVisible bool
+	mode          string
+}
+
+func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string) error {
+	name, ok := skillinvoke.NormalizeName(cfg.RequestedSkill)
+	if !ok {
+		cfg.RequestedSkill = ""
+		cfg.SkillExecutionMode = ""
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	resolution := resolveWorkflowSkill(home, providerName, name)
+	cfg.RequestedSkill = resolution.name
+	cfg.SkillExecutionMode = resolution.mode
+	switch resolution.mode {
+	case skillExecutionModeNative:
+		return nil
+	case skillExecutionModeInjected, skillExecutionModeFallback:
+		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
+	default:
+		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
+	}
+	return nil
+}
+
+func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillResolution {
+	resolution := workflowSkillResolution{
+		name:          skillName,
+		nativeVisible: providerSkillVisible(providerName, home, skillName),
+	}
+	if resolution.nativeVisible {
+		resolution.mode = skillExecutionModeNative
+		return resolution
+	}
+	resolution.path = findSkillPathInHome(home, skillName)
+	if resolution.path != "" {
+		data, err := os.ReadFile(resolution.path)
+		if err == nil {
+			resolution.text = string(data)
+			resolution.mode = skillExecutionModeInjected
+			return resolution
+		}
+	}
+	if data, err := bundledskills.FS.ReadFile("data/" + skillName + ".md"); err == nil {
+		resolution.text = string(data)
+		resolution.mode = skillExecutionModeFallback
+		return resolution
+	}
+	resolution.mode = skillExecutionModeUnavailable
+	return resolution
+}
+
+func providerSkillVisible(providerName, home, skillName string) bool {
+	if strings.TrimSpace(home) == "" {
+		return false
+	}
+	var names []string
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "claude":
+		names = discoverClaudeSkillsInHome(home)
+	case "codex":
+		names = discoverNativeCodexSkillsInHome(home)
+	case "copilot":
+		names = discoverNativeCopilotSkillsInHome(home)
+	default:
+		return false
+	}
+	return slices.Contains(names, skillName)
+}
+
+func injectWorkflowSkillPrompt(prompt, providerName string, resolution workflowSkillResolution) string {
+	basePrompt := stripSkillInvocations(prompt, []string{resolution.name})
+	source := resolution.path
+	if source == "" {
+		source = "bundled skill fallback"
+	}
+	return fmt.Sprintf(
+		"Mandatory workflow skill %q is not natively visible to provider %s. Follow the injected instructions below instead of invoking the skill directly.\n\n--- BEGIN INJECTED SKILL: %s (%s) ---\n%s\n--- END INJECTED SKILL: %s ---\n\n%s",
+		resolution.name,
+		providerName,
+		resolution.name,
+		source,
+		resolution.text,
+		resolution.name,
+		basePrompt,
+	)
+}
+
+func unavailableWorkflowSkillPrompt(prompt, providerName, skillName string) string {
+	basePrompt := stripSkillInvocations(prompt, []string{skillName})
+	return fmt.Sprintf(
+		"Mandatory workflow skill %q is not natively visible to provider %s, and no SKILL.md or bundled fallback was found. Do not attempt a native skill invocation; rely on the explicit workflow instructions below.\n\n%s",
+		skillName,
+		providerName,
+		basePrompt,
+	)
+}
+
+func discoverClaudeSkillsInHome(home string) []string {
+	seen := make(map[string]struct{}, 32)
+	for _, name := range listSkillDirs(filepath.Join(home, ".claude", "skills")) {
+		seen[name] = struct{}{}
+	}
+	for _, name := range listPluginSkillDirs(filepath.Join(home, ".claude", "plugins", "cache")) {
+		seen[name] = struct{}{}
+	}
+	return sortedSkillNames(seen)
+}
+
+func discoverNativeCodexSkillsInHome(home string) []string {
+	seen := make(map[string]struct{}, 32)
+	for _, name := range listSkillDirs(filepath.Join(home, ".codex", "skills")) {
+		seen[name] = struct{}{}
+	}
+	codexPluginSkills, fallbackPlugins, fallbackAll := listCodexPluginListSkills()
+	switch {
+	case fallbackAll:
+		codexPluginSkills = append(codexPluginSkills, listPluginSkillDirs(filepath.Join(home, ".codex", "plugins", "cache"))...)
+	case len(fallbackPlugins) > 0:
+		codexPluginSkills = append(codexPluginSkills, listPluginSkillDirsFiltered(filepath.Join(home, ".codex", "plugins", "cache"), fallbackPlugins)...)
+	}
+	for _, name := range codexPluginSkills {
+		seen[name] = struct{}{}
+	}
+	return sortedSkillNames(seen)
+}
+
+func discoverNativeCopilotSkillsInHome(home string) []string {
+	seen := make(map[string]struct{}, 16)
+	for _, name := range listSkillDirs(filepath.Join(home, ".copilot", "skills")) {
+		seen[name] = struct{}{}
+	}
+	return sortedSkillNames(seen)
+}
+
+func sortedSkillNames(seen map[string]struct{}) []string {
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func findSkillPathInHome(home, skillName string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	for _, dir := range []string{
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".codex", "skills"),
+		filepath.Join(home, ".copilot", "skills"),
+	} {
+		path := filepath.Join(dir, skillName, "SKILL.md")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
 }
 
 // discoverCodexSkills returns the union of skill names sybra knows about for

@@ -51,6 +51,10 @@ type Record struct {
 	// Codex convo respawns a fresh process per turn — without this the effort
 	// would revert to model default after a restart.
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	// SkillExecutionMode preserves how a workflow-owned skill actually ran
+	// (native, injected, fallback) so a reattached completion can persist the
+	// same attribution it started with.
+	SkillExecutionMode string `yaml:"skill_execution_mode,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

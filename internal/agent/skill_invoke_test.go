@@ -216,6 +216,98 @@ func TestBuildHeadlessInvocation_CopilotStripsOperatorSkillSlashInvocation(t *te
 	}
 }
 
+func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "sybra-test")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillExecutionModeNative {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeNative)
+	}
+	if cfg.Prompt != "Run /sybra-test now." {
+		t.Fatalf("Prompt = %q, want unchanged native invocation", cfg.Prompt)
+	}
+}
+
+func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillExecutionModeInjected {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeInjected)
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected marker:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, "\nRun /sybra-test now.") {
+		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
+	}
+}
+
+func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Adversarially test with /sybra-test.",
+		RequestedSkill: "sybra-test",
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillExecutionModeFallback {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeFallback)
+	}
+	if !strings.Contains(cfg.Prompt, "bundled skill fallback") {
+		t.Fatalf("Prompt missing bundled fallback marker:\n%s", cfg.Prompt)
+	}
+}
+
+func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /missing-skill now.",
+		RequestedSkill: "missing-skill",
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if cfg.SkillExecutionMode != skillExecutionModeUnavailable {
+		t.Fatalf("SkillExecutionMode = %q, want %q", cfg.SkillExecutionMode, skillExecutionModeUnavailable)
+	}
+	if !strings.Contains(cfg.Prompt, "no SKILL.md or bundled fallback was found") {
+		t.Fatalf("Prompt missing unavailable note:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, "\nRun /missing-skill now.") {
+		t.Fatalf("Prompt still contains raw slash invocation:\n%s", cfg.Prompt)
+	}
+}
+
 func TestListSkillDirs(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

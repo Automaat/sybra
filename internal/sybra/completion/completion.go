@@ -338,6 +338,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 		Model:           task.Ptr(ag.Model),
 		Provider:        task.Ptr(ag.Provider),
 	}
+	if ag.SkillExecutionMode != "" {
+		runUpdates.SkillExecutionMode = task.Ptr(ag.SkillExecutionMode)
+	}
 	if outcome := runTerminalOutcome(ag, exitErr); outcome != "" {
 		runUpdates.Outcome = task.Ptr(outcome)
 	}
