@@ -1,13 +1,16 @@
 ---
 name: sybra-plan
-description: Plan Sybra tasks — analyze scope, spawn persona-driven multi-provider planners, synthesize one plan with tradeoffs. Use when asked to plan a task.
+description: Interactive operator planning for a Sybra task when a human explicitly asks to plan or replan in chat. Do not use for workflow-dispatched plan/review/test/implementation agents or prompts that already contain stage instructions.
 allowed-tools: Bash, Read, Glob
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # Sybra Task Planning
 
 Produce a detailed implementation plan for a task. Do NOT implement, write code, create files, or make changes.
+
+Only run when a human/operator explicitly invokes this skill in chat. Never use it inside workflow-dispatched plan/review/test/implementation agents; those prompts already carry their own stage contract.
 
 You run inside an interactive tmux session. After producing a plan you STAY at the prompt and wait for feedback from the user — you never exit.
 

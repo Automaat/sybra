@@ -1,14 +1,17 @@
 ---
 name: sybra-tasks
-description: Manage Sybra tasks (list, create, update, delete) via sybra-cli. Use when user mentions tasks, work items, TODOs, or asks to track/create/update work.
+description: Interactive operator task CRUD for Sybra when a human explicitly asks to list, create, update, or delete tasks in chat. Do not use for workflow-dispatched plan/review/test/implementation agents or prompts that already specify task-stage instructions.
 allowed-tools: Bash
 user-invocable: true
+disable-model-invocation: true
 argument-hint: "[list|create|update|delete] [args]"
 ---
 
 # Sybra Task Management
 
 Use `sybra-cli` to manage tasks. Always use `--json` for machine-parseable output.
+
+Only run when a human/operator explicitly asks to manage Sybra tasks. Never activate inside workflow-dispatched agents or merely because a prompt mentions tasks, status fields, tags, or stage transitions.
 
 ## Commands
 
