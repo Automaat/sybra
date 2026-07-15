@@ -52,19 +52,18 @@ func computePRPhase(s prSignals) string {
 		return PRPhaseFixing
 	case s.Mergeable == "CONFLICTING":
 		return PRPhaseFixing
-	// Still a draft (and not actively being fixed for CI/conflict): the human
-	// must mark it ready. This outranks the comment check because the monitor
-	// skips comment-fix dispatch on drafts (MatchTaskPRs gates on !IsDraft), so
-	// a draft with comments would otherwise imply a fix that never runs and
-	// hide the "mark ready" action.
-	case s.IsDraft:
-		return PRPhaseDraft
-	// Reviewers asked for changes (or left actionable threads — a reviewer had
-	// the last word): a fix-review agent is dispatched to address them. Threads
-	// the agent already replied to are unresolved but not actionable, so they
-	// surface as awaiting-approval (waiting on the reviewer), not changes.
+	// Actionable threads — a reviewer had the last word — dispatch a
+	// fix-review agent. ReviewDecision can stay CHANGES_REQUESTED after every
+	// thread was answered, so it only keeps the phase in "needs attention".
+	// Threads the agent already replied to are unresolved but not actionable,
+	// so they surface as awaiting-approval (waiting on the reviewer), not
+	// changes.
 	case s.ReviewDecision == "CHANGES_REQUESTED" || s.ActionableCount > 0:
 		return PRPhaseChangesRequested
+	// Still a draft (and not actively being fixed for CI/conflict/comments):
+	// the human must mark it ready.
+	case s.IsDraft:
+		return PRPhaseDraft
 	// CI is still running — wait it out.
 	case s.CIStatus == "PENDING" || s.HasPendingChecks:
 		return PRPhaseBuilding

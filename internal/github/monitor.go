@@ -117,8 +117,9 @@ func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 		// reviewer had the last word. GitHub's reviewDecision can remain
 		// CHANGES_REQUESTED after every thread was answered or resolved, and the
 		// fix-review skill has no live thread left to process in that state.
-		// Skip drafts: the author is still iterating.
-		if !pr.IsDraft && pr.ActionableCount > 0 {
+		// Draft PRs still get review feedback from Copilot/humans; fix those
+		// comments before the author marks the PR ready.
+		if pr.ActionableCount > 0 {
 			issues = append(issues, PRIssue{Kind: PRIssueComments, TaskID: tm.ID, PR: *pr})
 		}
 		if !pr.IsDraft && !pr.HasPendingChecks && pr.Mergeable == "MERGEABLE" && (pr.CIStatus == "SUCCESS" || pr.CIStatus == "") {
