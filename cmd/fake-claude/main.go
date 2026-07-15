@@ -160,6 +160,7 @@ var scenarioHandlers = map[string]func(string){
 	"test_pass_verbose":           func(string) { runTestPassVerbose() },
 	"test_fail":                   func(string) { runTestFail() },
 	"test_infra_failure":          func(string) { runTestInfraFailure() },
+	"tool_result_large":           func(string) { runToolResultLarge() },
 	"triage_to_done":              func(taskID string) { runTriage(taskID, "done", "") },
 	"triage_to_in_review":         func(taskID string) { runTriage(taskID, "in-review", "") },
 	"triage_to_human_required":    func(taskID string) { runTriage(taskID, "human-required", "") },
@@ -402,6 +403,25 @@ func runTestPassVerbose() {
 	emitResult(long + "\n" + testPassReport() + "\nTEST_VERDICT: PASS")
 }
 
+func runToolResultLarge() {
+	emitSystem()
+	emitAssistant("Running a large verification command...")
+	emitToolUse("toolu_large", "Bash", map[string]any{"command": "go test ./... && golangci-lint run ./..."})
+
+	var b strings.Builder
+	for i := range 120 {
+		fmt.Fprintf(&b, "ok   github.com/Automaat/sybra/internal/pkg%d 0.0%ds\n", i%5, (i%9)+1)
+	}
+	b.WriteString("internal/sybra/app.go:217:13: undefined: missingDependency\n")
+	b.WriteString("internal/sybra/app.go:217:13: compile failed after refactor\n")
+	for i := range 120 {
+		fmt.Fprintf(&b, "lint note %03d: checked another file successfully\n", i)
+	}
+	emitToolResult("toolu_large", b.String(), true)
+	emitAssistant("I found the compile failure and corrected it.")
+	emitResult("Implementation done. PR created")
+}
+
 // runInteractiveImplement emits a full implement result then blocks on stdin
 // until EOF, simulating a real conversational claude agent that stays alive
 // between turns and exits when the parent closes stdin.
@@ -622,6 +642,38 @@ func emitSystem() {
 
 func emitAssistant(text string) {
 	emit(assistantEvent(text))
+}
+
+func emitToolUse(id, name string, input map[string]any) {
+	emit(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":  "tool_use",
+					"id":    id,
+					"name":  name,
+					"input": input,
+				},
+			},
+		},
+	})
+}
+
+func emitToolResult(toolUseID, content string, isError bool) {
+	emit(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": toolUseID,
+					"content":     content,
+					"is_error":    isError,
+				},
+			},
+		},
+	})
 }
 
 func emitResult(result string) {

@@ -405,6 +405,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	r.emit("reviews:updated", summary)
 
 	monitoredPRs := r.monitoredPRs(summary)
+	monitoredPRs = r.includeKnownTaskPRs(tasks, monitoredPRs)
 
 	// Recover PRs orphaned by a workflow that exited before linking — e.g. a
 	// task stranded in human-required while a late-finishing agent opened the
@@ -1270,6 +1271,63 @@ func (r *Handler) monitoredPRs(summary github.ReviewSummary) []github.PullReques
 	prs = append(prs, summary.CreatedByMe...)
 	prs = append(prs, renovatePRs...)
 	return prs
+}
+
+// includeKnownTaskPRs folds linked task PRs into the search-backed monitor
+// result. FetchReviews is intentionally search-based and can miss PRs created
+// by another machine/account in the cluster; linked task metadata is the
+// canonical fallback for those outbound PRs.
+func (r *Handler) includeKnownTaskPRs(tasks []task.Task, monitoredPRs []github.PullRequest) []github.PullRequest {
+	selection := r.selectKnownPRPoll(tasks)
+	if r.logger != nil {
+		r.logger.Info("reviews.poll.bounded",
+			"selected", selection.selectedPRs,
+			"deferred", selection.deferredPRs,
+			"capped", selection.cappedPRs)
+	}
+
+	seen := make(map[string]struct{}, len(monitoredPRs))
+	for i := range monitoredPRs {
+		pr := &monitoredPRs[i]
+		if pr.Repository == "" || pr.Number == 0 {
+			continue
+		}
+		seen[prRefCacheKey(pr.Repository, pr.Number)] = struct{}{}
+	}
+
+	matchers := make([]github.TaskMatcher, 0, len(selection.tasks))
+	for i := range selection.tasks {
+		tk := &selection.tasks[i]
+		if !knownPRPollEligible(tk) {
+			continue
+		}
+		matchers = append(matchers, github.TaskMatcher{
+			ID:        tk.ID,
+			PRNumber:  tk.PRNumber,
+			Branch:    tk.Branch,
+			ProjectID: tk.ProjectID,
+		})
+	}
+	if len(matchers) == 0 {
+		return monitoredPRs
+	}
+
+	knownPRs := r.fetchKnownTaskPRs(matchers)
+	if len(knownPRs) == 0 {
+		return monitoredPRs
+	}
+	out := make([]github.PullRequest, 0, len(monitoredPRs)+len(knownPRs))
+	out = append(out, monitoredPRs...)
+	for i := range knownPRs {
+		pr := &knownPRs[i]
+		key := prRefCacheKey(pr.Repository, pr.Number)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, *pr)
+	}
+	return out
 }
 
 // prMonitorEligible decides whether the PR monitor should consider a task
