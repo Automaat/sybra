@@ -17,7 +17,6 @@ func TestLoadGeneratesAndPersistsServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
 	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
-	isolateServerEnv(t)
 
 	cfg, err := Load()
 	if err != nil {
@@ -52,7 +51,6 @@ func TestLoadPreservesExplicitServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
 	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
-	isolateServerEnv(t)
 
 	yaml := []byte("server:\n  auth_token: my-explicit-token\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
@@ -115,7 +113,6 @@ func TestLoadNoPersistDoesNotGenerateServerAuthToken(t *testing.T) {
 	dir := t.TempDir()
 	isolateServerEnv(t)
 	t.Setenv("SYBRA_HOME", dir)
-	isolateServerEnv(t)
 
 	yaml := []byte("server:\n  allowed_origins: [https://a.example]\n")
 	cfgPath := filepath.Join(dir, "config.yaml")

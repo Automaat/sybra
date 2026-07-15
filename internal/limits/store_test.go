@@ -89,3 +89,102 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 		t.Fatalf("expected only the fresh event on disk, got %+v", p.Events)
 	}
 }
+
+func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceLivePoll,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 88, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.InvalidateLiveExactSnapshot(ProviderClaude); err != nil {
+		t.Fatalf("InvalidateLiveExactSnapshot: %v", err)
+	}
+
+	snap, ok := s.Snapshot(ProviderClaude)
+	if !ok {
+		t.Fatal("snapshot missing after invalidation")
+	}
+	if snap.Confidence != ConfidenceEstimated {
+		t.Fatalf("confidence = %q, want estimated", snap.Confidence)
+	}
+	if snap.Primary == nil || snap.Primary.UsedPercent != 88 {
+		t.Fatalf("primary cycle changed unexpectedly: %+v", snap.Primary)
+	}
+}
+
+func TestStore_InvalidateLiveExactSnapshot_FallsBackForRouting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	if err := s.UpdateSnapshot(Snapshot{
+		Provider:   ProviderClaude,
+		Source:     SourceLivePoll,
+		Confidence: ConfidenceExact,
+		CapturedAt: now,
+		Primary:    &CycleSnapshot{UsedPercent: 95, WindowMinutes: 300, ResetsAt: now.Add(time.Hour)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUsage(UsageEvent{
+		ID:          "claude-run",
+		Provider:    ProviderClaude,
+		Source:      SourceRunStats,
+		CostUSD:     12.5,
+		InputTokens: 321,
+		Timestamp:   now.Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := DefaultPolicy()
+	if available, reason := s.ProviderAvailable(ProviderClaude, policy); available || reason == "" {
+		t.Fatalf("ProviderAvailable before invalidation = (%v, %q), want quota-limited", available, reason)
+	}
+
+	if err := s.InvalidateLiveExactSnapshot(ProviderClaude); err != nil {
+		t.Fatalf("InvalidateLiveExactSnapshot: %v", err)
+	}
+
+	summary := s.Summary(policy)
+	var claude ProviderSummary
+	found := false
+	for _, provider := range summary.Providers {
+		if provider.Provider == ProviderClaude {
+			claude = provider
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Claude provider summary missing")
+	}
+	if claude.Confidence != ConfidenceEstimated {
+		t.Fatalf("summary confidence = %q, want estimated", claude.Confidence)
+	}
+	if claude.SessionUsedPercent != 0 {
+		t.Fatalf("session used percent = %v, want 0 after exact snapshot invalidation", claude.SessionUsedPercent)
+	}
+	if claude.SessionSpendUSD != 12.5 || claude.SessionInputTokens != 321 {
+		t.Fatalf("summary fallback counters = %+v", claude)
+	}
+	if available, reason := s.ProviderAvailable(ProviderClaude, policy); !available || reason != "" {
+		t.Fatalf("ProviderAvailable after invalidation = (%v, %q), want available fallback", available, reason)
+	}
+}
