@@ -248,16 +248,20 @@ func normalizeListItemText(text string) string {
 }
 
 func criterionCovered(source string, contractCriteria []string) bool {
-	source = normalizeCriterionWhitespace(source)
+	source = normalizeCriterionText(source)
 	if source == "" {
 		return true
 	}
 	for _, criterion := range contractCriteria {
-		if normalizeCriterionWhitespace(criterion) == source {
+		if normalizeCriterionText(criterion) == source {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeCriterionText(s string) string {
+	return normalizeCriterionWhitespace(normalizeListItemText(s))
 }
 
 func normalizeCriterionWhitespace(s string) string {
