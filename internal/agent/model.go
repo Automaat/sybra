@@ -49,24 +49,25 @@ type Agent struct {
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests float64   `json:"premiumRequests,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	LastEventAt     time.Time `json:"lastEventAt"`
-	LogPath         string    `json:"logPath,omitempty"`
-	External        bool      `json:"external"`
-	PID             int       `json:"pid,omitempty"`
-	Command         string    `json:"command,omitempty"`
-	Name            string    `json:"name,omitempty"`
-	Project         string    `json:"project,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	Node            string    `json:"node,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	ExperimentID    string    `json:"experimentId,omitempty"`
-	VariantID       string    `json:"variantId,omitempty"`
-	AssignmentUnit  string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey   string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
-	Prompt          string    `json:"prompt,omitempty"`
+	PremiumRequests    float64   `json:"premiumRequests,omitempty"`
+	StartedAt          time.Time `json:"startedAt"`
+	LastEventAt        time.Time `json:"lastEventAt"`
+	LogPath            string    `json:"logPath,omitempty"`
+	External           bool      `json:"external"`
+	PID                int       `json:"pid,omitempty"`
+	Command            string    `json:"command,omitempty"`
+	Name               string    `json:"name,omitempty"`
+	Project            string    `json:"project,omitempty"`
+	Provider           string    `json:"provider,omitempty"`
+	Node               string    `json:"node,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	ExperimentID       string    `json:"experimentId,omitempty"`
+	VariantID          string    `json:"variantId,omitempty"`
+	AssignmentUnit     string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey      string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort    string    `json:"reasoningEffort,omitempty"`
+	SkillExecutionMode string    `json:"skillExecutionMode,omitempty"`
+	Prompt             string    `json:"prompt,omitempty"`
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -249,6 +250,7 @@ type View struct {
 	AssignmentUnit           string    `json:"assignmentUnit,omitempty"`
 	AssignmentKey            string    `json:"assignmentKey,omitempty"`
 	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
+	SkillExecutionMode       string    `json:"skillExecutionMode,omitempty"`
 	Prompt                   string    `json:"prompt,omitempty"`
 	TurnCount                int       `json:"turnCount,omitempty"`
 	ToolCalls                int       `json:"toolCalls,omitempty"`
@@ -302,6 +304,7 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		AssignmentUnit:           a.AssignmentUnit,
 		AssignmentKey:            a.AssignmentKey,
 		ReasoningEffort:          a.ReasoningEffort,
+		SkillExecutionMode:       a.SkillExecutionMode,
 		Prompt:                   a.Prompt,
 		TurnCount:                a.TurnCount,
 		ToolCalls:                a.ToolCalls,
@@ -383,6 +386,7 @@ func (a *Agent) toRecord() Record {
 		RequirePermissions: a.requirePermissions,
 		SandboxMode:        a.sandboxMode,
 		ReasoningEffort:    a.ReasoningEffort,
+		SkillExecutionMode: a.SkillExecutionMode,
 	}
 }
 
@@ -414,6 +418,7 @@ func fromRecord(r Record) *Agent {
 		requirePermissions: r.RequirePermissions,
 		sandboxMode:        r.SandboxMode,
 		ReasoningEffort:    r.ReasoningEffort,
+		SkillExecutionMode: r.SkillExecutionMode,
 		detached:           true,
 	}
 }
@@ -1313,6 +1318,15 @@ type RunConfig struct {
 	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
 	// `--effort`.
 	ReasoningEffort string
+	// RequestedSkill names a workflow-owned skill invocation the dispatcher
+	// expects to run. Empty leaves ad-hoc prompt skill mentions untouched; set
+	// only for mandatory workflow skills so provider prep can enforce native
+	// visibility or inject the resolved instructions.
+	RequestedSkill string
+	// SkillExecutionMode records how RequestedSkill actually ran after provider
+	// preparation: native invocation, injected SKILL.md, bundled fallback, or
+	// unavailable. Empty means this run did not carry a mandatory workflow skill.
+	SkillExecutionMode string
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only
 	// for code-author roles (see Role.AuthorsCode): verifier roles share the

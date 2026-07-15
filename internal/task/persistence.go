@@ -69,6 +69,7 @@ type agentRunRecord struct {
 	AssignmentUnit         string    `yaml:"assignment_unit,omitempty"`
 	AssignmentKey          string    `yaml:"assignment_key,omitempty"`
 	ReasoningEffort        string    `yaml:"reasoning_effort,omitempty"`
+	SkillExecutionMode     string    `yaml:"skill_execution_mode,omitempty"`
 	State                  string    `yaml:"state"`
 	Outcome                string    `yaml:"outcome,omitempty"`
 	EscalationReason       string    `yaml:"escalation_reason,omitempty"`

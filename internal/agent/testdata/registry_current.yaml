@@ -24,3 +24,4 @@ max_turns: 7
 require_permissions: true
 sandbox_mode: enforce
 reasoning_effort: high
+skill_execution_mode: injected
