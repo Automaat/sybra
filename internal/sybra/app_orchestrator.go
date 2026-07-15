@@ -102,11 +102,45 @@ func (a *App) maintenancePass(ctx context.Context) {
 
 func (a *App) queueDrainPass(ctx context.Context) {
 	a.drainManualQueue(ctx)
+	a.reconcileRunnableBoardTasks()
 	if a.workflowEngine != nil {
 		// workflow.Engine derives its shell-step context from its own e.ctx
 		// field (Engine.SetContext, bound once from App's root ctx), not an
 		// explicit per-call parameter.
 		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	}
+}
+
+func (a *App) reconcileRunnableBoardTasks() {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		a.logger.Warn("workflow.reconcile-runnable.list", "err", err)
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+			continue
+		}
+		if !a.runsTaskLocally(t) {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		if t.Workflow != nil {
+			continue
+		}
+		switch t.Status {
+		case task.StatusNew, task.StatusTodo, task.StatusPlanning:
+			a.dispatchTaskCreatedWorkflow(t.ID)
+		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+			a.dispatchStatusWorkflow(t.ID, t.Status)
+		default:
+		}
 	}
 }
 
