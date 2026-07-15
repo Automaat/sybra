@@ -136,6 +136,9 @@ func (a *App) reconcileRunnableBoardTasks() {
 		}
 		switch t.Status {
 		case task.StatusNew, task.StatusTodo, task.StatusPlanning:
+			if skipTaskCreatedWorkflow(t) {
+				continue
+			}
 			a.dispatchTaskCreatedWorkflow(t.ID)
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
 			a.dispatchStatusWorkflow(t.ID, t.Status)

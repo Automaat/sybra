@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -334,6 +335,12 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	todo := idle("idle-todo", task.StatusTodo)
 	planning := idle("idle-planning", task.StatusPlanning)
 	inProgress := idle("idle-in-progress", task.StatusInProgress)
+	gatedTodo := idle("gated-todo", task.StatusTodo)
+	if _, err := a.tasks.UpdateMap(gatedTodo.ID, map[string]any{
+		"tags": []string{umbrella.GatedTag},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	umbrellaTask := idle("synthetic-umbrella", task.StatusInProgress)
 	if _, err := a.tasks.UpdateMap(umbrellaTask.ID, map[string]any{
 		"task_type": string(task.TaskTypeUmbrella),
@@ -385,6 +392,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	}
 	if gotActive.Workflow == nil || gotActive.Workflow.WorkflowID != "simple-task-plan" || gotActive.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("active workflow should be left alone, got %+v", gotActive.Workflow)
+	}
+	gotGated, err := a.tasks.Get(gatedTodo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotGated.Workflow != nil {
+		t.Fatalf("umbrella-gated todo task should be left for releaseUnblockedChildren, got %+v", gotGated.Workflow)
 	}
 	gotUmbrella, err := a.tasks.Get(umbrellaTask.ID)
 	if err != nil {
