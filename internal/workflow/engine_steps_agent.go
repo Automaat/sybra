@@ -32,6 +32,13 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 	if err != nil {
 		return
 	}
+	e.importSidecarIfConfiguredFromDef(taskID, stepID, info, &def)
+}
+
+func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info TaskInfo, def *Definition) {
+	if info.Workflow == nil || def == nil {
+		return
+	}
 	step := def.StepByID(stepID)
 	if step == nil || step.Type != StepRunAgent {
 		return

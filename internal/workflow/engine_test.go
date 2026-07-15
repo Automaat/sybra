@@ -4271,6 +4271,43 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 	}
 }
 
+func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "plan-agent", Role: "plan"},
+		},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "plan-agent",
+		Result:  "late plan completion",
+		Success: true,
+	})
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "implement" {
+		t.Fatalf("CurrentStep = %q, want implement — plan completion must not satisfy implementation step",
+			ti.Workflow.CurrentStep)
+	}
+	if len(ti.Workflow.StepHistory) != 0 {
+		t.Fatalf("StepHistory = %+v, want no recorded implementation completion", ti.Workflow.StepHistory)
+	}
+}
+
 func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
