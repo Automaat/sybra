@@ -14,6 +14,15 @@ type PermissionDenial struct {
 	Reason    string
 }
 
+// MalformedToolCall records one malformed tool-call recovery outcome observed
+// during a run. Outcome is "corrected" when Sybra queued an in-session
+// correction turn, or "unrecoverable" when it fell back to workflow reschedule.
+type MalformedToolCall struct {
+	ToolUseID string
+	Tool      string
+	Outcome   string
+}
+
 // PlanStep represents a single item from a TodoWrite tool call.
 type PlanStep struct {
 	Content string `json:"content"`

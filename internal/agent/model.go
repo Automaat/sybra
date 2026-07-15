@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os/exec"
 	"slices"
 	"sync"
@@ -194,6 +195,14 @@ type Agent struct {
 	// permissionDenials accumulates auto-mode classifier denial records
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
+	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
+	// malformed tool_result back to the original tool name + input.
+	toolUsesByID map[string]trackedToolUse
+	// malformedToolCalls accumulates corrected vs unrecoverable malformed
+	// tool-call outcomes observed during the run. Flushed to audit in OnComplete.
+	malformedToolCalls []MalformedToolCall
+	// malformedToolCorrectionAttempts bounds in-session recovery prompts.
+	malformedToolCorrectionAttempts int
 
 	// handoff is set by SendMessage/regateBeforeClaudeTurn when a persistent
 	// Claude interactive agent's provider is switched at a turn boundary. The
@@ -211,6 +220,11 @@ type Agent struct {
 type foregroundCommand struct {
 	Command   string
 	StartedAt time.Time
+}
+
+type trackedToolUse struct {
+	Name  string
+	Input map[string]any
 }
 
 // View is a point-in-time, concurrency-safe snapshot of an Agent's exported
@@ -786,6 +800,86 @@ func (a *Agent) GetPermissionDenials() []PermissionDenial {
 	return cp
 }
 
+// NoteMalformedToolCall records one malformed tool-call recovery outcome.
+func (a *Agent) NoteMalformedToolCall(toolUseID, tool, outcome string) {
+	a.mu.Lock()
+	a.malformedToolCalls = append(a.malformedToolCalls, MalformedToolCall{
+		ToolUseID: toolUseID,
+		Tool:      tool,
+		Outcome:   outcome,
+	})
+	a.mu.Unlock()
+}
+
+// GetMalformedToolCalls returns a snapshot of the recorded malformed
+// tool-call recovery outcomes.
+func (a *Agent) GetMalformedToolCalls() []MalformedToolCall {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.malformedToolCalls) == 0 {
+		return nil
+	}
+	cp := make([]MalformedToolCall, len(a.malformedToolCalls))
+	copy(cp, a.malformedToolCalls)
+	return cp
+}
+
+// IncMalformedToolCorrectionAttempts increments and returns the number of
+// in-session malformed tool-call correction prompts sent so far.
+func (a *Agent) IncMalformedToolCorrectionAttempts() int {
+	a.mu.Lock()
+	a.malformedToolCorrectionAttempts++
+	n := a.malformedToolCorrectionAttempts
+	a.mu.Unlock()
+	return n
+}
+
+// GetMalformedToolCorrectionAttempts returns the number of malformed tool-call
+// correction prompts sent so far in this run.
+func (a *Agent) GetMalformedToolCorrectionAttempts() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.malformedToolCorrectionAttempts
+}
+
+// RememberToolUse stores tool name + input for later correlation with a
+// tool_result. Shallow-copies the input map so later mutations cannot race.
+func (a *Agent) RememberToolUse(id, name string, input map[string]any) {
+	if id == "" {
+		return
+	}
+	var cp map[string]any
+	if input != nil {
+		cp = make(map[string]any, len(input))
+		maps.Copy(cp, input)
+	}
+	a.mu.Lock()
+	if a.toolUsesByID == nil {
+		a.toolUsesByID = make(map[string]trackedToolUse)
+	}
+	a.toolUsesByID[id] = trackedToolUse{Name: name, Input: cp}
+	a.mu.Unlock()
+}
+
+// ToolUseByID returns a snapshot of the remembered tool_use metadata.
+func (a *Agent) ToolUseByID(id string) (name string, input map[string]any, ok bool) {
+	if id == "" {
+		return "", nil, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	live, ok := a.toolUsesByID[id]
+	if !ok {
+		return "", nil, false
+	}
+	var cp map[string]any
+	if live.Input != nil {
+		cp = make(map[string]any, len(live.Input))
+		maps.Copy(cp, live.Input)
+	}
+	return live.Name, cp, true
+}
+
 // GetHeadlessPermissionMode returns the resolved headless permission posture for this run.
 func (a *Agent) GetHeadlessPermissionMode() string {
 	a.mu.RLock()
@@ -1163,6 +1257,7 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 		a.SetBackgroundTaskIDs(ev.BackgroundTaskIDs)
 	}
 	for i := range ev.toolUses {
+		a.RememberToolUse(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input)
 		if ev.toolUses[i].Name != "Bash" {
 			continue
 		}

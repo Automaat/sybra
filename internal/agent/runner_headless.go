@@ -809,6 +809,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
 	}
+	m.handleMalformedToolResults(a, event)
 
 	// Capture the session id as soon as it appears (init/system), not only on
 	// the terminal result. Claude/Codex report it at session start; without
@@ -859,6 +860,45 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		}
 	}
 	return false
+}
+
+func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
+	for i := range event.toolResults {
+		diag, ok := classifyMalformedToolCall(event.toolResults[i])
+		if !ok {
+			continue
+		}
+		toolName, input, _ := a.ToolUseByID(event.toolResults[i].ToolUseID)
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		if a.computeCanSteer() && a.GetMalformedToolCorrectionAttempts() < maxMalformedToolCorrectionAttempts {
+			prompt := buildMalformedToolCorrectionPrompt(toolName, input, diag)
+			if err := m.sendHeadlessSteerMessage(a, prompt); err == nil {
+				a.IncMalformedToolCorrectionAttempts()
+				a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeCorrected)
+				m.logger.Warn("agent.headless.tool_call_malformed.corrected",
+					"id", a.ID,
+					"provider", a.GetProvider(),
+					"tool", toolName,
+					"tool_use_id", event.toolResults[i].ToolUseID,
+					"attempt", a.GetMalformedToolCorrectionAttempts())
+				return
+			}
+		}
+		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, truncatePromptField(diag.ValidationError))
+		a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeUnrecoverable)
+		a.SetError(malformedToolCallErrorKind, reason)
+		m.ReportProviderSignal(a.GetProvider(), providerpkg.SignalRateLimit, malformedToolCallErrorKind, malformedToolFailoverCooldown)
+		m.logger.Warn("agent.headless.tool_call_malformed.unrecoverable",
+			"id", a.ID,
+			"provider", a.GetProvider(),
+			"tool", toolName,
+			"tool_use_id", event.toolResults[i].ToolUseID,
+			"attempts", a.GetMalformedToolCorrectionAttempts(),
+			"reason", reason)
+		return
+	}
 }
 
 // handleHeadlessResult records a terminal result event's stats/session,
