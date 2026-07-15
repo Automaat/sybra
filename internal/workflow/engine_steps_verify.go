@@ -279,11 +279,7 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 		}
 	}
 
-	output, err := e.gitLogAheadOfBase(wtPath)
-	if err != nil && !errors.Is(e.ctx.Err(), context.Canceled) && !errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
-		verifyCommitsRetrySleep(verifyCommitsRetryBackoff)
-		output, err = e.gitLogAheadOfBase(wtPath)
-	}
+	output, err := e.gitLogAheadOfBaseWithRetry(taskID, wtPath)
 	if err != nil {
 		// Context cancellation indicates engine shutdown, not a worktree
 		// problem — leave task status alone so it resumes on next boot.
@@ -377,6 +373,26 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "commits verified"}, nil
 }
 
+func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string) ([]byte, error) {
+	output, err := e.gitLogAheadOfBase(wtPath)
+	for attempt := 0; err != nil && shouldRetryVerifyCommitsGitError(err, output); attempt++ {
+		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
+			break
+		}
+		if attempt >= len(verifyCommitsRetryBackoffs) {
+			break
+		}
+		e.logger.Warn("workflow.verify-commits.retry",
+			"task_id", taskID,
+			"worktree", wtPath,
+			"attempt", attempt+1,
+			"err", err)
+		verifyCommitsRetrySleep(verifyCommitsRetryBackoffs[attempt])
+		output, err = e.gitLogAheadOfBase(wtPath)
+	}
+	return output, err
+}
+
 // branchMergedIntoBase reports whether HEAD is reachable from the resolved
 // origin base ref (i.e. HEAD is an ancestor of, or equal to, base). Used by
 // execVerifyCommits to distinguish "fix already merged into origin" from
@@ -402,7 +418,40 @@ func (e *Engine) gitLogAheadOfBase(wtPath string) ([]byte, error) {
 	baseRef := resolveOriginBase(ctx, wtPath)
 	cmd := exec.CommandContext(ctx, "git", "log", baseRef+"..HEAD", "--oneline")
 	cmd.Dir = wtPath
-	return cmd.Output()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			return out, fmt.Errorf("git log %s..HEAD: %w", baseRef, err)
+		}
+		return out, fmt.Errorf("git log %s..HEAD: %w: %s", baseRef, err, detail)
+	}
+	return out, nil
+}
+
+func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error() + "\n" + string(output))
+	for _, needle := range []string{
+		"bad object head",
+		"fatal: bad object",
+		"not a valid object name",
+		"invalid object",
+		"missing object",
+		"unable to read sha1 file",
+		"object file",
+		"loose object",
+		"unknown revision",
+		"ambiguous argument",
+		"reference broken",
+	} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // diagnoseWorktreeState produces a short human-readable hint about why a

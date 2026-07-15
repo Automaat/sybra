@@ -6037,6 +6037,30 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	return dir
 }
 
+func withFakeGit(t *testing.T, script string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("LookPath git: %v", err)
+	}
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	script = strings.ReplaceAll(script, "{{REAL_GIT}}", realGit)
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 // TestExecRunAgent_DispatchInFlightWaits asserts a run_agent step whose
 // StartAgent loses the per-task dispatch claim parks the workflow in
 // ExecWaiting (the claim holder's agent will drive it) rather than failing the
@@ -6454,6 +6478,109 @@ func TestExecVerifyCommits_RetriesAfterTransientFailure(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "in-progress" {
 		t.Errorf("task status = %q, want in-progress", ti.Status)
+	}
+}
+
+func TestExecVerifyCommits_RetriesTransientBadHEAD(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+	verifyCommitsRetrySleep = func(time.Duration) {}
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond, time.Nanosecond}
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	countFile := filepath.Join(t.TempDir(), "git-log-count")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "log" ]; then
+  count=0
+  if [ -f "`+countFile+`" ]; then
+    count=$(cat "`+countFile+`")
+  fi
+  count=$((count + 1))
+  printf "%s" "$count" > "`+countFile+`"
+  if [ "$count" = "1" ]; then
+    echo "fatal: bad object HEAD" >&2
+    exit 128
+  fi
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "commits verified") {
+		t.Errorf("Output = %q, want 'commits verified'", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "in-progress" {
+		t.Errorf("task status = %q, want in-progress", ti.Status)
+	}
+	if got := strings.TrimSpace(readFile(t, countFile)); got != "2" {
+		t.Errorf("git log calls = %q, want 2", got)
+	}
+}
+
+func TestExecVerifyCommits_DurableBadHEADEscalatesAfterRetries(t *testing.T) {
+	prevSleep := verifyCommitsRetrySleep
+	prevBackoffs := verifyCommitsRetryBackoffs
+	t.Cleanup(func() {
+		verifyCommitsRetrySleep = prevSleep
+		verifyCommitsRetryBackoffs = prevBackoffs
+	})
+	verifyCommitsRetrySleep = func(time.Duration) {}
+	verifyCommitsRetryBackoffs = []time.Duration{time.Nanosecond, time.Nanosecond}
+
+	wtDir := makeGitRepo(t, true /* withExtraCommit */)
+	countFile := filepath.Join(t.TempDir(), "git-log-count")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "log" ]; then
+  count=0
+  if [ -f "`+countFile+`" ]; then
+    count=$(cat "`+countFile+`")
+  fi
+  count=$((count + 1))
+  printf "%s" "$count" > "`+countFile+`"
+  echo "fatal: bad object HEAD" >&2
+  exit 128
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.Output, "git error") {
+		t.Errorf("Output = %q, want git error", out.Output)
+	}
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Errorf("task status = %q, want human-required", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "bad object HEAD") {
+		t.Errorf("status reason = %q, want bad object HEAD", reason)
+	}
+	if got := strings.TrimSpace(readFile(t, countFile)); got != "3" {
+		t.Errorf("git log calls = %q, want 3", got)
 	}
 }
 

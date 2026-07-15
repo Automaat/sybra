@@ -14,12 +14,13 @@ var (
 	prVerifyBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 6 * time.Second}
 	prVerifySleep    = time.Sleep
 
-	// verifyCommitsRetryBackoff is the delay before a single retry of
-	// `git log` in verify_commits — verify_commits runs immediately after
-	// the agent process exits, so a leftover .git/index.lock can transiently
-	// fail the first call. Indirected for tests.
-	verifyCommitsRetryBackoff = 500 * time.Millisecond
-	verifyCommitsRetrySleep   = time.Sleep
+	// verifyCommitsRetryBackoffs schedule bounded retries of transient
+	// ref/object visibility failures in verify_commits. The gate runs
+	// immediately after the agent process exits, so sandbox sync, ref writes,
+	// or leftover git locks can briefly make HEAD or its object unreadable.
+	// Indirected for tests.
+	verifyCommitsRetryBackoffs = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+	verifyCommitsRetrySleep    = time.Sleep
 
 	// classifyTaskRetryBackoffs schedules retries after a transient classify
 	// failure (rate limit, brief provider outage). classify_task replaced a
