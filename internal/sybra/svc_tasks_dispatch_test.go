@@ -346,6 +346,34 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleInboundReview := idle("stale-inbound-review", task.StatusInReview)
+	staleReviewCompletedAt := staleInboundReview.StatusChangedAt.Add(time.Second)
+	staleInboundReview, err = a.tasks.UpdateMap(staleInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    151,
+		"review_phase": "needs-approval",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "pr-review",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &staleReviewCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedInboundReview := idle("approved-inbound-review", task.StatusInReview)
+	approvedInboundReview, err = a.tasks.UpdateMap(approvedInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    152,
+		"review_phase": "approved",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ownPRReview := idle("own-pr-review", task.StatusInReview)
 	ownPRReview, err = a.tasks.UpdateMap(ownPRReview.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -457,6 +485,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	assertWorkflow(inProgress.ID, "simple-task-implement")
 	assertWorkflow(postPlanInProgress.ID, "simple-task-implement")
 	assertWorkflow(inboundReview.ID, "pr-review")
+	assertWorkflow(staleInboundReview.ID, "pr-review")
 
 	gotActive, err := a.tasks.Get(active.ID)
 	if err != nil {
@@ -486,6 +515,13 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotOwnPRReview.Workflow != nil {
 		t.Fatalf("ordinary in-review task should stay on PR monitor, got %+v", gotOwnPRReview.Workflow)
 	}
+	gotApprovedInboundReview, err := a.tasks.Get(approvedInboundReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotApprovedInboundReview.Workflow != nil {
+		t.Fatalf("approved inbound review should stay idle, got %+v", gotApprovedInboundReview.Workflow)
+	}
 	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -500,8 +536,8 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
 	}
-	if launcher.startCalls != 3 {
-		t.Fatalf("startCalls = %d, want 3 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
+	if launcher.startCalls != 4 {
+		t.Fatalf("startCalls = %d, want 4 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
 	}
 }
 

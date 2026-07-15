@@ -47,12 +47,15 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 	}
 }
 
-// dispatchPass runs the cheap scheduling actions that gate a ready task. Safe to
-// run often: maybeStartOrchestrator no-ops when already running, and
-// releaseUnblockedChildren only acts on tasks whose dependencies merged.
+// dispatchPass runs the cheap scheduling actions that gate a ready task and
+// reconciles idle board tasks that should already be moving. Safe to run often:
+// maybeStartOrchestrator no-ops when already running, releaseUnblockedChildren
+// only acts on tasks whose dependencies merged, and workflow dispatch helpers
+// refuse active workflows/running agents.
 func (a *App) dispatchPass(ctx context.Context) {
 	a.maybeStartOrchestrator(ctx)
 	a.releaseUnblockedChildren()
+	a.reconcileRunnableBoardTasks()
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
 	}
@@ -170,6 +173,9 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 	if t.Status != task.StatusInReview || !isInboundReviewTask(t) {
 		return
 	}
+	if !inboundReviewNeedsAgent(t) {
+		return
+	}
 	if !a.runsTaskLocally(t) {
 		return
 	}
@@ -223,6 +229,10 @@ func boardReconcileWorkflowActive(t task.Task) bool {
 		switch t.Status {
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
 			return false
+		case task.StatusInReview:
+			if isInboundReviewTask(t) && inboundReviewNeedsAgent(t) {
+				return false
+			}
 		default:
 		}
 		return t.Workflow.CompletedAt == nil ||
@@ -230,6 +240,15 @@ func boardReconcileWorkflowActive(t task.Task) bool {
 			!t.StatusChangedAt.After(*t.Workflow.CompletedAt)
 	default:
 		return true
+	}
+}
+
+func inboundReviewNeedsAgent(t task.Task) bool {
+	switch t.ReviewPhase {
+	case "", "needs-approval":
+		return true
+	default:
+		return false
 	}
 }
 
