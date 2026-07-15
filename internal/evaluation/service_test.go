@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -86,5 +87,37 @@ func TestServiceScanHandlesRecordsWithoutExperimentMetadata(t *testing.T) {
 	}
 	if len(got.ByAgentModel) == 0 {
 		t.Fatalf("ByAgentModel should still populate from non-experiment records")
+	}
+}
+
+func TestServiceScanGroupsSkillExecutionMode(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	svc := NewService(Deps{
+		Cfg: config.EvaluationConfig{WindowDays: 7},
+		Stats: testStatsReader{records: []stats.RunRecord{
+			{TaskID: "A", SkillExecutionMode: skillattr.ExecutionModeNone, Outcome: "completed", Timestamp: in},
+			{TaskID: "B", SkillExecutionMode: skillattr.ExecutionModeNative, Outcome: "failed", Timestamp: in},
+			{TaskID: "C", SkillExecutionMode: "", Outcome: "completed", Timestamp: in},
+		}},
+		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) { return nil, nil }),
+		Now:   func() time.Time { return now },
+	})
+
+	got, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got.BySkillExecutionMode) != 3 {
+		t.Fatalf("BySkillExecutionMode len = %d, want 3: %+v", len(got.BySkillExecutionMode), got.BySkillExecutionMode)
+	}
+	if got.BySkillExecutionMode[0].Key != "native" || got.BySkillExecutionMode[0].Failures != 1 {
+		t.Fatalf("native breakdown = %+v", got.BySkillExecutionMode[0])
+	}
+	if got.BySkillExecutionMode[1].Key != "none" {
+		t.Fatalf("none breakdown = %+v", got.BySkillExecutionMode[1])
+	}
+	if got.BySkillExecutionMode[2].Key != "unknown" {
+		t.Fatalf("unknown breakdown = %+v", got.BySkillExecutionMode[2])
 	}
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // Backfill imports historical agent runs from audit logs into the stats
@@ -54,9 +55,11 @@ func (s *Store) Backfill(auditDir string) error {
 		}
 
 		r := RunRecord{
-			ID:        ev.AgentID,
-			TaskID:    ev.TaskID,
-			Timestamp: ev.Timestamp,
+			ID:                 ev.AgentID,
+			TaskID:             ev.TaskID,
+			SkillExecutionMode: skillattr.ExecutionModeUnknown,
+			SkillConformance:   skillattr.ConformanceUnknown,
+			Timestamp:          ev.Timestamp,
 		}
 
 		if v, ok := ev.Data["mode"].(string); ok {

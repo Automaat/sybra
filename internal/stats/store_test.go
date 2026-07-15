@@ -34,18 +34,21 @@ func TestRecordAndQuery(t *testing.T) {
 		{
 			ID: "a1", TaskID: "t1", ProjectID: "org/repo",
 			Mode: "headless", Role: "implementation", Model: "sonnet",
+			RequestedSkill: "sybra-test", SkillExecutionMode: "native", SkillConformance: "exact",
 			CostUSD: 0.05, DurationS: 30, InputTokens: 1000, OutputTokens: 500,
 			Outcome: "completed", Timestamp: now,
 		},
 		{
 			ID: "a2", TaskID: "t2", ProjectID: "org/repo",
 			Mode: "interactive", Role: "triage", Model: "opus",
+			SkillExecutionMode: "none", SkillConformance: "none",
 			CostUSD: 0.10, DurationS: 60, InputTokens: 2000, OutputTokens: 1000,
 			Outcome: "completed", Timestamp: now.Add(-time.Hour),
 		},
 		{
 			ID: "a3", TaskID: "t3", ProjectID: "org/other",
 			Mode: "headless", Role: "plan", Model: "sonnet",
+			// Legacy blank skill metadata must stay readable and group as unknown.
 			CostUSD: 0.03, DurationS: 20, InputTokens: 500, OutputTokens: 200,
 			Outcome: "failed", Timestamp: now.Add(-48 * time.Hour),
 		},
@@ -87,6 +90,18 @@ func TestRecordAndQuery(t *testing.T) {
 	if len(resp.ByMode) != 2 {
 		t.Errorf("byMode: got %d groups, want 2", len(resp.ByMode))
 	}
+	if len(resp.BySkillExecutionMode) != 3 {
+		t.Fatalf("bySkillExecutionMode: got %d groups, want 3", len(resp.BySkillExecutionMode))
+	}
+	if resp.BySkillExecutionMode[0].Key != "none" {
+		t.Errorf("bySkillExecutionMode[0].Key = %q, want none", resp.BySkillExecutionMode[0].Key)
+	}
+	if resp.BySkillExecutionMode[1].Key != "native" {
+		t.Errorf("bySkillExecutionMode[1].Key = %q, want native", resp.BySkillExecutionMode[1].Key)
+	}
+	if resp.BySkillExecutionMode[2].Key != "unknown" {
+		t.Errorf("bySkillExecutionMode[2].Key = %q, want unknown", resp.BySkillExecutionMode[2].Key)
+	}
 
 	// RecentRuns newest first
 	if len(resp.RecentRuns) != 3 {
@@ -94,6 +109,9 @@ func TestRecordAndQuery(t *testing.T) {
 	}
 	if resp.RecentRuns[0].ID != "a1" {
 		t.Errorf("recentRuns[0].id: got %s, want a1", resp.RecentRuns[0].ID)
+	}
+	if resp.RecentRuns[2].SkillExecutionMode != "unknown" {
+		t.Errorf("recentRuns[2].SkillExecutionMode = %q, want unknown", resp.RecentRuns[2].SkillExecutionMode)
 	}
 }
 

@@ -172,6 +172,7 @@ type Report struct {
 	Overall                  Scorecard                 `json:"overall"`
 	ByProvider               []Breakdown               `json:"byProvider,omitempty"`
 	ByRole                   []Breakdown               `json:"byRole,omitempty"`
+	BySkillExecutionMode     []Breakdown               `json:"bySkillExecutionMode,omitempty"`
 	ByAgentModel             []ComparisonBreakdown     `json:"byAgentModel,omitempty"`
 	ByAgentModelContribution []ComparisonBreakdown     `json:"byAgentModelContribution,omitempty"`
 	ByExperimentKind         []ExperimentKindBreakdown `json:"byExperimentKind,omitempty"`

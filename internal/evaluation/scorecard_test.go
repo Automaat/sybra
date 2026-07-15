@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
 
@@ -115,6 +116,28 @@ func TestBreakdownBy(t *testing.T) {
 	cx := got[1]
 	if cx.Key != "codex" || cx.Runs != 1 || cx.Failures != 0 || cx.TotalCostUSD != 5.0 {
 		t.Errorf("codex breakdown = %+v", cx)
+	}
+}
+
+func TestBreakdownBySkillExecutionModeNormalization(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{SkillExecutionMode: skillattr.ExecutionModeNative, CostUSD: 1.0, Outcome: "completed", Timestamp: in},
+		{SkillExecutionMode: "", CostUSD: 2.0, Outcome: "failed", Timestamp: in},
+	}
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string {
+		return skillattr.NormalizeExecutionMode(r.SkillExecutionMode)
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d groups, want 2: %+v", len(got), got)
+	}
+	if got[0].Key != "native" {
+		t.Fatalf("first group = %+v, want native", got[0])
+	}
+	if got[1].Key != "unknown" || got[1].Failures != 1 {
+		t.Fatalf("second group = %+v, want unknown with one failure", got[1])
 	}
 }
 

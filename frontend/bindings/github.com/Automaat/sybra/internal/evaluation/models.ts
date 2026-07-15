@@ -553,6 +553,7 @@ export class Report {
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
+    "bySkillExecutionMode"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
     "byAgentModelContribution"?: ComparisonBreakdown[];
     "byExperimentKind"?: ExperimentKindBreakdown[];
@@ -584,11 +585,12 @@ export class Report {
         const $$createField3_0 = $$createType15;
         const $$createField4_0 = $$createType17;
         const $$createField5_0 = $$createType17;
-        const $$createField6_0 = $$createType4;
+        const $$createField6_0 = $$createType17;
         const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType19;
-        const $$createField9_0 = $$createType21;
-        const $$createField10_0 = $$createType22;
+        const $$createField8_0 = $$createType4;
+        const $$createField9_0 = $$createType19;
+        const $$createField10_0 = $$createType21;
+        const $$createField11_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -599,20 +601,23 @@ export class Report {
         if ("byRole" in $$parsedSource) {
             $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
         }
+        if ("bySkillExecutionMode" in $$parsedSource) {
+            $$parsedSource["bySkillExecutionMode"] = $$createField6_0($$parsedSource["bySkillExecutionMode"]);
+        }
         if ("byAgentModel" in $$parsedSource) {
-            $$parsedSource["byAgentModel"] = $$createField6_0($$parsedSource["byAgentModel"]);
+            $$parsedSource["byAgentModel"] = $$createField7_0($$parsedSource["byAgentModel"]);
         }
         if ("byAgentModelContribution" in $$parsedSource) {
-            $$parsedSource["byAgentModelContribution"] = $$createField7_0($$parsedSource["byAgentModelContribution"]);
+            $$parsedSource["byAgentModelContribution"] = $$createField8_0($$parsedSource["byAgentModelContribution"]);
         }
         if ("byExperimentKind" in $$parsedSource) {
-            $$parsedSource["byExperimentKind"] = $$createField8_0($$parsedSource["byExperimentKind"]);
+            $$parsedSource["byExperimentKind"] = $$createField9_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField9_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField10_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
