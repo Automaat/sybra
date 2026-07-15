@@ -336,6 +336,13 @@ func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handle
 			"task_id", t.ID, "last_run_mode", lr.Mode)
 		return false, false
 	case !lr.OneShot:
+		if r.WorkflowEngine == nil || t.Workflow == nil {
+			// Non-workflow interactive tasks have no workflow step to
+			// advance in place; recoverStaleInteractive would no-op and
+			// strand the task. Fall through to the generic redispatch path.
+			r.Logger.Info("restart-stale.no-workflow-fallthrough", "task_id", t.ID)
+			return false, false
+		}
 		r.recoverStaleInteractive(t)
 		return false, true
 	default:
