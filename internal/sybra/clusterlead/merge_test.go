@@ -25,21 +25,26 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		MirrorRev:    4,
 	}
 	follower := task.Task{
-		ID:           "task-1",
-		ProjectID:    "attacker/evil",
-		AssignedNode: "somewhere-else",
-		Title:        "follower renamed it",
-		Issue:        "https://github.com/attacker/evil/issues/1",
-		Status:       task.StatusInReview,
-		StatusReason: "review drafted",
-		Branch:       "feat/x",
-		WorktreeDir:  "/wt/task-1",
-		PRNumber:     42,
-		Reviewed:     true,
-		Outcome:      "merged",
-		Plan:         "the plan",
-		CodeReview:   "the review",
-		UpdatedAt:    t1,
+		ID:            "task-1",
+		ProjectID:     "attacker/evil",
+		AssignedNode:  "somewhere-else",
+		Title:         "follower renamed it",
+		Issue:         "https://github.com/attacker/evil/issues/1",
+		Status:        task.StatusInReview,
+		StatusReason:  "review drafted",
+		Branch:        "feat/x",
+		WorktreeDir:   "/wt/task-1",
+		PRNumber:      42,
+		Reviewed:      true,
+		Outcome:       "merged",
+		Plan:          "the plan",
+		PlanContract:  `{"task_id":"task-1"}`,
+		PlanCritique:  "the critique",
+		PlanResearch:  "the research",
+		PlanDecisions: "# Decisions\n\nNo open decisions.",
+		PlanBrief:     "the brief",
+		CodeReview:    "the review",
+		UpdatedAt:     t1,
 	}
 
 	out, ok := Merge(canonical, follower)
@@ -55,7 +60,13 @@ func TestMergeAuthoritySplit(t *testing.T) {
 
 	if out.Status != task.StatusInReview || out.StatusReason != "review drafted" ||
 		out.Branch != "feat/x" || out.WorktreeDir != "/wt/task-1" || out.PRNumber != 42 ||
-		!out.Reviewed || out.Outcome != "merged" || out.Plan != "the plan" || out.CodeReview != "the review" {
+		!out.Reviewed || out.Outcome != "merged" || out.Plan != "the plan" ||
+		out.PlanContract != `{"task_id":"task-1"}` ||
+		out.PlanCritique != "the critique" ||
+		out.PlanResearch != "the research" ||
+		out.PlanDecisions != "# Decisions\n\nNo open decisions." ||
+		out.PlanBrief != "the brief" ||
+		out.CodeReview != "the review" {
 		t.Errorf("execution fields must be follower-authoritative: %+v", out)
 	}
 

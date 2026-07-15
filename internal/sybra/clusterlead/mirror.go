@@ -170,6 +170,18 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 	if err := store.PlanContracts().Write(t.ID, t.PlanContract); err != nil {
 		return err
 	}
+	if err := store.PlanCritiques().Write(t.ID, t.PlanCritique); err != nil {
+		return err
+	}
+	if err := store.PlanResearch().Write(t.ID, t.PlanResearch); err != nil {
+		return err
+	}
+	if err := store.PlanDecisions().Write(t.ID, t.PlanDecisions); err != nil {
+		return err
+	}
+	if err := store.PlanBrief().Write(t.ID, t.PlanBrief); err != nil {
+		return err
+	}
 	if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
 		return err
 	}
@@ -207,6 +219,10 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.Body = follower.Body
 	out.Plan = follower.Plan
 	out.PlanContract = follower.PlanContract
+	out.PlanCritique = follower.PlanCritique
+	out.PlanResearch = follower.PlanResearch
+	out.PlanDecisions = follower.PlanDecisions
+	out.PlanBrief = follower.PlanBrief
 	out.CodeReview = follower.CodeReview
 
 	out.MirrorRev = canonical.MirrorRev + 1
