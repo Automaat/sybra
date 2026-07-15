@@ -71,12 +71,11 @@ const PRFixResultContract = "\n\nBefore your final response, decide the outcome:
 	"- If you intentionally stopped because the PR needs a human, end with " +
 	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
 
-// readyForCopilotAutoMerge reports whether a pet PR satisfies the auto-merge
-// policy: mechanically mergeable, CI green (or no checks), GitHub Copilot has
-// submitted a review, no unresolved review threads, and no outstanding change
-// request. Human approval is intentionally NOT required — pet PRs never get one;
-// Copilot's review is the gate. A repo without Copilot enabled stays parked in
-// In Review until a human merges it.
+// readyForCopilotAutoMerge reports whether a pet PR satisfies the Copilot
+// auto-merge policy: mechanically mergeable, CI green (or no checks), GitHub
+// Copilot has submitted a review, no unresolved review threads, and no
+// outstanding change request. Human approval is intentionally NOT required —
+// pet PRs never get one; Copilot's review is one acceptable gate.
 //
 // A SourcedViaREST PR always returns false here — REST fetches leave
 // CopilotReviewed/UnresolvedCount/ReviewDecision zero (thread and review data
@@ -88,6 +87,20 @@ func readyForCopilotAutoMerge(pr github.PullRequest) bool {
 		pr.Mergeable == "MERGEABLE" &&
 		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
 		pr.CopilotReviewed &&
+		pr.UnresolvedCount == 0 &&
+		pr.ReviewDecision != "CHANGES_REQUESTED"
+}
+
+// readyForSybraReviewedAutoMerge reports whether a pet PR can merge without an
+// external reviewer because the owning task has completed Sybra's review stage.
+// This keeps externally opened or unreviewed PRs parked, but avoids stranding
+// Sybra-authored pet work forever when Copilot does not produce a review.
+func readyForSybraReviewedAutoMerge(t task.Task, pr github.PullRequest) bool {
+	return t.Reviewed &&
+		!pr.SourcedViaREST &&
+		!pr.IsDraft &&
+		pr.Mergeable == "MERGEABLE" &&
+		(pr.CIStatus == "SUCCESS" || pr.CIStatus == "") &&
 		pr.UnresolvedCount == 0 &&
 		pr.ReviewDecision != "CHANGES_REQUESTED"
 }
@@ -224,8 +237,13 @@ func (r *Handler) handleAutoMerge(issue github.PRIssue) {
 		// Renovate dependency-bump PRs (surfaced via the "Fix CI" flow) are bot-
 		// authored and never receive a Copilot review, so the Copilot gate would
 		// strand them. The ReadyToMerge issue already implies green + mergeable +
-		// !draft, so preserve their prior green auto-merge.
-		ready = renovateFix || readyForOwnBotAutoMerge(issue.PR) || readyForCopilotAutoMerge(issue.PR)
+		// !draft, so preserve their prior green auto-merge. Sybra-authored pet PRs
+		// can also proceed after the owning task has completed Sybra's own review
+		// stage, even when Copilot never comments.
+		ready = renovateFix ||
+			readyForOwnBotAutoMerge(issue.PR) ||
+			readyForCopilotAutoMerge(issue.PR) ||
+			readyForSybraReviewedAutoMerge(t, issue.PR)
 	}
 	if !ready {
 		return
