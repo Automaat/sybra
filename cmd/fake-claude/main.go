@@ -161,6 +161,8 @@ var scenarioHandlers = map[string]func(string){
 	"test_fail":                   func(string) { runTestFail() },
 	"test_infra_failure":          func(string) { runTestInfraFailure() },
 	"tool_result_large":           func(string) { runToolResultLarge() },
+	"malformed_tool_call_once":    func(string) { runMalformedToolCallOnce() },
+	"malformed_tool_call_repeat":  func(string) { runMalformedToolCallRepeat() },
 	"triage_to_done":              func(taskID string) { runTriage(taskID, "done", "") },
 	"triage_to_in_review":         func(taskID string) { runTriage(taskID, "in-review", "") },
 	"triage_to_human_required":    func(taskID string) { runTriage(taskID, "human-required", "") },
@@ -685,6 +687,34 @@ func runHighCost() {
 	event := resultEvent("over budget")
 	event["total_cost_usd"] = 11.0
 	emit(event)
+}
+
+func runMalformedToolCallOnce() {
+	_ = readInitialPrompt(os.Stdin)
+	emitSystem()
+	emitToolUse("toolu_1", "functions.exec_command", map[string]any{"yield_time_ms": 1000})
+	emitToolResult("toolu_1", malformedToolValidation("missing required property \"cmd\".", `{"type":"object","required":["cmd"]}`), true)
+	emitResult("tool call rejected; waiting for correction")
+	_ = readInitialPrompt(os.Stdin)
+	emitToolUse("toolu_2", "functions.exec_command", map[string]any{"cmd": "pwd", "yield_time_ms": 1000})
+	emitToolResult("toolu_2", "/repo\n", false)
+	emitResult("corrected tool call succeeded")
+}
+
+func runMalformedToolCallRepeat() {
+	_ = readInitialPrompt(os.Stdin)
+	emitSystem()
+	emitToolUse("toolu_1", "functions.exec_command", map[string]any{"yield_time_ms": 1000})
+	emitToolResult("toolu_1", malformedToolValidation("missing required property \"cmd\".", `{"type":"object","required":["cmd"]}`), true)
+	emitResult("tool call rejected; waiting for correction")
+	_ = readInitialPrompt(os.Stdin)
+	emitToolUse("toolu_2", "functions.exec_command", map[string]any{"yield_time_ms": 1000})
+	emitToolResult("toolu_2", malformedToolValidation("missing required property \"cmd\".", `{"type":"object","required":["cmd"]}`), true)
+	emitResult("tool call rejected again")
+}
+
+func malformedToolValidation(validationError, schema string) string {
+	return "Validation error: " + validationError + "\nExpected schema: " + schema
 }
 
 func systemEvent() map[string]any {
