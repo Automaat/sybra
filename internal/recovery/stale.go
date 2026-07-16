@@ -215,11 +215,11 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 	wfID := t.Workflow.WorkflowID
 	// Review tasks are driven by the pr-review workflow, not the
 	// plan/implement pipeline. If simple-task-plan ended up attached to a
-	// review-tagged task due to the create-before-tag race, do NOT restart it.
+	// review-tagged task due to the create-before-tag race, converge it onto
+	// pr-review (or escalate) instead of leaving it stuck in-progress with a
+	// terminal workflow forever — see convergeReviewOnPlanWorkflow.
 	if slices.Contains(t.Tags, "review") && wfID == "simple-task-plan" {
-		r.Logger.Info("restart-stale.skip",
-			"task_id", t.ID, "reason", "review_task_on_plan_workflow", "workflow", wfID)
-		return true
+		return r.convergeReviewOnPlanWorkflow(t)
 	}
 	// pr-fix workflows require WorkflowVarDir and prompt vars seeded by
 	// DispatchEvent. StartWorkflow(nil vars) would launch in ~/.sybra (wrong
@@ -277,6 +277,79 @@ func (r *Recovery) handleTerminalWorkflow(t *task.Task) bool {
 		}
 		if wfErr := r.WorkflowEngine.StartWorkflow(taskID, wfID); wfErr != nil {
 			r.Logger.Error("restart-stale.restart-workflow.failed", "task_id", taskID, "err", wfErr)
+		}
+	})
+	return true
+}
+
+// convergeReviewOnPlanWorkflow repairs a review-tagged task that ended up
+// wired to the plan/implement pipeline instead of pr-review — the
+// create-before-tag race in createReviewTaskWithTriage (internal/sybra/review/inbound.go):
+// a file-watcher-driven task.created dispatch can observe the new task before
+// its "review" tag is indexed, letting simple-task-plan claim the slot
+// pr-review should have matched. Left alone, the task sits in-progress with a
+// terminal workflow and no agent indefinitely — the monitor's lost_agent
+// detector rediscovers it on every tick, and its "agent lost; recovery will
+// resume" StatusReason marker never gets cleared because nothing mutates the
+// task again.
+//
+// pr-review, unlike pr-fix, needs no seeded WorkflowVarDir/vars — its steps
+// read PRNumber/ProjectID straight off the task — so it is safely restartable
+// via a bare StartWorkflow once the task carries that PR context (always set
+// atomically by CreateFull at creation). Without that context there is
+// nothing to resume from: park the task human-required with a precise reason
+// instead of leaving it silently inert forever.
+//
+// Always returns true: the task is handled either way, and the caller must
+// not fall through to the generic redispatch/respawn path below, which would
+// start an implementation agent on an inbound review task.
+func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
+	if t.ProjectID == "" || t.PRNumber == 0 {
+		reason := "review task stranded on a terminal plan workflow with no project/PR context to resume pr-review"
+		r.Logger.Warn("restart-stale.review-on-plan.no-context", "task_id", t.ID)
+		if _, updErr := r.Tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(reason),
+		}); updErr != nil {
+			r.Logger.Error("restart-stale.review-on-plan.park-failed", "task_id", t.ID, "err", updErr)
+		}
+		return true
+	}
+	taskID := t.ID
+	r.Logger.Info("restart-stale.review-on-plan.converge", "task_id", taskID)
+	r.WG.Go(func() {
+		// Re-read and re-check the exact stranded shape: a concurrent tick or
+		// an operator action may already have moved this task on by the time
+		// this goroutine runs (same race the generic redispatch path above
+		// guards against). StartWorkflow's own active-workflow check would
+		// catch a non-terminal workflow, but re-checking here avoids
+		// clobbering a task an operator or another recovery pass already
+		// converged, and keeps this idempotent by inspection.
+		cur, getErr := r.Tasks.Get(taskID)
+		if getErr != nil {
+			r.Logger.Warn("restart-stale.review-on-plan.reget-failed", "task_id", taskID, "err", getErr)
+			return
+		}
+		if cur.Workflow == nil || cur.Workflow.WorkflowID != "simple-task-plan" ||
+			(cur.Workflow.State != workflow.ExecCompleted && cur.Workflow.State != workflow.ExecFailed) {
+			return
+		}
+		if r.Agents.HasRunningAgentForTask(taskID) {
+			return
+		}
+		if err := r.WorkflowEngine.StartWorkflow(taskID, "pr-review"); err != nil {
+			if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+				r.Logger.Error("restart-stale.review-on-plan.start-failed", "task_id", taskID, "err", err)
+			}
+			return
+		}
+		// Overwrite any stale monitor StatusReason (e.g. resetLostAgent's
+		// "agent lost; recovery will resume") now that convergence actually
+		// happened, so the marker that triggered this tick's rediscovery
+		// doesn't linger and mislead the next one.
+		reason := "recovered: converged review task from stale plan workflow to pr-review"
+		if _, updErr := r.Tasks.Update(taskID, task.Update{StatusReason: task.Ptr(reason)}); updErr != nil {
+			r.Logger.Error("restart-stale.review-on-plan.reason-failed", "task_id", taskID, "err", updErr)
 		}
 	})
 	return true
