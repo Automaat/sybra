@@ -492,6 +492,7 @@ func resolveRef(ctx context.Context, barePath, ref string) (string, bool) {
 // from — callers must not depend on the commit having landed.
 func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	restoreProtectedPaths(ctx, wtPath)
+	removeEmbeddedGitDirs(wtPath)
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.Output()
@@ -528,6 +529,30 @@ func isSafeProtectedPath(p string) bool {
 	}
 	for part := range strings.SplitSeq(p, "/") {
 		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func removeEmbeddedGitDirs(wtPath string) {
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == ".git" {
+			continue
+		}
+		if looksLikeGitDir(filepath.Join(wtPath, entry.Name())) {
+			_ = os.RemoveAll(filepath.Join(wtPath, entry.Name()))
+		}
+	}
+}
+
+func looksLikeGitDir(dir string) bool {
+	for _, marker := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err != nil {
 			return false
 		}
 	}
