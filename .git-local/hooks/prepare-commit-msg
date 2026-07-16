@@ -1,7 +1,0 @@
-#!/bin/sh
-# Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
-# commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
-msg_file="$1"
-sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
-[ -z "$sob" ] && exit 0
-git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
