@@ -181,6 +181,29 @@ func TestCompareByExcludesStallsFromFailureEstimate(t *testing.T) {
 	}
 }
 
+// The failure rate and the check on whether it has enough samples must count
+// the same population. Gating on dispatches while rating over resolved runs
+// lets a row declare itself actionable at a 100% failure rate off n=1.
+func TestCompareByGatesSamplesOnResolvedRuns(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := make([]stats.RunRecord, 0, 30)
+	for range 29 {
+		records = append(records, stats.RunRecord{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in})
+	}
+	records = append(records, stats.RunRecord{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in})
+
+	rows := CompareByLatestAuthor(records, nil, since, base, 30, func(r stats.RunRecord) string { return r.Provider })
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if !rows[0].InsufficientData {
+		t.Errorf("InsufficientData = false for a row with 1 resolved run against minSamples=30 (runs=%d stalled=%d failureRate=%v)",
+			rows[0].Runs, rows[0].Stalled, rows[0].FailureRate)
+	}
+}
+
 func TestBreakdownBy(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -7)

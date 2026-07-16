@@ -16,7 +16,7 @@ import * as abtest$0 from "../abtest/models.js";
  * carry provider/role/project yet — see Report.Notes.
  * Runs counts every run in the group (stalls included — they burn real
  * wall-clock and spend). Stalled counts the retried subset, and FailureRate
- * divides by Runs-Stalled so a stall-prone provider cannot look reliable.
+ * divides by ResolvedRuns so a stall-prone provider cannot look reliable.
  */
 export class Breakdown {
     "key": string;

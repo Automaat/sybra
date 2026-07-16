@@ -67,7 +67,7 @@ type Scorecard struct {
 // carry provider/role/project yet — see Report.Notes.
 // Runs counts every run in the group (stalls included — they burn real
 // wall-clock and spend). Stalled counts the retried subset, and FailureRate
-// divides by Runs-Stalled so a stall-prone provider cannot look reliable.
+// divides by ResolvedRuns so a stall-prone provider cannot look reliable.
 type Breakdown struct {
 	Key          string  `json:"key"`
 	Runs         int     `json:"runs"`
@@ -78,6 +78,15 @@ type Breakdown struct {
 	Turns        int     `json:"turns"`
 	Tools        int     `json:"tools"`
 }
+
+// ResolvedRuns counts runs that reached a definitive outcome.
+//
+// It is both the only honest denominator for a failure rate and the only
+// honest sample count for gating on one: a stall carries no signal about the
+// subject's quality, so 29 stalls and 1 failure is a sample of one, not 30.
+// Anything that rates or gates on failures must use this rather than Runs, or
+// the rate and its sufficiency check end up measuring different populations.
+func (b Breakdown) ResolvedRuns() int { return b.Runs - b.Stalled }
 
 // ComparisonBreakdown compares agent/model or experiment variants on the
 // speed, quality, and cost signals Sybra already records.
@@ -135,6 +144,11 @@ type ComparisonBreakdown struct {
 	MinSamplesPerVariant      int                   `json:"minSamplesPerVariant,omitempty"`
 	RoleBreakdowns            []ComparisonBreakdown `json:"roleBreakdowns,omitempty"`
 }
+
+// ResolvedRuns counts runs that reached a definitive outcome — see
+// Breakdown.ResolvedRuns for why failure rating and sample gating must agree
+// on this denominator rather than Runs.
+func (c ComparisonBreakdown) ResolvedRuns() int { return c.Runs - c.Stalled }
 
 // RateEstimate is a binomial rate with fixed 95% Wilson uncertainty and an
 // optional effect delta relative to an A/B baseline row.
@@ -477,7 +491,7 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	out := make([]Breakdown, 0, len(groups))
 	for k, a := range groups {
 		b := Breakdown{Key: k, Runs: a.runs, Failures: a.fails, Stalled: a.stalls, TotalCostUSD: a.cost, Turns: a.turns, Tools: a.tools}
-		if resolved := a.runs - a.stalls; resolved > 0 {
+		if resolved := b.ResolvedRuns(); resolved > 0 {
 			b.FailureRate = float64(a.fails) / float64(resolved)
 		}
 		out = append(out, b)
@@ -891,7 +905,7 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		row := a.row
 		// Landing stays rated over all runs (a stall still consumed a dispatch
 		// of this variant); only the failure rate drops the retried ones.
-		row.FailureEstimate = wilson95(row.Failures, row.Runs-row.Stalled)
+		row.FailureEstimate = wilson95(row.Failures, row.ResolvedRuns())
 		row.LandedEstimate = wilson95(row.Landed, row.Runs)
 		row.MergeEstimate = wilson95(row.Merged, row.Landed)
 		row.MergedWithEditsEstimate = wilson95(row.MergedWithEdits, row.Landed)
@@ -924,7 +938,9 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 		}
 		row.DurationP50S = percentile(a.durations, 50)
 		row.DurationP90S = percentile(a.durations, 90)
-		row.InsufficientData = minSamples > 0 && row.Runs < minSamples
+		// Gate on resolved runs, or a variant with 29 stalls and 1 failure —
+		// one data point — is declared trustworthy at a 100% failure rate.
+		row.InsufficientData = minSamples > 0 && row.ResolvedRuns() < minSamples
 		row.QualityAttributionLimited = row.Landed == 0 && row.Runs > 0
 		out = append(out, row)
 	}
@@ -1002,7 +1018,7 @@ func applyVariantSemantics(rows []ComparisonBreakdown, opts CompareOptions) []Ex
 			}
 			row.MinSamplesPerVariant = opts.MinSamples
 			row.BaselineVariantID = cfg.baselineVariantID
-			if opts.MinSamples > 0 && row.Runs < opts.MinSamples {
+			if opts.MinSamples > 0 && row.ResolvedRuns() < opts.MinSamples {
 				row.SampleStatus = "low-sample"
 			} else {
 				row.SampleStatus = "actionable"
@@ -1138,10 +1154,12 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 	}
 	for _, id := range variantIDs {
 		row := rows[id]
+		// Readiness is about decidable evidence, so it counts resolved runs —
+		// matching the row-level SampleStatus above rather than contradicting it.
 		runs := 0
 		observed := false
 		if row != nil {
-			runs = row.Runs
+			runs = row.ResolvedRuns()
 			observed = true
 		}
 		ready := minSamples <= 0 || runs >= minSamples

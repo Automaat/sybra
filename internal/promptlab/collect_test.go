@@ -54,6 +54,41 @@ func TestCollectWeakSubjectsGates(t *testing.T) {
 	}
 }
 
+// A role whose runs mostly stalled has almost no evidence about its prompt.
+// Gating on dispatches instead of resolved runs would let one resolved run
+// clear MinSamples and — with PromptLab.AutoApprove defaulting to true —
+// autonomously rewrite a prompt over what is really a provider stall (#2149).
+func TestCollectWeakSubjectsGatesOnResolvedRunsNotStalls(t *testing.T) {
+	var records []stats.RunRecord
+	// review: 5 dispatches, but only 1 resolved (a failure). Samples of one.
+	records = append(records, repeatRecords(4, "review", stats.OutcomeStalled, "p1", "review-stall-")...)
+	records = append(records, repeatRecords(1, "review", stats.OutcomeFailed, "p1", "review-fail-")...)
+	// docs: 20 clean runs, holding the fleet baseline near zero so review's
+	// effect size clears MinEffectSize easily if the sample gate lets it past.
+	records = append(records, repeatRecords(20, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
+
+	if got := CollectWeakSubjects(records, 5, 0.15); len(got) != 0 {
+		t.Fatalf("CollectWeakSubjects = %+v, want none: review has 1 resolved run against minSamples=5", got)
+	}
+}
+
+// Once a role has enough resolved runs, stalls alongside them neither block it
+// nor inflate the reported sample count.
+func TestCollectWeakSubjectsReportsResolvedSampleCount(t *testing.T) {
+	var records []stats.RunRecord
+	records = append(records, repeatRecords(5, "implementation", stats.OutcomeFailed, "p1", "impl-fail-")...)
+	records = append(records, repeatRecords(3, "implementation", stats.OutcomeStalled, "p1", "impl-stall-")...)
+	records = append(records, repeatRecords(20, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
+
+	got := CollectWeakSubjects(records, 5, 0.15)
+	if len(got) != 1 || got[0].Role != "implementation" {
+		t.Fatalf("CollectWeakSubjects = %+v, want implementation", got)
+	}
+	if got[0].Samples != 5 {
+		t.Errorf("Samples = %d, want 5 (resolved runs, not the 8 dispatched)", got[0].Samples)
+	}
+}
+
 func TestCollectWeakSubjectsNoRecords(t *testing.T) {
 	got := CollectWeakSubjects(nil, 5, 0.15)
 	if len(got) != 0 {

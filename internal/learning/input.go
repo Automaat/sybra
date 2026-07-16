@@ -25,6 +25,7 @@ type ExperimentSignal struct {
 	Provider             string  `json:"provider,omitempty"`
 	Model                string  `json:"model,omitempty"`
 	Runs                 int     `json:"runs"`
+	Stalled              int     `json:"stalled,omitempty"`
 	MergeRate            float64 `json:"mergeRate"`
 	FailureRate          float64 `json:"failureRate"`
 	InsufficientData     bool    `json:"insufficientData"`
@@ -130,6 +131,7 @@ func buildPacket(recs []stats.RunRecord, evts []audit.Event, abTesting abtest.Co
 			Provider:             rows[i].Provider,
 			Model:                rows[i].Model,
 			Runs:                 rows[i].Runs,
+			Stalled:              rows[i].Stalled,
 			MergeRate:            rows[i].MergeRate,
 			FailureRate:          rows[i].FailureRate,
 			InsufficientData:     rows[i].InsufficientData,
