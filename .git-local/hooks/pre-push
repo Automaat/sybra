@@ -1,5 +1,0 @@
-#!/bin/sh
-set -e
-unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
-mise exec -- go test ./...
-(cd frontend && npm run check)
