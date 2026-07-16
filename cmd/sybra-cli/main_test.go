@@ -30,6 +30,7 @@ func setupStore(t *testing.T) string {
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv("SYBRA_TASKS_DIR", filepath.Join(dir, "tasks"))
+	t.Setenv(serverTargetEnv, "")
 	return dir
 }
 

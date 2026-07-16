@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -88,13 +89,21 @@ func lockdownDir(t *testing.T, dir string) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 }
 
+func isolateHTTPCLITestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv("SYBRA_TASKS_DIR", "")
+	t.Setenv(serverTargetEnv, "")
+}
+
 func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SYBRA_HOME", home)
+	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
 	if code != 0 {
@@ -122,7 +131,7 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	}
 
 	port := startFakeAPIServer(t, serverTasksDir)
-	t.Setenv("SYBRA_PORT", port)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
@@ -153,7 +162,7 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SYBRA_HOME", home)
+	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "no server target")
 	if code != 0 {
@@ -184,7 +193,7 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SYBRA_HOME", home)
+	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "server error target")
 	if code != 0 {
@@ -206,7 +215,7 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	}
 
 	port := startFailingAPIServer(t, t.TempDir())
-	t.Setenv("SYBRA_PORT", port)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	code, out = runCLI(t, "--json", "update", id, "--status", "todo")
 	if code == 0 {
@@ -228,6 +237,7 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	isolateHTTPCLITestHome(t, home)
 
 	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
 	if code != 0 {
@@ -245,12 +255,73 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	id := list[0].ID
 
 	port := startFakeAPIServer(t, tasksDir)
-	t.Setenv("SYBRA_PORT", port)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
 	code, _ = runCLI(t, "--json", "--home", home, "update", id, "--status", "todo")
 	if code == 0 {
 		t.Fatal("--home must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
+	}
+}
+
+func TestNewAPIClient_RequiresExplicitServerTarget(t *testing.T) {
+	t.Setenv(serverTargetEnv, "")
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "token"
+
+	if client, ok := newAPIClient(cfg); ok || client != nil {
+		t.Fatalf("newAPIClient() = %#v, %v, want no client without %s", client, ok, serverTargetEnv)
+	}
+}
+
+func TestNewAPIClient_IgnoresSYBRAPortWithoutDedicatedTarget(t *testing.T) {
+	t.Setenv(serverTargetEnv, "")
+	t.Setenv("SYBRA_PORT", "8080")
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "token"
+
+	if client, ok := newAPIClient(cfg); ok || client != nil {
+		t.Fatalf("newAPIClient() = %#v, %v, want no client when only SYBRA_PORT is set", client, ok)
+	}
+}
+
+func TestNewAPIClient_UsesDedicatedServerTargetEnv(t *testing.T) {
+	t.Setenv(serverTargetEnv, "127.0.0.1:4123")
+	cfg := config.DefaultConfig()
+	cfg.Server.AuthToken = "token"
+
+	client, ok := newAPIClient(cfg)
+	if !ok || client == nil {
+		t.Fatal("newAPIClient() did not build a client from a valid dedicated target")
+	}
+	if client.baseURL != "http://127.0.0.1:4123" {
+		t.Fatalf("baseURL = %q, want http://127.0.0.1:4123", client.baseURL)
+	}
+}
+
+func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "empty", raw: ""},
+		{name: "missing-host", raw: "8080"},
+		{name: "blank-host", raw: ":8080"},
+		{name: "wildcard-host", raw: "0.0.0.0:8080"},
+		{name: "url-missing-port", raw: "http://127.0.0.1"},
+		{name: "url-with-path", raw: "http://127.0.0.1:8080/api"},
+		{name: "https-not-supported", raw: "https://127.0.0.1:8080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(serverTargetEnv, tc.raw)
+			cfg := config.DefaultConfig()
+			cfg.Server.AuthToken = "token"
+
+			if client, ok := newAPIClient(cfg); ok || client != nil {
+				t.Fatalf("newAPIClient() = %#v, %v, want invalid target %q to be rejected", client, ok, tc.raw)
+			}
+		})
 	}
 }

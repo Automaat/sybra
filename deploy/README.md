@@ -51,7 +51,7 @@ validate it (below) before trusting the deploy.**
 | File | Installed to | Purpose |
 |------|--------------|---------|
 | `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build). |
-| `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (port, static dir, `PATH` with mise shims + npm globals). |
+| `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, static dir, `PATH` with mise shims + npm globals). |
 | `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + binary from `/opt/sybra/src`, atomic swap, keep last-good on failure. |
 | `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` the built binary. |
 
@@ -172,10 +172,11 @@ model; this is the deployment checklist.
 **1. Provision the host exactly as above** (mise + toolchain + provider CLIs).
 A follower runs agents, so it needs the full toolchain, not a thin proxy.
 
-**2. Give the unit a token.** In `/etc/sybra/sybra.env`:
+**2. Give the unit a token and explicit local API target.** In `/etc/sybra/sybra.env`:
 
 ```
 SYBRA_AUTH_TOKEN=<32-byte hex, unique per node>
+SYBRA_SERVER_TARGET=127.0.0.1:8080
 ```
 
 The same value goes on the leader, named — never inlined:

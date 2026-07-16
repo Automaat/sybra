@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,12 @@ import (
 const apiCallTimeout = 15 * time.Second
 
 const maxAPIResponseBody = 32 << 20
+
+// serverTargetEnv is the explicit control-plane target for local CLI API mode.
+// Reusing SYBRA_PORT/SYBRA_HOST here is unsafe: they describe where the server
+// listens, and ambient unit-shell exports made the CLI hit unrelated localhost
+// servers during ordinary filesystem-backed commands.
+const serverTargetEnv = "SYBRA_SERVER_TARGET"
 
 type apiClient struct {
 	baseURL string
@@ -44,7 +51,7 @@ func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	if cfg == nil || strings.TrimSpace(cfg.Server.AuthToken) == "" || cfg.ServesTLS() {
 		return nil, false
 	}
-	host, port, ok := resolveDialTarget(cfg)
+	host, port, ok := resolveDialTarget()
 	if !ok {
 		return nil, false
 	}
@@ -55,19 +62,26 @@ func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	}, true
 }
 
-func resolveDialTarget(cfg *config.Config) (host, port string, ok bool) {
-	if configured := configuredBindAddr(cfg); configured != "" {
-		if h, p, err := net.SplitHostPort(configured); err == nil && h != "" && !isWildcardHost(h) {
-			if _, err := strconv.Atoi(p); err == nil {
-				return h, p, true
-			}
-		}
-	}
-	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
-	if len(addrs) == 0 {
+func resolveDialTarget() (host, port string, ok bool) {
+	return parseServerTarget(os.Getenv(serverTargetEnv))
+}
+
+func parseServerTarget(raw string) (host, port string, ok bool) {
+	target := strings.TrimSpace(raw)
+	if target == "" {
 		return "", "", false
 	}
-	_, p, err := net.SplitHostPort(addrs[0])
+	if strings.Contains(target, "://") {
+		u, err := url.Parse(target)
+		if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			return "", "", false
+		}
+		if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
+			return "", "", false
+		}
+		target = u.Host
+	}
+	h, p, err := net.SplitHostPort(target)
 	if err != nil {
 		return "", "", false
 	}
@@ -75,16 +89,10 @@ func resolveDialTarget(cfg *config.Config) (host, port string, ok bool) {
 	if err != nil || n < 1 || n > 65535 {
 		return "", "", false
 	}
-	return "127.0.0.1", p, true
-}
-
-func configuredBindAddr(cfg *config.Config) string {
-	for _, a := range cfg.Cluster.BindAddrs {
-		if trimmed := strings.TrimSpace(a); trimmed != "" {
-			return trimmed
-		}
+	if strings.TrimSpace(h) == "" || isWildcardHost(h) {
+		return "", "", false
 	}
-	return strings.TrimSpace(cfg.Cluster.BindAddr)
+	return h, p, true
 }
 
 func isWildcardHost(h string) bool {
