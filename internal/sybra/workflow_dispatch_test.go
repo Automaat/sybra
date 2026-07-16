@@ -35,3 +35,25 @@ func TestSkipTaskCreatedWorkflowPromptLabProposal(t *testing.T) {
 		t.Error("expected prompt-lab proposal task to skip task:created dispatch")
 	}
 }
+
+func TestSkipTaskCreatedWorkflowInboundReviewTodo(t *testing.T) {
+	tsk := task.Task{
+		Status:   task.StatusTodo,
+		PRNumber: 42,
+		Tags:     []string{"review"},
+	}
+	if skipTaskCreatedWorkflow(tsk) {
+		t.Error("expected a newly created inbound review task to enter task:created dispatch")
+	}
+}
+
+func TestSkipTaskCreatedWorkflowPlanningReviewWithPR(t *testing.T) {
+	tsk := task.Task{
+		Status:   task.StatusPlanning,
+		PRNumber: 42,
+		Tags:     []string{"backend", "review"},
+	}
+	if !skipTaskCreatedWorkflow(tsk) {
+		t.Error("expected a planning task with a linked PR to stay out of task:created dispatch")
+	}
+}
