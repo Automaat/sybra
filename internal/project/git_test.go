@@ -486,6 +486,47 @@ func TestIsSafeProtectedPath(t *testing.T) {
 	}
 }
 
+func TestAutoCommitUncommitted_RemovesEmbeddedGitDirBeforeCommitting(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	embedded := filepath.Join(dir, ".git-local")
+	if err := os.MkdirAll(filepath.Join(embedded, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(embedded, "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(embedded, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(embedded, "config"), []byte("[user]\n\tname = Smoke Test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real-work.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: recovered work"); !got {
+		t.Fatal("expected a commit for the unrelated real-work.txt change")
+	}
+
+	if _, err := os.Stat(embedded); !os.IsNotExist(err) {
+		t.Fatalf(".git-local should have been removed before commit, got stat err=%v", err)
+	}
+
+	statOut, err := exec.Command("git", "-C", dir, "show", "--stat", "-1").Output()
+	if err != nil {
+		t.Fatalf("git show: %v", err)
+	}
+	if strings.Contains(string(statOut), ".git-local") {
+		t.Fatalf("commit should not contain .git-local, got:\n%s", statOut)
+	}
+	if !strings.Contains(string(statOut), "real-work.txt") {
+		t.Fatalf("commit should contain real-work.txt, got:\n%s", statOut)
+	}
+}
+
 func TestAutoCommitUncommitted_RestoresProtectedPathBeforeCommitting(t *testing.T) {
 	t.Parallel()
 
