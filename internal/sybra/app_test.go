@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/config"
 	eventnames "github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -415,6 +416,52 @@ func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
 	}
 	if status.LastReclaim.RanAt.IsZero() {
 		t.Error("LastReclaim.RanAt is zero, want the reclaim pass's timestamp")
+	}
+}
+
+func TestHealthPressureStatusSurfacesLastReclaimWithoutGate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	cfg.Orchestrator.Pressure.Enabled = false
+	a.cfg = cfg
+
+	reclaimer := a.getDiskReclaimer()
+	if reclaimer == nil {
+		t.Fatal("getDiskReclaimer() = nil, want reclaimer")
+	}
+	if !reclaimer.TryRun() {
+		t.Fatal("TryRun() = false, want first reclaim pass to start")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status *health.PressureStatus
+	for time.Now().Before(deadline) {
+		if s := a.healthPressureStatus(); s != nil && s.LastReclaim != nil {
+			status = s
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil {
+		t.Fatal("healthPressureStatus() = nil, want last reclaim telemetry even without a pressure gate")
+	}
+	if status.DiskFreePct != -1 || status.MemAvailablePct != -1 || status.LoadPerCPU != -1 {
+		t.Fatalf("pressure sample = %+v, want unavailable sentinels without a gate", *status)
+	}
+	if status.WarningDiskFreePct != 0 || status.CriticalDiskFreePct != 0 {
+		t.Fatalf("thresholds = (%v, %v), want 0/0 without a gate", status.WarningDiskFreePct, status.CriticalDiskFreePct)
+	}
+	if status.LastReclaim.RanAt.IsZero() {
+		t.Error("LastReclaim.RanAt is zero, want the reclaim pass timestamp")
 	}
 }
 

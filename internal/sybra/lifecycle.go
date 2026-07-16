@@ -204,17 +204,19 @@ func runsGitHubRateBudgetLoop(cfg *config.Config) bool {
 
 func (a *App) healthPressureStatus() *health.PressureStatus {
 	gate := a.getPressureGate()
-	if gate == nil {
-		return nil
-	}
-	sample := gate.Status()
-	warning, critical := gate.Thresholds()
 	status := &health.PressureStatus{
-		DiskFreePct:         sample.DiskFreePct,
-		MemAvailablePct:     sample.MemAvailablePct,
-		LoadPerCPU:          sample.LoadPerCPU,
-		WarningDiskFreePct:  warning,
-		CriticalDiskFreePct: critical,
+		DiskFreePct:     -1,
+		MemAvailablePct: -1,
+		LoadPerCPU:      -1,
+	}
+	if gate != nil {
+		sample := gate.Status()
+		warning, critical := gate.Thresholds()
+		status.DiskFreePct = sample.DiskFreePct
+		status.MemAvailablePct = sample.MemAvailablePct
+		status.LoadPerCPU = sample.LoadPerCPU
+		status.WarningDiskFreePct = warning
+		status.CriticalDiskFreePct = critical
 	}
 	if reclaimer := a.getDiskReclaimer(); reclaimer != nil {
 		outcome := reclaimer.LastOutcome()
@@ -226,6 +228,9 @@ func (a *App) healthPressureStatus() *health.PressureStatus {
 				Errors:             outcome.Errors,
 			}
 		}
+	}
+	if gate == nil && status.LastReclaim == nil {
+		return nil
 	}
 	return status
 }
