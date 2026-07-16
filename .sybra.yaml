@@ -11,6 +11,18 @@ setup:
   - (cd frontend && npm ci)
   - (cd frontend && npm run build:desktop)
 
+# Restored to HEAD before an agent-recovery auto-commit (SanitizeWorktree /
+# verify_commits) rather than preserved as-is. frontend/bindings/ is Wails
+# codegen output; wails3 is darwin-only and not installed on the Linux
+# server, so an agent that deletes/regenerates it there (e.g. following a
+# "wails3 generate bindings" instruction from CLAUDE.md) can leave the
+# directory wiped with no way to regenerate it in that environment. Without
+# this, the safety net that preserves uncommitted work committed that wiped
+# state as if it were real progress (task 02909563: 9641 deletions, broken
+# `npm run build:desktop`).
+protected_paths:
+  - frontend/bindings
+
 # Black-box testing guidance for the testing workflow. Test-runners must prefer
 # this runnable surface over static inspection: start the server, wait for
 # health, then drive at least one user/operator-facing probe.
