@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1207,7 +1208,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	// Seed a handled marker so we can check Clear() was called.
 	r.prTracker.MarkHandled(ids["resolved"], github.PRIssueCIFailure, "sha-old")
 
-	r.cancelResolvedPRFixWorkflows(all, issues)
+	r.cancelResolvedPRFixWorkflows(all, issues, nil)
 
 	got, err := tasks.Get(ids["resolved"])
 	if err != nil {
@@ -1309,7 +1310,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		{Kind: github.PRIssueCIFailure, TaskID: created.ID},
 	}
 
-	r.cancelResolvedPRFixWorkflows(all, issues)
+	r.cancelResolvedPRFixWorkflows(all, issues, nil)
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
@@ -2476,5 +2477,295 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	}
 	if got.Status != task.StatusDone || got.Outcome != "merged" {
 		t.Fatalf("closed linked PR status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
+	}
+}
+
+// A fix agent's own push puts checks in flight, which erases the ci_failure
+// issue from the live set. Cancelling on that absence kills the agent for
+// doing its job, so an indeterminate PR must defer the cancel.
+func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("pending checks", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr42 := 42
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr42}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "ci_failure"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	prIndex := map[string]github.PullRequest{
+		created.ID: {Number: 42, CIStatus: "PENDING", HasPendingChecks: true, Mergeable: "MERGEABLE"},
+	}
+	r.cancelResolvedPRFixWorkflows(all, nil, prIndex)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow state = %+v, want still waiting; a pending-check PR must not cancel the running fix agent", got.Workflow)
+	}
+}
+
+// Once checks land green the ci_failure really is resolved, so the cancel must
+// still fire — the deferral is about unknowable state, not about never cancelling.
+func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := slog.New(slog.DiscardHandler)
+	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
+		t.Fatal(err)
+	}
+	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
+	engine := workflow.NewEngine(wfStore,
+		&taskAdapter{tasks: tasks},
+		&agentAdapter{agents: agentMgr, tasks: tasks},
+		logger,
+	)
+
+	created, err := tasks.Create("settled green", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr43 := 43
+	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr43}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-fix",
+		CurrentStep: "fix",
+		State:       workflow.ExecWaiting,
+		Variables:   map[string]string{"pr_issue_kind": "ci_failure"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Handler{
+		logger:         logger,
+		tasks:          tasks,
+		prTracker:      github.NewIssueTracker(time.Minute),
+		WorkflowEngine: engine,
+	}
+
+	prIndex := map[string]github.PullRequest{
+		created.ID: {Number: 43, CIStatus: "SUCCESS", HasPendingChecks: false, Mergeable: "MERGEABLE"},
+	}
+	r.cancelResolvedPRFixWorkflows(all, nil, prIndex)
+
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow state = %+v, want completed; a settled green PR must still cancel", got.Workflow)
+	}
+}
+
+// The durable budget caps LLM agents, so it must never starve the free
+// deterministic rerun: escalating a work project's transient CI failure to a
+// human without ever trying `gh run rerun --failed` is exactly the spend this
+// PR removes.
+func TestPollAndMonitorPRs_DurableBudgetStillAllowsFreeRerun(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("budget spent", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range github.MaxRetries {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("spent%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-fail",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	failingPR := github.PullRequest{
+		Number: 4242, Repository: "o/r", HeadRefName: "feat/x", HeadSHA: "sha-fail",
+		URL: "https://github.com/o/r/pull/4242", Mergeable: "MERGEABLE", CIStatus: "FAILURE", Author: "me",
+	}
+	var rerunCalled bool
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+	r.rerunFailedChecks = func(string, int) error { rerunCalled = true; return nil }
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if !rerunCalled {
+		t.Fatal("free rerun skipped for a budget-exhausted PR; the budget must cap agents, not deterministic work")
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatal("task parked human-required before the free rerun was even attempted")
+	}
+}
+
+// A ready_to_merge PR never dispatches a fix agent, so the agent budget must
+// not reach it. Gating it in the dispatch loop silently starved auto-merge:
+// escalateExhaustedFix no-ops for the kind, so the merge simply never fired.
+func TestPollAndMonitorPRs_DurableBudgetDoesNotBlockReadyToMerge(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ready to merge", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range github.MaxRetries {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("spent%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-green",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := &Handler{
+		logger:    slog.New(slog.DiscardHandler),
+		tasks:     tasks,
+		prTracker: github.NewIssueTracker(time.Minute),
+	}
+	readyIssue := github.PRIssue{
+		Kind: github.PRIssueReadyToMerge, TaskID: created.ID,
+		PR: github.PullRequest{Number: 4242, Repository: "o/r", HeadSHA: "sha-green", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
+	}
+
+	if spent := r.durableFixBudgetSpent(created.ID, "sha-green"); !spent {
+		t.Fatal("precondition: durable budget should read as spent at this head")
+	}
+	if got := r.prTracker.Decide(created.ID, readyIssue.Kind, readyIssue.PR.HeadSHA, ""); got != github.DispatchHandle {
+		t.Fatalf("ready_to_merge decision = %v, want DispatchHandle; the agent budget must not gate the merge kind", got)
+	}
+}
+
+// The in-memory tracker is wiped on restart, so the retry budget must also be
+// derivable from the task's persisted run log or a broken PR loops forever.
+func TestDurableFixBudgetSpent_CountsPersistedRunsAtHead(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	r := &Handler{logger: slog.New(slog.DiscardHandler), tasks: tasks}
+
+	created, err := tasks.Create("looping pr", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if r.durableFixBudgetSpent(created.ID, "sha-head") {
+		t.Fatal("budget spent with zero prior runs")
+	}
+
+	for i := range github.MaxRetries {
+		if err := store.AddRun(created.ID, task.AgentRun{
+			AgentID: fmt.Sprintf("a%d", i),
+			Role:    string(agent.RolePRFix),
+			HeadSHA: "sha-head",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		want := i == github.MaxRetries-1
+		if got := r.durableFixBudgetSpent(created.ID, "sha-head"); got != want {
+			t.Fatalf("after %d runs: spent = %v, want %v", i+1, got, want)
+		}
+	}
+
+	if r.durableFixBudgetSpent(created.ID, "sha-different") {
+		t.Error("budget spent for a head the agents never ran against; a push must reset the budget")
 	}
 }
