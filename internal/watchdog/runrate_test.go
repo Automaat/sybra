@@ -233,8 +233,8 @@ func TestRecentRunBurst(t *testing.T) {
 		t.Fatalf("recentRunBurst = (%q, %d), want (\"implementation\", 2)", role, count)
 	}
 
-	role, count = recentRunBurst(nil, now, 30*time.Minute)
+	role, count = recentRunBurst([]task.AgentRun{}, now, 30*time.Minute)
 	if role != "" || count != 0 {
-		t.Fatalf("recentRunBurst(nil) = (%q, %d), want (\"\", 0)", role, count)
+		t.Fatalf("recentRunBurst(empty) = (%q, %d), want (\"\", 0)", role, count)
 	}
 }
