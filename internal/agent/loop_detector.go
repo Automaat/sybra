@@ -74,7 +74,9 @@ func (d *loopDetector) noteAction(sig, label string) int {
 		d.recent = slices.Clone(d.recent[len(d.recent)-loopWindowSize:])
 	}
 	if sig == d.lastSig {
-		d.streak++
+		if d.streak < len(d.recent) {
+			d.streak++
+		}
 	} else {
 		d.lastSig = sig
 		d.lastLabel = label

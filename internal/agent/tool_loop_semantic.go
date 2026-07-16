@@ -115,9 +115,48 @@ func normalizeBashActionLabel(command string) string {
 		return "read:" + path
 	}
 	if commandLikelyLongRunningCheck(base) {
-		return "check:" + base
+		return "check:" + truncateCommandFamily(base, checkLabelTokens)
 	}
-	return "bash:" + base
+	return "bash:" + truncateCommandFamily(base, 1)
+}
+
+const checkLabelTokens = 4
+
+func truncateCommandFamily(command string, keepTokens int) string {
+	fields := strings.Fields(stripLeadingEnvAssignments(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	if len(fields) > keepTokens {
+		fields = fields[:keepTokens]
+	}
+	return strings.Join(fields, " ")
+}
+
+func stripLeadingEnvAssignments(command string) string {
+	fields := strings.Fields(command)
+	i := 0
+	for i < len(fields) && isEnvAssignment(fields[i]) {
+		i++
+	}
+	return strings.Join(fields[i:], " ")
+}
+
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	name := tok[:eq]
+	for i, r := range name {
+		switch {
+		case r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeInputPath(input map[string]any) string {

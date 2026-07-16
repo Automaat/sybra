@@ -108,6 +108,20 @@ func TestAgentNoteToolSignature(t *testing.T) {
 		}
 	})
 
+	t.Run("streak never exceeds the retained window", func(t *testing.T) {
+		a := &Agent{}
+		for range loopWindowSize + 8 {
+			a.NoteToolSignature("x")
+		}
+		ev := a.ToolLoopEvidence()
+		if ev.Count > ev.Window {
+			t.Fatalf("evidence = %+v, Count must never exceed Window", ev)
+		}
+		if ev.Count != loopWindowSize || ev.Window != loopWindowSize {
+			t.Fatalf("evidence = %+v, want count/window capped at %d", ev, loopWindowSize)
+		}
+	})
+
 	t.Run("successful progress resets the low-progress window", func(t *testing.T) {
 		a := &Agent{}
 		a.NoteToolAction("check:go test ./...", "check:go test ./...")
