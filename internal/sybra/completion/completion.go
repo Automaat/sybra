@@ -153,27 +153,7 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
 }
 
-func (h *Handler) OnComplete(ag *agent.Agent) {
-	resultContent := terminalResultContent(ag)
-
-	// Snapshot mutable fields once under the agent's lock so both the
-	// persistence write and the audit entry see a consistent view.
-	state := ag.GetState()
-	cost := ag.GetCostUSD()
-	premiumRequests := ag.GetPremiumRequests()
-	cost = estimatedRunCost(ag, cost, premiumRequests)
-	exitErr := ag.GetExitErr()
-	input := ag.GetInputTokens()
-	output := ag.GetOutputTokens()
-	cacheCreate := ag.GetCacheCreationInputTokens()
-	cacheRead := ag.GetCacheReadInputTokens()
-	reasoning := ag.GetReasoningTokens()
-
-	// Audit logging always fires — orchestrator brain agents have no
-	// parent task and skip the storage paths below, but their lifecycle
-	// still belongs in the audit trail.
-	duration := runDurationSeconds(ag)
-	role := h.roleForAgentName(ag.Name)
+func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
 	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,
@@ -202,6 +182,35 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if premiumRequests > 0 {
 		auditData["premium_requests"] = premiumRequests
 	}
+	if reason, waited, ok := ag.PostResultWaitDuration(time.Now().UTC()); ok {
+		auditData["post_result_wait_reason"] = reason
+		auditData["post_result_wait_s"] = waited.Seconds()
+	}
+	return auditData
+}
+
+func (h *Handler) OnComplete(ag *agent.Agent) {
+	resultContent := terminalResultContent(ag)
+
+	// Snapshot mutable fields once under the agent's lock so both the
+	// persistence write and the audit entry see a consistent view.
+	state := ag.GetState()
+	cost := ag.GetCostUSD()
+	premiumRequests := ag.GetPremiumRequests()
+	cost = estimatedRunCost(ag, cost, premiumRequests)
+	exitErr := ag.GetExitErr()
+	input := ag.GetInputTokens()
+	output := ag.GetOutputTokens()
+	cacheCreate := ag.GetCacheCreationInputTokens()
+	cacheRead := ag.GetCacheReadInputTokens()
+	reasoning := ag.GetReasoningTokens()
+
+	// Audit logging always fires — orchestrator brain agents have no
+	// parent task and skip the storage paths below, but their lifecycle
+	// still belongs in the audit trail.
+	duration := runDurationSeconds(ag)
+	role := h.roleForAgentName(ag.Name)
+	auditData := buildCompletionAuditData(ag, state, role, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{

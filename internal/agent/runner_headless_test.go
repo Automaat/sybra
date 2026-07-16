@@ -2727,8 +2727,8 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 		t.Fatalf("lookupProvider: %v", err)
 	}
 	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
-	if stop {
-		t.Fatal("processHeadlessLine reported stop for an unsteered close")
+	if !stop {
+		t.Fatal("processHeadlessLine = false, want immediate stop for a clean terminal result with no queued steer or background tasks")
 	}
 
 	if !a.isFinalizing() {
@@ -2736,6 +2736,51 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	}
 	if a.convo.hasStdinPipe() {
 		t.Error("stdin pipe must be closed once finalizing")
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false, want result-derived completion on the fast close path")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitFastClose {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fast_close", reason, time.Time{}, ok)
+	}
+}
+
+func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with live background tasks must retain grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitBackgroundTask {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want background_tasks", reason, time.Time{}, ok)
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true before background tasks clear, want false")
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); !stop {
+		t.Fatal("background task clear after terminal result must trigger immediate stop")
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false after background tasks cleared, want true")
 	}
 }
 

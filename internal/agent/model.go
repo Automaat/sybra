@@ -157,6 +157,12 @@ type Agent struct {
 	// queuing a message that would never be delivered — the child is on its
 	// way out.
 	finalizing bool
+	// postResultWaitReason/postResultWaitSince track a headless run that
+	// already emitted a clean terminal result and is now only waiting for the
+	// process to exit. Persisted so a restart does not re-arm a fresh grace
+	// window for a run already known to be done.
+	postResultWaitReason string
+	postResultWaitSince  time.Time
 
 	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
 	// system event (REPLACE semantics: the full set of currently-live
@@ -380,30 +386,32 @@ func (a *Agent) toRecord() Record {
 	defer a.mu.RUnlock()
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
-		ID:                 a.ID,
-		TaskID:             a.TaskID,
-		Name:               a.Name,
-		Mode:               a.Mode,
-		Provider:           a.Provider,
-		Model:              a.Model,
-		ExperimentID:       a.ExperimentID,
-		VariantID:          a.VariantID,
-		AssignmentUnit:     a.AssignmentUnit,
-		AssignmentKey:      a.AssignmentKey,
-		PID:                a.PID,
-		SessionID:          a.SessionID,
-		LogPath:            a.LogPath,
-		CWD:                a.sessionCWD,
-		SandboxHomeDir:     a.sandboxHomeDir,
-		StartedAt:          a.StartedAt,
-		StdinPath:          a.convo.stdinPath,
-		PendingPrompts:     pendingPrompts,
-		OneShot:            a.oneShot,
-		MaxTurns:           a.MaxTurns,
-		RequirePermissions: a.requirePermissions,
-		SandboxMode:        a.sandboxMode,
-		ReasoningEffort:    a.ReasoningEffort,
-		SkillExecutionMode: a.SkillExecutionMode,
+		ID:                   a.ID,
+		TaskID:               a.TaskID,
+		Name:                 a.Name,
+		Mode:                 a.Mode,
+		Provider:             a.Provider,
+		Model:                a.Model,
+		ExperimentID:         a.ExperimentID,
+		VariantID:            a.VariantID,
+		AssignmentUnit:       a.AssignmentUnit,
+		AssignmentKey:        a.AssignmentKey,
+		PID:                  a.PID,
+		SessionID:            a.SessionID,
+		LogPath:              a.LogPath,
+		CWD:                  a.sessionCWD,
+		SandboxHomeDir:       a.sandboxHomeDir,
+		StartedAt:            a.StartedAt,
+		StdinPath:            a.convo.stdinPath,
+		PendingPrompts:       pendingPrompts,
+		OneShot:              a.oneShot,
+		MaxTurns:             a.MaxTurns,
+		RequirePermissions:   a.requirePermissions,
+		SandboxMode:          a.sandboxMode,
+		ReasoningEffort:      a.ReasoningEffort,
+		SkillExecutionMode:   a.SkillExecutionMode,
+		PostResultWaitReason: a.postResultWaitReason,
+		PostResultWaitSince:  a.postResultWaitSince,
 	}
 }
 
@@ -411,32 +419,34 @@ func (a *Agent) toRecord() Record {
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
 	return &Agent{
-		ID:                 r.ID,
-		TaskID:             r.TaskID,
-		Name:               r.Name,
-		Mode:               r.Mode,
-		Provider:           r.Provider,
-		Model:              r.Model,
-		ExperimentID:       r.ExperimentID,
-		VariantID:          r.VariantID,
-		AssignmentUnit:     r.AssignmentUnit,
-		AssignmentKey:      r.AssignmentKey,
-		PID:                r.PID,
-		SessionID:          r.SessionID,
-		LogPath:            r.LogPath,
-		sessionCWD:         r.CWD,
-		sandboxHomeDir:     r.SandboxHomeDir,
-		StartedAt:          r.StartedAt,
-		LastEventAt:        time.Now().UTC(),
-		State:              StateRunning,
-		MaxTurns:           r.MaxTurns,
-		oneShot:            r.OneShot,
-		convo:              convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
-		requirePermissions: r.RequirePermissions,
-		sandboxMode:        r.SandboxMode,
-		ReasoningEffort:    r.ReasoningEffort,
-		SkillExecutionMode: r.SkillExecutionMode,
-		detached:           true,
+		ID:                   r.ID,
+		TaskID:               r.TaskID,
+		Name:                 r.Name,
+		Mode:                 r.Mode,
+		Provider:             r.Provider,
+		Model:                r.Model,
+		ExperimentID:         r.ExperimentID,
+		VariantID:            r.VariantID,
+		AssignmentUnit:       r.AssignmentUnit,
+		AssignmentKey:        r.AssignmentKey,
+		PID:                  r.PID,
+		SessionID:            r.SessionID,
+		LogPath:              r.LogPath,
+		sessionCWD:           r.CWD,
+		sandboxHomeDir:       r.SandboxHomeDir,
+		StartedAt:            r.StartedAt,
+		LastEventAt:          time.Now().UTC(),
+		State:                StateRunning,
+		MaxTurns:             r.MaxTurns,
+		oneShot:              r.OneShot,
+		convo:                convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		requirePermissions:   r.RequirePermissions,
+		sandboxMode:          r.SandboxMode,
+		ReasoningEffort:      r.ReasoningEffort,
+		SkillExecutionMode:   r.SkillExecutionMode,
+		postResultWaitReason: r.PostResultWaitReason,
+		postResultWaitSince:  r.PostResultWaitSince,
+		detached:             true,
 	}
 }
 
@@ -1241,6 +1251,11 @@ func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
 // a run forever — the guard still fires, just later, once this is exhausted.
 const backgroundTaskGrace = 15 * time.Minute
 
+const (
+	postResultWaitFastClose      = "fast_close"
+	postResultWaitBackgroundTask = "background_tasks"
+)
+
 // SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
 // background bash tasks, mirroring the REPLACE semantics of the CLI's
 // "background_tasks_changed" system event.
@@ -1276,6 +1291,61 @@ func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
 		return base + backgroundTaskGrace
 	}
 	return base
+}
+
+// SetPostResultWait records that the run already produced a clean terminal
+// result and is only waiting on process teardown. The first observed timestamp
+// is preserved across later reason updates so total wait time survives
+// background-task clear events and restart reattach.
+func (a *Agent) SetPostResultWait(reason string, since time.Time) {
+	if reason == "" {
+		a.ClearPostResultWait()
+		return
+	}
+	if since.IsZero() {
+		since = time.Now().UTC()
+	}
+	a.mu.Lock()
+	if !a.postResultWaitSince.IsZero() && a.postResultWaitSince.Before(since) {
+		since = a.postResultWaitSince
+	}
+	a.postResultWaitReason = reason
+	a.postResultWaitSince = since
+	a.mu.Unlock()
+}
+
+// ClearPostResultWait forgets any recorded post-result wait state.
+func (a *Agent) ClearPostResultWait() {
+	a.mu.Lock()
+	a.postResultWaitReason = ""
+	a.postResultWaitSince = time.Time{}
+	a.mu.Unlock()
+}
+
+// PostResultWait reports the current post-result wait state, if any.
+func (a *Agent) PostResultWait() (reason string, since time.Time, ok bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.postResultWaitReason == "" || a.postResultWaitSince.IsZero() {
+		return "", time.Time{}, false
+	}
+	return a.postResultWaitReason, a.postResultWaitSince, true
+}
+
+// PostResultWaitDuration reports how long the current post-result wait has
+// lasted. ok=false means no post-result wait is active.
+func (a *Agent) PostResultWaitDuration(now time.Time) (reason string, d time.Duration, ok bool) {
+	reason, since, ok := a.PostResultWait()
+	if !ok {
+		return "", 0, false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if now.Before(since) {
+		return reason, 0, true
+	}
+	return reason, now.Sub(since), true
 }
 
 // SetForegroundCommand records a live foreground Bash/command_execution call.

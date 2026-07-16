@@ -164,6 +164,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if outFile == nil {
 		return false, nil
 	}
+	a.ClearPostResultWait()
 
 	prepared, err := prepareHeadlessAttempt(a, cfg)
 	if err != nil {
@@ -669,20 +670,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 			return true, end()
 		}
 
-		// Post-result hang: the process emitted its terminal result but has
-		// not exited. The run is logically complete — stop the orphan and
-		// finalize from the result so the workflow advances instead of the
-		// stall watchdog escalating a finished run to human-required.
-		// EffectiveHangGrace extends the idle window while a CLI
-		// `run_in_background` task (e.g. npm ci) is still live, so it isn't
-		// killed mid-write just because it produces no NDJSON activity.
-		if a.TerminalResultIdle(a.EffectiveHangGrace(postResultGrace)) {
-			m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
-				"idle_sec", int(time.Since(a.GetLastEventAt()).Seconds()),
-				"background_tasks_pending", a.HasBackgroundTasks())
-			a.setCompletedByResult(true)
-			m.signalKill(a)
-			waitExit()
+		if m.stopTailPostResultWait(a, waitExit) {
 			return true, end()
 		}
 
@@ -858,8 +846,51 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if keepGoing := m.handleHeadlessResult(ctx, a, event); !keepGoing {
 			return true
 		}
+	} else if m.stopAfterClearedBackgroundTasks(a) {
+		return true
 	}
 	return false
+}
+
+func shouldTrackPostResultWait(a *Agent) bool {
+	return a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
+}
+
+func ensurePostResultWaitState(a *Agent) {
+	if _, _, ok := a.PostResultWait(); ok || !a.CompletedSuccessfully() || !shouldTrackPostResultWait(a) {
+		return
+	}
+	reason := postResultWaitFastClose
+	if a.HasBackgroundTasks() {
+		reason = postResultWaitBackgroundTask
+	}
+	a.SetPostResultWait(reason, a.GetLastEventAt())
+}
+
+func (m *Manager) stopTailPostResultWait(a *Agent, waitExit func()) bool {
+	ensurePostResultWaitState(a)
+	reason, since, ok := a.PostResultWait()
+	if !ok {
+		return false
+	}
+	switch {
+	case reason == postResultWaitFastClose:
+		m.logPostResultWaitDone(a, "reattach_fast_close")
+	case reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks():
+		m.logPostResultWaitDone(a, "background_tasks_cleared")
+	case reason == postResultWaitBackgroundTask && !since.IsZero() && time.Since(since) >= a.EffectiveHangGrace(postResultGrace):
+		waited := time.Since(since)
+		m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
+			"reason", reason,
+			"wait_ms", waited.Milliseconds(),
+			"background_tasks_pending", a.HasBackgroundTasks())
+	default:
+		return false
+	}
+	a.setCompletedByResult(true)
+	m.signalKill(a)
+	waitExit()
+	return true
 }
 
 func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
@@ -945,7 +976,42 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 
 	m.drainOrCloseHeadlessSteer(a)
+	if !shouldTrackPostResultWait(a) {
+		a.ClearPostResultWait()
+		return true
+	}
+	if a.HasBackgroundTasks() {
+		a.SetPostResultWait(postResultWaitBackgroundTask, event.Timestamp)
+		m.saveRegistry(ctx, a)
+		return true
+	}
+	a.SetPostResultWait(postResultWaitFastClose, event.Timestamp)
+	m.saveRegistry(ctx, a)
+	m.logPostResultWaitDone(a, "result_seen")
+	a.setCompletedByResult(true)
+	return false
+}
+
+func (m *Manager) stopAfterClearedBackgroundTasks(a *Agent) bool {
+	reason, _, ok := a.PostResultWait()
+	if !ok || reason != postResultWaitBackgroundTask || a.HasBackgroundTasks() || !shouldTrackPostResultWait(a) {
+		return false
+	}
+	m.logPostResultWaitDone(a, "background_tasks_cleared")
+	a.setCompletedByResult(true)
 	return true
+}
+
+func (m *Manager) logPostResultWaitDone(a *Agent, resolution string) {
+	reason, waited, ok := a.PostResultWaitDuration(time.Now().UTC())
+	if !ok {
+		return
+	}
+	m.logger.Info("agent.headless.post_result_close",
+		"id", a.ID,
+		"reason", reason,
+		"resolution", resolution,
+		"wait_ms", waited.Milliseconds())
 }
 
 // drainOrCloseHeadlessSteer is the steerable headless run's turn-boundary
