@@ -4,7 +4,17 @@
 
   // Mirrors github.ParsePRURL (internal/github/client.go) — a fast client-side
   // check; the backend remains the source of truth for what actually enriches.
-  const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/
+  // Anchored so a PR number followed by anything other than "/" (e.g. a
+  // "?diff=split" or "#discussion_r123" glued onto the number from a copied
+  // browser URL) fails here instead of silently becoming a plain task with a
+  // garbage title — ParsePRURL's own strconv.Atoi on that path segment would
+  // reject it the same way.
+  const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(\/.*)?$/
+
+  function stripQueryAndFragment(url: string): string {
+    const i = url.search(/[?#]/)
+    return i === -1 ? url : url.slice(0, i)
+  }
 
   let active = $state(false)
   let link = $state('')
@@ -22,7 +32,7 @@
   }
 
   async function submit() {
-    const url = link.trim()
+    const url = stripQueryAndFragment(link.trim())
     if (!url) return
     if (!PR_URL_RE.test(url)) {
       notificationStore.pushLocal(
