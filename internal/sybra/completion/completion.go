@@ -203,7 +203,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		auditData["premium_requests"] = premiumRequests
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
-	if reason := ag.GetEscalationReason(); reason == "checkpoint" || reason == "checkpoint_failed" {
+	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
 			"reason":     reason,
 			"turn_count": ag.GetTurnCount(),
@@ -450,9 +450,9 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malfor
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
-	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
-	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == "checkpoint_failed"
-	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == "checkpoint"
+	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
+	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
 	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
 	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || checkpointStopped
 	return stalled, rateLimited, malformedTool, stopStalled, checkpointStopped

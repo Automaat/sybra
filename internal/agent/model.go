@@ -82,11 +82,12 @@ type Agent struct {
 	// one provider turn instead of surviving as reusable chats.
 	oneShot bool
 	// PluginErrors holds plugin load failures from the most recent init event.
-	PluginErrors     []string `json:"pluginErrors,omitempty"`
-	EscalationReason string   `json:"escalationReason,omitempty"`
-	ErrorKind        string   `json:"errorKind,omitempty"`
-	ErrorMsg         string   `json:"errorMsg,omitempty"`
-	AwaitingApproval bool     `json:"awaitingApproval,omitempty"`
+	PluginErrors []string `json:"pluginErrors,omitempty"`
+	// Read across packages to route a stopped run; writers must use EscalationReason* constants. EXC:FILE011:load-bearing-invariant
+	EscalationReason string `json:"escalationReason,omitempty"`
+	ErrorKind        string `json:"errorKind,omitempty"`
+	ErrorMsg         string `json:"errorMsg,omitempty"`
+	AwaitingApproval bool   `json:"awaitingApproval,omitempty"`
 	// Resumable is set when the agent was stopped intentionally via StopAgent
 	// and CC exited with a valid session_id, meaning the next run can pass
 	// --resume to continue the conversation.
@@ -777,6 +778,28 @@ func (a *Agent) AckToolLoop() {
 // trigger until the signature changes.
 func (a *Agent) ToolLoopAcknowledged() bool {
 	return a.loops.acknowledged()
+}
+
+// EscalationReasonCost marks a run stopped for breaching MaxCostUSD.
+const EscalationReasonCost = "cost"
+
+// EscalationReasonTurns marks a run stopped at the turn ceiling awaiting a human.
+const EscalationReasonTurns = "turns"
+
+// EscalationReasonCheckpoint marks a run whose work was committed at the turn
+// ceiling and which must be rescheduled onto a fresh agent. Never overwrite it:
+// the handoff is routed off this exact value.
+const EscalationReasonCheckpoint = "checkpoint"
+
+// EscalationReasonCheckpointFailed marks a turn-ceiling run whose checkpoint commit failed.
+const EscalationReasonCheckpointFailed = "checkpoint_failed"
+
+// IsCheckpointEscalation reports whether reason records a turn-ceiling
+// checkpoint outcome. Both values steer terminal handling — one reschedules the
+// handoff, the other stamps errCheckpointCommitFailed — so neither may be
+// overwritten by a later guardrail that fires on the same run.
+func IsCheckpointEscalation(reason string) bool {
+	return reason == EscalationReasonCheckpoint || reason == EscalationReasonCheckpointFailed
 }
 
 // SetEscalationReason updates the escalation reason string.

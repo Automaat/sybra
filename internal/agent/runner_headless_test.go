@@ -2808,3 +2808,73 @@ done
 	}
 	return dir
 }
+
+// A checkpoint handoff commits the run's work and sets escalation reason
+// "checkpoint"; internal/sybra/completion routes RescheduleCheckpointedAgent
+// off that exact value. The terminal result event lands after the checkpoint
+// and carries the run's total cost, so a run that checkpointed past the cost
+// ceiling had its reason stamped to "cost" — silently converting a handoff
+// into a plain failure and orphaning the committed work. This is the same bug
+// class TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure pins for
+// completedByResult.
+func TestCheckCostGuardrail_PreservesCheckpointEscalationReason(t *testing.T) {
+	t.Parallel()
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime: ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+
+	ag := &Agent{ID: "a1", TaskID: "t1", done: make(chan struct{})}
+	ag.SetEscalationReason(EscalationReasonCheckpoint)
+
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+		t.Fatal("checkCostGuardrail = true, want false (a cost breach always stops the run)")
+	}
+	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpoint {
+		t.Fatalf("escalation reason = %q, want %q; the cost ceiling must not discard a committed checkpoint handoff", got, EscalationReasonCheckpoint)
+	}
+	if !ag.WasStopped() {
+		t.Error("WasStopped() = false, want true")
+	}
+}
+
+// finalizeFromResult stamps errCheckpointCommitFailed off "checkpoint_failed",
+// so letting a late result event overwrite it with "cost" would finalize a run
+// whose checkpoint commit failed as though nothing had gone wrong, and would
+// also drop its EventAgentCheckpoint audit record.
+func TestCheckCostGuardrail_PreservesCheckpointFailedEscalationReason(t *testing.T) {
+	t.Parallel()
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime: ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+
+	ag := &Agent{ID: "a3", TaskID: "t3", done: make(chan struct{})}
+	ag.SetEscalationReason(EscalationReasonCheckpointFailed)
+
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+		t.Fatal("checkCostGuardrail = true, want false")
+	}
+	if got := ag.GetEscalationReason(); got != EscalationReasonCheckpointFailed {
+		t.Fatalf("escalation reason = %q, want %q; a failed checkpoint must not finalize as a plain cost stop", got, EscalationReasonCheckpointFailed)
+	}
+}
+
+// A run that never checkpointed must still be labelled "cost" so it flows
+// through the bounded failed-completion path rather than a reschedule.
+func TestCheckCostGuardrail_StampsCostWhenNoCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir(), ManagerConfig{
+		Runtime: ManagerRuntimeConfig{DefaultProvider: "claude"},
+	})
+
+	ag := &Agent{ID: "a2", TaskID: "t2", done: make(chan struct{})}
+
+	if keepGoing := m.checkCostGuardrail(ag, 8.19, 5.0); keepGoing {
+		t.Fatal("checkCostGuardrail = true, want false")
+	}
+	if got := ag.GetEscalationReason(); got != EscalationReasonCost {
+		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
+	}
+}
