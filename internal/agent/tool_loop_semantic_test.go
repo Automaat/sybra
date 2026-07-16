@@ -26,6 +26,11 @@ func TestNormalizeBashActionLabel_StripsEnvAssignmentsAndSecrets(t *testing.T) {
 			command: `CI_TOKEN=abc123 go test ./... -run TestSecretLeak -v -count=1`,
 			want:    "check:go test ./... -run",
 		},
+		{
+			name:    "quoted env assignment with spaces is fully stripped",
+			command: `TOKEN="super secret value" go test ./... -run TestSecretLeak -count=1`,
+			want:    "check:go test ./... -run",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,6 +54,9 @@ func TestTruncateCommandFamily(t *testing.T) {
 		{"go test ./... -run Foo", 1, "go"},
 		{"go test ./... -run Foo", 4, "go test ./... -run"},
 		{"FOO=bar BAZ=qux npm ci", 1, "npm"},
+		{`golangci-lint --token=abc123 run ./...`, 4, "golangci-lint --token=[redacted] run ./..."},
+		{`golangci-lint --token abc123 run ./...`, 4, "golangci-lint --token [redacted] run"},
+		{`TOKEN="super secret" go test ./... -run Foo`, 4, "go test ./... -run"},
 		{"", 1, ""},
 		{"FOO=bar", 1, ""},
 	}

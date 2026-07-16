@@ -96,16 +96,13 @@ func semanticToolPartForUse(use ToolUseBlock) semanticToolPart {
 }
 
 func normalizeBashActionLabel(command string) string {
-	cmd := normalizeShellWords(command)
+	cmd := strings.TrimSpace(command)
 	if cmd == "" {
 		return ""
 	}
 	pipeline := splitShellPipeline(cmd)
 	for len(pipeline) > 1 && pipelineStageIsOutputFilter(pipeline[len(pipeline)-1]) {
 		pipeline = pipeline[:len(pipeline)-1]
-	}
-	for i := range pipeline {
-		pipeline[i] = normalizeShellWords(pipeline[i])
 	}
 	base := strings.Join(pipeline, " | ")
 	if base == "" {
@@ -121,9 +118,10 @@ func normalizeBashActionLabel(command string) string {
 }
 
 const checkLabelTokens = 4
+const redactedCommandValue = "[redacted]"
 
 func truncateCommandFamily(command string, keepTokens int) string {
-	fields := strings.Fields(stripLeadingEnvAssignments(command))
+	fields := redactSecretBearingShellTokens(shellFields(stripLeadingEnvAssignments(command)))
 	if len(fields) == 0 {
 		return ""
 	}
@@ -134,12 +132,66 @@ func truncateCommandFamily(command string, keepTokens int) string {
 }
 
 func stripLeadingEnvAssignments(command string) string {
-	fields := strings.Fields(command)
+	return joinShellFields(stripLeadingEnvAssignmentTokens(shellFields(command)))
+}
+
+func stripLeadingEnvAssignmentTokens(fields []string) []string {
 	i := 0
 	for i < len(fields) && isEnvAssignment(fields[i]) {
 		i++
 	}
-	return strings.Join(fields[i:], " ")
+	return append([]string(nil), fields[i:]...)
+}
+
+func redactSecretBearingShellTokens(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := append([]string(nil), fields...)
+	for i := range out {
+		name, hasInlineValue, ok := parseSecretBearingFlag(out[i])
+		if !ok {
+			continue
+		}
+		if hasInlineValue {
+			out[i] = name + "=" + redactedCommandValue
+			continue
+		}
+		if i+1 < len(out) && !strings.HasPrefix(out[i+1], "-") {
+			out[i+1] = redactedCommandValue
+		}
+	}
+	return out
+}
+
+func parseSecretBearingFlag(token string) (name string, hasInlineValue, ok bool) {
+	if !strings.HasPrefix(token, "-") {
+		return "", false, false
+	}
+	flag := strings.TrimLeft(token, "-")
+	if flag == "" {
+		return "", false, false
+	}
+	name, _, hasInlineValue = strings.Cut(flag, "=")
+	if !flagNameLooksSecret(name) {
+		return "", false, false
+	}
+	return token[:len(token)-len(flag)] + name, hasInlineValue, true
+}
+
+func flagNameLooksSecret(name string) bool {
+	normalized := strings.NewReplacer("_", "-", ".", "-", ":", "-").Replace(strings.ToLower(name))
+	parts := strings.FieldsFunc(normalized, func(r rune) bool { return r == '-' })
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		switch part {
+		case "auth", "authorization", "bearer", "cookie", "credential", "credentials", "creds", "key", "passwd", "password", "secret", "session", "token":
+			return true
+		}
+	}
+	return false
 }
 
 func isEnvAssignment(tok string) bool {
@@ -177,10 +229,6 @@ func normalizePath(path string) string {
 	return filepath.Clean(path)
 }
 
-func normalizeShellWords(command string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
-}
-
 func splitShellPipeline(command string) []string {
 	var (
 		parts   []string
@@ -214,8 +262,63 @@ func splitShellPipeline(command string) []string {
 	return compactNonEmpty(parts)
 }
 
+func shellFields(command string) []string {
+	var (
+		fields  []string
+		current strings.Builder
+		singleQ bool
+		doubleQ bool
+		escaped bool
+	)
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+	}
+	for _, r := range command {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\' && !singleQ:
+			escaped = true
+		case r == '\'' && !doubleQ:
+			singleQ = !singleQ
+		case r == '"' && !singleQ:
+			doubleQ = !doubleQ
+		case (r == ' ' || r == '\t' || r == '\n') && !singleQ && !doubleQ:
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if escaped {
+		current.WriteByte('\\')
+	}
+	flush()
+	return fields
+}
+
+func joinShellFields(fields []string) string {
+	quoted := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if strings.IndexFunc(field, func(r rune) bool {
+			return r == ' ' || r == '\t' || r == '\n'
+		}) < 0 {
+			quoted = append(quoted, field)
+			continue
+		}
+		escaped := strings.ReplaceAll(field, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		quoted = append(quoted, `"`+escaped+`"`)
+	}
+	return strings.Join(quoted, " ")
+}
+
 func pipelineStageIsOutputFilter(stage string) bool {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(stage)))
+	fields := shellFields(strings.ToLower(strings.TrimSpace(stage)))
 	if len(fields) == 0 {
 		return false
 	}
@@ -232,7 +335,7 @@ func pipelineStageIsOutputFilter(stage string) bool {
 }
 
 func classifyShellRead(command string) (string, bool) {
-	fields := strings.Fields(command)
+	fields := shellFields(command)
 	if len(fields) == 0 {
 		return "", false
 	}
