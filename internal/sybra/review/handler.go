@@ -177,11 +177,11 @@ type Handler struct {
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
-func (r *Handler) agentLogin() string {
+func (r *Handler) agentLogin(ctx context.Context) string {
 	if r.viewerLoginFn != nil {
 		return r.viewerLoginFn()
 	}
-	return github.ViewerLogin()
+	return github.ViewerLoginCtx(ctx)
 }
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
@@ -331,7 +331,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
@@ -453,7 +453,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
 	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,

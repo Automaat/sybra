@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // execer abstracts command execution for testing.
@@ -78,26 +79,68 @@ var (
 	cachedViewer string
 )
 
-func viewerLogin(e execer) string {
+// resetCachedViewer drops the memoized viewer login. Called when the auth mode
+// changes, since the identity is resolved differently per mode.
+func resetCachedViewer() {
+	viewerMu.Lock()
+	cachedViewer = ""
+	viewerMu.Unlock()
+}
+
+func viewerLogin(ctx context.Context, e execer) string {
+	login, err := viewerLoginE(ctx, e)
+	if err != nil {
+		return ""
+	}
+	return login
+}
+
+// viewerLoginE resolves the login this process acts as, returning the cause on
+// failure so callers can report *why* attribution is impossible rather than a
+// bare "unknown".
+//
+// Auth-mode-dependent by necessity: under GitHub App auth the identity is
+// "<slug>[bot]" and must come from GET /app, because /user is a user-to-server
+// endpoint that always 403s for installation tokens (the same trap #2032 hit in
+// Authenticated() — see the comment there). Silently returning "" from a failed
+// /user call is what froze review_phase and drove the 112-review loop in #2164.
+func viewerLoginE(ctx context.Context, e execer) (string, error) {
 	viewerMu.RLock()
 	cached := cachedViewer
 	viewerMu.RUnlock()
 	if cached != "" {
-		return cached
+		return cached, nil
 	}
-	out, err := e.run("api", "user", "-q", ".login")
-	if err != nil {
-		return ""
+
+	var login string
+	if src := currentAppSource(); src != nil {
+		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		resolved, err := src.appLogin(reqCtx)
+		if err != nil {
+			return "", err
+		}
+		login = resolved
+	} else {
+		out, err := runE(ctx, e, "api", "user", "-q", ".login")
+		if err != nil {
+			return "", fmt.Errorf("gh api user: %w", err)
+		}
+		login = strings.TrimSpace(string(out))
+		if login == "" {
+			return "", fmt.Errorf("gh api user: empty login")
+		}
 	}
+
 	viewerMu.Lock()
 	// Double-checked: another goroutine may have populated the cache
 	// between RUnlock and Lock; keep whichever value is set.
 	if cachedViewer == "" {
-		cachedViewer = strings.TrimSpace(string(out))
+		cachedViewer = login
 	}
 	result := cachedViewer
 	viewerMu.Unlock()
-	return result
+	return result, nil
 }
 
 // sanitizeGHOutput trims the `gh` CLI's combined output for use in error
@@ -502,9 +545,15 @@ func ParseIssueURL(rawURL string) (repo string, number int) {
 	return parseGitHubResourceURL(rawURL, "issues")
 }
 
-// ViewerLogin returns the authenticated GitHub user's login.
+// ViewerLogin returns the login this process acts as — the authenticated user,
+// or "<slug>[bot]" under GitHub App auth. Returns "" if it cannot be resolved.
 func ViewerLogin() string {
-	return viewerLogin(defaultExecer)
+	return ViewerLoginCtx(context.Background())
+}
+
+// ViewerLoginCtx is ViewerLogin bound to a caller's context.
+func ViewerLoginCtx(ctx context.Context) string {
+	return viewerLogin(ctx, defaultExecer)
 }
 
 // IsTransientError reports whether err is a transient GitHub API failure
