@@ -3,6 +3,8 @@
 // exact same rate/percent/duration formatting without drifting.
 
 export type RateEstimateLike = {
+  numerator?: number
+  denominator?: number
   point?: number
   wilsonLower?: number
   wilsonUpper?: number
@@ -79,6 +81,15 @@ export function rateCell(row: ComparisonRowLike, key: EstimateKey, fallback: num
   const interval = estimateInterval(row, key)
   const delta = showDelta ? estimateDelta(row, key) : ''
   return [estimatePct(row, key, fallback), interval ? `CI ${interval}` : '', delta].filter(Boolean).join(' · ')
+}
+
+// Spells out the population a rate was actually computed over. A failure rate
+// is rated over resolved runs, which is smaller than the Runs column whenever a
+// variant stalled — without this the two numbers read as a contradiction.
+export function estimateBasis(row: ComparisonRowLike, key: EstimateKey): string {
+  const est = estimate(row, key)
+  if (!est?.hasData) return ''
+  return `${est.numerator ?? 0}/${est.denominator ?? 0} resolved runs`
 }
 
 export function verdictClasses(verdict: string): string {

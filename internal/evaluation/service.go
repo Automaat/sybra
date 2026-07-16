@@ -178,7 +178,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 			return r.Provider + ":" + r.Model + ":" + r.ReasoningEffort + ":" + normalizedRole(r.Role)
 		}),
 		ByExperimentKind: GroupByKind(byVariant, byVariantContribution, s.abTesting.Experiments),
-		Notes:            deferredNotes,
+		Notes:            reportNotes(recs, since, now),
 	}
 	rep.Weaknesses = Weaknesses(rep)
 	return rep, nil

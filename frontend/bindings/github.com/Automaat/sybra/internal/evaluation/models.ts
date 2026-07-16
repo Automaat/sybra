@@ -360,6 +360,7 @@ export class ExperimentSampleStatus {
     "variants": VariantSampleStatus[];
     "readyVariants": number;
     "totalRuns": number;
+    "totalResolvedRuns": number;
     "status": string;
 
     /** Creates a new ExperimentSampleStatus instance. */
@@ -384,6 +385,9 @@ export class ExperimentSampleStatus {
         }
         if (!("totalRuns" in $$source)) {
             this["totalRuns"] = 0;
+        }
+        if (!("totalResolvedRuns" in $$source)) {
+            this["totalResolvedRuns"] = 0;
         }
         if (!("status" in $$source)) {
             this["status"] = "";
@@ -853,10 +857,16 @@ export class TaskPhases {
 /**
  * VariantSampleStatus describes whether one configured or observed A/B variant
  * has enough samples for the configured minimum.
+ * 
+ * Runs counts dispatches, matching Breakdown.Runs — "runs" means the same
+ * population in every struct in this package. ResolvedRuns is what Ready gates
+ * on, so a variant that stalled away most of its dispatches reads as
+ * observed-but-not-ready rather than as never dispatched.
  */
 export class VariantSampleStatus {
     "variantId": string;
     "runs": number;
+    "resolvedRuns": number;
     "ready": boolean;
     "configured": boolean;
     "observed": boolean;
@@ -869,6 +879,9 @@ export class VariantSampleStatus {
         }
         if (!("runs" in $$source)) {
             this["runs"] = 0;
+        }
+        if (!("resolvedRuns" in $$source)) {
+            this["resolvedRuns"] = 0;
         }
         if (!("ready" in $$source)) {
             this["ready"] = false;

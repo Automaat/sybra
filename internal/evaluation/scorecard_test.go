@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +202,58 @@ func TestCompareByGatesSamplesOnResolvedRuns(t *testing.T) {
 	if !rows[0].InsufficientData {
 		t.Errorf("InsufficientData = false for a row with 1 resolved run against minSamples=30 (runs=%d stalled=%d failureRate=%v)",
 			rows[0].Runs, rows[0].Stalled, rows[0].FailureRate)
+	}
+}
+
+// Stall records only exist going forward, so a window straddling the upgrade
+// shows an inflated failure rate next to a stall count of ~0 — which reads as
+// if the fix never landed. The report has to say so itself; the operator
+// looking at the dashboard is the one who needs to know.
+func TestReportNotesFlagsPreFixStallsRecordedAsFailures(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		// Pre-fix stalls: recorded as failures, and a stall's usage event never
+		// arrived, so they cost nothing and produced nothing.
+		{Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Outcome: stats.OutcomeFailed, Timestamp: in},
+		// A genuine failure that actually did work.
+		{Outcome: stats.OutcomeFailed, CostUSD: 0.76, OutputTokens: 900, Timestamp: in},
+		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
+	}
+
+	notes := reportNotes(records, since, base)
+	found := ""
+	for _, n := range notes {
+		if strings.Contains(n, "zero cost and zero tokens") {
+			found = n
+		}
+	}
+	if found == "" {
+		t.Fatalf("reportNotes = %v, want a note about failed runs that recorded no cost or tokens", notes)
+	}
+	if !strings.Contains(found, "2 of 3") {
+		t.Errorf("note = %q, want it to count 2 of 3 failed runs", found)
+	}
+}
+
+// Once the window is clear of pre-fix records the note must disappear, or it
+// becomes permanent furniture that no one reads.
+func TestReportNotesOmitsStallCaveatWhenFailuresAreAccounted(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Outcome: stats.OutcomeFailed, CostUSD: 0.76, OutputTokens: 900, Timestamp: in},
+		{Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
+	}
+
+	for _, n := range reportNotes(records, since, base) {
+		if strings.Contains(n, "zero cost and zero tokens") {
+			t.Errorf("note %q present, but the only failure is fully accounted and the stall is recorded as a stall", n)
+		}
 	}
 }
 

@@ -7,7 +7,9 @@ package evaluation
 
 import (
 	"encoding/base64"
+	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -165,9 +167,15 @@ type RateEstimate struct {
 
 // VariantSampleStatus describes whether one configured or observed A/B variant
 // has enough samples for the configured minimum.
+//
+// Runs counts dispatches, matching Breakdown.Runs — "runs" means the same
+// population in every struct in this package. ResolvedRuns is what Ready gates
+// on, so a variant that stalled away most of its dispatches reads as
+// observed-but-not-ready rather than as never dispatched.
 type VariantSampleStatus struct {
 	VariantID    string `json:"variantId"`
 	Runs         int    `json:"runs"`
+	ResolvedRuns int    `json:"resolvedRuns"`
 	Ready        bool   `json:"ready"`
 	Configured   bool   `json:"configured"`
 	Observed     bool   `json:"observed"`
@@ -184,6 +192,7 @@ type ExperimentSampleStatus struct {
 	Variants             []VariantSampleStatus `json:"variants"`
 	ReadyVariants        int                   `json:"readyVariants"`
 	TotalRuns            int                   `json:"totalRuns"`
+	TotalResolvedRuns    int                   `json:"totalResolvedRuns"`
 	Status               string                `json:"status"`
 }
 
@@ -230,6 +239,47 @@ type ExperimentGroup struct {
 
 // experimentKindOrder is the stable rendering order for ExperimentKindBreakdown groups.
 var experimentKindOrder = []string{"model", "prompt", "skill", "unknown"}
+
+// unaccountedFailureNote flags failed runs that recorded no cost and no tokens.
+//
+// Stall records only exist going forward: before the stall fix a retried stall
+// was recorded as a failure, and a stall's terminal usage event never arrives,
+// so those runs are on disk as failures costing nothing. Until the window rolls
+// past the upgrade the scorecard therefore overstates failure_rate while
+// reporting few or no stalls, which reads exactly like the fix never landed.
+// There is no signal that can tell an old stall from a genuinely instant
+// failure (an auth error also costs $0), so this reports the ambiguity rather
+// than guessing: it is diagnostic only and never adjusts a metric.
+func unaccountedFailureNote(records []stats.RunRecord, since, until time.Time) string {
+	failures, unaccounted := 0, 0
+	for i := range records {
+		r := records[i]
+		if r.Timestamp.Before(since) || r.Timestamp.After(until) || r.Outcome != stats.OutcomeFailed {
+			continue
+		}
+		failures++
+		if r.CostUSD == 0 && r.PremiumRequests == 0 && r.InputTokens == 0 && r.OutputTokens == 0 &&
+			r.CacheCreationInputTokens == 0 && r.CacheReadInputTokens == 0 && r.ReasoningTokens == 0 {
+			unaccounted++
+		}
+	}
+	if unaccounted == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%d of %d failed runs recorded zero cost and zero tokens — runs from before the stall fix recorded retried stalls as failures, so a window straddling that upgrade overstates failure_rate and understates stalls",
+		unaccounted, failures)
+}
+
+// reportNotes pairs the static deferred-metric notes with any note that depends
+// on what is actually in the window.
+func reportNotes(records []stats.RunRecord, since, until time.Time) []string {
+	notes := slices.Clone(deferredNotes)
+	if n := unaccountedFailureNote(records, since, until); n != "" {
+		notes = append(notes, n)
+	}
+	return notes
+}
 
 // deferredNotes documents metrics that need signals not yet captured, so the
 // report never silently presents a partial picture as complete.
@@ -1154,19 +1204,21 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 	}
 	for _, id := range variantIDs {
 		row := rows[id]
-		// Readiness is about decidable evidence, so it counts resolved runs —
-		// matching the row-level SampleStatus above rather than contradicting it.
-		runs := 0
+		// Readiness gates on resolved runs to match the row-level SampleStatus
+		// above rather than contradict it, while Runs stays the dispatch count
+		// so "never ran" stays distinguishable from "every dispatch stalled".
+		runs, resolved := 0, 0
 		observed := false
 		if row != nil {
-			runs = row.ResolvedRuns()
+			runs, resolved = row.Runs, row.ResolvedRuns()
 			observed = true
 		}
-		ready := minSamples <= 0 || runs >= minSamples
+		ready := minSamples <= 0 || resolved >= minSamples
 		if ready {
 			status.ReadyVariants++
 		}
 		status.TotalRuns += runs
+		status.TotalResolvedRuns += resolved
 		sampleStatus := "low-sample"
 		if ready {
 			sampleStatus = "actionable"
@@ -1174,6 +1226,7 @@ func experimentSampleStatus(key string, cfg experimentRoleConfig, rows map[strin
 		status.Variants = append(status.Variants, VariantSampleStatus{
 			VariantID:    id,
 			Runs:         runs,
+			ResolvedRuns: resolved,
 			Ready:        ready,
 			Configured:   configured[id],
 			Observed:     observed,
