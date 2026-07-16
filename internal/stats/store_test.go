@@ -260,7 +260,7 @@ func TestReviewRoundsByModel(t *testing.T) {
 
 	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	at := func(offset int) time.Time { return base.Add(time.Duration(offset) * time.Minute) }
-	ok := func(r RunRecord) RunRecord { r.Outcome = "success"; return r }
+	ok := func(r RunRecord) RunRecord { r.Outcome = OutcomeCompleted; return r }
 
 	runs := []RunRecord{
 		// opus task: clean first pass.
@@ -332,9 +332,10 @@ func TestReviewRoundsByModel_CountsOnlySuccessfulRuns(t *testing.T) {
 	t.Parallel()
 
 	runs := []RunRecord{
-		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: "success"},
-		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: "failure"},
-		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: "success"},
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeFailed},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeStalled},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
 	}
 
 	got := reviewRoundsByModel(runs)
@@ -342,7 +343,7 @@ func TestReviewRoundsByModel_CountsOnlySuccessfulRuns(t *testing.T) {
 		t.Fatalf("reviewRoundsByModel = %+v, want 1 model", got)
 	}
 	if got[0].TotalRounds != 1 {
-		t.Errorf("TotalRounds = %d, want 1 (the failed attempt is not a round)", got[0].TotalRounds)
+		t.Errorf("TotalRounds = %d, want 1 (failed and stalled attempts are not rounds)", got[0].TotalRounds)
 	}
 	if got[0].CleanFirstPass != 1 {
 		t.Errorf("CleanFirstPass = %d, want 1 — a retried reviewer that then found nothing is still a clean first pass", got[0].CleanFirstPass)
@@ -356,12 +357,12 @@ func TestReviewRoundsByModel_ExcludesBestOfNTasks(t *testing.T) {
 	t.Parallel()
 
 	runs := []RunRecord{
-		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: "success", AssignmentUnit: "bestofn-attempt", VariantID: "attempt_1"},
-		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: "success", AssignmentUnit: "bestofn-attempt", VariantID: "attempt_2"},
-		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: "success"},
-		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: "success"},
-		{TaskID: "t2", Role: "implementation", Model: "opus", Outcome: "success"},
-		{TaskID: "t2", Role: "review", Model: "sonnet", Outcome: "success"},
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted, AssignmentUnit: "bestofn-attempt", VariantID: "attempt_1"},
+		{TaskID: "t1", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted, AssignmentUnit: "bestofn-attempt", VariantID: "attempt_2"},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t2", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "t2", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
 	}
 
 	got := reviewRoundsByModel(runs)
@@ -377,9 +378,9 @@ func TestReviewRoundsByModel_ExcludesUnreviewedAndEmptyTaskID(t *testing.T) {
 	t.Parallel()
 
 	runs := []RunRecord{
-		{TaskID: "", Role: "implementation", Model: "opus", Outcome: "success"},
-		{TaskID: "", Role: "review", Model: "sonnet", Outcome: "success"},
-		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: "success"},
+		{TaskID: "", Role: "implementation", Model: "opus", Outcome: OutcomeCompleted},
+		{TaskID: "", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Outcome: OutcomeCompleted},
 	}
 	if got := reviewRoundsByModel(runs); len(got) != 0 {
 		t.Errorf("reviewRoundsByModel = %+v, want empty (no attributable impl run)", got)

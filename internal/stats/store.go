@@ -205,14 +205,15 @@ func (s *Store) flush() error {
 	return fsutil.AtomicWrite(s.path, data)
 }
 
-// roleReviewLabel mirrors agent.RoleReview, outcomeSuccessLabel mirrors
-// task.RunOutcomeSuccess, and bestOfNAssignmentUnit mirrors the assignment
-// workflow stamps on best-of-N attempts. Duplicated rather than imported:
-// internal/agent already imports internal/stats for EstimateAgentCost, so a
-// back-import would form a cycle.
+// roleReviewLabel mirrors agent.RoleReview and bestOfNAssignmentUnit mirrors
+// the assignment workflow stamps on best-of-N attempts. Duplicated rather than
+// imported: internal/agent already imports internal/stats for
+// EstimateAgentCost, so a back-import would form a cycle. Outcome values are
+// NOT duplicated — this package owns them (OutcomeCompleted/Failed/Stalled),
+// and task.RunOutcomeSuccess ("success") is a different vocabulary that never
+// reaches RunRecord.Outcome (see completion.runOutcome).
 const (
 	roleReviewLabel       = "review"
-	outcomeSuccessLabel   = "success"
 	bestOfNAssignmentUnit = "bestofn-attempt"
 )
 
@@ -254,10 +255,11 @@ func isImplementationRun(role string) bool {
 //     trivial/noreview, or still in flight), so counting them as zero rounds
 //     would present code that was never reviewed as code a reviewer passed on
 //     the first try.
-//   - Runs that did not succeed: recordRunStats writes a record for every
-//     agent termination, so a reviewer that crashed and was retried would
-//     otherwise read as a second round — conflating provider flakiness with
-//     rework, the exact confound this stat exists to isolate.
+//   - Runs that did not complete: recordRunStats writes a record for every
+//     agent termination, so a reviewer that crashed or stalled and was retried
+//     would otherwise read as a second round — conflating provider flakiness
+//     with rework, the exact confound this stat exists to isolate. Only
+//     OutcomeCompleted counts; OutcomeFailed and OutcomeStalled do not.
 //   - Best-of-N tasks entirely: simple-task-best-of-n-implement dispatches its
 //     judge with role "review", and nothing on the RunRecord separates that
 //     judge from a real reviewer. Counting it would add a phantom round to
@@ -280,7 +282,7 @@ func reviewRoundsByModel(runs []RunRecord) []ReviewRoundsStat {
 		if r.AssignmentUnit == bestOfNAssignmentUnit {
 			tr.bestOfN = true
 		}
-		if r.Outcome != outcomeSuccessLabel {
+		if r.Outcome != OutcomeCompleted {
 			continue
 		}
 		switch {
