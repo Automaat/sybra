@@ -157,6 +157,15 @@ func TestEligibleUnknownTaskIDNeverEligible(t *testing.T) {
 	}
 }
 
+func TestSandboxTaskIDFromDir(t *testing.T) {
+	if got := sandboxTaskIDFromDir("abc12345"); got != "abc12345" {
+		t.Fatalf("sandboxTaskIDFromDir(task) = %q, want task id", got)
+	}
+	if got := sandboxTaskIDFromDir(sandboxQuarantineDirName); got != unknownTaskID {
+		t.Fatalf("sandboxTaskIDFromDir(%q) = %q, want %q", sandboxQuarantineDirName, got, unknownTaskID)
+	}
+}
+
 // --- helpers ------------------------------------------------------------
 
 func TestTaskIDFromWorktreeDir(t *testing.T) {
@@ -563,6 +572,54 @@ func TestApplyDeletesOnlySafeBucketsSelected(t *testing.T) {
 	}
 	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
 		t.Fatalf("expected orphan sandbox dir to be removed, stat err = %v", err)
+	}
+}
+
+func TestScanSandboxesSkipsQuarantineLedger(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	quarantineDir := filepath.Join(sandboxesDir(), sandboxQuarantineDirName)
+	writeFileAt(t, filepath.Join(quarantineDir, "task-stuck.json"), 10, now)
+	orphanDir := filepath.Join(sandboxesDir(), "orphan123")
+	writeFileAt(t, filepath.Join(orphanDir, "f"), 20, now)
+
+	s := NewScanner(cfg, &fakeLister{})
+	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(res.Buckets) != 1 {
+		t.Fatalf("scan buckets = %+v, want exactly sandboxes", res.Buckets)
+	}
+	if got := res.Buckets[0].Paths; len(got) != 1 || got[0] != orphanDir {
+		t.Fatalf("sandbox paths = %v, want only %q", got, orphanDir)
+	}
+}
+
+func TestApplySandboxesSkipsQuarantineLedger(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Sandbox.RetentionHours = 1
+	now := time.Now()
+
+	quarantineDir := filepath.Join(sandboxesDir(), sandboxQuarantineDirName)
+	writeFileAt(t, filepath.Join(quarantineDir, "task-stuck.json"), 10, now)
+
+	s := NewScanner(cfg, &fakeLister{})
+	fakeBucket := Bucket{Name: BucketSandboxes, Risk: RiskSafe, Paths: []string{quarantineDir}}
+	res, err := s.Apply([]Bucket{fakeBucket}, Options{Only: []string{BucketSandboxes}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Buckets[0].Removed != 0 {
+		t.Fatalf("quarantine dir removed unexpectedly: %+v", res.Buckets[0])
+	}
+	if len(res.Buckets[0].Skipped) != 1 {
+		t.Fatalf("expected quarantine dir skip, got %+v", res.Buckets[0])
+	}
+	if _, err := os.Stat(quarantineDir); err != nil {
+		t.Fatalf("quarantine dir must survive apply: %v", err)
 	}
 }
 

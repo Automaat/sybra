@@ -63,12 +63,12 @@ func TestMismatchedOwnership(t *testing.T) {
 		t.Fatalf("write nested file: %v", err)
 	}
 
-	real := ownerRecord{UID: os.Getuid(), GID: os.Getgid()}
-	if mismatchedOwnership(dir, real) {
+	actualOwner := ownerRecord{UID: os.Getuid(), GID: os.Getgid()}
+	if mismatchedOwnership(dir, actualOwner) {
 		t.Error("mismatchedOwnership with the real owner: true, want false")
 	}
 
-	fake := ownerRecord{UID: real.UID + 999999, GID: real.GID + 999999}
+	fake := ownerRecord{UID: actualOwner.UID + 999999, GID: actualOwner.GID + 999999}
 	if !mismatchedOwnership(dir, fake) {
 		t.Error("mismatchedOwnership with a fake owner: false, want true")
 	}
