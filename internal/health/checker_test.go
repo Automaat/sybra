@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
@@ -145,5 +146,55 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 	if report.Score != ScoreCritical {
 		t.Errorf("Score = %q, want critical", report.Score)
+	}
+}
+
+func TestCheckerIncludesPressureTelemetry(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+
+	ranAt := time.Date(2026, 7, 16, 20, 30, 0, 0, time.UTC)
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.SetPressureStatus(func() *PressureStatus {
+		return &PressureStatus{
+			DiskFreePct:         12.5,
+			MemAvailablePct:     40.0,
+			LoadPerCPU:          1.25,
+			WarningDiskFreePct:  15,
+			CriticalDiskFreePct: 5,
+			LastReclaim: &ReclaimStatus{
+				RanAt:              ranAt,
+				ReclaimedBytes:     3 << 30,
+				UnreclaimableBytes: 11 << 30,
+				Errors:             1,
+			},
+		}
+	})
+
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	if report.Pressure == nil {
+		t.Fatal("Pressure = nil, want telemetry")
+	}
+	if report.Pressure.DiskFreePct != 12.5 || report.Pressure.WarningDiskFreePct != 15 || report.Pressure.CriticalDiskFreePct != 5 {
+		t.Fatalf("Pressure = %+v", *report.Pressure)
+	}
+	if report.Pressure.LastReclaim == nil {
+		t.Fatal("Pressure.LastReclaim = nil, want last reclaim outcome")
+	}
+	if report.Pressure.LastReclaim.RanAt != ranAt {
+		t.Fatalf("LastReclaim.RanAt = %s, want %s", report.Pressure.LastReclaim.RanAt, ranAt)
+	}
+	if report.Pressure.LastReclaim.ReclaimedBytes != 3<<30 || report.Pressure.LastReclaim.UnreclaimableBytes != 11<<30 || report.Pressure.LastReclaim.Errors != 1 {
+		t.Fatalf("LastReclaim = %+v", *report.Pressure.LastReclaim)
 	}
 }

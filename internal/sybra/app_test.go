@@ -342,6 +342,27 @@ func TestNewApp(t *testing.T) {
 	}
 }
 
+func TestGetPressureGateWiresDiskReclaimer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	a.cfg = cfg
+	if gate := a.getPressureGate(); gate == nil {
+		t.Fatal("getPressureGate() = nil, want gate")
+	}
+	if a.diskReclaimer == nil {
+		t.Fatal("diskReclaimer = nil, want shared reclaimer wired with pressure gate")
+	}
+}
+
 func TestListTasksEmpty(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	tasks, err := svc.ListTasks()
