@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sybra-config
+  namespace: sybra-poc
+data:
+  config.yaml: |
+    agent:
+      provider: claude
+      mode: headless
+      max_concurrent: 4
+      require_permissions: false
+      survive_restart: false
+      sandbox_mode: "off"
+      headless_steerable: false
+      k8s_jobs:
+        enabled: true
+        mode: fake
+        namespace: sybra-poc
+        image: busybox:1.36
+        ttl_seconds_after_finished: 300
+    github:
+      enabled: false
+    todoist:
+      enabled: false
+    renovate:
+      enabled: false
+    umbrella:
+      enabled: false

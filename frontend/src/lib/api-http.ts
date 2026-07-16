@@ -102,6 +102,7 @@ export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boole
 export function StartChat(arg1: string, arg2: string, arg3: string): Promise<Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
 export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 export function AgentQueueSnapshot(): Promise<AgentQueueSnapshotData> { return call('App', 'AgentQueueSnapshot') }
+export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('App', 'StartK8sPocAgent', arg1) }
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }

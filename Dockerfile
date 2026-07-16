@@ -13,7 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra-server \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-cli ./cmd/sybra-cli
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-cli ./cmd/sybra-cli \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/fake-claude ./cmd/fake-claude
 
 # Stage 3: Runtime — node:24-slim for claude CLI (Node.js-based)
 #
@@ -22,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 #
 #   A. apt system packages + gh repo   — heaviest, rare changes
 #   B. klaudiush binary                — pinned via ARG, rare
-#   C. node CLIs (claude, codex)       — pinned via ARG, monthly bumps
+#   C. node CLIs (claude, codex, opencode) — pinned via ARG, monthly bumps
 #   D. mise binary                     — pinned via ARG, rare
 #   E. non-root user + static config   — never changes
 #   F+G. sybra binaries + web assets   — per-commit, thin (~20MB)
@@ -53,7 +54,7 @@ ARG SYBRA_GID=1000
 
 # --- Layer A: apt system packages + gh repo ---
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl gpg \
+    && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl gpg gpg-agent \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -89,14 +90,17 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && install -m 0755 "${TMPDIR}/klaudiush" /usr/local/bin/klaudiush \
     && rm -rf "${TMPDIR}"
 
-# --- Layer C: node CLIs (claude code + codex), pinned for cache stability ---
+# --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.204
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.142.5
+# renovate: datasource=npm depName=opencode-ai
+ARG OPENCODE_VERSION=1.17.20
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}" \
     && rm -rf /root/.npm
 
 # --- Layer D: mise binary only (tools installed per-worktree) ---
@@ -162,6 +166,7 @@ RUN userdel -r node 2>/dev/null || true \
 # --- Layer F+G: thin, per-commit layers ---
 COPY --from=go-builder /bin/sybra-server /usr/local/bin/sybra-server
 COPY --from=go-builder /bin/sybra-cli /usr/local/bin/sybra-cli
+COPY --from=go-builder /bin/fake-claude /usr/local/bin/fake-claude
 COPY --from=frontend-builder /app/frontend/dist-web /app/web
 COPY internal /app/src/internal
 COPY orchestrator /app/src/orchestrator

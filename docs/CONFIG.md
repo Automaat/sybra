@@ -137,6 +137,7 @@ couldn't catch).
 | `agent.default_project_id` | `string` |  | DefaultProjectID pins the project a project-less task auto-assigns to when it needs an isolated worktree (e.g. a meta/self-referential task routed to the plan step). Without it, auto-assignment only fires when exactly one project is registered — on a machine with two or more projects, a project-less task can never dispatch and always ends up human-required. Empty means no default (falls back to the sole-project behavior). |
 | `agent.role_effort` | `map[string]string` |  | RoleEffort overrides the built-in per-role reasoning-effort baseline (see agent.Role.DefaultReasoningEffort), keyed by role name (e.g. "triage", "implementation"). Still loses to an experiment assignment's or the task's own ReasoningEffort — this only replaces the role fallback, not an explicit per-task/per-run override. Unknown role keys or invalid effort values are ignored (falls back to the built-in default for that role). |
 | `agent.playwright_mcp` | `PlaywrightMCPConfig` | _(see below)_ | PlaywrightMCP configures the default-off headless Playwright MCP server attached to test-runner runs that resolve to the Claude provider. |
+| `agent.k8s_jobs` | `K8sJobsConfig` | _(see below)_ | K8sJobs configures an experimental backend that runs headless agents as short-lived Kubernetes Jobs instead of local subprocesses. |
 | `agent.queue` | `QueueConfig` | _(see below)_ | Queue configures the agent-dispatch admission queue (internal/agentqueue) that a workflow implementation dispatch falls back to when the agent pool is saturated, instead of erroring or wasting a worktree prep. |
 
 ## PlaywrightMCPConfig (`agent.playwright_mcp`)
@@ -150,6 +151,48 @@ provider and pass a launcher preflight (see internal/agent/mcp.go).
 |---|---|---|---|
 | `agent.playwright_mcp.enabled` | `bool` |  | Enabled opts this machine into attaching the Playwright MCP server. |
 | `agent.playwright_mcp.extra_args` | `[]string` |  | ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest --headless --output-dir <dir>` launch command. |
+
+## K8sJobsConfig (`agent.k8s_jobs`)
+
+K8sJobsConfig is a PoC execution backend for headless-only Sybra. When
+enabled, future headless agents are run as Kubernetes Jobs using the
+in-cluster service account.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.k8s_jobs.enabled` | `bool` |  |  |
+| `agent.k8s_jobs.namespace` | `string` |  |  |
+| `agent.k8s_jobs.image` | `string` |  |  |
+| `agent.k8s_jobs.command` | `[]string` |  |  |
+| `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
+| `agent.k8s_jobs.mode` | `string` |  |  |
+| `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |
+| `agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |
+| `agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |
+
+## K8sJobEnvVar (`agent.k8s_jobs.env`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.k8s_jobs.env.name` | `string` |  |  |
+| `agent.k8s_jobs.env.value` | `string` |  |  |
+
+## K8sJobSecretEnvVar (`agent.k8s_jobs.secret_env`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.k8s_jobs.secret_env.name` | `string` |  |  |
+| `agent.k8s_jobs.secret_env.secret_name` | `string` |  |  |
+| `agent.k8s_jobs.secret_env.secret_key` | `string` |  |  |
+
+## K8sJobVolume (`agent.k8s_jobs.volumes`)
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `agent.k8s_jobs.volumes.name` | `string` |  |  |
+| `agent.k8s_jobs.volumes.claim_name` | `string` |  |  |
+| `agent.k8s_jobs.volumes.mount_path` | `string` |  |  |
+| `agent.k8s_jobs.volumes.read_only` | `bool` |  |  |
 
 ## QueueConfig (`agent.queue`)
 

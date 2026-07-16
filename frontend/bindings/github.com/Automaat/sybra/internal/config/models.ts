@@ -208,6 +208,12 @@ export class AgentDefaults {
     "playwrightMcp": PlaywrightMCPConfig;
 
     /**
+     * K8sJobs configures an experimental backend that runs headless agents as
+     * short-lived Kubernetes Jobs instead of local subprocesses.
+     */
+    "k8sJobs": K8sJobsConfig;
+
+    /**
      * Queue configures the agent-dispatch admission queue (internal/agentqueue)
      * that a workflow implementation dispatch falls back to when the agent
      * pool is saturated, instead of erroring or wasting a worktree prep.
@@ -303,6 +309,9 @@ export class AgentDefaults {
         if (!("playwrightMcp" in $$source)) {
             this["playwrightMcp"] = (new PlaywrightMCPConfig());
         }
+        if (!("k8sJobs" in $$source)) {
+            this["k8sJobs"] = (new K8sJobsConfig());
+        }
         if (!("queue" in $$source)) {
             this["queue"] = (new QueueConfig());
         }
@@ -317,6 +326,7 @@ export class AgentDefaults {
         const $$createField27_0 = $$createType0;
         const $$createField28_0 = $$createType1;
         const $$createField29_0 = $$createType2;
+        const $$createField30_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
             $$parsedSource["roleEffort"] = $$createField27_0($$parsedSource["roleEffort"]);
@@ -324,8 +334,11 @@ export class AgentDefaults {
         if ("playwrightMcp" in $$parsedSource) {
             $$parsedSource["playwrightMcp"] = $$createField28_0($$parsedSource["playwrightMcp"]);
         }
+        if ("k8sJobs" in $$parsedSource) {
+            $$parsedSource["k8sJobs"] = $$createField29_0($$parsedSource["k8sJobs"]);
+        }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField29_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField30_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -601,12 +614,170 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField11_0 = $$createType3;
+        const $$createField11_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
             $$parsedSource["app"] = $$createField11_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
+    }
+}
+
+export class K8sJobEnvVar {
+    "name": string;
+    "value": string;
+
+    /** Creates a new K8sJobEnvVar instance. */
+    constructor($$source: Partial<K8sJobEnvVar> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new K8sJobEnvVar instance from a string or object.
+     */
+    static createFrom($$source: any = {}): K8sJobEnvVar {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new K8sJobEnvVar($$parsedSource as Partial<K8sJobEnvVar>);
+    }
+}
+
+export class K8sJobSecretEnvVar {
+    "name": string;
+    "secretName": string;
+    "secretKey": string;
+
+    /** Creates a new K8sJobSecretEnvVar instance. */
+    constructor($$source: Partial<K8sJobSecretEnvVar> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("secretName" in $$source)) {
+            this["secretName"] = "";
+        }
+        if (!("secretKey" in $$source)) {
+            this["secretKey"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new K8sJobSecretEnvVar instance from a string or object.
+     */
+    static createFrom($$source: any = {}): K8sJobSecretEnvVar {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new K8sJobSecretEnvVar($$parsedSource as Partial<K8sJobSecretEnvVar>);
+    }
+}
+
+export class K8sJobVolume {
+    "name": string;
+    "claimName": string;
+    "mountPath": string;
+    "readOnly"?: boolean;
+
+    /** Creates a new K8sJobVolume instance. */
+    constructor($$source: Partial<K8sJobVolume> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("claimName" in $$source)) {
+            this["claimName"] = "";
+        }
+        if (!("mountPath" in $$source)) {
+            this["mountPath"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new K8sJobVolume instance from a string or object.
+     */
+    static createFrom($$source: any = {}): K8sJobVolume {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new K8sJobVolume($$parsedSource as Partial<K8sJobVolume>);
+    }
+}
+
+/**
+ * K8sJobsConfig is a PoC execution backend for headless-only Sybra. When
+ * enabled, future headless agents are run as Kubernetes Jobs using the
+ * in-cluster service account.
+ */
+export class K8sJobsConfig {
+    "enabled": boolean;
+    "namespace": string;
+    "image": string;
+    "command": string[];
+    "ttlSecondsAfterFinished": number;
+    "mode": string;
+    "env": K8sJobEnvVar[];
+    "secretEnv": K8sJobSecretEnvVar[];
+    "volumes": K8sJobVolume[];
+
+    /** Creates a new K8sJobsConfig instance. */
+    constructor($$source: Partial<K8sJobsConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("namespace" in $$source)) {
+            this["namespace"] = "";
+        }
+        if (!("image" in $$source)) {
+            this["image"] = "";
+        }
+        if (!("command" in $$source)) {
+            this["command"] = [];
+        }
+        if (!("ttlSecondsAfterFinished" in $$source)) {
+            this["ttlSecondsAfterFinished"] = 0;
+        }
+        if (!("mode" in $$source)) {
+            this["mode"] = "";
+        }
+        if (!("env" in $$source)) {
+            this["env"] = [];
+        }
+        if (!("secretEnv" in $$source)) {
+            this["secretEnv"] = [];
+        }
+        if (!("volumes" in $$source)) {
+            this["volumes"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new K8sJobsConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): K8sJobsConfig {
+        const $$createField3_0 = $$createType5;
+        const $$createField6_0 = $$createType7;
+        const $$createField7_0 = $$createType9;
+        const $$createField8_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("command" in $$parsedSource) {
+            $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
+        }
+        if ("env" in $$parsedSource) {
+            $$parsedSource["env"] = $$createField6_0($$parsedSource["env"]);
+        }
+        if ("secretEnv" in $$parsedSource) {
+            $$parsedSource["secretEnv"] = $$createField7_0($$parsedSource["secretEnv"]);
+        }
+        if ("volumes" in $$parsedSource) {
+            $$parsedSource["volumes"] = $$createField8_0($$parsedSource["volumes"]);
+        }
+        return new K8sJobsConfig($$parsedSource as Partial<K8sJobsConfig>);
     }
 }
 
@@ -703,7 +874,7 @@ export class MonitorConfig {
      * Creates a new MonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorConfig {
-        const $$createField9_0 = $$createType4;
+        const $$createField9_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bottleneckHours" in $$parsedSource) {
             $$parsedSource["bottleneckHours"] = $$createField9_0($$parsedSource["bottleneckHours"]);
@@ -787,7 +958,7 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField3_0 = $$createType5;
+        const $$createField3_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField3_0($$parsedSource["pressure"]);
@@ -830,7 +1001,7 @@ export class PlaywrightMCPConfig {
      * Creates a new PlaywrightMCPConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): PlaywrightMCPConfig {
-        const $$createField1_0 = $$createType6;
+        const $$createField1_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("extraArgs" in $$parsedSource) {
             $$parsedSource["extraArgs"] = $$createField1_0($$parsedSource["extraArgs"]);
@@ -1066,12 +1237,12 @@ export class ProvidersConfig {
      * Creates a new ProvidersConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProvidersConfig {
-        const $$createField0_0 = $$createType7;
-        const $$createField1_0 = $$createType8;
-        const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType9;
+        const $$createField0_0 = $$createType14;
+        const $$createField1_0 = $$createType15;
+        const $$createField2_0 = $$createType15;
+        const $$createField3_0 = $$createType15;
+        const $$createField4_0 = $$createType15;
+        const $$createField5_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("healthCheck" in $$parsedSource) {
             $$parsedSource["healthCheck"] = $$createField0_0($$parsedSource["healthCheck"]);
@@ -1227,7 +1398,7 @@ export class SelfMonitorConfig {
      * Creates a new SelfMonitorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): SelfMonitorConfig {
-        const $$createField6_0 = $$createType6;
+        const $$createField6_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("autoActCategories" in $$parsedSource) {
             $$parsedSource["autoActCategories"] = $$createField6_0($$parsedSource["autoActCategories"]);
@@ -1424,11 +1595,18 @@ export class UmbrellaConfig {
 // Private type creation functions
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = PlaywrightMCPConfig.createFrom;
-const $$createType2 = QueueConfig.createFrom;
-const $$createType3 = GitHubAppConfig.createFrom;
-const $$createType4 = $Create.Map($Create.Any, $Create.Any);
-const $$createType5 = PressureConfig.createFrom;
-const $$createType6 = $Create.Array($Create.Any);
-const $$createType7 = ProviderHealthCheckConfig.createFrom;
-const $$createType8 = ProviderEntryConfig.createFrom;
-const $$createType9 = ProviderLimitsConfig.createFrom;
+const $$createType2 = K8sJobsConfig.createFrom;
+const $$createType3 = QueueConfig.createFrom;
+const $$createType4 = GitHubAppConfig.createFrom;
+const $$createType5 = $Create.Array($Create.Any);
+const $$createType6 = K8sJobEnvVar.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = K8sJobSecretEnvVar.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = K8sJobVolume.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = $Create.Map($Create.Any, $Create.Any);
+const $$createType13 = PressureConfig.createFrom;
+const $$createType14 = ProviderHealthCheckConfig.createFrom;
+const $$createType15 = ProviderEntryConfig.createFrom;
+const $$createType16 = ProviderLimitsConfig.createFrom;

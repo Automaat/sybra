@@ -252,11 +252,12 @@ type opencodeEnvelope struct {
 	Code           int             `json:"code"`
 	ErrorType      string          `json:"errorType"`
 	ErrorTypeSnake string          `json:"error_type"`
-	Error          string          `json:"error"`
+	Error          json.RawMessage `json:"error"`
 	Message        string          `json:"message"`
 	Content        string          `json:"content"`
 	Text           string          `json:"text"`
 	Data           json.RawMessage `json:"data"`
+	Part           *opencodePart   `json:"part"`
 	Usage          *opencodeUsage  `json:"usage"`
 }
 
@@ -290,6 +291,28 @@ type opencodeData struct {
 	Result       json.RawMessage    `json:"result"`
 	ToolRequests []opencodeToolCall `json:"toolRequests"`
 	ToolCalls    []opencodeToolCall `json:"toolCalls"`
+}
+
+type opencodePart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+	// Step-finish payloads carry token/cost accounting under part.
+	Tokens *opencodePartTokens `json:"tokens"`
+	Cost   float64             `json:"cost"`
+	Reason string              `json:"reason"`
+}
+
+type opencodePartTokens struct {
+	Total     int                `json:"total"`
+	Input     int                `json:"input"`
+	Output    int                `json:"output"`
+	Reasoning int                `json:"reasoning"`
+	Cache     opencodeTokenCache `json:"cache"`
+}
+
+type opencodeTokenCache struct {
+	Write int `json:"write"`
+	Read  int `json:"read"`
 }
 
 type opencodeToolCall struct {
@@ -412,10 +435,14 @@ func ParseOpenCodeLine(line []byte) (OpenCodeEvent, error) {
 	rawCopy := copyRaw(line)
 	sessionID := firstNonEmpty(raw.SessionID, raw.SessionIDSnake)
 	eventType := strings.ToLower(strings.TrimSpace(raw.Type))
+	errText, errType, errStatus := opencodeErrorDetails(raw.Error)
 
 	switch eventType {
-	case "assistant.message", "assistant", "message", "agent_message", "message.updated":
+	case "assistant.message", "assistant", "message", "agent_message", "message.updated", "text":
 		msg := &ClaudeMessage{Role: "assistant", Text: firstNonEmpty(raw.Content, raw.Text, raw.Message)}
+		if raw.Part != nil && msg.Text == "" {
+			msg.Text = raw.Part.Text
+		}
 		outTokens := 0
 		if len(raw.Data) > 0 {
 			data := parseOpenCodeData(raw.Data)
@@ -456,31 +483,9 @@ func ParseOpenCodeLine(line []byte) (OpenCodeEvent, error) {
 			}},
 		}}, nil
 
-	case "result", "session.idle", "session.completed", "turn.completed", "run.completed":
-		r := &ClaudeResult{
-			SessionID:   sessionID,
-			Text:        firstNonEmpty(raw.Content, raw.Text, raw.Message),
-			ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake),
-			ErrorStatus: firstNonZero(raw.Code, raw.ExitCode),
-		}
-		if raw.Usage != nil {
-			r.InputTokens = raw.Usage.inputTokens()
-			r.OutputTokens = raw.Usage.outputTokens()
-			r.CacheReadInputTokens = raw.Usage.cacheReadInputTokens()
-			r.ReasoningTokens = raw.Usage.reasoningTokens()
-			r.CostUSD = raw.Usage.costUSD()
-		}
-		subtype := ""
-		if raw.Subtype != "" {
-			subtype = raw.Subtype
-		} else if r.ErrorStatus != 0 || r.ErrorType != "" || raw.Error != "" {
-			subtype = "error"
-			if r.Text == "" {
-				r.Text = raw.Error
-			}
-		}
-		r.Subtype = subtype
-		return OpenCodeEvent{Type: "result", Subtype: subtype, SessionID: sessionID, Raw: rawCopy, Result: r}, nil
+	case "result", "session.idle", "session.completed", "turn.completed", "run.completed", "step_finish", "step-finish":
+		r := opencodeResult(raw, sessionID, errText, errType, errStatus)
+		return OpenCodeEvent{Type: "result", Subtype: r.Subtype, SessionID: sessionID, Raw: rawCopy, Result: r}, nil
 
 	case "error":
 		status := firstNonZero(raw.Code, raw.ExitCode)
@@ -491,9 +496,9 @@ func ParseOpenCodeLine(line []byte) (OpenCodeEvent, error) {
 			Result: &ClaudeResult{
 				Subtype:     "error",
 				SessionID:   sessionID,
-				Text:        firstNonEmpty(raw.Error, raw.Message, raw.Content, raw.Text),
-				ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake, "error"),
-				ErrorStatus: status,
+				Text:        firstNonEmpty(errText, raw.Message, raw.Content, raw.Text),
+				ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake, errType, "error"),
+				ErrorStatus: firstNonZero(status, errStatus),
 			},
 		}, nil
 
@@ -503,6 +508,76 @@ func ParseOpenCodeLine(line []byte) (OpenCodeEvent, error) {
 	default:
 		return OpenCodeEvent{Raw: rawCopy}, nil
 	}
+}
+
+func opencodeResult(raw opencodeEnvelope, sessionID, errText, errType string, errStatus int) *ClaudeResult {
+	r := &ClaudeResult{
+		SessionID:   sessionID,
+		Text:        firstNonEmpty(raw.Content, raw.Text, raw.Message),
+		ErrorType:   firstNonEmpty(raw.ErrorType, raw.ErrorTypeSnake),
+		ErrorStatus: firstNonZero(raw.Code, raw.ExitCode),
+	}
+	if raw.Usage != nil {
+		r.InputTokens = raw.Usage.inputTokens()
+		r.OutputTokens = raw.Usage.outputTokens()
+		r.CacheReadInputTokens = raw.Usage.cacheReadInputTokens()
+		r.ReasoningTokens = raw.Usage.reasoningTokens()
+		r.CostUSD = raw.Usage.costUSD()
+	}
+	if raw.Part != nil {
+		applyOpenCodePartResult(r, raw.Part)
+	}
+	if raw.Subtype != "" {
+		r.Subtype = raw.Subtype
+	} else if r.ErrorStatus != 0 || r.ErrorType != "" || errText != "" {
+		r.Subtype = "error"
+		if r.Text == "" {
+			r.Text = errText
+		}
+		if r.ErrorType == "" {
+			r.ErrorType = errType
+		}
+		if r.ErrorStatus == 0 {
+			r.ErrorStatus = errStatus
+		}
+	}
+	return r
+}
+
+func applyOpenCodePartResult(r *ClaudeResult, part *opencodePart) {
+	if r.Text == "" {
+		r.Text = part.Reason
+	}
+	if part.Tokens != nil {
+		r.InputTokens = part.Tokens.Input
+		r.OutputTokens = part.Tokens.Output
+		r.CacheReadInputTokens = part.Tokens.Cache.Read
+		r.ReasoningTokens = part.Tokens.Reasoning
+	}
+	r.CostUSD = part.Cost
+}
+
+func opencodeErrorDetails(raw json.RawMessage) (text, typ string, status int) {
+	if len(raw) == 0 {
+		return "", "", 0
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, "", 0
+	}
+	var obj struct {
+		Name string `json:"name"`
+		Data struct {
+			Message    string `json:"message"`
+			StatusCode int    `json:"statusCode"`
+		} `json:"data"`
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return string(raw), "", 0
+	}
+	return firstNonEmpty(obj.Data.Message, obj.Message, obj.Name), obj.Name, firstNonZero(obj.Data.StatusCode, obj.Code)
 }
 
 func parseOpenCodeData(raw json.RawMessage) opencodeData {

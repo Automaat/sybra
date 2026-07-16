@@ -93,6 +93,52 @@ func TestPrepareRunConfig_InteractiveFailsOverLikeHeadless(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_UsesRuntimeDefaultModelWhenRunModelEmpty(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			DefaultProvider: "opencode",
+			DefaultModel:    "openrouter/deepseek/deepseek-v4-flash",
+		},
+	})
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"opencode": true}})
+
+	cfg, prov, err := m.prepareRunConfig(RunConfig{
+		Mode: "headless",
+		Dir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if prov.Name() != "opencode" {
+		t.Fatalf("provider = %q, want opencode", prov.Name())
+	}
+	if cfg.Model != "openrouter/deepseek/deepseek-v4-flash" {
+		t.Fatalf("Model = %q, want configured runtime default", cfg.Model)
+	}
+}
+
+func TestPrepareRunConfig_ExplicitModelOverridesRuntimeDefault(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime: ManagerRuntimeConfig{
+			DefaultProvider: "opencode",
+			DefaultModel:    "openrouter/deepseek/deepseek-v4-flash",
+		},
+	})
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"opencode": true}})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		Mode:  "headless",
+		Model: "openrouter/z-ai/glm-5.2",
+		Dir:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if cfg.Model != "openrouter/z-ai/glm-5.2" {
+		t.Fatalf("Model = %q, want explicit run model", cfg.Model)
+	}
+}
+
 // TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor
 // locks in that prepareRunConfig — the single chokepoint every headless and
 // interactive run passes through — wires the background-task guardrail into

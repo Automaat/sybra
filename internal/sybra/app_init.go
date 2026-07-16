@@ -457,6 +457,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,
+		DefaultModel:           cfg.Agent.Model,
 		BashTimeoutMs:          cfg.BashTimeoutMs(),
 		RetryWatchdog:          cfg.RetryWatchdog(),
 		FallbackModel:          cfg.Agent.FallbackModel,
@@ -468,7 +469,38 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		SandboxMode:            cfg.DefaultSandboxMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
+		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
+		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
 	}
+}
+
+func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerConfig {
+	out := agent.K8sJobRunnerConfig{
+		Namespace: cfg.Namespace,
+		Image:     cfg.Image,
+		Command:   cfg.Command,
+		TTL:       cfg.TTL,
+		Mode:      cfg.Mode,
+	}
+	for _, e := range cfg.Env {
+		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
+	}
+	for _, e := range cfg.SecretEnv {
+		out.SecretEnv = append(out.SecretEnv, agent.K8sJobSecretEnvVar{
+			Name:       e.Name,
+			SecretName: e.SecretName,
+			SecretKey:  e.SecretKey,
+		})
+	}
+	for _, v := range cfg.Volumes {
+		out.Volumes = append(out.Volumes, agent.K8sJobVolume{
+			Name:      v.Name,
+			ClaimName: v.ClaimName,
+			MountPath: v.MountPath,
+			ReadOnly:  v.ReadOnly,
+		})
+	}
+	return out
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {

@@ -59,6 +59,26 @@ func TestParseOpenCodeLineAssistantAndTool(t *testing.T) {
 	}
 }
 
+func TestParseOpenCodeRunTextAndStepFinish(t *testing.T) {
+	text, err := ParseOpenCodeLine([]byte(`{"type":"text","sessionID":"sess-4","part":{"type":"text","text":"k8s-opencode-ok"}}`))
+	if err != nil {
+		t.Fatalf("text parse: %v", err)
+	}
+	se := opencodeEventToStreamEvent(text)
+	if se.Type != "assistant" || se.SessionID != "sess-4" || se.Content != "k8s-opencode-ok" {
+		t.Fatalf("text stream event = %+v", se)
+	}
+
+	done, err := ParseOpenCodeLine([]byte(`{"type":"step_finish","sessionID":"sess-4","part":{"type":"step-finish","reason":"stop","tokens":{"total":7065,"input":1662,"output":8,"reasoning":15,"cache":{"write":0,"read":5380}},"cost":0.00258306}}`))
+	if err != nil {
+		t.Fatalf("step_finish parse: %v", err)
+	}
+	se = opencodeEventToStreamEvent(done)
+	if se.Type != "result" || se.SessionID != "sess-4" || se.InputTokens != 1662 || se.OutputTokens != 8 || se.CacheReadInputTokens != 5380 || se.ReasoningTokens != 15 || se.CostUSD != 0.00258306 {
+		t.Fatalf("step_finish stream event = %+v", se)
+	}
+}
+
 func TestParseOpenCodeLineResultUsageAndError(t *testing.T) {
 	result, err := ParseOpenCodeLine([]byte(`{"type":"result","sessionId":"sess-2","message":"done","usage":{"inputTokens":10,"outputTokens":4,"cacheReadInputTokens":6,"reasoningTokens":2,"costUSD":0.01}}`))
 	if err != nil {
@@ -76,5 +96,14 @@ func TestParseOpenCodeLineResultUsageAndError(t *testing.T) {
 	se = opencodeEventToStreamEvent(failed)
 	if se.Type != "result" || se.Subtype != "error" || se.ErrorType != "rate_limit" || se.ErrorStatus != 429 {
 		t.Fatalf("error stream event = %+v", se)
+	}
+
+	failed, err = ParseOpenCodeLine([]byte(`{"type":"error","sessionID":"sess-3","error":{"name":"APIError","data":{"message":"User not found.","statusCode":401}}}`))
+	if err != nil {
+		t.Fatalf("object error parse: %v", err)
+	}
+	se = opencodeEventToStreamEvent(failed)
+	if se.Type != "result" || se.Subtype != "error" || se.SessionID != "sess-3" || se.Content != "User not found." || se.ErrorType != "APIError" || se.ErrorStatus != 401 {
+		t.Fatalf("object error stream event = %+v", se)
 	}
 }

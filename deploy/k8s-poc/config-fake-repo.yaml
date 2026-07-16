@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sybra-config
+  namespace: sybra-poc
+data:
+  config.yaml: |
+    agent:
+      provider: claude
+      model: sonnet
+      mode: headless
+      max_concurrent: 2
+      require_permissions: false
+      survive_restart: false
+      sandbox_mode: "off"
+      headless_steerable: false
+      k8s_jobs:
+        enabled: true
+        mode: provider
+        namespace: sybra-poc
+        image: sybra-server:poc
+        ttl_seconds_after_finished: 300
+        env:
+          - name: SYBRA_K8S_PROVIDER_BIN
+            value: /usr/local/bin/fake-claude
+          - name: FAKE_CLAUDE_SCENARIO
+            value: k8s_repo_change
+        volumes:
+          - name: sybra-home
+            claim_name: sybra-home
+            mount_path: /home/sybra/.sybra
+    ab_testing:
+      enabled: false
+    providers:
+      health_check:
+        enabled: false
+      auto_failover: false
+      limits:
+        enabled: false
+      claude:
+        enabled: true
+      codex:
+        enabled: false
+      copilot:
+        enabled: false
+      opencode:
+        enabled: false
+    orchestrator:
+      dispatch_interval_seconds: 3600
+      maintenance_interval_seconds: 3600
+    monitor:
+      enabled: false
+    github:
+      enabled: false
+    todoist:
+      enabled: false
+    renovate:
+      enabled: false
+    umbrella:
+      enabled: false
+    triage:
+      enabled: false

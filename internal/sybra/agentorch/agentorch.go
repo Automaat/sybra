@@ -304,6 +304,13 @@ func (o *Orchestrator) resolveDispatchProvider(taskID string, assignment workflo
 	return o.agents.DefaultProvider()
 }
 
+func (o *Orchestrator) assignmentModel(assigned string) string {
+	if o.cfg == nil {
+		return FirstNonEmpty(assigned, "sonnet")
+	}
+	return FirstNonEmpty(assigned, o.cfg.Agent.Model, "sonnet")
+}
+
 // SandboxEnvIfRunning returns the sandbox env vars only when a sandbox is
 // already running for the task; it never starts one. Sandboxes are started
 // lazily by the testing phase (test-runner role), so implementation/review
@@ -572,6 +579,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	}
 	dispatchProvider := o.resolveDispatchProvider(taskID, assignment)
 	resumeSessionID := PickImplementationResumeSession(t.AgentRuns, workflowStart, dispatchProvider)
+	model := o.assignmentModel(assignment.Model)
 
 	posture, postureErr := ResolveHeadlessPermissionMode(t, o.cfg)
 	if postureErr != nil {
@@ -588,7 +596,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		AllowedTools:            t.AllowedTools,
 		Dir:                     dir,
 		Provider:                assignment.Provider,
-		Model:                   FirstNonEmpty(assignment.Model, "sonnet"),
+		Model:                   model,
 		ExperimentID:            assignment.ExperimentID,
 		VariantID:               assignment.VariantID,
 		AssignmentUnit:          assignment.AssignmentUnit,
