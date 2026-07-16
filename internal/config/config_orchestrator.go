@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -99,13 +98,19 @@ func NormalizeInstanceRole(s string) (string, error) {
 	}
 }
 
-// InstanceRole returns this instance's resolved role. An invalid config value
-// is logged and treated as full, so a misconfigured instance keeps the
-// behavior it had before the key existed rather than silently going idle.
+// InstanceRole returns this instance's resolved role. An invalid value is
+// treated as full, so a misconfigured instance keeps the behavior it had
+// before the key existed rather than silently going idle.
+//
+// The fallback is silent here by design: this package cannot log it usefully,
+// because slog's default logger is not the server's logger — a warning emitted
+// here lands at DEBUG, below the shipped level, and the operator never learns
+// their role was ignored. Callers must surface it themselves by calling
+// NormalizeInstanceRole (see App.applyInstanceRole). Same rationale as
+// Config.ListenAddrs' envDiscarded return.
 func (c OrchestratorConfig) InstanceRole() string {
 	role, err := NormalizeInstanceRole(c.Role)
 	if err != nil {
-		slog.Warn("config: invalid orchestrator.role; falling back to full", "value", c.Role)
 		return InstanceRoleFull
 	}
 	return role

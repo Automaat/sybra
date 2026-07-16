@@ -904,7 +904,41 @@ export class NotificationConfig {
     }
 }
 
+/**
+ * OrchestratorConfig gates and paces the self-starting automations. Role
+ * "full" runs the orchestrator brain session and the auto-dispatch scheduler,
+ * preserving single-node behavior. Role "agent-only" fails closed on both: it
+ * serves the HTTP API and runs explicitly-started agents but never orchestrates
+ * on its own — the posture for a secondary/test deployment (a Kubernetes
+ * agent-only server, a scratch instance) that must not race a full instance.
+ */
 export class OrchestratorConfig {
+    /**
+     * Role declares which self-starting automations this instance owns:
+     * "full" (default) or "agent-only". An invalid value falls back to "full"
+     * with a warning, so a typo never silently parks an instance that was meant
+     * to orchestrate.
+     */
+    "role": string;
+
+    /**
+     * Enabled overrides Role for the orchestrator brain session — the
+     * conversational context auto-started while tasks are active. nil (default)
+     * derives from Role. Explicit true re-enables the brain on an agent-only
+     * instance; explicit false parks it on a full one. Never gates an
+     * operator's manual StartOrchestrator call.
+     */
+    "enabled": boolean | null;
+
+    /**
+     * SchedulerEnabled overrides Role for the auto-dispatch scheduler — the
+     * pass that reconciles board tasks, drains the admission queue, releases
+     * unblocked children, and restarts stale in-progress agents. nil (default)
+     * derives from Role. Maintenance cleanup (orphan worktrees/sandboxes,
+     * metrics) always runs, so a parked instance still collects its garbage.
+     */
+    "schedulerEnabled": boolean | null;
+
     /**
      * DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
      * dispatch pass (start the orchestrator, release unblocked children). Kept
@@ -938,6 +972,15 @@ export class OrchestratorConfig {
 
     /** Creates a new OrchestratorConfig instance. */
     constructor($$source: Partial<OrchestratorConfig> = {}) {
+        if (!("role" in $$source)) {
+            this["role"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = null;
+        }
+        if (!("schedulerEnabled" in $$source)) {
+            this["schedulerEnabled"] = null;
+        }
         if (!("dispatchIntervalSeconds" in $$source)) {
             this["dispatchIntervalSeconds"] = 0;
         }
@@ -958,10 +1001,10 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField3_0 = $$createType13;
+        const $$createField6_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
-            $$parsedSource["pressure"] = $$createField3_0($$parsedSource["pressure"]);
+            $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
         }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
     }

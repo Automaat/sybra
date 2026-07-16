@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -66,18 +67,39 @@ func (a *App) dispatchPass(ctx context.Context) {
 	}
 }
 
+// applyInstanceRole resolves the instance-role gates once. They are sampled
+// rather than read per tick because config reload rewrites cfg.Orchestrator in
+// place under the ConfigService lock, which would race the orchestrator loop;
+// role changes are restart-required, matching orchestrator.intervals. Also
+// surfaces an invalid role — internal/config cannot log it itself, since
+// slog's default logger is not the server's logger and the warning would land
+// below the shipped level.
+func (a *App) applyInstanceRole() {
+	scheduler, brain := true, true
+	if a.cfg != nil {
+		if _, err := config.NormalizeInstanceRole(a.cfg.Orchestrator.Role); err != nil && a.logger != nil {
+			a.logger.Warn("config.orchestrator.role.invalid",
+				"value", a.cfg.Orchestrator.Role, "fallback", config.InstanceRoleFull)
+		}
+		scheduler = a.cfg.Orchestrator.RunsScheduler()
+		brain = a.cfg.Orchestrator.RunsOrchestrator()
+	}
+	a.schedulerDisabled.Store(!scheduler)
+	a.brainDisabled.Store(!brain)
+}
+
 // runsScheduler reports whether this instance may auto-dispatch work. An
 // agent-only instance still serves the HTTP API and runs explicitly-started
 // agents; it just never schedules any itself.
 func (a *App) runsScheduler() bool {
-	return a.cfg == nil || a.cfg.Orchestrator.RunsScheduler()
+	return !a.schedulerDisabled.Load()
 }
 
 // runsOrchestratorBrain reports whether this instance may auto-start the
 // orchestrator session. Only gates the automatic start — an operator's manual
 // StartOrchestrator call stays available on every instance.
 func (a *App) runsOrchestratorBrain() bool {
-	return a.cfg == nil || a.cfg.Orchestrator.RunsOrchestrator()
+	return !a.brainDisabled.Load()
 }
 
 const clusterHealthProbeInterval = 30 * time.Second
@@ -126,10 +148,14 @@ func (a *App) maintenancePass(ctx context.Context) {
 }
 
 func (a *App) queueDrainPass(ctx context.Context) {
+	// Draining the manual queue is the resume path for an agent an operator
+	// already explicitly started, not auto-dispatch — an agent-only instance
+	// must still finish it, or a start that landed on a busy pool is stranded
+	// forever (nothing else pops manual items).
+	a.drainManualQueue(ctx)
 	if !a.runsScheduler() {
 		return
 	}
-	a.drainManualQueue(ctx)
 	a.reconcileRunnableBoardTasks()
 	if a.workflowEngine != nil {
 		// workflow.Engine derives its shell-step context from its own e.ctx

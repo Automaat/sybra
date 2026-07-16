@@ -60,12 +60,18 @@ orchestrator:
 | | `full` (default) | `agent-only` |
 |---|---|---|
 | Orchestrator brain session (auto-start) | yes | no |
-| Auto-dispatch scheduler (board reconcile, queue drain, stale-agent restart) | yes | no |
+| Board reconcile, workflow resume, stale-agent restart | yes | no |
+| Workflow dispatch on a task status change (watcher, CLI, mirror) | yes | no |
+| Auto-spawned human-review agent | yes | no |
 | HTTP API, explicitly-started agents (`App.StartAgent`, `sybra-cli`) | yes | yes |
+| Draining an explicitly-started agent queued behind a busy pool | yes | yes |
 | Maintenance cleanup (orphan worktrees/sandboxes, metrics) | yes | yes |
 
-Cleanup keeps running under `agent-only`, so a parked instance still collects its
-own garbage. An operator's manual `StartOrchestrator` call is never gated.
+Two things deliberately keep running under `agent-only`. Cleanup, so a parked
+instance still collects its own garbage. And the manual queue drain — that is the
+resume path for an agent an operator already explicitly started, not
+auto-dispatch, so gating it would strand any start that landed while the pool was
+busy. An operator's manual `StartOrchestrator` call is never gated either.
 
 Re-enable either half independently — these win over `role`:
 
@@ -76,16 +82,23 @@ orchestrator:
   scheduler_enabled: true  # auto-dispatch only
 ```
 
-An invalid `role` falls back to `full` with a warning, so a typo never silently
-parks an instance that was meant to orchestrate. Confirm the resolved role in the
-startup log:
+An invalid `role` falls back to `full` and logs `config.orchestrator.role.invalid`,
+so a typo never silently parks an instance that was meant to orchestrate. Note the
+direction: a typo'd role starts orchestrating, it does not go idle — check the log
+after changing it.
+
+The role is sampled once at startup (like `orchestrator.dispatch_interval_seconds`),
+so changing it needs a restart; a reload logs `config.reload.restart_required`
+with field `orchestrator.role`.
+
+Confirm the resolved role in the startup log:
 
 ```bash
 kubectl -n sybra-poc logs deploy/sybra-server | grep app.automations
 ```
 
-```
-level=INFO msg=app.automations instance_role=agent-only orchestrator=false scheduler=false ...
+```json
+{"level":"INFO","msg":"app.automations","instance_role":"agent-only","orchestrator":false,"scheduler":false}
 ```
 
 ## Fake repo e2e mode

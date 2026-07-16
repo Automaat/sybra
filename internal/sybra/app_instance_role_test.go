@@ -1,10 +1,14 @@
 package sybra
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestAppInstanceRoleGates(t *testing.T) {
@@ -44,6 +48,7 @@ func TestAppInstanceRoleGates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &App{cfg: &config.Config{Orchestrator: tt.orch}}
+			a.applyInstanceRole()
 			if got := a.runsScheduler(); got != tt.wantScheduler {
 				t.Errorf("runsScheduler() = %v, want %v", got, tt.wantScheduler)
 			}
@@ -56,6 +61,7 @@ func TestAppInstanceRoleGates(t *testing.T) {
 
 func TestAppInstanceRoleGatesNilConfig(t *testing.T) {
 	a := &App{}
+	a.applyInstanceRole()
 	if !a.runsScheduler() {
 		t.Error("runsScheduler() = false with nil cfg, want true")
 	}
@@ -64,25 +70,126 @@ func TestAppInstanceRoleGatesNilConfig(t *testing.T) {
 	}
 }
 
-func TestAgentOnlyQueueDrainPassIsNoop(t *testing.T) {
-	a := setupManualQueueApp(t, "", "", 1)
-	a.cfg.Orchestrator.Role = config.InstanceRoleAgentOnly
-
-	blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
-	if _, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false); err != nil {
-		t.Fatalf("StartAgent(blocker): %v", err)
+func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
+	tests := []struct {
+		name      string
+		role      string
+		wantDepth int
+	}{
+		{name: "full drains", role: config.InstanceRoleFull, wantDepth: 0},
+		{name: "agent-only still drains explicit starts", role: config.InstanceRoleAgentOnly, wantDepth: 0},
 	}
-	queued := createResearchTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
-	if _, err := a.StartAgent(queued.ID, "headless", "queued", false); err != nil {
-		t.Fatalf("StartAgent(queued): %v", err)
-	}
-	if got := len(a.agentQueue.Snapshot()); got != 1 {
-		t.Fatalf("queue depth before drain = %d, want 1", got)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := setupManualQueueApp(t, "", "", 1)
+			a.cfg.Orchestrator.Role = tt.role
+			a.applyInstanceRole()
 
-	a.queueDrainPass(t.Context())
+			blocker := createResearchTaskWithPriority(t, a.tasks, "blocker", task.PriorityMedium)
+			blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
+			if err != nil {
+				t.Fatalf("StartAgent(blocker): %v", err)
+			}
+			queued := createResearchTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
+			if _, err := a.StartAgent(queued.ID, "headless", "queued", false); err != nil {
+				t.Fatalf("StartAgent(queued): %v", err)
+			}
+			if got := len(a.agentQueue.Snapshot()); got != 1 {
+				t.Fatalf("queue depth before drain = %d, want 1", got)
+			}
 
-	if got := len(a.agentQueue.Snapshot()); got != 1 {
-		t.Fatalf("queue depth after agent-only drain = %d, want 1 (drain must not run)", got)
+			if err := a.agents.StopAgent(blockerAgent.ID); err != nil {
+				t.Fatalf("StopAgent(blocker): %v", err)
+			}
+			waitForFreeSlot(t, a)
+
+			a.queueDrainPass(t.Context())
+
+			if got := len(a.agentQueue.Snapshot()); got != tt.wantDepth {
+				t.Fatalf("queue depth after drain with a free slot = %d, want %d", got, tt.wantDepth)
+			}
+		})
+	}
+}
+
+func waitForFreeSlot(t *testing.T, a *App) {
+	t.Helper()
+	for range 200 {
+		if a.agents.AvailableQueueDrainSlots(1) > 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for a free agent pool slot")
+}
+
+func TestAgentOnlyStatusHookDoesNotDispatchWorkflow(t *testing.T) {
+	tests := []struct {
+		name         string
+		role         string
+		wantWorkflow bool
+	}{
+		{name: "full dispatches on status change", role: config.InstanceRoleFull, wantWorkflow: true},
+		{name: "agent-only fails closed", role: config.InstanceRoleAgentOnly, wantWorkflow: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := setupApp(t)
+			a.cfg = config.DefaultConfig()
+			a.cfg.Orchestrator.Role = tt.role
+			a.applyInstanceRole()
+
+			wfDir := t.TempDir()
+			wfStore, err := workflow.NewStore(wfDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const testReviewWF = `id: simple-task-review
+name: Test Review
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: ready-review
+steps:
+  - id: mark_testing
+    name: Hand to Testing
+    type: set_status
+    config:
+      status: testing
+    next:
+      - goto: ""
+`
+			if err := os.WriteFile(filepath.Join(wfDir, "simple-task-review.yaml"), []byte(testReviewWF), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ta := &taskAdapter{tasks: a.tasks}
+			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.initStatusHook()
+
+			created, err := a.tasks.Create("ready-review dispatch", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+				"status": string(task.StatusReadyReview),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			tk, err := a.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := tk.Workflow != nil; got != tt.wantWorkflow {
+				t.Fatalf("workflow attached = %v, want %v (status-change dispatch on role %q)",
+					got, tt.wantWorkflow, tt.role)
+			}
+			if !tt.wantWorkflow && tk.Status != task.StatusReadyReview {
+				t.Errorf("task status = %q, want ready-review untouched on an agent-only instance", tk.Status)
+			}
+		})
 	}
 }

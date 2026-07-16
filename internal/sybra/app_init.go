@@ -620,6 +620,11 @@ func (a *App) initStatusHook() {
 			local = a.runsTaskLocally(t)
 			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
+		// A status change is the other way work auto-starts, independent of the
+		// dispatch pass: any process writing the board (the watcher, an operator
+		// CLI, a mirror) lands here. An agent-only instance must fail closed on
+		// it too, or it spawns workflow agents it was never asked for.
+		autoDispatch := a.runsScheduler()
 
 		// Wake the dispatch pass immediately so a task that just became ready
 		// (e.g. a dependency completing, a stage advancing) is picked up now
@@ -638,15 +643,15 @@ func (a *App) initStatusHook() {
 
 		switch to {
 		case string(task.StatusTodo):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchTaskCreatedWorkflow(taskID)
 			}
 		case string(task.StatusPlanning):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchPlanningWorkflow(taskID)
 			}
 		case string(task.StatusInProgress):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
 			}
 		case string(task.StatusInReview):
@@ -665,19 +670,19 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.humanReview != nil {
+			if local && autoDispatch && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
 			}
 		case string(task.StatusTesting):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchStatusWorkflow(taskID, task.StatusTesting)
 			}
 		case string(task.StatusReadyPR):
-			if !runsNoAgent {
+			if !runsNoAgent && autoDispatch {
 				a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 			}
 		case string(task.StatusDone):
