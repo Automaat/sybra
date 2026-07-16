@@ -620,11 +620,6 @@ func (a *App) initStatusHook() {
 			local = a.runsTaskLocally(t)
 			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
-		// A status change is the other way work auto-starts, independent of the
-		// dispatch pass: any process writing the board (the watcher, an operator
-		// CLI, a mirror) lands here. An agent-only instance must fail closed on
-		// it too, or it spawns workflow agents it was never asked for.
-		autoDispatch := a.runsScheduler()
 
 		// Wake the dispatch pass immediately so a task that just became ready
 		// (e.g. a dependency completing, a stage advancing) is picked up now
@@ -643,15 +638,15 @@ func (a *App) initStatusHook() {
 
 		switch to {
 		case string(task.StatusTodo):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchTaskCreatedWorkflow(taskID)
 			}
 		case string(task.StatusPlanning):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchPlanningWorkflow(taskID)
 			}
 		case string(task.StatusInProgress):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
 			}
 		case string(task.StatusInReview):
@@ -670,19 +665,19 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && autoDispatch && a.humanReview != nil {
+			if local && a.runsScheduler() && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
 			}
 		case string(task.StatusTesting):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchStatusWorkflow(taskID, task.StatusTesting)
 			}
 		case string(task.StatusReadyPR):
-			if !runsNoAgent && autoDispatch {
+			if !runsNoAgent {
 				a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
 			}
 		case string(task.StatusDone):
@@ -837,6 +832,9 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
+	if !a.runsScheduler() {
+		return
+	}
 	if a.workflowEngine == nil {
 		return
 	}
@@ -879,7 +877,18 @@ func expectedHumanKind(t task.Task) string {
 // parked task back in todo/planning. Mirrors TaskService.startCreatedWorkflow.
 // Idempotent: DispatchEvent serializes per task and rejects a task that already
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
+// dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
+// are the three sinks through which a task auto-starts work, so each gates on
+// runsScheduler itself rather than trusting its callers. Gating call sites was
+// tried and leaked twice: the watcher reaches these both via the status hook and
+// via maybeStartWorkflowForExternalTask, and because the task store writes
+// atomically (temp file + rename) fsnotify reports every external write — even a
+// tags-only update — as CREATE, so the create path is far hotter than its name
+// suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
+	if !a.runsScheduler() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}

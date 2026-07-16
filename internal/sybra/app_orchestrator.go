@@ -242,6 +242,9 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 }
 
 func (a *App) dispatchPlanningWorkflow(taskID string) {
+	if !a.runsScheduler() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
