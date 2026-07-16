@@ -156,13 +156,11 @@ func run(args []string) int {
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
-	// HTTP auto-detect is only safe on the default control path: either no
-	// explicit home override at all, or the task-scoped control-home bridge
-	// back to the real operator store. A bare SYBRA_HOME override means the
-	// caller explicitly targeted an on-disk store (common in tests/manual
-	// harnesses), so reaching some unrelated reachable server would violate that
-	// contract.
-	allowHTTP := homeOverride == "" && (fromControlHome || !fromSybraHome)
+	// HTTP auto-detect is only safe on the untouched default path. Any resolved
+	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
+	// caller explicitly targeted an on-disk store, so reaching some unrelated
+	// reachable server would violate that contract.
+	allowHTTP := homeOverride == "" && !fromControlHome && !fromSybraHome
 	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
 }
 
