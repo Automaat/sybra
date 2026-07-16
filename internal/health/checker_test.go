@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -78,5 +79,71 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 	}
 	if dockerFinding.Fingerprint != string(CatDockerReclaimable) {
 		t.Fatalf("Fingerprint = %q, want %q", dockerFinding.Fingerprint, CatDockerReclaimable)
+	}
+}
+
+func TestCheckerSkipsSandboxCheckWhenUnwired(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	for _, f := range report.Findings {
+		if f.Category == CatSandboxCleanup {
+			t.Fatalf("unexpected %q finding with no sandboxQuarantine wired: %+v", CatSandboxCleanup, f)
+		}
+	}
+}
+
+func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.SetSandboxQuarantine(func() []sandbox.QuarantineEntry {
+		return []sandbox.QuarantineEntry{
+			{TaskID: "task-quarantined", Path: "/data/sandboxes/task-quarantined", BytesRetained: 2048, Attempts: 4, LastError: "permission denied"},
+		}
+	})
+
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Category == CatSandboxCleanup {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q finding, got %v", CatSandboxCleanup, findingCategories(report.Findings))
+	}
+	if found.TaskID != "task-quarantined" {
+		t.Errorf("TaskID = %q, want task-quarantined", found.TaskID)
+	}
+	if found.Fingerprint != string(CatSandboxCleanup)+":task-quarantined" {
+		t.Errorf("Fingerprint = %q, want %q", found.Fingerprint, string(CatSandboxCleanup)+":task-quarantined")
+	}
+	if report.Score != ScoreCritical {
+		t.Errorf("Score = %q, want critical", report.Score)
 	}
 }

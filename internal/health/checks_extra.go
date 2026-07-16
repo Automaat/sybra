@@ -2,6 +2,8 @@ package health
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
@@ -114,6 +116,52 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 	}
 
 	return findings
+}
+
+// checkGHIssueAuthFailure flags GitHub issue filing (monitor anomalies,
+// human-review) failing on authentication instead of succeeding or failing
+// for an unrelated reason — the durable outbox (monitor.DurableGHIssueSink)
+// already queues and bounded-retries these, but an operator should still see
+// one actionable signal that credentials need attention, not just a log
+// line. One finding aggregates every affected sink so a simultaneous
+// monitor+human-review outage does not spam the board with duplicates.
+func checkGHIssueAuthFailure(events []audit.Event, now time.Time) []Finding {
+	sinks := make(map[string]bool)
+	var lastErr string
+	count := 0
+	for _, e := range events {
+		if e.Type != audit.EventGHIssueAuthFailed {
+			continue
+		}
+		count++
+		if sink, ok := e.Data["sink"].(string); ok && sink != "" {
+			sinks[sink] = true
+		}
+		if errStr, ok := e.Data["err"].(string); ok && errStr != "" {
+			lastErr = errStr
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	sinkNames := make([]string, 0, len(sinks))
+	for s := range sinks {
+		sinkNames = append(sinkNames, s)
+	}
+	sort.Strings(sinkNames)
+
+	return []Finding{{
+		Category:    CatGHAuthFailure,
+		Severity:    SeverityWarning,
+		Title:       fmt.Sprintf("GitHub issue filing failed authentication (%s)", strings.Join(sinkNames, ", ")),
+		Description: fmt.Sprintf("GitHub issue filing hit an authentication failure %d time(s) across %s in the last 24h — configure github.app or run `gh auth login`. Failed filings are queued in the durable outbox and retried automatically once credentials recover.", count, strings.Join(sinkNames, ", ")),
+		Evidence: map[string]any{
+			"sinks":      sinkNames,
+			"count":      count,
+			"last_error": lastErr,
+		},
+		DetectedAt: now,
+	}}
 }
 
 func isExpectedHumanRequired(e audit.Event) bool {
