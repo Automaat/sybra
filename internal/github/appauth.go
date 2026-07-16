@@ -246,9 +246,21 @@ func GHEnv() []string {
 }
 
 // Authenticated reports whether gh can currently reach the API under the
-// configured credentials — a cached GitHub App installation token, or
-// ambient gh auth. Performs a live lookup (cached after the first success),
-// so it's meant for a startup/periodic preflight, not a hot path.
+// configured credentials — a cached GitHub App installation token, an
+// ambient GH_TOKEN carrying one, or ambient user gh auth. Performs a live
+// lookup, so it's meant for a startup/periodic preflight, not a hot path.
+//
+// Deliberately does NOT use ViewerLogin()/gh api user: /user is a
+// user-to-server endpoint that always 403s for GitHub App installation
+// tokens even when they're fully functional for issue filing, which made
+// the preflight false-positive on exactly the credential type it exists to
+// support (see #2032). /rate_limit is reachable by every credential type gh
+// supports, so probe that instead.
 func Authenticated() bool {
-	return ViewerLogin() != ""
+	return authenticated(defaultExecer)
+}
+
+func authenticated(e execer) bool {
+	_, err := e.run("api", "rate_limit", "-q", ".rate.limit")
+	return err == nil
 }

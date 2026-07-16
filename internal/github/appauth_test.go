@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -156,5 +157,31 @@ func TestEnableAppAuth_RequiresAllFields(t *testing.T) {
 	t.Cleanup(DisableAppAuth)
 	if err := EnableAppAuth(AppCredentials{AppID: 1}); err == nil {
 		t.Fatal("expected error for incomplete credentials")
+	}
+}
+
+func TestAuthenticated_InstallationTokenSucceedsViaRateLimit(t *testing.T) {
+	// Regression for #2032: `gh api user` 403s for GitHub App installation
+	// tokens ("Resource not accessible by integration") even when the token
+	// is fully functional for issue filing. Authenticated() must probe an
+	// endpoint reachable by installation tokens, not /user.
+	fe := &fakeExecer{
+		output: []byte(`{"message":"Resource not accessible by integration"}`),
+		err:    fmt.Errorf("gh: Resource not accessible by integration (HTTP 403)"),
+	}
+	if authenticated(fe) {
+		t.Fatal("sanity: fake configured to fail should not report authenticated")
+	}
+
+	fe = &fakeExecer{output: []byte("60\n")}
+	if !authenticated(fe) {
+		t.Fatal("expected authenticated=true when rate_limit probe succeeds")
+	}
+}
+
+func TestAuthenticated_NoCredentials(t *testing.T) {
+	fe := &fakeExecer{err: fmt.Errorf("gh: authentication required, run `gh auth login`")}
+	if authenticated(fe) {
+		t.Fatal("expected authenticated=false when gh has no credentials")
 	}
 }
