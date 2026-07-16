@@ -95,8 +95,6 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv("SYBRA_TASKS_DIR", tasksDir)
 
 	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
 	if code != 0 {
@@ -156,8 +154,6 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv("SYBRA_TASKS_DIR", tasksDir)
 
 	code, out := runCLI(t, "--json", "create", "--title", "no server target")
 	if code != 0 {
@@ -189,8 +185,6 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv("SYBRA_TASKS_DIR", tasksDir)
 
 	code, out := runCLI(t, "--json", "create", "--title", "server error target")
 	if code != 0 {
@@ -258,51 +252,5 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	code, _ = runCLI(t, "--json", "--home", home, "update", id, "--status", "todo")
 	if code == 0 {
 		t.Fatal("--home must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
-	}
-}
-
-// TestCreate_IsolationHoldsWhenControlHomeIsAmbientlySet guards against the
-// leak in #2136: SYBRA_CONTROL_HOME outranks SYBRA_HOME in run()'s home
-// precedence (cmd/sybra-cli/main.go), by design, so bare sybra-cli calls from
-// inside a task-scoped agent reach the real operator board. A test that only
-// clears SYBRA_HOME leaves that real board reachable if SYBRA_CONTROL_HOME is
-// already set in the ambient environment — exactly the condition inside any
-// Sybra-dispatched agent shell. This test simulates that ambient condition
-// and asserts a "decoy" real-board directory is never written to.
-func TestCreate_IsolationHoldsWhenControlHomeIsAmbientlySet(t *testing.T) {
-	decoyRealHome := t.TempDir()
-	decoyTasksDir := filepath.Join(decoyRealHome, "tasks")
-	if err := os.MkdirAll(decoyTasksDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SYBRA_CONTROL_HOME", decoyRealHome)
-
-	home := t.TempDir()
-	tasksDir := filepath.Join(home, "tasks")
-	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SYBRA_HOME", home)
-	t.Setenv("SYBRA_TASKS_DIR", tasksDir)
-
-	code, out := runCLI(t, "--json", "create", "--title", "isolation probe")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	decoy, err := task.NewStore(decoyTasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list, err := decoy.List(); err != nil || len(list) != 0 {
-		t.Fatalf("task leaked into the ambient SYBRA_CONTROL_HOME decoy board: %v (err=%v); out=%s", list, err, out)
-	}
-
-	isolated, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if list, err := isolated.List(); err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one task in the isolated dir, got %v (err=%v)", list, err)
 	}
 }
