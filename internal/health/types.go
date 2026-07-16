@@ -88,6 +88,12 @@ type ReclaimStatus struct {
 // PressureStatus captures the current pressure sample plus the most recent
 // automatic safe-cache reclaim pass, if any.
 type PressureStatus struct {
+	// DiskFreePct, MemAvailablePct, and LoadPerCPU are -1 when the
+	// underlying signal could not be sampled (see
+	// internal/pressure.Sample). The source reading is NaN in that case,
+	// but encoding/json cannot marshal NaN — the Checker sanitizes it to
+	// -1 (never a legitimate value for these fields) before persisting so
+	// one unreadable signal can't blackhole the whole report.
 	DiskFreePct         float64        `json:"diskFreePct"`
 	MemAvailablePct     float64        `json:"memAvailablePct"`
 	LoadPerCPU          float64        `json:"loadPerCpu"`

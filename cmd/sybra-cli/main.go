@@ -1794,15 +1794,19 @@ func printPressureBlock(pressure healthPressureStatus) {
 	}
 }
 
+// -1 is the persisted sentinel for "signal unreadable" (see
+// health.PressureStatus) — encoding/json can't round-trip the source NaN, so
+// the Checker sanitizes it to -1 before writing health-report.json. The
+// math.IsNaN check stays as defense in depth for any other in-process caller.
 func formatHealthPercent(v float64, digits int) string {
-	if math.IsNaN(v) {
+	if math.IsNaN(v) || v < 0 {
 		return "unavailable"
 	}
 	return fmt.Sprintf("%.*f%%", digits, v)
 }
 
 func formatHealthNumber(v float64, digits int) string {
-	if math.IsNaN(v) {
+	if math.IsNaN(v) || v < 0 {
 		return "unavailable"
 	}
 	return fmt.Sprintf("%.*f", digits, v)

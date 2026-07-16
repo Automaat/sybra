@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -165,7 +166,7 @@ func (c *Checker) check(ctx context.Context) {
 	processes := procstat.Sample(5, owned.Owns)
 	var pressure *PressureStatus
 	if c.pressure != nil {
-		pressure = c.pressure()
+		pressure = sanitizePressureStatus(c.pressure())
 	}
 
 	report := &Report{
@@ -197,6 +198,33 @@ func (c *Checker) check(ctx context.Context) {
 
 	c.logger.Info("health.check.done", "findings", len(findings),
 		"total_cost", stats.TotalCostUSD, "failure_rate", stats.FailureRate)
+}
+
+// sanitizePressureStatus clamps NaN/Inf sample readings to -1 ("signal
+// unreadable" — DiskFreePct/MemAvailablePct/LoadPerCPU are never legitimately
+// negative). pressure.Gate.Status legitimately returns NaN for a signal it
+// could not sample (see internal/pressure's allSignalsUnreadable and the CLI's
+// own math.IsNaN-aware formatHealthPercent/formatHealthNumber), but
+// encoding/json refuses to marshal NaN/Inf anywhere in the object graph —
+// unsanitized, one unreadable sample would silently fail persist's
+// MarshalIndent call and blackhole the *entire* report (score, findings,
+// stats, docker, processes — not just pressure).
+func sanitizePressureStatus(p *PressureStatus) *PressureStatus {
+	if p == nil {
+		return nil
+	}
+	sanitized := *p
+	sanitized.DiskFreePct = safeFloat(p.DiskFreePct)
+	sanitized.MemAvailablePct = safeFloat(p.MemAvailablePct)
+	sanitized.LoadPerCPU = safeFloat(p.LoadPerCPU)
+	return &sanitized
+}
+
+func safeFloat(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return -1
+	}
+	return v
 }
 
 func buildStats(events []audit.Event) Stats {
