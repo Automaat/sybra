@@ -305,7 +305,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	stderrOut := stderrBuf.String()
-	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+	if a.WasStopped() && a.GetEscalationReason() == EscalationReasonCost {
 		a.SetExitErr(errCostGuardrailExceeded)
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
@@ -464,7 +464,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+	if a.WasStopped() && a.GetEscalationReason() == EscalationReasonCost {
 		a.SetExitErr(errCostGuardrailExceeded)
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
@@ -510,7 +510,7 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 // guard stopped, deriving completion from the terminal result event rather
 // than the kill signal that appears in the process wait error.
 func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
-	if a.GetEscalationReason() == "checkpoint_failed" {
+	if a.GetEscalationReason() == EscalationReasonCheckpointFailed {
 		a.SetExitErr(errCheckpointCommitFailed)
 		return
 	}
@@ -1056,7 +1056,10 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
 	a.MarkStopped()
-	a.SetEscalationReason("cost")
+	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
+	if a.GetEscalationReason() != EscalationReasonCheckpoint {
+		a.SetEscalationReason(EscalationReasonCost)
+	}
 	a.setCompletedByResult(true)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:  "cost",
@@ -1100,7 +1103,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 		m.logger.Info("agent.guardrail.turns.auto_continued", "id", a.ID, "turns", turns, "new_limit", newLimit)
 		return true
 	}
-	a.SetEscalationReason("turns")
+	a.SetEscalationReason(EscalationReasonTurns)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:    "turns",
 		TurnCount: turns,
@@ -1126,7 +1129,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, maxTurns int) bool {
 	worktreeDir := strings.TrimSpace(a.sessionCWD)
 	if worktreeDir == "" {
-		a.SetEscalationReason("checkpoint_failed")
+		a.SetEscalationReason(EscalationReasonCheckpointFailed)
 		a.MarkStopped()
 		a.setCompletedByResult(true)
 		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
@@ -1138,7 +1141,7 @@ func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, max
 	msg := fmt.Sprintf("chore(checkpoint): preserve progress at turn %d\n\nSybra checkpointed this run at the per-run turn ceiling (%d turns) before handing off to a fresh agent.", turns, maxTurns)
 	committed, err := project.CheckpointCommit(ctx, worktreeDir, msg)
 	if err != nil {
-		a.SetEscalationReason("checkpoint_failed")
+		a.SetEscalationReason(EscalationReasonCheckpointFailed)
 		a.MarkStopped()
 		a.setCompletedByResult(true)
 		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
@@ -1147,7 +1150,7 @@ func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, max
 		return false
 	}
 
-	a.SetEscalationReason("checkpoint")
+	a.SetEscalationReason(EscalationReasonCheckpoint)
 	a.MarkStopped()
 	a.setCompletedByResult(true)
 	m.logger.Info("agent.guardrail.turns.checkpoint",
