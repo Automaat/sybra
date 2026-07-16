@@ -591,6 +591,79 @@ func TestManager_RemoveContext_NormalOwnership(t *testing.T) {
 	}
 }
 
+func TestManager_RemoveContext_LegacyOwnerRecordNormalizesAfterPermissionFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		writeMetadata func(t *testing.T, taskDir string)
+	}{
+		{
+			name:          "missing",
+			writeMetadata: func(*testing.T, string) {},
+		},
+		{
+			name: "malformed",
+			writeMetadata: func(t *testing.T, taskDir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(taskDir, ownerFileName), []byte("not json"), 0o600); err != nil {
+					t.Fatalf("write malformed owner record: %v", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestManager(t)
+			taskID := "task-legacy-" + tt.name
+			taskDir, err := m.taskDir(taskID)
+			if err != nil {
+				t.Fatalf("taskDir: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(taskDir, "sybra-home"), 0o755); err != nil {
+				t.Fatalf("mkdir legacy task dir: %v", err)
+			}
+			tt.writeMetadata(t, taskDir)
+
+			var normalizeCalls int
+			m.normalizeOwnership = func(_ context.Context, path string, uid, gid int) error {
+				normalizeCalls++
+				if path != taskDir {
+					t.Errorf("normalizeOwnership path = %q, want %q", path, taskDir)
+				}
+				if uid != os.Getuid() || gid != os.Getgid() {
+					t.Errorf("normalizeOwnership uid/gid = %d/%d, want %d/%d", uid, gid, os.Getuid(), os.Getgid())
+				}
+				return nil
+			}
+
+			var removeCalls int
+			m.removeAll = func(path string) error {
+				removeCalls++
+				if removeCalls == 1 {
+					return fmt.Errorf("remove %s: permission denied", path)
+				}
+				return os.RemoveAll(path)
+			}
+
+			m.RemoveContext(context.Background(), taskID)
+
+			if normalizeCalls != 1 {
+				t.Errorf("normalizeOwnership calls = %d, want 1", normalizeCalls)
+			}
+			if removeCalls != 2 {
+				t.Errorf("removeAll calls = %d, want 2", removeCalls)
+			}
+			if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+				t.Fatalf("task dir %q still exists after RemoveContext: %v", taskDir, err)
+			}
+			if entries := m.QuarantinedEntries(); len(entries) != 0 {
+				t.Errorf("QuarantinedEntries = %+v, want empty", entries)
+			}
+		})
+	}
+}
+
 // TestManager_RemoveContext_MixedOwnership proves the mixed-ownership case
 // from the acceptance criteria: when the recorded owner no longer matches
 // (e.g. a docker/k8s sandbox left root-owned files via a bind mount),

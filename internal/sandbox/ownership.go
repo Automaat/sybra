@@ -68,6 +68,17 @@ func readOwnerRecord(taskDir string) (ownerRecord, bool) {
 	return rec, true
 }
 
+func currentOwnerRecord() ownerRecord {
+	return ownerRecord{UID: os.Getuid(), GID: os.Getgid()}
+}
+
+func cleanupOwnerRecord(taskDir string) (ownerRecord, bool) {
+	if rec, ok := readOwnerRecord(taskDir); ok {
+		return rec, true
+	}
+	return currentOwnerRecord(), false
+}
+
 // mismatchedOwnership reports whether any entry under taskDir is owned by a
 // UID/GID other than want — the signature of a docker/k8s sandbox writing
 // host-visible files as a different (often root) user via a bind mount. A
@@ -126,6 +137,17 @@ func isTransientRemoveErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "device or resource busy") || strings.Contains(msg, "resource busy")
+}
+
+func isPermissionRemoveErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "permission denied") || strings.Contains(msg, "operation not permitted")
 }
 
 // QuarantineEntry records a sandbox cleanup failure that survived ownership

@@ -248,14 +248,10 @@ func (m *Manager) RemoveContext(ctx context.Context, taskID string) {
 // RemoveContext, returning the final error (if any) for the caller to
 // quarantine.
 func (m *Manager) removeSandboxDir(ctx context.Context, taskID, taskDir string) error {
-	if rec, ok := readOwnerRecord(taskDir); ok && mismatchedOwnership(taskDir, rec) {
-		normalize := m.normalizeOwnership
-		if normalize == nil {
-			normalize = dockerChownNormalizer
-		}
-		if err := normalize(ctx, taskDir, rec.UID, rec.GID); err != nil {
-			m.logger.Warn("sandbox.remove.normalize", "task_id", taskID, "path", taskDir, "err", err)
-		}
+	rec, hasOwnerRecord := cleanupOwnerRecord(taskDir)
+	normalized := false
+	if mismatchedOwnership(taskDir, rec) {
+		normalized = m.normalizeSandboxOwnership(ctx, taskID, taskDir, rec)
 	}
 
 	removeAll := m.removeAll
@@ -264,12 +260,30 @@ func (m *Manager) removeSandboxDir(ctx context.Context, taskID, taskDir string) 
 	}
 
 	err := removeAll(taskDir)
+	if err != nil && !hasOwnerRecord && !normalized && isPermissionRemoveErr(err) {
+		normalized = m.normalizeSandboxOwnership(ctx, taskID, taskDir, rec)
+		if normalized {
+			err = removeAll(taskDir)
+		}
+	}
 	for attempt := 0; err != nil && isTransientRemoveErr(err) && attempt < len(sandboxRemoveBackoffs); attempt++ {
 		m.logger.Warn("sandbox.remove.retry", "task_id", taskID, "attempt", attempt+1, "err", err)
 		sandboxRemoveSleep(sandboxRemoveBackoffs[attempt])
 		err = removeAll(taskDir)
 	}
 	return err
+}
+
+func (m *Manager) normalizeSandboxOwnership(ctx context.Context, taskID, taskDir string, rec ownerRecord) bool {
+	normalize := m.normalizeOwnership
+	if normalize == nil {
+		normalize = dockerChownNormalizer
+	}
+	if err := normalize(ctx, taskDir, rec.UID, rec.GID); err != nil {
+		m.logger.Warn("sandbox.remove.normalize", "task_id", taskID, "path", taskDir, "err", err)
+		return false
+	}
+	return true
 }
 
 // quarantine records taskDir as a genuinely unsafe (or at least not
