@@ -95,9 +95,24 @@ func signalPID(pid int, grace time.Duration) {
 	target := signalTarget(pid)
 	_ = syscall.Kill(target, syscall.SIGINT)
 	go func() {
-		time.Sleep(grace)
-		if processAlive(pid) {
-			_ = syscall.Kill(target, syscall.SIGKILL)
+		if grace <= 0 {
+			if processAlive(pid) {
+				_ = syscall.Kill(target, syscall.SIGKILL)
+			}
+			return
+		}
+		deadline := time.Now().Add(grace)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if !processAlive(pid) {
+				return
+			}
+			if time.Now().After(deadline) {
+				_ = syscall.Kill(target, syscall.SIGKILL)
+				return
+			}
+			<-ticker.C
 		}
 	}()
 }

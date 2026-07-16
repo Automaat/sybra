@@ -71,11 +71,11 @@ func processOwnerFromEnvAssignments(assignments []string) processOwner {
 }
 
 func processOwnerFromAnyEnv(assignments []string) processOwner {
-	if owner := processOwnerFromEnvAssignments(assignments); owner != (processOwner{}) {
-		return owner
-	}
 	if owner := mcpOwnerFromEnvAssignments(assignments); owner != (mcpOwner{}) {
 		return processOwner(owner)
+	}
+	if owner := processOwnerFromEnvAssignments(assignments); owner != (processOwner{}) {
+		return owner
 	}
 	return processOwner{}
 }

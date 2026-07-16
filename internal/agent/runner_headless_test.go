@@ -2727,8 +2727,8 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 		t.Fatalf("lookupProvider: %v", err)
 	}
 	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
-	if !stop {
-		t.Fatal("processHeadlessLine = false, want immediate stop for a clean terminal result with no queued steer or background tasks")
+	if stop {
+		t.Fatal("processHeadlessLine reported stop for an unsteered close state; the detached tailer owns the actual fast-close decision")
 	}
 
 	if !a.isFinalizing() {
@@ -2737,8 +2737,8 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	if a.convo.hasStdinPipe() {
 		t.Error("stdin pipe must be closed once finalizing")
 	}
-	if !a.WasCompletedByResult() {
-		t.Fatal("WasCompletedByResult() = false, want result-derived completion on the fast close path")
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true before the tailer reaps the post-result process, want false")
 	}
 	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitFastClose {
 		t.Fatalf("PostResultWait = (%q, %v, %v), want fast_close", reason, time.Time{}, ok)
@@ -2776,11 +2776,18 @@ func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t
 	}
 
 	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
-	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); !stop {
-		t.Fatal("background task clear after terminal result must trigger immediate stop")
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background task clear event should update state, not stop the stream directly")
+	}
+	called := false
+	if !m.stopTailPostResultWait(a, func() { called = true }) {
+		t.Fatal("tailer must stop promptly once background tasks clear after the terminal result")
+	}
+	if !called {
+		t.Fatal("stopTailPostResultWait must invoke waitExit on the close path")
 	}
 	if !a.WasCompletedByResult() {
-		t.Fatal("WasCompletedByResult() = false after background tasks cleared, want true")
+		t.Fatal("WasCompletedByResult() = false after tailer close, want true")
 	}
 }
 
