@@ -547,6 +547,12 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 		return true
 	}
 
+	// Checked after the fast paths: the budget caps LLM agents, not deterministic work. EXC:FILE011:load-bearing-invariant
+	if !opts.replaceActiveWorkflow && r.durableFixBudgetSpent(t.ID, primary.PR.HeadSHA) {
+		r.escalateExhaustedFix(primary)
+		return true
+	}
+
 	// dispatchPRIssueWithOptions -> WorkflowEngine.DispatchEvent eventually
 	// reaches execShell, which derives its context from workflow.Engine's own
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.

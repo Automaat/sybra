@@ -81,8 +81,7 @@ func prRepoNumberKey(repo string, number int) string {
 	return repo + "#" + strconv.Itoa(number)
 }
 
-// MatchTaskPRs finds issues on PRs that are linked to tasks.
-// Matches by PRNumber or Branch (HeadRefName). Skips drafts and UNKNOWN mergeable.
+// MatchTaskPRs finds issues on task-linked PRs, matching by PRNumber then Branch. Only ready_to_merge skips drafts; unresolved mergeability yields no conflict issue rather than dropping the PR, which is not the same as resolved (see PRIssueIndeterminate). EXC:FILE011:corrects-a-stale-claim-that-callers-relied-on
 // MatchTaskPRIndex maps task ID to the PR matched for it, using the same
 // number-then-branch resolution as MatchTaskPRs. Callers need the live PR even
 // when it produced no issue this cycle — "no issue" and "issue resolved" are

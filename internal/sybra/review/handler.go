@@ -605,9 +605,6 @@ func (r *Handler) handleTaskPRIssues(ctx context.Context, taskID string, issues 
 		if r.prTracker != nil {
 			decision = r.prTracker.Decide(taskID, issues[i].Kind, issues[i].PR.HeadSHA, sig)
 		}
-		if decision == github.DispatchHandle && r.durableFixBudgetSpent(taskID, issues[i].PR.HeadSHA) {
-			decision = github.DispatchExhausted
-		}
 		switch decision {
 		case github.DispatchHandle:
 			if issues[i].Kind == github.PRIssueReadyToMerge {
