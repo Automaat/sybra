@@ -155,6 +155,8 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	m.injectGhShim(&cfg)
+
 	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
 	}
