@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/audit"
 )
 
 // fakeSubmitter is a minimal issueSubmitter for outbox tests: it fails with
@@ -74,6 +77,49 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 	}
 	if d.store.depth() != 0 {
 		t.Fatalf("want 0 pending outbox items after recovery flush, got %d", d.store.depth())
+	}
+}
+
+func TestDurableGHIssueSink_AuthFailureEmitsAuditEventOnce(t *testing.T) {
+	dir := t.TempDir()
+	auditDir := filepath.Join(dir, "audit")
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+
+	store, err := newIssueOutboxStore(filepath.Join(dir, "outbox"))
+	if err != nil {
+		t.Fatalf("newIssueOutboxStore: %v", err)
+	}
+	inner := &fakeSubmitter{err: errAuthFailed}
+	d := &DurableGHIssueSink{inner: inner, store: store, logger: slog.Default(), name: "monitor", auditLog: auditLog}
+
+	// Same fingerprint fails twice (e.g. one initial failure plus one
+	// retried-and-still-failing flush) — the audit event must only be
+	// emitted once, on the first time the fingerprint is newly persisted.
+	if _, _, err := d.SubmitIssue(context.Background(), "recurring anomaly", "body", nil); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	d.flushPending(context.Background())
+
+	events, err := audit.Read(auditDir, audit.Query{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	var matches int
+	for _, e := range events {
+		if e.Type != audit.EventGHIssueAuthFailed {
+			continue
+		}
+		matches++
+		if sink, _ := e.Data["sink"].(string); sink != "monitor" {
+			t.Errorf("event sink = %q, want %q", sink, "monitor")
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("want exactly 1 gh_issue.auth_failed audit event, got %d", matches)
 	}
 }
 

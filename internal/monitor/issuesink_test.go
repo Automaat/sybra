@@ -3,11 +3,14 @@ package monitor
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/github"
 )
 
 // fakeExecer records every gh invocation and returns canned responses keyed
@@ -405,6 +408,42 @@ func TestSanitizeGHOutput_CaseInsensitiveHTML(t *testing.T) {
 				t.Errorf("sanitizeGHOutput = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDefaultGHExecer_NoAppAuthInheritsAmbientEnv guards defaultGHExecer.run's
+// fallback branch: when no GitHub App auth is configured, github.GHEnv()
+// returns nil and cmd.Env must stay unset so the gh subprocess inherits the
+// full ambient environment (its own `gh auth login` config, GH_TOKEN, HOME,
+// etc.) unchanged. A regression that unconditionally overrode cmd.Env with a
+// stripped-down slice would silently break every non-App-auth deployment —
+// see #2032.
+func TestDefaultGHExecer_NoAppAuthInheritsAmbientEnv(t *testing.T) {
+	github.DisableAppAuth()
+	t.Cleanup(github.DisableAppAuth)
+
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	captured := filepath.Join(dir, "captured-env.txt")
+	// Pure bash builtins only (printf, [[..]]) — PATH is scoped to dir below,
+	// so external tools like env/grep would not resolve.
+	script := "#!/bin/bash\n[[ -n \"$SYBRA_TEST_MARKER\" ]] && printf '%s' \"$SYBRA_TEST_MARKER\" > " + captured + "\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("SYBRA_TEST_MARKER", "present")
+
+	if _, err := (defaultGHExecer{}).run(context.Background(), "issue", "list"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	got, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	if string(got) != "present" {
+		t.Fatalf("ambient env not inherited by gh subprocess when no App auth is configured: %q", got)
 	}
 }
 

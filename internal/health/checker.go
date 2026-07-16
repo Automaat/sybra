@@ -125,6 +125,7 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkAgentRetryLoops(dayEvents, now)...)
 	findings = append(findings, checkTriageMismatch(weekEvents, now)...)
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
+	findings = append(findings, checkGHIssueAuthFailure(dayEvents, now)...)
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)
 

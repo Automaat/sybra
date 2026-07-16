@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
@@ -136,16 +137,20 @@ func (s *issueOutboxStore) depth() int {
 // duplicate-title conflict won't resolve itself by retrying, so those are
 // returned to the caller unchanged without consuming outbox space.
 type DurableGHIssueSink struct {
-	inner  issueSubmitter
-	store  *issueOutboxStore
-	logger *slog.Logger
-	name   string // sink identity for logs, e.g. "monitor" or "human-review"
+	inner    issueSubmitter
+	store    *issueOutboxStore
+	logger   *slog.Logger
+	name     string        // sink identity for logs, e.g. "monitor" or "human-review"
+	auditLog *audit.Logger // optional; nil in tests that construct the struct directly
 }
 
 // NewDurableGHIssueSink wraps inner with a bounded on-disk retry outbox
 // rooted at dir. name identifies the sink in log lines (e.g. "monitor",
-// "human-review") since a process may run more than one.
-func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger) (*DurableGHIssueSink, error) {
+// "human-review") since a process may run more than one. auditLog may be nil
+// (no audit event is emitted, only the log line) — callers that want the
+// failure surfaced as a health.Finding (see internal/health's
+// checkGHIssueAuthFailure) must pass a non-nil logger.
+func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger, auditLog *audit.Logger) (*DurableGHIssueSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -153,7 +158,7 @@ func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Lo
 	if err != nil {
 		return nil, err
 	}
-	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name}, nil
+	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name, auditLog: auditLog}, nil
 }
 
 // Submit implements IssueSink.
@@ -242,6 +247,9 @@ func (d *DurableGHIssueSink) persist(title, body string, extraLabels []string, s
 	if !hadExisting {
 		d.logger.Error("monitor.issue.auth_failed", "sink", d.name, "title", title, "err", it.LastError,
 			"hint", "issue filing is unauthenticated; configure github.app or `gh auth login` — queued for retry")
+		audit.LogEvent(d.auditLog, d.logger, audit.EventGHIssueAuthFailed, "", "", map[string]any{
+			"sink": d.name, "err": it.LastError,
+		})
 	}
 }
 

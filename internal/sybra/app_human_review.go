@@ -134,7 +134,7 @@ func (a *App) initHumanReview() {
 	}
 	ghSink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
 	var sink humanReviewIssueFiler = ghSink
-	if durableSink, err := monitor.NewDurableGHIssueSink(ghSink, filepath.Join(config.GHIssueOutboxDir(), "human-review"), "human-review", a.logger); err != nil {
+	if durableSink, err := monitor.NewDurableGHIssueSink(ghSink, filepath.Join(config.GHIssueOutboxDir(), "human-review"), "human-review", a.logger, a.audit); err != nil {
 		a.logger.Error("human-review.issue_outbox.init_failed", "err", err)
 	} else {
 		sink = durableSink
