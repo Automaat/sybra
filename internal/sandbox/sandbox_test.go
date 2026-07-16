@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -554,6 +556,251 @@ func TestManager_CleanupOrphaned_RetentionDisabled(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("eligible dir removed despite disabled retention: %v", err)
+	}
+}
+
+// TestManager_RemoveContext_NormalOwnership proves the plain-permissions
+// case from the acceptance criteria: a completed sandbox with matching
+// ownership is removed without ever invoking ownership normalization.
+func TestManager_RemoveContext_NormalOwnership(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-normal")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+
+	normalizeCalled := false
+	m.normalizeOwnership = func(context.Context, string, int, int) error {
+		normalizeCalled = true
+		return nil
+	}
+
+	m.RemoveContext(context.Background(), "task-normal")
+
+	if normalizeCalled {
+		t.Error("normalizeOwnership called for a matching-ownership sandbox, want no call")
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task dir %q still exists after RemoveContext: %v", taskDir, err)
+	}
+	if entries := m.QuarantinedEntries(); len(entries) != 0 {
+		t.Errorf("QuarantinedEntries = %+v, want empty", entries)
+	}
+}
+
+// TestManager_RemoveContext_MixedOwnership proves the mixed-ownership case
+// from the acceptance criteria: when the recorded owner no longer matches
+// (e.g. a docker/k8s sandbox left root-owned files via a bind mount),
+// RemoveContext normalizes ownership through the injected privileged
+// mechanism before removing, and the dir is gone afterward.
+func TestManager_RemoveContext_MixedOwnership(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-mixed")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+
+	// Force a fake owner record so mismatchedOwnership reports true even
+	// though the test process actually owns every file (we cannot chown to
+	// another UID without root).
+	if err := writeOwnerRecord(taskDir); err != nil {
+		t.Fatalf("writeOwnerRecord: %v", err)
+	}
+	rec, _ := readOwnerRecord(taskDir)
+	rec.UID += 999999
+	rec.GID += 999999
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal fake owner record: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, ownerFileName), data, 0o600); err != nil {
+		t.Fatalf("write fake owner record: %v", err)
+	}
+
+	var normalizeCalls int
+	m.normalizeOwnership = func(_ context.Context, path string, uid, gid int) error {
+		normalizeCalls++
+		if uid != rec.UID || gid != rec.GID {
+			t.Errorf("normalizeOwnership uid/gid = %d/%d, want %d/%d", uid, gid, rec.UID, rec.GID)
+		}
+		if path != taskDir {
+			t.Errorf("normalizeOwnership path = %q, want %q", path, taskDir)
+		}
+		return nil
+	}
+
+	m.RemoveContext(context.Background(), "task-mixed")
+
+	if normalizeCalls != 1 {
+		t.Errorf("normalizeOwnership calls = %d, want 1", normalizeCalls)
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task dir %q still exists after RemoveContext: %v", taskDir, err)
+	}
+	if entries := m.QuarantinedEntries(); len(entries) != 0 {
+		t.Errorf("QuarantinedEntries = %+v, want empty", entries)
+	}
+}
+
+// TestManager_RemoveContext_RetriesTransientBusyThenSucceeds proves a
+// transient EBUSY-shaped failure (mount/process still tearing down right
+// after StopContext) is retried within the bounded backoff budget instead
+// of being quarantined immediately.
+func TestManager_RemoveContext_RetriesTransientBusyThenSucceeds(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	if _, err := m.SybraHomeDir("task-busy"); err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+
+	var calls int
+	m.removeAll = func(string) error {
+		calls++
+		if calls < 3 {
+			return fmt.Errorf("remove: device or resource busy")
+		}
+		return nil
+	}
+
+	m.RemoveContext(context.Background(), "task-busy")
+
+	if calls != 3 {
+		t.Errorf("removeAll calls = %d, want 3 (2 transient failures + 1 success)", calls)
+	}
+	if entries := m.QuarantinedEntries(); len(entries) != 0 {
+		t.Errorf("QuarantinedEntries = %+v, want empty after eventual success", entries)
+	}
+}
+
+// TestManager_RemoveContext_QuarantinesPersistentFailure proves a removal
+// failure that is neither a transient busy error nor curable by ownership
+// normalization is quarantined (not retried indefinitely) and reports bytes
+// retained — the third acceptance criterion.
+func TestManager_RemoveContext_QuarantinesPersistentFailure(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-stuck")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "payload"), make([]byte, 128), 0o600); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	m.removeAll = func(string) error {
+		return fmt.Errorf("permission denied")
+	}
+
+	m.RemoveContext(context.Background(), "task-stuck")
+
+	entries := m.QuarantinedEntries()
+	if len(entries) != 1 {
+		t.Fatalf("QuarantinedEntries = %+v, want exactly 1 entry", entries)
+	}
+	entry := entries[0]
+	if entry.TaskID != "task-stuck" {
+		t.Errorf("entry.TaskID = %q, want task-stuck", entry.TaskID)
+	}
+	if entry.Attempts != 1 {
+		t.Errorf("entry.Attempts = %d, want 1", entry.Attempts)
+	}
+	if entry.BytesRetained <= 0 {
+		t.Errorf("entry.BytesRetained = %d, want > 0", entry.BytesRetained)
+	}
+	if _, err := os.Stat(taskDir); err != nil {
+		t.Errorf("quarantined task dir removed unexpectedly: %v", err)
+	}
+
+	// A second failure against the same task bumps Attempts and keeps the
+	// original FirstFailedAt instead of resetting it.
+	first := entry.FirstFailedAt
+	m.RemoveContext(context.Background(), "task-stuck")
+	entries = m.QuarantinedEntries()
+	if len(entries) != 1 || entries[0].Attempts != 2 {
+		t.Fatalf("QuarantinedEntries after second failure = %+v, want single entry with Attempts=2", entries)
+	}
+	if !entries[0].FirstFailedAt.Equal(first) {
+		t.Errorf("FirstFailedAt changed on repeat failure: got %v, want %v", entries[0].FirstFailedAt, first)
+	}
+}
+
+// TestManager_CleanupOrphaned_SkipsAlreadyQuarantined proves CleanupOrphaned
+// does not retry a task whose cleanup is already quarantined on every tick —
+// it would just repeat the same failing work for no progress.
+func TestManager_CleanupOrphaned_SkipsAlreadyQuarantined(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	if _, err := m.SybraHomeDir("task-q"); err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+
+	var calls int
+	m.removeAll = func(string) error {
+		calls++
+		return fmt.Errorf("permission denied")
+	}
+
+	tasks := []task.Task{{ID: "task-q", Status: task.StatusDone}}
+	m.CleanupOrphaned(context.Background(), tasks, nil)
+	if calls != 1 {
+		t.Fatalf("removeAll calls after first tick = %d, want 1", calls)
+	}
+	if entries := m.QuarantinedEntries(); len(entries) != 1 {
+		t.Fatalf("QuarantinedEntries after first tick = %+v, want 1 entry", entries)
+	}
+
+	// Second tick: even though removeAll would now succeed, the task must
+	// not be retried since it is already quarantined.
+	m.removeAll = func(string) error {
+		calls++
+		return nil
+	}
+	m.CleanupOrphaned(context.Background(), tasks, nil)
+	if calls != 1 {
+		t.Errorf("removeAll calls after second tick = %d, want still 1 (quarantined task skipped)", calls)
+	}
+	if entries := m.QuarantinedEntries(); len(entries) != 1 {
+		t.Errorf("QuarantinedEntries after second tick = %+v, want still 1 entry", entries)
+	}
+}
+
+// TestManager_RemoveContext_DeletedTaskRetriesPastQuarantine proves an
+// explicit task deletion gets one more removal attempt even if the task was
+// previously quarantined — see the CleanupOrphaned "!exists" comment.
+func TestManager_RemoveContext_DeletedTaskRetriesPastQuarantine(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-deleted")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+
+	m.quarantine("task-deleted", taskDir, fmt.Errorf("prior failure"))
+	if entries := m.QuarantinedEntries(); len(entries) != 1 {
+		t.Fatalf("QuarantinedEntries before delete = %+v, want 1 entry", entries)
+	}
+
+	// CleanupOrphaned's caller passes no matching task -> "deleted" branch;
+	// simulate that directly via RemoveContext, which is what it calls.
+	m.RemoveContext(context.Background(), "task-deleted")
+
+	if entries := m.QuarantinedEntries(); len(entries) != 0 {
+		t.Errorf("QuarantinedEntries after delete-triggered removal = %+v, want empty", entries)
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("task dir %q still exists after RemoveContext: %v", taskDir, err)
 	}
 }
 

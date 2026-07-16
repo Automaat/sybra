@@ -28,6 +28,7 @@ const (
 	CatAgentRetryLoop    Category = "agent_retry_loop"
 	CatTriageMismatch    Category = "triage_mismatch"
 	CatStatusBottleneck  Category = "status_bottleneck"
+	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
 )
 
 // Score is the rollup verdict across all findings in a report.
