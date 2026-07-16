@@ -22,7 +22,7 @@ type fakeSubmitter struct {
 	healthy bool
 }
 
-func (f *fakeSubmitter) SubmitIssue(_ context.Context, title, _ string, _ []string) (bool, string, error) {
+func (f *fakeSubmitter) SubmitIssue(_ context.Context, title, _ string, _ []string) (created bool, url string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -44,10 +44,10 @@ func (f *fakeSubmitter) callCount() int {
 	return f.calls
 }
 
-func newTestDurableSink(t *testing.T, inner issueSubmitter) (*DurableGHIssueSink, string) {
+func newTestDurableSink(t *testing.T, inner issueSubmitter) (sink *DurableGHIssueSink, outboxDir string) {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := newIssueOutboxStore(filepath.Join(dir, "outbox"))
+	tmpDir := t.TempDir()
+	store, err := newIssueOutboxStore(filepath.Join(tmpDir, "outbox"))
 	if err != nil {
 		t.Fatalf("newIssueOutboxStore: %v", err)
 	}

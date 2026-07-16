@@ -189,7 +189,8 @@ func (d *DurableGHIssueSink) SubmitIssue(ctx context.Context, title, body string
 // attempt count, or dropped once issueOutboxMaxAttempts is exceeded.
 func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 	pending := d.store.load(d.logger)
-	for _, it := range pending {
+	for i := range pending {
+		it := &pending[i]
 		created, _, err := d.inner.SubmitIssue(ctx, it.Title, it.Body, it.ExtraLabels)
 		if err == nil {
 			if delErr := d.store.del(it.Fingerprint); delErr != nil {
@@ -209,7 +210,7 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 			d.logger.Error("monitor.issue_outbox.retry.exhausted", "sink", d.name, "fingerprint", it.Fingerprint, "title", it.Title, "attempts", it.Attempts, "err", it.LastError)
 			continue
 		}
-		if putErr := d.store.put(it); putErr != nil {
+		if putErr := d.store.put(*it); putErr != nil {
 			d.logger.Warn("monitor.issue_outbox.retry.persist-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", putErr)
 		}
 	}
