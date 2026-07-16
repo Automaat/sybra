@@ -847,6 +847,31 @@ func TestManager_CleanupOrphaned_SkipsAlreadyQuarantined(t *testing.T) {
 	}
 }
 
+// TestManager_CleanupOrphaned_PreservesOrphanedActiveAgent proves a sandbox
+// with no matching task record (e.g. the task list snapshot raced a delete,
+// or was fetched from a stale store) is still preserved when hasAgent
+// reports a live agent for it — the active-agent check must take precedence
+// over the "task record is gone" branch, not just over the eligibility
+// check for tasks that still exist.
+func TestManager_CleanupOrphaned_PreservesOrphanedActiveAgent(t *testing.T) {
+	t.Parallel()
+	m := newTestManager(t)
+
+	dir, err := m.SybraHomeDir("task-live-orphan")
+	if err != nil {
+		t.Fatalf("SybraHomeDir: %v", err)
+	}
+	taskDir := filepath.Dir(dir)
+
+	m.CleanupOrphaned(context.Background(), nil, func(taskID string) bool {
+		return taskID == "task-live-orphan"
+	})
+
+	if _, err := os.Stat(taskDir); err != nil {
+		t.Fatalf("orphaned dir with live agent removed unexpectedly: %v", err)
+	}
+}
+
 // TestManager_RemoveContext_DeletedTaskRetriesPastQuarantine proves an
 // explicit task deletion gets one more removal attempt even if the task was
 // previously quarantined — see the CleanupOrphaned "!exists" comment.

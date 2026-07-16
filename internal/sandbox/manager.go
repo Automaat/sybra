@@ -356,12 +356,16 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 		}
 		t, exists := active[taskID]
 		switch {
+		case hasAgent != nil && hasAgent(taskID):
+			// A live agent takes precedence over every other signal,
+			// including a task record that's gone missing — an orphaned
+			// dir with a running agent is not orphaned, it's just
+			// unlinked from the (possibly stale) task list.
+			continue
 		case !exists:
 			// Deleted task — remove regardless of age, and regardless of any
 			// prior quarantine: an explicit delete deserves one more attempt.
 		case !cleanupEligible(t.Status):
-			continue
-		case hasAgent != nil && hasAgent(taskID):
 			continue
 		default:
 			if _, quarantined := m.loadQuarantine(taskID); quarantined {
