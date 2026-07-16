@@ -2807,6 +2807,24 @@ func TestProcessHeadlessLine_ForkSubagentResultKeepsIdleGrace(t *testing.T) {
 	}
 }
 
+func TestProcessHeadlessLine_ErrorResultDoesNotArmPostResultClose(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "retry-close", TaskID: "t", Mode: "headless", Provider: "codex", StartedAt: time.Now().UTC()}
+
+	var lastEmit time.Time
+	prov := providerByName("codex")
+	result := []byte(`{"type":"error","message":"Overloaded","error_type":"overloaded_error","code":529}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("error terminal result must not stop the stream before attempt exit classification")
+	}
+	if _, _, ok := a.PostResultWait(); ok {
+		t.Fatal("PostResultWait must stay clear for error results so retry classification can run")
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true on error result, want false")
+	}
+}
+
 func TestProcessHeadlessLine_ForkSubagentBackgroundClearKeepsIdleGrace(t *testing.T) {
 	m := newParseTestManager(t)
 	a := &Agent{ID: "fork-bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}

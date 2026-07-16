@@ -1056,6 +1056,10 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 
 	m.drainOrCloseHeadlessSteer(a)
+	if resultSubtypeIsError(event.Subtype) || event.ErrorType != "" || event.ErrorStatus != 0 {
+		a.ClearPostResultWait()
+		return true
+	}
 	if !shouldTrackPostResultWait(a) {
 		a.ClearPostResultWait()
 		return true
