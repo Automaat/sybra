@@ -19,6 +19,10 @@ func TestApplyMapFields_JSONDecodedArrays(t *testing.T) {
 		{name: "tags non-string element", body: `{"tags":["a",7]}`, field: "tags", wantErr: true},
 		{name: "depends_on from json array", body: `{"depends_on":["t1","t2"]}`, field: "depends_on", want: []string{"t1", "t2"}},
 		{name: "depends_on non-string element", body: `{"depends_on":[{"x":1}]}`, field: "depends_on", wantErr: true},
+		{name: "depends_on drops blank element", body: `{"depends_on":["t1",""]}`, field: "depends_on", want: []string{"t1"}},
+		{name: "depends_on drops whitespace element", body: `{"depends_on":["t1","  "]}`, field: "depends_on", want: []string{"t1"}},
+		{name: "depends_on trims elements", body: `{"depends_on":[" t1 "]}`, field: "depends_on", want: []string{"t1"}},
+		{name: "depends_on drops trailing comma", body: `{"depends_on":"t1,"}`, field: "depends_on", want: []string{"t1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
