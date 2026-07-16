@@ -320,7 +320,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues)
+		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
 		r.handleMatchedPRIssues(ctx, issues)
 	}
 
@@ -442,7 +442,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 		if r.prTracker != nil {
 			r.prTracker.Cleanup()
 		}
-		r.cancelResolvedPRFixWorkflows(tasks, issues)
+		r.cancelResolvedPRFixWorkflows(tasks, issues, github.MatchTaskPRIndex(monitoredPRs, matchers))
 		r.handleMatchedPRIssues(ctx, issues)
 	}
 
@@ -770,7 +770,9 @@ func (r *Handler) evictReadyPRCache(repo string, number int) {
 
 // advanceClosedTaskPRs moves tasks whose linked PR is no longer open to done,
 // stamping the terminal outcome and emitting the audit + task.landed events the
-// evaluation scorecard reads. Skips tasks with a still-running agent.
+// evaluation scorecard reads. If an agent is still running for a task whose PR
+// already landed, the terminal GitHub state wins: stop the agent first, then
+// close the task.
 func (r *Handler) advanceClosedTaskPRs(ctx context.Context, monitoredPRs []github.PullRequest, closedMatchers []github.TaskMatcher) {
 	fetchFn := github.FetchPRState
 	if r.fetchPRStateFn != nil {
@@ -783,8 +785,8 @@ func (r *Handler) advanceClosedTaskPRsWithFetch(ctx context.Context, monitoredPR
 	closedPRs := github.DetectClosedTaskPRs(monitoredPRs, closedMatchers, fetchFn)
 	for _, c := range closedPRs {
 		if r.agents.HasRunningAgentForTask(c.TaskID) {
-			r.logger.Info("pr-monitor.closed-skip-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
-			continue
+			r.logger.Info("pr-monitor.closed-stop-running-agent", "task_id", c.TaskID, "pr", c.PRNumber)
+			r.agents.KillAgentsForTask(c.TaskID, 10*time.Second)
 		}
 		// Flip to done immediately with the base outcome — the status transition
 		// must never wait on GitHub enrichment.
@@ -1173,7 +1175,7 @@ func earliestRunStart(runs []task.AgentRun) time.Time {
 // cancelling on the primary alone would kill the workflow (and drop the
 // still-unresolved sibling, already marked handled for this SHA) the moment
 // the primary kind resolves first.
-func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue) {
+func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []github.PRIssue, prIndex map[string]github.PullRequest) {
 	if r.WorkflowEngine == nil {
 		return
 	}
@@ -1203,6 +1205,10 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		}
 		if anyKindLive(liveByTask[t.ID], kinds) {
 			continue // at least one coalesced kind still holds — let the workflow proceed
+		}
+		if pr, ok := prIndex[t.ID]; ok && anyKindIndeterminate(pr, kinds) {
+			r.logger.Info("pr-monitor.cancel-resolved.deferred", "task_id", t.ID, "kinds", strings.Join(kinds, "+"))
+			continue
 		}
 		reason := strings.Join(kinds, "+")
 		step, err := r.WorkflowEngine.CancelWorkflow(t.ID, "pr-monitor: "+reason+" resolved")
@@ -1249,6 +1255,39 @@ func coalescedWorkflowKinds(vars map[string]string) []string {
 func anyKindLive(live map[string]bool, kinds []string) bool {
 	for _, kind := range kinds {
 		if live[kind] {
+			return true
+		}
+	}
+	return false
+}
+
+// The in-memory tracker resets every process start, so on a host that redeploys faster than the cooldown its budget never accumulates. EXC:FILE011:load-bearing-invariant
+func (r *Handler) durableFixBudgetSpent(taskID, headSHA string) bool {
+	if headSHA == "" || r.tasks == nil {
+		return false
+	}
+	t, err := r.tasks.Get(taskID)
+	if err != nil {
+		return false
+	}
+	spent := 0
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RolePRFix) && t.AgentRuns[i].HeadSHA == headSHA {
+			spent++
+		}
+	}
+	if spent < github.MaxRetries {
+		return false
+	}
+	r.logger.Warn("pr-monitor.fix-budget.durable-exhausted",
+		"task_id", taskID, "head_sha", headSHA, "attempts", spent, "max", github.MaxRetries)
+	return true
+}
+
+// A kind's absence is not evidence of resolution while the live PR cannot answer it. EXC:FILE011:load-bearing-invariant
+func anyKindIndeterminate(pr github.PullRequest, kinds []string) bool {
+	for _, kind := range kinds {
+		if github.PRIssueIndeterminate(pr, github.PRIssueKind(kind)) {
 			return true
 		}
 	}

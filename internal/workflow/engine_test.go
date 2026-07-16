@@ -4271,6 +4271,43 @@ func TestHandleAgentComplete_PendingStepStartDropsStaleCompletion(t *testing.T) 
 	}
 }
 
+func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "plan-agent", Role: "plan"},
+		},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "plan-agent",
+		Result:  "late plan completion",
+		Success: true,
+	})
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow.CurrentStep != "implement" {
+		t.Fatalf("CurrentStep = %q, want implement — plan completion must not satisfy implementation step",
+			ti.Workflow.CurrentStep)
+	}
+	if len(ti.Workflow.StepHistory) != 0 {
+		t.Fatalf("StepHistory = %+v, want no recorded implementation completion", ti.Workflow.StepHistory)
+	}
+}
+
 func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -6639,6 +6676,14 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 		t.Fatalf("origin/fix/missing-object = %q, want %q", got, head)
 	}
 
+	badSiblingRef := filepath.Join(wtDir, ".git", "refs", "heads", "feat", "bad-sibling")
+	if err := os.MkdirAll(filepath.Dir(badSiblingRef), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badSiblingRef, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	objectPath := filepath.Join(wtDir, ".git", "objects", head[:2], head[2:])
 	if err := os.Remove(objectPath); err != nil {
 		t.Fatalf("remove local head object %s: %v", objectPath, err)
@@ -6662,6 +6707,9 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 	}
 	if got := strings.TrimSpace(runGitAt(t, wtDir, "cat-file", "-t", head)); got != "commit" {
 		t.Fatalf("recovered object type = %q, want commit", got)
+	}
+	if _, err := os.Stat(badSiblingRef); !os.IsNotExist(err) {
+		t.Fatalf("broken sibling ref still exists after recovery: stat err=%v", err)
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Fatalf("task status = %q, want unchanged in-progress", ti.Status)

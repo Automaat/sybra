@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -305,6 +307,306 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
 		}
 	})
+}
+
+// TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker reproduces the
+// production bug (task 33aa3f62 / issue #2004): app_umbrella_gate.go's
+// rollupTrackers rolls an umbrella tracker back to in-progress (e.g. after a
+// stuck child resolves), initStatusHook dispatches simple-task-implement for
+// that transition same as any other task, the implement step then tries to
+// start an agent against a tracker that runs none, and after three rejected
+// attempts within 15 minutes the circuit breaker force-escalates the tracker
+// to human-required — a state no human retry can actually resolve, since the
+// tracker will never successfully run an "implement" agent. initStatusHook
+// must skip dispatch entirely for umbrella (and chat) task types, exactly as
+// reconcileRunnableBoardTasks already does.
+func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.initStatusHook()
+
+	tk, err := a.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusHumanRequired),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil — an umbrella tracker must never have simple-task-implement dispatched against it", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — an umbrella tracker runs no agent", launcher.startCalls)
+	}
+}
+
+func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	idle := func(id string, status task.Status) task.Task {
+		t.Helper()
+		tk, err := a.tasks.Create(id, "", "headless")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+			"status": string(status),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	todo := idle("idle-todo", task.StatusTodo)
+	planning := idle("idle-planning", task.StatusPlanning)
+	inProgress := idle("idle-in-progress", task.StatusInProgress)
+	var err error
+	inboundReview := idle("inbound-review", task.StatusInReview)
+	inboundReview, err = a.tasks.UpdateMap(inboundReview.ID, map[string]any{
+		"tags":       []string{"review"},
+		"project_id": "Automaat/lightroom-mcp",
+		"pr_number":  151,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleInboundReview := idle("stale-inbound-review", task.StatusInReview)
+	staleReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
+	staleInboundReview, err = a.tasks.UpdateMap(staleInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    151,
+		"review_phase": "needs-approval",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "pr-review",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &staleReviewCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedInboundReview := idle("approved-inbound-review", task.StatusInReview)
+	approvedInboundReview, err = a.tasks.UpdateMap(approvedInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    152,
+		"review_phase": "approved",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recentInboundReview := idle("recent-inbound-review", task.StatusInReview)
+	recentReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown / 2)
+	recentInboundReview, err = a.tasks.UpdateMap(recentInboundReview.ID, map[string]any{
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/lightroom-mcp",
+		"pr_number":    153,
+		"review_phase": "needs-approval",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "pr-review",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &recentReviewCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownPRReview := idle("own-pr-review", task.StatusInReview)
+	ownPRReview, err = a.tasks.UpdateMap(ownPRReview.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"pr_number":  2037,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postPlanInProgress := idle("post-plan-in-progress", task.StatusInProgress)
+	postPlanCompletedAt := postPlanInProgress.StatusChangedAt.Add(time.Second)
+	postPlanInProgress, err = a.tasks.UpdateMap(postPlanInProgress.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &postPlanCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requeuedPlanning := idle("requeued-planning", task.StatusPlanning)
+	requeuedCompletedAt := requeuedPlanning.StatusChangedAt.Add(-time.Hour)
+	requeuedPlanning, err = a.tasks.UpdateMap(requeuedPlanning.ID, map[string]any{
+		"tags": []string{"backend", "review"},
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &requeuedCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTerminal := idle("current-terminal", task.StatusTodo)
+	currentCompletedAt := currentTerminal.StatusChangedAt.Add(time.Hour)
+	currentTerminal, err = a.tasks.UpdateMap(currentTerminal.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &currentCompletedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatedTodo := idle("gated-todo", task.StatusTodo)
+	if _, err := a.tasks.UpdateMap(gatedTodo.ID, map[string]any{
+		"tags": []string{umbrella.GatedTag},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prPlanning := idle("pr-planning", task.StatusPlanning)
+	if _, err := a.tasks.UpdateMap(prPlanning.ID, map[string]any{
+		"pr_number": 123,
+		"tags":      []string{"backend", "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	umbrellaTask := idle("synthetic-umbrella", task.StatusInProgress)
+	if _, err := a.tasks.UpdateMap(umbrellaTask.ID, map[string]any{
+		"task_type": string(task.TaskTypeUmbrella),
+		"workflow": &workflow.Execution{
+			WorkflowID:  "old-workflow",
+			CurrentStep: "old-step",
+			State:       workflow.ExecFailed,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	active := idle("active-todo", task.StatusTodo)
+	if _, err := a.tasks.UpdateMap(active.ID, map[string]any{
+		"workflow": &workflow.Execution{
+			WorkflowID:  "simple-task-plan",
+			CurrentStep: "triage",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.reconcileRunnableBoardTasks()
+	a.wg.Wait()
+
+	assertWorkflow := func(id, want string) {
+		t.Helper()
+		got, err := a.tasks.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil || got.Workflow.WorkflowID != want {
+			t.Fatalf("%s workflow = %+v, want %s", id, got.Workflow, want)
+		}
+		if got.Workflow.State == workflow.ExecFailed {
+			t.Fatalf("%s kept stale failed workflow: %+v", id, got.Workflow)
+		}
+	}
+	assertWorkflow(todo.ID, "simple-task-plan")
+	assertWorkflow(planning.ID, "simple-task-plan")
+	assertWorkflow(requeuedPlanning.ID, "simple-task-plan")
+	assertWorkflow(inProgress.ID, "simple-task-implement")
+	assertWorkflow(postPlanInProgress.ID, "simple-task-implement")
+	assertWorkflow(inboundReview.ID, "pr-review")
+	assertWorkflow(staleInboundReview.ID, "pr-review")
+
+	gotActive, err := a.tasks.Get(active.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotActive.Workflow == nil || gotActive.Workflow.WorkflowID != "simple-task-plan" || gotActive.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("active workflow should be left alone, got %+v", gotActive.Workflow)
+	}
+	gotGated, err := a.tasks.Get(gatedTodo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotGated.Workflow != nil {
+		t.Fatalf("umbrella-gated todo task should be left for releaseUnblockedChildren, got %+v", gotGated.Workflow)
+	}
+	gotPRPlanning, err := a.tasks.Get(prPlanning.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPRPlanning.Workflow != nil {
+		t.Fatalf("planning task with PR should not start simple-task-plan, got %+v", gotPRPlanning.Workflow)
+	}
+	gotOwnPRReview, err := a.tasks.Get(ownPRReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOwnPRReview.Workflow != nil {
+		t.Fatalf("ordinary in-review task should stay on PR monitor, got %+v", gotOwnPRReview.Workflow)
+	}
+	gotApprovedInboundReview, err := a.tasks.Get(approvedInboundReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotApprovedInboundReview.Workflow != nil {
+		t.Fatalf("approved inbound review should stay idle, got %+v", gotApprovedInboundReview.Workflow)
+	}
+	gotRecentInboundReview, err := a.tasks.Get(recentInboundReview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRecentInboundReview.Workflow == nil ||
+		gotRecentInboundReview.Workflow.WorkflowID != "pr-review" ||
+		gotRecentInboundReview.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("recent completed inbound review should not re-dispatch, got %+v", gotRecentInboundReview.Workflow)
+	}
+	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCurrentTerminal.Workflow == nil || gotCurrentTerminal.Workflow.WorkflowID != "old-workflow" || gotCurrentTerminal.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("current terminal workflow should be left alone, got %+v", gotCurrentTerminal.Workflow)
+	}
+	gotUmbrella, err := a.tasks.Get(umbrellaTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
+		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
+	}
+	if launcher.startCalls != 4 {
+		t.Fatalf("startCalls = %d, want 4 for idle/post-plan implementation and inbound review tasks", launcher.startCalls)
+	}
 }
 
 func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {

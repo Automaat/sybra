@@ -523,11 +523,12 @@ func (m *Manager) streamPerTurnConvoOutput(a *Agent, stdout io.Reader, outFile i
 			if event.SessionID != "" {
 				a.SetSessionID(event.SessionID)
 			}
-			costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+			a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 			a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
 			if event.PremiumRequests > 0 {
 				a.AddPremiumRequests(event.PremiumRequests)
 			}
+			costNow := a.BankEstimatedCost()
 			m.logger.Info("agent.convo.result", "id", a.ID, "provider", a.Provider, "cost", costNow)
 			gotResult = true
 		}

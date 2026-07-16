@@ -469,6 +469,14 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	}
 
 	baseRef := resolveOriginBase(ctx, wtPath)
+	negotiationTips := verifyCommitsNegotiationTips(ctx, wtPath, baseRef)
+	barePath, bareErr := project.CommonDir(ctx, wtPath)
+	if bareErr != nil {
+		barePath = ""
+	}
+	for _, ref := range pruneBrokenVerifyCommitRefs(ctx, wtPath, barePath, branch) {
+		e.logger.Warn("workflow.verify-commits.ref-recovery.pruned-broken-ref", "task_id", taskID, "ref", ref)
+	}
 	refspecs := []string{"+" + "refs/heads/" + branch + ":refs/remotes/origin/" + branch}
 	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
 		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
@@ -484,8 +492,8 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	}
 
 	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}
-	if baseRef != "" && revParseRef(ctx, wtPath, baseRef) {
-		args = append(args, "--negotiation-tip="+baseRef)
+	for _, tip := range negotiationTips {
+		args = append(args, "--negotiation-tip="+tip)
 	}
 	args = append(args, "origin")
 	args = append(args, refspecs...)
@@ -500,10 +508,59 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	return true
 }
 
-func revParseRef(ctx context.Context, wtPath, ref string) bool {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref)
+func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) []string {
+	if baseRef == "" {
+		return nil
+	}
+	if sha := revParseCommit(ctx, wtPath, baseRef); sha != "" {
+		return []string{sha}
+	}
+	return nil
+}
+
+func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBranch string) []string {
+	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	cmd.Dir = wtPath
-	return cmd.Run() == nil
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	keepLocalBranch := "refs/heads/" + taskBranch
+	var pruned []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		ref := strings.TrimSpace(line)
+		if ref == "" || ref == keepLocalBranch {
+			continue
+		}
+		check := exec.CommandContext(ctx, "git", "cat-file", "-e", ref+"^{object}")
+		check.Dir = wtPath
+		if check.Run() == nil {
+			continue
+		}
+		if barePath != "" {
+			badValue := exec.CommandContext(ctx, "git", "rev-parse", ref)
+			badValue.Dir = wtPath
+			shaOut, _ := badValue.Output()
+			project.QuarantineRef(barePath, ref, strings.TrimSpace(string(shaOut)))
+		}
+		deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", ref)
+		deleteCmd.Dir = wtPath
+		if deleteCmd.Run() == nil {
+			pruned = append(pruned, ref)
+		}
+	}
+	return pruned
+}
+
+func revParseCommit(ctx context.Context, wtPath, ref string) string {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", ref+"^{commit}")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // diagnoseWorktreeState produces a short human-readable hint about why a

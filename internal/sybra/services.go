@@ -9,6 +9,7 @@ import (
 // wireServices populates the Wails-bound service structs that were pre-allocated
 // in NewApp(). Must be called after all dependencies are initialized.
 func (a *App) wireServices(emit func(string, any)) {
+	go a.infoSvc.primeRuntimeSnapshot()
 	a.wireReviewServices()
 	a.wireTaskService()
 	a.wirePlanningService()
@@ -50,6 +51,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			// RunLearningDigestNow excluded: it shells out to the claude CLI on
 			// every call — Wails/local-only, not exposed over HTTP.
 			"StartAgent",
+			"StartK8sPocAgent",
 			"AgentQueueSnapshot",
 			"StartChat",
 			"StopChat",
@@ -83,6 +85,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"GetVersion",
 			"GetCodexModels",
 			"GetCopilotModels",
+			"GetAvailableRuntimes",
 		),
 		"TaskService": httpapi.NewService(a.taskSvc,
 			"AssignTask",
@@ -93,6 +96,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			"ListTaskAuditEvents",
 			"GetTamperReport",
 			"GetTask",
+			"RecoverLostAgent",
 			"CreateTask",
 			"UpdateTask",
 			"DeleteTask",

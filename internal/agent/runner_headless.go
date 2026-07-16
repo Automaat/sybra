@@ -305,7 +305,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	}
 
 	stderrOut := stderrBuf.String()
-	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+	if a.WasStopped() && a.GetEscalationReason() == EscalationReasonCost {
 		a.SetExitErr(errCostGuardrailExceeded)
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
@@ -464,7 +464,7 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	if b, readErr := os.ReadFile(stderrPath); readErr == nil {
 		stderrOut = string(b)
 	}
-	if a.WasStopped() && a.GetEscalationReason() == "cost" {
+	if a.WasStopped() && a.GetEscalationReason() == EscalationReasonCost {
 		a.SetExitErr(errCostGuardrailExceeded)
 		logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 		return false, nil
@@ -510,7 +510,7 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 // guard stopped, deriving completion from the terminal result event rather
 // than the kill signal that appears in the process wait error.
 func (m *Manager) finalizeFromResult(a *Agent, prevLen int) {
-	if a.GetEscalationReason() == "checkpoint_failed" {
+	if a.GetEscalationReason() == EscalationReasonCheckpointFailed {
 		a.SetExitErr(errCheckpointCommitFailed)
 		return
 	}
@@ -798,9 +798,9 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	a.AppendOutput(event)
 	a.AddToolCalls(event.ToolCalls)
 	// Feed the tool-call fingerprint into the real-time loop detector. An empty
-	// signature (non-tool event) is a no-op, so the streak survives reasoning
-	// between identical calls and the watchdog can spot an active loop.
-	a.NoteToolSignature(event.toolSig)
+	// signature (non-tool event) is a no-op, so the low-progress window survives
+	// reasoning between repeated actions and the watchdog can spot an active loop.
+	a.NoteToolAction(event.toolSig, event.toolLoopLabel)
 	// Record any auto-mode classifier denials observed in this event's tool results.
 	for _, d := range event.permissionDenials {
 		a.NotePermissionDenial(d.ToolUseID, d.Reason)
@@ -908,12 +908,14 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 // budget. Returns false when the caller should stop the stream (cost
 // guardrail breach).
 func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event StreamEvent) (keepGoing bool) {
-	costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+	a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 	a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
 	// Copilot's billing unit: premium requests (no USD on the result event).
 	if event.PremiumRequests > 0 {
 		a.AddPremiumRequests(event.PremiumRequests)
 	}
+	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
+	costNow := a.BankEstimatedCost()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
@@ -1056,7 +1058,10 @@ func (m *Manager) warnIfResultHasLiveBackgroundTasks(a *Agent) {
 func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
 	a.MarkStopped()
-	a.SetEscalationReason("cost")
+	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
+	if !IsCheckpointEscalation(a.GetEscalationReason()) {
+		a.SetEscalationReason(EscalationReasonCost)
+	}
 	a.setCompletedByResult(true)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:  "cost",
@@ -1100,7 +1105,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 		m.logger.Info("agent.guardrail.turns.auto_continued", "id", a.ID, "turns", turns, "new_limit", newLimit)
 		return true
 	}
-	a.SetEscalationReason("turns")
+	a.SetEscalationReason(EscalationReasonTurns)
 	m.emit(events.AgentEscalation(a.ID), EscalationEvent{
 		Reason:    "turns",
 		TurnCount: turns,
@@ -1126,7 +1131,7 @@ func (m *Manager) checkTurnsGuardrail(ctx context.Context, a *Agent) bool {
 func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, maxTurns int) bool {
 	worktreeDir := strings.TrimSpace(a.sessionCWD)
 	if worktreeDir == "" {
-		a.SetEscalationReason("checkpoint_failed")
+		a.SetEscalationReason(EscalationReasonCheckpointFailed)
 		a.MarkStopped()
 		a.setCompletedByResult(true)
 		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
@@ -1138,7 +1143,7 @@ func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, max
 	msg := fmt.Sprintf("chore(checkpoint): preserve progress at turn %d\n\nSybra checkpointed this run at the per-run turn ceiling (%d turns) before handing off to a fresh agent.", turns, maxTurns)
 	committed, err := project.CheckpointCommit(ctx, worktreeDir, msg)
 	if err != nil {
-		a.SetEscalationReason("checkpoint_failed")
+		a.SetEscalationReason(EscalationReasonCheckpointFailed)
 		a.MarkStopped()
 		a.setCompletedByResult(true)
 		m.logger.Error("agent.guardrail.turns.checkpoint_failed",
@@ -1147,7 +1152,7 @@ func (m *Manager) checkpointAndHandoff(ctx context.Context, a *Agent, turns, max
 		return false
 	}
 
-	a.SetEscalationReason("checkpoint")
+	a.SetEscalationReason(EscalationReasonCheckpoint)
 	a.MarkStopped()
 	a.setCompletedByResult(true)
 	m.logger.Info("agent.guardrail.turns.checkpoint",

@@ -56,6 +56,7 @@ import (
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/google/uuid"
 )
 
 type App struct {
@@ -421,12 +422,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.prTracker = github.NewIssueTracker(30 * time.Minute)
 
-	// Bound how often FetchOrigin does a real network fetch per bare clone —
-	// fix/review/pr-fix prepares call it unconditionally on every dispatch, so
-	// without a TTL a tight cluster of dispatches against one repo (hundreds
-	// of pr-fix runs/month, see issue #1527) pays for a full-branch fetch on
-	// every single one.
-	project.FetchTTL = 60 * time.Second
+	configureProjectGitDefaults()
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
 		WorktreesDir:     a.worktreesDir,
@@ -454,6 +450,11 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.started")
 	started = true
 	return nil
+}
+
+func configureProjectGitDefaults() {
+	project.FetchTTL = 60 * time.Second
+	project.QuarantineDir = filepath.Join(config.HomeDir(), "quarantine")
 }
 
 // sandboxRetentionWindow translates the resolved sandbox.retention_hours
@@ -611,6 +612,36 @@ func (a *App) dumpGoroutineStacks() string {
 // steps that expect a single turn.
 func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription bool) (*agent.Agent, error) {
 	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
+}
+
+// StartK8sPocAgent starts a project-less headless run directly through
+// agent.Manager. It exists to smoke-test the experimental Kubernetes Job runner
+// without requiring a project/worktree. Normal production dispatch should keep
+// using StartAgent/workflows.
+func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
+	if a == nil || a.agents == nil {
+		return nil, fmt.Errorf("agent manager unavailable")
+	}
+	if a.cfg == nil || !a.cfg.Agent.K8sJobs.Enabled {
+		return nil, fmt.Errorf("kubernetes job runner is not enabled")
+	}
+	home, err := os.MkdirTemp("", "sybra-k8s-poc-*")
+	if err != nil {
+		return nil, fmt.Errorf("create k8s poc home: %w", err)
+	}
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID:   "k8s-poc-" + uuid.NewString()[:8],
+		Name:     string(agent.RoleImplementation),
+		Mode:     "headless",
+		Prompt:   prompt,
+		Dir:      home,
+		ExtraEnv: []string{"SYBRA_HOME=" + home, "SYBRA_CONTROL_HOME=" + home},
+	})
+	if err != nil {
+		_ = os.RemoveAll(home)
+		return nil, err
+	}
+	return ag, nil
 }
 
 // AgentQueueSnapshot exposes the read-only queue snapshot to Wails/web clients.

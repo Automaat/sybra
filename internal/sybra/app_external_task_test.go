@@ -223,6 +223,63 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	}
 }
 
+func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
+	for _, target := range []task.Status{task.StatusTodo, task.StatusPlanning} {
+		t.Run(string(target), func(t *testing.T) {
+			taskSvc, app := setupTaskService(t)
+			app.workflowEngine = taskSvc.workflowEngine
+			app.initStatusHook()
+
+			tk := task.Task{
+				ID:        "external-retry-" + string(target),
+				Title:     "external retry " + string(target),
+				Status:    task.StatusHumanRequired,
+				AgentMode: task.AgentModeHeadless,
+				Workflow: &workflow.Execution{
+					WorkflowID:  "simple-task-plan",
+					CurrentStep: "triage",
+					State:       workflow.ExecFailed,
+					Variables:   map[string]string{},
+				},
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+			}
+			if target == task.StatusPlanning {
+				tk.Tags = []string{"backend", "review"}
+			}
+			path := filepath.Join(app.tasksDir, tk.ID+".md")
+			write := func(in task.Task) {
+				t.Helper()
+				data, err := task.Marshal(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := fsutil.AtomicWrite(path, data); err != nil {
+					t.Fatal(err)
+				}
+				app.tasks.OnExternalUpdate(path)
+			}
+
+			write(tk)
+			tk.Status = target
+			tk.UpdatedAt = time.Now().UTC()
+			write(tk)
+			app.wg.Wait()
+
+			got, err := app.tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
+				t.Fatalf("external %s update did not restart task.created workflow, got %+v", target, got.Workflow)
+			}
+			if got.Workflow.State == workflow.ExecFailed {
+				t.Fatalf("external %s update kept stale failed workflow: %+v", target, got.Workflow)
+			}
+		})
+	}
+}
+
 func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *testing.T) {
 	fixture := setupRemoteMirrorFixture(t)
 

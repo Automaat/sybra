@@ -53,6 +53,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
 	}
@@ -171,6 +172,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	m.preparePlaywrightMCP(&cfg)
 
 	m.mu.RLock()
+	if cfg.Model == "" {
+		cfg.Model = m.defaultModel
+	}
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -682,6 +686,13 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig, prov Provider, cancel context.CancelFunc) error {
 	switch cfg.Mode {
 	case "headless":
+		m.mu.RLock()
+		k8sRunner := m.k8sRunner
+		m.mu.RUnlock()
+		if k8sRunner != nil {
+			go k8sRunner.Run(ctx, m, a, cfg)
+			return nil
+		}
 		go m.runHeadless(ctx, a, cfg)
 	case "interactive":
 		// codex, copilot, and opencode use the per-turn conversational runner (each turn

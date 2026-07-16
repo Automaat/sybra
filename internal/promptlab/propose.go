@@ -2,9 +2,12 @@ package promptlab
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // candidateIntents are the directions promptlab may scaffold from a weak
@@ -124,4 +127,48 @@ func reviewGate(p Proposal) string {
 		return "requires human approval"
 	}
 	return "standard review"
+}
+
+// ProposalIDMarker is the substring RenderProposalBody emits for a proposal's
+// ID, and the key HasProposal matches on. It is defined next to the renderer
+// so the marker format and its parser can never drift apart.
+func ProposalIDMarker(proposalID string) string {
+	return "Proposal ID:** `" + proposalID + "`"
+}
+
+// HasProposal reports whether proposalID should be suppressed rather than
+// filed again, given the tasks already on the board.
+//
+// A live (non-terminal) proposal always suppresses: it is still being worked.
+// A terminal one suppresses only until cooldown elapses from its last update.
+// Both halves matter and pull against each other:
+//
+// Ignoring terminal tasks entirely is what let pl-a2d853b2c1d9 get filed four
+// separate times — the ID is a stable hash of (role, step, intent), so every
+// tick re-proposed it as earlier copies aged into done/cancelled.
+//
+// Suppressing on terminal tasks forever is the opposite failure: with only two
+// candidate intents per subject, a role would get at most two proposals for the
+// lifetime of the board and then go permanently silent — including when the
+// shipped variant lost its A/B and the role is still weak. Auto-approve makes
+// that worse, not better, by churning proposals to terminal in hours.
+//
+// The cooldown is the bounded-rate middle: re-proposing a subject is allowed,
+// just not every tick. A zero or negative cooldown suppresses on any terminal
+// task (never re-file).
+func HasProposal(tasks []task.Task, proposalID string, cooldown time.Duration, now time.Time) bool {
+	marker := ProposalIDMarker(proposalID)
+	for i := range tasks {
+		t := &tasks[i]
+		if !slices.Contains(t.Tags, ProposalTag) || !strings.Contains(t.Body, marker) {
+			continue
+		}
+		if !task.IsTerminalStatus(t.Status) {
+			return true
+		}
+		if cooldown <= 0 || now.Sub(t.UpdatedAt) < cooldown {
+			return true
+		}
+	}
+	return false
 }

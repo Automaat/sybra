@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
@@ -75,6 +76,12 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			auditDir := filepath.Join(home, "audit")
+			auditLogger, err := audit.NewLogger(auditDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = auditLogger.Close() })
 
 			store, err := task.NewStore(tasksDir)
 			if err != nil {
@@ -111,6 +118,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			})
 			h = completion.New(completion.Config{
 				Logger:    logger,
+				Audit:     auditLogger,
 				Tasks:     taskMgr,
 				Worktrees: wm,
 				Stats:     statsStore,
@@ -171,6 +179,29 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			if reloaded.Len() != 1 {
 				t.Fatalf("after reload: expected 1 record, got %d", reloaded.Len())
 			}
+
+			events, err := audit.Read(auditDir, audit.Query{
+				Since: nowMinus(time.Hour),
+				Until: time.Now().Add(time.Hour),
+				Type:  audit.EventAgentCompleted,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary := audit.Summarize(events, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+			if summary.AgentRuns != 1 {
+				t.Fatalf("audit summary agent runs = %d, want 1", summary.AgentRuns)
+			}
+			// Claude emits provider-native cost into the audit event; codex cost
+			// is estimated for stats, so the live end-to-end assertion here is
+			// the shared terminal-run accounting, not estimated-cost parity.
+			if tc.provider == "claude" && math.Abs(summary.TotalCostUSD-tc.wantCost) > 1e-9 {
+				t.Fatalf("audit summary cost = %g, want %g", summary.TotalCostUSD, tc.wantCost)
+			}
 		})
 	}
+}
+
+func nowMinus(d time.Duration) time.Time {
+	return time.Now().Add(-d)
 }

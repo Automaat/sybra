@@ -273,6 +273,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// a manual implementation agent completing during a code_review step) and
 	// must be dropped to prevent it from advancing the wrong step.
 	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
+	defs := completionDefinitionCache{engine: e, task: t}
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
 		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
@@ -280,6 +281,14 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 				"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
 			e.clearAgentStep(c.AgentID)
 			return
+		}
+		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
+			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
+				e.logger.Info("workflow.agent-complete.bail",
+					"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-role-mismatch", "current_step", spawnedStep)
+				e.clearAgentStep(c.AgentID)
+				return
+			}
 		}
 	}
 
@@ -289,7 +298,12 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	}
 
 	if c.Success {
-		e.importSidecarIfConfigured(taskID, spawnedStep, t)
+		if def, ok := defs.get(); ok {
+			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
+		} else {
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
+		}
 	}
 
 	if e.recorder != nil {
@@ -379,6 +393,50 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 
 func pendingStepStartKey(taskID, stepID string) string {
 	return taskID + "|" + stepID
+}
+
+type completionDefinitionCache struct {
+	engine *Engine
+	task   TaskInfo
+	def    *Definition
+}
+
+func (c *completionDefinitionCache) get() (*Definition, bool) {
+	if c.def != nil {
+		return c.def, true
+	}
+	if c.task.Workflow == nil || c.task.Workflow.WorkflowID == "" {
+		return nil, false
+	}
+	def, err := c.engine.store.Get(c.task.Workflow.WorkflowID)
+	if err != nil {
+		return nil, false
+	}
+	c.def = &def
+	return c.def, true
+}
+
+func agentRunRole(runs []AgentRunInfo, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	for i := range slices.Backward(runs) {
+		if runs[i].AgentID == agentID {
+			return runs[i].Role
+		}
+	}
+	return ""
+}
+
+func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole string) bool {
+	if def == nil || stepID == "" || runRole == "" {
+		return true
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent || step.Config.Role == "" {
+		return true
+	}
+	return step.Config.Role == runRole
 }
 
 // markStepStarting records that a run_agent step's agent-start sequence

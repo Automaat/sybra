@@ -6,7 +6,7 @@ import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/syb
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, CodexModel, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
@@ -102,6 +102,7 @@ export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boole
 export function StartChat(arg1: string, arg2: string, arg3: string): Promise<Agent> { return call('App', 'StartChat', arg1, arg2, arg3) }
 export function StopChat(arg1: string): Promise<void> { return call('App', 'StopChat', arg1) }
 export function AgentQueueSnapshot(): Promise<AgentQueueSnapshotData> { return call('App', 'AgentQueueSnapshot') }
+export function StartK8sPocAgent(arg1: string): Promise<Agent> { return call('App', 'StartK8sPocAgent', arg1) }
 
 // ConfigService
 export function GetSettings(): Promise<AppSettings> { return call('ConfigService', 'GetSettings') }
@@ -112,6 +113,7 @@ export function GetRawConfig(): Promise<string> { return call('ConfigService', '
 export function SaveRawConfig(arg1: string): Promise<void> { return call('ConfigService', 'SaveRawConfig', arg1) }
 
 // InfoService
+export function GetAvailableRuntimes(): Promise<RuntimeInfo[]> { return call('InfoService', 'GetAvailableRuntimes') }
 export function GetCodexModels(): Promise<CodexModel[]> { return call('InfoService', 'GetCodexModels') }
 export function GetCopilotModels(): Promise<CopilotModel[]> { return call('InfoService', 'GetCopilotModels') }
 export function GetVersion(): Promise<VersionInfo> { return call('InfoService', 'GetVersion') }
@@ -200,6 +202,7 @@ export function ListTasks(): Promise<Array<Task>> { return call('TaskService', '
 export function ListTaskProgress(arg1: string): Promise<Array<ProgressEntry>> { return call('TaskService', 'ListTaskProgress', arg1) }
 export function UpdateTask(arg1: string, arg2: Record<string, unknown>): Promise<Task> { return call('TaskService', 'UpdateTask', arg1, arg2) }
 export function AssignTask(arg1: Task): Promise<void> { return call('TaskService', 'AssignTask', arg1) }
+export function RecoverLostAgent(arg1: string): Promise<void> { return call('TaskService', 'RecoverLostAgent', arg1) }
 
 // WorkflowService
 export function DeleteWorkflow(arg1: string): Promise<void> { return call('WorkflowService', 'DeleteWorkflow', arg1) }

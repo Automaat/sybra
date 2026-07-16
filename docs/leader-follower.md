@@ -32,6 +32,12 @@ A follower hard-disables every inbound poller (Todoist, GitHub issues, Renovate)
 regardless of its own feature flags: the leader is the only ingress, so two nodes
 can never race to claim the same upstream item.
 
+Monitor ownership follows the same rule: the leader is the only node allowed to
+remediate, dispatch monitor agents, or file issues. Followers may still run the
+detector locally for observation, but that pass is read-only. Lost-agent recovery
+for follower-homed tasks is decided by the leader and then routed back to the
+assigned follower for execution.
+
 ## Transport tiers
 
 The leader talks to a follower over the same HTTP control plane the web UI uses

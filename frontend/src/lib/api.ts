@@ -65,6 +65,7 @@ export const StartAgent = pick(AppSvc.StartAgent, http.StartAgent)
 export const StartChat = pick(AppSvc.StartChat, http.StartChat)
 export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 export const AgentQueueSnapshot = pick(AppSvc.AgentQueueSnapshot, http.AgentQueueSnapshot)
+export const StartK8sPocAgent = pick(AppSvc.StartK8sPocAgent, http.StartK8sPocAgent)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
@@ -75,6 +76,7 @@ export const GetRawConfig = pick(ConfigSvc.GetRawConfig, http.GetRawConfig)
 export const SaveRawConfig = pick(ConfigSvc.SaveRawConfig, http.SaveRawConfig)
 
 // InfoService
+export const GetAvailableRuntimes = pick(InfoSvc.GetAvailableRuntimes, http.GetAvailableRuntimes)
 export const GetCodexModels = pick(InfoSvc.GetCodexModels, http.GetCodexModels)
 export const GetCopilotModels = pick(InfoSvc.GetCopilotModels, http.GetCopilotModels)
 export const GetVersion = pick(InfoSvc.GetVersion, http.GetVersion)
@@ -163,6 +165,7 @@ export const ListTasks = pick(TaskSvc.ListTasks, http.ListTasks)
 export const ListTaskProgress = pick(TaskSvc.ListTaskProgress, http.ListTaskProgress)
 export const UpdateTask = pick(TaskSvc.UpdateTask, http.UpdateTask)
 export const AssignTask = pick(TaskSvc.AssignTask, http.AssignTask)
+export const RecoverLostAgent = pick(TaskSvc.RecoverLostAgent, http.RecoverLostAgent)
 
 // WorkflowService
 export const DeleteWorkflow = pick(WorkflowSvc.DeleteWorkflow, http.DeleteWorkflow)

@@ -3,8 +3,6 @@ package sybra
 import (
 	"context"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -28,9 +26,16 @@ type promptLabCoordinator struct {
 	cfg               *config.Config
 	allowsProjectType func(project.ProjectType) bool
 	scrubContext      func(projectID string) *WorkScrubContext
+	approve           func(taskID string) error
 }
 
 const promptLabProjectID = "Automaat/sybra"
+
+const promptLabNoProjectReason = "Prompt Lab proposal not auto-approved: project " + promptLabProjectID +
+	" is not registered, so the authoring workflow has no repo to open a worktree in. Register it, then approve."
+
+const promptLabNoProjectErr = "prompt-lab approval unavailable: project " + promptLabProjectID +
+	" is not registered, so the authoring workflow has no repo to open a worktree in"
 
 func newPromptLabCoordinator(
 	tasks *task.Manager,
@@ -40,6 +45,7 @@ func newPromptLabCoordinator(
 	cfg *config.Config,
 	allowsProjectType func(project.ProjectType) bool,
 	scrubContext func(string) *WorkScrubContext,
+	approve func(string) error,
 ) *promptLabCoordinator {
 	return &promptLabCoordinator{
 		tasks:             tasks,
@@ -49,6 +55,7 @@ func newPromptLabCoordinator(
 		cfg:               cfg,
 		allowsProjectType: allowsProjectType,
 		scrubContext:      scrubContext,
+		approve:           approve,
 	}
 }
 
@@ -97,7 +104,7 @@ func (c *promptLabCoordinator) tick(ctx context.Context) {
 		c.logger.Warn("promptlab.tick.failed", "err", err)
 		return
 	}
-	filed, err := c.fileScrubbedProposals(result)
+	filed, err := c.fileScrubbedProposals(ctx, result)
 	if err != nil {
 		c.logger.Warn("promptlab.file.failed", "err", err)
 		return
@@ -114,7 +121,7 @@ func (c *promptLabCoordinator) tick(ctx context.Context) {
 // here, not inherited: internal/harnessevolution's filer does not scrub, so
 // this coordinator builds and applies the blocklist itself rather than
 // assuming that precedent covers it too.
-func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult) ([]task.Task, error) {
+func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result promptlab.RunResult) ([]task.Task, error) {
 	existing, err := c.tasks.List()
 	if err != nil {
 		return nil, err
@@ -125,7 +132,8 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 		if !c.allowsAnyProject(p.Evidence.ProjectIDs) {
 			continue
 		}
-		if _, ok := findExistingPromptLabProposal(existing, p.ID); ok {
+		cooldown := time.Duration(c.cfg.PromptLab.RefileCooldownDays * float64(24*time.Hour))
+		if promptlab.HasProposal(existing, p.ID, cooldown, time.Now().UTC()) {
 			continue
 		}
 		body := c.scrubBody(promptlab.RenderProposalBody(p), p.Evidence.ProjectIDs)
@@ -146,10 +154,40 @@ func (c *promptLabCoordinator) fileScrubbedProposals(result promptlab.RunResult)
 		if err != nil {
 			return filed, err
 		}
+		c.maybeAutoApprove(ctx, created, p)
 		filed = append(filed, created)
 		existing = append(existing, created)
 	}
 	return filed, nil
+}
+
+func (c *promptLabCoordinator) maybeAutoApprove(ctx context.Context, t task.Task, p promptlab.Proposal) {
+	if c.approve == nil || !c.cfg.PromptLabAutoApprove() {
+		return
+	}
+	if ctx.Err() != nil {
+		c.logger.Warn("promptlab.auto_approve.skipped_shutdown", "task_id", t.ID, "proposal_id", p.ID)
+		return
+	}
+	if !isPendingProposalStatus(t.Status) || p.Offline.Verdict == promptlab.VerdictFailed {
+		return
+	}
+	if t.ProjectID == "" {
+		c.logger.Warn("promptlab.auto_approve.skipped_no_project", "task_id", t.ID, "proposal_id", p.ID)
+		c.setStatusReason(t.ID, promptLabNoProjectReason)
+		return
+	}
+	if err := c.approve(t.ID); err != nil {
+		c.logger.Warn("promptlab.auto_approve.failed", "task_id", t.ID, "proposal_id", p.ID, "err", err)
+		return
+	}
+	c.logger.Info("promptlab.auto_approve", "task_id", t.ID, "proposal_id", p.ID)
+}
+
+func (c *promptLabCoordinator) setStatusReason(taskID, reason string) {
+	if _, err := c.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil {
+		c.logger.Warn("promptlab.status_reason.failed", "task_id", taskID, "err", err)
+	}
 }
 
 func promptLabTargetProjectID(projects *project.Store) string {
@@ -195,25 +233,13 @@ func (c *promptLabCoordinator) scrubBody(body string, projectIDs []string) strin
 	return body
 }
 
-func findExistingPromptLabProposal(tasks []task.Task, proposalID string) (task.Task, bool) {
-	marker := "Proposal ID:** `" + proposalID + "`"
-	for i := range tasks {
-		if task.IsTerminalStatus(tasks[i].Status) {
-			continue
-		}
-		if !slices.Contains(tasks[i].Tags, promptlab.ProposalTag) {
-			continue
-		}
-		if strings.Contains(tasks[i].Body, marker) {
-			return tasks[i], true
-		}
-	}
-	return task.Task{}, false
-}
-
 // initPromptLab constructs the promptlab coordinator. Cheap to always build
 // (mirrors renovateCoordinator): the ticker itself no-ops when disabled, so
 // the coordinator can be built unconditionally without an extra guard here.
 func (a *App) initPromptLab() {
-	a.promptLab = newPromptLabCoordinator(a.tasks, a.projects, a.stats, a.logger, a.cfg, a.allowsProjectType, a.workScrubContextForTask)
+	a.promptLab = newPromptLabCoordinator(
+		a.tasks, a.projects, a.stats, a.logger, a.cfg,
+		a.allowsProjectType, a.workScrubContextForTask,
+		func(taskID string) error { return a.promptLabSvc.autoApprove(taskID) },
+	)
 }

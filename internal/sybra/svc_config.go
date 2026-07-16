@@ -263,6 +263,7 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,
+		DefaultModel:           cfg.Agent.Model,
 		BashTimeoutMs:          cfg.BashTimeoutMs(),
 		RetryWatchdog:          cfg.RetryWatchdog(),
 		FallbackModel:          cfg.Agent.FallbackModel,
@@ -274,6 +275,8 @@ func (s *ConfigService) managerRuntimeConfig(cfg config.Config) agent.ManagerRun
 		SandboxMode:            cfg.DefaultSandboxMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
+		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
+		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
 	}
 }
 

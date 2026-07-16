@@ -43,6 +43,7 @@ type Deps struct {
 	Tasks         taskAPI
 	Audit         auditAPI
 	Agents        agentLister
+	ObserverOnly  bool
 	Dispatcher    Dispatcher
 	Sink          IssueSink
 	Emit          EmitFunc
@@ -58,10 +59,10 @@ type Deps struct {
 	// Work-Data Confidentiality.
 	DowngradeLLMForTask func(taskID string) bool
 	// RecoverLostAgent is called after a lost_agent remediation marks stale
-	// run state stopped. Production wires this to recovery.RestartStaleInProgress
-	// so the monitor detection immediately hands the in-progress task back to
-	// the existing workflow/agent recovery path.
-	RecoverLostAgent func(context.Context)
+	// run state stopped. Production wires this to the canonical owner's
+	// recovery path so the monitor detection immediately hands the
+	// in-progress task back to workflow/agent recovery on the assigned node.
+	RecoverLostAgent func(context.Context, string)
 }
 
 // Service runs the monitor loop. It is constructed once at app startup and
@@ -71,6 +72,7 @@ type Service struct {
 	tasks               taskAPI
 	audit               auditAPI
 	agents              agentLister
+	observerOnly        bool
 	dispatcher          Dispatcher
 	sink                IssueSink
 	emit                EmitFunc
@@ -109,6 +111,7 @@ func NewService(d Deps) *Service {
 		tasks:               d.Tasks,
 		audit:               d.Audit,
 		agents:              d.Agents,
+		observerOnly:        d.ObserverOnly,
 		dispatcher:          d.Dispatcher,
 		sink:                d.Sink,
 		emit:                d.Emit,
@@ -133,7 +136,7 @@ func (s *Service) Run(ctx context.Context) {
 	if interval < time.Minute {
 		interval = 5 * time.Minute
 	}
-	s.logger.Info("monitor.start", "interval", interval.String())
+	s.logger.Info("monitor.start", "interval", interval.String(), "observer_only", s.observerOnly)
 
 	s.tickAndLog(ctx)
 
@@ -195,12 +198,14 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
 
-	rem := s.applyRemediations(ctx, report.Anomalies)
-	report.Remediated = rem.labels
-	report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
-	opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
-	report.IssuesOpened = opened
-	report.IssuesUpdated = updated
+	if !s.observerOnly {
+		rem := s.applyRemediations(ctx, report.Anomalies)
+		report.Remediated = rem.labels
+		report.Dispatched = s.dispatchLLMAnomalies(ctx, now, report.Anomalies)
+		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.skipIssueForFP)
+		report.IssuesOpened = opened
+		report.IssuesUpdated = updated
+	}
 
 	s.state.recordReport(report, now)
 	s.emit(events.MonitorReport, report)

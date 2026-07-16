@@ -21,6 +21,11 @@ import (
 const rejectedNoFeedbackReason = "rejected (no feedback provided)"
 
 const (
+	approvedProgressNote     = "Approved: started Prompt Lab variant authoring + offline eval workflow"
+	autoApprovedProgressNote = "Auto-approved (prompt_lab.auto_approve): started Prompt Lab variant authoring + offline eval workflow"
+)
+
+const (
 	promptLabAlreadyActiveWait = 500 * time.Millisecond
 	promptLabAlreadyActivePoll = 25 * time.Millisecond
 )
@@ -29,6 +34,19 @@ const (
 // Wails-bound methods. Proposals are plain tasks (tagged
 // "prompt-lab-proposal" + "requires-human", status human-required) until
 // approval, which starts the dedicated prompt-lab authoring workflow.
+//
+// Approval starts the authoring workflow; it does not certify the variant.
+// It is not necessarily a human either: under prompt_lab.auto_approve
+// promptLabCoordinator approves each proposal as it files it, making these
+// methods the manual override rather than the only way through.
+//
+// Approval carries no guarantee that the authored variant is screened before
+// it enrolls in A/B. prompteval.Gate is only constructed when
+// evaluation.offline.enabled is set, and a nil Engine.evalGate means offline
+// verdicts do not gate enrollment at all. That is exactly why
+// Config.PromptLabAutoApprove is hard-gated on the same flag: with the screen
+// off, a human calling ApproveProposal is the last remaining barrier, so the
+// unattended caller must not exist there.
 type PromptLabService struct {
 	tasks          *task.Manager
 	artifacts      *artifact.Store
@@ -40,7 +58,24 @@ type PromptLabService struct {
 // in-progress, drops the requires-human tag, and starts the dedicated
 // prompt-lab authoring workflow. Errors without mutating if the task is not a
 // pending proposal (wrong status, or missing the prompt-lab-proposal tag).
+//
+// promptLabCoordinator drives the same path unattended via autoApprove when
+// prompt_lab.auto_approve is set, so every guard, dispatch, and
+// revert-on-failure below must hold for a caller that is not a human; the
+// two differ only in the progress note left in the task's decision log.
 func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
+	return s.approveProposal(id, approvedProgressNote)
+}
+
+func (s *PromptLabService) autoApprove(id string) error {
+	_, err := s.approveProposal(id, autoApprovedProgressNote)
+	return err
+}
+
+func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, error) {
+	if s.workflowEngine == nil {
+		return task.Task{}, errors.New("prompt-lab approval unavailable: no workflow engine to start the authoring workflow")
+	}
 	t, err := s.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
 		if err := requirePendingProposal(cur); err != nil {
 			return task.Update{}, err
@@ -54,9 +89,11 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 			Tags:         &tags,
 		}
 		if cur.ProjectID == "" {
-			if projectID := promptLabTargetProjectID(s.projects); projectID != "" {
-				update.ProjectID = &projectID
+			projectID := promptLabTargetProjectID(s.projects)
+			if projectID == "" {
+				return task.Update{}, errors.New(promptLabNoProjectErr)
 			}
+			update.ProjectID = &projectID
 		}
 		return update, nil
 	})
@@ -64,34 +101,32 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 		return task.Task{}, err
 	}
 
-	if s.workflowEngine != nil {
-		matched, dispatchErr := s.workflowEngine.DispatchEvent(
-			id,
-			"task.status_changed",
-			map[string]string{"task.status": string(task.StatusInProgress)},
-			nil,
-		)
-		if !s.promptLabDispatchStarted(id, matched, dispatchErr) {
-			failure := "no prompt-lab workflow matched"
-			if dispatchErr != nil {
-				failure = dispatchErr.Error()
-			}
-			revertReason := "Prompt Lab approval failed to start authoring workflow: " + failure
-			status := task.StatusHumanRequired
-			tags := mergeTag(t.Tags, "requires-human")
-			reverted, revertErr := s.tasks.Update(id, task.Update{
-				Status:       &status,
-				StatusReason: &revertReason,
-				Tags:         tags,
-			})
-			if revertErr != nil {
-				return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
-			}
-			return reverted, errors.New(revertReason)
+	matched, dispatchErr := s.workflowEngine.DispatchEvent(
+		id,
+		"task.status_changed",
+		map[string]string{"task.status": string(task.StatusInProgress)},
+		nil,
+	)
+	if !s.promptLabDispatchStarted(id, matched, dispatchErr) {
+		failure := "no prompt-lab workflow matched"
+		if dispatchErr != nil {
+			failure = dispatchErr.Error()
 		}
+		revertReason := "Prompt Lab approval failed to start authoring workflow: " + failure
+		status := task.StatusHumanRequired
+		tags := mergeTag(t.Tags, "requires-human")
+		reverted, revertErr := s.tasks.Update(id, task.Update{
+			Status:       &status,
+			StatusReason: &revertReason,
+			Tags:         tags,
+		})
+		if revertErr != nil {
+			return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
+		}
+		return reverted, errors.New(revertReason)
 	}
 
-	s.appendProgress(id, artifact.ProgressKindDecision, "Approved: started Prompt Lab variant authoring + offline eval workflow")
+	s.appendProgress(id, artifact.ProgressKindDecision, progressNote)
 	return t, nil
 }
 
@@ -157,10 +192,14 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 // the race a stale browser tab could otherwise re-fire (double approve,
 // approve-after-reject, etc).
 func requirePendingProposal(cur task.Task) error {
-	if !slices.Contains(cur.Tags, promptlab.ProposalTag) || cur.Status != task.StatusHumanRequired {
+	if !slices.Contains(cur.Tags, promptlab.ProposalTag) || !isPendingProposalStatus(cur.Status) {
 		return fmt.Errorf("task %s is not a pending prompt-lab proposal (status=%s)", cur.ID, cur.Status)
 	}
 	return nil
+}
+
+func isPendingProposalStatus(s task.Status) bool {
+	return s == task.StatusHumanRequired || s == task.StatusTodo
 }
 
 // removeTag returns tags with every occurrence of target removed.

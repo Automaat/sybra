@@ -48,50 +48,52 @@ func (s *Store) Backfill(auditDir string) error {
 		return nil
 	}
 
-	for _, ev := range events {
-		if ev.Type != audit.EventAgentCompleted && ev.Type != audit.EventAgentFailed {
+	runs := audit.NormalizeAgentRuns(events)
+	for i := range runs {
+		run := &runs[i]
+		if !run.Terminal {
 			continue
 		}
 
 		r := RunRecord{
-			ID:        ev.AgentID,
-			TaskID:    ev.TaskID,
-			Timestamp: ev.Timestamp,
+			ID:        run.AgentID,
+			TaskID:    run.TaskID,
+			Timestamp: run.TerminalAt,
 		}
 
-		if v, ok := ev.Data["mode"].(string); ok {
+		if v, ok := run.TerminalEvent.Data["mode"].(string); ok {
 			r.Mode = v
 		}
-		if v, ok := ev.Data["cost_usd"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["cost_usd"].(float64); ok {
 			r.CostUSD = v
 		}
-		if v, ok := ev.Data["duration_s"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["duration_s"].(float64); ok {
 			r.DurationS = v
 		}
-		if v, ok := ev.Data["state"].(string); ok && v == "stopped" {
-			r.Outcome = "completed"
-		} else {
+		if run.Failed {
 			r.Outcome = "failed"
+		} else {
+			r.Outcome = "completed"
 		}
-		if v, ok := ev.Data["provider"].(string); ok {
+		if v, ok := run.TerminalEvent.Data["provider"].(string); ok {
 			r.Provider = v
 		}
-		if v, ok := ev.Data["reasoning_tokens"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["reasoning_tokens"].(float64); ok {
 			r.ReasoningTokens = int(v)
 		}
-		if v, ok := ev.Data["input_tokens"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["input_tokens"].(float64); ok {
 			r.InputTokens = int(v)
 		}
-		if v, ok := ev.Data["output_tokens"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["output_tokens"].(float64); ok {
 			r.OutputTokens = int(v)
 		}
-		if v, ok := ev.Data["cache_creation_input_tokens"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["cache_creation_input_tokens"].(float64); ok {
 			r.CacheCreationInputTokens = int(v)
 		}
-		if v, ok := ev.Data["cache_read_input_tokens"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["cache_read_input_tokens"].(float64); ok {
 			r.CacheReadInputTokens = int(v)
 		}
-		if v, ok := ev.Data["premium_requests"].(float64); ok {
+		if v, ok := run.TerminalEvent.Data["premium_requests"].(float64); ok {
 			r.PremiumRequests = v
 		}
 

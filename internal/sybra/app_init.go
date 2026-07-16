@@ -457,6 +457,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 	return agent.ManagerRuntimeConfig{
 		MaxConcurrent:          cfg.Agent.MaxConcurrent,
 		DefaultProvider:        cfg.Agent.Provider,
+		DefaultModel:           cfg.Agent.Model,
 		BashTimeoutMs:          cfg.BashTimeoutMs(),
 		RetryWatchdog:          cfg.RetryWatchdog(),
 		FallbackModel:          cfg.Agent.FallbackModel,
@@ -468,7 +469,38 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		SandboxMode:            cfg.DefaultSandboxMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
+		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
+		K8sJobs:                k8sJobRunnerConfigFromConfig(cfg.Agent.K8sJobs),
 	}
+}
+
+func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerConfig {
+	out := agent.K8sJobRunnerConfig{
+		Namespace: cfg.Namespace,
+		Image:     cfg.Image,
+		Command:   cfg.Command,
+		TTL:       cfg.TTL,
+		Mode:      cfg.Mode,
+	}
+	for _, e := range cfg.Env {
+		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
+	}
+	for _, e := range cfg.SecretEnv {
+		out.SecretEnv = append(out.SecretEnv, agent.K8sJobSecretEnvVar{
+			Name:       e.Name,
+			SecretName: e.SecretName,
+			SecretKey:  e.SecretKey,
+		})
+	}
+	for _, v := range cfg.Volumes {
+		out.Volumes = append(out.Volumes, agent.K8sJobVolume{
+			Name:      v.Name,
+			ClaimName: v.ClaimName,
+			MountPath: v.MountPath,
+			ReadOnly:  v.ReadOnly,
+		})
+	}
+	return out
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
@@ -580,8 +612,10 @@ func (a *App) initStatusHook() {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
 		local := true
+		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
+			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -600,6 +634,18 @@ func (a *App) initStatusHook() {
 		}
 
 		switch to {
+		case string(task.StatusTodo):
+			if !runsNoAgent {
+				a.dispatchTaskCreatedWorkflow(taskID)
+			}
+		case string(task.StatusPlanning):
+			if !runsNoAgent {
+				a.dispatchPlanningWorkflow(taskID)
+			}
+		case string(task.StatusInProgress):
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
+			}
 		case string(task.StatusInReview):
 			msg := taskID
 			if t, err := a.tasks.Get(taskID); err == nil {
@@ -620,11 +666,17 @@ func (a *App) initStatusHook() {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
+			}
 		case string(task.StatusTesting):
-			a.dispatchStatusWorkflow(taskID, task.StatusTesting)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusTesting)
+			}
 		case string(task.StatusReadyPR):
-			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
+			}
 		case string(task.StatusDone):
 			if local {
 				go a.closeLinkedIssueOnDone(taskID)
@@ -813,38 +865,28 @@ func expectedHumanKind(t task.Task) string {
 	}
 }
 
-// maybeStartWorkflowForExternalTask starts the matching task.created workflow
-// for a task that appeared on disk outside the GUI CreateTask path — most
-// importantly via sybra-cli, the documented primary task interface. Without
-// this, CLI-created tasks never get a workflow and sit inert in todo: the
-// orchestrator can triage them but no implementation ever starts. Mirrors
-// TaskService.startCreatedWorkflow. Idempotent: DispatchEvent serializes per
-// task and rejects a task that already owns a non-terminal workflow, so the
-// watcher firing TaskCreated several times for one file is harmless.
-func (a *App) maybeStartWorkflowForExternalTask(path string) {
+// dispatchTaskCreatedWorkflow starts the matching task.created workflow for a
+// task that is ready to enter or re-enter the front of the pipeline. This is
+// used both for files created outside the GUI and for status updates that put a
+// parked task back in todo/planning. Mirrors TaskService.startCreatedWorkflow.
+// Idempotent: DispatchEvent serializes per task and rejects a task that already
+// owns a non-terminal workflow, so duplicate watcher/status events are harmless.
+func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
-	base := filepath.Base(path)
-	// Sidecar files (plan/critique/review) share the tasks dir and also fire
-	// TaskCreated; they are not tasks, so skip them up front rather than
-	// spending a goroutine + Get that would fail anyway.
-	if task.IsSidecarFile(base) {
-		return
-	}
-	id := strings.TrimSuffix(base, ".md")
-	if id == "" {
+	if taskID == "" {
 		return
 	}
 	a.wg.Go(func() {
-		t, err := a.tasks.Get(id)
+		t, err := a.tasks.Get(taskID)
 		if err != nil {
 			return
 		}
-		// Only fresh, pre-implementation tasks. simple-task-plan's trigger has
-		// no status condition, so without this guard a task.created dispatch
-		// could restart planning on an in-review/done task.
-		if t.Status != task.StatusNew && t.Status != task.StatusTodo {
+		// Only front-of-pipeline tasks. simple-task-plan's trigger has no status
+		// condition, so without this guard a task.created dispatch could restart
+		// planning on an in-review/done task.
+		if t.Status != task.StatusNew && t.Status != task.StatusTodo && t.Status != task.StatusPlanning {
 			return
 		}
 		if !a.runsTaskLocally(t) {
@@ -856,7 +898,7 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 			}
 			if a.assigner != nil {
 				if _, err := a.assigner.Route(a.ctx, t); err != nil {
-					a.logger.Warn("cluster.assign.failed", "task_id", id, "err", err)
+					a.logger.Warn("cluster.assign.failed", "task_id", taskID, "err", err)
 				}
 			}
 			return
@@ -873,14 +915,37 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 			t.Workflow.State != workflow.ExecFailed {
 			return
 		}
-		if a.agents.HasRunningAgentForTask(id) {
+		if a.agents.HasRunningAgentForTask(taskID) {
 			return
 		}
-		if _, err := a.workflowEngine.DispatchEvent(id, "task.created", nil, nil); err != nil &&
+		if _, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil); err != nil &&
 			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
-			a.logger.Error("workflow.external-create.failed", "task_id", id, "err", err)
+			a.logger.Error("workflow.task-created.failed", "task_id", taskID, "err", err)
 		}
 	})
+}
+
+// maybeStartWorkflowForExternalTask starts the matching task.created workflow
+// for a task that appeared on disk outside the GUI CreateTask path — most
+// importantly via sybra-cli, the documented primary task interface. Without
+// this, CLI-created tasks never get a workflow and sit inert in todo: the
+// orchestrator can triage them but no implementation ever starts.
+func (a *App) maybeStartWorkflowForExternalTask(path string) {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	base := filepath.Base(path)
+	// Sidecar files (plan/critique/review) share the tasks dir and also fire
+	// TaskCreated; they are not tasks, so skip them up front rather than
+	// spending a goroutine + Get that would fail anyway.
+	if task.IsSidecarFile(base) {
+		return
+	}
+	id := strings.TrimSuffix(base, ".md")
+	if id == "" {
+		return
+	}
+	a.dispatchTaskCreatedWorkflow(id)
 }
 
 func (a *App) initAudit() {

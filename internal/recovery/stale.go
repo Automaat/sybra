@@ -31,135 +31,151 @@ func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 		return
 	}
 	for i := range tasks {
-		t := tasks[i]
-		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
-			continue
+		r.restartTaskIfStale(ctx, tasks[i])
+	}
+}
+
+// RestartTaskIfStale applies the same stale-agent recovery rules as the full
+// sweep, but scoped to one task. Used when the cluster leader decides a
+// follower-owned task needs recovery and asks the assigned follower to resume
+// exactly that task.
+func (r *Recovery) RestartTaskIfStale(ctx context.Context, taskID string) error {
+	t, err := r.Tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	r.restartTaskIfStale(ctx, t)
+	return nil
+}
+
+func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
+	if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+		return
+	}
+	if r.DispatchGate != nil && !r.DispatchGate(t) {
+		return
+	}
+	if t.Status != task.StatusInProgress {
+		return
+	}
+	if r.Agents.HasRunningAgentForTask(t.ID) {
+		return
+	}
+	if r.Agents.IsDispatching(t.ID) {
+		return
+	}
+	// Don't re-dispatch to the same provider while it is rate-limited; do
+	// continue when failover can route this run to a healthy peer. (A
+	// rate-limited run is stalled in-progress by the completion handler, not
+	// flipped to human-required.) Auth failures are NOT skipped here: they
+	// take the human-required path so the operator knows to log in.
+	if lr := lastAgentRun(&t); lr != nil && r.Agents.ProviderRateLimited(lr.Provider) && !r.Agents.ProviderCanFailover(lr.Provider) {
+		r.Logger.Info("restart-stale.skip",
+			"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
+		return
+	}
+	if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
+		// recoverCompletedHeadlessRun handled this task (last headless run
+		// completed but workflow step was never recorded). Skip the generic
+		// stale-restart path only when it actually fired HandleAgentComplete;
+		// unmatched review tasks (running agent, empty result, missing workflow,
+		// etc.) fall through so they can still be restarted.
+		return
+	}
+	if r.recoverCancelledPRFix(&t) {
+		return
+	}
+	// Tasks with a terminal workflow stuck at in-progress: restart the
+	// workflow rather than spawning a bare agent. A bare agent spawn
+	// would loop forever (completion callback can't advance a terminal
+	// workflow), but restarting the workflow gives the callback a live
+	// execution to advance.
+	if r.handleTerminalWorkflow(&t) {
+		return
+	}
+	// Debounce respawn when a previous run started recently. Covers
+	// the dev-reload case: app restarts every few seconds, but a
+	// headless subprocess from the prior lifecycle is still alive.
+	// A pending supervisor steer bypasses the debounce: the watchdog
+	// deliberately stopped a looping agent to re-dispatch it with a
+	// correction, and that should not wait out the recent-run window.
+	if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge &&
+		strings.TrimSpace(t.SupervisorSteer) == "" {
+		r.Logger.Info("restart-stale.skip",
+			"task_id", t.ID, "reason", "recent_run",
+			"last_run_age_s", time.Since(lr.StartedAt).Seconds())
+		return
+	}
+	// Tasks whose last agent was a pr-fix should not be re-implemented.
+	// Move them back to in-review so the reviews poller can re-detect
+	// and fix. handlePRIssue spawns pr-fix agents directly without
+	// registering a workflow, so onAgentComplete can't advance the task
+	// back to in-review itself.
+	if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
+		r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
+		if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
+			r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
 		}
-		if r.DispatchGate != nil && !r.DispatchGate(t) {
-			continue
+		return
+	}
+	// Interactive: drive the workflow engine to advance the current
+	// step using the stored agent run result — same mechanism as
+	// onAgentComplete.
+	oneShot := false
+	if t.AgentMode != "headless" {
+		var handled bool
+		oneShot, handled = r.resolveInteractiveStaleRestart(&t)
+		if handled {
+			return
 		}
-		if t.Status != task.StatusInProgress {
-			continue
-		}
-		if r.Agents.HasRunningAgentForTask(t.ID) {
-			continue
-		}
-		if r.Agents.IsDispatching(t.ID) {
-			continue
-		}
-		// Don't re-dispatch to the same provider while it is rate-limited; do
-		// continue when failover can route this run to a healthy peer. (A
-		// rate-limited run is stalled in-progress by the completion handler, not
-		// flipped to human-required.) Auth failures are NOT skipped here: they
-		// take the human-required path so the operator knows to log in.
-		if lr := lastAgentRun(&t); lr != nil && r.Agents.ProviderRateLimited(lr.Provider) && !r.Agents.ProviderCanFailover(lr.Provider) {
-			r.Logger.Info("restart-stale.skip",
-				"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
-			continue
-		}
-		if slices.Contains(t.Tags, "review") && r.recoverCompletedHeadlessRun(&t) {
-			// recoverCompletedHeadlessRun handled this task (last headless run
-			// completed but workflow step was never recorded). Skip the generic
-			// stale-restart path only when it actually fired HandleAgentComplete;
-			// unmatched review tasks (running agent, empty result, missing workflow,
-			// etc.) fall through so they can still be restarted.
-			continue
-		}
-		if r.recoverCancelledPRFix(&t) {
-			continue
-		}
-		// Tasks with a terminal workflow stuck at in-progress: restart the
-		// workflow rather than spawning a bare agent. A bare agent spawn
-		// would loop forever (completion callback can't advance a terminal
-		// workflow), but restarting the workflow gives the callback a live
-		// execution to advance.
-		if r.handleTerminalWorkflow(&t) {
-			continue
-		}
-		// Debounce respawn when a previous run started recently. Covers
-		// the dev-reload case: app restarts every few seconds, but a
-		// headless subprocess from the prior lifecycle is still alive.
-		// A pending supervisor steer bypasses the debounce: the watchdog
-		// deliberately stopped a looping agent to re-dispatch it with a
-		// correction, and that should not wait out the recent-run window.
-		if lr := lastAgentRun(&t); lr != nil && time.Since(lr.StartedAt) < restartStaleMinAge &&
-			strings.TrimSpace(t.SupervisorSteer) == "" {
-			r.Logger.Info("restart-stale.skip",
-				"task_id", t.ID, "reason", "recent_run",
-				"last_run_age_s", time.Since(lr.StartedAt).Seconds())
-			continue
-		}
-		// Tasks whose last agent was a pr-fix should not be re-implemented.
-		// Move them back to in-review so the reviews poller can re-detect
-		// and fix. handlePRIssue spawns pr-fix agents directly without
-		// registering a workflow, so onAgentComplete can't advance the task
-		// back to in-review itself.
-		if lastRun := lastAgentRun(&t); lastRun != nil && lastRun.Role == "pr-fix" {
-			r.Logger.Info("restart-stale.revert-to-review", "task_id", t.ID)
-			if _, updErr := r.Tasks.Update(t.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); updErr != nil {
-				r.Logger.Error("restart-stale.revert", "task_id", t.ID, "err", updErr)
-			}
-			continue
-		}
-		// Interactive: drive the workflow engine to advance the current
-		// step using the stored agent run result — same mechanism as
-		// onAgentComplete.
-		oneShot := false
-		if t.AgentMode != "headless" {
-			var handled bool
-			oneShot, handled = r.resolveInteractiveStaleRestart(&t)
-			if handled {
-				continue
-			}
-		}
-		if t.ProjectID == "" {
-			err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
-			r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
-			// Surface off the scan loop, matching the other two
-			// surfaceStartFailure call sites in this function, so a
-			// file-backed Tasks.Update never blocks the fleet-wide sweep.
-			taskID, currentStatus := t.ID, t.Status
-			r.WG.Go(func() {
-				r.surfaceStartFailure(taskID, currentStatus, err)
-			})
-			continue
-		}
-		r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
-		taskID := t.ID
-		runRole := t.RunRole
-		if runRole == "pr-fix" {
-			currentStatus := t.Status
-			r.WG.Go(func() {
-				err := r.Orchestrator.StartPRFixAgent(taskID)
-				metrics.OrchestratorStaleRestart(ctx, err == nil)
-				r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
-				if err != nil {
-					r.surfaceStartFailure(taskID, currentStatus, err)
-				}
-			})
-			continue
-		}
-		mode := t.AgentMode
-		prFlag := " --draft"
-		if proj, pErr := r.Projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
-			prFlag = ""
-		}
-		// A pending supervisor steer (set by the watchdog's headless nudge) is
-		// consumed and prepended to the prompt inside agentorch.Orchestrator.StartAgent,
-		// the single dispatch choke point this path and the workflow resume path
-		// both funnel through — so it is delivered exactly once regardless of
-		// which loop re-dispatches the task.
-		prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
+	}
+	if t.ProjectID == "" {
+		err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
+		r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
+		// Surface off the scan loop, matching the other two
+		// surfaceStartFailure call sites in this function, so a
+		// file-backed Tasks.Update never blocks the fleet-wide sweep.
+		taskID, currentStatus := t.ID, t.Status
+		r.WG.Go(func() {
+			r.surfaceStartFailure(taskID, currentStatus, err)
+		})
+		return
+	}
+	r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
+	taskID := t.ID
+	runRole := t.RunRole
+	if runRole == "pr-fix" {
 		currentStatus := t.Status
 		r.WG.Go(func() {
-			_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
+			err := r.Orchestrator.StartPRFixAgent(taskID)
 			metrics.OrchestratorStaleRestart(ctx, err == nil)
-			r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
+			r.Throttle.Log(r.Logger, "restart.pr-fix.failed", "pr-fix:"+taskID, err, "task_id", taskID)
 			if err != nil {
 				r.surfaceStartFailure(taskID, currentStatus, err)
 			}
 		})
+		return
 	}
+	mode := t.AgentMode
+	prFlag := " --draft"
+	if proj, pErr := r.Projects.Get(t.ProjectID); pErr == nil && proj.Type == project.ProjectTypePet {
+		prFlag = ""
+	}
+	// A pending supervisor steer (set by the watchdog's headless nudge) is
+	// consumed and prepended to the prompt inside agentorch.Orchestrator.StartAgent,
+	// the single dispatch choke point this path and the workflow resume path
+	// both funnel through — so it is delivered exactly once regardless of
+	// which loop re-dispatches the task.
+	prompt := "Continue implementing this task. When done, create a PR with `gh pr create" + prFlag + "`."
+	currentStatus := t.Status
+	r.WG.Go(func() {
+		_, err := r.Orchestrator.StartAgent(taskID, mode, prompt, false, oneShot)
+		metrics.OrchestratorStaleRestart(ctx, err == nil)
+		r.Throttle.Log(r.Logger, "restart-stale.failed", "stale:"+taskID, err, "task_id", taskID)
+		if err != nil {
+			r.surfaceStartFailure(taskID, currentStatus, err)
+		}
+	})
 }
 
 // handleTerminalWorkflow handles a task whose workflow reached a terminal state

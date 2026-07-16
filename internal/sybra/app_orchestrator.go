@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -11,6 +12,8 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
+
+const inboundReviewRedispatchCooldown = 10 * time.Minute
 
 // orchestratorLoop runs two cadences. The cheap, latency-sensitive dispatch pass
 // (start the orchestrator, release unblocked children) fires on a fast ticker and
@@ -46,12 +49,15 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 	}
 }
 
-// dispatchPass runs the cheap scheduling actions that gate a ready task. Safe to
-// run often: maybeStartOrchestrator no-ops when already running, and
-// releaseUnblockedChildren only acts on tasks whose dependencies merged.
+// dispatchPass runs the cheap scheduling actions that gate a ready task and
+// reconciles idle board tasks that should already be moving. Safe to run often:
+// maybeStartOrchestrator no-ops when already running, releaseUnblockedChildren
+// only acts on tasks whose dependencies merged, and workflow dispatch helpers
+// refuse active workflows/running agents.
 func (a *App) dispatchPass(ctx context.Context) {
 	a.maybeStartOrchestrator(ctx)
 	a.releaseUnblockedChildren()
+	a.reconcileRunnableBoardTasks()
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
 	}
@@ -102,11 +108,154 @@ func (a *App) maintenancePass(ctx context.Context) {
 
 func (a *App) queueDrainPass(ctx context.Context) {
 	a.drainManualQueue(ctx)
+	a.reconcileRunnableBoardTasks()
 	if a.workflowEngine != nil {
 		// workflow.Engine derives its shell-step context from its own e.ctx
 		// field (Engine.SetContext, bound once from App's root ctx), not an
 		// explicit per-call parameter.
 		a.workflowEngine.ResumeStalled() //nolint:contextcheck // Engine uses its own e.ctx field, see comment above
+	}
+}
+
+func (a *App) reconcileRunnableBoardTasks() {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		a.logger.Warn("workflow.reconcile-runnable.list", "err", err)
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+			continue
+		}
+		if !a.runsTaskLocally(t) {
+			continue
+		}
+		if a.agents.HasRunningAgentForTask(t.ID) {
+			continue
+		}
+		if boardReconcileWorkflowActive(t) {
+			continue
+		}
+		switch t.Status {
+		case task.StatusNew, task.StatusTodo:
+			if skipTaskCreatedWorkflow(t) {
+				continue
+			}
+			a.dispatchTaskCreatedWorkflow(t.ID)
+		case task.StatusPlanning:
+			a.dispatchPlanningWorkflow(t.ID)
+		case task.StatusInReview:
+			if isInboundReviewTask(t) {
+				a.dispatchInboundReviewWorkflow(t.ID)
+				continue
+			}
+		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+			a.dispatchStatusWorkflow(t.ID, t.Status)
+		default:
+		}
+	}
+}
+
+func isInboundReviewTask(t task.Task) bool {
+	return slices.Contains(t.Tags, "review") && t.ProjectID != "" && t.PRNumber != 0
+}
+
+func (a *App) dispatchInboundReviewWorkflow(taskID string) {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if t.Status != task.StatusInReview || !isInboundReviewTask(t) {
+		return
+	}
+	if !inboundReviewNeedsAgent(t) {
+		return
+	}
+	if !a.runsTaskLocally(t) {
+		return
+	}
+	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
+		return
+	}
+	if a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
+	}
+}
+
+func (a *App) dispatchPlanningWorkflow(taskID string) {
+	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
+		return
+	}
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return
+	}
+	if t.Status != task.StatusPlanning {
+		return
+	}
+	if !a.runsTaskLocally(t) {
+		return
+	}
+	if skipTaskCreatedWorkflow(t) {
+		return
+	}
+	if t.Workflow != nil && t.Workflow.State != workflow.ExecCompleted && t.Workflow.State != workflow.ExecFailed {
+		return
+	}
+	if a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+	if err := a.workflowEngine.StartWorkflow(taskID, "simple-task-plan"); err != nil &&
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		a.logger.Error("workflow.dispatch.planning", "task_id", taskID, "err", err)
+	}
+}
+
+func boardReconcileWorkflowActive(t task.Task) bool {
+	if t.Workflow == nil {
+		return false
+	}
+	switch t.Workflow.State {
+	case workflow.ExecCompleted, workflow.ExecFailed:
+		switch t.Status {
+		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+			return false
+		case task.StatusInReview:
+			if isInboundReviewTask(t) && inboundReviewNeedsAgent(t) {
+				return false
+			}
+		default:
+		}
+		return t.Workflow.CompletedAt == nil ||
+			t.StatusChangedAt.IsZero() ||
+			!t.StatusChangedAt.After(*t.Workflow.CompletedAt)
+	default:
+		return true
+	}
+}
+
+func inboundReviewNeedsAgent(t task.Task) bool {
+	switch t.ReviewPhase {
+	case "":
+		return true
+	case "needs-approval":
+		if t.Workflow == nil || t.Workflow.CompletedAt == nil {
+			return true
+		}
+		return time.Since(*t.Workflow.CompletedAt) >= inboundReviewRedispatchCooldown
+	default:
+		return false
 	}
 }
 

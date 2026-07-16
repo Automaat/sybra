@@ -393,6 +393,19 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 			// refs/remotes/origin/*.
 			return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 		})
+		if err != nil && IsBadRefError(err) {
+			if _, repairErr := repairBareCloneLocked(ctx, barePath, ""); repairErr == nil {
+				retryErr := withLockRetry(func() error {
+					return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+				})
+				if retryErr == nil {
+					markFetched(barePath)
+					return nil
+				}
+				return retryErr
+			}
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -478,6 +491,8 @@ func resolveRef(ctx context.Context, barePath, ref string) (string, bool) {
 // swallowed, matching the SanitizeWorktree call site this was extracted
 // from — callers must not depend on the commit having landed.
 func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
+	restoreProtectedPaths(ctx, wtPath)
+	removeEmbeddedGitDirs(wtPath)
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.Output()
@@ -490,6 +505,58 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 		return false
 	}
 	return runRecoveryCommit(ctx, wtPath, message) == nil
+}
+
+func restoreProtectedPaths(ctx context.Context, wtPath string) {
+	cfg, err := LoadRepoConfig(wtPath)
+	if err != nil || cfg == nil {
+		return
+	}
+	for _, p := range cfg.ProtectedPaths {
+		p = strings.TrimSpace(p)
+		if !isSafeProtectedPath(p) {
+			continue
+		}
+		restore := exec.CommandContext(ctx, "git", "checkout", "--", ":(literal)"+p)
+		restore.Dir = wtPath
+		_ = restore.Run()
+	}
+}
+
+func isSafeProtectedPath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, ":") {
+		return false
+	}
+	for part := range strings.SplitSeq(p, "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func removeEmbeddedGitDirs(wtPath string) {
+	entries, err := os.ReadDir(wtPath)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == ".git" {
+			continue
+		}
+		if looksLikeGitDir(filepath.Join(wtPath, entry.Name())) {
+			_ = os.RemoveAll(filepath.Join(wtPath, entry.Name()))
+		}
+	}
+}
+
+func looksLikeGitDir(dir string) bool {
+	for _, marker := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckpointCommit stages and commits the current worktree state with message.

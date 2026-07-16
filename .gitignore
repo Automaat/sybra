@@ -49,6 +49,11 @@ core.*
 .sybra-manual-test-port*
 .sybra-bad-*
 .sybra-manual-*
+deploy/k8s-poc/.env
 
 # Web-mode dev mock backend home + fake CLIs
 .dev-mock/
+
+# Stray secondary git-dirs from sandboxed/isolated tool invocations
+# (see AutoCommitUncommitted's embedded-git-dir guard in internal/project/git.go)
+.git-local/

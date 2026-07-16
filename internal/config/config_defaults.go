@@ -204,6 +204,28 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
+// its authoring workflow without a human click. Defaults to true, but is
+// hard-gated on evaluation.offline.enabled regardless of the setting.
+//
+// Auto-approve is only safe because a later gate screens the authored
+// variant before it enrolls in production A/B. That gate is not always
+// there: App.initWorkflowEngine only builds prompteval.Gate when
+// evaluation.offline.enabled is set, and Engine.evalGate == nil means
+// "offline eval verdicts do not gate A/B enrollment" (abtest.EligibleVariants
+// skips the check on a nil evalPassed). With the screen off, the human click
+// is the ONLY thing between an unscreened variant and production, so
+// removing it there would be a safety regression rather than autonomy.
+func (c *Config) PromptLabAutoApprove() bool {
+	if c == nil || !c.Evaluation.Offline.Enabled {
+		return false
+	}
+	if c.PromptLab.AutoApprove != nil {
+		return *c.PromptLab.AutoApprove
+	}
+	return true
+}
+
 // DefaultHeadlessSteerable returns the configured agent.headless_steerable
 // default, or true if unset.
 func (c *Config) DefaultHeadlessSteerable() bool {
@@ -1181,6 +1203,9 @@ func applyPromptLabDefaults(cfg *Config) {
 	}
 	if p.MinEffectSize <= 0 {
 		p.MinEffectSize = 0.15
+	}
+	if p.RefileCooldownDays <= 0 {
+		p.RefileCooldownDays = 30
 	}
 	if p.MaxProposalsPerRun <= 0 {
 		p.MaxProposalsPerRun = 3

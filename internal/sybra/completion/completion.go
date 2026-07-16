@@ -203,7 +203,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		auditData["premium_requests"] = premiumRequests
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
-	if reason := ag.GetEscalationReason(); reason == "checkpoint" || reason == "checkpoint_failed" {
+	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
 			"reason":     reason,
 			"turn_count": ag.GetTurnCount(),
@@ -450,9 +450,9 @@ func classifyStall(ag *agent.Agent, exitErr error) (stalled, rateLimited, malfor
 	// Cost guardrails intentionally hard-stop the subprocess, but they are a
 	// budget failure, not an infra stall. Let them flow through the bounded
 	// failed-completion path instead of ClearAgentStep/ResumeStalled.
-	costStopped := ag.WasStopped() && ag.GetEscalationReason() == "cost"
-	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == "checkpoint_failed"
-	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == "checkpoint"
+	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
+	checkpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
 	stopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !checkpointStopped
 	stalled = isSignalKill(exitErr) || stopStalled || rateLimited || malformedTool || checkpointStopped
 	return stalled, rateLimited, malformedTool, stopStalled, checkpointStopped
@@ -772,24 +772,17 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 }
 
 func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
-	if cost > 0 {
-		return cost
-	}
-	if ag.Provider == "copilot" {
-		return stats.EstimateCopilotCost(premiumRequests)
-	}
-	if ag.Provider == "codex" {
-		return stats.EstimateCostDetailed(
-			ag.Model,
-			ag.GetInputTokens(),
-			ag.GetOutputTokens(),
-			0,
-			ag.GetCacheReadInputTokens(),
-			ag.GetReasoningTokens(),
-			ag.StartedAt,
-		)
-	}
-	return 0
+	return stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		CostUSD:         cost,
+		InputTokens:     ag.GetInputTokens(),
+		OutputTokens:    ag.GetOutputTokens(),
+		CacheRead:       ag.GetCacheReadInputTokens(),
+		ReasoningTokens: ag.GetReasoningTokens(),
+		PremiumRequests: premiumRequests,
+		StartedAt:       ag.StartedAt,
+	})
 }
 
 // isRateLimitedRun reports whether a run was rejected by a transient provider

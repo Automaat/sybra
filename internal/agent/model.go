@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/stats"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -82,11 +84,12 @@ type Agent struct {
 	// one provider turn instead of surviving as reusable chats.
 	oneShot bool
 	// PluginErrors holds plugin load failures from the most recent init event.
-	PluginErrors     []string `json:"pluginErrors,omitempty"`
-	EscalationReason string   `json:"escalationReason,omitempty"`
-	ErrorKind        string   `json:"errorKind,omitempty"`
-	ErrorMsg         string   `json:"errorMsg,omitempty"`
-	AwaitingApproval bool     `json:"awaitingApproval,omitempty"`
+	PluginErrors []string `json:"pluginErrors,omitempty"`
+	// Read across packages to route a stopped run; writers must use EscalationReason* constants. EXC:FILE011:load-bearing-invariant
+	EscalationReason string `json:"escalationReason,omitempty"`
+	ErrorKind        string `json:"errorKind,omitempty"`
+	ErrorMsg         string `json:"errorMsg,omitempty"`
+	AwaitingApproval bool   `json:"awaitingApproval,omitempty"`
 	// Resumable is set when the agent was stopped intentionally via StopAgent
 	// and CC exited with a valid session_id, meaning the next run can pass
 	// --resume to continue the conversation.
@@ -637,6 +640,35 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.mu.Unlock()
 }
 
+// BankEstimatedCost returns the run's cost, deriving it from banked token
+// totals when the provider reported none, and storing the derived figure so
+// mid-run spend ceilings can see it. A provider-reported cost always wins.
+//
+// Call it only after every stat for the terminal event is banked: the estimate
+// reads accumulated totals rather than one event's delta, so it is naturally
+// cumulative and safe to re-run. The whole read-compute-store runs under one
+// lock and can only ever raise CostUSD — two runner goroutines can reach an
+// agent's terminal sites at once (see completedOnce), so releasing the lock to
+// compute would let a stale estimate overwrite a newer provider-reported cost.
+func (a *Agent) BankEstimatedCost() float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	estimated := stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		CostUSD:         a.CostUSD,
+		InputTokens:     a.InputTokens,
+		OutputTokens:    a.OutputTokens,
+		CacheRead:       a.CacheReadInputTokens,
+		ReasoningTokens: a.ReasoningTokens,
+		PremiumRequests: a.PremiumRequests,
+		StartedAt:       a.StartedAt,
+	})
+	a.CostUSD = max(a.CostUSD, estimated)
+	return a.CostUSD
+}
+
 // AddPremiumRequests merges Copilot premium-request usage into the totals.
 // Copilot reports usage in premium requests (AI credits) rather than USD;
 // claude/codex never call this (their result events carry no such field).
@@ -735,19 +767,34 @@ func (a *Agent) GetToolCalls() int {
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
-// the loop detector and returns the resulting consecutive-repeat streak. An
+// the loop detector and returns the resulting low-progress repeat score. An
 // empty signature (an assistant turn with no tool calls — pure text/thinking)
-// carries no loop signal and leaves the streak untouched, so interleaved
-// reasoning between identical calls does not reset a genuine loop. A new
-// signature resets the streak to 1.
+// carries no loop signal and leaves the current window untouched.
 func (a *Agent) NoteToolSignature(sig string) int {
-	return a.loops.noteSignature(sig)
+	return a.loops.noteAction(sig, "")
 }
 
-// ToolLoopStreak returns the current count of consecutive identical tool-call
-// signatures. A high value means the agent is repeating the same call.
+// NoteToolAction records one semantic tool-action family plus its human-
+// readable label for watchdog loop detection.
+func (a *Agent) NoteToolAction(sig, label string) int {
+	return a.loops.noteAction(sig, label)
+}
+
+// NoteToolProgress resets the current low-progress loop window after a
+// successful mutating action.
+func (a *Agent) NoteToolProgress() {
+	a.loops.noteProgress()
+}
+
+// ToolLoopStreak returns the current semantic repeat score. A high value means
+// the agent is cycling through the same low-progress action family/window.
 func (a *Agent) ToolLoopStreak() int {
 	return a.loops.currentStreak()
+}
+
+// ToolLoopEvidence returns the current semantic loop evidence snapshot.
+func (a *Agent) ToolLoopEvidence() ToolLoopEvidence {
+	return a.loops.currentEvidence()
 }
 
 // AckToolLoop records the current loop signature as already inspected, so the
@@ -762,6 +809,28 @@ func (a *Agent) AckToolLoop() {
 // trigger until the signature changes.
 func (a *Agent) ToolLoopAcknowledged() bool {
 	return a.loops.acknowledged()
+}
+
+// EscalationReasonCost marks a run stopped for breaching MaxCostUSD.
+const EscalationReasonCost = "cost"
+
+// EscalationReasonTurns marks a run stopped at the turn ceiling awaiting a human.
+const EscalationReasonTurns = "turns"
+
+// EscalationReasonCheckpoint marks a run whose work was committed at the turn
+// ceiling and which must be rescheduled onto a fresh agent. Never overwrite it:
+// the handoff is routed off this exact value.
+const EscalationReasonCheckpoint = "checkpoint"
+
+// EscalationReasonCheckpointFailed marks a turn-ceiling run whose checkpoint commit failed.
+const EscalationReasonCheckpointFailed = "checkpoint_failed"
+
+// IsCheckpointEscalation reports whether reason records a turn-ceiling
+// checkpoint outcome. Both values steer terminal handling — one reschedules the
+// handoff, the other stamps errCheckpointCommitFailed — so neither may be
+// overwritten by a later guardrail that fires on the same run.
+func IsCheckpointEscalation(reason string) bool {
+	return reason == EscalationReasonCheckpoint || reason == EscalationReasonCheckpointFailed
 }
 
 // SetEscalationReason updates the escalation reason string.
@@ -1266,6 +1335,13 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolResults {
 		a.ClearForegroundCommand(ev.toolResults[i].ToolUseID)
+		if ev.toolResults[i].IsError {
+			continue
+		}
+		name, input, ok := a.ToolUseByID(ev.toolResults[i].ToolUseID)
+		if ok && toolResultSignalsProgress(name, input) {
+			a.NoteToolProgress()
+		}
 	}
 }
 

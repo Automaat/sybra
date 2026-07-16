@@ -217,12 +217,14 @@ func waitForChaosSettle(t *testing.T, env *e2eEnv, taskID string, timeout time.D
 // per-poll predicate; the caller requires sustained truth before declaring
 // settlement to filter out transient between-step observations.
 //
-// The pendingCompletions gate closes the race window between
+// The pendingCompletions gate closes most of the race window between
 // agent.Manager.markAgentDone (which flips HasRunningAgentForTask to false
 // before the onComplete callback runs) and the engine's AdvanceStep/
-// executeSteps chain actually advancing workflow state. Without it, under
-// CI load the gap widens past the stable-poll budget and the invariant-4
-// check observes state=Running mid-transition.
+// executeSteps chain actually advancing workflow state. The callback counter
+// itself is incremented inside that callback, so there is still a tiny gap
+// before the counter goes non-zero. Requiring at least one recorded step
+// closes that last window for the test-simple workflow used here: a real run
+// must record triage before the system is considered settled.
 func isChaosSettled(env *e2eEnv, taskID string) bool {
 	if env.pendingCompletions.Load() > 0 {
 		return false
@@ -232,6 +234,9 @@ func isChaosSettled(env *e2eEnv, taskID string) bool {
 	}
 	tk, err := env.tasks.Get(taskID)
 	if err != nil || tk.Workflow == nil {
+		return false
+	}
+	if len(tk.Workflow.StepHistory) == 0 {
 		return false
 	}
 	state := tk.Workflow.State

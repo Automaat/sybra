@@ -116,6 +116,44 @@ func EstimateCopilotCost(premiumRequests float64) float64 {
 	return premiumRequests * copilotAICreditUSD
 }
 
+// AgentUsage is one run's billable usage, as banked from a provider's terminal
+// completion event — `result` for claude/copilot, `turn.completed` for codex.
+type AgentUsage struct {
+	Provider        string
+	Model           string
+	CostUSD         float64
+	InputTokens     int
+	OutputTokens    int
+	CacheCreate     int
+	CacheRead       int
+	ReasoningTokens int
+	PremiumRequests float64
+	StartedAt       time.Time
+}
+
+// EstimateAgentCost returns a run's USD cost, falling back to a token-derived
+// estimate for providers that report no USD on their result event (codex reports
+// only tokens, copilot only premium requests). A provider-reported cost always
+// wins, so this can only ever fill a gap, never contradict a real figure.
+//
+// Callers that gate on cost mid-run must use this rather than the raw reported
+// value: an unmetered provider otherwise reads as $0 for its whole run and no
+// spend ceiling can fire on it.
+func EstimateAgentCost(u AgentUsage) float64 {
+	if u.CostUSD > 0 {
+		return u.CostUSD
+	}
+	switch u.Provider {
+	case "copilot":
+		return EstimateCopilotCost(u.PremiumRequests)
+	case "codex":
+		return EstimateCostDetailed(u.Model, u.InputTokens, u.OutputTokens,
+			u.CacheCreate, u.CacheRead, u.ReasoningTokens, u.StartedAt)
+	default:
+		return 0
+	}
+}
+
 // EstimateCostDetailed prices a run using the full token breakdown.
 //
 // For Codex: input is the gross `input_tokens` (which already includes the

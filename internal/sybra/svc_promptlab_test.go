@@ -14,20 +14,49 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+type parkedAgentLauncher struct{ workflow.AgentLauncher }
+
+func (parkedAgentLauncher) StartAgent(
+	_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment,
+) (agentID, startedDir, baselineRef string, err error) {
+	return "", "", "", workflow.ErrAgentPoolBusy
+}
+
 func setupPromptLabService(t *testing.T) *PromptLabService {
 	t.Helper()
-	store, err := task.NewStore(t.TempDir())
+	a := setupApp(t)
+
+	wfStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	projects, err := project.NewStore(t.TempDir(), t.TempDir())
-	if err != nil {
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: a.tasks},
+		parkedAgentLauncher{&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}},
+		a.logger,
+	)
+	engine.SetContext(t.Context())
+
+	projects := a.projects
+	if projects == nil {
+		projects, err = project.NewStore(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+
 	return &PromptLabService{
-		tasks:     task.NewManager(store, nil),
-		artifacts: artifact.New(t.TempDir()),
-		projects:  projects,
+		tasks:          a.tasks,
+		artifacts:      artifact.New(t.TempDir()),
+		projects:       projects,
+		workflowEngine: engine,
 	}
 }
 
@@ -79,12 +108,97 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	}
 }
 
+// TestPromptLabService_autoApprove pins that the unattended path lands the
+// task in exactly the state a human click would, differing only in the
+// progress note — promptLabCoordinator relies on reusing every guard here.
+func TestPromptLabService_autoApprove(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	tags := []string{promptlab.ProposalTag, "role:test-runner", "requires-human"}
+	created := createProposal(t, svc, task.StatusHumanRequired, tags)
+
+	if err := svc.autoApprove(created.ID); err != nil {
+		t.Fatalf("autoApprove: %v", err)
+	}
+
+	got, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if slices.Contains(got.Tags, "requires-human") {
+		t.Fatalf("tags = %v, want requires-human removed", got.Tags)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Message != autoApprovedProgressNote {
+		t.Fatalf("progress entries = %+v, want the auto-approved note for audit", entries)
+	}
+}
+
+// TestPromptLabService_autoApprove_StaleStatusGuard pins that the unattended
+// caller cannot bypass requirePendingProposal — e.g. re-approving a proposal
+// a human already rejected.
+func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
+	t.Parallel()
+	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			svc := setupPromptLabService(t)
+			created := createProposal(t, svc, status, []string{promptlab.ProposalTag})
+
+			if err := svc.autoApprove(created.ID); err == nil {
+				t.Fatal("autoApprove: want error for non-pending status")
+			}
+			after, err := svc.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != status {
+				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
+			}
+		})
+	}
+}
+
+// TestPromptLabService_ApproveProposal_NoProjectFailsEarly pins that approval
+// does not mutate when no project can be assigned. Dispatching anyway starts
+// the authoring workflow whose agent dies on "no project_id: refusing to start
+// agent without isolated worktree", leaving the task in-progress-then-reverted
+// under a status_reason that hides the real cause — the failure live task
+// 3c2257dc recorded.
+func TestPromptLabService_ApproveProposal_NoProjectFailsEarly(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	if err := svc.projects.Delete(promptLabProjectID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
+
+	if _, err := svc.ApproveProposal(created.ID); err == nil {
+		t.Fatal("ApproveProposal: want error when no project can be assigned")
+	}
+
+	after, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required (no mutation)", after.Status)
+	}
+	if !slices.Contains(after.Tags, "requires-human") {
+		t.Fatalf("tags = %v, want requires-human retained so the GUI still lists it", after.Tags)
+	}
+}
+
 func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	if _, err := svc.projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
-		t.Fatalf("CreateMeta: %v", err)
-	}
 	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.ApproveProposal(created.ID)
@@ -176,7 +290,7 @@ func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
 
 func TestPromptLabService_StaleStatusGuard(t *testing.T) {
 	t.Parallel()
-	for _, status := range []task.Status{task.StatusTodo, task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
+	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
 		t.Run(string(status), func(t *testing.T) {
 			t.Parallel()
 			svc := setupPromptLabService(t)
@@ -246,10 +360,7 @@ func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 
 func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	t.Parallel()
-	store, err := task.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := setupPromptLabService(t)
 	// Point the artifact store root at a regular file so any write under it
 	// fails at MkdirAll — simulating an AppendProgress failure without a
 	// custom fake, since artifact.Store has no interface seam.
@@ -258,11 +369,8 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	badRoot.Close()
+	svc.artifacts = artifact.New(badRoot.Name())
 
-	svc := &PromptLabService{
-		tasks:     task.NewManager(store, nil),
-		artifacts: artifact.New(badRoot.Name()),
-	}
 	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.ApproveProposal(created.ID)

@@ -187,7 +187,7 @@ func TestServiceTickEndToEnd(t *testing.T) {
 		Sink:       sink,
 		Logger:     slog.Default(),
 		Now:        func() time.Time { return now },
-		RecoverLostAgent: func(context.Context) {
+		RecoverLostAgent: func(context.Context, string) {
 			recoverCalls++
 		},
 	})
@@ -259,7 +259,7 @@ func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
 		Sink:   sink,
 		Logger: slog.Default(),
 		Now:    func() time.Time { return now },
-		RecoverLostAgent: func(context.Context) {
+		RecoverLostAgent: func(context.Context, string) {
 			recoverCalls++
 		},
 	})
@@ -350,7 +350,7 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 		Sink:       sink,
 		Logger:     slog.Default(),
 		Now:        func() time.Time { return now },
-		RecoverLostAgent: func(context.Context) {
+		RecoverLostAgent: func(context.Context, string) {
 			recoverCalls++
 		},
 	})
@@ -367,6 +367,44 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	}
 	if recoverCalls != 0 {
 		t.Fatalf("scan must not call lost-agent recovery, got %d calls", recoverCalls)
+	}
+}
+
+func TestServiceTickObserverOnlyHasNoSideEffects(t *testing.T) {
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	tasks := &fakeTasks{tasks: []task.Task{mkTask("lost", task.StatusInProgress)}}
+	sink := &fakeSink{createNext: true}
+	disp := &fakeDispatcher{}
+	var recoverCalls int
+	svc := NewService(Deps{
+		Cfg:          defaultCfg(),
+		Tasks:        tasks,
+		Audit:        fakeAudit{},
+		Agents:       nilAgentLister{},
+		ObserverOnly: true,
+		Dispatcher:   disp,
+		Sink:         sink,
+		Logger:       slog.Default(),
+		Now:          func() time.Time { return now },
+		RecoverLostAgent: func(context.Context, string) {
+			recoverCalls++
+		},
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindLostAgent {
+		t.Fatalf("want one lost_agent anomaly, got %v", report.Anomalies)
+	}
+	if len(report.Remediated) != 0 || len(report.Dispatched) != 0 || report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("observer-only tick must stay read-only, got remediated=%v dispatched=%v opened=%d updated=%d",
+			report.Remediated, report.Dispatched, report.IssuesOpened, report.IssuesUpdated)
+	}
+	if len(tasks.updates) != 0 || len(tasks.runUpdates) != 0 || len(sink.submissions) != 0 || len(disp.calls) != 0 || recoverCalls != 0 {
+		t.Fatalf("observer-only tick mutated state (updates=%d run_updates=%d sink=%d dispatch=%d recover=%d)",
+			len(tasks.updates), len(tasks.runUpdates), len(sink.submissions), len(disp.calls), recoverCalls)
 	}
 }
 

@@ -283,3 +283,66 @@ func TestPollAndMonitorPRs_CIFailureRerunPermissionDenialParks(t *testing.T) {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, ciInfraRerunPermissionReason)
 	}
 }
+
+// A rerun re-runs jobs the repo already ran and sends no content anywhere, so
+// the work/pet split that guards content-authoring paths must not apply to it.
+// Gating it to pet made every transient CI failure on a work project spend a
+// full fix agent on work `gh run rerun --failed` does for free.
+func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-fail",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		Author:      "me",
+	}
+
+	var rerunRepo string
+	var rerunNumber int
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{failingPR}}, nil
+	})
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypeWork); err != nil {
+		t.Fatal(err)
+	}
+	r.rerunFailedChecks = func(repo string, number int) error {
+		rerunRepo = repo
+		rerunNumber = number
+		return nil
+	}
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if rerunRepo != "o/r" || rerunNumber != 4242 {
+		t.Fatalf("rerun = %s#%d, want o/r#4242 — a work project must get the free rerun too", rerunRepo, rerunNumber)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatal("unexpected pr-fix workflow; a work project's transient rerun should wait for GitHub checks")
+	}
+}
