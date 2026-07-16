@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -824,8 +825,18 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
 	}
+	if got != "clear_review_sidecar" {
+		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "clear_review_sidecar")
+	}
+
+	// The back-edge must clear the sidecar before re-reviewing, otherwise a
+	// failed round re-reads the previous round's verdict and loops forever.
+	got, err = ResolveTransition(step("clear_review_sidecar").Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
 	if got != "pick_review_method" {
-		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "pick_review_method")
+		t.Errorf("clear_review_sidecar goto = %q, want pick_review_method", got)
 	}
 
 	got, err = ResolveTransition(step("detect_tampering").Next, map[string]string{
@@ -903,7 +914,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 		field string
 		want  string
 	}{
-		{name: "loop_when_enabled", field: "true", want: "pick_review_method"},
+		{name: "loop_when_enabled", field: "true", want: "clear_review_sidecar"},
 		{name: "single_pass_when_disabled", field: "false", want: "done_review"},
 	}
 	for _, tc := range cases {
@@ -931,5 +942,94 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("tampered goto = %q, want \"\" (park wins over the toggle)", got)
+	}
+}
+
+// TestEngineReviewUntilCleanReachesTransition covers the wiring the YAML-level
+// toggle test cannot: SetReviewUntilClean -> reviewLoopDisabled -> the
+// config.review_until_clean field resolveNext actually supplies. Without this,
+// dropping the `!` from the inverted setter (silently reversing the knob) or
+// deleting the field assignment entirely (making the knob dead) both pass the
+// whole suite — the config test builds its own field map and never touches
+// engine code.
+func TestEngineReviewUntilCleanReachesTransition(t *testing.T) {
+	t.Parallel()
+
+	// Two steps so resolveNext has a real target to pick, routed purely on the
+	// engine-supplied field.
+	def := &Definition{
+		ID: "test-review-toggle",
+		Steps: []Step{
+			{
+				ID:   "gate",
+				Type: StepCondition,
+				Next: []Transition{
+					{When: &Condition{Field: "config.review_until_clean", Operator: "equals", Value: "false"}, GoTo: "single_pass"},
+					{GoTo: "loop"},
+				},
+			},
+			{ID: "single_pass", Type: StepSetStatus},
+			{ID: "loop", Type: StepSetStatus},
+		},
+	}
+
+	cases := []struct {
+		name             string
+		reviewUntilClean bool
+		want             string
+	}{
+		{name: "default_engine_loops", reviewUntilClean: true, want: "loop"},
+		{name: "disabled_takes_single_pass", reviewUntilClean: false, want: "single_pass"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mt := newMemTasks()
+			mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
+			e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+			e.SetReviewUntilClean(tc.reviewUntilClean)
+
+			wfExec := &Execution{WorkflowID: def.ID, Variables: map[string]string{}}
+			next, _, err := e.resolveNext("t1", def, &def.Steps[0], wfExec, TaskInfo{ID: "t1", Status: "testing"})
+			if err != nil {
+				t.Fatalf("resolveNext: %v", err)
+			}
+			if next == nil {
+				t.Fatalf("resolveNext returned no step, want %q", tc.want)
+			}
+			if next.ID != tc.want {
+				t.Errorf("SetReviewUntilClean(%v) routed to %q, want %q — the toggle is inverted or unwired",
+					tc.reviewUntilClean, next.ID, tc.want)
+			}
+		})
+	}
+}
+
+// A zero-value Engine must keep the loop on, matching config.ReviewUntilClean's
+// documented default, since the field is stored inverted precisely so an engine
+// built without the setter does not silently ship single-pass review.
+func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
+	t.Parallel()
+
+	mt := newMemTasks()
+	mt.tasks["t1"] = &TaskInfo{ID: "t1"}
+	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+	def := &Definition{ID: "d", Steps: []Step{
+		{ID: "gate", Type: StepCondition, Next: []Transition{
+			{When: &Condition{Field: "config.review_until_clean", Operator: "equals", Value: "false"}, GoTo: "single_pass"},
+			{GoTo: "loop"},
+		}},
+		{ID: "single_pass", Type: StepSetStatus},
+		{ID: "loop", Type: StepSetStatus},
+	}}
+
+	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("resolveNext: %v", err)
+	}
+	if next == nil || next.ID != "loop" {
+		t.Fatalf("zero-value engine routed to %v, want loop", next)
 	}
 }

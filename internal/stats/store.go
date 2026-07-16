@@ -205,10 +205,16 @@ func (s *Store) flush() error {
 	return fsutil.AtomicWrite(s.path, data)
 }
 
-// roleReviewLabel mirrors agent.RoleReview. Duplicated rather than imported:
+// roleReviewLabel mirrors agent.RoleReview, outcomeSuccessLabel mirrors
+// task.RunOutcomeSuccess, and bestOfNAssignmentUnit mirrors the assignment
+// workflow stamps on best-of-N attempts. Duplicated rather than imported:
 // internal/agent already imports internal/stats for EstimateAgentCost, so a
 // back-import would form a cycle.
-const roleReviewLabel = "review"
+const (
+	roleReviewLabel       = "review"
+	outcomeSuccessLabel   = "success"
+	bestOfNAssignmentUnit = "bestofn-attempt"
+)
 
 // taskReviewRollup accumulates one task's implementation attribution and its
 // review-round count while walking the run log a single time.
@@ -218,6 +224,7 @@ type taskReviewRollup struct {
 	mixedImpl  bool
 	rounds     int
 	firstImplT time.Time
+	bestOfN    bool
 }
 
 // normalizeRunModel resolves the model label for grouping. RunRecord.Model is
@@ -238,10 +245,25 @@ func isImplementationRun(role string) bool {
 }
 
 // reviewRoundsByModel groups tasks by the model that implemented them and
-// reports how many review rounds each needed. Tasks with no review run are
-// excluded: they never entered the review loop (skipped as trivial/noreview,
-// or still in flight), so counting them as zero rounds would present code that
-// was never reviewed as code a reviewer passed on the first try.
+// reports how many review rounds each needed.
+//
+// Three exclusions keep the number a measure of code quality rather than of
+// harness noise:
+//
+//   - Tasks with no review run: they never entered the review loop (skipped as
+//     trivial/noreview, or still in flight), so counting them as zero rounds
+//     would present code that was never reviewed as code a reviewer passed on
+//     the first try.
+//   - Runs that did not succeed: recordRunStats writes a record for every
+//     agent termination, so a reviewer that crashed and was retried would
+//     otherwise read as a second round — conflating provider flakiness with
+//     rework, the exact confound this stat exists to isolate.
+//   - Best-of-N tasks entirely: simple-task-best-of-n-implement dispatches its
+//     judge with role "review", and nothing on the RunRecord separates that
+//     judge from a real reviewer. Counting it would add a phantom round to
+//     every best-of-N task and deny it CleanFirstPass — biased against the
+//     model that won the bake-off. Dropping the task is honest; guessing which
+//     review run was the judge is not.
 func reviewRoundsByModel(runs []RunRecord) []ReviewRoundsStat {
 	rollups := map[string]*taskReviewRollup{}
 
@@ -254,6 +276,12 @@ func reviewRoundsByModel(runs []RunRecord) []ReviewRoundsStat {
 		if tr == nil {
 			tr = &taskReviewRollup{}
 			rollups[r.TaskID] = tr
+		}
+		if r.AssignmentUnit == bestOfNAssignmentUnit {
+			tr.bestOfN = true
+		}
+		if r.Outcome != outcomeSuccessLabel {
+			continue
 		}
 		switch {
 		case isImplementationRun(r.Role):
@@ -277,7 +305,7 @@ func reviewRoundsByModel(runs []RunRecord) []ReviewRoundsStat {
 
 	agg := map[string]*ReviewRoundsStat{}
 	for _, tr := range rollups {
-		if tr.rounds == 0 || !tr.implSeen {
+		if tr.rounds == 0 || !tr.implSeen || tr.bestOfN {
 			continue
 		}
 		st := agg[tr.implModel]

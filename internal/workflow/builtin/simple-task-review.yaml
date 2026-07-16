@@ -53,6 +53,26 @@ steps:
     name: Triage Review
     type: triage_review
     next:
+      - goto: clear_review_sidecar
+
+  # Every review dispatch must start from a fresh sidecar file.
+  # Without this the loop below cannot terminate on a failed round: the sidecar
+  # is imported only when the agent succeeds (engine_events.go), and
+  # require_code_review only rejects an EMPTY sidecar, so a reviewer that dies
+  # after round 1 would leave task.code_review holding round 1's stale
+  # NEEDS_FIXES — re-running fix_review against findings it already fixed,
+  # forever. Clearing first makes a dead reviewer fail closed into
+  # require_code_review -> human-required instead.
+  #
+  # `rm -f` is exit-0 on a missing file, so first entry (nothing to remove) and
+  # a worktree-less run (empty dir, nothing matches) are both no-ops.
+  - id: clear_review_sidecar
+    name: Clear Stale Review Sidecar
+    type: shell
+    config:
+      command: rm -f .sybra-review-{{.Task.ID}}.md
+      dir: '{{getvar .Vars "_dir"}}'
+    next:
       - goto: pick_review_method
 
   # Post-implement review is ALWAYS adversarial. Staff review is reserved for
@@ -275,7 +295,7 @@ steps:
           operator: equals
           value: "false"
         goto: done_review
-      - goto: pick_review_method
+      - goto: clear_review_sidecar
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr
