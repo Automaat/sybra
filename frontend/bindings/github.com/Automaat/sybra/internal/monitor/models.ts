@@ -69,6 +69,7 @@ export enum AnomalyKind {
     KindLostAgent = "lost_agent",
     KindFailureSpike = "failure_spike",
     KindBottleneck = "bottleneck",
+    KindHTTPErrorSpike = "http_error_spike",
 };
 
 /**

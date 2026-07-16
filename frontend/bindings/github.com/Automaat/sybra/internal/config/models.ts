@@ -828,6 +828,27 @@ export class MonitorConfig {
     "issueLabel": string;
     "issueRepo": string;
 
+    /**
+     * HTTPErrorRateThreshold is the sybra-server 5xx-response-rate SLO
+     * target: a rolling window with a higher fraction of 5xx responses than
+     * this trips a KindHTTPErrorSpike anomaly. Evaluated only once the
+     * window has at least HTTPErrorRateMinRequests samples, so low-traffic
+     * periods can't trigger on a single failed request.
+     */
+    "httpErrorRateThreshold": number;
+
+    /**
+     * HTTPErrorRateWindowMinutes is the rolling window width the threshold
+     * above is evaluated over.
+     */
+    "httpErrorRateWindowMinutes": number;
+
+    /**
+     * HTTPErrorRateMinRequests is the minimum request volume the window
+     * must have before the error-rate threshold is evaluated.
+     */
+    "httpErrorRateMinRequests": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -865,6 +886,15 @@ export class MonitorConfig {
         }
         if (!("issueRepo" in $$source)) {
             this["issueRepo"] = "";
+        }
+        if (!("httpErrorRateThreshold" in $$source)) {
+            this["httpErrorRateThreshold"] = 0;
+        }
+        if (!("httpErrorRateWindowMinutes" in $$source)) {
+            this["httpErrorRateWindowMinutes"] = 0;
+        }
+        if (!("httpErrorRateMinRequests" in $$source)) {
+            this["httpErrorRateMinRequests"] = 0;
         }
 
         Object.assign(this, $$source);
