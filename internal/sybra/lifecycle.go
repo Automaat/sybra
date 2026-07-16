@@ -447,7 +447,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger)
+	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
 	if err != nil {
 		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
 		durableSink = nil
