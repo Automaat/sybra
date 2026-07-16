@@ -580,8 +580,10 @@ func (a *App) initStatusHook() {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
 		local := true
+		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
+			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -597,11 +599,6 @@ func (a *App) initStatusHook() {
 		}
 		if local && releaseTaskAgents {
 			a.releaseTaskAgents(taskID)
-		}
-
-		runsNoAgent := false
-		if t, err := a.tasks.Get(taskID); err == nil {
-			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		switch to {

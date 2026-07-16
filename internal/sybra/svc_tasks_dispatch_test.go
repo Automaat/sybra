@@ -334,11 +334,14 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
-	if err != nil {
+	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 		t.Fatal(err)
 	}
 
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil — an umbrella tracker must never have simple-task-implement dispatched against it", got.Workflow)
 	}
