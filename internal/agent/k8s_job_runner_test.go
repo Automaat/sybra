@@ -159,3 +159,17 @@ func TestK8sProviderCommandWrapsGitWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestK8sProviderWrapperCommitsUntrackedFiles(t *testing.T) {
+	script := k8sProviderWrapperScript()
+
+	if !strings.Contains(script, "git status --porcelain") {
+		t.Errorf("wrapper script must gate its commit on `git status --porcelain`:\n%s", script)
+	}
+	// `git diff` only reports tracked files, so gating on it skipped the commit
+	// whenever the agent created a new file — and the push then reported
+	// "Everything up-to-date" and silently dropped the work.
+	if strings.Contains(script, "git diff --quiet") {
+		t.Errorf("wrapper script gates its commit on `git diff`, which cannot see a newly created file:\n%s", script)
+	}
+}
