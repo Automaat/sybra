@@ -264,7 +264,7 @@ func splitShellPipeline(command string) []string {
 
 func shellFields(command string) []string {
 	var (
-		fields  []string
+		fields  = []string{}
 		current strings.Builder
 		singleQ bool
 		doubleQ bool
