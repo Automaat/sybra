@@ -68,6 +68,12 @@ type dispatchFixOptions struct {
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
 	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If this PR's diff is correct and CI failed for reasons unrelated to it — a " +
+	"flaky test, an infrastructure failure, or a breakage that reproduces on the " +
+	"base branch — end with `SYBRA_PR_FIX_RESULT: flake` and `SYBRA_PR_FIX_REASON: " +
+	"<what failed, and the evidence it is unrelated>`. Reporting `flake` with " +
+	"evidence is a complete and successful outcome. It is always the right answer " +
+	"over inventing a change you cannot causally justify.\n" +
 	"- If you intentionally stopped because the PR needs a human, end with " +
 	"`SYBRA_PR_FIX_RESULT: human-required` and `SYBRA_PR_FIX_REASON: <short reason>`."
 
@@ -334,14 +340,47 @@ func ciFailurePrompt(pr github.PullRequest) string {
 		"Fix failing CI on branch `%s` (PR #%d). "+
 			"Check the failing run with `gh run view --log-failed`, "+
 			"fix the code, commit and push. No unrelated changes.\n\n"+
-			"Never weaken, skip, delete, or hardcode tests, snapshots, or "+
-			"fixtures to make CI pass, and never edit CI config to neuter a "+
-			"gate — fix the underlying code. Tampering is detected and blocks "+
-			"the task.\n\n"+
-			"%s",
-		pr.HeadRefName, pr.Number, prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
+			"%s\n\n%s\n\n%s",
+		pr.HeadRefName, pr.Number,
+		ciFailureDiagnosisRules(pr.BaseRefName),
+		prFixTamperingRules,
+		prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true),
 	)
 }
+
+// Without a base-branch baseline agents blame the diff for infra/flake failures. EXC:FILE011:load-bearing-invariant
+func ciFailureDiagnosisRules(baseRef string) string {
+	base := "the base branch"
+	if baseRef != "" {
+		base = "`" + baseRef + "`"
+	}
+	return "Diagnose before you change anything:\n" +
+		"- Identify which jobs failed and why. A job that fails during setup, " +
+		"provisioning, or image pull is infrastructure, not your diff.\n" +
+		"- Before changing ANY code for a test failure, check whether the same job " +
+		"already fails on " + base + " (e.g. `gh run list --branch <base> " +
+		"--workflow <workflow> --limit 20`). If it does, the failure is not yours: " +
+		"report `flake` with that evidence.\n" +
+		"- State the causal link before you edit: how does this diff produce this " +
+		"exact failure? If you cannot answer that, you do not have a fix — report " +
+		"`flake` or `human-required` instead of guessing.\n" +
+		"- If the failure is transient and unrelated, re-run the failed jobs with " +
+		"`gh run rerun <run-id> --failed` and report `flake`. Never mint an empty " +
+		"or amended commit just to retrigger CI."
+}
+
+// Banning only test tampering redirects the pressure onto production defaults. EXC:FILE011:load-bearing-invariant
+const prFixTamperingRules = "Never weaken, skip, delete, or hardcode tests, " +
+	"snapshots, or fixtures to make CI pass, and never edit CI config to neuter a " +
+	"gate — fix the underlying code. Tampering is detected and blocks the task.\n\n" +
+	"The same prohibition covers product code: never change production defaults, " +
+	"timeouts, intervals, or retry counts to make a test pass. A failing or flaky " +
+	"test is never by itself evidence for a product-code change — only a " +
+	"demonstrated causal link is. Shortening an interval or widening a timeout so " +
+	"a suite goes green is tampering with a user-facing default, not a fix.\n\n" +
+	"Never force-push and never rewrite already-pushed history (`--force`, " +
+	"`--force-with-lease`, `commit --amend`, rebase onto a pushed base). Append a " +
+	"new commit instead; a force-push can destroy work this PR depends on."
 
 // prFixPushPrompt renders the create-pr-equivalent push snippet for a pr-fix
 // agent. When fenced is true it emits a standalone ```sh block (optionally

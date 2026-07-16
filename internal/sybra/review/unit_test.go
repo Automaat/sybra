@@ -120,6 +120,63 @@ func TestCIFailurePrompt_DetectsForkRemote(t *testing.T) {
 	}
 }
 
+// The prompt must name the PR's real base branch so the agent can run the
+// baseline check; a wrong or missing base silently disables the whole gate.
+func TestCIFailurePrompt_RequiresBaseBranchBaseline(t *testing.T) {
+	t.Parallel()
+
+	prompt := ciFailurePrompt(github.PullRequest{
+		Number:      1178,
+		HeadRefName: "fix/example",
+		BaseRefName: "release-2.14",
+	})
+
+	for _, want := range []string{"release-2.14", "gh run list --branch", "report `flake`"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("ci failure prompt missing %q; baseline gate is not stated:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCIFailurePrompt_BaselineFallsBackWithoutBaseRef(t *testing.T) {
+	t.Parallel()
+
+	prompt := ciFailurePrompt(github.PullRequest{Number: 1178, HeadRefName: "fix/example"})
+
+	if !strings.Contains(prompt, "already fails on the base branch") {
+		t.Errorf("ci failure prompt with no BaseRefName must still ask for a baseline:\n%s", prompt)
+	}
+}
+
+// A ban on weakening tests alone just redirects the pressure onto production
+// defaults, which is the change class that reaches users.
+func TestCIFailurePrompt_BansProductCodeTamperingAndForcePush(t *testing.T) {
+	t.Parallel()
+
+	prompt := ciFailurePrompt(github.PullRequest{Number: 1178, HeadRefName: "fix/example"})
+
+	for _, want := range []string{
+		"never change production defaults",
+		"demonstrated causal link",
+		"Never force-push",
+		"Never weaken, skip, delete, or hardcode tests",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("ci failure prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestPRFixResultContract_OffersFlakeExit(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []string{"SYBRA_PR_FIX_RESULT: flake", "SYBRA_PR_FIX_RESULT: continue", "SYBRA_PR_FIX_RESULT: human-required"} {
+		if !strings.Contains(PRFixResultContract, want) {
+			t.Errorf("result contract missing %q; agents have no honest no-op exit:\n%s", want, PRFixResultContract)
+		}
+	}
+}
+
 func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
