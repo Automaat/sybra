@@ -62,7 +62,8 @@ func cmdPromptLabRun(cfg *config.Config, store *task.Manager, projStore *project
 
 	var filed []task.Task
 	if *fileTasks && !*dryRun {
-		filed, err = filePromptLabProposals(store, projStore, result)
+		cooldown := time.Duration(cfg.PromptLab.RefileCooldownDays * float64(24*time.Hour))
+		filed, err = filePromptLabProposals(store, projStore, result, cooldown)
 		if err != nil {
 			return fatal(jsonOut, "file proposals: %v", err)
 		}
@@ -81,7 +82,7 @@ const promptLabProjectID = "Automaat/sybra"
 // is EXPLICIT here, not inherited: fileHarnessProposals (harness_evolution.go)
 // does not scrub, so this filer builds and applies its own work-typed
 // blocklist per subject rather than assuming that precedent covers it too.
-func filePromptLabProposals(store *task.Manager, projStore *project.Store, result promptlab.RunResult) ([]task.Task, error) {
+func filePromptLabProposals(store *task.Manager, projStore *project.Store, result promptlab.RunResult, cooldown time.Duration) ([]task.Task, error) {
 	existing, err := store.List()
 	if err != nil {
 		return nil, err
@@ -89,7 +90,7 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 	var filed []task.Task
 	for i := range result.Proposals {
 		p := result.Proposals[i]
-		if promptlab.HasProposal(existing, p.ID) {
+		if promptlab.HasProposal(existing, p.ID, cooldown, time.Now().UTC()) {
 			continue
 		}
 		body := scrubProposalBody(projStore, promptlab.RenderProposalBody(p), p.Evidence.ProjectIDs)

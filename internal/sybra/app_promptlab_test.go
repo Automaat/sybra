@@ -60,7 +60,43 @@ func weakProposal(verdict promptlab.OfflineVerdict) promptlab.Proposal {
 }
 
 func promptLabCfg(autoApprove *bool) *config.Config {
-	return &config.Config{PromptLab: config.PromptLabConfig{Enabled: true, AutoApprove: autoApprove}}
+	return &config.Config{
+		PromptLab:  config.PromptLabConfig{Enabled: true, AutoApprove: autoApprove},
+		Evaluation: config.EvaluationConfig{Offline: config.OfflineEvalConfig{Enabled: true}},
+	}
+}
+
+// TestFileScrubbedProposals_NoOfflineScreenNoAutoApprove pins the hard gate:
+// App.initWorkflowEngine only builds prompteval.Gate when
+// evaluation.offline.enabled is set, and a nil evalGate means A/B enrollment
+// is not screened at all. With the screen off, the human click is the only
+// barrier left, so auto-approve must stay off no matter what the operator set
+// prompt_lab.auto_approve to.
+func TestFileScrubbedProposals_NoOfflineScreenNoAutoApprove(t *testing.T) {
+	t.Parallel()
+	on := true
+	var approved []string
+	cfg := &config.Config{
+		PromptLab:  config.PromptLabConfig{Enabled: true, AutoApprove: &on},
+		Evaluation: config.EvaluationConfig{Offline: config.OfflineEvalConfig{Enabled: false}},
+	}
+	c := setupPromptLabCoordinator(t, cfg, func(id string) error {
+		approved = append(approved, id)
+		return nil
+	})
+
+	filed, err := c.fileScrubbedProposals(context.Background(), promptlab.RunResult{
+		Proposals: []promptlab.Proposal{weakProposal(promptlab.VerdictNoVerdict)},
+	})
+	if err != nil {
+		t.Fatalf("fileScrubbedProposals: %v", err)
+	}
+	if len(approved) != 0 {
+		t.Fatalf("approved = %v, want none: an unscreened variant must not reach production A/B", approved)
+	}
+	if filed[0].Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", filed[0].Status)
+	}
 }
 
 // TestFileScrubbedProposals_AutoApproveClosesTheLoop is the core autonomy
@@ -198,33 +234,51 @@ func TestFileScrubbedProposals_NoProjectSkipsAutoApprove(t *testing.T) {
 	}
 }
 
-// TestFileScrubbedProposals_ShutdownStopsAutoApprove bounds the ticker's
-// shutdown latency. approve dispatches the authoring workflow synchronously,
-// and that call runs worktree setup inline — measured at ~150s for this repo
-// (mise install + npm ci). App.Shutdown waits on the ticker's goroutine, so a
-// cancelled context must stop the loop handing out further multi-minute
-// blocks rather than serialize one per proposal.
+// TestFileScrubbedProposals_ShutdownStopsAutoApprove pins that a cancellation
+// arriving mid-tick stops the loop handing out FURTHER approvals. Each approve
+// dispatches the authoring workflow synchronously and that runs worktree setup
+// inline (~150s measured here: mise install + npm ci), and App.Shutdown waits
+// on the ticker's goroutine — so this bounds a multi-proposal tick to one such
+// block rather than one per proposal.
+//
+// It does NOT bound an already-started approve: approve takes no ctx and
+// DispatchEvent is uncancellable, so an in-flight worktree setup still runs to
+// completion. Cancelling before the first proposal would pass trivially
+// without testing the loop at all, so cancel from inside the first approve.
 func TestFileScrubbedProposals_ShutdownStopsAutoApprove(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
 	var approved []string
 	c := setupPromptLabCoordinator(t, promptLabCfg(nil), func(id string) error {
 		approved = append(approved, id)
+		cancel()
 		return nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+
+	first := weakProposal(promptlab.VerdictNoVerdict)
+	second := weakProposal(promptlab.VerdictNoVerdict)
+	second.ID = "pl-5cf660095cb8"
+	second.Candidate.ID = second.ID
+	second.Title = "Prompt Lab: restructure context for role review"
 
 	filed, err := c.fileScrubbedProposals(ctx, promptlab.RunResult{
-		Proposals: []promptlab.Proposal{weakProposal(promptlab.VerdictNoVerdict)},
+		Proposals: []promptlab.Proposal{first, second},
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
 	}
-	if len(approved) != 0 {
-		t.Fatalf("approved = %v, want no new dispatch once shutting down", approved)
+	if len(filed) != 2 {
+		t.Fatalf("filed %d proposals, want both persisted for the next tick", len(filed))
 	}
-	if len(filed) != 1 || filed[0].Status != task.StatusHumanRequired {
-		t.Fatalf("filed = %+v, want the proposal still persisted for the next tick", filed)
+	if len(approved) != 1 {
+		t.Fatalf("approved = %v, want only the pre-cancel proposal dispatched", approved)
+	}
+	got, err := c.tasks.Get(filed[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want the post-cancel proposal left for the next tick", got.Status)
 	}
 }
 

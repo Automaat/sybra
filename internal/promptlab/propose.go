@@ -136,21 +136,37 @@ func ProposalIDMarker(proposalID string) string {
 	return "Proposal ID:** `" + proposalID + "`"
 }
 
-// HasProposal reports whether proposalID was already filed as a task in tasks.
+// HasProposal reports whether proposalID should be suppressed rather than
+// filed again, given the tasks already on the board.
 //
-// Terminal tasks count. A proposal ID is a stable hash of (role, workflow
-// step, intent), so a done proposal means that variant was already authored
-// and shipped, and a cancelled one means it was rejected — re-filing either
-// ignores a decision that was already made. Skipping terminal tasks here is
-// what let one proposal ID get filed four separate times as earlier copies
-// aged out into done/cancelled.
-func HasProposal(tasks []task.Task, proposalID string) bool {
+// A live (non-terminal) proposal always suppresses: it is still being worked.
+// A terminal one suppresses only until cooldown elapses from its last update.
+// Both halves matter and pull against each other:
+//
+// Ignoring terminal tasks entirely is what let pl-a2d853b2c1d9 get filed four
+// separate times — the ID is a stable hash of (role, step, intent), so every
+// tick re-proposed it as earlier copies aged into done/cancelled.
+//
+// Suppressing on terminal tasks forever is the opposite failure: with only two
+// candidate intents per subject, a role would get at most two proposals for the
+// lifetime of the board and then go permanently silent — including when the
+// shipped variant lost its A/B and the role is still weak. Auto-approve makes
+// that worse, not better, by churning proposals to terminal in hours.
+//
+// The cooldown is the bounded-rate middle: re-proposing a subject is allowed,
+// just not every tick. A zero or negative cooldown suppresses on any terminal
+// task (never re-file).
+func HasProposal(tasks []task.Task, proposalID string, cooldown time.Duration, now time.Time) bool {
 	marker := ProposalIDMarker(proposalID)
 	for i := range tasks {
-		if !slices.Contains(tasks[i].Tags, ProposalTag) {
+		t := &tasks[i]
+		if !slices.Contains(t.Tags, ProposalTag) || !strings.Contains(t.Body, marker) {
 			continue
 		}
-		if strings.Contains(tasks[i].Body, marker) {
+		if !task.IsTerminalStatus(t.Status) {
+			return true
+		}
+		if cooldown <= 0 || now.Sub(t.UpdatedAt) < cooldown {
 			return true
 		}
 	}

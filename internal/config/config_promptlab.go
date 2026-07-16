@@ -15,6 +15,12 @@ package config
 // prompteval.Gate.AllowEnrollment inside the authoring workflow, which is
 // fail-closed and unaffected by this setting. A proposal carrying an
 // explicit FAILED offline verdict is never auto-approved regardless.
+//
+// RefileCooldownDays is how long a subject stays suppressed after one of its
+// proposals reaches done/cancelled. A proposal ID is a stable hash of
+// (role, step, intent) over only two intents, so suppressing forever would
+// let each role produce at most two proposals ever and then go silent —
+// while never suppressing re-files the same ID every tick. Defaults to 30.
 type PromptLabConfig struct {
 	Enabled            bool    `yaml:"enabled" json:"enabled"`
 	IntervalHours      float64 `yaml:"interval_hours" json:"intervalHours"`
@@ -23,4 +29,5 @@ type PromptLabConfig struct {
 	MinEffectSize      float64 `yaml:"min_effect_size" json:"minEffectSize"`
 	MaxProposalsPerRun int     `yaml:"max_proposals_per_run" json:"maxProposalsPerRun"`
 	AutoApprove        *bool   `yaml:"auto_approve" json:"autoApprove"`
+	RefileCooldownDays float64 `yaml:"refile_cooldown_days" json:"refileCooldownDays"`
 }

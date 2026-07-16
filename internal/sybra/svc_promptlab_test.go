@@ -16,18 +16,39 @@ import (
 
 func setupPromptLabService(t *testing.T) *PromptLabService {
 	t.Helper()
-	store, err := task.NewStore(t.TempDir())
+	a := setupApp(t)
+
+	wfStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	projects, err := project.NewStore(t.TempDir(), t.TempDir())
-	if err != nil {
+	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: a.tasks},
+		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
+		a.logger,
+	)
+	engine.SetContext(t.Context())
+
+	projects := a.projects
+	if projects == nil {
+		projects, err = project.NewStore(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
+		t.Fatalf("CreateMeta: %v", err)
+	}
+
 	return &PromptLabService{
-		tasks:     task.NewManager(store, nil),
-		artifacts: artifact.New(t.TempDir()),
-		projects:  projects,
+		tasks:          a.tasks,
+		artifacts:      artifact.New(t.TempDir()),
+		projects:       projects,
+		workflowEngine: engine,
 	}
 }
 
@@ -117,7 +138,7 @@ func TestPromptLabService_autoApprove(t *testing.T) {
 // a human already rejected.
 func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
 	t.Parallel()
-	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress, task.StatusTodo} {
+	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
 		t.Run(string(status), func(t *testing.T) {
 			t.Parallel()
 			svc := setupPromptLabService(t)
@@ -140,9 +161,6 @@ func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
 func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)
-	if _, err := svc.projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
-		t.Fatalf("CreateMeta: %v", err)
-	}
 	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.ApproveProposal(created.ID)
@@ -234,7 +252,7 @@ func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
 
 func TestPromptLabService_StaleStatusGuard(t *testing.T) {
 	t.Parallel()
-	for _, status := range []task.Status{task.StatusTodo, task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
+	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress} {
 		t.Run(string(status), func(t *testing.T) {
 			t.Parallel()
 			svc := setupPromptLabService(t)
@@ -304,10 +322,7 @@ func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 
 func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	t.Parallel()
-	store, err := task.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := setupPromptLabService(t)
 	// Point the artifact store root at a regular file so any write under it
 	// fails at MkdirAll — simulating an AppendProgress failure without a
 	// custom fake, since artifact.Store has no interface seam.
@@ -316,11 +331,8 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	badRoot.Close()
+	svc.artifacts = artifact.New(badRoot.Name())
 
-	svc := &PromptLabService{
-		tasks:     task.NewManager(store, nil),
-		artifacts: artifact.New(badRoot.Name()),
-	}
 	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	got, err := svc.ApproveProposal(created.ID)

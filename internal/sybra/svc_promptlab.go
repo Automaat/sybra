@@ -67,6 +67,9 @@ func (s *PromptLabService) autoApprove(id string) error {
 }
 
 func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, error) {
+	if s.workflowEngine == nil {
+		return task.Task{}, errors.New("prompt-lab approval unavailable: no workflow engine to start the authoring workflow")
+	}
 	t, err := s.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
 		if err := requirePendingProposal(cur); err != nil {
 			return task.Update{}, err
@@ -90,31 +93,29 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 		return task.Task{}, err
 	}
 
-	if s.workflowEngine != nil {
-		matched, dispatchErr := s.workflowEngine.DispatchEvent(
-			id,
-			"task.status_changed",
-			map[string]string{"task.status": string(task.StatusInProgress)},
-			nil,
-		)
-		if !s.promptLabDispatchStarted(id, matched, dispatchErr) {
-			failure := "no prompt-lab workflow matched"
-			if dispatchErr != nil {
-				failure = dispatchErr.Error()
-			}
-			revertReason := "Prompt Lab approval failed to start authoring workflow: " + failure
-			status := task.StatusHumanRequired
-			tags := mergeTag(t.Tags, "requires-human")
-			reverted, revertErr := s.tasks.Update(id, task.Update{
-				Status:       &status,
-				StatusReason: &revertReason,
-				Tags:         tags,
-			})
-			if revertErr != nil {
-				return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
-			}
-			return reverted, errors.New(revertReason)
+	matched, dispatchErr := s.workflowEngine.DispatchEvent(
+		id,
+		"task.status_changed",
+		map[string]string{"task.status": string(task.StatusInProgress)},
+		nil,
+	)
+	if !s.promptLabDispatchStarted(id, matched, dispatchErr) {
+		failure := "no prompt-lab workflow matched"
+		if dispatchErr != nil {
+			failure = dispatchErr.Error()
 		}
+		revertReason := "Prompt Lab approval failed to start authoring workflow: " + failure
+		status := task.StatusHumanRequired
+		tags := mergeTag(t.Tags, "requires-human")
+		reverted, revertErr := s.tasks.Update(id, task.Update{
+			Status:       &status,
+			StatusReason: &revertReason,
+			Tags:         tags,
+		})
+		if revertErr != nil {
+			return task.Task{}, fmt.Errorf("%s; additionally failed to restore human-required: %w", revertReason, revertErr)
+		}
+		return reverted, errors.New(revertReason)
 	}
 
 	s.appendProgress(id, artifact.ProgressKindDecision, progressNote)
@@ -183,10 +184,14 @@ func (s *PromptLabService) RejectProposal(id, feedback string) (task.Task, error
 // the race a stale browser tab could otherwise re-fire (double approve,
 // approve-after-reject, etc).
 func requirePendingProposal(cur task.Task) error {
-	if !slices.Contains(cur.Tags, promptlab.ProposalTag) || cur.Status != task.StatusHumanRequired {
+	if !slices.Contains(cur.Tags, promptlab.ProposalTag) || !isPendingProposalStatus(cur.Status) {
 		return fmt.Errorf("task %s is not a pending prompt-lab proposal (status=%s)", cur.ID, cur.Status)
 	}
 	return nil
+}
+
+func isPendingProposalStatus(s task.Status) bool {
+	return s == task.StatusHumanRequired || s == task.StatusTodo
 }
 
 // removeTag returns tags with every occurrence of target removed.

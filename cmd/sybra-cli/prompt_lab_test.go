@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
@@ -55,7 +56,7 @@ func TestFilePromptLabProposalsScrubsWorkTyped(t *testing.T) {
 	p := testProposal("pl-work-1", "implementation", []string{proj.ID})
 	result := promptlab.RunResult{Proposals: []promptlab.Proposal{p}}
 
-	filed, err := filePromptLabProposals(tasks, projects, result)
+	filed, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestFilePromptLabProposalsLeavesPetUnredacted(t *testing.T) {
 	nilProjectProposal := testProposal("pl-nil-1", "review", nil)
 	result := promptlab.RunResult{Proposals: []promptlab.Proposal{petProposal, nilProjectProposal}}
 
-	filed, err := filePromptLabProposals(tasks, projects, result)
+	filed, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
 	}
@@ -116,14 +117,14 @@ func TestFilePromptLabProposalsSkipsDuplicates(t *testing.T) {
 	p := testProposal("pl-dup-1", "implementation", nil)
 	result := promptlab.RunResult{Proposals: []promptlab.Proposal{p}}
 
-	first, err := filePromptLabProposals(tasks, projects, result)
+	first, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("first file: %v", err)
 	}
 	if len(first) != 1 {
 		t.Fatalf("len(first) = %d, want 1", len(first))
 	}
-	second, err := filePromptLabProposals(tasks, projects, result)
+	second, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("second file: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestFilePromptLabProposalsAssignsSybraProjectWhenRegistered(t *testing.T) {
 	}
 
 	p := testProposal("pl-sybra-1", "implementation", nil)
-	filed, err := filePromptLabProposals(tasks, projects, promptlab.RunResult{Proposals: []promptlab.Proposal{p}})
+	filed, err := filePromptLabProposals(tasks, projects, promptlab.RunResult{Proposals: []promptlab.Proposal{p}}, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
 	}

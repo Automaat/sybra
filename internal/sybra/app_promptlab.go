@@ -129,7 +129,8 @@ func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result
 		if !c.allowsAnyProject(p.Evidence.ProjectIDs) {
 			continue
 		}
-		if promptlab.HasProposal(existing, p.ID) {
+		cooldown := time.Duration(c.cfg.PromptLab.RefileCooldownDays * float64(24*time.Hour))
+		if promptlab.HasProposal(existing, p.ID, cooldown, time.Now().UTC()) {
 			continue
 		}
 		body := c.scrubBody(promptlab.RenderProposalBody(p), p.Evidence.ProjectIDs)
@@ -165,7 +166,7 @@ func (c *promptLabCoordinator) maybeAutoApprove(ctx context.Context, t task.Task
 		c.logger.Warn("promptlab.auto_approve.skipped_shutdown", "task_id", t.ID, "proposal_id", p.ID)
 		return
 	}
-	if t.Status != task.StatusHumanRequired || p.Offline.Verdict == promptlab.VerdictFailed {
+	if !isPendingProposalStatus(t.Status) || p.Offline.Verdict == promptlab.VerdictFailed {
 		return
 	}
 	if t.ProjectID == "" {

@@ -1044,19 +1044,32 @@ func TestDefaultRequirePermissions(t *testing.T) {
 	}
 }
 
+// TestPromptLabAutoApprove pins the hard gate on evaluation.offline.enabled.
+// App.initWorkflowEngine only builds prompteval.Gate when that is set, and a
+// nil evalGate means A/B enrollment is not screened at all — so with the
+// screen off, auto-approve must stay off no matter what the operator asked
+// for, or an unscreened variant reaches production with no barrier left.
 func TestPromptLabAutoApprove(t *testing.T) {
 	t.Parallel()
 	boolPtr := func(b bool) *bool { return &b }
+	screenOn := func(p PromptLabConfig) *Config {
+		return &Config{PromptLab: p, Evaluation: EvaluationConfig{Offline: OfflineEvalConfig{Enabled: true}}}
+	}
+	screenOff := func(p PromptLabConfig) *Config {
+		return &Config{PromptLab: p, Evaluation: EvaluationConfig{Offline: OfflineEvalConfig{Enabled: false}}}
+	}
 
 	tests := []struct {
 		name string
 		cfg  *Config
 		want bool
 	}{
-		{"nil config", nil, true},
-		{"nil field", &Config{}, true},
-		{"explicit true", &Config{PromptLab: PromptLabConfig{AutoApprove: boolPtr(true)}}, true},
-		{"explicit false", &Config{PromptLab: PromptLabConfig{AutoApprove: boolPtr(false)}}, false},
+		{"nil config", nil, false},
+		{"screen off, unset", screenOff(PromptLabConfig{}), false},
+		{"screen off, explicit true", screenOff(PromptLabConfig{AutoApprove: boolPtr(true)}), false},
+		{"screen on, unset", screenOn(PromptLabConfig{}), true},
+		{"screen on, explicit true", screenOn(PromptLabConfig{AutoApprove: boolPtr(true)}), true},
+		{"screen on, explicit false", screenOn(PromptLabConfig{AutoApprove: boolPtr(false)}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1073,17 +1086,33 @@ func TestPromptLabAutoApprove(t *testing.T) {
 func TestPromptLabAutoApproveSurvivesDefaults(t *testing.T) {
 	t.Parallel()
 	boolPtr := func(b bool) *bool { return &b }
+	screen := EvaluationConfig{Offline: OfflineEvalConfig{Enabled: true}}
 
-	cfg := &Config{PromptLab: PromptLabConfig{Enabled: true, AutoApprove: boolPtr(false)}}
+	cfg := &Config{PromptLab: PromptLabConfig{Enabled: true, AutoApprove: boolPtr(false)}, Evaluation: screen}
 	applyPromptLabDefaults(cfg)
 	if cfg.PromptLabAutoApprove() {
 		t.Fatal("explicit auto_approve: false must survive defaulting")
 	}
 
-	unset := &Config{PromptLab: PromptLabConfig{Enabled: true}}
+	unset := &Config{PromptLab: PromptLabConfig{Enabled: true}, Evaluation: screen}
 	applyPromptLabDefaults(unset)
 	if !unset.PromptLabAutoApprove() {
 		t.Fatal("unset auto_approve must default to true")
+	}
+}
+
+func TestPromptLabRefileCooldownDefault(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{PromptLab: PromptLabConfig{Enabled: true}}
+	applyPromptLabDefaults(cfg)
+	if cfg.PromptLab.RefileCooldownDays != 30 {
+		t.Fatalf("RefileCooldownDays = %v, want 30", cfg.PromptLab.RefileCooldownDays)
+	}
+
+	explicit := &Config{PromptLab: PromptLabConfig{Enabled: true, RefileCooldownDays: 7}}
+	applyPromptLabDefaults(explicit)
+	if explicit.PromptLab.RefileCooldownDays != 7 {
+		t.Fatalf("RefileCooldownDays = %v, want explicit 7 preserved", explicit.PromptLab.RefileCooldownDays)
 	}
 }
 
