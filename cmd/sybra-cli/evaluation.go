@@ -380,7 +380,7 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	fmt.Printf("evaluation (%dd window): landed=%d merged=%d merged_with_edits=%d closed=%d\n",
 		int(o.WindowDays), o.TasksLanded, o.Merged, o.MergedWithEdits, o.Closed)
 	fmt.Printf("  autonomy=%.0f%%  ci-first-pass=%.0f%%  failure=%.0f%% (%d/%d resolved runs)  change-failure=%.0f%% (%d reverted)  rework_tasks=%d\n",
-		o.AutonomyRate*100, o.CIFirstPassRate*100, o.FailureRate*100, o.AgentFailures, o.AgentRuns-o.AgentStalls,
+		o.AutonomyRate*100, o.CIFirstPassRate*100, o.FailureRate*100, o.AgentFailures, o.AgentResolvedRuns,
 		o.ChangeFailureRate*100, o.Reverted, o.ReworkTasks)
 	fmt.Printf("  runs=%d  stalled=%d (retried, excluded from failure rate)\n", o.AgentRuns, o.AgentStalls)
 	fmt.Printf("  lead p50/p90=%.1f/%.1fh  cycle p50/p90=%.1f/%.1fh\n",

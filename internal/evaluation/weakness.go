@@ -60,7 +60,7 @@ func Weaknesses(r Report) []Weakness {
 		}
 	}
 
-	if o.AgentRuns-o.AgentStalls >= minRunsForSignal && o.FailureRate > 0.2 {
+	if o.AgentResolvedRuns >= minRunsForSignal && o.FailureRate > 0.2 {
 		out = append(out, Weakness{
 			Severity:   "warn",
 			Metric:     "failure_rate",
@@ -97,7 +97,7 @@ func outlierWeaknesses(groups []Breakdown, overallFailure float64, dimension str
 	var out []Weakness
 	for i := range groups {
 		b := groups[i]
-		if b.ResolvedRuns() < minRunsForSignal || b.FailureRate <= overallFailure+outlierMargin {
+		if b.ResolvedRuns < minRunsForSignal || b.FailureRate <= overallFailure+outlierMargin {
 			continue
 		}
 		out = append(out, Weakness{

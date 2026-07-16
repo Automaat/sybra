@@ -25,15 +25,15 @@ func repeatRecords(n int, role, outcome, projectID, taskIDPrefix string) []stats
 func TestCollectWeakSubjectsGates(t *testing.T) {
 	var records []stats.RunRecord
 	// implementation: 10 runs, 5 failed -> 0.50 failure rate, clears both gates.
-	records = append(records, repeatRecords(5, "implementation", "failed", "p1", "impl-fail-")...)
-	records = append(records, repeatRecords(5, "implementation", "ok", "p2", "impl-ok-")...)
+	records = append(records, repeatRecords(5, "implementation", stats.OutcomeFailed, "p1", "impl-fail-")...)
+	records = append(records, repeatRecords(5, "implementation", stats.OutcomeCompleted, "p2", "impl-ok-")...)
 	// review: 10 runs, 1 failed -> 0.10 failure rate, below min effect size.
-	records = append(records, repeatRecords(1, "review", "failed", "p1", "review-fail-")...)
-	records = append(records, repeatRecords(9, "review", "ok", "p1", "review-ok-")...)
+	records = append(records, repeatRecords(1, "review", stats.OutcomeFailed, "p1", "review-fail-")...)
+	records = append(records, repeatRecords(9, "review", stats.OutcomeCompleted, "p1", "review-ok-")...)
 	// fix-review: 2 runs, both failed -> below min samples despite high rate.
-	records = append(records, repeatRecords(2, "fix-review", "failed", "p1", "fix-review-")...)
+	records = append(records, repeatRecords(2, "fix-review", stats.OutcomeFailed, "p1", "fix-review-")...)
 	// docs: 10 runs, all passing -> dilutes the fleet baseline to 0.25.
-	records = append(records, repeatRecords(10, "docs", "ok", "p1", "docs-")...)
+	records = append(records, repeatRecords(10, "docs", stats.OutcomeCompleted, "p1", "docs-")...)
 
 	got := CollectWeakSubjects(records, 5, 0.15)
 	if len(got) != 1 {

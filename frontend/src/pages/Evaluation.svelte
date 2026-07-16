@@ -124,7 +124,7 @@
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Failure rate</span>
         <p class="mt-1 text-2xl font-bold {goodScale(1 - o.failureRate)}">{pct(o.failureRate)}</p>
-        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentRuns - o.agentStalls} resolved runs · {o.agentStalls} stalled · {o.reverted} reverted ({pct(o.changeFailureRate)})</p>
+        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentResolvedRuns} resolved runs · {o.agentStalls} stalled · {o.reverted} reverted ({pct(o.changeFailureRate)})</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Cost / landed</span>
@@ -285,7 +285,7 @@
                     <td class="py-1.5 font-mono text-xs">{row.key}</td>
                     <td class="py-1.5 text-right">{row.runs}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.stalled}</td>
-                    <td class="py-1.5 text-right" title="{row.failures}/{row.runs - row.stalled} resolved runs">{pct(row.failureRate)}</td>
+                    <td class="py-1.5 text-right" title="{row.failures}/{row.resolvedRuns} resolved runs">{pct(row.failureRate)}</td>
                     <td class="py-1.5 text-right">${row.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.turns}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.tools}</td>

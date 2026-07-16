@@ -40,7 +40,7 @@ func CollectWeakSubjects(records []stats.RunRecord, minSamples int, minEffectSiz
 		// resolved runs only, so gating on b.Runs would let a role whose runs
 		// mostly stalled clear MinSamples on a rate derived from one run —
 		// exactly the single unlucky run this is supposed to exclude.
-		resolved := b.ResolvedRuns()
+		resolved := b.ResolvedRuns
 		if resolved < minSamples {
 			continue
 		}

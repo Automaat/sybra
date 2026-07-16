@@ -23,8 +23,14 @@ const (
 
 // IsTerminalOutcome reports whether an outcome represents a definitive result
 // and therefore belongs in a failure-rate denominator.
+//
+// Deliberately an allowlist. A denylist ("anything but stalled") would quietly
+// count an empty, corrupt, or newly-added outcome as a resolved non-failure —
+// the same false dichotomy that caused this bug, where runOutcome assumed any
+// non-nil exit error meant failure. Anything not known to be definitive is not
+// definitive.
 func IsTerminalOutcome(outcome string) bool {
-	return outcome != OutcomeStalled
+	return outcome == OutcomeCompleted || outcome == OutcomeFailed
 }
 
 // RunRecord captures a single agent execution for analytics.

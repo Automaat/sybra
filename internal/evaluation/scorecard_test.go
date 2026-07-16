@@ -257,6 +257,41 @@ func TestReportNotesOmitsStallCaveatWhenFailuresAreAccounted(t *testing.T) {
 	}
 }
 
+// An outcome nothing can currently produce must still be handled: it is not a
+// definitive result, so it belongs in no rate — and it is not a stall either,
+// so it must not be counted as one. Runs, Stalled and ResolvedRuns are counted
+// independently precisely so an unknown value lands in Runs alone.
+func TestUnknownOutcomeCountsAsNeitherResolvedNorStalled(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: "", Timestamp: in},
+		{Provider: "codex", Outcome: "some-future-outcome", Timestamp: in},
+	}
+
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string { return r.Provider })
+	if len(got) != 1 {
+		t.Fatalf("got %d groups, want 1", len(got))
+	}
+	b := got[0]
+	if b.Runs != 5 || b.Stalled != 1 || b.ResolvedRuns != 2 || b.Failures != 1 {
+		t.Errorf("breakdown = %+v, want runs=5 stalled=1 resolvedRuns=2 failures=1", b)
+	}
+	if b.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5 (1 of 2 definitive results; the unknown pair must not dilute it)", b.FailureRate)
+	}
+
+	sc := Compute(records, nil, since, base)
+	if sc.AgentRuns != 5 || sc.AgentStalls != 1 || sc.AgentResolvedRuns != 2 || sc.FailureRate != 0.5 {
+		t.Errorf("scorecard = runs:%d stalls:%d resolved:%d rate:%v, want 5/1/2/0.5",
+			sc.AgentRuns, sc.AgentStalls, sc.AgentResolvedRuns, sc.FailureRate)
+	}
+}
+
 func TestBreakdownBy(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -7)
