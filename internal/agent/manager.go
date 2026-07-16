@@ -72,6 +72,7 @@ type Manager struct {
 	guardrails    Guardrails
 	bashTimeoutMs int
 	retryWatchdog int
+	defaultModel  string
 	fallbackModel string
 	// headlessSteerable gates whether headless claude runs launch with the
 	// stdin/stream-json shape that accepts mid-run steer messages. See
@@ -103,6 +104,7 @@ type Manager struct {
 	// playwrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs, appended
 	// verbatim to the Playwright MCP launch command.
 	playwrightMCPExtraArgs []string
+	k8sRunner              *k8sJobRunner
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
 	// lifetime.
@@ -213,6 +215,7 @@ type ManagerConfig struct {
 type ManagerRuntimeConfig struct {
 	MaxConcurrent   int
 	DefaultProvider string
+	DefaultModel    string
 	BashTimeoutMs   int
 	RetryWatchdog   int
 	FallbackModel   string
@@ -233,6 +236,10 @@ type ManagerRuntimeConfig struct {
 	PlaywrightMCPEnabled bool
 	// PlaywrightMCPExtraArgs mirrors config.PlaywrightMCPExtraArgs().
 	PlaywrightMCPExtraArgs []string
+	// K8sJobsEnabled routes future headless runs to short-lived Kubernetes
+	// Jobs. This is a PoC execution backend and is default-off.
+	K8sJobsEnabled bool
+	K8sJobs        K8sJobRunnerConfig
 }
 
 func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir string, cfg ManagerConfig) (*Manager, error) {
@@ -252,6 +259,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		logDir:                 logDir,
 		approvalAddr:           cfg.ApprovalAddr,
 		defaultProv:            defaultProv,
+		defaultModel:           cfg.Runtime.DefaultModel,
 		maxConcurrent:          cfg.Runtime.MaxConcurrent,
 		bashTimeoutMs:          cfg.Runtime.BashTimeoutMs,
 		retryWatchdog:          cfg.Runtime.RetryWatchdog,
@@ -272,6 +280,9 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		deadAgentRetention:     defaultDeadAgentRetention,
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
 		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
+	}
+	if cfg.Runtime.K8sJobsEnabled {
+		m.k8sRunner = newK8sJobRunner(logger, cfg.Runtime.K8sJobs)
 	}
 	m.warnInertCap(logger, m.maxInFlightPerProvider, m.limitGate)
 	if cfg.SurviveRestartDir != "" {
@@ -377,6 +388,7 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.mu.Lock()
 	m.maxConcurrent = cfg.MaxConcurrent
 	m.defaultProv = defaultProv
+	m.defaultModel = cfg.DefaultModel
 	m.bashTimeoutMs = cfg.BashTimeoutMs
 	m.retryWatchdog = cfg.RetryWatchdog
 	m.fallbackModel = cfg.FallbackModel
@@ -388,6 +400,11 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	m.defaultSandboxMode = cfg.SandboxMode
 	m.playwrightMCPEnabled = cfg.PlaywrightMCPEnabled
 	m.playwrightMCPExtraArgs = cfg.PlaywrightMCPExtraArgs
+	if cfg.K8sJobsEnabled {
+		m.k8sRunner = newK8sJobRunner(m.logger, cfg.K8sJobs)
+	} else {
+		m.k8sRunner = nil
+	}
 	m.mu.Unlock()
 	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil

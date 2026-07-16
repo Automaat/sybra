@@ -613,6 +613,22 @@ func (a *App) StartAgent(taskID, mode, prompt string, includeTaskDescription boo
 	return a.agentOrch.StartAgent(taskID, mode, prompt, includeTaskDescription, false)
 }
 
+// StartK8sPocAgent starts a project-less headless run directly through
+// agent.Manager. It exists to smoke-test the experimental Kubernetes Job runner
+// without requiring a project/worktree. Normal production dispatch should keep
+// using StartAgent/workflows.
+func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
+	if a == nil || a.agents == nil {
+		return nil, fmt.Errorf("agent manager unavailable")
+	}
+	return a.agents.Run(agent.RunConfig{
+		Name:   string(agent.RoleImplementation),
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    os.TempDir(),
+	})
+}
+
 // AgentQueueSnapshot exposes the read-only queue snapshot to Wails/web clients.
 func (a *App) AgentQueueSnapshot() AgentQueueSnapshot {
 	if a == nil || a.queueSvc == nil {

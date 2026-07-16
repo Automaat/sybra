@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sybra-home
+  namespace: sybra-poc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sybra-server
+  namespace: sybra-poc
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sybra-server
+  template:
+    metadata:
+      labels:
+        app: sybra-server
+    spec:
+      serviceAccountName: sybra-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: sybra-server
+          image: sybra-server:poc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SYBRA_HOME
+              value: /home/sybra/.sybra
+            - name: SYBRA_PORT
+              value: "8080"
+            - name: SYBRA_STATIC_DIR
+              value: /app/web
+            - name: SYBRA_AUTH_TOKEN
+              value: poc-token
+          volumeMounts:
+            - name: sybra-home
+              mountPath: /home/sybra/.sybra
+            - name: sybra-config
+              mountPath: /home/sybra/.sybra/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: sybra-home
+          persistentVolumeClaim:
+            claimName: sybra-home
+        - name: sybra-config
+          configMap:
+            name: sybra-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sybra-server
+  namespace: sybra-poc
+spec:
+  selector:
+    app: sybra-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

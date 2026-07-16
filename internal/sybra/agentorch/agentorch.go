@@ -588,7 +588,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		AllowedTools:            t.AllowedTools,
 		Dir:                     dir,
 		Provider:                assignment.Provider,
-		Model:                   FirstNonEmpty(assignment.Model, "sonnet"),
+		Model:                   FirstNonEmpty(assignment.Model, o.cfg.Agent.Model, "sonnet"),
 		ExperimentID:            assignment.ExperimentID,
 		VariantID:               assignment.VariantID,
 		AssignmentUnit:          assignment.AssignmentUnit,

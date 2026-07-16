@@ -135,6 +135,9 @@ type AgentDefaults struct {
 	// PlaywrightMCP configures the default-off headless Playwright MCP server
 	// attached to test-runner runs that resolve to the Claude provider.
 	PlaywrightMCP PlaywrightMCPConfig `yaml:"playwright_mcp" json:"playwrightMcp"`
+	// K8sJobs configures an experimental backend that runs headless agents as
+	// short-lived Kubernetes Jobs instead of local subprocesses.
+	K8sJobs K8sJobsConfig `yaml:"k8s_jobs" json:"k8sJobs"`
 	// Queue configures the agent-dispatch admission queue (internal/agentqueue)
 	// that a workflow implementation dispatch falls back to when the agent
 	// pool is saturated, instead of erroring or wasting a worktree prep.
@@ -160,4 +163,37 @@ type PlaywrightMCPConfig struct {
 	// ExtraArgs are appended verbatim to the `npx -y @playwright/mcp@latest
 	// --headless --output-dir <dir>` launch command.
 	ExtraArgs []string `yaml:"extra_args" json:"extraArgs"`
+}
+
+// K8sJobsConfig is a PoC execution backend for headless-only Sybra. When
+// enabled, future headless agents are run as Kubernetes Jobs using the
+// in-cluster service account.
+type K8sJobsConfig struct {
+	Enabled   bool                 `yaml:"enabled" json:"enabled"`
+	Namespace string               `yaml:"namespace,omitempty" json:"namespace"`
+	Image     string               `yaml:"image,omitempty" json:"image"`
+	Command   []string             `yaml:"command,omitempty" json:"command"`
+	TTL       int                  `yaml:"ttl_seconds_after_finished,omitempty" json:"ttlSecondsAfterFinished"`
+	Mode      string               `yaml:"mode,omitempty" json:"mode"`
+	Env       []K8sJobEnvVar       `yaml:"env,omitempty" json:"env"`
+	SecretEnv []K8sJobSecretEnvVar `yaml:"secret_env,omitempty" json:"secretEnv"`
+	Volumes   []K8sJobVolume       `yaml:"volumes,omitempty" json:"volumes"`
+}
+
+type K8sJobEnvVar struct {
+	Name  string `yaml:"name" json:"name"`
+	Value string `yaml:"value" json:"value"`
+}
+
+type K8sJobSecretEnvVar struct {
+	Name       string `yaml:"name" json:"name"`
+	SecretName string `yaml:"secret_name" json:"secretName"`
+	SecretKey  string `yaml:"secret_key" json:"secretKey"`
+}
+
+type K8sJobVolume struct {
+	Name      string `yaml:"name" json:"name"`
+	ClaimName string `yaml:"claim_name" json:"claimName"`
+	MountPath string `yaml:"mount_path" json:"mountPath"`
+	ReadOnly  bool   `yaml:"read_only,omitempty" json:"readOnly,omitempty"`
 }

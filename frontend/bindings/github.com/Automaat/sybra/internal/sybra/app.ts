@@ -158,6 +158,16 @@ export function StartChat(projectID: string, providerName: string, prompt: strin
 }
 
 /**
+ * StartK8sPocAgent starts a project-less headless run directly through
+ * agent.Manager. It exists to smoke-test the experimental Kubernetes Job runner
+ * without requiring a project/worktree. Normal production dispatch should keep
+ * using StartAgent/workflows.
+ */
+export function StartK8sPocAgent(prompt: string): $CancellablePromise<agent$0.Agent | null> {
+    return $Call.ByID(760362536, prompt);
+}
+
+/**
  * Startup initializes all subsystems. Returns an error if a critical subsystem
  * fails; callers (Wails OnStartup, HTTP server main) handle the error.
  * contextcheck note: several call chains below (emit's task.created dispatch,

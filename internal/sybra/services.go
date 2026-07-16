@@ -51,6 +51,7 @@ func (a *App) coreHTTPServices() map[string]httpapi.Service {
 			// RunLearningDigestNow excluded: it shells out to the claude CLI on
 			// every call — Wails/local-only, not exposed over HTTP.
 			"StartAgent",
+			"StartK8sPocAgent",
 			"AgentQueueSnapshot",
 			"StartChat",
 			"StopChat",

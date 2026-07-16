@@ -40,6 +40,9 @@
 //     `sybra-cli update` (no --home) on the task — proves default writes land
 //     in the per-task sandbox while task CRUD still reaches the real store
 //     via SYBRA_CONTROL_HOME (sybra#1577).
+//   - k8s_repo_change: writes k8s-agent-output.txt in the current git
+//     worktree. Used by the Kubernetes PoC fake-repo smoke; the k8s wrapper
+//     commits and pushes the dirty file after the fake provider exits.
 //
 // Perf scenarios (zero token cost, drive backend load):
 //   - perf_stream: emit FAKE_CLAUDE_EVENT_COUNT assistant events spaced
@@ -186,6 +189,7 @@ var scenarioHandlers = map[string]func(string){
 	"sybra_home_sentinel":   runSybraHomeSentinel,
 	"best_of_n_attempt":     func(string) { runBestOfNAttempt() },
 	"best_of_n_judge":       func(string) { runBestOfNJudge() },
+	"k8s_repo_change":       runK8sRepoChange,
 }
 
 func scenarioNeedsPromptContext(scenario string) bool {
@@ -296,6 +300,25 @@ func runSuccess() {
 	emitSystem()
 	emitAssistant("Working on it...")
 	emitResult("Task completed successfully.")
+}
+
+func runK8sRepoChange(taskID string) {
+	emitSystem()
+	cwd, err := os.Getwd()
+	if err != nil {
+		emitResult("k8s repo change failed: getwd: " + err.Error())
+		os.Exit(1)
+	}
+	content := "changed by k8s fake agent\n"
+	if taskID != "" {
+		content += "task: " + taskID + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "k8s-agent-output.txt"), []byte(content), 0o644); err != nil {
+		emitResult("k8s repo change failed: write: " + err.Error())
+		os.Exit(1)
+	}
+	emitAssistant("Wrote k8s-agent-output.txt")
+	emitResult("Kubernetes fake repo change complete.")
 }
 
 // runSuccessThenHang emits a clean terminal result, like runSuccess, but then
