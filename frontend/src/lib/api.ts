@@ -65,6 +65,7 @@ export const StartAgent = pick(AppSvc.StartAgent, http.StartAgent)
 export const StartChat = pick(AppSvc.StartChat, http.StartChat)
 export const StopChat = pick(AppSvc.StopChat, http.StopChat)
 export const AgentQueueSnapshot = pick(AppSvc.AgentQueueSnapshot, http.AgentQueueSnapshot)
+export const StartK8sPocAgent = pick(AppSvc.StartK8sPocAgent, http.StartK8sPocAgent)
 
 // ConfigService
 export const GetSettings = pick(ConfigSvc.GetSettings, http.GetSettings)
