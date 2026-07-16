@@ -224,12 +224,21 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 }
 
 // StaffCodeReviewPrompt returns the direct PR-review prompt shared by inbound
-// review automation and task enrichment. It explicitly authorizes posting the
-// GitHub review so headless agents do not stop to ask the operator.
+// review automation and task enrichment. It authorizes posting a non-approving
+// review so headless agents do not stop to ask the operator, while withholding
+// approval authority: these PRs are other people's work, and an approval from
+// the operator's account can satisfy a required-reviewer gate. Kept in lockstep
+// with the pr-review builtin workflow prompts and enforced by the PreToolUse
+// floor (agent.ForbiddenToolCall).
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 
-This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before taking the visible GitHub review action. If the PR is clean, submit an approve review. If there are blocking correctness issues, submit a review with the required change comments. If only non-blocking notes remain, submit a regular review comment/summary.
+This task is an authorized Sybra PR review for the linked project. Do not ask the operator for confirmation before posting your review.
+
+NEVER submit an approving review. You have no approval authority — approval is a human decision, and the harness blocks the call. Do not run `+"`gh pr review --approve`"+` or submit an APPROVE event via `+"`gh api`"+`, no matter how clean the PR looks.
+
+- Blocking correctness issues: submit a review requesting changes, with the required change comments.
+- Otherwise: submit a plain comment review with your summary — including when the PR looks clean. Say so in the summary and leave the approval to a human.
 
 End the review summary and every review comment you post with a blank line then exactly this standalone harness attribution footer:
 
