@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/procstat"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -29,6 +30,11 @@ type Checker struct {
 	emit     func(string, any)
 	owned    func() OwnedProcesses
 	docker   dockerRunner
+
+	// sandboxQuarantine returns the currently quarantined sandbox cleanup
+	// failures (see sandbox.Manager.QuarantinedEntries). nil disables the
+	// check — set only when a sandbox.Manager is wired in (see New).
+	sandboxQuarantine func() []sandbox.QuarantineEntry
 
 	mu     sync.RWMutex
 	report *Report
@@ -51,6 +57,14 @@ func New(
 		emit:     emit,
 		owned:    owned,
 	}
+}
+
+// SetSandboxQuarantine wires in the sandbox quarantine source (see
+// sandbox.Manager.QuarantinedEntries), enabling checkSandboxCleanupFailures.
+// Optional — omit to skip the check entirely (e.g. in tests with no sandbox
+// manager).
+func (c *Checker) SetSandboxQuarantine(f func() []sandbox.QuarantineEntry) {
+	c.sandboxQuarantine = f
 }
 
 // OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
@@ -127,6 +141,9 @@ func (c *Checker) check(ctx context.Context) {
 	findings = append(findings, checkStatusBottleneck(weekEvents, now)...)
 	docker := sampleDockerDisk(ctx, c.docker, now)
 	findings = append(findings, checkDockerReclaimable(docker, now)...)
+	if c.sandboxQuarantine != nil {
+		findings = append(findings, checkSandboxCleanupFailures(c.sandboxQuarantine(), now)...)
+	}
 
 	for i := range findings {
 		findings[i].Fingerprint = FingerprintFor(&findings[i])
