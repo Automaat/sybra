@@ -307,7 +307,16 @@ func boardReconcileWorkflowActive(t task.Task) bool {
 func inboundReviewNeedsAgent(t task.Task) bool {
 	switch t.ReviewPhase {
 	case "":
-		return true
+		// ReviewPhase only moves off "" once reconcileReviewPhases observes a
+		// live GitHub signal (submitted review, draft, conflict, ...) on its
+		// own poll cadence — which can lag well behind a review agent
+		// finishing, or never fire at all offline. Once a pr-review workflow
+		// has actually completed, the review already ran; treat that as
+		// "reviewed" instead of re-dispatching on every tick until the poll
+		// catches up. A task with no pr-review workflow yet (nil, or stranded
+		// on a foreign workflow like simple-task-plan from the
+		// create-before-tag race) still genuinely needs its first dispatch.
+		return t.Workflow == nil || t.Workflow.WorkflowID != "pr-review"
 	case "needs-approval":
 		if t.Workflow == nil || t.Workflow.CompletedAt == nil {
 			return true
