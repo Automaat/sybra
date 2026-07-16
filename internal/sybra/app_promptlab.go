@@ -34,6 +34,9 @@ const promptLabProjectID = "Automaat/sybra"
 const promptLabNoProjectReason = "Prompt Lab proposal not auto-approved: project " + promptLabProjectID +
 	" is not registered, so the authoring workflow has no repo to open a worktree in. Register it, then approve."
 
+const promptLabNoProjectErr = "prompt-lab approval unavailable: project " + promptLabProjectID +
+	" is not registered, so the authoring workflow has no repo to open a worktree in"
+
 func newPromptLabCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,

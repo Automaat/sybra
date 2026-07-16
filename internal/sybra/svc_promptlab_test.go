@@ -14,6 +14,14 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+type parkedAgentLauncher struct{ workflow.AgentLauncher }
+
+func (parkedAgentLauncher) StartAgent(
+	_, _, _, _, _, _, _ string, _ []string, _, _ bool, _, _ string, _ workflow.AgentAssignment,
+) (agentID, startedDir, baselineRef string, err error) {
+	return "", "", "", workflow.ErrAgentPoolBusy
+}
+
 func setupPromptLabService(t *testing.T) *PromptLabService {
 	t.Helper()
 	a := setupApp(t)
@@ -28,7 +36,7 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	engine := workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
-		&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks},
+		parkedAgentLauncher{&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}},
 		a.logger,
 	)
 	engine.SetContext(t.Context())
@@ -155,6 +163,36 @@ func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
 				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
 			}
 		})
+	}
+}
+
+// TestPromptLabService_ApproveProposal_NoProjectFailsEarly pins that approval
+// does not mutate when no project can be assigned. Dispatching anyway starts
+// the authoring workflow whose agent dies on "no project_id: refusing to start
+// agent without isolated worktree", leaving the task in-progress-then-reverted
+// under a status_reason that hides the real cause — the failure live task
+// 3c2257dc recorded.
+func TestPromptLabService_ApproveProposal_NoProjectFailsEarly(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	if err := svc.projects.Delete(promptLabProjectID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
+
+	if _, err := svc.ApproveProposal(created.ID); err == nil {
+		t.Fatal("ApproveProposal: want error when no project can be assigned")
+	}
+
+	after, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required (no mutation)", after.Status)
+	}
+	if !slices.Contains(after.Tags, "requires-human") {
+		t.Fatalf("tags = %v, want requires-human retained so the GUI still lists it", after.Tags)
 	}
 }
 

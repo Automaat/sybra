@@ -7,12 +7,18 @@
  * "prompt-lab-proposal" + "requires-human", status human-required) until
  * approval, which starts the dedicated prompt-lab authoring workflow.
  * 
- * Approval is not necessarily a human: under prompt_lab.auto_approve
- * (default on) promptLabCoordinator approves each proposal as it files it,
- * making these methods the manual override rather than the only way
- * through. What gates production either way is
- * prompteval.Gate.AllowEnrollment inside the authoring workflow — approval
- * only buys a candidate the right to be authored and screened.
+ * Approval starts the authoring workflow; it does not certify the variant.
+ * It is not necessarily a human either: under prompt_lab.auto_approve
+ * promptLabCoordinator approves each proposal as it files it, making these
+ * methods the manual override rather than the only way through.
+ * 
+ * Approval carries no guarantee that the authored variant is screened before
+ * it enrolls in A/B. prompteval.Gate is only constructed when
+ * evaluation.offline.enabled is set, and a nil Engine.evalGate means offline
+ * verdicts do not gate enrollment at all. That is exactly why
+ * Config.PromptLabAutoApprove is hard-gated on the same flag: with the screen
+ * off, a human calling ApproveProposal is the last remaining barrier, so the
+ * unattended caller must not exist there.
  * @module
  */
 
