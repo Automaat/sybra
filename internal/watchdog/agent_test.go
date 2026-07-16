@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/provider"
@@ -556,7 +557,7 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 		tasks:     tasks,
 		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopAgentCalled = true; return nil },
-		killAgentsForTask: func(taskID string, timeout time.Duration) {
+		killAgentsForTask: func(taskID string, timeout time.Duration) bool {
 			order = append(order, "kill")
 			if taskID != tk.ID {
 				t.Errorf("killAgentsForTask taskID = %q, want %q", taskID, tk.ID)
@@ -571,6 +572,7 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 			if got.Status != task.StatusInProgress || !strings.Contains(got.StatusReason, "verifying before deciding") {
 				t.Errorf("status before kill returns = %q/%q, want an interim in-progress hang reason already written", got.Status, got.StatusReason)
 			}
+			return true
 		},
 		verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
 			order = append(order, "verify")
@@ -591,6 +593,67 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 	want := []string{"kill", "verify"}
 	if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
 		t.Fatalf("call order = %v, want %v", order, want)
+	}
+}
+
+// TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut covers a gap
+// found in review of #2155: killAgentsForTask returning false means the
+// deadline hit before every agent process confirmed exit, so it may still be
+// alive and touching the worktree — running verify then would risk the exact
+// race stopAndVerifyAmbiguousLoop exists to close. Must escalate directly on
+// the judge's own reason instead, and never call verifyNow.
+func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	verifyCalled := false
+	w := &Watchdog{
+		tasks:             tasks,
+		logger:            slog.New(slog.DiscardHandler),
+		stopAgent:         func(string) error { return nil },
+		killAgentsForTask: func(string, time.Duration) bool { return false },
+		verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+			verifyCalled = true
+			return true, true, "", "", nil
+		},
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "agent stuck, unclear why",
+		Recommendation: "stop",
+		ReasonKind:     "",
+	})
+
+	if verifyCalled {
+		t.Fatal("verifyNow must not be called when killAgentsForTask times out")
+	}
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "could not confirm agent stopped") {
+		t.Fatalf("status_reason = %q, want it to explain the unconfirmed stop", got.StatusReason)
+	}
+}
+
+func TestTrimTail(t *testing.T) {
+	if got := trimTail("go test ./...", "", 10); got != "go test ./..." {
+		t.Fatalf("trimTail with empty output = %q, want just failedCmd", got)
+	}
+	if got := trimTail("cmd", "short", 10); got != "cmd\nshort" {
+		t.Fatalf("trimTail under the limit = %q, want the full output appended", got)
+	}
+	// "€" is a 3-byte rune; a naive byte-offset cut here splits it in half.
+	output := "€234567890"
+	got := trimTail("cmd", output, 8)
+	if !utf8.ValidString(got) {
+		t.Fatalf("trimTail produced invalid UTF-8: %q", got)
+	}
+	if strings.Contains(got, "�") {
+		t.Fatalf("trimTail = %q, want the split rune dropped rather than replaced with U+FFFD", got)
 	}
 }
 

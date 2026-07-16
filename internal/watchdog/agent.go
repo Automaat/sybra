@@ -180,7 +180,7 @@ type Watchdog struct {
 	// is about to touch the task's worktree right after stopping — e.g.
 	// verdictStatusFromVerify's on-demand verify re-run — so it never races a
 	// not-yet-dead agent process still writing to the same files (#2155).
-	killAgentsForTask func(taskID string, timeout time.Duration)
+	killAgentsForTask func(taskID string, timeout time.Duration) (allExited bool)
 	// stopCompletedAgent stops a headless agent that already produced a clean
 	// terminal result, marking it completed-by-result first so the runner
 	// finalizes it as a success rather than treating the kill signal as a
@@ -776,12 +776,16 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 	}); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
+	confirmedStopped := true
 	if w.killAgentsForTask != nil {
-		w.killAgentsForTask(ag.TaskID, killForVerifyTimeout)
+		confirmedStopped = w.killAgentsForTask(ag.TaskID, killForVerifyTimeout)
 	} else if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 	}
-	status, reason := w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
+	status, reason := task.StatusHumanRequired, "watchdog: could not confirm agent stopped before verify — "+judgeReason
+	if confirmedStopped {
+		status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
+	}
 	if _, err := w.tasks.Update(ag.TaskID, task.Update{
 		Status:       task.Ptr(status),
 		StatusReason: task.Ptr(reason),
@@ -820,7 +824,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 func trimTail(failedCmd, output string, n int) string {
 	tail := output
 	if len(tail) > n {
-		tail = "…" + tail[len(tail)-n:]
+		tail = "…" + strings.ToValidUTF8(tail[len(tail)-n:], "")
 	}
 	if tail == "" {
 		return failedCmd
