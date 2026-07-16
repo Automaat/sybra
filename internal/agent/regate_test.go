@@ -211,31 +211,66 @@ func TestRegateForTurn_HardLimitStillBlocksWithNoPeer(t *testing.T) {
 	}
 }
 
-// TestRegateForTurn_SoftThresholdAtInFlightCapStillBlocks guards that the last
-// resort only forgives budget. A full in-flight cap is a concurrency limit, not
-// spare quota, so it must keep gating even when the reason is soft.
-func TestRegateForTurn_SoftThresholdAtInFlightCapStillBlocks(t *testing.T) {
-	m, _ := newTestManager(t)
-	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
-	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
-		DefaultProvider:        "codex",
-		MaxInFlightPerProvider: 1,
-		LimitGate: &fakeLimitGate{
-			available:  map[string]bool{"codex": false},
-			reasons:    map[string]string{"codex": "session limit near threshold"},
-			chooseNone: true,
+// TestRegateForTurn_AtInFlightCapWithNoPeerProceeds pins that an exceeded
+// in-flight cap does not refuse a turn.
+//
+// The cap only ever redirects a new dispatch: gateProvider admits an at-cap
+// provider once no peer is free (MaxInFlightPerProvider). Refusing here would
+// diverge from that and reopen #2150's loop under `max_in_flight_per_provider`
+// — and it could not reduce concurrency regardless, because this agent already
+// holds the slot it would re-dispatch into.
+//
+// Both sub-cases matter: a quota signal that is soft, and no quota signal at
+// all (where `reason` stays the default string and never looks "soft").
+func TestRegateForTurn_AtInFlightCapWithNoPeerProceeds(t *testing.T) {
+	cases := []struct {
+		name string
+		gate *fakeLimitGate
+	}{
+		{
+			name: "soft quota signal",
+			gate: &fakeLimitGate{
+				available:  map[string]bool{"codex": false},
+				reasons:    map[string]string{"codex": "session limit near threshold"},
+				chooseNone: true,
+			},
 		},
-		LimitPolicy: limits.Policy{},
-	}); err != nil {
-		t.Fatal(err)
+		{
+			name: "no quota signal at all",
+			gate: &fakeLimitGate{chooseNone: true},
+		},
 	}
-	m.mu.Lock()
-	m.liveByProvider["codex"] = 2 // this agent's own slot, plus another agent's
-	m.mu.Unlock()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+			if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+				DefaultProvider:        "codex",
+				MaxInFlightPerProvider: 1,
+				LimitGate:              tc.gate,
+				LimitPolicy:            limits.Policy{},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			m.mu.Lock()
+			m.liveByProvider["codex"] = 2 // this agent's own slot, plus another agent's
+			m.mu.Unlock()
 
-	a := &Agent{ID: "cap1", Provider: "codex"}
-	if _, _, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t-cap"}, nil); err == nil {
-		t.Fatal("a full in-flight cap is not spare budget; the turn must still be rejected")
+			a := &Agent{ID: "cap1", Provider: "codex"}
+			got, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t-cap"}, nil)
+			if err != nil {
+				t.Fatalf("an at-cap provider must keep its turn when no peer is free, as dispatch admits it: %v", err)
+			}
+			if switched {
+				t.Error("switched = true, want false: there is no peer to switch to")
+			}
+			if got.Provider != "codex" {
+				t.Errorf("cfg.Provider = %q, want codex", got.Provider)
+			}
+			if a.GetErrorKind() != "" {
+				t.Errorf("error kind = %q, want empty: marking this rate-limited is what fed the reschedule loop", a.GetErrorKind())
+			}
+		})
 	}
 }
 

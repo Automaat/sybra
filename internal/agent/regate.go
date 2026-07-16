@@ -138,21 +138,29 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 				reason = r
 			}
 		}
-		// Mirror gateProvider's softLimitLastResort. A soft reserve threshold
-		// means current still has budget, so with no peer to redirect to,
-		// spend it rather than strand the turn — the invariant
-		// limits.IsSoftThresholdReason documents. Refusing the turn on a
-		// reason that dispatch admits closes a loop instead: the turn is
-		// recorded rate-limited, rescheduled, re-admitted, and refused again
-		// ~20s later, forever, doing no work. It ran 1847 times on one task
-		// before this check existed (#2150).
+		// Redirect failed, so mirror what dispatch does when it cannot
+		// redirect either: keep the turn on current unless the reason is one
+		// gateProvider itself fails closed on. Refusing anything dispatch
+		// admits closes a loop rather than parking the task — recorded
+		// rate-limited, rescheduled, re-admitted, refused again ~20s later,
+		// forever, doing no work. It ran 1847 times on one task (#2150).
 		//
-		// Only budget leniency is mirrored: a hard block (rate limit actually
-		// reached, provider disabled), an unhealthy gate, or a full in-flight
-		// cap are not soft reasons and still gate the turn.
-		if !gateUnhealthy && underCap(current) && (!currentMustBePerTurn || perTurnCapable(current)) &&
-			limits.IsSoftThresholdReason(reason) {
-			m.logger.Warn("agent.convo.regate.soft_limit_last_resort",
+		// Two reasons dispatch tolerates, so this must too. A soft reserve
+		// threshold leaves budget, and stranding a task on it is exactly what
+		// limits.IsSoftThresholdReason forbids (softLimitLastResort). A full
+		// in-flight cap only ever redirects a *new* dispatch (see
+		// MaxInFlightPerProvider), and gateProvider admits an at-cap provider
+		// once no peer is free; refusing here could not reduce concurrency
+		// anyway, since this agent already holds the slot it would
+		// re-dispatch into — the count is self-count-aware, so an exceeded cap
+		// means someone else's slot.
+		//
+		// A hard block (rate limit actually reached, provider disabled) and an
+		// unhealthy health gate are what dispatch does fail closed on, so they
+		// still gate the turn.
+		if !gateUnhealthy && (!currentMustBePerTurn || perTurnCapable(current)) &&
+			(limitAvailable(current) || limits.IsSoftThresholdReason(reason)) {
+			m.logger.Info("agent.convo.regate.last_resort",
 				"id", a.ID, "task", cfg.TaskID, "provider", current, "reason", reason)
 			return cfg, false, nil
 		}
