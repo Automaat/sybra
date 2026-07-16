@@ -20,18 +20,44 @@ const ReviewHoldParkVar = "review_hold_park"
 
 const reviewHoldParkReason = "review-hold: replies drafted as a pending review — verify & submit on GitHub"
 
+// PRFixVerdict is the outcome a pr-fix agent reported via its SYBRA_PR_FIX_RESULT sentinel.
+type PRFixVerdict string
+
+// PRFixContinue means the agent pushed a fix.
+const PRFixContinue PRFixVerdict = "continue"
+
+// PRFixFlake means the diff is correct and CI failed for unrelated reasons.
+const PRFixFlake PRFixVerdict = "flake"
+
+// PRFixHuman means the agent intentionally stopped for a human.
+const PRFixHuman PRFixVerdict = "human-required"
+
+// PRFixVerdictVar is the execution variable holding a pr-fix step's PRFixVerdict.
+const PRFixVerdictVar = "pr_fix_verdict"
+
 func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	requiresHuman, reason := prFixRequiresHuman(wfExec)
-	// Deterministic park wins over the sentinel: in push mode the agent pushed
-	// and its own sentinel says `continue`, which must NOT release the hold.
+	verdict, reason := prFixVerdict(wfExec)
+	// In push mode the agent pushed and reports `continue`, which must NOT release the hold. EXC:FILE011:load-bearing-invariant
 	reviewHoldForced := false
-	if !requiresHuman && wfExec != nil && wfExec.Variables[ReviewHoldParkVar] == "true" {
-		requiresHuman = true
+	if verdict != PRFixHuman && wfExec != nil && wfExec.Variables[ReviewHoldParkVar] == "true" {
+		verdict = PRFixHuman
 		reason = reviewHoldParkReason
 		reviewHoldForced = true
 	}
-	if !requiresHuman {
+	if verdict == PRFixContinue {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
+	}
+	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
+	if verdict == PRFixFlake {
+		msg := "pr-fix: CI failure unrelated to this PR"
+		if reason != "" {
+			msg += ": " + reason
+		}
+		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
+		}
+		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
 	// The review-hold park exists because a pending review draft needs a human
 	// to submit it — that's true regardless of the remote PR's CI/mergeable
@@ -79,20 +105,29 @@ func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason s
 	return fmt.Sprintf("pr-fix skipped park: PR #%d already resolved on remote (agent reported: %s)", t.PRNumber, agentReason), true
 }
 
-func prFixRequiresHuman(wfExec *Execution) (requiresHuman bool, reason string) {
+func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 	if wfExec == nil {
-		return false, ""
+		return PRFixContinue, ""
 	}
 	stepID := wfExec.LastAgentStepID()
 	if stepID == "" {
-		return false, ""
+		return PRFixContinue, ""
 	}
 	if wfExec.Variables != nil {
+		if v := wfExec.Variables["step."+stepID+"."+PRFixVerdictVar]; v != "" {
+			switch PRFixVerdict(v) {
+			case PRFixHuman, PRFixFlake:
+				return PRFixVerdict(v), wfExec.Variables["step."+stepID+".pr_fix_reason"]
+			case PRFixContinue:
+				return PRFixContinue, ""
+			}
+		}
+		// An execution advanced by a pre-flake binary carries only the boolean. EXC:FILE011:load-bearing-invariant
 		switch wfExec.Variables["step."+stepID+".pr_fix_requires_human"] {
 		case "true":
-			return true, wfExec.Variables["step."+stepID+".pr_fix_reason"]
+			return PRFixHuman, wfExec.Variables["step."+stepID+".pr_fix_reason"]
 		case "false":
-			return false, ""
+			return PRFixContinue, ""
 		}
 	}
 	return classifyPRFixResult(lastPRFixOutput(wfExec, stepID))
@@ -111,18 +146,20 @@ func lastPRFixOutput(wfExec *Execution, stepID string) string {
 	return ""
 }
 
-func classifyPRFixResult(output string) (requiresHuman bool, reason string) {
+func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	if strings.TrimSpace(output) == "" {
-		return false, ""
+		return PRFixContinue, ""
 	}
 	matches := prFixSentinelRe.FindAllStringSubmatch(output, -1)
 	if len(matches) > 0 {
 		m := matches[len(matches)-1]
 		switch strings.ToLower(strings.TrimSpace(m[1])) {
 		case "human-required", "human_required", "human":
-			return true, extractPRFixReason(output)
+			return PRFixHuman, extractPRFixReason(output)
+		case "flake", "no-op", "no_op", "noop":
+			return PRFixFlake, sentinelReason(output)
 		case "continue", "ok", "done":
-			return false, ""
+			return PRFixContinue, ""
 		}
 	}
 
@@ -135,7 +172,7 @@ func classifyPRFixResult(output string) (requiresHuman bool, reason string) {
 	}
 	for _, phrase := range negativePhrases {
 		if strings.Contains(lower, phrase) {
-			return false, ""
+			return PRFixContinue, ""
 		}
 	}
 
@@ -157,17 +194,25 @@ func classifyPRFixResult(output string) (requiresHuman bool, reason string) {
 	}
 	for _, phrase := range humanPhrases {
 		if strings.Contains(lower, phrase) {
-			return true, "pr-fix agent requested human review: " + truncate(firstNonEmptyLine(output), 200)
+			return PRFixHuman, "pr-fix agent requested human review: " + truncate(firstNonEmptyLine(output), 200)
 		}
 	}
-	return false, ""
+	return PRFixContinue, ""
+}
+
+// Empty when the agent gave no reason; only human-required defaults its text. EXC:FILE011:load-bearing-invariant
+func sentinelReason(output string) string {
+	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	m := matches[len(matches)-1]
+	return truncate(strings.TrimSpace(m[1]), 200)
 }
 
 func extractPRFixReason(output string) string {
-	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
-	if len(matches) > 0 {
-		m := matches[len(matches)-1]
-		return truncate(strings.TrimSpace(m[1]), 200)
+	if reason := sentinelReason(output); reason != "" {
+		return reason
 	}
 	return "pr-fix agent requested human review"
 }
