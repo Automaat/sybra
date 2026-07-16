@@ -3,6 +3,8 @@ go = "1.26.5"
 node = "24"
 hadolint = "2.14.0"
 golangci-lint = "2.12.2"
+k3d = "5.9.0"
+kubectl = "1.36.2"
 
 [tasks."hooks:install"]
 run = "git config core.hooksPath .githooks"
@@ -58,9 +60,9 @@ description = "Run all linters"
 # outcome depends only on repo state, not on ambient CI infra. Intentionally
 # excludes gates that need external advisory DBs or a browser and so cannot
 # run reliably as a pre-commit loop: lint-nilaway (installs nilaway),
-# security (govulncheck + npm audit hit the advisory DBs), and the e2e job
-# (Playwright + chromium + a live server). CI remains the source of truth for
-# those three.
+# security (govulncheck + npm audit hit the advisory DBs), the e2e job
+# (Playwright + chromium + a live server), and smoke:k3d (Docker + a real k3d
+# cluster). CI remains the source of truth for those four.
 [tasks.verify]
 run = [
   "cd frontend && npm ci && npm run build:desktop",
@@ -139,3 +141,7 @@ description = "Run the task-store CRUD churn scenario"
 run = "./bin/sybra-perf -scenario soak -duration 5m -concurrency 4 -event-interval 200ms -fake-claude ./bin/fake-claude -pprof-dir ./perf-profiles"
 depends = ["perf:build"]
 description = "Long-running soak scenario with heap/goroutine profiles for leak detection"
+
+[tasks."smoke:k3d"]
+description = "k3d smoke for the Kubernetes agent-Job runner (fake provider, no API keys)"
+run = "scripts/smoke-k3d.sh"

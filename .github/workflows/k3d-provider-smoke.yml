@@ -1,0 +1,71 @@
+name: k3d Provider Smoke
+
+# Release-validation counterpart to ci.yml's smoke-k3d job.
+#
+# smoke-k3d proves the Job runner's mechanics with fake-claude: deterministic,
+# free, and on every PR. It cannot prove that a real provider CLI actually runs
+# inside the agent image — the wrapper swaps argv[0] for SYBRA_K8S_PROVIDER_BIN,
+# so the real CLI's own launch path is never exercised there.
+#
+# This workflow closes that gap against OpenRouter, which costs real money and
+# needs a key. Hence manual-only: never on push or pull_request. Run it before
+# cutting a release, or after changing the agent image, the provider pins, or
+# the wrapper script.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: OpenRouter model to drive the agent with
+        required: false
+        default: openrouter/deepseek/deepseek-v4-flash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k3d-provider-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: k3d Provider Smoke (OpenRouter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Absent secret means an unconfigured fork or a repo without the key. Fail
+    # loudly rather than silently "passing" a spend-gated smoke that never ran.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Require OpenRouter key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY secret is not set; this smoke cannot run"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build agent image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          tags: sybra-server:poc
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run provider smoke
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SMOKE_MODEL: ${{ inputs.model }}
+        run: |
+          SMOKE_SKIP_BUILD=1 \
+          SMOKE_CLUSTER=sybra-provider-ci \
+          SMOKE_PROVIDER=opencode \
+          scripts/smoke-k3d.sh

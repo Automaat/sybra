@@ -416,6 +416,12 @@ func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = ga
 // instance back into workflows.
 func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
 
+// AutoDispatchEnabled reports whether this instance dispatches workflows. The
+// gate in startWorkflowCore is what actually enforces it; this lets a caller
+// avoid announcing an auto-start that is about to be refused, and avoid
+// spawning a goroutine that would only no-op.
+func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled }
+
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open
 // human decisions.
