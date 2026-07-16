@@ -439,7 +439,10 @@ fi
 status=$?
 set -e
 if [ "$status" -eq 0 ] && [ -n "${SYBRA_K8S_GIT_REMOTE:-}" ]; then
-	if ! git diff --quiet || ! git diff --cached --quiet; then
+	# git status --porcelain, not git diff: diff only sees tracked files, so an
+	# agent that created a new file (the common case) produced no commit and the
+	# push below silently reported "Everything up-to-date", losing the work.
+	if [ -n "$(git status --porcelain)" ]; then
 		git add -A
 		git commit -m "chore: persist k8s agent changes" || true
 	fi

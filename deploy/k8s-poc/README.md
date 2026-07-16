@@ -113,9 +113,34 @@ kubectl -n sybra-poc exec deploy/sybra-server -- \
 {"level":"INFO","msg":"app.automations","instance_role":"agent-only","orchestrator":false,"scheduler":false}
 ```
 
+## Automated smoke
+
+`scripts/smoke-k3d.sh` runs the "Fake repo e2e mode" flow below end to end and
+asserts it, so the Job runner has regression cover without a model API key or
+any provider spend. CI runs it on every PR as the `k3d Job Runner Smoke` job.
+
+```bash
+mise run smoke:k3d              # build, run, tear down
+SMOKE_KEEP=1 mise run smoke:k3d # leave the cluster up to poke at it
+```
+
+It needs `docker`, and `k3d`/`kubectl` come from `mise install`. It never
+touches your kubectl context: the cluster is created with
+`--kubeconfig-update-default=false` and every command runs against an isolated
+kubeconfig, so a `sybra-poc` cluster or a work context nearby is safe.
+
+Deliberately excluded from `mise run verify`, which stays a fast deterministic
+pre-commit loop — this needs Docker and a real cluster.
+
+For a real-model run against OpenRouter, see the manual
+`.github/workflows/k3d-provider-smoke.yml` (needs an `OPENROUTER_API_KEY`
+secret) or run `SMOKE_PROVIDER=opencode OPENROUTER_API_KEY=... mise run
+smoke:k3d` locally. That path costs money, so it never runs on a PR.
+
 ## Fake repo e2e mode
 
-Use this path when you want a fully local k3d test that exercises the real
+The manual version of what the smoke automates. Use this path when you want a
+fully local k3d test that exercises the real
 Sybra project/worktree path without model API keys or GitHub pushes. The server
 and agent Job share the `sybra-home` PVC, the Job runs `/usr/local/bin/fake-claude`,
 and the fake provider writes `k8s-agent-output.txt` into the checked-out repo.
@@ -210,14 +235,9 @@ kubectl -n sybra-poc exec deploy/sybra-server -- \
     --data '[]' \
   | jq '.[] | select(.taskId == "'$TASK_ID'") | {id, taskId, state, command, provider, model, costUsd}'
 
-kubectl -n sybra-poc exec deploy/sybra-server -- \
-  sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
-
 WT=$(
   kubectl -n sybra-poc exec deploy/sybra-server -- \
-    sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
+    sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID | head -1"
 )
 kubectl -n sybra-poc exec deploy/sybra-server -- \
   sh -ceu "test -f '$WT/k8s-agent-output.txt' && cat '$WT/k8s-agent-output.txt' && git -C '$WT' log --oneline -2"
@@ -341,8 +361,7 @@ Verify the branch commit and runtime behavior in the server worktree:
 ```bash
 WT=$(
   kubectl -n sybra-poc exec deploy/sybra-server -- \
-    sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
+    sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID | head -1"
 )
 
 kubectl -n sybra-poc exec deploy/sybra-server -- \

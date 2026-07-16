@@ -434,3 +434,44 @@ jobs:
           name: playwright-report-${{ matrix.provider }}
           path: frontend/test-results/
           retention-days: 7
+
+  smoke-k3d:
+    name: k3d Job Runner Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      # The agent image is multi-GB and gets built, loaded into dockerd, then
+      # imported into the k3d node — three copies. A stock runner does not have
+      # the headroom, and the import OOM-kills the node rather than failing
+      # cleanly. These toolchains are not used by this job.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      # docker-build.yml cannot supply this image: it is path-filtered to the
+      # Dockerfile and uses load: false, so nothing k3d could import survives it.
+      # Hence load: true and a build of our own here.
+      - name: Build agent image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          tags: sybra-server:poc
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Via the mise task, which carries the k3d/kubectl pins. Calling the
+      # script directly would run against whatever the runner happens to ship.
+      - name: Run k3d smoke
+        env:
+          SMOKE_SKIP_BUILD: "1"
+          SMOKE_CLUSTER: sybra-ci
+        run: mise run smoke:k3d

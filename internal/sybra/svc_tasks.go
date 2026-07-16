@@ -668,6 +668,11 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if skipTaskCreatedWorkflow(t) {
 		return
 	}
+	// An agent-only instance refuses the start below, so bail before announcing
+	// an auto-start that will not happen — the log line read like a leak.
+	if !s.workflowEngine.AutoDispatchEnabled() {
+		return
+	}
 	info := taskToInfo(t)
 	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
 		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
@@ -738,7 +743,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	// and flipped status back to `planning` instead of running implement.
 	// DispatchEvent matches against current trigger conditions, which is what
 	// the user wants: in-progress → simple-task-implement.
-	if s.workflowEngine != nil {
+	if s.workflowEngine != nil && s.workflowEngine.AutoDispatchEnabled() {
 		if newStatus, ok := updates["status"].(string); ok &&
 			newStatus == string(task.StatusInProgress) &&
 			cur.Workflow != nil &&
