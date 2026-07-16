@@ -198,6 +198,10 @@ type Watchdog struct {
 	hasLiveHeadlessAgent func(taskID string) bool
 	pressureGate         *pressure.Gate
 	admitPressure        func() (bool, string)
+
+	// maxRunsPerWindow and runWindow drive checkRunRate — see its doc comment.
+	maxRunsPerWindow int
+	runWindow        time.Duration
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -232,6 +236,8 @@ func New(
 			}
 			return pressureGate.Admit()
 		},
+		maxRunsPerWindow: cfg.MaxRunsPerWindow,
+		runWindow:        time.Duration(cfg.RunWindowMinutes) * time.Minute,
 	}
 }
 
@@ -251,6 +257,7 @@ func (w *Watchdog) Run(ctx context.Context) {
 			w.tick(ctx, s, now)
 		case now := <-dwellTicker.C:
 			w.checkDwell(now)
+			w.checkRunRate(now)
 		}
 	}
 }
