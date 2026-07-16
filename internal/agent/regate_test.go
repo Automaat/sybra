@@ -130,6 +130,115 @@ func TestRegateForTurn_NoPerTurnPeerRejected(t *testing.T) {
 	}
 }
 
+// TestRegateForTurn_SoftThresholdLastResortUsesRemainingBudget is the turn-
+// boundary mirror of TestGateProvider_SoftThresholdLastResortUsesRemainingBudget.
+//
+// Dispatch admits a soft-threshold-limited provider when no peer exists (budget
+// remains). If regate refuses that same provider on that same reason, the
+// refusal does not park anything: the turn is recorded rate-limited, the
+// workflow reschedules it, dispatch admits it again, and regate refuses again —
+// a ~20s loop that did no work and ran 1847 times on one task (#2150).
+func TestRegateForTurn_SoftThresholdLastResortUsesRemainingBudget(t *testing.T) {
+	for _, reason := range []string{"weekly limit near threshold", "session limit near threshold"} {
+		t.Run(reason, func(t *testing.T) {
+			m, _ := newTestManager(t)
+			m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+			if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+				DefaultProvider: "codex",
+				LimitGate: &fakeLimitGate{
+					available:  map[string]bool{"codex": false},
+					reasons:    map[string]string{"codex": reason},
+					chooseNone: true,
+				},
+				LimitPolicy: limits.Policy{},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			a := &Agent{ID: "soft1", Provider: "codex", Model: "gpt-5.5"}
+			a.SetSessionID("sess-keep")
+			cfg := RunConfig{Provider: "codex", TaskID: "t-soft"}
+
+			got, switched, err := m.regateForTurn(t.Context(), a, cfg, nil)
+			if err != nil {
+				t.Fatalf("soft threshold with no peer must not block the turn: %v", err)
+			}
+			if switched {
+				t.Error("switched = true, want false: there is no peer to switch to")
+			}
+			if got.Provider != "codex" {
+				t.Errorf("cfg.Provider = %q, want codex (spend the remaining budget)", got.Provider)
+			}
+			if a.GetErrorKind() != "" {
+				t.Errorf("error kind = %q, want empty: a soft threshold is not a rate-limit failure, and marking it one is what fed the reschedule loop", a.GetErrorKind())
+			}
+			if a.GetSessionID() != "sess-keep" {
+				t.Errorf("session id = %q, want it untouched when no switch happens", a.GetSessionID())
+			}
+		})
+	}
+}
+
+// TestRegateForTurn_HardLimitStillBlocksWithNoPeer guards the other side of the
+// last resort: a hard block (the cap is actually reached, not merely neared) has
+// no budget left to spend, so it must still reject the turn and stay reachable
+// for the rate-limit reschedule.
+func TestRegateForTurn_HardLimitStillBlocksWithNoPeer(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider: "codex",
+		LimitGate: &fakeLimitGate{
+			available:  map[string]bool{"codex": false},
+			reasons:    map[string]string{"codex": "provider reports rate limit reached"},
+			chooseNone: true,
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{ID: "hard1", Provider: "codex"}
+	_, switched, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t-hard"}, nil)
+	if err == nil {
+		t.Fatal("a reached rate limit has no remaining budget; the turn must be rejected")
+	}
+	if switched {
+		t.Error("switched must be false on rejection")
+	}
+	if a.GetErrorKind() != "rate_limit" {
+		t.Errorf("error kind = %q, want rate_limit", a.GetErrorKind())
+	}
+}
+
+// TestRegateForTurn_SoftThresholdAtInFlightCapStillBlocks guards that the last
+// resort only forgives budget. A full in-flight cap is a concurrency limit, not
+// spare quota, so it must keep gating even when the reason is soft.
+func TestRegateForTurn_SoftThresholdAtInFlightCapStillBlocks(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.SetHealthGate(&fakeGate{healthy: map[string]bool{"codex": true}})
+	if err := m.ReplaceRuntimeConfig(ManagerRuntimeConfig{
+		DefaultProvider:        "codex",
+		MaxInFlightPerProvider: 1,
+		LimitGate: &fakeLimitGate{
+			available:  map[string]bool{"codex": false},
+			reasons:    map[string]string{"codex": "session limit near threshold"},
+			chooseNone: true,
+		},
+		LimitPolicy: limits.Policy{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.liveByProvider["codex"] = 2 // this agent's own slot, plus another agent's
+	m.mu.Unlock()
+
+	a := &Agent{ID: "cap1", Provider: "codex"}
+	if _, _, err := m.regateForTurn(t.Context(), a, RunConfig{Provider: "codex", TaskID: "t-cap"}, nil); err == nil {
+		t.Fatal("a full in-flight cap is not spare budget; the turn must still be rejected")
+	}
+}
+
 // TestRegateForTurn_SelfCountAware verifies that the agent's own in-flight
 // turn (already counted in its provider's live bucket) does not make its own
 // healthy provider look "at cap" to itself.
