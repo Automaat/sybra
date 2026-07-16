@@ -234,3 +234,21 @@ func ghEnv() []string {
 	}
 	return append(os.Environ(), "GH_TOKEN="+token)
 }
+
+// GHEnv is the exported form of ghEnv for gh subprocesses spawned outside
+// this package. internal/monitor's GHIssueSink shells out to gh directly
+// (it predates the App-auth mechanism) and must inject the same
+// installation token as every gh call in this package, otherwise it falls
+// back to ambient `gh auth login`/GH_TOKEN even when a GitHub App is
+// configured and healthy — see issue #2032.
+func GHEnv() []string {
+	return ghEnv()
+}
+
+// Authenticated reports whether gh can currently reach the API under the
+// configured credentials — a cached GitHub App installation token, or
+// ambient gh auth. Performs a live lookup (cached after the first success),
+// so it's meant for a startup/periodic preflight, not a hot path.
+func Authenticated() bool {
+	return ViewerLogin() != ""
+}

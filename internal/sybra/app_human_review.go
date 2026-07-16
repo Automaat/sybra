@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -122,7 +123,22 @@ func (a *App) initHumanReview() {
 		a.logger.Warn("human-review.disabled", "reason", "sybra_repo_dir not a directory", "dir", dir, "err", err)
 		return
 	}
-	sink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
+	// Auth preflight: mirrors the monitor service's check (see
+	// LifecycleManager.startMonitorService) — human-review issue filing
+	// shares the same GHIssueSink/credential source, so surface the same
+	// loud, non-fatal startup signal rather than only discovering an
+	// unauthenticated `gh` after a review verdict silently fails to file.
+	if !github.Authenticated() {
+		a.logger.Error("human-review.issue_filing.auth_unavailable",
+			"hint", "configure github.app or run `gh auth login`; issue filing will queue and retry via the durable outbox once credentials are available")
+	}
+	ghSink := monitor.NewGHIssueSink(a.cfg.HumanReviewIssueLabel(), a.cfg.HumanReviewRepo())
+	var sink humanReviewIssueFiler = ghSink
+	if durableSink, err := monitor.NewDurableGHIssueSink(ghSink, filepath.Join(config.GHIssueOutboxDir(), "human-review"), "human-review", a.logger); err != nil {
+		a.logger.Error("human-review.issue_outbox.init_failed", "err", err)
+	} else {
+		sink = durableSink
+	}
 	logFile := filepath.Join(a.logDir, "sybra.log")
 	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, sink, config.HomeDir(), logFile, a.workScrubContextForTask)
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
@@ -553,6 +569,16 @@ func (h *humanReviewHandler) fileAutonomyIssue(taskID, projectID, agentID string
 	created, url, err := h.sink.SubmitIssue(ctx, v.IssueTitle, v.IssueBody, v.IssueLabels)
 	if err != nil {
 		h.logger.Warn("human-review.autonomy.file", "task_id", taskID, "agent_id", agentID, "err", err)
+		// Record the failure in the audit trail too — an autonomy issue is
+		// best-effort (nothing downstream blocks on it, unlike fileIssue's
+		// sybra_bug path), but a silent Warn-only log meant a filing failure
+		// left no trace an operator could distinguish from "nothing to file".
+		// The sink itself (DurableGHIssueSink) already queues an
+		// auth-classified failure for retry — this event is purely the
+		// audit-visible record that the attempt did not succeed.
+		h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
+			"created": false, "url": "", "title": v.IssueTitle, "autonomy": true, "err": err.Error(),
+		})
 		return
 	}
 	h.logAudit(audit.EventHumanReviewIssue, taskID, agentID, map[string]any{
