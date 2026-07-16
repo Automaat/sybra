@@ -130,10 +130,25 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 		t.Fatalf("GH_TOKEN not injected into gh env")
 	}
 
+	// GHEnv is the exported form used by callers outside this package
+	// (internal/monitor's GHIssueSink) — must mirror ghEnv() exactly.
+	var foundExported bool
+	for _, kv := range GHEnv() {
+		if kv == "GH_TOKEN=ghs_installationtoken" {
+			foundExported = true
+		}
+	}
+	if !foundExported {
+		t.Fatal("GH_TOKEN not injected into GHEnv()")
+	}
+
 	// Disabled source injects nothing.
 	DisableAppAuth()
 	if ghEnv() != nil {
 		t.Fatal("expected nil env when app auth disabled")
+	}
+	if GHEnv() != nil {
+		t.Fatal("expected nil env from GHEnv() when app auth disabled")
 	}
 }
 

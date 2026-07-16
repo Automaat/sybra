@@ -528,14 +528,21 @@ func IsTransientError(err error) bool {
 		strings.Contains(msg, "context deadline exceeded")
 }
 
-// IsAuthError reports whether err is a GitHub authentication failure (HTTP
-// 401 / "Bad credentials") that will not resolve on its own — a dead or
-// revoked token needs a human to rotate it, so pollers should circuit-break
-// on this instead of retrying at their normal cadence.
+// IsAuthError reports whether err is a GitHub authentication failure — an
+// invalid/expired/revoked token (HTTP 401 / "Bad credentials") or gh having
+// no credentials configured at all (its local preflight fails before any
+// request with a "please run gh auth login" guidance message rather than an
+// API error). Neither resolves on its own: an invalid token needs a human to
+// rotate it, and a missing token needs App auth or `gh auth login`
+// configured — so pollers should circuit-break on this instead of retrying
+// at their normal cadence.
 func IsAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 401") || strings.Contains(msg, "bad credentials")
+	return strings.Contains(msg, "http 401") ||
+		strings.Contains(msg, "bad credentials") ||
+		strings.Contains(msg, "gh auth login") ||
+		strings.Contains(msg, "gh_token environment variable")
 }
