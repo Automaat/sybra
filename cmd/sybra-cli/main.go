@@ -148,29 +148,38 @@ func run(args []string) int {
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
-	return dispatch(cmd, rest, cfg, store, projStore, jsonOut)
+	return dispatch(cmd, rest, cfg, store, projStore, homeOverride == "", jsonOut)
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
-func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, jsonOut bool) int {
+func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
+	var api *apiClient
+	switch cmd {
+	case "create", "update", "link-pr", "delete":
+		if allowHTTP {
+			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+				api = c
+			}
+		}
+	}
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
 	case "get":
 		return cmdGet(store, rest, jsonOut)
 	case "create":
-		return cmdCreate(store, rest, jsonOut)
+		return cmdCreate(store, api, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
 		return cmdUmbrella(cfg, store, projStore, rest, jsonOut)
 	case "update":
-		return cmdUpdate(store, rest, jsonOut)
+		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
-		return cmdLinkPR(store, rest, jsonOut)
+		return cmdLinkPR(store, api, rest, jsonOut)
 	case "delete":
-		return cmdDelete(store, rest, jsonOut)
+		return cmdDelete(store, api, rest, jsonOut)
 	case "reopen":
 		return cmdReopen(store, rest, jsonOut)
 	case "project":
@@ -367,7 +376,7 @@ func stripPlanningSupport(t *task.Task) error {
 	return nil
 }
 
-func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
+func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -409,54 +418,15 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 		}
 	}
 
-	t, err := s.Create(*title, *body, *mode)
+	t, err := createTaskViaAPIOrFS(s, api, *title, *body, *mode)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	updates := map[string]any{}
-	if *ttype != "" && *ttype != string(task.TaskTypeNormal) {
-		updates["task_type"] = *ttype
-	}
-	if *tags != "" {
-		tagList := strings.Split(*tags, ",")
-		for i := range tagList {
-			tagList[i] = strings.TrimSpace(tagList[i])
-		}
-		updates["tags"] = tagList
-	}
-	if *proj != "" {
-		updates["project_id"] = *proj
-	}
-	if *branch != "" {
-		updates["branch"] = *branch
-	}
-	if *pr > 0 {
-		updates["pr_number"] = float64(*pr)
-	}
-	if *issue != "" {
-		updates["issue"] = *issue
-	}
-	if *plan != "" {
-		updates["plan"] = *plan
-	}
-	if *planContract != "" {
-		updates["plan_contract"] = *planContract
-	}
-	if *planCritique != "" {
-		updates["plan_critique"] = *planCritique
-	}
-	if *planResearch != "" {
-		updates["plan_research"] = *planResearch
-	}
-	if *planDecisions != "" {
-		updates["plan_decisions"] = *planDecisions
-	}
-	if *planBrief != "" {
-		updates["plan_brief"] = *planBrief
-	}
+	updates := buildCreateUpdateMap(*ttype, *tags, *proj, *branch, *pr, *issue,
+		*plan, *planContract, *planCritique, *planResearch, *planDecisions, *planBrief)
 	if len(updates) > 0 {
-		t, err = s.UpdateMap(t.ID, updates)
+		t, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -467,6 +437,66 @@ func cmdCreate(s *task.Manager, args []string, jsonOut bool) int {
 	}
 	fmt.Printf("Created task %s: %s\n", t.ID, t.Title)
 	return 0
+}
+
+func buildCreateUpdateMap(ttype, tags, proj, branch string, pr int, issue,
+	plan, planContract, planCritique, planResearch, planDecisions, planBrief string) map[string]any {
+	updates := map[string]any{}
+	if ttype != "" && ttype != string(task.TaskTypeNormal) {
+		updates["task_type"] = ttype
+	}
+	if tags != "" {
+		tagList := strings.Split(tags, ",")
+		for i := range tagList {
+			tagList[i] = strings.TrimSpace(tagList[i])
+		}
+		updates["tags"] = tagList
+	}
+	if proj != "" {
+		updates["project_id"] = proj
+	}
+	if branch != "" {
+		updates["branch"] = branch
+	}
+	if pr > 0 {
+		updates["pr_number"] = float64(pr)
+	}
+	if issue != "" {
+		updates["issue"] = issue
+	}
+	if plan != "" {
+		updates["plan"] = plan
+	}
+	if planContract != "" {
+		updates["plan_contract"] = planContract
+	}
+	if planCritique != "" {
+		updates["plan_critique"] = planCritique
+	}
+	if planResearch != "" {
+		updates["plan_research"] = planResearch
+	}
+	if planDecisions != "" {
+		updates["plan_decisions"] = planDecisions
+	}
+	if planBrief != "" {
+		updates["plan_brief"] = planBrief
+	}
+	return updates
+}
+
+func createTaskViaAPIOrFS(s *task.Manager, api *apiClient, title, body, mode string) (task.Task, error) {
+	if created, handled, apiErr := viaAPI[task.Task](api, "TaskService", "CreateTask", title, body, mode); handled {
+		return created, apiErr
+	}
+	return s.Create(title, body, mode)
+}
+
+func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, error) {
+	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
+		return updated, apiErr
+	}
+	return s.UpdateMap(id, updates)
 }
 
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
@@ -948,7 +978,7 @@ func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.
 	return task.Task{}, false, nil
 }
 
-func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
+func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: update <id> [flags]")
 	}
@@ -969,7 +999,7 @@ func cmdUpdate(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "no updates specified")
 	}
 
-	t, err := s.UpdateMap(id, updates)
+	t, err := updateTaskViaAPIOrFS(s, api, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1134,13 +1164,17 @@ func applyTypedUpdateFlags(fs *flag.FlagSet, updates map[string]any, f updateFla
 	return nil
 }
 
-func cmdDelete(s *task.Manager, args []string, jsonOut bool) int {
+func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}
 
-	if err := s.Delete(args[0]); err != nil {
-		return fatal(jsonOut, "%v", err)
+	if _, handled, apiErr := viaAPI[struct{}](api, "TaskService", "DeleteTask", args[0]); handled {
+		if apiErr != nil {
+			return fatal(jsonOut, "%v", apiErr)
+		}
+	} else if fsErr := s.Delete(args[0]); fsErr != nil {
+		return fatal(jsonOut, "%v", fsErr)
 	}
 
 	if jsonOut {
@@ -1196,7 +1230,7 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 // to in-review so the PR monitor loop can take over (auto-merge / done on
 // merge). Use when a PR was opened outside of Sybra (manually or by an external
 // tool) and the task's pr_number is still 0.
-func cmdLinkPR(s *task.Manager, args []string, jsonOut bool) int {
+func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 2 {
 		return fatal(jsonOut, "usage: link-pr <task-id> <pr-number>")
 	}
@@ -1211,13 +1245,14 @@ func cmdLinkPR(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	u := task.Update{PRNumber: task.Ptr(prNum)}
-	if !task.IsTerminalStatus(t.Status) && t.Status != task.StatusInReview {
-		u.Status = task.Ptr(task.StatusInReview)
-		u.StatusReason = task.Ptr("")
+	advanceToReview := !task.IsTerminalStatus(t.Status) && t.Status != task.StatusInReview
+	updates := map[string]any{"pr_number": float64(prNum)}
+	if advanceToReview {
+		updates["status"] = string(task.StatusInReview)
+		updates["status_reason"] = ""
 	}
 
-	t, err = s.Update(id, u)
+	t, err = updateTaskViaAPIOrFS(s, api, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1225,7 +1260,7 @@ func cmdLinkPR(s *task.Manager, args []string, jsonOut bool) int {
 	if jsonOut {
 		return printJSON(t)
 	}
-	if u.Status != nil {
+	if advanceToReview {
 		fmt.Printf("linked PR #%d to task %s → in-review\n", prNum, t.ID)
 	} else {
 		fmt.Printf("linked PR #%d to task %s (status: %s)\n", prNum, t.ID, t.Status)
