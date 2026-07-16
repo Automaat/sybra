@@ -1421,6 +1421,29 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	if !strings.Contains(updated.StatusReason, "no project/PR context") {
 		t.Errorf("status reason = %q, want precise no-context reason", updated.StatusReason)
 	}
+
+	// Tick 2: once parked off in-progress, repeated maintenance passes must
+	// stay inert instead of re-triggering the same recovery path.
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("StartWorkflow calls after tick 2 = %d; want no additional calls", wfStub.startWorkflowCalls)
+	}
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d) on tick 2; want 0", stub.startCalls, stub.prFixCalls)
+	}
+
+	parked, err := tasks.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != task.StatusHumanRequired {
+		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusHumanRequired)
+	}
+	if parked.StatusReason != updated.StatusReason {
+		t.Errorf("status reason after tick 2 = %q; want unchanged %q", parked.StatusReason, updated.StatusReason)
+	}
 }
 
 // newTerminalWorkflowInProgressTask creates an in-progress task whose
