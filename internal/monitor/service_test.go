@@ -3,12 +3,14 @@ package monitor
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -293,6 +295,48 @@ func TestServiceCooldownSuppressesSecondTick(t *testing.T) {
 	}
 	if got := len(sink.submissions); got != 2 {
 		t.Fatalf("tick3 (after cooldown) want 2 submissions total, got %d", got)
+	}
+}
+
+// TestServiceScan_HTTPErrorSpike_WiredFromMetricsTracker proves the wiring
+// from internal/metrics's process-wide HTTP tracker through
+// Service.httpErrorSnapshot into the detector — not just that
+// detectHTTPErrorRate evaluates a DetectInput.HTTPErrors field correctly
+// (already covered in detector_test.go).
+func TestServiceScan_HTTPErrorSpike_WiredFromMetricsTracker(t *testing.T) {
+	now := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	cfg := defaultCfg()
+	cfg.HTTPErrorRateThreshold = 0.1
+	cfg.HTTPErrorRateWindowMinutes = 15
+	cfg.HTTPErrorRateMinRequests = 5
+
+	for range 8 {
+		metrics.RecordHTTPRequest(context.Background(), now, http.StatusOK)
+	}
+	for range 2 {
+		metrics.RecordHTTPRequest(context.Background(), now, http.StatusInternalServerError)
+	}
+
+	svc := NewService(Deps{
+		Cfg:    cfg,
+		Tasks:  &fakeTasks{},
+		Audit:  fakeAudit{},
+		Agents: nilAgentLister{},
+		Now:    func() time.Time { return now },
+	})
+
+	r, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var found bool
+	for _, a := range r.Anomalies {
+		if a.Kind == KindHTTPErrorSpike {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want http_error_spike anomaly wired from the live metrics tracker, got %v", r.Anomalies)
 	}
 }
 

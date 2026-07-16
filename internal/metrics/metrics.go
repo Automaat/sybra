@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/httpstats"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
@@ -67,6 +68,13 @@ var (
 	providerRateLimits    metric.Int64Counter
 	agentFailoversCounter metric.Int64Counter
 	agentsGatedCounter    metric.Int64Counter
+
+	httpRequestsTotal metric.Int64Counter
+	// httpTracker is a lightweight in-memory sliding window kept
+	// independently of the Prometheus enabled/disabled flag: the HTTP
+	// error-rate SLO detector (internal/monitor) needs to read a live
+	// error rate even on deployments that never enable /metrics scraping.
+	httpTracker = httpstats.New()
 
 	// Observable gauge providers, mutated at wiring time and read from the
 	// meter's registered callback. Guarded by obsMu.
@@ -167,6 +175,9 @@ func createInstruments() error {
 		return err
 	}
 	if err := createProviderInstruments(); err != nil {
+		return err
+	}
+	if err := createHTTPInstruments(); err != nil {
 		return err
 	}
 	return createObservableGauges()
@@ -336,6 +347,19 @@ func createProviderInstruments() error {
 	agentsGatedCounter, err = m.Int64Counter(
 		"sybra_agents_gated_total",
 		metric.WithDescription("Agent runs refused by the provider health gate, by provider and reason."),
+	)
+	return err
+}
+
+func createHTTPInstruments() error {
+	m := meter
+	if m == nil {
+		return nil
+	}
+	var err error
+	httpRequestsTotal, err = m.Int64Counter(
+		"sybra_http_requests_total",
+		metric.WithDescription("HTTP requests served by sybra-server, by status class (2xx/3xx/4xx/5xx)."),
 	)
 	return err
 }
@@ -701,4 +725,39 @@ func resultLabel(ok bool) string {
 		return "ok"
 	}
 	return "error"
+}
+
+// RecordHTTPRequest records one HTTP response's outcome. It always updates
+// the in-memory sliding window (httpstats.Tracker) used by the monitor's
+// HTTP-error-rate SLO detector, regardless of whether Prometheus export is
+// enabled; the Int64Counter add is skipped (nil-safe) when metrics are
+// disabled, matching every other record helper in this file.
+func RecordHTTPRequest(ctx context.Context, now time.Time, status int) {
+	httpTracker.Record(now, status >= 500)
+	if httpRequestsTotal == nil {
+		return
+	}
+	httpRequestsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("class", statusClass(status))))
+}
+
+// HTTPErrorSnapshot returns the sliding-window request/error counts over the
+// given window ending at now. Available even when Prometheus export is
+// disabled — see RecordHTTPRequest.
+func HTTPErrorSnapshot(now time.Time, window time.Duration) httpstats.Snapshot {
+	return httpTracker.Snapshot(now, window)
+}
+
+func statusClass(status int) string {
+	switch {
+	case status >= 500:
+		return "5xx"
+	case status >= 400:
+		return "4xx"
+	case status >= 300:
+		return "3xx"
+	case status >= 200:
+		return "2xx"
+	default:
+		return "unknown"
+	}
 }

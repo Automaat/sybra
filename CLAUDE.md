@@ -340,6 +340,7 @@ Sybra runs headless as a **systemd service** (not Docker) directly on the LXC, d
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
 - **Deploy:** `ansible/playbooks/setup-sybra-lxc.yml` (provision LXC), `ansible/playbooks/deploy-sybra.yml` (provision toolchain, install unit + scripts, render config, `systemctl restart`).
 - **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring.
+- **Error-rate SLO:** sybra-server's HTTP 5xx rate is monitored against a 1% target (`monitor.http_error_rate_threshold`) and alerts through the same monitor pipeline as agent-failure spikes. See `docs/monitoring.md`.
 
 **SSH access:** `ssh root@192.168.20.219` (no DNS for `synapse`/`synapse.mskalski.dev` from outside LAN — use IP). Inventory: `home-nas/ansible/inventory.yml` → group `sybra_lxc`. Common debug commands:
 

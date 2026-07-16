@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 )
@@ -269,5 +270,75 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 		if body := rr.Body.String(); body != "index" {
 			t.Fatalf("%s: body = %q, want %q", path, body, "index")
 		}
+	}
+}
+
+func TestMetricsMiddlewareRecordsErrorStatus(t *testing.T) {
+	h := metricsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/foo/bar", http.NoBody)
+	rr := httptest.NewRecorder()
+
+	before := metrics.HTTPErrorSnapshot(time.Now(), time.Minute)
+	h.ServeHTTP(rr, req)
+	after := metrics.HTTPErrorSnapshot(time.Now(), time.Minute)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if after.Errors != before.Errors+1 {
+		t.Fatalf("want the 5xx response counted in the error snapshot: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestMetricsMiddlewareSkipsHealthEndpoint(t *testing.T) {
+	h := metricsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
+	rr := httptest.NewRecorder()
+
+	before := metrics.HTTPErrorSnapshot(time.Now(), time.Minute)
+	h.ServeHTTP(rr, req)
+	after := metrics.HTTPErrorSnapshot(time.Now(), time.Minute)
+
+	if after.Total != before.Total {
+		t.Fatalf("want /health excluded from tracking: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestStatusRecorderDefaultsTo200WhenWriteHeaderNeverCalled(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rec := &statusRecorder{ResponseWriter: rr, status: http.StatusOK}
+	if _, err := rec.Write([]byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if rec.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.status)
+	}
+}
+
+func TestStatusRecorderIgnoresSecondWriteHeaderCall(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rec := &statusRecorder{ResponseWriter: rr, status: http.StatusOK}
+	rec.WriteHeader(http.StatusNotFound)
+	rec.WriteHeader(http.StatusInternalServerError)
+	if rec.status != http.StatusNotFound {
+		t.Fatalf("status = %d, want the first WriteHeader call (404) to win", rec.status)
+	}
+}
+
+// TestStatusRecorderPreservesFlusher guards against SSE regressions: the SSE
+// broker (internal/sse) type-asserts the ResponseWriter it's given to
+// http.Flusher on every event — if statusRecorder didn't implement Flush,
+// wrapping it in metricsMiddleware would silently break live event delivery.
+func TestStatusRecorderPreservesFlusher(t *testing.T) {
+	rr := httptest.NewRecorder()
+	rec := &statusRecorder{ResponseWriter: rr, status: http.StatusOK}
+	var flusher http.Flusher = rec
+	flusher.Flush()
+	if !rr.Flushed {
+		t.Fatal("want Flush() to delegate to the underlying ResponseWriter")
 	}
 }

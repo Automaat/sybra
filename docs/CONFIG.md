@@ -382,6 +382,9 @@ focused headless agent for anomalies that need LLM judgment.
 | `monitor.bottleneck_hours` | `map[string]float64` |  |  |
 | `monitor.issue_label` | `string` |  |  |
 | `monitor.issue_repo` | `string` |  |  |
+| `monitor.http_error_rate_threshold` | `float64` |  | HTTPErrorRateThreshold is the sybra-server 5xx-response-rate SLO target: a rolling window with a higher fraction of 5xx responses than this trips a KindHTTPErrorSpike anomaly. Evaluated only once the window has at least HTTPErrorRateMinRequests samples, so low-traffic periods can't trigger on a single failed request. |
+| `monitor.http_error_rate_window_minutes` | `int` |  | HTTPErrorRateWindowMinutes is the rolling window width the threshold above is evaluated over. |
+| `monitor.http_error_rate_min_requests` | `int` |  | HTTPErrorRateMinRequests is the minimum request volume the window must have before the error-rate threshold is evaluated. |
 
 ## WatchdogConfig (`watchdog`)
 

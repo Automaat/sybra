@@ -35,6 +35,10 @@ func TestMetricsPipeline(t *testing.T) {
 	ProviderRateLimit("codex")
 	AgentFailover("claude", "codex")
 	AgentGated("claude", "logged_out")
+	RecordHTTPRequest(context.Background(), time.Now(), 200)
+	if snap := HTTPErrorSnapshot(time.Now(), 15*time.Minute); snap.Total == 0 {
+		t.Fatal("HTTPErrorSnapshot must track requests even before Init")
+	}
 
 	if err := Init(config.MetricsConfig{Enabled: true}); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -73,6 +77,8 @@ func TestMetricsPipeline(t *testing.T) {
 	ProviderRateLimit("codex")
 	AgentFailover("claude", "codex")
 	AgentGated("claude", "logged_out")
+	RecordHTTPRequest(context.Background(), time.Now(), 200)
+	RecordHTTPRequest(context.Background(), time.Now(), 500)
 
 	// Observable gauges — provide live callbacks.
 	RegisterTasksByStatus(func() map[string]int64 {
@@ -119,6 +125,7 @@ func TestMetricsPipeline(t *testing.T) {
 		"sybra_agents_gated_total",
 		"sybra_provider_healthy",
 		"sybra_provider_raw_healthy",
+		"sybra_http_requests_total",
 		`status="todo"`,
 		`state="running"`,
 		`result="ok"`,
@@ -128,6 +135,8 @@ func TestMetricsPipeline(t *testing.T) {
 		`provider="claude"`,
 		`from="claude"`,
 		`to="codex"`,
+		`class="2xx"`,
+		`class="5xx"`,
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(body, want) {
@@ -143,4 +152,21 @@ func scrape(t *testing.T) string {
 	rec := httptest.NewRecorder()
 	promhttp.Handler().ServeHTTP(rec, req)
 	return rec.Body.String()
+}
+
+func TestStatusClass(t *testing.T) {
+	cases := map[int]string{
+		199: "unknown",
+		200: "2xx",
+		299: "2xx",
+		301: "3xx",
+		404: "4xx",
+		500: "5xx",
+		599: "5xx",
+	}
+	for status, want := range cases {
+		if got := statusClass(status); got != want {
+			t.Errorf("statusClass(%d) = %q, want %q", status, got, want)
+		}
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/httpstats"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -188,6 +189,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		HourSummary:   summary,
 		LiveAgents:    live,
 		Cfg:           s.cfg,
+		HTTPErrors:    s.httpErrorSnapshot(now),
 		AllowsProject: s.allowsProject,
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
@@ -264,6 +266,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		HourSummary:   summary,
 		LiveAgents:    live,
 		Cfg:           s.cfg,
+		HTTPErrors:    s.httpErrorSnapshot(now),
 		AllowsProject: s.allowsProject,
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
@@ -382,6 +385,18 @@ func AuditDirReader(dir string) auditAPI {
 	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
 		return audit.Read(dir, q)
 	})
+}
+
+// httpErrorSnapshot reads the current sybra-server HTTP error-rate window
+// from the process-wide internal/metrics tracker. The window width is
+// operator-configurable (Cfg.HTTPErrorRateWindowMinutes); falls back to 15m
+// when unset so a zero-value config in tests still yields a sane window.
+func (s *Service) httpErrorSnapshot(now time.Time) httpstats.Snapshot {
+	window := time.Duration(s.cfg.HTTPErrorRateWindowMinutes) * time.Minute
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
+	return metrics.HTTPErrorSnapshot(now, window)
 }
 
 func snapshotLiveAgents(src agentLister) []liveAgent {

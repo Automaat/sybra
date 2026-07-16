@@ -27,6 +27,7 @@ const (
 	KindLostAgent         AnomalyKind = "lost_agent"
 	KindFailureSpike      AnomalyKind = "failure_spike"
 	KindBottleneck        AnomalyKind = "bottleneck"
+	KindHTTPErrorSpike    AnomalyKind = "http_error_spike"
 )
 
 // AllAnomalyKinds returns every kind in declaration order. Useful for tests
@@ -40,6 +41,7 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindLostAgent,
 		KindFailureSpike,
 		KindBottleneck,
+		KindHTTPErrorSpike,
 	}
 }
 

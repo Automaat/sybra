@@ -7,21 +7,25 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/httpstats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func defaultCfg() config.MonitorConfig {
 	return config.MonitorConfig{
-		Enabled:              true,
-		IntervalSeconds:      300,
-		Model:                "sonnet",
-		IssueCooldownMinutes: 30,
-		DispatchLimit:        3,
-		StuckHumanHours:      8,
-		LostAgentMinutes:     15,
-		PRGapGraceMinutes:    15,
-		FailureRateThreshold: 0.3,
+		Enabled:                    true,
+		IntervalSeconds:            300,
+		Model:                      "sonnet",
+		IssueCooldownMinutes:       30,
+		DispatchLimit:              3,
+		StuckHumanHours:            8,
+		LostAgentMinutes:           15,
+		PRGapGraceMinutes:          15,
+		FailureRateThreshold:       0.3,
+		HTTPErrorRateThreshold:     0.05,
+		HTTPErrorRateWindowMinutes: 15,
+		HTTPErrorRateMinRequests:   10,
 		BottleneckHours: map[string]float64{
 			"plan-review":    4,
 			"human-required": 8,
@@ -475,6 +479,33 @@ func TestDetect(t *testing.T) {
 				Cfg: cfg,
 			},
 			want: []AnomalyKind{KindFailureSpike, KindLostAgent},
+		},
+		{
+			name: "http_error_spike when error rate exceeds threshold with enough volume",
+			in: DetectInput{
+				Now:        now,
+				HTTPErrors: httpstats.Snapshot{Total: 20, Errors: 2, ErrorRate: 0.1},
+				Cfg:        cfg,
+			},
+			want: []AnomalyKind{KindHTTPErrorSpike},
+		},
+		{
+			name: "http_error_spike suppressed below threshold",
+			in: DetectInput{
+				Now:        now,
+				HTTPErrors: httpstats.Snapshot{Total: 20, Errors: 1, ErrorRate: 0.05},
+				Cfg:        cfg,
+			},
+			want: nil,
+		},
+		{
+			name: "http_error_spike suppressed below minimum request volume",
+			in: DetectInput{
+				Now:        now,
+				HTTPErrors: httpstats.Snapshot{Total: 5, Errors: 5, ErrorRate: 1.0},
+				Cfg:        cfg,
+			},
+			want: nil,
 		},
 	}
 

@@ -562,3 +562,24 @@ func TestDeterministicIssueBody_DefaultFallback(t *testing.T) {
 		t.Error("non-stuck kinds should still reference the dispatched agent")
 	}
 }
+
+func TestDispatchPrompt_HTTPErrorSpike(t *testing.T) {
+	a := Anomaly{
+		Kind: KindHTTPErrorSpike,
+		Evidence: map[string]any{
+			"error_rate":     0.05,
+			"errors":         5,
+			"requests":       100,
+			"threshold":      0.01,
+			"window_minutes": 15,
+		},
+	}
+
+	prompt := DispatchPrompt(a, "owner/repo", "")
+
+	for _, want := range []string{"HTTP-error-rate", "errors=5", "requests=100", "owner/repo", "http_error_spike"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

@@ -18,4 +18,16 @@ type MonitorConfig struct {
 	BottleneckHours      map[string]float64 `yaml:"bottleneck_hours" json:"bottleneckHours"`
 	IssueLabel           string             `yaml:"issue_label" json:"issueLabel"`
 	IssueRepo            string             `yaml:"issue_repo" json:"issueRepo"`
+	// HTTPErrorRateThreshold is the sybra-server 5xx-response-rate SLO
+	// target: a rolling window with a higher fraction of 5xx responses than
+	// this trips a KindHTTPErrorSpike anomaly. Evaluated only once the
+	// window has at least HTTPErrorRateMinRequests samples, so low-traffic
+	// periods can't trigger on a single failed request.
+	HTTPErrorRateThreshold float64 `yaml:"http_error_rate_threshold" json:"httpErrorRateThreshold"`
+	// HTTPErrorRateWindowMinutes is the rolling window width the threshold
+	// above is evaluated over.
+	HTTPErrorRateWindowMinutes int `yaml:"http_error_rate_window_minutes" json:"httpErrorRateWindowMinutes"`
+	// HTTPErrorRateMinRequests is the minimum request volume the window
+	// must have before the error-rate threshold is evaluated.
+	HTTPErrorRateMinRequests int `yaml:"http_error_rate_min_requests" json:"httpErrorRateMinRequests"`
 }

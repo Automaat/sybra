@@ -121,7 +121,7 @@ func run() (int, error) {
 	// (no wildcard). Order matters: CORS must sit outside auth so preflight
 	// OPTIONS requests (which never carry Authorization) are answered before
 	// reaching it.
-	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
+	handler := metricsMiddleware(cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux))))
 
 	srv, errCh, err := serveAll(ctx, cfg, handler, logger)
 	if err != nil {
@@ -249,6 +249,56 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.fs.ServeHTTP(w, r)
+}
+
+// metricsMiddleware records every response's status code against the
+// sybra_http_requests_total counter and the internal/httpstats sliding
+// window the monitor's HTTP-error-rate SLO detector reads (see
+// internal/monitor detectHTTPErrorRate). /health is excluded: it's a
+// high-frequency container-orchestration liveness probe, not real API
+// traffic, and would dilute the error-rate signal.
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		metrics.RecordHTTPRequest(r.Context(), time.Now(), rec.status)
+	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code
+// actually written. It preserves http.Flusher so it stays transparent to the
+// SSE broker (internal/sse), which type-asserts the ResponseWriter it's
+// given to flush each event as it's written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.wroteHeader {
+		return
+	}
+	s.wroteHeader = true
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if !s.wroteHeader {
+		s.WriteHeader(http.StatusOK)
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func cspMiddleware(next http.Handler) http.Handler {

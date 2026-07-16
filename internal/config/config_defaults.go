@@ -1333,6 +1333,16 @@ func applyMonitorDefaults(cfg *Config) {
 	if cfg.Monitor.FailureRateThreshold <= 0 {
 		cfg.Monitor.FailureRateThreshold = 0.3
 	}
+	if cfg.Monitor.HTTPErrorRateThreshold <= 0 {
+		// 1% 5xx rate is the production SLO target for sybra-server.
+		cfg.Monitor.HTTPErrorRateThreshold = 0.01
+	}
+	if cfg.Monitor.HTTPErrorRateWindowMinutes <= 0 {
+		cfg.Monitor.HTTPErrorRateWindowMinutes = 15
+	}
+	if cfg.Monitor.HTTPErrorRateMinRequests <= 0 {
+		cfg.Monitor.HTTPErrorRateMinRequests = 20
+	}
 	if cfg.Monitor.IssueLabel == "" {
 		cfg.Monitor.IssueLabel = "monitor"
 	}

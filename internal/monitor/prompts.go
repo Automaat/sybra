@@ -47,6 +47,8 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 		return failureSpikePrompt(a, issueRepo)
 	case KindBottleneck:
 		return bottleneckPrompt(a, issueRepo)
+	case KindHTTPErrorSpike:
+		return httpErrorSpikePrompt(a, issueRepo)
 	default:
 		return investigatePrompt(a, issueRepo)
 	}
@@ -185,6 +187,36 @@ GitHub issue handling:
 Output exactly one final JSON line:
 {"issueNumber":N,"action":"created"|"commented","rootCause":"<one phrase>","commonPattern":"<one phrase>"}`,
 		rate, runs, issueRepo, issueRepo, issueRepo, issueRepo,
+	)
+}
+
+func httpErrorSpikePrompt(a Anomaly, issueRepo string) string {
+	rate, _ := a.Evidence["error_rate"].(float64)
+	errs, _ := a.Evidence["errors"].(int)
+	reqs, _ := a.Evidence["requests"].(int)
+	windowMin, _ := a.Evidence["window_minutes"].(int)
+	return fmt.Sprintf(
+		`You are the sybra monitor HTTP-error-rate investigator.
+
+sybra-server 5xx rate over the last %d minutes:
+  error_rate=%.2f%%  errors=%d  requests=%d
+
+Read-only investigation:
+- On the server host, run `+"`journalctl -u sybra -n 300 --no-pager`"+` (or `+"`tail -300 /data/sybra/home/logs/sybra.log`"+` if not on the server) and grep for 5xx-class error log lines (httpapi.error, httpapi.call.error, server.shutdown.err) in the last %d minutes.
+- Identify whether failures cluster on one API service/method or are spread across many — a single hot method points at a code regression, spread failures point at infra (DB/disk/provider outage).
+- Check whether the spike correlates with a recent deploy (`+"`git -C /opt/sybra/src log --oneline -5`"+`) or a provider outage.
+
+GitHub issue handling:
+- Repo: %s
+- Title: "[monitor] http_error_spike"
+- Dedup: gh issue list --repo %s --state open --label monitor --search "in:title \"[monitor] http_error_spike\""
+- On hit: gh issue comment --repo %s <num> --body "..."
+- On miss: gh issue create --repo %s --title "[monitor] http_error_spike" --body "..." --label monitor,bug
+
+Output exactly one final JSON line:
+{"issueNumber":N,"action":"created"|"commented","rootCause":"<one phrase>","hotService":"<service.method or 'spread'>"}`,
+		windowMin, rate*100, errs, reqs, windowMin,
+		issueRepo, issueRepo, issueRepo, issueRepo,
 	)
 }
 

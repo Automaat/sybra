@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/httpstats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -23,12 +24,17 @@ type liveAgent struct {
 // DetectInput aggregates everything the detector needs in one struct so the
 // public Detect signature stays stable as new rules arrive.
 type DetectInput struct {
-	Now           time.Time
-	Tasks         []task.Task
-	Events15m     []audit.Event
-	HourSummary   audit.Summary
-	LiveAgents    []liveAgent
-	Cfg           config.MonitorConfig
+	Now         time.Time
+	Tasks       []task.Task
+	Events15m   []audit.Event
+	HourSummary audit.Summary
+	LiveAgents  []liveAgent
+	Cfg         config.MonitorConfig
+	// HTTPErrors is a snapshot of sybra-server's HTTP request/error volume
+	// over the last Cfg.HTTPErrorRateWindowMinutes, taken from the
+	// in-process internal/metrics tracker. Zero value (no requests observed)
+	// is safe — detectHTTPErrorRate treats it as "nothing to alert on".
+	HTTPErrors    httpstats.Snapshot
 	AllowsProject func(projectID string) bool
 }
 
@@ -43,6 +49,7 @@ func Detect(in DetectInput) Report {
 	report.Anomalies = append(report.Anomalies, detectBoardWide(in, report.Counts)...)
 	report.Anomalies = append(report.Anomalies, detectPerTask(in)...)
 	report.Anomalies = append(report.Anomalies, detectFromAudit(in)...)
+	report.Anomalies = append(report.Anomalies, detectHTTPErrorRate(in)...)
 	return report
 }
 
@@ -460,6 +467,35 @@ func detectFromAudit(in DetectInput) []Anomaly {
 		})
 	}
 	return out
+}
+
+// detectHTTPErrorRate flags a KindHTTPErrorSpike anomaly when the
+// sybra-server 5xx rate over the configured window exceeds
+// Cfg.HTTPErrorRateThreshold. The volume gate (HTTPErrorRateMinRequests)
+// prevents a single failed request on a quiet server from tripping the SLO —
+// mirrors detectFromAudit's AgentRuns > 0 gate for KindFailureSpike.
+func detectHTTPErrorRate(in DetectInput) []Anomaly {
+	if in.HTTPErrors.Total < in.Cfg.HTTPErrorRateMinRequests {
+		return nil
+	}
+	if in.HTTPErrors.ErrorRate <= in.Cfg.HTTPErrorRateThreshold {
+		return nil
+	}
+	ev := map[string]any{
+		"error_rate":     in.HTTPErrors.ErrorRate,
+		"errors":         in.HTTPErrors.Errors,
+		"requests":       in.HTTPErrors.Total,
+		"threshold":      in.Cfg.HTTPErrorRateThreshold,
+		"window_minutes": in.Cfg.HTTPErrorRateWindowMinutes,
+	}
+	return []Anomaly{{
+		Kind:        KindHTTPErrorSpike,
+		Severity:    SeverityError,
+		RequiresLLM: true,
+		Fingerprint: Fingerprint(KindHTTPErrorSpike, "", ev),
+		Evidence:    ev,
+		DetectedAt:  in.Now,
+	}}
 }
 
 func bottleneckThreshold(cfg config.MonitorConfig, status string) float64 {
