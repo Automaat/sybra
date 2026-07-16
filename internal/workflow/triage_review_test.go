@@ -783,3 +783,153 @@ func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 		})
 	}
 }
+
+// TestBuiltinSimpleTask_ReviewLoopsUntilClean pins the review→fix→review cycle:
+// a clean tamper scan must re-enter review rather than hand off to testing, so
+// the fix agent's diff is never the last word. The CLEAN verdict is the only
+// exit; there is deliberately no round cap.
+func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review not found")
+	}
+
+	step := func(id string) *Step {
+		for i := range simple.Steps {
+			if simple.Steps[i].ID == id {
+				return &simple.Steps[i]
+			}
+		}
+		t.Fatalf("step %q not found", id)
+		return nil
+	}
+
+	// A clean tamper scan re-enters the review picker; a tamper finding still
+	// parks the task instead of looping.
+	got, err := ResolveTransition(step("detect_tampering").Next, map[string]string{
+		"task.status": "testing",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "pick_review_method" {
+		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "pick_review_method")
+	}
+
+	got, err = ResolveTransition(step("detect_tampering").Next, map[string]string{
+		"task.status": "human-required",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "" {
+		t.Errorf("detect_tampering tampered goto = %q, want \"\" (park, do not loop)", got)
+	}
+
+	// CLEAN is the only exit from the loop.
+	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
+		"task.code_review": "Review Verdict: CLEAN",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "done_review" {
+		t.Errorf("CLEAN verdict goto = %q, want done_review", got)
+	}
+
+	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
+		"task.code_review": "Review Verdict: NEEDS_FIXES",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "fix_review" {
+		t.Errorf("NEEDS_FIXES verdict goto = %q, want fix_review", got)
+	}
+}
+
+// TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle pins the kill-switch:
+// agent.review_until_clean=false must route the first fix straight to testing
+// instead of re-reviewing. Guards the field-name contract too — a
+// config.review_until_clean typo here would silently never match and the loop
+// would run uncapped regardless of config (the dead-condition bug class
+// KnownTriggerFields exists to prevent).
+func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
+	t.Parallel()
+
+	if !KnownTriggerFields["config.review_until_clean"] {
+		t.Fatal("config.review_until_clean missing from KnownTriggerFields — the condition would silently never match")
+	}
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-review not found")
+	}
+	var tamper *Step
+	for i := range simple.Steps {
+		if simple.Steps[i].ID == "detect_tampering" {
+			tamper = &simple.Steps[i]
+			break
+		}
+	}
+	if tamper == nil {
+		t.Fatal("detect_tampering step not found")
+	}
+
+	cases := []struct {
+		name  string
+		field string
+		want  string
+	}{
+		{name: "loop_when_enabled", field: "true", want: "pick_review_method"},
+		{name: "single_pass_when_disabled", field: "false", want: "done_review"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveTransition(tamper.Next, map[string]string{
+				"task.status":               "testing",
+				"config.review_until_clean": tc.field,
+			})
+			if err != nil {
+				t.Fatalf("ResolveTransition: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("review_until_clean=%s goto = %q, want %q", tc.field, got, tc.want)
+			}
+		})
+	}
+
+	// Tampering still parks regardless of the toggle.
+	got, err := ResolveTransition(tamper.Next, map[string]string{
+		"task.status":               "human-required",
+		"config.review_until_clean": "false",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "" {
+		t.Errorf("tampered goto = %q, want \"\" (park wins over the toggle)", got)
+	}
+}

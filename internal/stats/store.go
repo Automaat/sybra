@@ -174,6 +174,7 @@ func (s *Store) QueryAt(now time.Time) StatsResponse {
 		ByModel:              groupedStats(byModel),
 		ByProvider:           groupedStats(byProvider),
 		BySkillExecutionMode: groupedStats(bySkillExecutionMode),
+		ReviewRounds:         reviewRoundsByModel(s.runs),
 	}
 
 	// Recent runs: last 50, newest first
@@ -202,6 +203,113 @@ func (s *Store) flush() error {
 		return err
 	}
 	return fsutil.AtomicWrite(s.path, data)
+}
+
+// roleReviewLabel mirrors agent.RoleReview. Duplicated rather than imported:
+// internal/agent already imports internal/stats for EstimateAgentCost, so a
+// back-import would form a cycle.
+const roleReviewLabel = "review"
+
+// taskReviewRollup accumulates one task's implementation attribution and its
+// review-round count while walking the run log a single time.
+type taskReviewRollup struct {
+	implModel  string
+	implSeen   bool
+	mixedImpl  bool
+	rounds     int
+	firstImplT time.Time
+}
+
+// normalizeRunModel resolves the model label for grouping. RunRecord.Model is
+// empty for older records and for providers that never reported one.
+func normalizeRunModel(m string) string {
+	if m == "" {
+		return "(unknown)"
+	}
+	return m
+}
+
+// isImplementationRun reports whether a run authored the implementation.
+// AgentRun.Role carries "" for implementation on older records (see
+// task.AgentRun), which is why an empty role counts here — the same
+// normalization ByRole applies.
+func isImplementationRun(role string) bool {
+	return role == "" || role == "implementation"
+}
+
+// reviewRoundsByModel groups tasks by the model that implemented them and
+// reports how many review rounds each needed. Tasks with no review run are
+// excluded: they never entered the review loop (skipped as trivial/noreview,
+// or still in flight), so counting them as zero rounds would present code that
+// was never reviewed as code a reviewer passed on the first try.
+func reviewRoundsByModel(runs []RunRecord) []ReviewRoundsStat {
+	rollups := map[string]*taskReviewRollup{}
+
+	for i := range runs {
+		r := &runs[i]
+		if r.TaskID == "" {
+			continue
+		}
+		tr := rollups[r.TaskID]
+		if tr == nil {
+			tr = &taskReviewRollup{}
+			rollups[r.TaskID] = tr
+		}
+		switch {
+		case isImplementationRun(r.Role):
+			model := normalizeRunModel(r.Model)
+			// Ordering within the run log is not guaranteed, so attribution
+			// follows the earliest implementation timestamp, not position.
+			if !tr.implSeen || r.Timestamp.Before(tr.firstImplT) {
+				if tr.implSeen && model != tr.implModel {
+					tr.mixedImpl = true
+				}
+				tr.implModel = model
+				tr.firstImplT = r.Timestamp
+				tr.implSeen = true
+			} else if model != tr.implModel {
+				tr.mixedImpl = true
+			}
+		case r.Role == roleReviewLabel:
+			tr.rounds++
+		}
+	}
+
+	agg := map[string]*ReviewRoundsStat{}
+	for _, tr := range rollups {
+		if tr.rounds == 0 || !tr.implSeen {
+			continue
+		}
+		st := agg[tr.implModel]
+		if st == nil {
+			st = &ReviewRoundsStat{Key: tr.implModel}
+			agg[tr.implModel] = st
+		}
+		st.Tasks++
+		st.TotalRounds += tr.rounds
+		if tr.rounds > st.MaxRounds {
+			st.MaxRounds = tr.rounds
+		}
+		if tr.rounds == 1 {
+			st.CleanFirstPass++
+		}
+		if tr.mixedImpl {
+			st.MixedImplModels++
+		}
+	}
+
+	out := make([]ReviewRoundsStat, 0, len(agg))
+	for _, st := range agg {
+		st.AvgRounds = float64(st.TotalRounds) / float64(st.Tasks)
+		out = append(out, *st)
+	}
+	slices.SortFunc(out, func(a, b ReviewRoundsStat) int {
+		if c := cmp.Compare(b.Tasks, a.Tasks); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Key, b.Key)
+	})
+	return out
 }
 
 func summarize(runs []RunRecord) Summary {

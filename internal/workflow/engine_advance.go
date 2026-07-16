@@ -630,6 +630,12 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	if wfExec.Recovered {
 		fields["vars.recovered"] = "true"
 	}
+	// Engine-level config, not task state, so taskFields cannot supply it.
+	// Inverted on purpose: a zero-value engine field must still mean the
+	// review cycle runs, so an engine built without SetReviewUntilClean
+	// follows the documented default instead of silently shipping
+	// single-pass review.
+	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
 
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {

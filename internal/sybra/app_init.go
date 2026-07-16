@@ -1241,6 +1241,7 @@ func (a *App) getPressureGate() *pressure.Gate {
 // funlen cap).
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
 }
 

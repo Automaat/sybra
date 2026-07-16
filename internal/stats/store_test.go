@@ -254,3 +254,85 @@ func TestQueryEmptyStore(t *testing.T) {
 		t.Errorf("empty store: expected empty recentRuns, got %d", len(resp.RecentRuns))
 	}
 }
+
+func TestReviewRoundsByModel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	at := func(offset int) time.Time { return base.Add(time.Duration(offset) * time.Minute) }
+
+	runs := []RunRecord{
+		// opus task: clean first pass.
+		{TaskID: "t1", Role: "implementation", Model: "opus", Timestamp: at(0)},
+		{TaskID: "t1", Role: "review", Model: "sonnet", Timestamp: at(1)},
+
+		// opus task: needed three review rounds.
+		{TaskID: "t2", Role: "implementation", Model: "opus", Timestamp: at(0)},
+		{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(1)},
+		{TaskID: "t2", Role: "fix-review", Model: "sonnet", Timestamp: at(2)},
+		{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(3)},
+		{TaskID: "t2", Role: "fix-review", Model: "sonnet", Timestamp: at(4)},
+		{TaskID: "t2", Role: "review", Model: "sonnet", Timestamp: at(5)},
+
+		// legacy empty role counts as implementation.
+		{TaskID: "t3", Role: "", Model: "codex", Timestamp: at(0)},
+		{TaskID: "t3", Role: "review", Model: "sonnet", Timestamp: at(1)},
+
+		// never reviewed -> excluded entirely.
+		{TaskID: "t4", Role: "implementation", Model: "opus", Timestamp: at(0)},
+
+		// failover mid-task: attributed to earliest impl, flagged mixed.
+		{TaskID: "t5", Role: "implementation", Model: "codex", Timestamp: at(9)},
+		{TaskID: "t5", Role: "implementation", Model: "opus", Timestamp: at(0)},
+		{TaskID: "t5", Role: "review", Model: "sonnet", Timestamp: at(10)},
+	}
+
+	got := reviewRoundsByModel(runs)
+
+	byKey := map[string]ReviewRoundsStat{}
+	for _, s := range got {
+		byKey[s.Key] = s
+	}
+
+	opus := byKey["opus"]
+	if opus.Tasks != 3 {
+		t.Errorf("opus Tasks = %d, want 3 (t4 unreviewed must be excluded)", opus.Tasks)
+	}
+	if opus.TotalRounds != 5 {
+		t.Errorf("opus TotalRounds = %d, want 5", opus.TotalRounds)
+	}
+	if opus.MaxRounds != 3 {
+		t.Errorf("opus MaxRounds = %d, want 3", opus.MaxRounds)
+	}
+	if opus.CleanFirstPass != 2 {
+		t.Errorf("opus CleanFirstPass = %d, want 2", opus.CleanFirstPass)
+	}
+	if opus.MixedImplModels != 1 {
+		t.Errorf("opus MixedImplModels = %d, want 1 (t5 failed over)", opus.MixedImplModels)
+	}
+	if opus.AvgRounds < 1.66 || opus.AvgRounds > 1.67 {
+		t.Errorf("opus AvgRounds = %v, want ~1.667", opus.AvgRounds)
+	}
+
+	codex := byKey["codex"]
+	if codex.Tasks != 1 || codex.TotalRounds != 1 {
+		t.Errorf("codex = %+v, want 1 task / 1 round (empty role is implementation)", codex)
+	}
+
+	if _, ok := byKey["(unknown)"]; ok {
+		t.Errorf("unexpected (unknown) bucket: %+v", got)
+	}
+}
+
+func TestReviewRoundsByModel_ExcludesUnreviewedAndEmptyTaskID(t *testing.T) {
+	t.Parallel()
+
+	runs := []RunRecord{
+		{TaskID: "", Role: "implementation", Model: "opus"},
+		{TaskID: "", Role: "review", Model: "sonnet"},
+		{TaskID: "t1", Role: "review", Model: "sonnet"},
+	}
+	if got := reviewRoundsByModel(runs); len(got) != 0 {
+		t.Errorf("reviewRoundsByModel = %+v, want empty (no attributable impl run)", got)
+	}
+}

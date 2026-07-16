@@ -241,6 +241,26 @@ steps:
   # the review-fix agent has added commits (the implement-stage scan only saw
   # the original diff). A high-severity finding flips the task to
   # human-required. Skips gracefully without a worktree.
+  #
+  # On a clean scan this goes BACK to pick_review_method rather than handing
+  # off to testing: the fix agent just rewrote code that no reviewer has seen,
+  # and detect_tampering only inspects test/CI tampering, not whether the fix
+  # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
+  #
+  # No round cap here, deliberately. A cap would censor the very distribution
+  # the review-rounds stat exists to measure (ReviewRoundsByModel in
+  # internal/stats), and every round is gated by a fresh reviewer that must
+  # reach CLEAN to exit. Backstop is the per-task cost ceiling:
+  # agent.max_task_cost_usd is enforced before every dispatch
+  # (preflightRunAgentBudget), so a non-converging review/fix cycle ends at
+  # the task's budget rather than never terminating. Operators who want the
+  # old single-pass posture set agent.review_until_clean: false, which routes
+  # straight to testing after the first fix.
+  #
+  # A backward goto to a sync step is safe because the run_agent steps in the
+  # cycle are async: each agent completion re-enters executeSteps with a fresh
+  # `visited` set, so no sync step repeats within one pass and the CycleError
+  # guard never trips.
   - id: detect_tampering
     name: Detect Test Tampering
     type: detect_tampering
@@ -250,7 +270,12 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: done_review
+      - when:
+          field: config.review_until_clean
+          operator: equals
+          value: "false"
+        goto: done_review
+      - goto: pick_review_method
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr
