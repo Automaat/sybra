@@ -24,10 +24,11 @@ func TestClassifyPRFixResult(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name        string
-		output      string
-		wantVerdict PRFixVerdict
-		wantReason  string
+		name            string
+		output          string
+		wantVerdict     PRFixVerdict
+		wantReason      string
+		wantEmptyReason bool
 	}{
 		{
 			name: "sentinel human required with reason",
@@ -52,6 +53,12 @@ func TestClassifyPRFixResult(t *testing.T) {
 			name:        "sentinel no-op alias maps to flake",
 			output:      "Nothing to change.\nSYBRA_PR_FIX_RESULT: no-op\n",
 			wantVerdict: PRFixFlake,
+		},
+		{
+			name:            "flake without a reason sentinel reports no reason",
+			output:          "Nothing to change.\nSYBRA_PR_FIX_RESULT: flake\n",
+			wantVerdict:     PRFixFlake,
+			wantEmptyReason: true,
 		},
 		{
 			name: "legacy conflict abort text",
@@ -96,6 +103,9 @@ func TestClassifyPRFixResult(t *testing.T) {
 			}
 			if tc.wantReason != "" && gotReason != tc.wantReason {
 				t.Errorf("reason = %q, want %q", gotReason, tc.wantReason)
+			}
+			if tc.wantEmptyReason && gotReason != "" {
+				t.Errorf("reason = %q, want empty; a non-human verdict must not inherit the human-required default text", gotReason)
 			}
 		})
 	}

@@ -157,7 +157,7 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 		case "human-required", "human_required", "human":
 			return PRFixHuman, extractPRFixReason(output)
 		case "flake", "no-op", "no_op", "noop":
-			return PRFixFlake, extractPRFixReason(output)
+			return PRFixFlake, sentinelReason(output)
 		case "continue", "ok", "done":
 			return PRFixContinue, ""
 		}
@@ -200,11 +200,19 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	return PRFixContinue, ""
 }
 
-func extractPRFixReason(output string) string {
+// Empty when the agent gave no reason; only human-required defaults its text. EXC:FILE011:load-bearing-invariant
+func sentinelReason(output string) string {
 	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
-	if len(matches) > 0 {
-		m := matches[len(matches)-1]
-		return truncate(strings.TrimSpace(m[1]), 200)
+	if len(matches) == 0 {
+		return ""
+	}
+	m := matches[len(matches)-1]
+	return truncate(strings.TrimSpace(m[1]), 200)
+}
+
+func extractPRFixReason(output string) string {
+	if reason := sentinelReason(output); reason != "" {
+		return reason
 	}
 	return "pr-fix agent requested human review"
 }
