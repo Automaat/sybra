@@ -187,6 +187,9 @@ func (e *Engine) advanceSatisfiedWaitForStatus(taskID string, t TaskInfo) (TaskI
 // Safe to call for any status change — no-ops when the current step does
 // not declare wait_for_status or when the status does not match.
 func (e *Engine) HandleStatusChange(taskID, newStatus string) {
+	if e.dispatchDisabled {
+		return
+	}
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.logger.Debug("workflow.status-change.get", "task_id", taskID, "err", err)
@@ -916,6 +919,9 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
 func (e *Engine) ResumeStalled() {
+	if e.dispatchDisabled {
+		return
+	}
 	// Prune stale admission-queue items (missing/terminal/in-progress tasks)
 	// before scanning, so this tick's ordering never reasons about a queued
 	// item that no longer reflects live task state.

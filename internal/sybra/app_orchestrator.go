@@ -86,6 +86,12 @@ func (a *App) applyInstanceRole() {
 	}
 	a.schedulerDisabled.Store(!scheduler)
 	a.brainDisabled.Store(!brain)
+	// The engine is the authoritative gate: it has callers across TaskService,
+	// review, completion, PR integrations, promptlab and the watcher, and gating
+	// those individually leaked three times.
+	if a.workflowEngine != nil {
+		a.workflowEngine.SetAutoDispatch(scheduler)
+	}
 }
 
 // runsScheduler reports whether this instance may auto-dispatch work. An

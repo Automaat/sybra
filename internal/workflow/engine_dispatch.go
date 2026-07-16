@@ -13,6 +13,11 @@ import (
 // already has a non-terminal workflow attached.
 var ErrWorkflowAlreadyActive = fmt.Errorf("task already has an active workflow")
 
+// ErrAutoDispatchDisabled is returned when workflow dispatch is off for this
+// instance (orchestrator.role: agent-only). Callers should treat it as a
+// benign no-op, not a failure.
+var ErrAutoDispatchDisabled = errors.New("workflow dispatch is disabled on this instance")
+
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 	return e.StartWorkflowWithVars(taskID, workflowID, nil)
@@ -34,6 +39,9 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 // Used by recovery flows that must resume at the interrupted step rather than
 // replaying the workflow from the beginning.
 func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID string, vars map[string]string) error {
+	if e.dispatchDisabled {
+		return ErrAutoDispatchDisabled
+	}
 	// startWorkflowLocked holds the `starting` marker; it is released by the
 	// time this returns, so firing the completion here cannot re-enter against
 	// it. This is what lets a synchronous mechanical workflow (e.g.
@@ -212,6 +220,9 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
+	if e.dispatchDisabled {
+		return "", ErrAutoDispatchDisabled
+	}
 	// Serialize event-driven workflow dispatch attempts per task. The shared
 	// agent.Manager claim only appears once a run_agent step reaches StartAgent;
 	// DispatchEvent needs its own earlier reservation so two callers cannot both

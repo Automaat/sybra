@@ -312,6 +312,10 @@ type Engine struct {
 	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	dispatchGate     func(TaskInfo) bool
+	// dispatchDisabled is stored negated so the zero value keeps a
+	// struct-literal Engine dispatching, matching its behavior before this
+	// gate existed.
+	dispatchDisabled bool
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -394,6 +398,21 @@ func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
 // leader-follower mode a task homed on a remote follower executes there, and the
 // leader only mirrors its state. A nil gate (the default) runs every task.
 func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = gate }
+
+// SetAutoDispatch turns workflow dispatch on or off for this instance. It is
+// the single chokepoint behind Sybra's agent-only instance role: StartWorkflow*,
+// DispatchEvent, HandleStatusChange and ResumeStalled all consult it, so a
+// caller cannot start a workflow by reaching past a per-call-site guard. Gating
+// the call sites instead was tried and leaked three times — the engine has
+// callers in TaskService, review, completion, PR integrations, promptlab,
+// planning and the watcher.
+//
+// Deliberately blunt: it stops operator-initiated workflow starts too, not just
+// automatic ones. An agent-only instance runs agents, not workflows; direct
+// agent starts (App.StartAgent, sybra-cli) never touch the engine and keep
+// working. Set orchestrator.scheduler_enabled true to opt an agent-only
+// instance back into workflows.
+func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
 
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open

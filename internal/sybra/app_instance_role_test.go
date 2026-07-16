@@ -137,7 +137,6 @@ func TestAgentOnlyStatusHookDoesNotDispatchWorkflow(t *testing.T) {
 			a := setupApp(t)
 			a.cfg = config.DefaultConfig()
 			a.cfg.Orchestrator.Role = tt.role
-			a.applyInstanceRole()
 
 			wfDir := t.TempDir()
 			wfStore, err := workflow.NewStore(wfDir)
@@ -167,6 +166,7 @@ steps:
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
 			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.applyInstanceRole()
 			a.initStatusHook()
 
 			created, err := a.tasks.Create("ready-review dispatch", "", "headless")
@@ -230,7 +230,6 @@ steps:
 				a := setupApp(t)
 				a.cfg = config.DefaultConfig()
 				a.cfg.Orchestrator.Role = r.role
-				a.applyInstanceRole()
 
 				wfDir := t.TempDir()
 				if err := os.WriteFile(filepath.Join(wfDir, "probe-created.yaml"), []byte(createdWF), 0o644); err != nil {
@@ -243,6 +242,7 @@ steps:
 				ta := &taskAdapter{tasks: a.tasks}
 				aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
 				a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+				a.applyInstanceRole()
 
 				created, err := a.tasks.Create("dispatch sink probe", "", "headless")
 				if err != nil {

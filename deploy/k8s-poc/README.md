@@ -60,12 +60,21 @@ orchestrator:
 | | `full` (default) | `agent-only` |
 |---|---|---|
 | Orchestrator brain session (auto-start) | yes | no |
-| Board reconcile, workflow resume, stale-agent restart | yes | no |
-| Workflow dispatch on a task status change (watcher, CLI, mirror) | yes | no |
+| Workflows of any kind — dispatch, resume, status-change, **or a manual start** | yes | no |
+| Board reconcile, stale-agent restart | yes | no |
 | Auto-spawned human-review agent | yes | no |
 | HTTP API, explicitly-started agents (`App.StartAgent`, `sybra-cli`) | yes | yes |
 | Draining an explicitly-started agent queued behind a busy pool | yes | yes |
 | Maintenance cleanup (orphan worktrees/sandboxes, metrics) | yes | yes |
+
+**An `agent-only` instance runs agents, not workflows.** The workflow engine is
+the single gate: `StartWorkflow`, `DispatchEvent`, `HandleStatusChange` and
+`ResumeStalled` all refuse with `workflow dispatch is disabled on this instance`.
+That is deliberately blunt — it stops an operator-initiated workflow start too,
+not just automatic ones — because the engine has callers spread across the task
+service, the review fixer, completion, PR integrations and the watcher, and
+gating those individually kept missing routes. Direct agent starts never touch
+the engine, so they keep working. Opt back in with `scheduler_enabled: true`.
 
 Two things deliberately keep running under `agent-only`. Cleanup, so a parked
 instance still collects its own garbage. And the manual queue drain — that is the
@@ -91,10 +100,13 @@ The role is sampled once at startup (like `orchestrator.dispatch_interval_second
 so changing it needs a restart; a reload logs `config.reload.restart_required`
 with field `orchestrator.role`.
 
-Confirm the resolved role in the startup log:
+Confirm the resolved role in the startup log. Note `kubectl logs` will *not* show
+it: Sybra's slog handler writes to a rotating file, not stdout, so the pod's
+stdout carries only a few bootstrap lines. Read the real sink instead:
 
 ```bash
-kubectl -n sybra-poc logs deploy/sybra-server | grep app.automations
+kubectl -n sybra-poc exec deploy/sybra-server -- \
+  grep app.automations /home/sybra/.sybra/logs/sybra.log
 ```
 
 ```json
