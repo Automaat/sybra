@@ -175,6 +175,12 @@ type Watchdog struct {
 
 	inspectAgent func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error)
 	stopAgent    func(string) error
+	// killAgentsForTask stops a task's agent(s) and blocks until the process(es)
+	// actually exit (or timeout). Used instead of stopAgent wherever something
+	// is about to touch the task's worktree right after stopping — e.g.
+	// verdictStatusFromVerify's on-demand verify re-run — so it never races a
+	// not-yet-dead agent process still writing to the same files (#2155).
+	killAgentsForTask func(taskID string, timeout time.Duration) (allExited bool)
 	// stopCompletedAgent stops a headless agent that already produced a clean
 	// terminal result, marking it completed-by-result first so the runner
 	// finalizes it as a success rather than treating the kill signal as a
@@ -202,6 +208,11 @@ type Watchdog struct {
 	// maxRunsPerWindow and runWindow drive checkRunRate — see its doc comment.
 	maxRunsPerWindow int
 	runWindow        time.Duration
+
+	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
+	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
+	// (#2155). Nil falls through to unconditional escalation.
+	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -214,6 +225,7 @@ func New(
 	wg *sync.WaitGroup,
 	cfg config.WatchdogConfig,
 	pressureGate *pressure.Gate,
+	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error),
 ) *Watchdog {
 	return &Watchdog{
 		agents:               agents,
@@ -225,6 +237,7 @@ func New(
 		loopThreshold:        cfg.LoopThreshold,
 		inspectAgent:         agent.Inspect,
 		stopAgent:            agents.StopAgent,
+		killAgentsForTask:    agents.KillAgentsForTask,
 		stopCompletedAgent:   agents.StopCompletedAgent,
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
@@ -238,6 +251,7 @@ func New(
 		},
 		maxRunsPerWindow: cfg.MaxRunsPerWindow,
 		runWindow:        time.Duration(cfg.RunWindowMinutes) * time.Minute,
+		verifyNow:        verifyNow,
 	}
 }
 
@@ -630,7 +644,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 		"reason_kind", verdict.ReasonKind)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
-	w.applyVerdict(ag, trigger, verdict)
+	w.applyVerdict(ctx, ag, trigger, verdict)
 
 	// Acknowledge a loop-triggered inspection that left the agent running, so the
 	// same unchanged signature does not re-trigger every debounce window. Skip
@@ -642,7 +656,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 	}
 }
 
-func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	switch verdict.Recommendation {
 	case "stop":
 		if verdict.ReasonKind == "rate_limit" {
@@ -650,6 +664,10 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 			return
 		}
 		if w.stopAlreadyCompleted(ag) {
+			return
+		}
+		if ag.TaskID != "" && (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
+			w.stopAndVerifyAmbiguousLoop(ctx, ag, verdict)
 			return
 		}
 		// Set the task state before stopping so the completion callback sees the
@@ -718,6 +736,100 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 	case "continue":
 		// intentional no-op; debounce suppresses re-check
 	}
+}
+
+// verifyNowTimeout bounds a single on-demand verify re-run triggered by an
+// ambiguous loop/budget stop verdict — generous enough for a real test suite,
+// short enough that a hung verify command cannot indefinitely delay the
+// escalation decision it exists to inform.
+const verifyNowTimeout = 5 * time.Minute
+
+// killForVerifyTimeout bounds how long stopAndVerifyAmbiguousLoop waits for
+// the stopped agent's process to actually exit before re-running verify in
+// its worktree, matching the existing KillAgentsForTask convention used
+// elsewhere (internal/sybra/svc_tasks.go, internal/sybra/review/handler.go).
+const killForVerifyTimeout = 10 * time.Second
+
+// stopAndVerifyAmbiguousLoop handles an unclassified ("") loop/budget stop
+// verdict — the judge's own prompt biases it toward leaving ReasonKind empty
+// whenever reward-hacking is merely possible rather than confidently picking
+// generic_stall, so this is the exact ambiguous case a stale/wrong stop lands
+// in (#2147, #2155). Re-runs the task's verify suite before trusting it,
+// instead of the unconditional escalation every other non-benign stop gets.
+//
+// The agent must be fully stopped — not just signaled — before verify runs,
+// or the two can race on the same worktree files (a still-writing agent
+// mid-loop vs. a concurrent build/test in the same directory), so this uses
+// killAgentsForTask (stop-and-wait) rather than the fire-and-forget stopAgent
+// every other path in applyVerdict uses. An interim status is written first
+// so the completion callback sees an intended recovery path immediately,
+// matching the stall/generic_stall convention, rather than leaving the task
+// on its pre-stop status for the duration of the verify re-run.
+func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, verdict agent.InspectorVerdict) {
+	judgeReason := "watchdog stop"
+	if verdict.Reason != "" {
+		judgeReason = "watchdog: " + verdict.Reason
+	}
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("watchdog hang: verifying before deciding — " + judgeReason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	confirmedStopped := true
+	if w.killAgentsForTask != nil {
+		confirmedStopped = w.killAgentsForTask(ag.TaskID, killForVerifyTimeout)
+	} else if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
+	status, reason := task.StatusHumanRequired, "watchdog: could not confirm agent stopped before verify — "+judgeReason
+	if confirmedStopped {
+		status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
+	}
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(status),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+}
+
+// verdictStatusFromVerify decides the task status/reason for an unclassified
+// ("") loop or budget stop verdict by re-running the task's verify suite
+// instead of trusting the judge's ambiguous call outright (#2155). judgeReason
+// is the fallback human-required reason if nothing can be verified. Returns
+// StatusInProgress with a "watchdog hang" reason when verify passes (treated
+// the same as a generic_stall false alarm), StatusHumanRequired with the
+// fresh failing command/output when verify still fails, and StatusHumanRequired
+// with judgeReason when verification itself was not possible (no worktree, no
+// configured verify commands, or w.verifyNow is nil) or errored.
+func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeReason string) (status task.Status, reason string) {
+	if w.verifyNow == nil {
+		return task.StatusHumanRequired, judgeReason
+	}
+	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
+	defer cancel()
+	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
+	if !verified || err != nil {
+		return task.StatusHumanRequired, judgeReason
+	}
+	if passed {
+		return task.StatusInProgress, "watchdog hang: verify suite passed on re-check — loop stop was a false positive"
+	}
+	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(failedCmd, output, 500)
+}
+
+// trimTail appends a bounded tail of output to failedCmd so the escalation
+// reason carries real evidence without ballooning the task's status_reason.
+func trimTail(failedCmd, output string, n int) string {
+	tail := output
+	if len(tail) > n {
+		tail = "…" + strings.ToValidUTF8(tail[len(tail)-n:], "")
+	}
+	if tail == "" {
+		return failedCmd
+	}
+	return failedCmd + "\n" + tail
 }
 
 // stopForRateLimit handles a "stop" verdict whose ReasonKind is "rate_limit":
