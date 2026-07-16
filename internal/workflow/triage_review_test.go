@@ -1,12 +1,22 @@
 package workflow
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func manyGoFiles(n int) []string {
+	files := make([]string, 0, n)
+	for i := range n {
+		files = append(files, fmt.Sprintf("pkg/svc/file%d.go", i))
+	}
+
+	return files
+}
 
 func TestTriageVerdict(t *testing.T) {
 	t.Parallel()
@@ -46,8 +56,15 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
-			name:       "test_file_always_staff",
+			name:       "test_file_alone_is_simple",
 			files:      []string{"internal/task/parser_test.go"},
+			insertions: 8,
+			deletions:  2,
+			want:       "simple",
+		},
+		{
+			name:       "test_file_under_risky_path_is_staff",
+			files:      []string{"internal/workflow/engine_test.go"},
 			insertions: 8,
 			deletions:  2,
 			want:       "staff",
@@ -67,22 +84,36 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
-			name:       "main_go_always_staff",
+			name:       "main_go_is_simple",
 			files:      []string{"main.go"},
 			insertions: 2,
 			deletions:  1,
-			want:       "staff",
+			want:       "simple",
+		},
+		{
+			name:       "routine_feature_sized_diff_is_simple",
+			files:      []string{"frontend/src/App.svelte"},
+			insertions: 100,
+			deletions:  0,
+			want:       "simple",
 		},
 		{
 			name:       "many_lines_is_staff",
 			files:      []string{"frontend/src/App.svelte"},
-			insertions: 100,
+			insertions: triageReviewLineLimit + 1,
 			deletions:  0,
 			want:       "staff",
 		},
 		{
-			name:       "many_files_is_staff",
+			name:       "handful_of_files_is_simple",
 			files:      []string{"a.go", "b.go", "c.go", "d.go"},
+			insertions: 4,
+			deletions:  0,
+			want:       "simple",
+		},
+		{
+			name:       "many_files_is_staff",
+			files:      manyGoFiles(triageReviewFileLimit + 1),
 			insertions: 4,
 			deletions:  0,
 			want:       "staff",
@@ -557,15 +588,15 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			want: "code_review_simple",
 		},
 		{
-			name: "staff_verdict_routes_to_staff",
+			name: "staff_verdict_still_routes_to_adversarial",
 			fields: map[string]string{
 				"task.tags":                      "backend",
 				"vars.step.triage_review.output": "staff",
 			},
-			want: "code_review_staff",
+			want: "code_review_simple",
 		},
 		{
-			name: "force_staff_tag_overrides_simple_verdict",
+			name: "force_staff_tag_is_the_only_route_to_staff",
 			fields: map[string]string{
 				"task.tags":                      "backend,force-staff-review",
 				"vars.step.triage_review.output": "simple",
@@ -573,11 +604,19 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			want: "code_review_staff",
 		},
 		{
-			name: "missing_verdict_falls_back_to_staff",
+			name: "force_staff_tag_overrides_staff_verdict_too",
+			fields: map[string]string{
+				"task.tags":                      "backend,force-staff-review",
+				"vars.step.triage_review.output": "staff",
+			},
+			want: "code_review_staff",
+		},
+		{
+			name: "missing_verdict_falls_back_to_adversarial",
 			fields: map[string]string{
 				"task.tags": "backend",
 			},
-			want: "code_review_staff",
+			want: "code_review_simple",
 		},
 		{
 			name: "skip_verdict_routes_to_done_review",

@@ -45,22 +45,24 @@ steps:
         goto: triage_review
       - goto: done_review
 
-  # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
-  # "simple" or "staff" so pick_review_method below can pick between the
-  # lightweight /pr-review skill and the deeper /staff-code-review skill.
-  # Force-staff-review tag is checked by the picker, not here, so the
-  # decision rationale is still logged for tagged tasks.
+  # Mechanical heuristic (no LLM): inspects diff size + file shape. Only its
+  # "skip" verdict is load-bearing here — the post-implement stage never routes
+  # to staff on a size/shape judgement (see pick_review_method). Kept so a
+  # zero-net-line diff still short-circuits the review cycle.
   - id: triage_review
     name: Triage Review
     type: triage_review
     next:
       - goto: pick_review_method
 
-  # Routes to the simple or staff review based on:
-  #   - task.tags contains force-staff-review → always staff (escape hatch)
+  # Post-implement review is ALWAYS adversarial. Staff review is reserved for
+  # PRs a human is asked to review (pr-review.yaml); running an 11-subagent
+  # staff pass on every landing is what made review 34% of fleet spend while
+  # the "simple" branch sat dead — triage picked staff on 62 of 62 reviews.
+  # Routes:
+  #   - task.tags contains force-staff-review → staff (the only route to staff)
   #   - vars.step.triage_review.output equals skip → trivial diff, skip review
-  #   - vars.step.triage_review.output equals simple → /pr-review
-  #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
+  #   - otherwise → /adversarial-review
   - id: pick_review_method
     name: Pick Review Method
     type: condition
@@ -75,18 +77,14 @@ steps:
           operator: equals
           value: skip
         goto: done_review
-      - when:
-          field: vars.step.triage_review.output
-          operator: equals
-          value: simple
-        goto: code_review_simple
-      - goto: code_review_staff
+      - goto: code_review_simple
 
-  # Lightweight review for small, low-risk diffs. Writes to the same
-  # sidecar path as code_review_staff so fix_review reads either one
-  # transparently.
+  # Default review depth for every landing. Writes to the same sidecar path as
+  # code_review_staff so fix_review reads either one transparently.
+  # /adversarial-review emits `Review Verdict: CLEAN|NEEDS_FIXES` natively, so
+  # the mapping below is identity — no verdict translation to get wrong.
   - id: code_review_simple
-    name: Code Review (simple)
+    name: Code Review (adversarial)
     type: run_agent
     config:
       role: review
@@ -100,18 +98,16 @@ steps:
 
         Steps:
           1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
-          2. Run /pr-review against that patch and the worktree source
+          2. Run /adversarial-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
-        verdict marker:
-          - `Review Verdict: CLEAN` when /pr-review found no bug-risk,
-            correctness, reliability, security, data-loss, test-breaking,
-            or otherwise actionable implementation issue that should be fixed
-            before PR creation. Style-only comments, simplification ideas,
-            unused-code observations that do not affect behavior, and optional
-            consistency suggestions stay CLEAN.
-          - `Review Verdict: NEEDS_FIXES` when any /pr-review finding should
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly the
+        verdict line /adversarial-review emits, copied verbatim:
+          - `Review Verdict: CLEAN` when no surviving finding requires a code
+            change before PR creation. Style-only comments, simplification
+            ideas, unused-code observations that do not affect behavior, and
+            optional consistency suggestions stay CLEAN.
+          - `Review Verdict: NEEDS_FIXES` when any surviving finding should
             trigger code changes before PR creation.
         This line gates whether a fix-review agent runs next — get it right.
 
@@ -126,9 +122,10 @@ steps:
     next:
       - goto: require_code_review
 
-  # Deep review for non-trivial diffs. Same sidecar contract as
-  # code_review_simple. Used by default whenever triage cannot prove a
-  # diff is small + low-risk.
+  # Deep review. Same sidecar contract as code_review_simple. Reachable ONLY
+  # via the force-staff-review tag — triage no longer routes here. Tag a task
+  # when you want the architectural/convention/dead-code lenses that
+  # /adversarial-review deliberately drops.
   - id: code_review_staff
     name: Code Review (staff)
     type: run_agent

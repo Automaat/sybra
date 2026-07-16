@@ -3765,7 +3765,7 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 }
 
 func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
-	for _, name := range []string{"pr-review", "staff-code-review"} {
+	for _, name := range []string{"adversarial-review", "staff-code-review"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)

@@ -10,20 +10,30 @@ import (
 )
 
 // triageReviewLineLimit and triageReviewFileLimit are the hard ceilings under
-// which a diff is eligible for the lightweight `/pr-review` skill. Anything
-// larger gets the deeper `/staff-code-review`. Tuned by gut; revisit after a
-// week of real use.
+// which a diff is eligible for the lightweight `/adversarial-review` skill.
+// Anything larger gets the deeper `/staff-code-review`. These were 50 lines /
+// 3 files and produced a staff verdict on 62 of 62 real reviews — the
+// lightweight branch never executed once. A routine feature here lands ~300
+// lines across ~10 files, so the caps sit above that and staff is reserved for
+// diffs that are genuinely large.
 const (
-	triageReviewLineLimit = 50
-	triageReviewFileLimit = 3
+	triageReviewLineLimit = 400
+	triageReviewFileLimit = 15
 )
 
 // triageReviewRiskyPathRe matches paths whose changes warrant staff-level
-// review regardless of size: workflow/agent core, entrypoints, tests, CI,
-// container build. A 5-line tweak inside internal/workflow can break the
-// engine for every task — exactly what staff review is for.
+// review regardless of size: workflow/agent core, CI, container build. A
+// 5-line tweak inside internal/workflow can break the engine for every task —
+// exactly what staff review is for. Deliberately absent: `*_test.go`, because
+// every real change ships a test and this alone forced staff on most diffs
+// (the tampering concern it existed for is already covered mechanically by the
+// detect_tampering step, which re-scans the full diff after review fixes
+// land); `internal/sybra/`, the god package that nearly every change touches,
+// so treating it as risky means treating everything as risky; and `cmd/` +
+// `main.go`, thin entrypoint wiring whose logic is covered by the package
+// rules above.
 var triageReviewRiskyPathRe = regexp.MustCompile(
-	`(^|/)(internal/(workflow|agent|sybra)/|cmd/|main\.go$|.*_test\.go$|Dockerfile|\.github/workflows/)`,
+	`(^|/)(internal/(workflow|agent)/|Dockerfile|\.github/workflows/)`,
 )
 
 // triageReviewSimpleExts lists the file extensions a "simple" review can
@@ -112,7 +122,7 @@ func classifyTrivialFile(path string) trivialFileClass {
 // with a short rationale. Pure function — easy to unit-test without git.
 //
 // "skip"   — trivial diff (zero net lines changed): no review needed.
-// "simple" — small, low-risk diff: lightweight /pr-review is sufficient.
+// "simple" — small, low-risk diff: lightweight /adversarial-review is sufficient.
 // "staff"  — large or risky diff: full /staff-code-review required.
 //
 // Ordering: the pure-docs fast-path below runs BEFORE the risky-path gate
@@ -203,10 +213,12 @@ func filepathExt(name string) string {
 	return ""
 }
 
-// execTriageReview decides between the lightweight `/pr-review` skill and the
-// deeper `/staff-code-review` skill based on the diff's size and shape. Pure
-// mechanical — no LLM call. Returns Output set to "simple" or "staff" so a
-// downstream condition step can route via vars.step.<id>.output.
+// execTriageReview decides between the lightweight `/adversarial-review` skill
+// and the deeper `/staff-code-review` skill based on the diff's size and shape.
+// Pure mechanical — no LLM call. Returns Output set to "simple" or "staff" so a
+// downstream condition step can route via vars.step.<id>.output. Only pr-review
+// acts on the "staff" verdict; simple-task-review consumes "skip" and otherwise
+// always reviews adversarially.
 //
 // Two diff sources, in order:
 //  1. Worktree (preferred): git diff <base>...HEAD against the resolved
