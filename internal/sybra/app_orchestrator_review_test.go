@@ -69,3 +69,79 @@ func TestInboundReviewNeedsAgent_CompletedPRReviewIsNotRedispatched(t *testing.T
 		})
 	}
 }
+
+// TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp pins the
+// reported #2035 production shape at the real maintenance loop boundary: a
+// review task already converged onto a terminal pr-review workflow, but whose
+// ReviewPhase has not caught up from GitHub polling yet, must not start a new
+// pr-review workflow on this tick or any later tick. The second tick is the
+// acceptance-critical part: it must stay a no-op instead of bouncing the task
+// in-review -> in-progress -> in-review forever.
+func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	svc.workflowEngine.SetTaskClassifier(&taskClassifierAdapter{
+		tasks:      a.tasks,
+		classifier: fakeTriageClassifier{},
+	})
+	a.workflowEngine = svc.workflowEngine
+
+	tk, err := a.tasks.Create("Review: converged PR", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedAt := time.Now().Add(-time.Minute)
+	got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
+		"status":       string(task.StatusInReview),
+		"tags":         []string{"review"},
+		"project_id":   "Automaat/sybra",
+		"pr_number":    2035,
+		"review_phase": "",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "pr-review",
+			CurrentStep: "",
+			State:       workflow.ExecCompleted,
+			CompletedAt: &completedAt,
+			Variables:   map[string]string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !got.StatusChangedAt.After(completedAt) {
+		t.Fatalf("test precondition failed: status_changed_at=%s must be after workflow completed_at=%s", got.StatusChangedAt, completedAt)
+	}
+
+	a.reconcileRunnableBoardTasks()
+	a.wg.Wait()
+	afterFirst, err := a.tasks.Get(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("first maintenance tick started %d agents; want 0", launcher.startCalls)
+	}
+	if afterFirst.Workflow == nil || afterFirst.Workflow.WorkflowID != "pr-review" || afterFirst.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("first maintenance tick mutated converged workflow: %+v", afterFirst.Workflow)
+	}
+	if afterFirst.Status != task.StatusInReview {
+		t.Fatalf("first maintenance tick status = %q, want %q", afterFirst.Status, task.StatusInReview)
+	}
+
+	a.reconcileRunnableBoardTasks()
+	a.wg.Wait()
+	afterSecond, err := a.tasks.Get(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("second maintenance tick started %d agents; want still 0", launcher.startCalls)
+	}
+	if afterSecond.Workflow == nil || afterSecond.Workflow.WorkflowID != "pr-review" || afterSecond.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("second maintenance tick mutated converged workflow: %+v", afterSecond.Workflow)
+	}
+	if afterSecond.Status != task.StatusInReview {
+		t.Fatalf("second maintenance tick status = %q, want %q", afterSecond.Status, task.StatusInReview)
+	}
+}
