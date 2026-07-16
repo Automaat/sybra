@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
@@ -1232,8 +1233,24 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 func (a *App) getPressureGate() *pressure.Gate {
 	if a.pressureGate == nil {
 		a.pressureGate = pressure.New(a.cfg.Orchestrator.Pressure, config.HomeDir(), a.logger)
+		if a.pressureGate != nil {
+			if reclaimer := a.getDiskReclaimer(); reclaimer != nil {
+				a.pressureGate.SetReclaimTrigger(func() { reclaimer.TryRun() })
+			}
+		}
 	}
 	return a.pressureGate
+}
+
+func (a *App) getDiskReclaimer() *diskreclaim.Reclaimer {
+	if a == nil || a.cfg == nil || a.tasks == nil {
+		return nil
+	}
+	if a.diskReclaimer == nil {
+		cooldown := time.Duration(a.cfg.Orchestrator.Pressure.ReclaimCooldownSeconds) * time.Second
+		a.diskReclaimer = diskreclaim.New(a.cfg, a.tasks, cooldown, a.logger)
+	}
+	return a.diskReclaimer
 }
 
 // configureTestingEscalation wires the testing→escalation config knobs onto

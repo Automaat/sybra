@@ -29,6 +29,7 @@ import (
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
+	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/experience"
@@ -104,6 +105,7 @@ type App struct {
 	workflowEngine    *workflow.Engine
 	workflowStore     *workflow.Store
 	pressureGate      *pressure.Gate
+	diskReclaimer     *diskreclaim.Reclaimer
 	todoist           *todoistCoordinator
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
