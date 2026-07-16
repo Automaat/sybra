@@ -1115,6 +1115,8 @@ func TestRestartStalePRFixRebaseFailedFlipsToHumanRequired(t *testing.T) {
 // a non-nil engine without a real workflow store.
 type stubWorkflowEngine struct {
 	startWorkflowCalls int
+	startWorkflowIDs   []string
+	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
 
 	dispatchEventCalls  []map[string]string
@@ -1122,9 +1124,10 @@ type stubWorkflowEngine struct {
 	dispatchEventErr    error
 }
 
-func (s *stubWorkflowEngine) StartWorkflow(_, _ string) error {
+func (s *stubWorkflowEngine) StartWorkflow(_, workflowID string) error {
 	s.startWorkflowCalls++
-	return nil
+	s.startWorkflowIDs = append(s.startWorkflowIDs, workflowID)
+	return s.startWorkflowErr
 }
 
 func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[string]string) (string, error) {
@@ -1220,6 +1223,203 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	}
 	if !strings.Contains(updated.StatusReason, "conflict resolved") {
 		t.Errorf("status reason = %q, want cancellation reason", updated.StatusReason)
+	}
+}
+
+// newReviewTaskOnPlanWorkflow reproduces the create-before-tag race from
+// createReviewTaskWithTriage (internal/sybra/review/inbound.go): a review
+// task whose task.created dispatch lost to simple-task-plan before the
+// "review" tag was visible, leaving it in-progress with a terminal
+// simple-task-plan workflow and no agent. withPRContext controls whether
+// ProjectID/PRNumber (normally set atomically by CreateFull) are present.
+func newReviewTaskOnPlanWorkflow(t *testing.T, tasks *task.Manager, withPRContext bool) string {
+	t.Helper()
+	created, err := tasks.Create("Review: some PR", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	tags := []string{"review"}
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		State:       workflow.ExecCompleted,
+		CompletedAt: task.Ptr(time.Now().UTC()),
+	}
+	upd := task.Update{Status: &status, Tags: &tags, Workflow: &wf}
+	if withPRContext {
+		upd.ProjectID = task.Ptr("Automaat/sybra")
+		upd.PRNumber = task.Ptr(42)
+	}
+	if _, err := tasks.Update(created.ID, upd); err != nil {
+		t.Fatal(err)
+	}
+	return created.ID
+}
+
+// TestRestartStaleReviewOnPlanWorkflowConvergesToPRReview verifies the fix for
+// #2035 / #2004: a review task stranded in-progress on a terminal
+// simple-task-plan workflow (the create-before-tag race) must converge onto
+// pr-review — the workflow it should have matched in the first place —
+// rather than being silently re-logged as "handled" every tick forever.
+// pr-review reads PRNumber/ProjectID straight off the task, so restarting it
+// needs no seeded vars (unlike pr-fix, just above this in stale.go).
+//
+// A second maintenance tick, run after the task converges onto a live
+// (non-terminal) pr-review workflow, must be a no-op: it must not call
+// StartWorkflow again and must not fall through to the generic
+// implementation redispatch/respawn path.
+func TestRestartStaleReviewOnPlanWorkflowConvergesToPRReview(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	taskID := newReviewTaskOnPlanWorkflow(t, tasks, true)
+	// Stamp the stale lost-agent marker resetLostAgent leaves behind, so
+	// convergence overwriting it is observable.
+	if _, err := tasks.Update(taskID, task.Update{
+		StatusReason: task.Ptr("monitor: agent lost; recovery will resume"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	// Tick 1: converges.
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d); want 0 (must not start an implementation agent)", stub.startCalls, stub.prFixCalls)
+	}
+	if len(wfStub.startWorkflowIDs) != 1 || wfStub.startWorkflowIDs[0] != "pr-review" {
+		t.Fatalf("StartWorkflow calls = %v; want exactly [\"pr-review\"]", wfStub.startWorkflowIDs)
+	}
+
+	converged, err := tasks.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(converged.StatusReason, "agent lost") {
+		t.Errorf("status reason = %q, stale lost-agent marker was not cleared", converged.StatusReason)
+	}
+	if converged.Status != task.StatusInProgress {
+		t.Errorf("status = %s; want in-progress (pr-review's own set_in_progress step owns this)", converged.Status)
+	}
+
+	// Simulate the real engine's effect of StartWorkflow: it attaches a live,
+	// non-terminal execution and a running review agent before this function
+	// returns (startWorkflowCore calls SetWorkflow, then the run_agent step
+	// registers and starts the agent, before StartWorkflow returns). The stub
+	// doesn't do either itself since it has no task store or agent manager —
+	// set both here to drive tick 2 the way the real engine would have left
+	// things.
+	liveWF := &workflow.Execution{WorkflowID: "pr-review", State: workflow.ExecRunning}
+	if _, err := tasks.Update(taskID, task.Update{Workflow: &liveWF}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(taskID, task.AgentRun{
+		AgentID:   "ag-pr-review",
+		Role:      "review",
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tick 2: must be a no-op.
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.startWorkflowIDs) != 1 {
+		t.Errorf("StartWorkflow calls after tick 2 = %v; want no additional calls", wfStub.startWorkflowIDs)
+	}
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d) on tick 2; want 0", stub.startCalls, stub.prFixCalls)
+	}
+}
+
+// TestRestartStaleReviewOnPlanWorkflowNoContextEscalates verifies the
+// durable-recoverable-state half of the fix: a review task stranded on a
+// terminal simple-task-plan workflow with no PR context to resume pr-review
+// from must not be silently re-logged as "handled" forever — it must escalate
+// to human-required with a precise reason, and must never call StartWorkflow
+// or start an implementation agent.
+func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, context.Background(), func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	taskID := newReviewTaskOnPlanWorkflow(t, tasks, false)
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("StartWorkflow called %d times; want 0 (no PR context to resume from)", wfStub.startWorkflowCalls)
+	}
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d); want 0", stub.startCalls, stub.prFixCalls)
+	}
+
+	updated, err := tasks.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusHumanRequired {
+		t.Errorf("status = %s; want %s (durable recoverable state)", updated.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(updated.StatusReason, "no project/PR context") {
+		t.Errorf("status reason = %q, want precise no-context reason", updated.StatusReason)
 	}
 }
 
