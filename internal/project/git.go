@@ -402,6 +402,7 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 					markFetched(barePath)
 					return nil
 				}
+				return retryErr
 			}
 			return err
 		}

@@ -76,7 +76,10 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 		}
 		badValue, _ := outputBare(ctx, barePath, "rev-parse", ref)
 		QuarantineRef(barePath, ref, strings.TrimSpace(badValue))
-		if delErr := runBare(ctx, barePath, "update-ref", "-d", ref); delErr == nil {
+		delErr := withLockRetry(func() error {
+			return runBare(ctx, barePath, "update-ref", "-d", ref)
+		})
+		if delErr == nil {
 			report.QuarantinedRefs = append(report.QuarantinedRefs, ref)
 		}
 	}
@@ -105,7 +108,9 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	}
 
 	if len(report.QuarantinedRefs) > 0 {
-		_ = runBare(ctx, barePath, "worktree", "prune")
+		_ = withLockRetry(func() error {
+			return runBare(ctx, barePath, "worktree", "prune")
+		})
 		report.PrunedWorktrees = true
 	}
 
