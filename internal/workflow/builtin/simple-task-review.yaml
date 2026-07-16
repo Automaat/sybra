@@ -53,19 +53,28 @@ steps:
     name: Triage Review
     type: triage_review
     next:
-      - goto: clear_review_sidecar
+      - goto: pick_review_method
 
-  # Every review dispatch must start from a fresh sidecar file.
-  # Without this the loop below cannot terminate on a failed round: the sidecar
-  # is imported only when the agent succeeds (engine_events.go), and
-  # require_code_review only rejects an EMPTY sidecar, so a reviewer that dies
-  # after round 1 would leave task.code_review holding round 1's stale
-  # NEEDS_FIXES — re-running fix_review against findings it already fixed,
-  # forever. Clearing first makes a dead reviewer fail closed into
-  # require_code_review -> human-required instead.
+  # Back-edge only — reachable from detect_tampering, never on first entry.
+  # Every RE-review must start from a fresh sidecar: the file is imported only
+  # when the agent succeeds (engine_events.go), and require_code_review only
+  # rejects an EMPTY sidecar, so a reviewer that dies after round 1 would leave
+  # task.code_review holding round 1's stale NEEDS_FIXES — re-running
+  # fix_review against findings it already fixed, forever. Clearing first makes
+  # a dead reviewer fail closed into require_code_review -> human-required.
   #
-  # `rm -f` is exit-0 on a missing file, so first entry (nothing to remove) and
-  # a worktree-less run (empty dir, nothing matches) are both no-ops.
+  # This must NOT sit on the triage_review -> pick_review_method path.
+  # `_dir` is set by execRunAgent (engine_steps_agent.go) only once the first
+  # run_agent of THIS execution has started, and execShell rejects an empty dir
+  # outright ("resolved to empty path"), so on first entry the step would fail
+  # the workflow before any reviewer ran. On the back-edge the review and fix
+  # agents have both run, so `_dir` is populated.
+  #
+  # Round 1 needs no clearing anyway: the reviewer writes the file fresh, and
+  # nothing has yet re-read a previous round's verdict.
+  #
+  # `rm -f` is exit-0 on a missing file, so a round whose reviewer never wrote
+  # one is still a no-op.
   - id: clear_review_sidecar
     name: Clear Stale Review Sidecar
     type: shell

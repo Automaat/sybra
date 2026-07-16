@@ -829,6 +829,22 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "clear_review_sidecar")
 	}
 
+	// clear_review_sidecar must be reachable ONLY from the back-edge. Its
+	// dir renders from `_dir`, which execRunAgent sets only after the first
+	// run_agent of this execution starts, and execShell rejects an empty dir
+	// outright — so on first entry the step would fail the workflow before any
+	// reviewer ran.
+	got, err = ResolveTransition(step("triage_review").Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got == "clear_review_sidecar" {
+		t.Errorf("triage_review goto = %q — clear_review_sidecar needs _dir, which is unset before the first agent runs", got)
+	}
+	if got != "pick_review_method" {
+		t.Errorf("triage_review goto = %q, want pick_review_method", got)
+	}
+
 	// The back-edge must clear the sidecar before re-reviewing, otherwise a
 	// failed round re-reads the previous round's verdict and loops forever.
 	got, err = ResolveTransition(step("clear_review_sidecar").Next, map[string]string{})
