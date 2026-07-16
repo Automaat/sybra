@@ -44,6 +44,75 @@ k3d cluster delete sybra-poc
 The default agent Job uses `busybox:1.36` and emits Claude-shaped NDJSON so the
 existing Sybra stream parser can consume it.
 
+## Instance role
+
+A Kubernetes deployment should not start orchestrator sessions or dispatch tasks
+just because tasks are active — a shared or test cluster would race the machine
+that actually owns the board. Every config here sets:
+
+```yaml
+orchestrator:
+  role: agent-only
+```
+
+`agent-only` fails closed on both self-starting automations:
+
+| | `full` (default) | `agent-only` |
+|---|---|---|
+| Orchestrator brain session (auto-start) | yes | no |
+| Workflows of any kind — dispatch, resume, status-change, **or a manual start** | yes | no |
+| Board reconcile, stale-agent restart | yes | no |
+| Auto-spawned human-review agent | yes | no |
+| HTTP API, explicitly-started agents (`App.StartAgent`, `sybra-cli`) | yes | yes |
+| Draining an explicitly-started agent queued behind a busy pool | yes | yes |
+| Maintenance cleanup (orphan worktrees/sandboxes, metrics) | yes | yes |
+
+**An `agent-only` instance runs agents, not workflows.** The workflow engine is
+the single gate: `StartWorkflow`, `DispatchEvent`, `HandleStatusChange` and
+`ResumeStalled` all refuse with `workflow dispatch is disabled on this instance`.
+That is deliberately blunt — it stops an operator-initiated workflow start too,
+not just automatic ones — because the engine has callers spread across the task
+service, the review fixer, completion, PR integrations and the watcher, and
+gating those individually kept missing routes. Direct agent starts never touch
+the engine, so they keep working. Opt back in with `scheduler_enabled: true`.
+
+Two things deliberately keep running under `agent-only`. Cleanup, so a parked
+instance still collects its own garbage. And the manual queue drain — that is the
+resume path for an agent an operator already explicitly started, not
+auto-dispatch, so gating it would strand any start that landed while the pool was
+busy. An operator's manual `StartOrchestrator` call is never gated either.
+
+Re-enable either half independently — these win over `role`:
+
+```yaml
+orchestrator:
+  role: agent-only
+  enabled: true            # orchestrator brain only
+  scheduler_enabled: true  # auto-dispatch only
+```
+
+An invalid `role` falls back to `full` and logs `config.orchestrator.role.invalid`,
+so a typo never silently parks an instance that was meant to orchestrate. Note the
+direction: a typo'd role starts orchestrating, it does not go idle — check the log
+after changing it.
+
+The role is sampled once at startup (like `orchestrator.dispatch_interval_seconds`),
+so changing it needs a restart; a reload logs `config.reload.restart_required`
+with field `orchestrator.role`.
+
+Confirm the resolved role in the startup log. Note `kubectl logs` will *not* show
+it: Sybra's slog handler writes to a rotating file, not stdout, so the pod's
+stdout carries only a few bootstrap lines. Read the real sink instead:
+
+```bash
+kubectl -n sybra-poc exec deploy/sybra-server -- \
+  grep app.automations /home/sybra/.sybra/logs/sybra.log
+```
+
+```json
+{"level":"INFO","msg":"app.automations","instance_role":"agent-only","orchestrator":false,"scheduler":false}
+```
+
 ## Fake repo e2e mode
 
 Use this path when you want a fully local k3d test that exercises the real
