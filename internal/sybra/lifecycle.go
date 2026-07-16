@@ -77,6 +77,9 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		}
 		return owned
 	})
+	if a.sandboxes != nil {
+		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
+	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)

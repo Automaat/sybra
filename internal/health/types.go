@@ -29,6 +29,7 @@ const (
 	CatTriageMismatch    Category = "triage_mismatch"
 	CatStatusBottleneck  Category = "status_bottleneck"
 	CatGHAuthFailure     Category = "gh_auth_failure"
+	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
 )
 
 // Score is the rollup verdict across all findings in a report.

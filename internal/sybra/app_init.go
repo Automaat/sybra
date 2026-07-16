@@ -839,8 +839,19 @@ func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
 	if a.workflowEngine == nil {
 		return
 	}
-	if t, err := a.tasks.Get(taskID); err == nil && !a.runsTaskLocally(t) {
-		return
+	if t, err := a.tasks.Get(taskID); err == nil {
+		if !a.runsTaskLocally(t) {
+			return
+		}
+		// Umbrella/chat tasks run no agent (agentorch.startAgent refuses
+		// them at the dispatch choke point). Every status-triggered
+		// workflow here ends in a run_agent step, so dispatching one onto
+		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
+		// flips the tracker to human-required — and umbrella.rollup then
+		// flips it back to in-progress on the next tick, looping forever.
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+			return
+		}
 	}
 
 	statusValue := string(status)

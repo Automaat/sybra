@@ -455,3 +455,75 @@ steps:
 		t.Errorf("task status = %q, want in-review (set_status step in test workflow)", tk.Status)
 	}
 }
+
+// TestApp_StatusHook_InProgress_SkipsUmbrellaTracker reproduces the
+// production incident where an umbrella tracker's rollup flips its status
+// to in-progress (reflecting its children), initStatusHook dispatches
+// simple-task-implement onto it same as any normal task, agentorch refuses
+// to start an agent for a TaskTypeUmbrella task, the run_agent step retries
+// exhaust and trip the circuit breaker, the tracker flips to human-required,
+// and the next rollup tick flips it back to in-progress — repeating forever.
+// initStatusHook must skip workflow dispatch for umbrella (and chat) tasks
+// entirely, matching every other stale/recovery dispatch path in the
+// codebase (internal/recovery/stale.go, internal/watchdog/agent.go, etc.).
+func TestApp_StatusHook_InProgress_SkipsUmbrellaTracker(t *testing.T) {
+	a := setupApp(t)
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const testImplementWF = `id: simple-task-implement
+name: Test Implement
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+steps:
+  - id: mark_ready_review
+    name: Mark Ready Review
+    type: set_status
+    config:
+      status: ready-review
+    next:
+      - goto: ""
+`
+	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-implement.yaml"), []byte(testImplementWF), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.initStatusHook()
+
+	created, err := a.tasks.Create("umbrella tracker", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	umbrellaType := task.TaskTypeUmbrella
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"task_type": string(umbrellaType),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Act — mirror rollupTrackers flipping the tracker to in-progress.
+	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert — no workflow was dispatched onto the tracker.
+	tk, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Workflow != nil {
+		t.Errorf("workflow attached to umbrella tracker = %+v, want nil — initStatusHook must not dispatch onto umbrella tasks", tk.Workflow)
+	}
+}
