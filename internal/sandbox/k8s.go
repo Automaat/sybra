@@ -15,9 +15,9 @@ import (
 
 func (m *Manager) startK8s(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
 	clusterName := "sybra-" + taskID
-	taskDir := filepath.Join(m.dataDir, taskID)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return nil, fmt.Errorf("sandbox dir: %w", err)
+	taskDir, err := m.prepareTaskDir(taskID)
+	if err != nil {
+		return nil, err
 	}
 	kubeconfigPath := filepath.Join(taskDir, "kubeconfig")
 
