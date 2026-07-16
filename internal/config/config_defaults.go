@@ -627,6 +627,7 @@ func DefaultConfig() *Config {
 				MinDiskFreePercent:     5,
 				MinMemAvailablePercent: 8,
 				MaxLoadPerCPU:          8.0,
+				WarningDiskFreePercent: 15,
 				SampleIntervalSeconds:  15,
 			},
 		},
@@ -1305,20 +1306,25 @@ func applyOrchestratorDefaults(cfg *Config) {
 }
 
 // applyPressureDefaults fills the Pressure block. The thresholds
-// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU) are seeded in
-// DefaultConfig, NOT here: their documented `<=0 disables this dimension`
-// sentinel means an explicit `0` in YAML must survive loading, so defaulting
-// them on `<=0` would silently re-enable a signal the operator turned off. A
-// config missing the block entirely keeps the DefaultConfig seeds; a config
-// that sets one threshold to 0 keeps its 0.
+// (MinDiskFreePercent, MinMemAvailablePercent, MaxLoadPerCPU,
+// WarningDiskFreePercent) are seeded in DefaultConfig, NOT here: their
+// documented `<=0 disables this dimension` sentinel means an explicit `0` in
+// YAML must survive loading, so defaulting them on `<=0` would silently
+// re-enable a signal the operator turned off. A config missing the block
+// entirely keeps the DefaultConfig seeds; a config that sets one threshold
+// to 0 keeps its 0.
 //
-// SampleIntervalSeconds is different — its `<=0` means "fall back to the
-// default", not "disable" — so it is safe to normalize here (pressure.Gate
-// also falls back internally).
+// SampleIntervalSeconds and ReclaimCooldownSeconds are different — their
+// `<=0` means "fall back to the default", not "disable" — so it is safe to
+// normalize them here (pressure.Gate and internal/diskreclaim.Reclaimer also
+// fall back internally).
 func applyPressureDefaults(cfg *Config) {
 	p := &cfg.Orchestrator.Pressure
 	if p.SampleIntervalSeconds <= 0 {
 		p.SampleIntervalSeconds = 15
+	}
+	if p.ReclaimCooldownSeconds <= 0 {
+		p.ReclaimCooldownSeconds = 300
 	}
 }
 

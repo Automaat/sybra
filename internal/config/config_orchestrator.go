@@ -78,6 +78,20 @@ type PressureConfig struct {
 	// count, above which new dispatch is deferred. <=0 disables this
 	// dimension. Default 8.0.
 	MaxLoadPerCPU float64 `yaml:"max_load_per_cpu" json:"maxLoadPerCpu"`
+	// WarningDiskFreePercent is the free-disk-space percentage at which
+	// Sybra automatically runs a safe-cache reclaim pass (internal/cleanup's
+	// RiskSafe buckets, via internal/diskreclaim), before disk free space
+	// reaches MinDiskFreePercent and dispatch starts being deferred. Must be
+	// set higher than MinDiskFreePercent for cleanup to get a chance to run
+	// first; the gate still triggers cleanup even once MinDiskFreePercent has
+	// also been crossed. <=0 disables the warning-triggered cleanup entirely.
+	// Default 15.
+	WarningDiskFreePercent float64 `yaml:"warning_disk_free_percent" json:"warningDiskFreePercent"`
+	// ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
+	// cleanup pass may run, so a host hovering right at the watermark doesn't
+	// re-scan/re-delete on every dispatch tick. <=0 falls back to
+	// diskreclaim.DefaultCooldown (5 minutes). Default 300.
+	ReclaimCooldownSeconds int `yaml:"reclaim_cooldown_seconds" json:"reclaimCooldownSeconds"`
 	// SampleIntervalSeconds is both the resource-sample cache TTL and the
 	// deny-log throttle window. <=0 falls back to
 	// pressure.DefaultSampleIntervalSeconds (15). Default 15.
