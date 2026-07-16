@@ -83,6 +83,52 @@ func prRepoNumberKey(repo string, number int) string {
 
 // MatchTaskPRs finds issues on PRs that are linked to tasks.
 // Matches by PRNumber or Branch (HeadRefName). Skips drafts and UNKNOWN mergeable.
+// MatchTaskPRIndex maps task ID to the PR matched for it, using the same
+// number-then-branch resolution as MatchTaskPRs. Callers need the live PR even
+// when it produced no issue this cycle — "no issue" and "issue resolved" are
+// different claims.
+func MatchTaskPRIndex(prs []PullRequest, tasks []TaskMatcher) map[string]PullRequest {
+	byNumber := make(map[int]*TaskMatcher, len(tasks))
+	byBranch := make(map[string]*TaskMatcher, len(tasks))
+	for i := range tasks {
+		if tasks[i].PRNumber > 0 {
+			byNumber[tasks[i].PRNumber] = &tasks[i]
+		}
+		if tasks[i].Branch != "" {
+			byBranch[tasks[i].Branch] = &tasks[i]
+		}
+	}
+	index := make(map[string]PullRequest, len(tasks))
+	for i := range prs {
+		pr := &prs[i]
+		tm := byNumber[pr.Number]
+		if tm == nil {
+			tm = byBranch[pr.HeadRefName]
+		}
+		if tm == nil {
+			continue
+		}
+		index[tm.ID] = *pr
+	}
+	return index
+}
+
+// PRIssueIndeterminate reports whether pr's live data cannot yet answer whether
+// kind is resolved. A fix agent's own push or rerun puts checks in flight, which
+// makes ci_failure unknowable, and GitHub recomputes mergeability
+// asynchronously, which makes conflict unknowable. Reading either absence as
+// "resolved" cancels the very agent that is fixing the PR.
+func PRIssueIndeterminate(pr PullRequest, kind PRIssueKind) bool {
+	switch kind {
+	case PRIssueCIFailure:
+		return pr.HasPendingChecks || pr.CIStatus == "PENDING"
+	case PRIssueConflict:
+		return pr.Mergeable == "" || pr.Mergeable == "UNKNOWN"
+	default:
+		return false
+	}
+}
+
 func MatchTaskPRs(prs []PullRequest, tasks []TaskMatcher) []PRIssue {
 	byNumber := make(map[int]*TaskMatcher, len(tasks))
 	byBranch := make(map[string]*TaskMatcher, len(tasks))

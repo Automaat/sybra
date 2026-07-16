@@ -594,12 +594,12 @@ func truncatePushPreflightReason(s string, limit int) string {
 	return strings.TrimSpace(b.String()) + "..."
 }
 
+// A rerun re-runs jobs the repo already ran and sends no content anywhere, so the work/pet split does not apply. EXC:FILE011:load-bearing-invariant
 func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 	if r.projects == nil || r.prTracker == nil || t.ProjectID == "" || issue.PR.Number <= 0 {
 		return false
 	}
-	proj, err := r.projects.Get(t.ProjectID)
-	if err != nil || proj.Type != project.ProjectTypePet {
+	if _, err := r.projects.Get(t.ProjectID); err != nil {
 		return false
 	}
 	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, issue.PR.HeadSHA) {
