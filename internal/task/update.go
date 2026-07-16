@@ -270,6 +270,12 @@ func applyTagsField(u *Update, k string, v any) error {
 		cp := make([]string, len(tv))
 		copy(cp, tv)
 		u.Tags = &cp
+	case []any:
+		parts, err := stringSlice(k, tv)
+		if err != nil {
+			return err
+		}
+		u.Tags = &parts
 	case string:
 		parts := strings.Split(tv, ",")
 		u.Tags = &parts
@@ -279,12 +285,33 @@ func applyTagsField(u *Update, k string, v any) error {
 	return nil
 }
 
+// stringSlice coerces a JSON-decoded array. Every update that arrives over HTTP
+// (the CLI writes that way, and so does the web GUI) decodes to []any, never
+// []string — without this, any tags/depends_on update 500s.
+func stringSlice(k string, in []any) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, e := range in {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("field %q: want a string element, got %T", k, e)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 func applyDependsOnField(u *Update, k string, v any) error {
 	switch dv := v.(type) {
 	case []string:
 		cp := make([]string, len(dv))
 		copy(cp, dv)
 		u.DependsOn = &cp
+	case []any:
+		parts, err := stringSlice(k, dv)
+		if err != nil {
+			return err
+		}
+		u.DependsOn = &parts
 	case string:
 		// Comma-separated shorthand from the CLI; trim and drop empties so a
 		// trailing comma or stray space cannot inject a blank dependency ref
