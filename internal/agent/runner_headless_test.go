@@ -2728,7 +2728,7 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	}
 	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
 	if stop {
-		t.Fatal("processHeadlessLine reported stop for an unsteered close")
+		t.Fatal("processHeadlessLine reported stop for an unsteered close state; the detached tailer owns the actual fast-close decision")
 	}
 
 	if !a.isFinalizing() {
@@ -2736,6 +2736,123 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	}
 	if a.convo.hasStdinPipe() {
 		t.Error("stdin pipe must be closed once finalizing")
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true before the tailer reaps the post-result process, want false")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitFastClose {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fast_close", reason, time.Time{}, ok)
+	}
+}
+
+func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with live background tasks must retain grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitBackgroundTask {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want background_tasks", reason, time.Time{}, ok)
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true before background tasks clear, want false")
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background task clear event should update state, not stop the stream directly")
+	}
+	called := false
+	if !m.stopTailPostResultWait(a, func() { called = true }) {
+		t.Fatal("tailer must stop promptly once background tasks clear after the terminal result")
+	}
+	if !called {
+		t.Fatal("stopTailPostResultWait must invoke waitExit on the close path")
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false after tailer close, want true")
+	}
+}
+
+func TestProcessHeadlessLine_ForkSubagentResultKeepsIdleGrace(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "fork-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	a.SetForkSubagent(true)
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with fork subagents must retain idle grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitForkSubagent {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fork_subagent", reason, time.Time{}, ok)
+	}
+}
+
+func TestProcessHeadlessLine_ErrorResultDoesNotArmPostResultClose(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "retry-close", TaskID: "t", Mode: "headless", Provider: "codex", StartedAt: time.Now().UTC()}
+
+	var lastEmit time.Time
+	prov := providerByName("codex")
+	result := []byte(`{"type":"error","message":"Overloaded","error_type":"overloaded_error","code":529}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("error terminal result must not stop the stream before attempt exit classification")
+	}
+	if _, _, ok := a.PostResultWait(); ok {
+		t.Fatal("PostResultWait must stay clear for error results so retry classification can run")
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true on error result, want false")
+	}
+}
+
+func TestProcessHeadlessLine_ForkSubagentBackgroundClearKeepsIdleGrace(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "fork-bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	a.SetForkSubagent(true)
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with live background tasks must retain grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitBackgroundTask {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want background_tasks", reason, time.Time{}, ok)
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background task clear event should not stop the stream")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitForkSubagent {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fork_subagent after background clear", reason, time.Time{}, ok)
 	}
 }
 

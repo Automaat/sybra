@@ -462,6 +462,31 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 	}
 }
 
+// TestE2E_HeadlessAgent_TerminalResultFastCloseAdvancesWorkflow verifies the
+// observable workflow behavior behind the runner change: a headless agent that
+// emits its clean terminal result but then hangs must now be closed promptly
+// by the runner itself, without waiting for a later watchdog/manual reap, so
+// the workflow advances past the completed step on its own.
+func TestE2E_HeadlessAgent_TerminalResultFastCloseAdvancesWorkflow(t *testing.T) {
+	env := setupE2E(t, "success_then_hang")
+
+	created, err := env.tasks.Create("terminal result fast close", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "workflow advances past triage after a hanging post-result process", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage" && !env.agents.HasRunningAgentForTask(created.ID)
+	})
+}
+
 // TestE2E_AgentRunPromptPersisted verifies that the prompt passed to an agent
 // is captured on the persisted AgentRun and survives a parse round-trip.
 // The triage step of test-simple.yaml uses prompt "Triage {{.Task.ID}}", so

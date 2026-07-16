@@ -71,6 +71,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.oneShot = true
 	a.requirePermissions = true
 	a.sandboxMode = "enforce"
+	a.SetForkSubagent(true)
 	a.EnqueuePrompt("queued turn 1")
 	a.EnqueuePrompt("queued turn 2")
 
@@ -168,52 +169,58 @@ func recordMappingStartedAt() time.Time {
 
 func recordMappingAgent(started time.Time) *Agent {
 	return &Agent{
-		ID:                 "a-map",
-		TaskID:             "task-map",
-		Name:               "mapper",
-		Mode:               "interactive",
-		Provider:           "codex",
-		Model:              "gpt-5.3-codex",
-		ExperimentID:       "exp-1",
-		VariantID:          "variant-a",
-		AssignmentUnit:     "task",
-		AssignmentKey:      "task-map",
-		PID:                12345,
-		SessionID:          "sess-map",
-		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
-		StartedAt:          started,
-		MaxTurns:           7,
-		ReasoningEffort:    "high",
-		SkillExecutionMode: "injected",
+		ID:                   "a-map",
+		TaskID:               "task-map",
+		Name:                 "mapper",
+		Mode:                 "interactive",
+		Provider:             "codex",
+		Model:                "gpt-5.3-codex",
+		ExperimentID:         "exp-1",
+		VariantID:            "variant-a",
+		AssignmentUnit:       "task",
+		AssignmentKey:        "task-map",
+		PID:                  12345,
+		SessionID:            "sess-map",
+		LogPath:              "/tmp/sybra/agents/a-map.ndjson",
+		StartedAt:            started,
+		MaxTurns:             7,
+		ReasoningEffort:      "high",
+		SkillExecutionMode:   "injected",
+		postResultWaitReason: postResultWaitBackgroundTask,
+		postResultWaitSince:  started.Add(10 * time.Minute),
+		forkSubagent:         true,
 	}
 }
 
 func recordMappingRecord(started time.Time) Record {
 	return Record{
-		ID:                 "a-map",
-		TaskID:             "task-map",
-		Name:               "mapper",
-		Mode:               "interactive",
-		Provider:           "codex",
-		Model:              "gpt-5.3-codex",
-		ExperimentID:       "exp-1",
-		VariantID:          "variant-a",
-		AssignmentUnit:     "task",
-		AssignmentKey:      "task-map",
-		PID:                12345,
-		SessionID:          "sess-map",
-		LogPath:            "/tmp/sybra/agents/a-map.ndjson",
-		CWD:                "/tmp/sybra/worktrees/task-map",
-		SandboxHomeDir:     "/tmp/sybra/sandboxes/task-map",
-		StartedAt:          started,
-		StdinPath:          "/tmp/sybra/agents/a-map.stdin",
-		PendingPrompts:     []string{"queued turn 1", "queued turn 2"},
-		OneShot:            true,
-		MaxTurns:           7,
-		RequirePermissions: true,
-		SandboxMode:        "enforce",
-		ReasoningEffort:    "high",
-		SkillExecutionMode: "injected",
+		ID:                   "a-map",
+		TaskID:               "task-map",
+		Name:                 "mapper",
+		Mode:                 "interactive",
+		Provider:             "codex",
+		Model:                "gpt-5.3-codex",
+		ExperimentID:         "exp-1",
+		VariantID:            "variant-a",
+		AssignmentUnit:       "task",
+		AssignmentKey:        "task-map",
+		PID:                  12345,
+		SessionID:            "sess-map",
+		LogPath:              "/tmp/sybra/agents/a-map.ndjson",
+		CWD:                  "/tmp/sybra/worktrees/task-map",
+		SandboxHomeDir:       "/tmp/sybra/sandboxes/task-map",
+		StartedAt:            started,
+		StdinPath:            "/tmp/sybra/agents/a-map.stdin",
+		PendingPrompts:       []string{"queued turn 1", "queued turn 2"},
+		OneShot:              true,
+		MaxTurns:             7,
+		RequirePermissions:   true,
+		SandboxMode:          "enforce",
+		ReasoningEffort:      "high",
+		SkillExecutionMode:   "injected",
+		PostResultWaitReason: postResultWaitBackgroundTask,
+		PostResultWaitSince:  started.Add(10 * time.Minute),
+		ForkSubagent:         true,
 	}
 }
 
@@ -552,6 +559,95 @@ func TestTailHeadlessFile_EndOffsetExcludesPartialLine(t *testing.T) {
 	}
 	if end != int64(len(complete)) {
 		t.Fatalf("expected endOffset=%d (after complete line only), got %d", len(complete), end)
+	}
+}
+
+func TestTailHeadlessFile_ReattachedFastCloseDoesNotWaitFullGrace(t *testing.T) {
+	prevDrain := drainTimeout
+	drainTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prevDrain })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	logPath := filepath.Join(t.TempDir(), "tail-fast-close.ndjson")
+	content := `{"type":"result","result":"done","session_id":"sess-1","total_cost_usd":0}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	a := &Agent{
+		ID:                   "fast-close",
+		Provider:             "claude",
+		postResultWaitReason: postResultWaitFastClose,
+		postResultWaitSince:  time.Now().Add(-time.Second),
+	}
+	procDone := make(chan struct{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(procDone)
+	}()
+
+	start := time.Now()
+	exited, _ := m.tailHeadlessFile(context.Background(), a, logPath, 0, procDone)
+	if !exited {
+		t.Fatal("expected exited=true on persisted fast-close state")
+	}
+	if elapsed := time.Since(start); elapsed >= postResultGrace/2 {
+		t.Fatalf("tailHeadlessFile took %s, want prompt close instead of waiting near postResultGrace", elapsed)
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false, want true on reattached fast-close path")
+	}
+}
+
+func TestTailHeadlessFile_ForkSubagentOutputAfterResultKeepsGrace(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	logPath := filepath.Join(t.TempDir(), "tail-fork-subagent.ndjson")
+	content := `{"type":"result","result":"done","session_id":"sess-1","total_cost_usd":0}` + "\n" +
+		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"still working"}]}}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	a := &Agent{
+		ID:                   "fork-close",
+		Provider:             "claude",
+		LastEventAt:          time.Now().UTC(),
+		postResultWaitReason: postResultWaitForkSubagent,
+		postResultWaitSince:  time.Now().Add(-2 * postResultGrace),
+		forkSubagent:         true,
+	}
+	procDone := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		exited, _ := m.tailHeadlessFile(ctx, a, logPath, 0, procDone)
+		if exited {
+			t.Error("tailHeadlessFile exited before fork-subagent idle grace elapsed")
+		}
+	}()
+
+	deadline := time.After(scaledDeadline(500 * time.Millisecond))
+	for {
+		if got := a.Output(); len(got) >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for tailer to consume post-result subagent output")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = true while fork-subagent output refreshed idle grace")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(scaledDeadline(time.Second)):
+		t.Fatal("tailer did not exit after context cancellation")
 	}
 }
 

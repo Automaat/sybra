@@ -73,6 +73,13 @@ func checkLiveBackgroundTasksAtExit(m *Manager, a *Agent) error {
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
 
+// postResultFastCloseDelay is the short debounce before a pipe-backed
+// headless run cancels a process that already emitted a clean terminal
+// result with no live cleanup work. Any further output within this window
+// proves the earlier result was not the final close boundary and suppresses
+// the cancel.
+var postResultFastCloseDelay = 100 * time.Millisecond
+
 // postResultGrace bounds how long the tailer waits for a headless process to
 // exit on its own after it has emitted a terminal (non-error) result event.
 // CC normally exits within a second or two; a skill that spawns subagents or
@@ -164,12 +171,14 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 	if outFile == nil {
 		return false, nil
 	}
+	a.ClearPostResultWait()
 
 	prepared, err := prepareHeadlessAttempt(a, cfg)
 	if err != nil {
 		return false, err
 	}
 	defer prepared.cleanup()
+	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
 
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
@@ -669,20 +678,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 			return true, end()
 		}
 
-		// Post-result hang: the process emitted its terminal result but has
-		// not exited. The run is logically complete — stop the orphan and
-		// finalize from the result so the workflow advances instead of the
-		// stall watchdog escalating a finished run to human-required.
-		// EffectiveHangGrace extends the idle window while a CLI
-		// `run_in_background` task (e.g. npm ci) is still live, so it isn't
-		// killed mid-write just because it produces no NDJSON activity.
-		if a.TerminalResultIdle(a.EffectiveHangGrace(postResultGrace)) {
-			m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
-				"idle_sec", int(time.Since(a.GetLastEventAt()).Seconds()),
-				"background_tasks_pending", a.HasBackgroundTasks())
-			a.setCompletedByResult(true)
-			m.signalKill(a)
-			waitExit()
+		if m.stopTailPostResultWait(a, waitExit) {
 			return true, end()
 		}
 
@@ -858,8 +854,123 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if keepGoing := m.handleHeadlessResult(ctx, a, event); !keepGoing {
 			return true
 		}
+	} else {
+		if reason, _, ok := a.PostResultWait(); ok {
+			if reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks() && a.UsesForkSubagent() {
+				a.SetPostResultWait(postResultWaitForkSubagent, a.GetLastEventAt())
+				reason = postResultWaitForkSubagent
+			}
+			m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), postResultPipeResolution(reason))
+		}
 	}
 	return false
+}
+
+func postResultPipeResolution(reason string) string {
+	switch reason {
+	case postResultWaitBackgroundTask:
+		return "background_tasks_cleared"
+	case postResultWaitForkSubagent:
+		return "fork_subagent_idle"
+	default:
+		return "pipe_fast_close"
+	}
+}
+
+func shouldTrackPostResultWait(a *Agent) bool {
+	return a.PendingPromptCount() == 0 && (!a.convo.hasStdinPipe() || a.isFinalizing())
+}
+
+func ensurePostResultWaitState(a *Agent) {
+	if _, _, ok := a.PostResultWait(); ok || !a.CompletedSuccessfully() || !shouldTrackPostResultWait(a) {
+		return
+	}
+	reason := postResultWaitFastClose
+	switch {
+	case a.HasBackgroundTasks():
+		reason = postResultWaitBackgroundTask
+	case a.UsesForkSubagent():
+		reason = postResultWaitForkSubagent
+	}
+	a.SetPostResultWait(reason, a.GetLastEventAt())
+}
+
+func (m *Manager) stopTailPostResultWait(a *Agent, waitExit func()) bool {
+	ensurePostResultWaitState(a)
+	reason, since, ok := a.PostResultWait()
+	if !ok {
+		return false
+	}
+	if reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks() && a.UsesForkSubagent() {
+		a.SetPostResultWait(postResultWaitForkSubagent, a.GetLastEventAt())
+		reason = postResultWaitForkSubagent
+	}
+	switch {
+	case reason == postResultWaitFastClose:
+		m.logPostResultWaitDone(a, "reattach_fast_close")
+	case reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks():
+		m.logPostResultWaitDone(a, "background_tasks_cleared")
+	case reason == postResultWaitBackgroundTask && !since.IsZero() && time.Since(since) >= a.EffectiveHangGrace(postResultGrace):
+		waited := time.Since(since)
+		m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
+			"reason", reason,
+			"wait_ms", waited.Milliseconds(),
+			"background_tasks_pending", a.HasBackgroundTasks())
+	case reason == postResultWaitForkSubagent && a.TerminalResultIdle(postResultGrace):
+		m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
+			"reason", reason,
+			"wait_ms", time.Since(a.GetLastEventAt()).Milliseconds())
+	default:
+		return false
+	}
+	a.setCompletedByResult(true)
+	m.signalKill(a)
+	waitExit()
+	return true
+}
+
+func (m *Manager) maybeArmPipePostResultClose(a *Agent, observedAt time.Time, resolution string) {
+	if a.isDetached() || a.cancel == nil {
+		return
+	}
+	reason, _, ok := a.PostResultWait()
+	if !ok {
+		return
+	}
+	if reason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
+		return
+	}
+	delay := postResultFastCloseDelay
+	if reason == postResultWaitForkSubagent {
+		delay = postResultGrace
+	}
+	go func() {
+		time.Sleep(delay)
+		if a.GetState() == StateStopped || a.WasStopped() {
+			return
+		}
+		currentReason, _, ok := a.PostResultWait()
+		if !ok {
+			return
+		}
+		if currentReason != postResultWaitFastClose &&
+			currentReason != postResultWaitBackgroundTask &&
+			currentReason != postResultWaitForkSubagent {
+			return
+		}
+		if currentReason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
+			return
+		}
+		if currentReason == postResultWaitForkSubagent && !a.TerminalResultIdle(postResultGrace) {
+			return
+		}
+		if a.GetLastEventAt().After(observedAt) {
+			return
+		}
+		m.logPostResultWaitDone(a, resolution)
+		a.setCompletedByResult(true)
+		a.cancel()
+	}()
 }
 
 func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
@@ -945,7 +1056,38 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 
 	m.drainOrCloseHeadlessSteer(a)
+	if resultSubtypeIsError(event.Subtype) || event.ErrorType != "" || event.ErrorStatus != 0 {
+		a.ClearPostResultWait()
+		return true
+	}
+	if !shouldTrackPostResultWait(a) {
+		a.ClearPostResultWait()
+		return true
+	}
+	switch {
+	case a.HasBackgroundTasks():
+		a.SetPostResultWait(postResultWaitBackgroundTask, event.Timestamp)
+	case a.UsesForkSubagent():
+		a.SetPostResultWait(postResultWaitForkSubagent, event.Timestamp)
+		m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "fork_subagent_idle")
+	default:
+		a.SetPostResultWait(postResultWaitFastClose, event.Timestamp)
+		m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "pipe_fast_close")
+	}
+	m.saveRegistry(ctx, a)
 	return true
+}
+
+func (m *Manager) logPostResultWaitDone(a *Agent, resolution string) {
+	reason, waited, ok := a.PostResultWaitDuration(time.Now().UTC())
+	if !ok {
+		return
+	}
+	m.logger.Info("agent.headless.post_result_close",
+		"id", a.ID,
+		"reason", reason,
+		"resolution", resolution,
+		"wait_ms", waited.Milliseconds())
 }
 
 // drainOrCloseHeadlessSteer is the steerable headless run's turn-boundary
