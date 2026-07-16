@@ -3,8 +3,6 @@ go = "1.26.5"
 node = "24"
 hadolint = "2.14.0"
 golangci-lint = "2.12.2"
-k3d = "5.9.0"
-kubectl = "1.36.2"
 
 [tasks."hooks:install"]
 run = "git config core.hooksPath .githooks"
@@ -142,6 +140,12 @@ run = "./bin/sybra-perf -scenario soak -duration 5m -concurrency 4 -event-interv
 depends = ["perf:build"]
 description = "Long-running soak scenario with heap/goroutine profiles for leak detection"
 
+# Tools are task-scoped, not in [tools]: the production deploy runs `mise
+# install` in ExecStartPre (deploy/bin/sybra-build.sh), where a failed download
+# is swallowed by keep_last_good_or_fail and silently pins the box to the old
+# binary. A k8s tool only this task needs has no business in that path, or in
+# the 12 CI jobs that never use it.
 [tasks."smoke:k3d"]
 description = "k3d smoke for the Kubernetes agent-Job runner (fake provider, no API keys)"
+tools = { k3d = "5.9.0", kubectl = "1.36.2" }
 run = "scripts/smoke-k3d.sh"

@@ -62,8 +62,7 @@ jobs:
       - name: Run provider smoke
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          SMOKE_SKIP_BUILD=1 \
-          SMOKE_CLUSTER=sybra-provider-ci \
-          SMOKE_PROVIDER=opencode \
-          scripts/smoke-k3d.sh
+          SMOKE_SKIP_BUILD: "1"
+          SMOKE_CLUSTER: sybra-provider-ci
+          SMOKE_PROVIDER: opencode
+        run: mise run smoke:k3d

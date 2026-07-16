@@ -459,5 +459,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Via the mise task, which carries the k3d/kubectl pins. Calling the
+      # script directly would run against whatever the runner happens to ship.
       - name: Run k3d smoke
-        run: SMOKE_SKIP_BUILD=1 SMOKE_CLUSTER=sybra-ci scripts/smoke-k3d.sh
+        env:
+          SMOKE_SKIP_BUILD: "1"
+          SMOKE_CLUSTER: sybra-ci
+        run: mise run smoke:k3d
