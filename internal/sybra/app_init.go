@@ -580,8 +580,10 @@ func (a *App) initStatusHook() {
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
 
 		local := true
+		runsNoAgent := false
 		if t, err := a.tasks.Get(taskID); err == nil {
 			local = a.runsTaskLocally(t)
+			runsNoAgent = t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella
 		}
 
 		// Wake the dispatch pass immediately so a task that just became ready
@@ -601,11 +603,17 @@ func (a *App) initStatusHook() {
 
 		switch to {
 		case string(task.StatusTodo):
-			a.dispatchTaskCreatedWorkflow(taskID)
+			if !runsNoAgent {
+				a.dispatchTaskCreatedWorkflow(taskID)
+			}
 		case string(task.StatusPlanning):
-			a.dispatchPlanningWorkflow(taskID)
+			if !runsNoAgent {
+				a.dispatchPlanningWorkflow(taskID)
+			}
 		case string(task.StatusInProgress):
-			a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusInProgress)
+			}
 		case string(task.StatusInReview):
 			msg := taskID
 			if t, err := a.tasks.Get(taskID); err == nil {
@@ -626,11 +634,17 @@ func (a *App) initStatusHook() {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
-			a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusReadyReview)
+			}
 		case string(task.StatusTesting):
-			a.dispatchStatusWorkflow(taskID, task.StatusTesting)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusTesting)
+			}
 		case string(task.StatusReadyPR):
-			a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
+			if !runsNoAgent {
+				a.dispatchStatusWorkflow(taskID, task.StatusReadyPR)
+			}
 		case string(task.StatusDone):
 			if local {
 				go a.closeLinkedIssueOnDone(taskID)

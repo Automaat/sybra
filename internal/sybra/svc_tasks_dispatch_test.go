@@ -309,6 +309,47 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 	})
 }
 
+// TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker reproduces the
+// production bug (task 33aa3f62 / issue #2004): app_umbrella_gate.go's
+// rollupTrackers rolls an umbrella tracker back to in-progress (e.g. after a
+// stuck child resolves), initStatusHook dispatches simple-task-implement for
+// that transition same as any other task, the implement step then tries to
+// start an agent against a tracker that runs none, and after three rejected
+// attempts within 15 minutes the circuit breaker force-escalates the tracker
+// to human-required — a state no human retry can actually resolve, since the
+// tracker will never successfully run an "implement" agent. initStatusHook
+// must skip dispatch entirely for umbrella (and chat) task types, exactly as
+// reconcileRunnableBoardTasks already does.
+func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.initStatusHook()
+
+	tk, err := a.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
+		TaskType: task.Ptr(task.TaskTypeUmbrella),
+		Status:   task.Ptr(task.StatusHumanRequired),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatalf("workflow = %+v, want nil — an umbrella tracker must never have simple-task-implement dispatched against it", got.Workflow)
+	}
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — an umbrella tracker runs no agent", launcher.startCalls)
+	}
+}
+
 func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T) {
 	launcher := &fakeAgentLauncher{}
 	svc, a := setupDispatchTestService(t, launcher)

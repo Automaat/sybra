@@ -219,9 +219,6 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 	if len(report.Remediated) != 1 || report.Remediated[0] != "lost_agent:"+remote.ID {
 		t.Fatalf("remediated = %v, want lost_agent:%s", report.Remediated, remote.ID)
 	}
-	if orch.startedCount() != 1 {
-		t.Fatalf("remote recovery starts = %d, want 1", orch.startedCount())
-	}
 
 	waitForMonitorCluster(t, "mirror convergence after remote recovery", func() bool {
 		got, err := leaderTasks.Get(remote.ID)
@@ -238,6 +235,9 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 			first.State == string(agent.StateStopped) &&
 			got.StatusReason == "monitor: agent lost; recovery will resume"
 	})
+	if orch.startedCount() != 1 {
+		t.Fatalf("remote recovery starts = %d, want 1", orch.startedCount())
+	}
 
 	got, err := leaderTasks.Get(remote.ID)
 	if err != nil {
