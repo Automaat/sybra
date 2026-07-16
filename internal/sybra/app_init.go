@@ -409,6 +409,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		Artifacts:   a.artifacts,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
+		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()

@@ -61,11 +61,18 @@ steps:
         Run /pr-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
         This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before taking the visible GitHub
-        review action. If the PR is clean, submit an approve review. If there
-        are blocking correctness issues, submit a review with the required
-        change comments. If only non-blocking notes remain, submit a regular
-        review comment/summary.
+        ask the operator for confirmation before posting your review.
+
+        NEVER submit an approving review. You have no approval authority —
+        approval is a human decision, and the harness blocks the call. Do not
+        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
+        no matter how clean the PR looks.
+
+        - Blocking correctness issues: submit a review requesting changes, with
+          the required change comments.
+        - Otherwise: submit a plain comment review with your summary —
+          including when the PR looks clean. Say so in the summary and leave
+          the approval to a human.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:
@@ -89,11 +96,18 @@ steps:
         Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
         This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before taking the visible GitHub
-        review action. If the PR is clean, submit an approve review. If there
-        are blocking correctness issues, submit a review with the required
-        change comments. If only non-blocking notes remain, submit a regular
-        review comment/summary.
+        ask the operator for confirmation before posting your review.
+
+        NEVER submit an approving review. You have no approval authority —
+        approval is a human decision, and the harness blocks the call. Do not
+        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
+        no matter how clean the PR looks.
+
+        - Blocking correctness issues: submit a review requesting changes, with
+          the required change comments.
+        - Otherwise: submit a plain comment review with your summary —
+          including when the PR looks clean. Say so in the summary and leave
+          the approval to a human.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:
