@@ -44,6 +44,8 @@ spec:
               value: /home/sybra/.sybra
             - name: SYBRA_PORT
               value: "8080"
+            - name: SYBRA_SERVER_TARGET
+              value: 127.0.0.1:8080
             - name: SYBRA_STATIC_DIR
               value: /app/web
             - name: SYBRA_AUTH_TOKEN
