@@ -35,6 +35,7 @@ type Checker struct {
 	// failures (see sandbox.Manager.QuarantinedEntries). nil disables the
 	// check — set only when a sandbox.Manager is wired in (see New).
 	sandboxQuarantine func() []sandbox.QuarantineEntry
+	pressure          func() *PressureStatus
 
 	mu     sync.RWMutex
 	report *Report
@@ -65,6 +66,12 @@ func New(
 // manager).
 func (c *Checker) SetSandboxQuarantine(f func() []sandbox.QuarantineEntry) {
 	c.sandboxQuarantine = f
+}
+
+// SetPressureStatus wires in the current pressure/reclaim telemetry source.
+// Optional — omit to leave pressure telemetry out of the report.
+func (c *Checker) SetPressureStatus(f func() *PressureStatus) {
+	c.pressure = f
 }
 
 // OwnedProcesses separates exact Sybra PIDs from process groups Sybra created.
@@ -156,6 +163,10 @@ func (c *Checker) check(ctx context.Context) {
 		owned = c.owned()
 	}
 	processes := procstat.Sample(5, owned.Owns)
+	var pressure *PressureStatus
+	if c.pressure != nil {
+		pressure = c.pressure()
+	}
 
 	report := &Report{
 		GeneratedAt: now,
@@ -164,6 +175,7 @@ func (c *Checker) check(ctx context.Context) {
 		Score:       RollupScore(findings),
 		Findings:    findings,
 		Stats:       stats,
+		Pressure:    pressure,
 		Processes:   &processes,
 	}
 	if docker.Available {

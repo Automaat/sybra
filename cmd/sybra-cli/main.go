@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1673,6 +1674,10 @@ func cmdHealth(cfg *config.Config, args []string, jsonOut bool) int {
 		fmt.Println()
 		printDockerBlock(*report.Docker)
 	}
+	if report.Pressure != nil {
+		fmt.Println()
+		printPressureBlock(*report.Pressure)
+	}
 	if report.Processes == nil {
 		return 0
 	}
@@ -1696,6 +1701,7 @@ type healthReport struct {
 	Findings    []json.RawMessage      `json:"findings"`
 	Stats       json.RawMessage        `json:"stats"`
 	Docker      *healthDockerDiskUsage `json:"docker,omitempty"`
+	Pressure    *healthPressureStatus  `json:"pressure,omitempty"`
 	Processes   *healthProcessSummary  `json:"processes,omitempty"`
 }
 
@@ -1720,6 +1726,22 @@ type healthProcess struct {
 	CPUPercent float64 `json:"cpuPercent"`
 	MemPercent float64 `json:"memPercent"`
 	Owned      bool    `json:"owned"`
+}
+
+type healthPressureStatus struct {
+	DiskFreePct         float64              `json:"diskFreePct"`
+	MemAvailablePct     float64              `json:"memAvailablePct"`
+	LoadPerCPU          float64              `json:"loadPerCpu"`
+	WarningDiskFreePct  float64              `json:"warningDiskFreePct"`
+	CriticalDiskFreePct float64              `json:"criticalDiskFreePct"`
+	LastReclaim         *healthReclaimStatus `json:"lastReclaim,omitempty"`
+}
+
+type healthReclaimStatus struct {
+	RanAt              string `json:"ranAt"`
+	ReclaimedBytes     int64  `json:"reclaimedBytes"`
+	UnreclaimableBytes int64  `json:"unreclaimableBytes"`
+	Errors             int    `json:"errors"`
 }
 
 func printProcessBlock(title string, processes []healthProcess) {
@@ -1749,6 +1771,41 @@ func printDockerBlock(docker healthDockerDiskUsage) {
 	if docker.ManualCommand != "" {
 		fmt.Printf("  Manual cleanup: %s\n", docker.ManualCommand)
 	}
+}
+
+func printPressureBlock(pressure healthPressureStatus) {
+	fmt.Println("Pressure:")
+	fmt.Printf("  Disk free: %s", formatHealthPercent(pressure.DiskFreePct, 1))
+	if pressure.WarningDiskFreePct > 0 || pressure.CriticalDiskFreePct > 0 {
+		fmt.Printf(" (warning %.1f%%, critical %.1f%%)", pressure.WarningDiskFreePct, pressure.CriticalDiskFreePct)
+	}
+	fmt.Println()
+	fmt.Printf("  Memory available: %s\n", formatHealthPercent(pressure.MemAvailablePct, 1))
+	fmt.Printf("  Load per CPU: %s\n", formatHealthNumber(pressure.LoadPerCPU, 2))
+	if pressure.LastReclaim != nil {
+		fmt.Printf("  Last reclaim: %s reclaimed, %s unreclaimable, errors %d",
+			humanBytes(pressure.LastReclaim.ReclaimedBytes),
+			humanBytes(pressure.LastReclaim.UnreclaimableBytes),
+			pressure.LastReclaim.Errors)
+		if pressure.LastReclaim.RanAt != "" {
+			fmt.Printf(" at %s", pressure.LastReclaim.RanAt)
+		}
+		fmt.Println()
+	}
+}
+
+func formatHealthPercent(v float64, digits int) string {
+	if math.IsNaN(v) {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%.*f%%", digits, v)
+}
+
+func formatHealthNumber(v float64, digits int) string {
+	if math.IsNaN(v) {
+		return "unavailable"
+	}
+	return fmt.Sprintf("%.*f", digits, v)
 }
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
