@@ -11,7 +11,15 @@ export class AgentDefaults {
     "mode": string;
     "maxConcurrent": number;
     "researchMachineDir": string;
+
+    /**
+     * Caps one run's spend. Providers report cost only on their terminal result, so a breach is already paid for when this fires — it is a circuit breaker against a repeat, not a budget. EXC:FILE011:documents-a-non-obvious-limit
+     */
     "maxCostUsd": number;
+
+    /**
+     * Bounds a run's length in assistant stream events, not in CLI turns as the provider counts them. One CLI turn emits several events, so a run set to 150 typically stops near a CLI-reported 80. EXC:FILE011:documents-a-non-obvious-unit
+     */
     "maxTurns": number;
 
     /**
