@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // LifecycleManager orchestrates background-service startup in discrete phases.
@@ -446,6 +448,9 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		}
 		a.wg.Go(func() {
 			dispatched, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil)
+			if errors.Is(err, workflow.ErrAutoDispatchDisabled) {
+				return
+			}
 			if err != nil {
 				a.logger.Error("monitor.routing.workflow.failed", "task_id", taskID, "err", err)
 				return

@@ -242,7 +242,8 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 		return
 	}
 	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&
-		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+		!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
 		a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
 	}
 }
@@ -274,7 +275,8 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 		return
 	}
 	if err := a.workflowEngine.StartWorkflow(taskID, "simple-task-plan"); err != nil &&
-		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+		!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
 		a.logger.Error("workflow.dispatch.planning", "task_id", taskID, "err", err)
 	}
 }

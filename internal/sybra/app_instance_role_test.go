@@ -264,3 +264,35 @@ steps:
 		}
 	}
 }
+
+func TestRecoveryDispatchGateRespectsInstanceRole(t *testing.T) {
+	tests := []struct {
+		name     string
+		role     string
+		wantGate bool
+	}{
+		{name: "full restarts stale tasks", role: config.InstanceRoleFull, wantGate: true},
+		{name: "agent-only does not", role: config.InstanceRoleAgentOnly, wantGate: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := setupApp(t)
+			a.cfg = config.DefaultConfig()
+			a.cfg.Orchestrator.Role = tt.role
+			a.applyInstanceRole()
+
+			rec := a.newRecovery()
+			if rec.DispatchGate == nil {
+				t.Fatal("newRecovery left DispatchGate nil; the startup stale-restart sweep would be ungated")
+			}
+
+			created, err := a.tasks.Create("stale probe", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := rec.DispatchGate(created); got != tt.wantGate {
+				t.Fatalf("recovery DispatchGate = %v on role %q, want %v", got, tt.role, tt.wantGate)
+			}
+		})
+	}
+}

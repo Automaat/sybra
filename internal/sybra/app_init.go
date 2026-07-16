@@ -936,7 +936,8 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 			return
 		}
 		if _, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil); err != nil &&
-			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+			!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
 			a.logger.Error("workflow.task-created.failed", "task_id", taskID, "err", err)
 		}
 	})
@@ -1346,7 +1347,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
 		},
-		DispatchGate: a.runsTaskLocally,
+		// Also gate on the instance role: RunStartupCleanup calls
+		// RestartStaleInProgress outside the (gated) maintenance pass, so an
+		// agent-only instance would otherwise restart a stale in-progress task
+		// on boot with no operator action. Evaluated per call, so it sees the
+		// role applyInstanceRole resolves at the top of startLifecycle.
+		DispatchGate: func(t task.Task) bool { return a.runsScheduler() && a.runsTaskLocally(t) },
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never
