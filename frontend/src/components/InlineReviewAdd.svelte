@@ -2,15 +2,19 @@
   import { taskStore } from '../stores/tasks.svelte.js'
   import { notificationStore } from '../stores/notifications.svelte.js'
 
-  // Mirrors github.ParsePRURL (internal/github/client.go) — a fast client-side
-  // check; the backend remains the source of truth for what actually enriches.
-  // Anchored so a PR number followed by anything other than "/" (e.g. a
-  // "?diff=split" or "#discussion_r123" glued onto the number from a copied
-  // browser URL) fails here instead of silently becoming a plain task with a
-  // garbage title — ParsePRURL's own strconv.Atoi on that path segment would
-  // reject it the same way. The number is captured (not just \d+-matched) so
-  // isValidPRURL can also reject "pull/0", matching ParsePRURL's n==0 check.
+  // Validates the URL after stripQueryAndFragment has already removed any
+  // "?diff=split"/"#discussion_r123" noise, so this only needs to mirror
+  // github.ParsePRURL's (internal/github/client.go) structural shape on the
+  // cleaned string — the backend remains the source of truth for what
+  // actually enriches. The number is captured (not just \d+-matched) so
+  // isValidPRURL can reject "pull/0" and huge numbers, matching ParsePRURL's
+  // n==0 check and strconv.Atoi's overflow rejection respectively.
   const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)(?:\/.*)?$/
+
+  // Real GitHub PR numbers are nowhere near this long; capping digit count
+  // sidesteps JS Number precision loss on huge strings entirely, rather than
+  // trying to replicate strconv.Atoi's exact int64 overflow point.
+  const MAX_PR_NUMBER_DIGITS = 10
 
   function stripQueryAndFragment(url: string): string {
     const i = url.search(/[?#]/)
@@ -19,7 +23,8 @@
 
   function isValidPRURL(url: string): boolean {
     const m = PR_URL_RE.exec(url)
-    return m !== null && Number(m[1]) !== 0
+    if (!m) return false
+    return m[1].length <= MAX_PR_NUMBER_DIGITS && Number(m[1]) !== 0
   }
 
   let active = $state(false)

@@ -78,6 +78,18 @@ describe('InlineReviewAdd', () => {
     })
   })
 
+  it('rejects a PR number too large to safely represent, without calling create', async () => {
+    render(InlineReviewAdd)
+    await fireEvent.click(screen.getByRole('button'))
+    const input = (await screen.findByPlaceholderText('Paste a GitHub PR link…')) as HTMLInputElement
+    await fireEvent.input(input, { target: { value: 'https://github.com/owner/repo/pull/99999999999999999999' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockPushLocal).toHaveBeenCalled()
+    })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
   it('rejects PR number 0 without calling create', async () => {
     render(InlineReviewAdd)
     await fireEvent.click(screen.getByRole('button'))
