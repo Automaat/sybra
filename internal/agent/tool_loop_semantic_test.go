@@ -58,3 +58,12 @@ func TestTruncateCommandFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeBashActionLabel_HeadTailWithoutFileStayGeneric(t *testing.T) {
+	for _, cmd := range []string{"tail -n 20", "head -n 20", "tail --lines 20", "head --bytes 20"} {
+		want := "bash:" + strings.Fields(cmd)[0]
+		if got := normalizeBashActionLabel(cmd); got != want {
+			t.Fatalf("normalizeBashActionLabel(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}

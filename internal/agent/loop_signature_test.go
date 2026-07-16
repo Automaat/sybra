@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestToolSignature(t *testing.T) {
 	bash := func(cmd string) ToolUseBlock {
@@ -132,6 +135,24 @@ func TestAgentNoteToolSignature(t *testing.T) {
 		}
 		if got := a.NoteToolAction("check:go test ./...", "check:go test ./..."); got != 1 {
 			t.Fatalf("new post-progress score = %d, want 1", got)
+		}
+	})
+
+	t.Run("non-cycle evidence does not render cycle wording", func(t *testing.T) {
+		a := &Agent{}
+		a.NoteToolAction("read:notes", "read:notes")
+		a.NoteToolAction("check:go test", "check:go test")
+		a.NoteToolAction("check:go test", "check:go test")
+
+		ev := a.ToolLoopEvidence()
+		if ev.IsCycle {
+			t.Fatalf("IsCycle = true, want false for repeated single-family evidence")
+		}
+		if got := ev.Summary(); strings.Contains(got, "cycled across") {
+			t.Fatalf("Summary() = %q, want repeated wording", got)
+		}
+		if !strings.Contains(ev.Summary(), "repeated check:go test") {
+			t.Fatalf("Summary() = %q, want repeated-family wording", ev.Summary())
 		}
 	})
 }

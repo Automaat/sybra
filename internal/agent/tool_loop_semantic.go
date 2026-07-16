@@ -242,7 +242,7 @@ func classifyShellRead(command string) (string, bool) {
 			return normalizePath(path), true
 		}
 	case "tail", "head":
-		if path := lastNonFlagToken(fields[1:]); path != "" {
+		if path := lastShellReadPathToken(fields[1:]); path != "" {
 			return normalizePath(path), true
 		}
 	case "sed":
@@ -265,6 +265,49 @@ func lastNonFlagToken(tokens []string) string {
 	return ""
 }
 
+func lastShellReadPathToken(tokens []string) string {
+	for i := range slices.Backward(tokens) {
+		token := tokens[i]
+		if token == "" || strings.HasPrefix(token, "-") {
+			continue
+		}
+		if shellReadFlagConsumesToken(tokens, i) {
+			continue
+		}
+		return token
+	}
+	return ""
+}
+
+func shellReadFlagConsumesToken(tokens []string, index int) bool {
+	if index == 0 || !shellTokenLooksNumeric(tokens[index]) {
+		return false
+	}
+	switch tokens[index-1] {
+	case "-n", "-c", "--lines", "--bytes":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellTokenLooksNumeric(token string) bool {
+	if token == "" {
+		return false
+	}
+	if token[0] == '+' || token[0] == '-' {
+		token = token[1:]
+	}
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 func hashParts(parts []string) string {
 	if len(parts) == 0 {
 		return ""

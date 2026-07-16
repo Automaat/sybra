@@ -15,6 +15,7 @@ const (
 
 type ToolLoopEvidence struct {
 	Signature      string
+	IsCycle        bool
 	Label          string
 	Count          int
 	Window         int
@@ -26,7 +27,7 @@ func (e ToolLoopEvidence) Summary() string {
 	if e.Count == 0 || e.Window == 0 {
 		return ""
 	}
-	if e.UniqueFamilies > 1 {
+	if e.IsCycle && e.UniqueFamilies > 1 {
 		return fmt.Sprintf("%d of last %d low-progress actions cycled across %d semantic families: %s",
 			e.Count, e.Window, e.UniqueFamilies, strings.Join(e.Examples, " | "))
 	}
@@ -149,6 +150,7 @@ func (d *loopDetector) currentEvidenceLocked() ToolLoopEvidence {
 		slices.Sort(cycleLabels)
 		return ToolLoopEvidence{
 			Signature:      "cycle:" + hashParts(sortedMapKeys(stats)),
+			IsCycle:        true,
 			Label:          strings.Join(cycleLabels, " + "),
 			Count:          len(d.recent),
 			Window:         len(d.recent),
