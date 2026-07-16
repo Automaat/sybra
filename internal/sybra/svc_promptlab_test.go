@@ -79,6 +79,64 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	}
 }
 
+// TestPromptLabService_autoApprove pins that the unattended path lands the
+// task in exactly the state a human click would, differing only in the
+// progress note — promptLabCoordinator relies on reusing every guard here.
+func TestPromptLabService_autoApprove(t *testing.T) {
+	t.Parallel()
+	svc := setupPromptLabService(t)
+	tags := []string{promptlab.ProposalTag, "role:test-runner", "requires-human"}
+	created := createProposal(t, svc, task.StatusHumanRequired, tags)
+
+	if err := svc.autoApprove(created.ID); err != nil {
+		t.Fatalf("autoApprove: %v", err)
+	}
+
+	got, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if slices.Contains(got.Tags, "requires-human") {
+		t.Fatalf("tags = %v, want requires-human removed", got.Tags)
+	}
+
+	entries, err := svc.artifacts.ReadProgress(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Message != autoApprovedProgressNote {
+		t.Fatalf("progress entries = %+v, want the auto-approved note for audit", entries)
+	}
+}
+
+// TestPromptLabService_autoApprove_StaleStatusGuard pins that the unattended
+// caller cannot bypass requirePendingProposal — e.g. re-approving a proposal
+// a human already rejected.
+func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
+	t.Parallel()
+	for _, status := range []task.Status{task.StatusCancelled, task.StatusDone, task.StatusInProgress, task.StatusTodo} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			svc := setupPromptLabService(t)
+			created := createProposal(t, svc, status, []string{promptlab.ProposalTag})
+
+			if err := svc.autoApprove(created.ID); err == nil {
+				t.Fatal("autoApprove: want error for non-pending status")
+			}
+			after, err := svc.tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != status {
+				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
+			}
+		})
+	}
+}
+
 func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
 	t.Parallel()
 	svc := setupPromptLabService(t)

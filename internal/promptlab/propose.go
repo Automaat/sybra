@@ -2,9 +2,12 @@ package promptlab
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // candidateIntents are the directions promptlab may scaffold from a weak
@@ -124,4 +127,32 @@ func reviewGate(p Proposal) string {
 		return "requires human approval"
 	}
 	return "standard review"
+}
+
+// ProposalIDMarker is the substring RenderProposalBody emits for a proposal's
+// ID, and the key HasProposal matches on. It is defined next to the renderer
+// so the marker format and its parser can never drift apart.
+func ProposalIDMarker(proposalID string) string {
+	return "Proposal ID:** `" + proposalID + "`"
+}
+
+// HasProposal reports whether proposalID was already filed as a task in tasks.
+//
+// Terminal tasks count. A proposal ID is a stable hash of (role, workflow
+// step, intent), so a done proposal means that variant was already authored
+// and shipped, and a cancelled one means it was rejected — re-filing either
+// ignores a decision that was already made. Skipping terminal tasks here is
+// what let one proposal ID get filed four separate times as earlier copies
+// aged out into done/cancelled.
+func HasProposal(tasks []task.Task, proposalID string) bool {
+	marker := ProposalIDMarker(proposalID)
+	for i := range tasks {
+		if !slices.Contains(tasks[i].Tags, ProposalTag) {
+			continue
+		}
+		if strings.Contains(tasks[i].Body, marker) {
+			return true
+		}
+	}
+	return false
 }

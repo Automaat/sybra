@@ -6,6 +6,13 @@
  * Wails-bound methods. Proposals are plain tasks (tagged
  * "prompt-lab-proposal" + "requires-human", status human-required) until
  * approval, which starts the dedicated prompt-lab authoring workflow.
+ * 
+ * Approval is not necessarily a human: under prompt_lab.auto_approve
+ * (default on) promptLabCoordinator approves each proposal as it files it,
+ * making these methods the manual override rather than the only way
+ * through. What gates production either way is
+ * prompteval.Gate.AllowEnrollment inside the authoring workflow — approval
+ * only buys a candidate the right to be authored and screened.
  * @module
  */
 
@@ -22,6 +29,11 @@ import * as task$0 from "../task/models.js";
  * in-progress, drops the requires-human tag, and starts the dedicated
  * prompt-lab authoring workflow. Errors without mutating if the task is not a
  * pending proposal (wrong status, or missing the prompt-lab-proposal tag).
+ * 
+ * promptLabCoordinator drives the same path unattended via autoApprove when
+ * prompt_lab.auto_approve is set, so every guard, dispatch, and
+ * revert-on-failure below must hold for a caller that is not a human; the
+ * two differ only in the progress note left in the task's decision log.
  */
 export function ApproveProposal(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3299652469, id).then(($result: any) => {

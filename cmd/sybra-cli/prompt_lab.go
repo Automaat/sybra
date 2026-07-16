@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"slices"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -91,7 +89,7 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 	var filed []task.Task
 	for i := range result.Proposals {
 		p := result.Proposals[i]
-		if _, ok := findExistingPromptLabProposal(existing, p.ID); ok {
+		if promptlab.HasProposal(existing, p.ID) {
 			continue
 		}
 		body := scrubProposalBody(projStore, promptlab.RenderProposalBody(p), p.Evidence.ProjectIDs)
@@ -145,22 +143,6 @@ func scrubProposalBody(projStore *project.Store, body string, projectIDs []strin
 		body, _ = scrub.Scrub(body, blocklist)
 	}
 	return body
-}
-
-func findExistingPromptLabProposal(tasks []task.Task, proposalID string) (task.Task, bool) {
-	marker := "Proposal ID:** `" + proposalID + "`"
-	for i := range tasks {
-		if task.IsTerminalStatus(tasks[i].Status) {
-			continue
-		}
-		if !slices.Contains(tasks[i].Tags, promptlab.ProposalTag) {
-			continue
-		}
-		if strings.Contains(tasks[i].Body, marker) {
-			return tasks[i], true
-		}
-	}
-	return task.Task{}, false
 }
 
 func printPromptLabResult(result promptlab.RunResult, filed []task.Task) {

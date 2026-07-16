@@ -1044,6 +1044,49 @@ func TestDefaultRequirePermissions(t *testing.T) {
 	}
 }
 
+func TestPromptLabAutoApprove(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, true},
+		{"nil field", &Config{}, true},
+		{"explicit true", &Config{PromptLab: PromptLabConfig{AutoApprove: boolPtr(true)}}, true},
+		{"explicit false", &Config{PromptLab: PromptLabConfig{AutoApprove: boolPtr(false)}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cfg.PromptLabAutoApprove(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPromptLabAutoApproveSurvivesDefaults guards the *bool: applyPromptLabDefaults
+// must not rewrite an explicit false into the true default.
+func TestPromptLabAutoApproveSurvivesDefaults(t *testing.T) {
+	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
+	cfg := &Config{PromptLab: PromptLabConfig{Enabled: true, AutoApprove: boolPtr(false)}}
+	applyPromptLabDefaults(cfg)
+	if cfg.PromptLabAutoApprove() {
+		t.Fatal("explicit auto_approve: false must survive defaulting")
+	}
+
+	unset := &Config{PromptLab: PromptLabConfig{Enabled: true}}
+	applyPromptLabDefaults(unset)
+	if !unset.PromptLabAutoApprove() {
+		t.Fatal("unset auto_approve must default to true")
+	}
+}
+
 func TestPlaywrightMCPEnabled(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

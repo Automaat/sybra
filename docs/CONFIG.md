@@ -492,10 +492,18 @@ prompt, workflow, permission, retry, validator, or deployment changes itself.
 PromptLabConfig controls the automated Prompt Lab loop that scaffolds
 versioned prompt/skill variant proposals from fleet evidence (Evaluation
 report + stats). It never authors or applies prompt/skill text itself —
-every proposal is filed as a reviewed local task for a human (or a later
-agent run) to author and gate through the standard offline-eval + A/B
-path. Disabled by default: unlike HarnessEvolveConfig, a fresh install
-must not start filing tasks before an operator opts in.
+every proposal is filed as a local task whose authoring workflow gates the
+resulting variant through the standard offline-eval + A/B path. Disabled
+by default: unlike HarnessEvolveConfig, a fresh install must not start
+filing tasks before an operator opts in.
+
+AutoApprove starts a filed proposal's authoring workflow without waiting
+for a human click, making the loop autonomous end to end. It defaults to
+true (see Config.PromptLabAutoApprove): a proposal only ever scaffolds an
+*attempt*, and the barrier that actually protects production is
+prompteval.Gate.AllowEnrollment inside the authoring workflow, which is
+fail-closed and unaffected by this setting. A proposal carrying an
+explicit FAILED offline verdict is never auto-approved regardless.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
@@ -505,6 +513,7 @@ must not start filing tasks before an operator opts in.
 | `prompt_lab.min_samples` | `int` |  |  |
 | `prompt_lab.min_effect_size` | `float64` |  |  |
 | `prompt_lab.max_proposals_per_run` | `int` |  |  |
+| `prompt_lab.auto_approve` | `*bool` | _(nil)_ |  |
 
 ## ExperienceConfig (`experience`)
 

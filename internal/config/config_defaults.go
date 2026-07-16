@@ -204,6 +204,16 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// PromptLabAutoApprove returns the configured prompt_lab.auto_approve, or
+// true if unset. See PromptLabConfig for why autonomous approval is the
+// default once an operator has opted into the loop at all.
+func (c *Config) PromptLabAutoApprove() bool {
+	if c != nil && c.PromptLab.AutoApprove != nil {
+		return *c.PromptLab.AutoApprove
+	}
+	return true
+}
+
 // DefaultHeadlessSteerable returns the configured agent.headless_steerable
 // default, or true if unset.
 func (c *Config) DefaultHeadlessSteerable() bool {

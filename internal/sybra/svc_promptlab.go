@@ -21,6 +21,11 @@ import (
 const rejectedNoFeedbackReason = "rejected (no feedback provided)"
 
 const (
+	approvedProgressNote     = "Approved: started Prompt Lab variant authoring + offline eval workflow"
+	autoApprovedProgressNote = "Auto-approved (prompt_lab.auto_approve): started Prompt Lab variant authoring + offline eval workflow"
+)
+
+const (
 	promptLabAlreadyActiveWait = 500 * time.Millisecond
 	promptLabAlreadyActivePoll = 25 * time.Millisecond
 )
@@ -29,6 +34,13 @@ const (
 // Wails-bound methods. Proposals are plain tasks (tagged
 // "prompt-lab-proposal" + "requires-human", status human-required) until
 // approval, which starts the dedicated prompt-lab authoring workflow.
+//
+// Approval is not necessarily a human: under prompt_lab.auto_approve
+// (default on) promptLabCoordinator approves each proposal as it files it,
+// making these methods the manual override rather than the only way
+// through. What gates production either way is
+// prompteval.Gate.AllowEnrollment inside the authoring workflow — approval
+// only buys a candidate the right to be authored and screened.
 type PromptLabService struct {
 	tasks          *task.Manager
 	artifacts      *artifact.Store
@@ -40,7 +52,21 @@ type PromptLabService struct {
 // in-progress, drops the requires-human tag, and starts the dedicated
 // prompt-lab authoring workflow. Errors without mutating if the task is not a
 // pending proposal (wrong status, or missing the prompt-lab-proposal tag).
+//
+// promptLabCoordinator drives the same path unattended via autoApprove when
+// prompt_lab.auto_approve is set, so every guard, dispatch, and
+// revert-on-failure below must hold for a caller that is not a human; the
+// two differ only in the progress note left in the task's decision log.
 func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
+	return s.approveProposal(id, approvedProgressNote)
+}
+
+func (s *PromptLabService) autoApprove(id string) error {
+	_, err := s.approveProposal(id, autoApprovedProgressNote)
+	return err
+}
+
+func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, error) {
 	t, err := s.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
 		if err := requirePendingProposal(cur); err != nil {
 			return task.Update{}, err
@@ -91,7 +117,7 @@ func (s *PromptLabService) ApproveProposal(id string) (task.Task, error) {
 		}
 	}
 
-	s.appendProgress(id, artifact.ProgressKindDecision, "Approved: started Prompt Lab variant authoring + offline eval workflow")
+	s.appendProgress(id, artifact.ProgressKindDecision, progressNote)
 	return t, nil
 }
 
