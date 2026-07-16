@@ -210,7 +210,7 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "ambiguous environment churn",
 		Recommendation: "escalate",
@@ -241,7 +241,7 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "looping on toolchain setup",
 		Recommendation: "stop",
@@ -286,7 +286,7 @@ func TestApplyVerdict_StopWithBufferedResultRoutesThroughCompletion(t *testing.T
 	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: `{"verdict":"PASS"}`})
 	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "lingering subagent chatter"})
 
-	w.applyVerdict(ag, "budget", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), ag, "budget", agent.InspectorVerdict{
 		Stuck:          false,
 		Reason:         "Agent completed verification successfully with PASS verdict; idle post-completion",
 		Recommendation: "stop",
@@ -328,7 +328,7 @@ func TestApplyVerdict_StopWithErrorResultStillEscalates(t *testing.T) {
 	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless"}
 	ag.AppendOutput(agent.StreamEvent{Type: "result", Subtype: "error_during_execution"})
 
-	w.applyVerdict(ag, "budget", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), ag, "budget", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "stuck after an error",
 		Recommendation: "stop",
@@ -356,7 +356,7 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "stall", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "no stream activity",
 		Recommendation: "stop",
@@ -392,7 +392,7 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "repeating identical investigation commands",
 		Recommendation: "stop",
@@ -429,7 +429,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "repeating the same failing fix with fabricated progress",
 		Recommendation: "stop",
@@ -451,6 +451,130 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst covers #2147/#2155:
+// an unclassified ("") loop stop is exactly the ambiguous case the judge's own
+// prompt steers toward when reward-hacking is merely possible — re-run verify
+// before trusting it rather than escalating on a potentially stale/wrong call.
+func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
+	tests := []struct {
+		name           string
+		verifyNow      func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
+		wantStatus     task.Status
+		wantReasonHas  string
+		wantVerifyCall bool
+	}{
+		{
+			name: "verify passes — false positive, retryable",
+			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+				return true, true, "", "", nil
+			},
+			wantStatus:     task.StatusInProgress,
+			wantReasonHas:  "verify suite passed",
+			wantVerifyCall: true,
+		},
+		{
+			name: "verify still fails — escalate with fresh evidence",
+			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+				return true, false, "go test ./...", "--- FAIL: TestFoo", nil
+			},
+			wantStatus:     task.StatusHumanRequired,
+			wantReasonHas:  "go test ./...",
+			wantVerifyCall: true,
+		},
+		{
+			name: "nothing to verify — falls back to judge reason",
+			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+				return false, false, "", "", nil
+			},
+			wantStatus:     task.StatusHumanRequired,
+			wantReasonHas:  "watchdog: agent stuck, unclear why",
+			wantVerifyCall: true,
+		},
+		{
+			name:           "no verifyNow dependency wired — falls back to judge reason",
+			verifyNow:      nil,
+			wantStatus:     task.StatusHumanRequired,
+			wantReasonHas:  "watchdog: agent stuck, unclear why",
+			wantVerifyCall: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			called := false
+			var verifyNow func(context.Context, string) (bool, bool, string, string, error)
+			if tc.verifyNow != nil {
+				verifyNow = func(ctx context.Context, taskID string) (bool, bool, string, string, error) {
+					called = true
+					return tc.verifyNow(ctx, taskID)
+				}
+			}
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { return nil },
+				verifyNow: verifyNow,
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "agent stuck, unclear why",
+				Recommendation: "stop",
+				ReasonKind:     "",
+			})
+
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if !strings.Contains(got.StatusReason, tc.wantReasonHas) {
+				t.Fatalf("status_reason = %q, want it to contain %q", got.StatusReason, tc.wantReasonHas)
+			}
+			if called != tc.wantVerifyCall {
+				t.Fatalf("verifyNow called = %v, want %v", called, tc.wantVerifyCall)
+			}
+		})
+	}
+}
+
+// TestApplyVerdict_GenericStallAndRewardHackingSkipVerify pins that only an
+// unclassified ("") ReasonKind triggers the verify re-check — generic_stall
+// keeps its existing unconditional-retry treatment and reward_hacking keeps
+// its existing unconditional escalation, both untouched by #2155.
+func TestApplyVerdict_GenericStallAndRewardHackingSkipVerify(t *testing.T) {
+	for _, reasonKind := range []string{"generic_stall", "reward_hacking"} {
+		t.Run(reasonKind, func(t *testing.T) {
+			tasks, tk := newTestTasks(t)
+
+			called := false
+			w := &Watchdog{
+				tasks:     tasks,
+				logger:    slog.New(slog.DiscardHandler),
+				stopAgent: func(string) error { return nil },
+				verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+					called = true
+					return true, true, "", "", nil
+				},
+			}
+
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+				Stuck:          true,
+				Reason:         "some reason",
+				Recommendation: "stop",
+				ReasonKind:     reasonKind,
+			})
+
+			if called {
+				t.Fatalf("verifyNow must not be called for ReasonKind %q", reasonKind)
+			}
+		})
+	}
+}
+
 // TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang covers the
 // gap left by #1456: a "stop" verdict on the "budget" trigger whose
 // ReasonKind is "generic_stall" (e.g. an agent legitimately polling
@@ -467,7 +591,7 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 		stopAgent: func(string) error { stopped = true; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "polling for backgrounded verify command to complete",
 		Recommendation: "stop",
@@ -505,7 +629,7 @@ func TestApplyVerdict_BudgetStopWithoutGenericStallEscalates(t *testing.T) {
 				stopAgent: func(string) error { stopped = true; return nil },
 			}
 
-			w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
+			w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "budget", agent.InspectorVerdict{
 				Stuck:          true,
 				Reason:         "burned through budget with no forward progress",
 				Recommendation: "stop",
@@ -553,7 +677,7 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 			}
 
 			ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Provider: "claude"}
-			w.applyVerdict(ag, trigger, agent.InspectorVerdict{
+			w.applyVerdict(t.Context(), ag, trigger, agent.InspectorVerdict{
 				Stuck:          true,
 				Reason:         "org-level rate limit exhausted",
 				Recommendation: "stop",
@@ -603,7 +727,7 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 	}
 
 	ag := &agent.Agent{ID: "a1", Provider: "claude"}
-	w.applyVerdict(ag, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), ag, "loop", agent.InspectorVerdict{
 		Stuck:          true,
 		Reason:         "org-level rate limit exhausted",
 		Recommendation: "stop",
@@ -1001,7 +1125,7 @@ func TestApplyVerdict_NudgeLiveTransportDeliversInPlace(t *testing.T) {
 		nudgeAgent: func(_, text string) error { nudged = text; return nil },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "fix the root cause first",
@@ -1037,7 +1161,7 @@ func TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops(t *testing.T) {
 		nudgeAgent: func(_, _ string) error { return errors.New("no active transport") },
 	}
 
-	w.applyVerdict(&agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
 		Reason:         "drifting",
 		Nudge:          "stop retrying the failing command",
@@ -1072,7 +1196,7 @@ func TestApplyVerdict_NudgeWithoutExplicitSteerUsesLoopEvidence(t *testing.T) {
 	ag.NoteToolAction("check:mise run verify", "check:mise run verify")
 	ag.NoteToolAction("read:verify.log", "read:verify.log")
 
-	w.applyVerdict(ag, "loop", agent.InspectorVerdict{
+	w.applyVerdict(t.Context(), ag, "loop", agent.InspectorVerdict{
 		Recommendation: "nudge",
 	})
 

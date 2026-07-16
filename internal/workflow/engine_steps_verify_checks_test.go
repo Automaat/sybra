@@ -66,6 +66,85 @@ func TestExecVerifyChecks_NoCommandsSkips(t *testing.T) {
 	}
 }
 
+func TestVerifyTaskNow_NoGetterNotVerified(t *testing.T) {
+	t.Parallel()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
+
+	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verified || passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no CheckConfigGetter", verified, passed)
+	}
+}
+
+func TestVerifyTaskNow_NoCommandsNotVerified(t *testing.T) {
+	t.Parallel()
+	engine, _ := newVerifyChecksEngine(t, t.TempDir(), nil)
+
+	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verified || passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no configured commands", verified, passed)
+	}
+}
+
+func TestVerifyTaskNow_NoWorktreeNotVerified(t *testing.T) {
+	t.Parallel()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
+
+	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verified || passed {
+		t.Fatalf("verified=%v passed=%v, want both false with no worktree", verified, passed)
+	}
+}
+
+func TestVerifyTaskNow_CommandsPass(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"true", "echo ok"})
+
+	verified, passed, failedCmd, _, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verified || !passed {
+		t.Fatalf("verified=%v passed=%v, want both true", verified, passed)
+	}
+	if failedCmd != "" {
+		t.Errorf("failedCmd = %q, want empty", failedCmd)
+	}
+}
+
+func TestVerifyTaskNow_CommandFails(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"true", "false"})
+
+	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verified || passed {
+		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
+	}
+	if failedCmd != "false" {
+		t.Errorf("failedCmd = %q, want %q", failedCmd, "false")
+	}
+	if !strings.Contains(output, "false") {
+		t.Errorf("output = %q, want it to contain the failing command", output)
+	}
+}
+
 func TestExecVerifyChecks_PassIsClean(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})

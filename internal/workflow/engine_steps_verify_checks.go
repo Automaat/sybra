@@ -197,6 +197,35 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	return stepDone(step, "clean")
 }
 
+// VerifyTaskNow re-runs a task's configured verify commands against its
+// current worktree state on demand, outside the normal verify_checks step —
+// used by internal/watchdog to distinguish a genuine implementation defect
+// from a stale/false-positive loop-stop verdict before escalating to
+// human-required (#2155). verified is false whenever nothing could actually
+// be checked (no CheckConfigGetter/WorktreeGetter wired, no verify commands
+// configured, or no worktree yet); callers must treat that the same as
+// "could not verify" and fall back to their own default behavior rather than
+// treat it as a pass.
+func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
+	if e.checks == nil || e.worktrees == nil {
+		return false, false, "", "", nil
+	}
+	cmds := e.checks.VerifyCommands(ctx, taskID)
+	if len(cmds) == 0 {
+		return false, false, "", "", nil
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return false, false, "", "", nil
+	}
+	maybeMiseTrust(ctx, wtPath)
+	failedCmd, output, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
+	if err != nil {
+		return true, false, failedCmd, output, err
+	}
+	return true, failedCmd == "", failedCmd, output, nil
+}
+
 // flagVerifyChecks flips the task to human-required. A failed status write
 // returns an error so the workflow stalls instead of advancing past the gate —
 // the YAML transition keys off task.status, so a silently-failed write would

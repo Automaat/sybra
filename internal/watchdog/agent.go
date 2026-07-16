@@ -202,6 +202,11 @@ type Watchdog struct {
 	// maxRunsPerWindow and runWindow drive checkRunRate — see its doc comment.
 	maxRunsPerWindow int
 	runWindow        time.Duration
+
+	// verifyNow re-runs a task's verify suite before applyVerdict escalates an
+	// ambiguous loop-stop, so a stale judge verdict doesn't strand honest work
+	// (#2155). Nil falls through to unconditional escalation.
+	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
 // New creates a Watchdog. cfg.Model selects the cheap judge model and
@@ -214,6 +219,7 @@ func New(
 	wg *sync.WaitGroup,
 	cfg config.WatchdogConfig,
 	pressureGate *pressure.Gate,
+	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error),
 ) *Watchdog {
 	return &Watchdog{
 		agents:               agents,
@@ -238,6 +244,7 @@ func New(
 		},
 		maxRunsPerWindow: cfg.MaxRunsPerWindow,
 		runWindow:        time.Duration(cfg.RunWindowMinutes) * time.Minute,
+		verifyNow:        verifyNow,
 	}
 }
 
@@ -630,7 +637,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 		"reason_kind", verdict.ReasonKind)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
-	w.applyVerdict(ag, trigger, verdict)
+	w.applyVerdict(ctx, ag, trigger, verdict)
 
 	// Acknowledge a loop-triggered inspection that left the agent running, so the
 	// same unchanged signature does not re-trigger every debounce window. Skip
@@ -642,7 +649,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 	}
 }
 
-func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	switch verdict.Recommendation {
 	case "stop":
 		if verdict.ReasonKind == "rate_limit" {
@@ -673,6 +680,8 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 				if verdict.Reason != "" {
 					reason = "watchdog hang: " + verdict.Reason
 				}
+			} else if (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
+				status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, reason)
 			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
 				Status:       task.Ptr(status),
@@ -730,6 +739,50 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 // so it applies the same cooldown/failover as the clean-429 case. The task is
 // left in-progress — human-required is reserved for genuine reward-hacking
 // loops per #1310's scoping.
+// verifyNowTimeout bounds a single on-demand verify re-run triggered by an
+// ambiguous loop/budget stop verdict — generous enough for a real test suite,
+// short enough that a hung verify command cannot indefinitely delay the
+// escalation decision it exists to inform.
+const verifyNowTimeout = 5 * time.Minute
+
+// verdictStatusFromVerify decides the task status/reason for an unclassified
+// ("") loop or budget stop verdict by re-running the task's verify suite
+// instead of trusting the judge's ambiguous call outright (#2155). judgeReason
+// is the fallback human-required reason if nothing can be verified. Returns
+// StatusInProgress with a "watchdog hang" reason when verify passes (treated
+// the same as a generic_stall false alarm), StatusHumanRequired with the
+// fresh failing command/output when verify still fails, and StatusHumanRequired
+// with judgeReason when verification itself was not possible (no worktree, no
+// configured verify commands, or w.verifyNow is nil) or errored.
+func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeReason string) (status task.Status, reason string) {
+	if w.verifyNow == nil {
+		return task.StatusHumanRequired, judgeReason
+	}
+	vctx, cancel := context.WithTimeout(ctx, verifyNowTimeout)
+	defer cancel()
+	verified, passed, failedCmd, output, err := w.verifyNow(vctx, taskID)
+	if !verified || err != nil {
+		return task.StatusHumanRequired, judgeReason
+	}
+	if passed {
+		return task.StatusInProgress, "watchdog hang: verify suite passed on re-check — loop stop was a false positive"
+	}
+	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(failedCmd, output, 500)
+}
+
+// trimTail appends a bounded tail of output to failedCmd so the escalation
+// reason carries real evidence without ballooning the task's status_reason.
+func trimTail(failedCmd, output string, n int) string {
+	tail := output
+	if len(tail) > n {
+		tail = "…" + tail[len(tail)-n:]
+	}
+	if tail == "" {
+		return failedCmd
+	}
+	return failedCmd + "\n" + tail
+}
+
 func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	reason := "watchdog: rate limit"
 	if verdict.Reason != "" {
