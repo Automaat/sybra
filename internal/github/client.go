@@ -146,8 +146,15 @@ func viewerLoginE(ctx context.Context, e execer) (string, error) {
 	if viewerGen != gen {
 		// The auth mode changed while we were resolving, so `login` describes
 		// the old mode. Writing it back would defeat resetCachedViewer() and
-		// pin a wrong-but-plausible identity forever. Fail instead: the caller
+		// pin a wrong-but-plausible identity forever.
+		//
+		// A non-empty cache here was necessarily written after the reset that
+		// bumped the generation (the reset empties it), so it already reflects
+		// the current mode and is safe to return. Otherwise fail: the caller
 		// leaves state untouched and the next call resolves under the new mode.
+		if cachedViewer != "" {
+			return cachedViewer, nil
+		}
 		return "", fmt.Errorf("resolve viewer login: auth mode changed during resolution")
 	}
 	// Double-checked: another goroutine may have populated the cache

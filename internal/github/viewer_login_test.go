@@ -192,6 +192,52 @@ func TestViewerLogin_AuthModeSwitchDoesNotPoisonCache(t *testing.T) {
 	}
 }
 
+// A generation mismatch means the stale resolution must be discarded — but if
+// another goroutine already resolved under the *new* mode, that value is
+// current (resetCachedViewer empties the cache, so anything non-empty was
+// written after the bump) and should be returned rather than failing the caller
+// for no reason.
+func TestViewerLogin_StaleResolutionYieldsToFreshCache(t *testing.T) {
+	clearViewerCache(t)
+	DisableAppAuth()
+
+	release := make(chan struct{})
+	slow := &blockingExecer{output: []byte("Automaat"), release: release, entered: make(chan struct{})}
+
+	done := make(chan string, 1)
+	go func() {
+		login, err := viewerLoginE(context.Background(), slow)
+		if err != nil {
+			done <- "ERR:" + err.Error()
+			return
+		}
+		done <- login
+	}()
+	<-slow.entered
+
+	path, _ := writeTestKey(t, false)
+	appSlugServer(t, "sybra-app")
+	t.Cleanup(DisableAppAuth)
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// Another caller resolves under the new mode before the stale one lands.
+	if _, err := viewerLoginE(context.Background(), &recordingExecer{}); err != nil {
+		t.Fatalf("fresh resolve: %v", err)
+	}
+
+	close(release)
+	if got := <-done; got != "sybra-app[bot]" {
+		t.Errorf("stale resolution returned %q, want the fresh cache value sybra-app[bot]", got)
+	}
+
+	viewerMu.RLock()
+	defer viewerMu.RUnlock()
+	if cachedViewer != "sybra-app[bot]" {
+		t.Errorf("cachedViewer = %q, want sybra-app[bot]", cachedViewer)
+	}
+}
+
 // Without App auth the /user path is correct and must be preserved.
 func TestViewerLogin_UserAuthUsesUserEndpoint(t *testing.T) {
 	clearViewerCache(t)

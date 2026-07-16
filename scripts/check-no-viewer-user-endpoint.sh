@@ -62,7 +62,11 @@ fail=0
 #   gh api user            -> e.run("api", "user", ...)
 #   gh api /user           -> exec.Command("gh", "api", "/user")
 #   "api", "user"          -> arg-slice form
-PATTERN='"api",[[:space:]]*"/?user"|gh[[:space:]]+api[[:space:]]+/?user\b|"/user"'
+#
+# The trailing boundary is spelled as an explicit character class rather than
+# \b: \b is a GNU/BSD extension undefined in POSIX ERE, and a guard that
+# silently stops matching is worse than no guard at all.
+PATTERN='"api",[[:space:]]*"/?user"|gh[[:space:]]+api[[:space:]]+/?user([^[:alnum:]_-]|$)|"/user"'
 
 files=()
 while IFS= read -r -d '' file; do
