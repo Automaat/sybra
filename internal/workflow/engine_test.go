@@ -26,9 +26,9 @@ import (
 )
 
 // TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
-// simple-task-plan replan/critique gates depend on: task.plan_critique
-// mirrors TaskInfo.PlanCritique verbatim (route_critique_verdict substring-
-// matches its verdict heading), and task.replan_count is start_replan's own
+// simple-task-plan replan/critique path depends on: task.plan_critique
+// mirrors TaskInfo.PlanCritique verbatim (the human gate renders it as
+// advisory context), and task.replan_count is start_replan's own
 // step-history count as of the current call — the number of full opus
 // replan cycles already spent, not counting the one about to start.
 func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
@@ -108,14 +108,15 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu        sync.Mutex
-	tasks     map[string]*TaskInfo
-	reasons   map[string]string
-	steers    map[string]string
-	gets      map[string]int
-	onGet     func(id string, t *TaskInfo, count int)
-	appendErr error
-	failGet   bool
+	mu              sync.Mutex
+	tasks           map[string]*TaskInfo
+	reasons         map[string]string
+	steers          map[string]string
+	gets            map[string]int
+	onGet           func(id string, t *TaskInfo, count int)
+	appendErr       error
+	failGet         bool
+	failSetWorkflow bool
 }
 
 func newMemTasks() *memTasks {
@@ -314,6 +315,9 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failSetWorkflow {
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)

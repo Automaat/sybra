@@ -191,11 +191,15 @@ steps:
         goto: ""
       - goto: route_review_verdict
 
-  # Mirrors route_critique_verdict in simple-task-plan: a clean review (zero
-  # actionable findings) skips the fix_review agent entirely — the exact
-  # analog of #1490, which gated address_critique on the plan-critique
-  # verdict but left review ungated (#1524). Saves ~1 wasted agent run per
-  # clean-review task, which is nearly every landing.
+  # A clean review (zero actionable findings) skips the fix_review agent
+  # entirely, saving ~1 wasted agent run per clean-review task — which is
+  # nearly every landing.
+  #
+  # Unlike the plan-side verdict gate this replaced (deleted: it tested for a
+  # literal the critic never emitted, so it never fired), the reviewer's
+  # verdict format is mandated by this workflow's own review prompt. Keep the
+  # prompt and this check in sync — an unenforced format is how the plan-side
+  # gate silently rotted.
   - id: route_review_verdict
     name: Route on Review Verdict
     type: condition
