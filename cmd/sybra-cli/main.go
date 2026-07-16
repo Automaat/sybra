@@ -147,8 +147,10 @@ func run(args []string) int {
 		return fatal(jsonOut, "%v", err)
 	}
 
+	allowHTTP := homeOverride == "" && os.Getenv("SYBRA_CONTROL_HOME") != ""
+
 	cmd, rest := filtered[0], filtered[1:]
-	return dispatch(cmd, rest, cfg, store, projStore, homeOverride == "", jsonOut)
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global

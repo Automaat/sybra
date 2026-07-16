@@ -95,6 +95,7 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
 	if code != 0 {
@@ -154,6 +155,7 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "no server target")
 	if code != 0 {
@@ -185,6 +187,7 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", home)
 
 	code, out := runCLI(t, "--json", "create", "--title", "server error target")
 	if code != 0 {
@@ -222,12 +225,66 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	}
 }
 
+func TestUpdate_StaysFilesystemOnlyWithoutControlHomeEvenWhenServerReachable(t *testing.T) {
+	home := t.TempDir()
+	tasksDir := filepath.Join(home, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+
+	code, out := runCLI(t, "--json", "create", "--title", "isolated test target")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+
+	tasks, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := tasks.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+	}
+	id := list[0].ID
+
+	otherTasksDir := t.TempDir()
+	port := startFakeAPIServer(t, otherTasksDir)
+	t.Setenv("SYBRA_PORT", port)
+
+	code, out = runCLI(t, "--json", "update", id, "--status", "todo", "--status-reason", "must stay local")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "must stay local") {
+		t.Fatalf("update output = %q, want it to reflect the applied status_reason", out)
+	}
+
+	served, err := task.NewStore(otherTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := served.Get(id); err == nil {
+		t.Fatal("update must not have reached the reachable server: a test without SYBRA_CONTROL_HOME must never use HTTP mode even when SYBRA_PORT happens to point at a live server")
+	}
+
+	got, err := tasks.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusTodo || got.StatusReason != "must stay local" {
+		t.Fatalf("filesystem task = %+v, want the update to have landed locally", got)
+	}
+}
+
 func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("SYBRA_CONTROL_HOME", t.TempDir())
 
 	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
 	if code != 0 {
