@@ -53,6 +53,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
 	}

@@ -17,7 +17,7 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 	type candidate struct {
 		pid   int
 		cmd   string
-		owner mcpOwner
+		owner processOwner
 	}
 	candidates := make([]candidate, 0)
 	pids := make([]string, 0)
@@ -31,7 +31,7 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 			continue
 		}
 		cmd := fields[1]
-		owner := mcpOwnerFromEnvAssignments(fields[2:])
+		owner := processOwnerFromAnyEnv(fields[2:])
 		if owner.AgentID == "" && !isProviderProcessName(cmd) {
 			continue
 		}

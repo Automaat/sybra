@@ -18,7 +18,7 @@ type providerProcess struct {
 	PID     int
 	Command string
 	CWD     string
-	Owner   mcpOwner
+	Owner   processOwner
 }
 
 type trackedAgentSnapshot struct {
@@ -51,10 +51,10 @@ func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []strin
 			continue
 		}
 		if proc.Owner.AgentID != "" {
-			if !shouldReapOwnedMCPHelper(proc, trackedAgents) {
+			if !shouldReapOwnedProcess(proc, trackedAgents) {
 				continue
 			}
-			m.logger.Warn("agent.orphan.mcp_reap", "pid", proc.PID, "cwd", proc.CWD, "command", proc.Command, "agent_id", proc.Owner.AgentID, "task_id", proc.Owner.TaskID, "mode", proc.Owner.Mode)
+			m.logger.Warn("agent.orphan.owned_reap", "pid", proc.PID, "cwd", proc.CWD, "command", proc.Command, "agent_id", proc.Owner.AgentID, "task_id", proc.Owner.TaskID, "mode", proc.Owner.Mode)
 			signalPID(proc.PID, stopSIGINTGrace)
 			reaped++
 			continue
@@ -66,9 +66,9 @@ func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []strin
 	return reaped
 }
 
-func shouldReapOwnedMCPHelper(proc providerProcess, tracked map[string]trackedAgentSnapshot) bool {
+func shouldReapOwnedProcess(proc providerProcess, tracked map[string]trackedAgentSnapshot) bool {
 	owner := proc.Owner
-	if owner.AgentID == "" || owner.TaskID == "" || owner.Mode != task.AgentModeHeadless {
+	if owner.AgentID == "" || owner.Mode != task.AgentModeHeadless {
 		return false
 	}
 	if live, ok := tracked[owner.AgentID]; ok && live.State != StateStopped {
@@ -112,7 +112,7 @@ func canonicalProcessRoots(roots []string) []string {
 }
 
 func pathWithinRoots(path string, roots []string) bool {
-	path = strings.TrimSpace(path)
+	path = normalizeObservedProcessPath(path)
 	if path == "" {
 		return false
 	}
@@ -127,6 +127,12 @@ func pathWithinRoots(path string, roots []string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeObservedProcessPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimSuffix(path, " (deleted)")
+	return strings.TrimSpace(path)
 }
 
 func isProviderProcessName(name string) bool {
