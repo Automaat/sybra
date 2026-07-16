@@ -94,6 +94,9 @@ func TestFileScrubbedProposals_NoOfflineScreenNoAutoApprove(t *testing.T) {
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want none: an unscreened variant must not reach production A/B", approved)
 	}
+	if len(filed) != 1 {
+		t.Fatalf("filed %d proposals, want 1", len(filed))
+	}
 	if filed[0].Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", filed[0].Status)
 	}
@@ -142,6 +145,9 @@ func TestFileScrubbedProposals_AutoApproveDisabled(t *testing.T) {
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want none when auto_approve is off", approved)
 	}
+	if len(filed) != 1 {
+		t.Fatalf("filed %d proposals, want 1", len(filed))
+	}
 	if filed[0].Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required to await a human", filed[0].Status)
 	}
@@ -166,6 +172,9 @@ func TestFileScrubbedProposals_NeverAutoApprovesFailedVerdict(t *testing.T) {
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want a failed verdict to stay with a human", approved)
+	}
+	if len(filed) != 1 {
+		t.Fatalf("filed %d proposals, want 1", len(filed))
 	}
 	if filed[0].Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", filed[0].Status)
@@ -221,6 +230,9 @@ func TestFileScrubbedProposals_NoProjectSkipsAutoApprove(t *testing.T) {
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want no dispatch that is certain to fail", approved)
+	}
+	if len(filed) != 1 {
+		t.Fatalf("filed %d proposals, want 1", len(filed))
 	}
 	got, err := c.tasks.Get(filed[0].ID)
 	if err != nil {
