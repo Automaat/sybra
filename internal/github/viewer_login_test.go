@@ -7,8 +7,25 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+// blockingExecer holds a /user resolution open until released, so a test can
+// interleave an auth-mode switch with an in-flight identity lookup.
+type blockingExecer struct {
+	output    []byte
+	release   chan struct{}
+	entered   chan struct{}
+	enterOnce sync.Once
+}
+
+func (b *blockingExecer) run(_ ...string) ([]byte, error) {
+	b.enterOnce.Do(func() { close(b.entered) })
+	<-b.release
+	return b.output, nil
+}
 
 // emptyLoginExecer answers the reviews call with valid JSON but yields an empty
 // /user login, isolating identity failure from reviews-fetch failure.
@@ -81,13 +98,16 @@ func TestViewerLogin_AppAuthResolvesSlugAndNeverCallsUser(t *testing.T) {
 	}
 }
 
-// The App slug is immutable, so it is fetched once and memoized.
-func TestViewerLogin_AppAuthCachesSlug(t *testing.T) {
+// The App slug is immutable, so appLogin fetches it once and memoizes it on the
+// token source. Driven through appLogin directly: viewerLoginE's own
+// cachedViewer memo would short-circuit calls 2..n and make this pass whether
+// or not the slug is cached at all.
+func TestAppLogin_CachesSlug(t *testing.T) {
 	clearViewerCache(t)
 	path, _ := writeTestKey(t, false)
-	var hits int
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits++
+		hits.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"slug":"sybra-app"}`))
 	}))
@@ -99,14 +119,76 @@ func TestViewerLogin_AppAuthCachesSlug(t *testing.T) {
 	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
+	src := currentAppSource()
 
 	for range 3 {
-		if _, err := viewerLoginE(context.Background(), &recordingExecer{}); err != nil {
-			t.Fatalf("viewerLoginE: %v", err)
+		got, err := src.appLogin(context.Background())
+		if err != nil {
+			t.Fatalf("appLogin: %v", err)
+		}
+		if got != "sybra-app[bot]" {
+			t.Fatalf("appLogin = %q, want sybra-app[bot]", got)
 		}
 	}
-	if hits != 1 {
-		t.Errorf("GET /app called %d times, want 1 (slug is immutable)", hits)
+	if n := hits.Load(); n != 1 {
+		t.Errorf("GET /app called %d times, want 1 (slug is immutable)", n)
+	}
+}
+
+// A resolution that started under the previous auth mode must not write its
+// now-stale login back into the freshly-invalidated cache. Sybra's startup hits
+// this window for real: orchestratorLoop (lifecycle.go:100) can call
+// ViewerLogin() under ambient PAT auth while startAppAuthLoop (lifecycle.go:107)
+// switches to App auth seven lines later, and a gh subprocess always loses that
+// race to a PEM read. Poisoning cachedViewer with the PAT login would look like
+// success — the bot would silently stop recognising its own reviews and every
+// in-review task would be flipped to manual/human-required.
+func TestViewerLogin_AuthModeSwitchDoesNotPoisonCache(t *testing.T) {
+	clearViewerCache(t)
+	DisableAppAuth()
+
+	release := make(chan struct{})
+	slow := &blockingExecer{output: []byte("Automaat"), release: release, entered: make(chan struct{})}
+
+	type result struct {
+		login string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		login, err := viewerLoginE(context.Background(), slow)
+		done <- result{login, err}
+	}()
+
+	<-slow.entered // the /user resolution is in flight under PAT auth
+
+	path, _ := writeTestKey(t, false)
+	appSlugServer(t, "sybra-app")
+	t.Cleanup(DisableAppAuth)
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	close(release) // let the stale PAT resolution finish and try to write back
+	got := <-done
+	if got.err == nil {
+		t.Errorf("stale resolution returned %q with no error; it must not be trusted across a mode switch", got.login)
+	}
+
+	viewerMu.RLock()
+	poisoned := cachedViewer
+	viewerMu.RUnlock()
+	if poisoned != "" {
+		t.Fatalf("cachedViewer poisoned with %q after the switch to App auth", poisoned)
+	}
+
+	// The next resolution must produce the App identity, not the PAT one.
+	login, err := viewerLoginE(context.Background(), &recordingExecer{output: []byte("Automaat")})
+	if err != nil {
+		t.Fatalf("viewerLoginE after switch: %v", err)
+	}
+	if login != "sybra-app[bot]" {
+		t.Errorf("login = %q, want sybra-app[bot]", login)
 	}
 }
 

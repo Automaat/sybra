@@ -77,6 +77,13 @@ var defaultExecer execer = ghExecer{}
 var (
 	viewerMu     sync.RWMutex
 	cachedViewer string
+	// viewerGen invalidates in-flight resolutions across an auth-mode switch.
+	// The identity is mode-dependent, and resolving it is slow (a gh subprocess
+	// or an HTTPS round-trip), so a resolution that started under the old mode
+	// can finish after resetCachedViewer() and write a now-wrong login back
+	// into an empty cache. That poisoned value looks like success, so nothing
+	// downstream fails closed — see the write-back guard below.
+	viewerGen uint64
 )
 
 // resetCachedViewer drops the memoized viewer login. Called when the auth mode
@@ -84,6 +91,7 @@ var (
 func resetCachedViewer() {
 	viewerMu.Lock()
 	cachedViewer = ""
+	viewerGen++
 	viewerMu.Unlock()
 }
 
@@ -107,6 +115,7 @@ func viewerLogin(ctx context.Context, e execer) string {
 func viewerLoginE(ctx context.Context, e execer) (string, error) {
 	viewerMu.RLock()
 	cached := cachedViewer
+	gen := viewerGen
 	viewerMu.RUnlock()
 	if cached != "" {
 		return cached, nil
@@ -133,14 +142,20 @@ func viewerLoginE(ctx context.Context, e execer) (string, error) {
 	}
 
 	viewerMu.Lock()
+	defer viewerMu.Unlock()
+	if viewerGen != gen {
+		// The auth mode changed while we were resolving, so `login` describes
+		// the old mode. Writing it back would defeat resetCachedViewer() and
+		// pin a wrong-but-plausible identity forever. Fail instead: the caller
+		// leaves state untouched and the next call resolves under the new mode.
+		return "", fmt.Errorf("resolve viewer login: auth mode changed during resolution")
+	}
 	// Double-checked: another goroutine may have populated the cache
 	// between RUnlock and Lock; keep whichever value is set.
 	if cachedViewer == "" {
 		cachedViewer = login
 	}
-	result := cachedViewer
-	viewerMu.Unlock()
-	return result, nil
+	return cachedViewer, nil
 }
 
 // sanitizeGHOutput trims the `gh` CLI's combined output for use in error
