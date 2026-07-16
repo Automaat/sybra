@@ -851,6 +851,8 @@ func TestIsAuthError(t *testing.T) {
 		{"504 transient", "gh api graphql: gh: HTTP 504: exit status 1", false},
 		{"404 not found", "gh api graphql: gh: HTTP 404: exit status 1", false},
 		{"graphql error", "graphql: Field 'foo' doesn't exist", false},
+		{"no ambient auth configured", "gh issue create: To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.: exit status 1", true},
+		{"gh_token guidance only", "populate the GH_TOKEN environment variable with a token", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

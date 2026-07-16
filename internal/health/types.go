@@ -28,6 +28,7 @@ const (
 	CatAgentRetryLoop    Category = "agent_retry_loop"
 	CatTriageMismatch    Category = "triage_mismatch"
 	CatStatusBottleneck  Category = "status_bottleneck"
+	CatGHAuthFailure     Category = "gh_auth_failure"
 	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
 )
 
