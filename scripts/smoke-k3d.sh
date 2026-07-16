@@ -84,9 +84,14 @@ if [ "${SMOKE_SKIP_BUILD:-0}" != "1" ]; then
   docker build -t "$IMAGE" "$REPO_ROOT"
 fi
 
+# Single node on purpose: `k3d image import` loads the image into every node, and
+# the agent image is multi-GB (node + three provider CLIs), so `--agents 1`
+# imported it twice and OOM-killed the node on a CI runner (exit 137, then the
+# API server fell over). This smoke exercises the Job runner, not multi-node
+# scheduling, so the extra node bought nothing.
 log "Creating cluster $CLUSTER"
 k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
-k3d cluster create "$CLUSTER" --agents 1 --wait \
+k3d cluster create "$CLUSTER" --agents 0 --wait \
   --kubeconfig-update-default=false --kubeconfig-switch-context=false
 k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 

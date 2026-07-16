@@ -446,6 +446,15 @@ jobs:
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
+      # The agent image is multi-GB and gets built, loaded into dockerd, then
+      # imported into the k3d node — three copies. A stock runner does not have
+      # the headroom, and the import OOM-kills the node rather than failing
+      # cleanly. These toolchains are not used by this job.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
       # docker-build.yml cannot supply this image: it is path-filtered to the
       # Dockerfile and uses load: false, so nothing k3d could import survives it.
       # Hence load: true and a build of our own here.
