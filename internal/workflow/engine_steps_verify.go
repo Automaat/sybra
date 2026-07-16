@@ -470,7 +470,11 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 
 	baseRef := resolveOriginBase(ctx, wtPath)
 	negotiationTips := verifyCommitsNegotiationTips(ctx, wtPath, baseRef)
-	for _, ref := range pruneBrokenVerifyCommitRefs(ctx, wtPath, branch) {
+	barePath, bareErr := project.CommonDir(ctx, wtPath)
+	if bareErr != nil {
+		barePath = ""
+	}
+	for _, ref := range pruneBrokenVerifyCommitRefs(ctx, wtPath, barePath, branch) {
 		e.logger.Warn("workflow.verify-commits.ref-recovery.pruned-broken-ref", "task_id", taskID, "ref", ref)
 	}
 	refspecs := []string{"+" + "refs/heads/" + branch + ":refs/remotes/origin/" + branch}
@@ -514,7 +518,7 @@ func verifyCommitsNegotiationTips(ctx context.Context, wtPath, baseRef string) [
 	return nil
 }
 
-func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, taskBranch string) []string {
+func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, barePath, taskBranch string) []string {
 	cmd := exec.CommandContext(ctx, "git", "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
@@ -533,6 +537,12 @@ func pruneBrokenVerifyCommitRefs(ctx context.Context, wtPath, taskBranch string)
 		check.Dir = wtPath
 		if check.Run() == nil {
 			continue
+		}
+		if barePath != "" {
+			badValue := exec.CommandContext(ctx, "git", "rev-parse", ref)
+			badValue.Dir = wtPath
+			shaOut, _ := badValue.Output()
+			project.QuarantineRef(barePath, ref, strings.TrimSpace(string(shaOut)))
 		}
 		deleteCmd := exec.CommandContext(ctx, "git", "update-ref", "-d", ref)
 		deleteCmd.Dir = wtPath

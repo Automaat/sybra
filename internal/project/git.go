@@ -393,6 +393,18 @@ func FetchOrigin(ctx context.Context, barePath string) error {
 			// refs/remotes/origin/*.
 			return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 		})
+		if err != nil && IsBadRefError(err) {
+			if _, repairErr := repairBareCloneLocked(ctx, barePath, ""); repairErr == nil {
+				retryErr := withLockRetry(func() error {
+					return runBare(ctx, barePath, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+				})
+				if retryErr == nil {
+					markFetched(barePath)
+					return nil
+				}
+			}
+			return err
+		}
 		if err != nil {
 			return err
 		}
