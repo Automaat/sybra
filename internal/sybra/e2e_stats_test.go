@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -199,6 +200,81 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 				t.Fatalf("audit summary cost = %g, want %g", summary.TotalCostUSD, tc.wantCost)
 			}
 		})
+	}
+}
+
+func TestE2E_Stats_WorkflowSkillExecutionModeRecorded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".claude", "sybra-test")
+
+	env := setupE2EMultiProvider(t, "codex", []string{"success"})
+	statsPath := filepath.Join(env.taskDir, "stats.json")
+	statsStore, err := stats.NewStore(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: env.worktreesDir,
+		Tasks:        env.tasks,
+		Logger:       e2eLogger(),
+		AgentChecker: env.agents.HasRunningAgentForTask,
+	})
+	handler := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      wm,
+		WorkflowEngine: env.engine,
+		Stats:          statsStore,
+		Artifacts:      env.artifacts,
+	})
+	env.onAgentComplete = func(ag *agent.Agent) {
+		handler.OnComplete(ag)
+	}
+
+	writeWorkflowFixture(t, env, "test-mandatory-skill", testMandatorySkillWorkflowYAML)
+	created, err := env.tasks.Create("workflow skill stats", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow stats completion", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		if gErr != nil || tk.Workflow == nil || tk.Workflow.State != workflow.ExecCompleted {
+			return false
+		}
+		return statsStore.Query().AllTime.TotalRuns == 1
+	})
+
+	resp := statsStore.Query()
+	if len(resp.BySkillExecutionMode) != 1 || resp.BySkillExecutionMode[0].Key != "injected" {
+		t.Fatalf("BySkillExecutionMode = %+v, want one injected bucket", resp.BySkillExecutionMode)
+	}
+	summary := resp.BySkillExecutionMode[0].Stats
+	if summary.TotalRuns != 1 || summary.FailedRuns != 0 {
+		t.Fatalf("injected summary runs/failures = %+v, want runs=1 failures=0", summary)
+	}
+	if summary.OutcomeCounts["completed"] != 1 {
+		t.Fatalf("injected outcome counts = %+v, want completed=1", summary.OutcomeCounts)
+	}
+	if len(resp.RecentRuns) != 1 {
+		t.Fatalf("RecentRuns len = %d, want 1", len(resp.RecentRuns))
+	}
+	run := resp.RecentRuns[0]
+	if run.RequestedSkill != "sybra-test" {
+		t.Fatalf("RequestedSkill = %q, want sybra-test", run.RequestedSkill)
+	}
+	if run.SkillExecutionMode != "injected" {
+		t.Fatalf("SkillExecutionMode = %q, want injected", run.SkillExecutionMode)
+	}
+	if run.SkillConformance != "exact" {
+		t.Fatalf("SkillConformance = %q, want exact", run.SkillConformance)
+	}
+	if run.ResolvedSkillSourceHash == "" {
+		t.Fatal("ResolvedSkillSourceHash empty for injected workflow skill")
 	}
 }
 

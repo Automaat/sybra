@@ -120,6 +120,69 @@
       default: return 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'
     }
   }
+
+  function skillExecutionModeLabel(mode?: string): string {
+    switch (mode) {
+      case 'none': return 'No skill'
+      case 'native': return 'Native'
+      case 'injected': return 'Injected'
+      case 'fallback': return 'Fallback'
+      case 'unavailable': return 'Unavailable'
+      default: return 'Unknown'
+    }
+  }
+
+  function breakdownLabel(sectionKind: string, key: string): string {
+    if (sectionKind === 'skill') return skillExecutionModeLabel(key)
+    return key
+  }
+
+  function outcomeCountsLabel(outcomeCounts?: Record<string, number | undefined>): string {
+    if (!outcomeCounts) return '—'
+    const preferred = ['completed', 'failed', 'unknown']
+    const seen = new Set<string>()
+    const entries: Array<[string, number]> = []
+    for (const key of preferred) {
+      const count = outcomeCounts[key]
+      if (count) {
+        entries.push([key, count])
+        seen.add(key)
+      }
+    }
+    const extra = Object.entries(outcomeCounts)
+      .filter((entry): entry is [string, number] => (entry[1] ?? 0) > 0 && !seen.has(entry[0]))
+      .sort(([a], [b]) => a.localeCompare(b))
+    entries.push(...extra)
+    if (entries.length === 0) return '—'
+    return entries.map(([key, count]) => `${count} ${key}`).join(' · ')
+  }
+
+  function skillCellPrimary(run: any): string {
+    if (run.requestedSkill) return run.requestedSkill
+    return skillExecutionModeLabel(run.skillExecutionMode)
+  }
+
+  function skillCellMeta(run: any): string {
+    const parts: string[] = []
+    if (run.requestedSkill) parts.push(skillExecutionModeLabel(run.skillExecutionMode))
+    if (run.skillConformance && run.skillConformance !== 'none' && run.skillConformance !== 'unknown') parts.push(run.skillConformance)
+    if (run.resolvedSkillSourceHash) parts.push(`src ${run.resolvedSkillSourceHash}`)
+    if (run.subagentCallCount) parts.push(`${run.subagentCallCount} subagents`)
+    return parts.join(' · ')
+  }
+
+  const breakdownSections = $derived(
+    statsStore.data
+      ? [
+          { title: 'By Project Type', data: statsStore.data.byProjectType, kind: 'default' },
+          { title: 'By Project', data: statsStore.data.byProject, kind: 'default' },
+          { title: 'By Role', data: statsStore.data.byRole, kind: 'default' },
+          { title: 'By Mode', data: statsStore.data.byMode, kind: 'default' },
+          { title: 'By Model', data: statsStore.data.byModel, kind: 'default' },
+          { title: 'By Skill Execution', data: statsStore.data.bySkillExecutionMode, kind: 'skill' },
+        ]
+      : [],
+  )
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
@@ -286,13 +349,7 @@
   <!-- Breakdowns -->
   {#if statsStore.data}
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {#each [
-        { title: 'By Project Type', data: statsStore.data.byProjectType },
-        { title: 'By Project', data: statsStore.data.byProject },
-        { title: 'By Role', data: statsStore.data.byRole },
-        { title: 'By Mode', data: statsStore.data.byMode },
-        { title: 'By Model', data: statsStore.data.byModel },
-      ] as section (section.title)}
+      {#each breakdownSections as section (section.title)}
         <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
           <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
           {#if section.data && section.data.length > 0}
@@ -301,18 +358,22 @@
                 <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
                   <th class="pb-2">Name</th>
                   <th class="pb-2 text-right">Runs</th>
+                  <th class="pb-2 text-right">Failures</th>
                   <th class="pb-2 text-right">Cost</th>
                   <th class="pb-2 text-right">Duration</th>
+                  <th class="pb-2">Outcomes</th>
                   <th class="pb-2 text-right">Reasoning</th>
                 </tr>
               </thead>
               <tbody>
                 {#each section.data as row (row.key)}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 font-mono text-xs">{row.key}</td>
+                    <td class="py-1.5 font-mono text-xs">{breakdownLabel(section.kind, row.key)}</td>
                     <td class="py-1.5 text-right">{row.stats.totalRuns}</td>
+                    <td class="py-1.5 text-right">{row.stats.failedRuns}</td>
                     <td class="py-1.5 text-right">${row.stats.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right">{formatDuration(row.stats.totalDurationS)}</td>
+                    <td class="py-1.5 text-xs text-surface-500">{outcomeCountsLabel(row.stats.outcomeCounts)}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.stats.totalReasoningTokens ? formatTokens(row.stats.totalReasoningTokens) : '—'}</td>
                   </tr>
                 {/each}
@@ -337,6 +398,7 @@
                 <th class="pb-2">Task</th>
                 <th class="pb-2">Role</th>
                 <th class="pb-2">Mode</th>
+                <th class="pb-2">Skill</th>
                 <th class="pb-2">Model</th>
                 <th class="pb-2 text-right">Cost</th>
                 <th class="pb-2 text-right">Duration</th>
@@ -353,6 +415,12 @@
                     <span class="rounded px-1.5 py-0.5 text-xs {roleBadgeClasses(run.role)}">{run.role}</span>
                   </td>
                   <td class="py-1.5 text-xs">{run.mode}</td>
+                  <td class="py-1.5">
+                    <div class="font-mono text-xs">{skillCellPrimary(run)}</div>
+                    {#if skillCellMeta(run)}
+                      <div class="text-xs text-surface-400">{skillCellMeta(run)}</div>
+                    {/if}
+                  </td>
                   <td class="py-1.5 text-xs">{run.model || '—'}</td>
                   <td class="py-1.5 text-right text-xs">${run.costUsd.toFixed(4)}</td>
                   <td class="py-1.5 text-right text-xs">{formatDuration(run.durationS)}</td>

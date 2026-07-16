@@ -5,6 +5,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/skillattr"
 )
 
 // Backfill imports historical agent runs from audit logs into the stats
@@ -56,9 +57,11 @@ func (s *Store) Backfill(auditDir string) error {
 		}
 
 		r := RunRecord{
-			ID:        run.AgentID,
-			TaskID:    run.TaskID,
-			Timestamp: run.TerminalAt,
+			ID:                 run.AgentID,
+			TaskID:             run.TaskID,
+			SkillExecutionMode: skillattr.ExecutionModeUnknown,
+			SkillConformance:   skillattr.ConformanceUnknown,
+			Timestamp:          run.TerminalAt,
 		}
 
 		if v, ok := run.TerminalEvent.Data["mode"].(string); ok {
@@ -95,6 +98,18 @@ func (s *Store) Backfill(auditDir string) error {
 		}
 		if v, ok := run.TerminalEvent.Data["premium_requests"].(float64); ok {
 			r.PremiumRequests = v
+		}
+		if v, ok := run.TerminalEvent.Data["requested_skill"].(string); ok {
+			r.RequestedSkill = v
+		}
+		if v, ok := run.TerminalEvent.Data["skill_execution_mode"].(string); ok && v != "" {
+			r.SkillExecutionMode = v
+		}
+		if v, ok := run.TerminalEvent.Data["resolved_skill_source_hash"].(string); ok {
+			r.ResolvedSkillSourceHash = v
+		}
+		if v, ok := run.TerminalEvent.Data["skill_conformance"].(string); ok && v != "" {
+			r.SkillConformance = v
 		}
 
 		s.runs = append(s.runs, r)

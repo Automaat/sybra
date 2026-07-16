@@ -100,6 +100,7 @@ function makeReport() {
     weaknesses: [],
     byProvider: [],
     byRole: [],
+    bySkillExecutionMode: [],
     byAgentModel: [comparisonRow],
     byExperimentKind: [
       {
@@ -164,6 +165,19 @@ describe('Evaluation', () => {
       expect(within(agentSection as HTMLElement).getByText(label)).toBeDefined()
       expect(within(experimentSection as HTMLElement).getByText(label)).toBeDefined()
     }
+  })
+
+  it('renders the skill execution breakdown with friendly labels', () => {
+    const report = makeReport()
+    report.bySkillExecutionMode = [
+      { key: 'native', runs: 3, failures: 1, failureRate: 1 / 3, totalCostUsd: 2, turns: 4, tools: 6 },
+    ] as any
+    mockEvaluationStore.data = report
+
+    render(Evaluation, { props: {} })
+
+    expect(screen.getByText('By Skill Execution')).toBeDefined()
+    expect(screen.getByText('Native')).toBeDefined()
   })
 
   it('shows distinct empty-state messages for unconfigured and zero-runs kinds, and hides unknown when absent', () => {

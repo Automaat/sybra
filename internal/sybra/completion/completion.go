@@ -347,6 +347,16 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ReasoningEffort != "" {
 		updates.ReasoningEffort = task.Ptr(ag.ReasoningEffort)
 	}
+	if ag.RequestedSkill != "" {
+		updates.RequestedSkill = task.Ptr(ag.RequestedSkill)
+	}
+	if ag.ResolvedSkillSourceHash != "" {
+		updates.ResolvedSkillSourceHash = task.Ptr(ag.ResolvedSkillSourceHash)
+	}
+	if ag.SkillConformance != "" {
+		updates.SkillConformance = task.Ptr(ag.SkillConformance)
+	}
+	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
@@ -737,6 +747,10 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		VariantID:                ag.VariantID,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
+		RequestedSkill:           ag.RequestedSkill,
+		SkillExecutionMode:       ag.SkillExecutionMode,
+		ResolvedSkillSourceHash:  ag.ResolvedSkillSourceHash,
+		SkillConformance:         ag.SkillConformance,
 		CostUSD:                  agCost,
 		DurationS:                duration,
 		InputTokens:              in,
@@ -747,6 +761,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		PremiumRequests:          ag.GetPremiumRequests(),
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
+		SubagentCallCount:        ag.GetSubagentCallCount(),
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})
