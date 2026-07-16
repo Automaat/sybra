@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/stats"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -636,6 +638,35 @@ func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.CacheCreationInputTokens += cacheCreate
 	a.CacheReadInputTokens += cacheRead
 	a.mu.Unlock()
+}
+
+// BankEstimatedCost returns the run's cost, deriving it from banked token
+// totals when the provider reported none, and storing the derived figure so
+// mid-run spend ceilings can see it. A provider-reported cost always wins.
+//
+// Call it only after every stat for the terminal event is banked: the estimate
+// reads accumulated totals rather than one event's delta, so it is naturally
+// cumulative and safe to re-run. The whole read-compute-store runs under one
+// lock and can only ever raise CostUSD — two runner goroutines can reach an
+// agent's terminal sites at once (see completedOnce), so releasing the lock to
+// compute would let a stale estimate overwrite a newer provider-reported cost.
+func (a *Agent) BankEstimatedCost() float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	estimated := stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		CostUSD:         a.CostUSD,
+		InputTokens:     a.InputTokens,
+		OutputTokens:    a.OutputTokens,
+		CacheRead:       a.CacheReadInputTokens,
+		ReasoningTokens: a.ReasoningTokens,
+		PremiumRequests: a.PremiumRequests,
+		StartedAt:       a.StartedAt,
+	})
+	a.CostUSD = max(a.CostUSD, estimated)
+	return a.CostUSD
 }
 
 // AddPremiumRequests merges Copilot premium-request usage into the totals.

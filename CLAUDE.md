@@ -191,6 +191,13 @@ claude -p "prompt" --output-format stream-json [--resume <id>] [--allowedTools "
   3. else `HeadlessPermissionMode` (`agent.headless_permission_mode`) `== "auto"` → `--permission-mode auto` (auto-mode classifier)
   4. else → `--dangerously-skip-permissions` (legacy full bypass)
 
+**Run guardrails — what the two ceilings actually measure.** Both are named in units they don't use, so read them as:
+
+- `agent.max_cost_usd` **cannot pre-empt an overspend.** Providers report cost only on their terminal result event, so `Agent.CostUSD` is 0 for the whole run and the ceiling fires on a breach that is already paid for (runs have landed at $8.19 against a $5 limit). It is a circuit breaker against the *next* run, not a budget. `agent.max_task_cost_usd` is the cumulative-per-task cap and is checked before dispatch, so that one does gate.
+- `agent.max_turns` **counts assistant stream events, not CLI turns.** `checkTurnsGuardrail` increments once per `assistant` event and one CLI turn emits several, so a configured `150` typically stops near a CLI-reported 80.
+
+Codex and copilot report no USD at all (tokens and premium requests respectively). `stats.EstimateAgentCost` derives it so the ceilings can see them; `Agent.BankEstimatedCost` banks it live, and **must** run after `AddCacheStats` — cached input is ~95% of a codex run and prices at a tenth of standard, so estimating first overstates by ~6x. A provider-reported cost always wins over the estimate.
+
 **Fork subagents** (`fork_subagent: true`): sets `CLAUDE_CODE_FORK_SUBAGENT=1` in the subprocess environment (CC v2.1.121+, claude provider only). Allows a single prompt to spawn parallel subagent runs, reducing wall-clock time for multi-part work. Tradeoff: each forked subagent incurs its own token usage — total cost multiplies with parallelism. Enable per-task from the metadata panel or task creation dialog. Not propagated to interactive or codex agents.
 
 **Interactive** (persistent conversational session — not tmux):

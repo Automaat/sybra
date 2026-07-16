@@ -908,12 +908,14 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 // budget. Returns false when the caller should stop the stream (cost
 // guardrail breach).
 func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event StreamEvent) (keepGoing bool) {
-	costNow := a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
+	a.AddResultStats(event.SessionID, event.CostUSD, event.InputTokens, event.OutputTokens, event.ReasoningTokens)
 	a.AddCacheStats(event.CacheCreationInputTokens, event.CacheReadInputTokens)
 	// Copilot's billing unit: premium requests (no USD on the result event).
 	if event.PremiumRequests > 0 {
 		a.AddPremiumRequests(event.PremiumRequests)
 	}
+	// Must follow AddCacheStats: cached input dominates a codex run and prices at a tenth of standard. EXC:FILE011:load-bearing-invariant
+	costNow := a.BankEstimatedCost()
 	// Codex NDJSON never reports session_id/cost on the result event, so
 	// those alone read as an empty/crashed run (this misled diagnosis of
 	// the 2026-07-05 stalled-workflow incident, #1559). Omit the
