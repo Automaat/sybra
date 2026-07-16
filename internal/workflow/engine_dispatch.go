@@ -13,6 +13,11 @@ import (
 // already has a non-terminal workflow attached.
 var ErrWorkflowAlreadyActive = fmt.Errorf("task already has an active workflow")
 
+// ErrAutoDispatchDisabled is returned when workflow dispatch is off for this
+// instance (orchestrator.role: agent-only). Callers should treat it as a
+// benign no-op, not a failure.
+var ErrAutoDispatchDisabled = errors.New("workflow dispatch is disabled on this instance")
+
 // StartWorkflow assigns a workflow to a task and executes the first step.
 func (e *Engine) StartWorkflow(taskID, workflowID string) error {
 	return e.StartWorkflowWithVars(taskID, workflowID, nil)
@@ -73,6 +78,12 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, var
 // cancel-then-start atomically without re-acquiring e.starting — see
 // ReplaceWorkflow's doc for why re-acquiring deadlocks.
 func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
+	// The gate lives here, not on the exported Start*/Replace* entries: every
+	// one of them funnels through this function, so a caller cannot start a
+	// workflow by reaching past it.
+	if e.dispatchDisabled {
+		return nil, ErrAutoDispatchDisabled
+	}
 	// Guard against sequential duplicate starts: the starting map only prevents
 	// overlapping entries. If caller A has completed its Start* call (defer
 	// removed the marker) while caller B is queued behind the mutex, B would
@@ -212,6 +223,9 @@ func (e *Engine) matchWorkflow(t TaskInfo, event string, extra map[string]string
 // want to replace an active workflow should use ReplaceWorkflow or
 // ReplaceWorkflowForEvent.
 func (e *Engine) DispatchEvent(taskID, event string, extraFields, vars map[string]string) (string, error) {
+	if e.dispatchDisabled {
+		return "", ErrAutoDispatchDisabled
+	}
 	// Serialize event-driven workflow dispatch attempts per task. The shared
 	// agent.Manager claim only appears once a run_agent step reaches StartAgent;
 	// DispatchEvent needs its own earlier reservation so two callers cannot both

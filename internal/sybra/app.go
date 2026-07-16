@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
@@ -118,10 +119,18 @@ type App struct {
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
-	dispatchNudge   chan struct{}
-	recovery        *recovery.Recovery
-	snapshotter     *tasksnapshot.Snapshotter
-	agentCompletion *completion.Handler
+	dispatchNudge chan struct{}
+	// schedulerDisabled and brainDisabled are the resolved instance-role gates,
+	// sampled once by applyInstanceRole so the orchestrator loop never races a
+	// config reload rewriting cfg.Orchestrator in place. Stored negated so the
+	// zero value means "full" — an App built without applyInstanceRole (tests,
+	// future call sites) keeps the behavior it had before the role key existed
+	// rather than silently refusing to dispatch.
+	schedulerDisabled atomic.Bool
+	brainDisabled     atomic.Bool
+	recovery          *recovery.Recovery
+	snapshotter       *tasksnapshot.Snapshotter
+	agentCompletion   *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -274,6 +283,7 @@ func (a *App) acquireHomeLock() error {
 }
 
 func (a *App) startLifecycle(ctx context.Context, emit func(string, any)) {
+	a.applyInstanceRole()
 	a.initLoopScheduler(ctx, emit)
 	a.initFileWatcher(ctx, emit)
 

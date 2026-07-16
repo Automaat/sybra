@@ -672,7 +672,8 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
 		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
 		s.wg.Go(func() {
-			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil {
+			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil &&
+				!errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
 				s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
 			}
 		})
@@ -746,6 +747,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
 			s.wg.Go(func() {
 				dispatched, wfErr := s.redispatchStatusChanged(id, newStatus)
+				if errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
+					return
+				}
 				if wfErr != nil {
 					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
 					return

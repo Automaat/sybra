@@ -5,6 +5,10 @@ metadata:
   namespace: sybra-poc
 data:
   config.yaml: |
+    # agent-only: serve the HTTP API and run explicitly-started agent Jobs, but
+    # never auto-start an orchestrator session or dispatch tasks on our own.
+    orchestrator:
+      role: agent-only
     agent:
       provider: claude
       mode: headless

@@ -225,8 +225,18 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 ## OrchestratorConfig (`orchestrator`)
 
+OrchestratorConfig gates and paces the self-starting automations. Role
+"full" runs the orchestrator brain session and the auto-dispatch scheduler,
+preserving single-node behavior. Role "agent-only" fails closed on both: it
+serves the HTTP API and runs explicitly-started agents but never orchestrates
+on its own — the posture for a secondary/test deployment (a Kubernetes
+agent-only server, a scratch instance) that must not race a full instance.
+
 | YAML key | Type | Default | Description |
 |---|---|---|---|
+| `orchestrator.role` | `string` | `full` | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
+| `orchestrator.enabled` | `*bool` | _(nil)_ | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
+| `orchestrator.scheduler_enabled` | `*bool` | _(nil)_ | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
 | `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
 | `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
 | `orchestrator.auto_approve_plans_without_decisions` | `bool` |  | AutoApprovePlansWithoutDecisions lets the workflow engine advance a validated simple-task plan from plan-review to implementation when the planner explicitly recorded that there are no open human decisions. Default false. |
