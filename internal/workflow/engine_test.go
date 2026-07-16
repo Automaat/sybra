@@ -26,9 +26,9 @@ import (
 )
 
 // TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
-// simple-task-plan replan/critique gates depend on: task.plan_critique
-// mirrors TaskInfo.PlanCritique verbatim (route_critique_verdict substring-
-// matches its verdict heading), and task.replan_count is start_replan's own
+// simple-task-plan replan/critique path depends on: task.plan_critique
+// mirrors TaskInfo.PlanCritique verbatim (the human gate renders it as
+// advisory context), and task.replan_count is start_replan's own
 // step-history count as of the current call — the number of full opus
 // replan cycles already spent, not counting the one about to start.
 func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {

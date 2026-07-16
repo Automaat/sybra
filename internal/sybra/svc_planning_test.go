@@ -2,6 +2,8 @@ package sybra
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -122,13 +124,13 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 		CurrentStep: "",
 		State:       workflow.ExecCompleted,
 		Variables: map[string]string{
-			"human_action":               "reject",
-			"human.feedback":             "stale feedback",
-			"step.review_plan.output":    "reject",
-			"step.address_critique.note": "keep",
+			"human_action":            "reject",
+			"human.feedback":          "stale feedback",
+			"step.review_plan.output": "reject",
+			"step.critique_plan.note": "keep",
 		},
 		StepHistory: []workflow.StepRecord{{
-			StepID: "validate_plan_contract_after_address",
+			StepID: "validate_plan_contract",
 			Status: "completed",
 		}},
 		StartedAt:   completedAt.Add(-time.Minute),
@@ -167,7 +169,7 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 	if _, ok := updated.Workflow.Variables["human.feedback"]; ok {
 		t.Fatal("stale human.feedback should be cleared during recovery")
 	}
-	if got := updated.Workflow.Variables["step.address_critique.note"]; got != "keep" {
+	if got := updated.Workflow.Variables["step.critique_plan.note"]; got != "keep" {
 		t.Fatalf("step variable = %q, want preserved", got)
 	}
 }
@@ -265,7 +267,7 @@ func TestPlanningService_ApprovePlan_RecoversManualVerificationContract(t *testi
 		CurrentStep: "",
 		State:       workflow.ExecCompleted,
 		StepHistory: []workflow.StepRecord{{
-			StepID: "validate_plan_contract_after_address",
+			StepID: "validate_plan_contract",
 			Status: "completed",
 		}},
 		StartedAt:   completedAt.Add(-time.Minute),
@@ -643,28 +645,75 @@ func TestPlanningService_SendPlanMessage_WithCommentsButNoLiveAgentErrors(t *tes
 	}
 }
 
+// waitForStatusWorkflowYAML backs TestApp_StatusHook_AdvancesWorkflow. No
+// builtin declares wait_for_status since #2152 removed address_critique, but
+// the engine feature stays live for user-authored workflows in
+// ~/.sybra/workflows, so the App-level hook still needs coverage and can no
+// longer borrow a builtin step to park on.
+const waitForStatusWorkflowYAML = `id: test-status-hook
+name: Test Status Hook
+description: Minimal workflow parking a run_agent step on wait_for_status
+trigger:
+  on: task.created
+steps:
+  - id: plan
+    name: Plan
+    type: run_agent
+    config:
+      role: plan
+      mode: interactive
+      model: opus
+      wait_for_status: plan-review
+      prompt: Plan {{.Task.ID}}
+    next:
+      - goto: review_plan
+
+  - id: review_plan
+    name: Review Plan
+    type: wait_human
+    config:
+      status: plan-review
+      human_actions:
+        - approve
+    next:
+      - goto: ""
+`
+
 // TestApp_StatusHook_AdvancesWorkflow verifies the end-to-end wiring
 // inside App.initStatusHook: a task status update on a task whose
 // workflow is sitting in a run_agent step with wait_for_status must
 // advance past that step as a side effect of the task update. Without
-// this wiring, the interactive address_critique agent would never make
-// the workflow leave the critique-iteration loop.
+// this wiring, such a workflow would never leave its waiting step.
 func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
-	taskSvc, app := setupTaskService(t)
-	app.workflowEngine = taskSvc.workflowEngine
+	_, app := setupTaskService(t)
+
+	// setupTaskService syncs only builtins, none of which declare
+	// wait_for_status — hence a purpose-built fixture store here.
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: app.tasks},
+		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
+		app.logger,
+	)
+	engine.SetContext(t.Context())
+	app.workflowEngine = engine
 	app.initStatusHook()
 
-	// Create the task directly via the store to bypass
-	// TaskService.CreateTask's auto-triage goroutine, which would race
-	// with this test's manual workflow setup.
+	// Direct store write, not TaskService.CreateTask: the latter's auto-triage
+	// goroutine would race this test's manual workflow setup.
 	created, err := app.tasks.Create("status hook task", "", "interactive")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Park the workflow in address_critique — the only run_agent step in
-	// simple-task-plan that still uses wait_for_status: plan-review (the
-	// plan step is now a parallel block of headless one-shots).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status":         "planning",
 		"plan":           "plan",
@@ -673,8 +722,8 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 		"plan_decisions": "decisions",
 		"plan_brief":     "brief",
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task-plan",
-			CurrentStep: "address_critique",
+			WorkflowID:  "test-status-hook",
+			CurrentStep: "plan",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},
 		},
