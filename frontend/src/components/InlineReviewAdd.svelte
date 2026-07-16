@@ -8,12 +8,18 @@
   // "?diff=split" or "#discussion_r123" glued onto the number from a copied
   // browser URL) fails here instead of silently becoming a plain task with a
   // garbage title — ParsePRURL's own strconv.Atoi on that path segment would
-  // reject it the same way.
-  const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(\/.*)?$/
+  // reject it the same way. The number is captured (not just \d+-matched) so
+  // isValidPRURL can also reject "pull/0", matching ParsePRURL's n==0 check.
+  const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)(?:\/.*)?$/
 
   function stripQueryAndFragment(url: string): string {
     const i = url.search(/[?#]/)
     return i === -1 ? url : url.slice(0, i)
+  }
+
+  function isValidPRURL(url: string): boolean {
+    const m = PR_URL_RE.exec(url)
+    return m !== null && Number(m[1]) !== 0
   }
 
   let active = $state(false)
@@ -34,7 +40,7 @@
   async function submit() {
     const url = stripQueryAndFragment(link.trim())
     if (!url) return
-    if (!PR_URL_RE.test(url)) {
+    if (!isValidPRURL(url)) {
       notificationStore.pushLocal(
         'error',
         'Invalid link',

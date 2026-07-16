@@ -67,6 +67,29 @@ describe('InlineReviewAdd', () => {
     })
   })
 
+  it('accepts a PR number with leading zeros', async () => {
+    render(InlineReviewAdd)
+    await fireEvent.click(screen.getByRole('button'))
+    const input = (await screen.findByPlaceholderText('Paste a GitHub PR link…')) as HTMLInputElement
+    await fireEvent.input(input, { target: { value: 'https://github.com/owner/repo/pull/007' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockCreate).toHaveBeenCalledWith('https://github.com/owner/repo/pull/007', '', 'headless')
+    })
+  })
+
+  it('rejects PR number 0 without calling create', async () => {
+    render(InlineReviewAdd)
+    await fireEvent.click(screen.getByRole('button'))
+    const input = (await screen.findByPlaceholderText('Paste a GitHub PR link…')) as HTMLInputElement
+    await fireEvent.input(input, { target: { value: 'https://github.com/owner/repo/pull/0' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => {
+      expect(mockPushLocal).toHaveBeenCalled()
+    })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
   it('rejects a non-PR link without calling create', async () => {
     render(InlineReviewAdd)
     await fireEvent.click(screen.getByRole('button'))
