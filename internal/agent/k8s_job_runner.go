@@ -451,6 +451,18 @@ if [ "$status" -eq 0 ] && [ -n "${SYBRA_K8S_GIT_REMOTE:-}" ]; then
 	else
 		git push
 	fi
+	# The Job opens its own PR. Creating it server-side would force the server
+	# to hold a GitHub credential and own repo state, when its whole job in
+	# Kubernetes is to dispatch Jobs and watch them. sybra-cli records the PR
+	# number back through the HTTP API.
+	if [ -n "${SYBRA_K8S_PR_REPO:-}" ] && [ -n "${SYBRA_K8S_GIT_BRANCH:-}" ]; then
+		sybra-cli pr create "$SYBRA_TASK_ID" \
+			--repo "$SYBRA_K8S_PR_REPO" \
+			--head "$SYBRA_K8S_GIT_BRANCH" \
+			--dir "$workdir" \
+			${SYBRA_K8S_PR_TITLE:+--title "$SYBRA_K8S_PR_TITLE"} \
+			${SYBRA_K8S_PR_BODY:+--body "$SYBRA_K8S_PR_BODY"}
+	fi
 fi
 exit "$status"
 `
