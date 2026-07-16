@@ -62,6 +62,8 @@ func RepairBareClone(ctx context.Context, barePath, taskBranch string) (RepairRe
 func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (RepairReport, error) {
 	var report RepairReport
 
+	releaseDeadWorktreeRefs(ctx, barePath, &report)
+
 	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err != nil {
 		return report, fmt.Errorf("enumerate refs/heads: %w", err)
@@ -84,33 +86,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 		}
 	}
 
-	worktreesDir := filepath.Join(barePath, "worktrees")
-	entries, _ := os.ReadDir(worktreesDir)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		wtRef := "worktrees/" + entry.Name() + "/HEAD"
-		headBytes, readErr := os.ReadFile(filepath.Join(worktreesDir, entry.Name(), "HEAD"))
-		if readErr != nil {
-			continue
-		}
-		head := strings.TrimSpace(string(headBytes))
-		target := head
-		if trimmed, ok := strings.CutPrefix(head, "ref: "); ok {
-			target = strings.TrimSpace(trimmed)
-		}
-		if checkErr := runBare(ctx, barePath, "rev-parse", "--verify", target+"^{commit}"); checkErr == nil {
-			continue
-		}
-		QuarantineRef(barePath, wtRef, head)
-		report.QuarantinedRefs = append(report.QuarantinedRefs, wtRef)
-	}
-
 	if len(report.QuarantinedRefs) > 0 {
-		_ = withLockRetry(func() error {
-			return runBare(ctx, barePath, "worktree", "prune")
-		})
 		report.PrunedWorktrees = true
 	}
 
@@ -124,6 +100,49 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	}
 
 	return report, nil
+}
+
+func releaseDeadWorktreeRefs(ctx context.Context, barePath string, report *RepairReport) {
+	worktreesDir := filepath.Join(barePath, "worktrees")
+	entries, _ := os.ReadDir(worktreesDir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		wtAdminDir := filepath.Join(worktreesDir, entry.Name())
+		wtRef := "worktrees/" + entry.Name() + "/HEAD"
+		headBytes, readErr := os.ReadFile(filepath.Join(wtAdminDir, "HEAD"))
+		if readErr != nil {
+			continue
+		}
+		head := strings.TrimSpace(string(headBytes))
+		target := head
+		if trimmed, ok := strings.CutPrefix(head, "ref: "); ok {
+			target = strings.TrimSpace(trimmed)
+		}
+		if checkErr := runBare(ctx, barePath, "rev-parse", "--verify", target+"^{commit}"); checkErr == nil {
+			continue
+		}
+		QuarantineRef(barePath, wtRef, head)
+		report.QuarantinedRefs = append(report.QuarantinedRefs, wtRef)
+		if checkoutPath := worktreeCheckoutPath(wtAdminDir); checkoutPath != "" {
+			_ = withLockRetry(func() error {
+				return runBare(ctx, barePath, "worktree", "remove", "--force", checkoutPath)
+			})
+		}
+	}
+	_ = withLockRetry(func() error {
+		return runBare(ctx, barePath, "worktree", "prune")
+	})
+}
+
+func worktreeCheckoutPath(adminDir string) string {
+	gitdirBytes, err := os.ReadFile(filepath.Join(adminDir, "gitdir"))
+	if err != nil {
+		return ""
+	}
+	gitdirPath := strings.TrimSpace(string(gitdirBytes))
+	return strings.TrimSuffix(gitdirPath, string(filepath.Separator)+".git")
 }
 
 func QuarantineRef(barePath, ref, badValue string) {

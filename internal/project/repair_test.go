@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,6 +107,58 @@ func TestRepairBareClone_NoOpOnCleanClone(t *testing.T) {
 	}
 	if report.PrunedWorktrees {
 		t.Fatal("PrunedWorktrees should be false when nothing was broken")
+	}
+}
+
+func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "extra.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", wtPath, "add", "."},
+		{"-C", wtPath, "commit", "-m", "extra"},
+	} {
+		if out, cmdErr := exec.Command("git", args...).CombinedOutput(); cmdErr != nil {
+			t.Fatalf("git %v: %v: %s", args, cmdErr, out)
+		}
+	}
+	headOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSHA := strings.TrimSpace(string(headOut))
+	objPath := filepath.Join(bare, "objects", headSHA[:2], headSHA[2:])
+	if err := os.Remove(objPath); err != nil {
+		t.Fatalf("corrupt commit object: %v", err)
+	}
+
+	origDir := QuarantineDir
+	QuarantineDir = t.TempDir()
+	t.Cleanup(func() { QuarantineDir = origDir })
+
+	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
+		t.Fatalf("RepairBareClone: %v", err)
+	}
+
+	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/task-branch"); err == nil {
+		t.Fatal("dead task-branch ref should have been deleted, but a live worktree HEAD still pinned it")
 	}
 }
 
