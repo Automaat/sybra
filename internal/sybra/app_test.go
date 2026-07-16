@@ -363,6 +363,61 @@ func TestGetPressureGateWiresDiskReclaimer(t *testing.T) {
 	}
 }
 
+// TestPressureGateReclaimSurfacesInHealthTelemetry drives the full loop the
+// acceptance criterion "Health reports reclaimed and unreclaimable space"
+// depends on: a dispatch-time Admit() call crossing the warning watermark
+// must fire the wired diskreclaim.Reclaimer (see getPressureGate), and once
+// that pass completes, healthPressureStatus (wired to health.Checker via
+// SetPressureStatus in lifecycle.go) must surface it. The two isolated unit
+// suites in internal/pressure and internal/health each cover their own half
+// of this; only this test exercises the App-level wiring connecting them.
+func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	a := setupApp(t)
+	cfg := config.DefaultConfig()
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	cfg.TasksDir = filepath.Join(home, "tasks")
+	cfg.SkillsDir = filepath.Join(home, "skills")
+	cfg.ProjectsDir = filepath.Join(home, "projects")
+	cfg.ClonesDir = filepath.Join(home, "clones")
+	cfg.WorktreesDir = filepath.Join(home, "worktrees")
+	// Force the warning watermark to trip regardless of the host's actual
+	// free disk space, and shrink the reclaim cooldown so TryRun's
+	// background pass has no rate-limit reason to no-op.
+	cfg.Orchestrator.Pressure.Enabled = true
+	cfg.Orchestrator.Pressure.WarningDiskFreePercent = 100
+	cfg.Orchestrator.Pressure.MinDiskFreePercent = 1
+	cfg.Orchestrator.Pressure.SampleIntervalSeconds = 1
+	cfg.Orchestrator.Pressure.ReclaimCooldownSeconds = 1
+	a.cfg = cfg
+
+	gate := a.getPressureGate()
+	if gate == nil {
+		t.Fatal("getPressureGate() = nil, want gate")
+	}
+	if ok, reason := gate.Admit(); !ok {
+		t.Fatalf("Admit() = false (%q), want true (critical threshold not crossed)", reason)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status *health.PressureStatus
+	for time.Now().Before(deadline) {
+		if s := a.healthPressureStatus(); s != nil && s.LastReclaim != nil {
+			status = s
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil {
+		t.Fatal("healthPressureStatus() never surfaced LastReclaim after Admit() triggered a reclaim pass")
+	}
+	if status.LastReclaim.RanAt.IsZero() {
+		t.Error("LastReclaim.RanAt is zero, want the reclaim pass's timestamp")
+	}
+}
+
 func TestListTasksEmpty(t *testing.T) {
 	svc, _ := setupTaskService(t)
 	tasks, err := svc.ListTasks()
