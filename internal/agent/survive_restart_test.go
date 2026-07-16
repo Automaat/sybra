@@ -555,6 +555,43 @@ func TestTailHeadlessFile_EndOffsetExcludesPartialLine(t *testing.T) {
 	}
 }
 
+func TestTailHeadlessFile_ReattachedFastCloseDoesNotWaitFullGrace(t *testing.T) {
+	prevDrain := drainTimeout
+	drainTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { drainTimeout = prevDrain })
+
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	logPath := filepath.Join(t.TempDir(), "tail-fast-close.ndjson")
+	content := `{"type":"result","result":"done","session_id":"sess-1","total_cost_usd":0}` + "\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	a := &Agent{
+		ID:                   "fast-close",
+		Provider:             "claude",
+		postResultWaitReason: postResultWaitFastClose,
+		postResultWaitSince:  time.Now().Add(-time.Second),
+	}
+	procDone := make(chan struct{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(procDone)
+	}()
+
+	start := time.Now()
+	exited, _ := m.tailHeadlessFile(context.Background(), a, logPath, 0, procDone)
+	if !exited {
+		t.Fatal("expected exited=true on persisted fast-close state")
+	}
+	if elapsed := time.Since(start); elapsed >= postResultGrace/2 {
+		t.Fatalf("tailHeadlessFile took %s, want prompt close instead of waiting near postResultGrace", elapsed)
+	}
+	if !a.WasCompletedByResult() {
+		t.Fatal("WasCompletedByResult() = false, want true on reattached fast-close path")
+	}
+}
+
 // TestReattachAll_RecoversCompletedDuringDowntime verifies a run that
 // finished while the app was down (process gone, log has a terminal result)
 // is finalized via onComplete instead of being dropped and re-run.

@@ -55,6 +55,11 @@ type Record struct {
 	// (native, injected, fallback) so a reattached completion can persist the
 	// same attribution it started with.
 	SkillExecutionMode string `yaml:"skill_execution_mode,omitempty"`
+	// PostResultWait* preserve the runner's post-terminal-result teardown
+	// decision so reattach can continue the same fast-close/grace path instead
+	// of starting a fresh wait window from restart time.
+	PostResultWaitReason string    `yaml:"post_result_wait_reason,omitempty"`
+	PostResultWaitSince  time.Time `yaml:"post_result_wait_since,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

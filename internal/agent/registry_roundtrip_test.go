@@ -42,6 +42,8 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		oneShot:                  true,
 		requirePermissions:       true,
 		sandboxMode:              "enforce",
+		postResultWaitReason:     postResultWaitBackgroundTask,
+		postResultWaitSince:      startedAt.Add(30 * time.Minute),
 		detached:                 false,
 		InputTokens:              1,
 		OutputTokens:             2,
@@ -90,6 +92,8 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		RequirePermissions: rehydrated.requirePermissions,
 		SandboxMode:        rehydrated.sandboxMode,
 		ReasoningEffort:    rehydrated.ReasoningEffort,
+		PostResultReason:   rehydrated.postResultWaitReason,
+		PostResultSince:    rehydrated.postResultWaitSince,
 	}
 	want := persistedAgentFields{
 		ID:                 original.ID,
@@ -114,6 +118,8 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 		RequirePermissions: original.requirePermissions,
 		SandboxMode:        original.sandboxMode,
 		ReasoningEffort:    original.ReasoningEffort,
+		PostResultReason:   original.postResultWaitReason,
+		PostResultSince:    original.postResultWaitSince,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("persisted fields mismatch\ngot:  %#v\nwant: %#v", got, want)
@@ -223,4 +229,6 @@ type persistedAgentFields struct {
 	RequirePermissions bool
 	SandboxMode        string
 	ReasoningEffort    string
+	PostResultReason   string
+	PostResultSince    time.Time
 }
