@@ -65,7 +65,15 @@ func recentRunBurst(runs []task.AgentRun, now time.Time, window time.Duration) (
 		if runs[i].StartedAt.Before(cutoff) {
 			break
 		}
-		counts[runs[i].Role]++
+		// Legacy runs recorded Role as "" for implementation (see
+		// internal/stats/store.go's identical normalization); without this
+		// a burst split across old and new records would undercount on
+		// both buckets and never trip.
+		r := runs[i].Role
+		if r == "" {
+			r = "implementation"
+		}
+		counts[r]++
 	}
 	for r, c := range counts {
 		if c > count {

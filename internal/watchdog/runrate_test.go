@@ -238,3 +238,43 @@ func TestRecentRunBurst(t *testing.T) {
 		t.Fatalf("recentRunBurst(empty) = (%q, %d), want (\"\", 0)", role, count)
 	}
 }
+
+// Legacy runs recorded Role as "" for implementation; mixed with current
+// runs that spell it out, they must count as one bucket, not two.
+func TestRecentRunBurst_NormalizesLegacyEmptyRole(t *testing.T) {
+	now := time.Now()
+	runs := []task.AgentRun{
+		{Role: "", StartedAt: now.Add(-20 * time.Minute)},
+		{Role: "", StartedAt: now.Add(-15 * time.Minute)},
+		{Role: "implementation", StartedAt: now.Add(-10 * time.Minute)},
+		{Role: "implementation", StartedAt: now.Add(-5 * time.Minute)},
+	}
+	role, count := recentRunBurst(runs, now, 30*time.Minute)
+	if role != "implementation" || count != 4 {
+		t.Fatalf("recentRunBurst = (%q, %d), want (\"implementation\", 4)", role, count)
+	}
+}
+
+func TestCheckRunRate_EscalatesMixedLegacyAndCurrentRole(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+	tk := newInProgressTask(t, mgr)
+
+	now := time.Now()
+	addRuns(t, mgr, tk.ID, "", 15, now.Add(-29*time.Minute), time.Minute)
+	addRuns(t, mgr, tk.ID, "implementation", 15, now.Add(-14*time.Minute), time.Minute)
+
+	w := &Watchdog{tasks: mgr, logger: slog.New(slog.DiscardHandler), maxRunsPerWindow: 30, runWindow: 30 * time.Minute}
+	w.checkRunRate(now)
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required", got.Status)
+	}
+}
