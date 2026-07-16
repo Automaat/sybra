@@ -918,6 +918,62 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 
 // ResumeStalled finds tasks with running/waiting workflows where no agent
 // is active, and attempts to re-execute the current step.
+// escalateMissingStep surfaces a task parked on a step its workflow no longer
+// declares — typically a step deleted by a newer build while the task sat on
+// it. Every advance path bails on a nil step, so without this the task strands
+// forever with no operator signal and approve/reject hard-error.
+//
+// The execution is failed, not just flagged: ResumeStalled reaches this branch
+// before its human-required skip, so leaving the execution waiting would
+// re-escalate (and rewrite the task file) on every maintenance tick. Failing it
+// also unblocks the operator, since approve/reject cannot resolve a step the
+// definition no longer has.
+func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
+	e.logger.Warn("workflow.resume-stalled.step-missing",
+		"task_id", taskID, "workflow_id", wf.WorkflowID, "step", wf.CurrentStep)
+
+	// Status first, execution second, so a failed second write leaves the task
+	// visible and retryable rather than buried mid-escalation.
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required",
+		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
+			" — it was removed while this task was parked on it. Set the task back to"+
+			" planning to re-plan against the current workflow."); err != nil {
+		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
+		return
+	}
+	// Failing the execution is what makes the task recoverable: the planning
+	// dispatcher only starts a fresh workflow when the old one is completed or
+	// failed, so a waiting execution would reject the operator's re-plan.
+	failed := *wf
+	failed.State = ExecFailed
+	if err := e.tasks.SetWorkflow(taskID, &failed); err != nil {
+		e.logger.Warn("workflow.resume-stalled.step-missing.fail", "task_id", taskID, "err", err)
+	}
+}
+
+// handleMissingStep applies the resumable path's own skip guards to a task
+// whose current step no longer resolves, since a nil step never reaches them.
+// A done/cancelled task needs no signal, and a live agent must keep its chance
+// to land the sidecar — HandleAgentComplete bails on a terminal execution,
+// so a failure here would discard the run.
+//
+// human-required is deliberately not skipped, unlike in the resumable path.
+// escalateMissingStep writes the status before the execution, so an escalation
+// whose second write failed sits at human-required with a live execution, which
+// the planning dispatcher refuses to re-plan — the operator would be stuck
+// following advice that cannot work. Re-entering here retries it. Nothing loops:
+// once both writes land, ResumeStalled's own ExecFailed check skips the task
+// before it ever reaches this function.
+func (e *Engine) handleMissingStep(t *TaskInfo) {
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
+		return
+	}
+	if e.agents.HasRunningAgent(t.ID) {
+		return
+	}
+	e.escalateMissingStep(t.ID, t.Workflow)
+}
+
 func (e *Engine) ResumeStalled() {
 	if e.dispatchDisabled {
 		return
@@ -964,6 +1020,7 @@ func (e *Engine) ResumeStalled() {
 		}
 		step := def.StepByID(t.Workflow.CurrentStep)
 		if step == nil {
+			e.handleMissingStep(t)
 			continue
 		}
 

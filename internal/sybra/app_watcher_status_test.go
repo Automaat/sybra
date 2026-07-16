@@ -33,8 +33,26 @@ import (
 // same primitive sybra-cli uses) and asserts that the workflow advances
 // past `plan` after the file is written.
 func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
-	taskSvc, app := setupTaskService(t)
-	app.workflowEngine = taskSvc.workflowEngine
+	_, app := setupTaskService(t)
+
+	// setupTaskService syncs only builtins, none of which declare
+	// wait_for_status since #2152 — hence a purpose-built fixture store.
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: app.tasks},
+		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
+		app.logger,
+	)
+	engine.SetContext(t.Context())
+	app.workflowEngine = engine
 	app.initStatusHook()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -62,10 +80,6 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Park the workflow at the simple-task-plan `address_critique` step —
-	// the only run_agent step in simple-task-plan that still uses
-	// wait_for_status: plan-review (the plan step is now a parallel block
-	// of headless one-shots that exit on their own).
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status":         "planning",
 		"plan":           "plan",
@@ -74,8 +88,8 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 		"plan_decisions": "decisions",
 		"plan_brief":     "brief",
 		"workflow": &workflow.Execution{
-			WorkflowID:  "simple-task-plan",
-			CurrentStep: "address_critique",
+			WorkflowID:  "test-status-hook",
+			CurrentStep: "plan",
 			State:       workflow.ExecWaiting,
 			Variables:   map[string]string{},
 		},
@@ -114,13 +128,13 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 				step = tk.Workflow.CurrentStep
 				state = string(tk.Workflow.State)
 			}
-			t.Fatalf("workflow stuck on step %q (state=%q, status=%q) after external status change to plan-review (expected advance past address_critique)", step, state, tk.Status)
+			t.Fatalf("workflow stuck on step %q (state=%q, status=%q) after external status change to plan-review (expected advance past plan)", step, state, tk.Status)
 		case <-time.After(50 * time.Millisecond):
 			tk, err := app.tasks.Get(created.ID)
 			if err != nil {
 				continue
 			}
-			if tk.Workflow != nil && tk.Workflow.CurrentStep != "address_critique" {
+			if tk.Workflow != nil && tk.Workflow.CurrentStep != "plan" {
 				return // success — workflow advanced
 			}
 		}

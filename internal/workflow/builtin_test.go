@@ -118,70 +118,6 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 }
 
-// TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove locks the
-// behavior that an APPROVE plan-critique verdict routes straight to
-// review_plan, skipping the second full opus address_critique run — that
-// run only makes sense when the critic asked for changes.
-func TestBuiltinSimpleTask_RouteCritiqueVerdictSkipsAddressOnApprove(t *testing.T) {
-	t.Parallel()
-
-	defs, err := BuiltinDefinitions()
-	if err != nil {
-		t.Fatalf("BuiltinDefinitions: %v", err)
-	}
-	var simple *Definition
-	for i := range defs {
-		if defs[i].ID == "simple-task-plan" {
-			simple = &defs[i]
-			break
-		}
-	}
-	if simple == nil {
-		t.Fatal("simple-task-plan builtin definition not found")
-		return
-	}
-	step := simple.StepByID("route_critique_verdict")
-	if step == nil {
-		t.Fatal("route_critique_verdict step not found in simple-task-plan")
-	}
-
-	cases := []struct {
-		name         string
-		planCritique string
-		want         string
-	}{
-		{
-			name:         "approve_skips_address_critique",
-			planCritique: "# Plan Review: APPROVE\n\n## Verdict\n\nExecutable as-is.\n",
-			want:         "review_plan",
-		},
-		{
-			name:         "refine_routes_to_address_critique",
-			planCritique: "# Plan Review: REFINE\n\n## Verdict\n\nNeeds targeted edits.\n",
-			want:         "reset_for_address",
-		},
-		{
-			name:         "reject_routes_to_address_critique",
-			planCritique: "# Plan Review: REJECT\n\n## Verdict\n\nUngrounded.\n",
-			want:         "reset_for_address",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(step.Next, map[string]string{
-				"task.plan_critique": tc.planCritique,
-			})
-			if err != nil {
-				t.Fatalf("ResolveTransition: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("goto = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
 // iteration cap: task.replan_count is start_replan's own step-history count
 // as of the current reject, so 0/1/2 still have budget for another full
@@ -245,7 +181,14 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 	}
 }
 
-func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T) {
+// TestBuiltinSimpleTaskPlan_CritiqueDoesNotTriggerReplan locks the ungated
+// critique contract (#2152): the critic's verdict is advisory context for the
+// human gate, never a router. The old route_critique_verdict step gated on the
+// literal "Plan Review: APPROVE", a format the plan-critic skill never emits
+// (it writes "# Plan Review" and "## Verdict: <X>" on separate lines), so every
+// critiqued plan fell through to a second full-price opus address_critique run.
+// No plan-role agent may be reachable from the critique path.
+func TestBuiltinSimpleTaskPlan_CritiqueDoesNotTriggerReplan(t *testing.T) {
 	t.Parallel()
 
 	defs, err := BuiltinDefinitions()
@@ -263,43 +206,29 @@ func TestBuiltinSimpleTask_AddressCritiqueRevalidatesPlanArtifacts(t *testing.T)
 		t.Fatal("simple-task-plan builtin definition not found")
 		return
 	}
-	step := simple.StepByID("address_critique")
-	if step == nil {
-		t.Fatal("address_critique step not found in simple-task-plan")
-		return
-	}
-	got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
-	if err != nil {
-		t.Fatalf("ResolveTransition: %v", err)
-	}
-	if got != "require_plan_after_address" {
-		t.Fatalf("address_critique next = %q, want require_plan_after_address", got)
+
+	// No step may branch on the critique's content: a verdict-shaped gate is
+	// exactly what silently forced the rerun, since the critic's real output
+	// never matched the literal the old gate tested for.
+	for _, s := range simple.Steps {
+		for _, n := range s.Next {
+			if n.When != nil && n.When.Field == "task.plan_critique" {
+				t.Errorf("step %q branches on task.plan_critique (%q %q) — the critique is advisory context, not a router",
+					s.ID, n.When.Operator, n.When.Value)
+			}
+		}
 	}
 
-	chain := []struct {
-		step string
-		want string
-	}{
-		{"require_plan_after_address", "require_plan_decisions_after_address"},
-		{"require_plan_decisions_after_address", "require_plan_brief_after_address"},
-		{"require_plan_brief_after_address", "require_plan_research_after_address"},
-		{"require_plan_research_after_address", "validate_plan_refs_after_address"},
-		{"validate_plan_refs_after_address", "validate_plan_contract_after_address"},
-		{"validate_plan_contract_after_address", "review_plan"},
+	// The rework path is the human reject loop only — no plan-role agent step
+	// may remain besides the initial plan.
+	var planRoleSteps []string
+	for _, s := range simple.Steps {
+		if s.Type == StepRunAgent && s.Config.Role == "plan" {
+			planRoleSteps = append(planRoleSteps, s.ID)
+		}
 	}
-	for _, c := range chain {
-		step := simple.StepByID(c.step)
-		if step == nil {
-			t.Fatalf("%s step not found in simple-task-plan", c.step)
-			return
-		}
-		got, err := ResolveTransition(step.Next, map[string]string{"task.status": "plan-review"})
-		if err != nil {
-			t.Fatalf("ResolveTransition(%s): %v", c.step, err)
-		}
-		if got != c.want {
-			t.Fatalf("%s next = %q, want %q", c.step, got, c.want)
-		}
+	if len(planRoleSteps) != 1 || planRoleSteps[0] != "plan" {
+		t.Errorf("plan-role agent steps = %v, want exactly [plan]", planRoleSteps)
 	}
 }
 
@@ -587,8 +516,7 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 
 // TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean locks
 // the #1524 fix: a clean review (zero actionable findings) routes straight
-// to done_review, skipping the fix_review agent entirely — the review-side
-// analog of route_critique_verdict's plan-critique gate (#1490).
+// to done_review, skipping the fix_review agent entirely.
 func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *testing.T) {
 	t.Parallel()
 
