@@ -581,8 +581,10 @@ func DefaultConfig() *Config {
 			Enabled: true,
 		},
 		Watchdog: WatchdogConfig{
-			Enabled:       true,
-			LoopThreshold: 6,
+			Enabled:          true,
+			LoopThreshold:    6,
+			MaxRunsPerWindow: 30,
+			RunWindowMinutes: 30,
 		},
 		ABTesting: abtest.DefaultConfig(),
 		AutoUpdate: AutoUpdateConfig{
@@ -1123,6 +1125,11 @@ func applyWatchdogDefaults(cfg *Config) {
 	if w.Model == "" {
 		w.Model = "claude-haiku-4-5-20251001"
 	}
+	// MaxRunsPerWindow and RunWindowMinutes are deliberately NOT defaulted
+	// here, same as LoopThreshold above — both are seeded by DefaultConfig
+	// (30/30), so a config missing the watchdog block keeps that default
+	// while an explicit 0 (disabling the run-rate check) survives instead
+	// of being clobbered back.
 }
 
 // applyEvaluationDefaults fills zero values for the Evaluation block so older
