@@ -40,31 +40,55 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("server returned %d: %s", e.Status, e.Message)
 }
 
-func (e *apiError) isClientError() bool {
-	return e.Status >= 400 && e.Status < 500
-}
-
 func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	if cfg == nil || strings.TrimSpace(cfg.Server.AuthToken) == "" || cfg.ServesTLS() {
 		return nil, false
 	}
-	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
-	if len(addrs) == 0 {
-		return nil, false
-	}
-	_, portStr, err := net.SplitHostPort(addrs[0])
-	if err != nil {
-		return nil, false
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port < 1 || port > 65535 {
+	host, port, ok := resolveDialTarget(cfg)
+	if !ok {
 		return nil, false
 	}
 	return &apiClient{
-		baseURL: "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		baseURL: "http://" + net.JoinHostPort(host, port),
 		token:   cfg.Server.AuthToken,
 		http:    &http.Client{Timeout: apiCallTimeout},
 	}, true
+}
+
+func resolveDialTarget(cfg *config.Config) (host, port string, ok bool) {
+	if configured := configuredBindAddr(cfg); configured != "" {
+		if h, p, err := net.SplitHostPort(configured); err == nil && h != "" && !isWildcardHost(h) {
+			if _, err := strconv.Atoi(p); err == nil {
+				return h, p, true
+			}
+		}
+	}
+	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	if len(addrs) == 0 {
+		return "", "", false
+	}
+	_, p, err := net.SplitHostPort(addrs[0])
+	if err != nil {
+		return "", "", false
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return "", "", false
+	}
+	return "127.0.0.1", p, true
+}
+
+func configuredBindAddr(cfg *config.Config) string {
+	for _, a := range cfg.Cluster.BindAddrs {
+		if trimmed := strings.TrimSpace(a); trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(cfg.Cluster.BindAddr)
+}
+
+func isWildcardHost(h string) bool {
+	return h == "0.0.0.0" || h == "::"
 }
 
 func (c *apiClient) reachable(ctx context.Context) bool {
@@ -136,7 +160,7 @@ func viaAPI[T any](api *apiClient, service, method string, args ...any) (result 
 		return result, true, nil
 	}
 	var ae *apiError
-	if errors.As(callErr, &ae) && ae.isClientError() {
+	if errors.As(callErr, &ae) {
 		return result, true, callErr
 	}
 	return result, false, nil
