@@ -178,6 +178,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		return false, err
 	}
 	defer prepared.cleanup()
+	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
 
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
@@ -855,14 +856,25 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		}
 	} else {
 		if reason, _, ok := a.PostResultWait(); ok {
-			resolution := "pipe_fast_close"
-			if reason == postResultWaitBackgroundTask {
-				resolution = "background_tasks_cleared"
+			if reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks() && a.UsesForkSubagent() {
+				a.SetPostResultWait(postResultWaitForkSubagent, a.GetLastEventAt())
+				reason = postResultWaitForkSubagent
 			}
-			m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), resolution)
+			m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), postResultPipeResolution(reason))
 		}
 	}
 	return false
+}
+
+func postResultPipeResolution(reason string) string {
+	switch reason {
+	case postResultWaitBackgroundTask:
+		return "background_tasks_cleared"
+	case postResultWaitForkSubagent:
+		return "fork_subagent_idle"
+	default:
+		return "pipe_fast_close"
+	}
 }
 
 func shouldTrackPostResultWait(a *Agent) bool {
@@ -874,8 +886,11 @@ func ensurePostResultWaitState(a *Agent) {
 		return
 	}
 	reason := postResultWaitFastClose
-	if a.HasBackgroundTasks() {
+	switch {
+	case a.HasBackgroundTasks():
 		reason = postResultWaitBackgroundTask
+	case a.UsesForkSubagent():
+		reason = postResultWaitForkSubagent
 	}
 	a.SetPostResultWait(reason, a.GetLastEventAt())
 }
@@ -885,6 +900,10 @@ func (m *Manager) stopTailPostResultWait(a *Agent, waitExit func()) bool {
 	reason, since, ok := a.PostResultWait()
 	if !ok {
 		return false
+	}
+	if reason == postResultWaitBackgroundTask && !a.HasBackgroundTasks() && a.UsesForkSubagent() {
+		a.SetPostResultWait(postResultWaitForkSubagent, a.GetLastEventAt())
+		reason = postResultWaitForkSubagent
 	}
 	switch {
 	case reason == postResultWaitFastClose:
@@ -897,6 +916,10 @@ func (m *Manager) stopTailPostResultWait(a *Agent, waitExit func()) bool {
 			"reason", reason,
 			"wait_ms", waited.Milliseconds(),
 			"background_tasks_pending", a.HasBackgroundTasks())
+	case reason == postResultWaitForkSubagent && a.TerminalResultIdle(postResultGrace):
+		m.logger.Warn("agent.headless.post_result_hang", "id", a.ID,
+			"reason", reason,
+			"wait_ms", time.Since(a.GetLastEventAt()).Milliseconds())
 	default:
 		return false
 	}
@@ -917,8 +940,12 @@ func (m *Manager) maybeArmPipePostResultClose(a *Agent, observedAt time.Time, re
 	if reason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
 		return
 	}
+	delay := postResultFastCloseDelay
+	if reason == postResultWaitForkSubagent {
+		delay = postResultGrace
+	}
 	go func() {
-		time.Sleep(postResultFastCloseDelay)
+		time.Sleep(delay)
 		if a.GetState() == StateStopped || a.WasStopped() {
 			return
 		}
@@ -926,10 +953,15 @@ func (m *Manager) maybeArmPipePostResultClose(a *Agent, observedAt time.Time, re
 		if !ok {
 			return
 		}
-		if currentReason != postResultWaitFastClose && currentReason != postResultWaitBackgroundTask {
+		if currentReason != postResultWaitFastClose &&
+			currentReason != postResultWaitBackgroundTask &&
+			currentReason != postResultWaitForkSubagent {
 			return
 		}
 		if currentReason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
+			return
+		}
+		if currentReason == postResultWaitForkSubagent && !a.TerminalResultIdle(postResultGrace) {
 			return
 		}
 		if a.GetLastEventAt().After(observedAt) {
@@ -1028,14 +1060,17 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 		a.ClearPostResultWait()
 		return true
 	}
-	if a.HasBackgroundTasks() {
+	switch {
+	case a.HasBackgroundTasks():
 		a.SetPostResultWait(postResultWaitBackgroundTask, event.Timestamp)
-		m.saveRegistry(ctx, a)
-		return true
+	case a.UsesForkSubagent():
+		a.SetPostResultWait(postResultWaitForkSubagent, event.Timestamp)
+		m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "fork_subagent_idle")
+	default:
+		a.SetPostResultWait(postResultWaitFastClose, event.Timestamp)
+		m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "pipe_fast_close")
 	}
-	a.SetPostResultWait(postResultWaitFastClose, event.Timestamp)
 	m.saveRegistry(ctx, a)
-	m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "pipe_fast_close")
 	return true
 }
 

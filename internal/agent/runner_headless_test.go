@@ -2791,6 +2791,53 @@ func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t
 	}
 }
 
+func TestProcessHeadlessLine_ForkSubagentResultKeepsIdleGrace(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "fork-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	a.SetForkSubagent(true)
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with fork subagents must retain idle grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitForkSubagent {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fork_subagent", reason, time.Time{}, ok)
+	}
+}
+
+func TestProcessHeadlessLine_ForkSubagentBackgroundClearKeepsIdleGrace(t *testing.T) {
+	m := newParseTestManager(t)
+	a := &Agent{ID: "fork-bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
+	a.SetForkSubagent(true)
+
+	var lastEmit time.Time
+	prov := providerByName("claude")
+
+	live := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1",` +
+		`"tasks":[{"task_id":"bpzdm25og","task_type":"bash","description":"mise run verify"}]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, live, &lastEmit, prov); stop {
+		t.Fatal("background_tasks_changed must not stop the stream")
+	}
+
+	result := []byte(`{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":0.1,"usage":{"input_tokens":1,"output_tokens":1}}`)
+	if stop := m.processHeadlessLine(context.Background(), a, result, &lastEmit, prov); stop {
+		t.Fatal("clean terminal result with live background tasks must retain grace")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitBackgroundTask {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want background_tasks", reason, time.Time{}, ok)
+	}
+
+	cleared := []byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`)
+	if stop := m.processHeadlessLine(context.Background(), a, cleared, &lastEmit, prov); stop {
+		t.Fatal("background task clear event should not stop the stream")
+	}
+	if reason, _, ok := a.PostResultWait(); !ok || reason != postResultWaitForkSubagent {
+		t.Fatalf("PostResultWait = (%q, %v, %v), want fork_subagent after background clear", reason, time.Time{}, ok)
+	}
+}
+
 // TestHeadlessSteerProducesFurtherTurn drives runHeadlessAttemptPipe end to
 // end against an echo fake provider that reflects a stdin-delivered steer
 // message back as a second assistant/result turn, proving the queued message

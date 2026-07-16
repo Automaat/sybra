@@ -60,6 +60,7 @@ type Record struct {
 	// of starting a fresh wait window from restart time.
 	PostResultWaitReason string    `yaml:"post_result_wait_reason,omitempty"`
 	PostResultWaitSince  time.Time `yaml:"post_result_wait_since,omitempty"`
+	ForkSubagent         bool      `yaml:"fork_subagent,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

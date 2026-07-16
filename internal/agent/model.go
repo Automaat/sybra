@@ -163,6 +163,10 @@ type Agent struct {
 	// window for a run already known to be done.
 	postResultWaitReason string
 	postResultWaitSince  time.Time
+	// forkSubagent mirrors RunConfig.ForkSubagent for the active invocation.
+	// Forked subagents can keep emitting stream events after the parent result,
+	// so post-result teardown must use the idle grace instead of fast-close.
+	forkSubagent bool
 
 	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
 	// system event (REPLACE semantics: the full set of currently-live
@@ -412,6 +416,7 @@ func (a *Agent) toRecord() Record {
 		SkillExecutionMode:   a.SkillExecutionMode,
 		PostResultWaitReason: a.postResultWaitReason,
 		PostResultWaitSince:  a.postResultWaitSince,
+		ForkSubagent:         a.forkSubagent,
 	}
 }
 
@@ -446,6 +451,7 @@ func fromRecord(r Record) *Agent {
 		SkillExecutionMode:   r.SkillExecutionMode,
 		postResultWaitReason: r.PostResultWaitReason,
 		postResultWaitSince:  r.PostResultWaitSince,
+		forkSubagent:         r.ForkSubagent,
 		detached:             true,
 	}
 }
@@ -1254,7 +1260,24 @@ const backgroundTaskGrace = 15 * time.Minute
 const (
 	postResultWaitFastClose      = "fast_close"
 	postResultWaitBackgroundTask = "background_tasks"
+	postResultWaitForkSubagent   = "fork_subagent"
 )
+
+// SetForkSubagent records whether the active headless invocation enabled
+// Claude Code fork subagents.
+func (a *Agent) SetForkSubagent(enabled bool) {
+	a.mu.Lock()
+	a.forkSubagent = enabled
+	a.mu.Unlock()
+}
+
+// UsesForkSubagent reports whether the active headless invocation enabled
+// Claude Code fork subagents.
+func (a *Agent) UsesForkSubagent() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.forkSubagent
+}
 
 // SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
 // background bash tasks, mirroring the REPLACE semantics of the CLI's
