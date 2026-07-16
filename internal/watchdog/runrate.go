@@ -31,6 +31,12 @@ func (w *Watchdog) checkRunRate(now time.Time) {
 		if t.Status != task.StatusInProgress {
 			continue
 		}
+		// Same exemption as checkDwell: a live headless agent may itself be
+		// producing the burst while genuinely recovering, and escalating
+		// here would get it force-stopped on the very next tick.
+		if w.hasLiveHeadlessAgent != nil && w.hasLiveHeadlessAgent(t.ID) {
+			continue
+		}
 		role, count := recentRunBurst(t.AgentRuns, now, w.runWindow)
 		if count < w.maxRunsPerWindow {
 			continue

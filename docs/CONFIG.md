@@ -402,8 +402,8 @@ that the dwell budget (hours) would only catch much later.
 | `watchdog.enabled` | `bool` | `true` |  |
 | `watchdog.model` | `string` |  |  |
 | `watchdog.loop_threshold` | `int` | `6` |  |
-| `watchdog.max_runs_per_window` | `int` |  |  |
-| `watchdog.run_window_minutes` | `int` |  |  |
+| `watchdog.max_runs_per_window` | `int` | `30` |  |
+| `watchdog.run_window_minutes` | `int` | `30` |  |
 
 ## SelfMonitorConfig (`self_monitor`)
 

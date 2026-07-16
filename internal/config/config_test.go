@@ -676,6 +676,12 @@ func TestLoadWatchdogRunRateDefaults(t *testing.T) {
 			wantMaxRuns:    50,
 			wantWindowMins: 15,
 		},
+		{
+			name:           "explicit zero disables the check and survives defaulting",
+			yaml:           "watchdog:\n  max_runs_per_window: 0\n  run_window_minutes: 0\n",
+			wantMaxRuns:    0,
+			wantWindowMins: 0,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

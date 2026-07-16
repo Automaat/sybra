@@ -191,6 +191,35 @@ func TestCheckRunRate_DisabledWhenThresholdIsZero(t *testing.T) {
 	}
 }
 
+func TestCheckRunRate_SkipsTaskWithRunningAgent(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	mgr := task.NewManager(store, nil)
+	tk := newInProgressTask(t, mgr)
+
+	now := time.Now()
+	addRuns(t, mgr, tk.ID, "implementation", 30, now.Add(-29*time.Minute), 18*time.Second)
+
+	w := &Watchdog{
+		tasks:                mgr,
+		logger:               slog.New(slog.DiscardHandler),
+		maxRunsPerWindow:     30,
+		runWindow:            30 * time.Minute,
+		hasLiveHeadlessAgent: func(taskID string) bool { return taskID == tk.ID },
+	}
+	w.checkRunRate(now)
+
+	got, err := mgr.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want in-progress (running agent should suppress run-rate escalation)", got.Status)
+	}
+}
+
 func TestRecentRunBurst(t *testing.T) {
 	now := time.Now()
 	runs := []task.AgentRun{
