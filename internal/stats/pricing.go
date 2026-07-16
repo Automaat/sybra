@@ -116,8 +116,8 @@ func EstimateCopilotCost(premiumRequests float64) float64 {
 	return premiumRequests * copilotAICreditUSD
 }
 
-// AgentUsage is one run's billable usage, as banked from a provider's result
-// event.
+// AgentUsage is one run's billable usage, as banked from a provider's terminal
+// completion event — `result` for claude/copilot, `turn.completed` for codex.
 type AgentUsage struct {
 	Provider        string
 	Model           string

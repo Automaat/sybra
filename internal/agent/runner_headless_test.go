@@ -2889,8 +2889,9 @@ func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
 
 	a := &Agent{
 		ID: "codex-cost", TaskID: "t", Mode: "headless",
-		Provider: "codex", Model: "gpt-5.4", StartedAt: time.Now().UTC(),
-		done: make(chan struct{}),
+		Provider: "codex", Model: "gpt-5.4",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+		done:      make(chan struct{}),
 	}
 	lastEmit := time.Now().Add(-time.Minute)
 	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":2304369,"cached_input_tokens":2188672,"output_tokens":9709,"reasoning_output_tokens":3684}}`)
@@ -2913,7 +2914,7 @@ func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
 func TestBankEstimatedCost_LeavesProviderReportedCostAlone(t *testing.T) {
 	t.Parallel()
 
-	a := &Agent{ID: "claude-cost", Provider: "claude", Model: "sonnet-5", StartedAt: time.Now().UTC()}
+	a := &Agent{ID: "claude-cost", Provider: "claude", Model: "sonnet-5", StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)}
 	a.AddResultStats("sess-1", 0.25, 1_000_000, 500, 0)
 
 	if got := a.BankEstimatedCost(); got != 0.25 {
@@ -2929,7 +2930,7 @@ func TestBankEstimatedCost_LeavesProviderReportedCostAlone(t *testing.T) {
 func TestBankEstimatedCost_IsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	a := &Agent{ID: "codex-idem", Provider: "codex", Model: "gpt-5.4", StartedAt: time.Now().UTC()}
+	a := &Agent{ID: "codex-idem", Provider: "codex", Model: "gpt-5.4", StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)}
 	a.AddResultStats("", 0, 1_000_000, 1000, 0)
 	a.AddCacheStats(0, 900_000)
 
@@ -2940,5 +2941,51 @@ func TestBankEstimatedCost_IsIdempotent(t *testing.T) {
 	}
 	if first <= 0 {
 		t.Fatalf("estimate = %.4f, want a positive derived cost", first)
+	}
+}
+
+// A late provider-reported cost must survive a concurrent estimate. Two runner
+// goroutines can reach an agent's terminal sites at once (see completedOnce),
+// so BankEstimatedCost must never lower CostUSD it did not compute.
+func TestBankEstimatedCost_NeverLowersCost(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{ID: "codex-race", Provider: "codex", Model: "gpt-5.4",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)}
+	a.AddResultStats("", 0, 1_000_000, 1000, 0)
+	a.AddCacheStats(0, 900_000)
+
+	estimate := a.BankEstimatedCost()
+	if estimate <= 0 {
+		t.Fatalf("estimate = %.4f, want positive", estimate)
+	}
+
+	a.AddResultStats("sess-late", estimate*10, 0, 0, 0)
+	reported := a.GetCostUSD()
+
+	if got := a.BankEstimatedCost(); got != reported {
+		t.Fatalf("BankEstimatedCost lowered a provider-reported cost: %.4f -> %.4f", reported, got)
+	}
+}
+
+// Concurrent bankers must not race the totals they read.
+func TestBankEstimatedCost_ConcurrentCallsAreSafe(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{ID: "codex-conc", Provider: "codex", Model: "gpt-5.4",
+		StartedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)}
+	a.AddResultStats("", 0, 1_000_000, 1000, 0)
+	a.AddCacheStats(0, 900_000)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			a.BankEstimatedCost()
+		})
+	}
+	wg.Wait()
+
+	if got := a.GetCostUSD(); got <= 0 {
+		t.Fatalf("CostUSD = %.4f after concurrent banking, want the stable estimate", got)
 	}
 }
