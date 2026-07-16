@@ -75,8 +75,11 @@ var triageReviewGeneratedRe = regexp.MustCompile(
 // triageReviewCarveOutRe matches paths that look docs-shaped but actually
 // govern agent behavior (skills, CLAUDE.md, orchestrator prompts) — these
 // must never get the trivial fast-path even though they end in .md.
+// internal/skills/data/ is the embedded skill bundle: prose-shaped .md files
+// that are agent prompts, not documentation, and are the same class of content
+// as .claude/skills/.
 var triageReviewCarveOutRe = regexp.MustCompile(
-	`(^|/)\.claude/skills/|(^|/)CLAUDE\.md$|(^|/)SKILL\.md$|(^|/)orchestrator/`,
+	`(^|/)\.claude/skills/|(^|/)internal/skills/data/|(^|/)CLAUDE\.md$|(^|/)SKILL\.md$|(^|/)orchestrator/`,
 )
 
 type trivialFileClass uint8
@@ -215,10 +218,11 @@ func filepathExt(name string) string {
 
 // execTriageReview decides between the lightweight `/adversarial-review` skill
 // and the deeper `/staff-code-review` skill based on the diff's size and shape.
-// Pure mechanical — no LLM call. Returns Output set to "simple" or "staff" so a
-// downstream condition step can route via vars.step.<id>.output. Only pr-review
-// acts on the "staff" verdict; simple-task-review consumes "skip" and otherwise
-// always reviews adversarially.
+// Pure mechanical — no LLM call. Returns Output set to "skip", "simple", or
+// "staff" (the same three triageVerdict produces) so a downstream condition step
+// can route via vars.step.<id>.output. Only pr-review acts on the "staff"
+// verdict; simple-task-review consumes "skip" and otherwise always reviews
+// adversarially.
 //
 // Two diff sources, in order:
 //  1. Worktree (preferred): git diff <base>...HEAD against the resolved

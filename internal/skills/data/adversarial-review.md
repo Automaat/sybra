@@ -148,8 +148,8 @@ Emit findings as conventional comments:
 
 ## Output
 
-Surviving findings, strongest first, in the conventional-comment format above.
-Then exactly one final line — no prose after it:
+The verdict always comes **first**, on its own line, before any findings — in
+your reply and in any file you write. Never put prose above it.
 
 ```
 Review Verdict: CLEAN
@@ -166,11 +166,14 @@ Review Verdict: NEEDS_FIXES
 - **NEEDS_FIXES** — at least one surviving `blocking:` or `issue:` should be
   fixed before this lands.
 
-This line gates whether a fix agent runs next. Get it right.
+Below that line, list the surviving findings strongest-first in the
+conventional-comment format above.
 
-When the caller asks for the review in a file, that verdict line must be the
-**first** line of the file, findings below it. When the caller asks you to submit
-to GitHub, post CLEAN as an approve and NEEDS_FIXES as change comments.
+This verdict gates whether a fix agent runs next, and callers read it by
+matching the **first line**. Get it right, and put it nowhere else.
+
+When the caller asks you to submit to GitHub instead, post CLEAN as an approve
+and NEEDS_FIXES as change comments.
 
 ## Anti-patterns
 

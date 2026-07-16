@@ -196,6 +196,20 @@ func TestTriageVerdict(t *testing.T) {
 			want:       "staff",
 		},
 		{
+			name:       "embedded_skill_bundle_carve_out_is_staff",
+			files:      []string{"internal/skills/data/adversarial-review.md"},
+			insertions: 3,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
+			name:       "embedded_skill_bundle_large_diff_is_staff",
+			files:      []string{"internal/skills/data/sybra-test.md"},
+			insertions: triageReviewLineLimit + 100,
+			deletions:  0,
+			want:       "staff",
+		},
+		{
 			name:       "mixed_trivial_and_source_is_staff",
 			files:      []string{"README.md", "internal/agent/x.go"},
 			insertions: 3,
