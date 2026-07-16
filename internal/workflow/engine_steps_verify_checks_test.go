@@ -145,6 +145,40 @@ func TestVerifyTaskNow_CommandFails(t *testing.T) {
 	}
 }
 
+func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	frontend := filepath.Join(wt, "frontend")
+	nm := filepath.Join(frontend, "node_modules")
+	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(frontend, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cmd := "test -d frontend/node_modules/.bin"
+	engine, _ := newVerifyChecksEngine(t, wt, []string{cmd})
+
+	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verified || !passed {
+		t.Fatalf("verified=%v passed=%v failedCmd=%q output=%q, want both true (repair should have fixed node_modules first)",
+			verified, passed, failedCmd, output)
+	}
+}
+
 func TestExecVerifyChecks_PassIsClean(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -1054,7 +1088,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	fakeNpmOnPath(t, marker)
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
 	if err != nil {
@@ -1082,7 +1116,7 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	fakeNpmOnPath(t, marker)
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
 	if err != nil {
@@ -1107,7 +1141,7 @@ func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
 	fakeNpmOnPath(t, marker)
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected npm ci to be skipped without lockfile, got err=%v", err)
@@ -1138,7 +1172,7 @@ func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if !strings.Contains(logBuf.String(), "workflow.verify-checks.npm-repair-failed") {
 		t.Fatalf("expected failed npm repair to be logged, got %q", logBuf.String())
@@ -1180,7 +1214,7 @@ esac
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(lifecycleMarker); !os.IsNotExist(err) {
 		t.Fatalf("repair ran package lifecycle script marker; err = %v", err)
@@ -1208,7 +1242,7 @@ func TestRepairTornNodeModules_SkipsWhenHealthy(t *testing.T) {
 	fakeNpmOnPath(t, marker)
 
 	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.repairTornNodeModules("t1", wt)
+	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("expected npm ci NOT to run for a healthy install (no lockfile to compare), marker err = %v", err)

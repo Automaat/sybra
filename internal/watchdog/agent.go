@@ -175,6 +175,12 @@ type Watchdog struct {
 
 	inspectAgent func(context.Context, *slog.Logger, agent.InspectInput) (agent.InspectorVerdict, error)
 	stopAgent    func(string) error
+	// killAgentsForTask stops a task's agent(s) and blocks until the process(es)
+	// actually exit (or timeout). Used instead of stopAgent wherever something
+	// is about to touch the task's worktree right after stopping — e.g.
+	// verdictStatusFromVerify's on-demand verify re-run — so it never races a
+	// not-yet-dead agent process still writing to the same files (#2155).
+	killAgentsForTask func(taskID string, timeout time.Duration)
 	// stopCompletedAgent stops a headless agent that already produced a clean
 	// terminal result, marking it completed-by-result first so the runner
 	// finalizes it as a success rather than treating the kill signal as a
@@ -231,6 +237,7 @@ func New(
 		loopThreshold:        cfg.LoopThreshold,
 		inspectAgent:         agent.Inspect,
 		stopAgent:            agents.StopAgent,
+		killAgentsForTask:    agents.KillAgentsForTask,
 		stopCompletedAgent:   agents.StopCompletedAgent,
 		nudgeAgent:           agents.SendPromptToAgent,
 		recordProviderSignal: agents.RecordProviderSignal,
@@ -659,6 +666,10 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 		if w.stopAlreadyCompleted(ag) {
 			return
 		}
+		if ag.TaskID != "" && (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
+			w.stopAndVerifyAmbiguousLoop(ctx, ag, verdict)
+			return
+		}
 		// Set the task state before stopping so the completion callback sees the
 		// intended recovery path. rate_limit is already handled above regardless
 		// of trigger. Of what remains: a stall stop is a retryable hang; the
@@ -680,8 +691,6 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 				if verdict.Reason != "" {
 					reason = "watchdog hang: " + verdict.Reason
 				}
-			} else if (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
-				status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, reason)
 			}
 			if _, err := w.tasks.Update(ag.TaskID, task.Update{
 				Status:       task.Ptr(status),
@@ -729,21 +738,57 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 	}
 }
 
-// stopForRateLimit handles a "stop" verdict whose ReasonKind is "rate_limit":
-// a provider rate/quota limit, not a genuine hang or reward-hacking loop.
-// This reuses the same recovery machinery already trusted for a structured
-// 429 (internal/agent/runner_headless_retry.go): mark the agent's error kind
-// so the completion handler's isRateLimitedRun check recognizes the stop as
-// rate-limited and calls RescheduleRateLimitedAgent instead of stranding the
-// task in human-required, and report the signal to the provider health gate
-// so it applies the same cooldown/failover as the clean-429 case. The task is
-// left in-progress — human-required is reserved for genuine reward-hacking
-// loops per #1310's scoping.
 // verifyNowTimeout bounds a single on-demand verify re-run triggered by an
 // ambiguous loop/budget stop verdict — generous enough for a real test suite,
 // short enough that a hung verify command cannot indefinitely delay the
 // escalation decision it exists to inform.
 const verifyNowTimeout = 5 * time.Minute
+
+// killForVerifyTimeout bounds how long stopAndVerifyAmbiguousLoop waits for
+// the stopped agent's process to actually exit before re-running verify in
+// its worktree, matching the existing KillAgentsForTask convention used
+// elsewhere (internal/sybra/svc_tasks.go, internal/sybra/review/handler.go).
+const killForVerifyTimeout = 10 * time.Second
+
+// stopAndVerifyAmbiguousLoop handles an unclassified ("") loop/budget stop
+// verdict — the judge's own prompt biases it toward leaving ReasonKind empty
+// whenever reward-hacking is merely possible rather than confidently picking
+// generic_stall, so this is the exact ambiguous case a stale/wrong stop lands
+// in (#2147, #2155). Re-runs the task's verify suite before trusting it,
+// instead of the unconditional escalation every other non-benign stop gets.
+//
+// The agent must be fully stopped — not just signaled — before verify runs,
+// or the two can race on the same worktree files (a still-writing agent
+// mid-loop vs. a concurrent build/test in the same directory), so this uses
+// killAgentsForTask (stop-and-wait) rather than the fire-and-forget stopAgent
+// every other path in applyVerdict uses. An interim status is written first
+// so the completion callback sees an intended recovery path immediately,
+// matching the stall/generic_stall convention, rather than leaving the task
+// on its pre-stop status for the duration of the verify re-run.
+func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, verdict agent.InspectorVerdict) {
+	judgeReason := "watchdog stop"
+	if verdict.Reason != "" {
+		judgeReason = "watchdog: " + verdict.Reason
+	}
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(task.StatusInProgress),
+		StatusReason: task.Ptr("watchdog hang: verifying before deciding — " + judgeReason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+	if w.killAgentsForTask != nil {
+		w.killAgentsForTask(ag.TaskID, killForVerifyTimeout)
+	} else if err := w.stopAgent(ag.ID); err != nil {
+		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
+	}
+	status, reason := w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
+	if _, err := w.tasks.Update(ag.TaskID, task.Update{
+		Status:       task.Ptr(status),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
+	}
+}
 
 // verdictStatusFromVerify decides the task status/reason for an unclassified
 // ("") loop or budget stop verdict by re-running the task's verify suite
@@ -783,6 +828,16 @@ func trimTail(failedCmd, output string, n int) string {
 	return failedCmd + "\n" + tail
 }
 
+// stopForRateLimit handles a "stop" verdict whose ReasonKind is "rate_limit":
+// a provider rate/quota limit, not a genuine hang or reward-hacking loop.
+// This reuses the same recovery machinery already trusted for a structured
+// 429 (internal/agent/runner_headless_retry.go): mark the agent's error kind
+// so the completion handler's isRateLimitedRun check recognizes the stop as
+// rate-limited and calls RescheduleRateLimitedAgent instead of stranding the
+// task in human-required, and report the signal to the provider health gate
+// so it applies the same cooldown/failover as the clean-429 case. The task is
+// left in-progress — human-required is reserved for genuine reward-hacking
+// loops per #1310's scoping.
 func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
 	reason := "watchdog: rate limit"
 	if verdict.Reason != "" {

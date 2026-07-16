@@ -147,7 +147,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
 		return stepDone(step, "skipped: node_modules repair failed — broken toolchain state, not a product failure")
 	}
-	e.repairTornNodeModules(taskID, wtPath)
+	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(taskID, wtPath, cmds, timeout, step.ID)
 
@@ -218,6 +218,13 @@ func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, pa
 	if !ok {
 		return false, false, "", "", nil
 	}
+	if e.repairCorruptedNodeModules(ctx, taskID, wtPath) {
+		// Same as execVerifyChecks: an unrepairable corrupt install would
+		// deterministically fail verify and misattribute a toolchain problem
+		// to the diff — nothing was actually verified either way.
+		return false, false, "", "", nil
+	}
+	e.repairTornNodeModules(ctx, taskID, wtPath)
 	maybeMiseTrust(ctx, wtPath)
 	failedCmd, output, err = e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 	if err != nil {
@@ -370,8 +377,8 @@ const repairTornNodeModulesTimeout = 3 * time.Minute
 // never completed or was gutted mid-run), or npm's own
 // node_modules/.package-lock.json stamp missing/older than package-lock.json
 // (an install that was interrupted before npm finished writing its stamp).
-func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
-	e.repairTornNodeModulesInDir(taskID, wtPath, ".")
+func (e *Engine) repairTornNodeModules(ctx context.Context, taskID, wtPath string) {
+	e.repairTornNodeModulesInDir(ctx, taskID, wtPath, ".")
 	entries, err := os.ReadDir(wtPath)
 	if err != nil {
 		return
@@ -381,11 +388,11 @@ func (e *Engine) repairTornNodeModules(taskID, wtPath string) {
 			continue
 		}
 		dir := filepath.Join(wtPath, entry.Name())
-		e.repairTornNodeModulesInDir(taskID, dir, entry.Name())
+		e.repairTornNodeModulesInDir(ctx, taskID, dir, entry.Name())
 	}
 }
 
-func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
+func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, dir, label string) {
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
 		return
 	}
@@ -402,9 +409,9 @@ func (e *Engine) repairTornNodeModulesInDir(taskID, dir, label string) {
 	}
 
 	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
-	ctx, cancel := context.WithTimeout(e.ctx, repairTornNodeModulesTimeout)
+	rctx, cancel := context.WithTimeout(ctx, repairTornNodeModulesTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "npm", "ci", "--ignore-scripts")
+	cmd := exec.CommandContext(rctx, "npm", "ci", "--ignore-scripts")
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
 		e.logger.Warn("workflow.verify-checks.npm-repair-failed", "task_id", taskID, "dir", label, "err", err)

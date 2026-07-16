@@ -541,6 +541,59 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 	}
 }
 
+// TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify covers #2155's
+// race fix: the agent must be fully stopped (via killAgentsForTask, which
+// blocks until the process exits) before verify re-runs in its worktree, not
+// merely signaled via the fire-and-forget stopAgent every other stop path
+// uses. Also pins the ordering: an interim in-progress status is written
+// before the kill, and verifyNow only runs after the kill call returns.
+func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	var order []string
+	stopAgentCalled := false
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopAgentCalled = true; return nil },
+		killAgentsForTask: func(taskID string, timeout time.Duration) {
+			order = append(order, "kill")
+			if taskID != tk.ID {
+				t.Errorf("killAgentsForTask taskID = %q, want %q", taskID, tk.ID)
+			}
+			if timeout <= 0 {
+				t.Errorf("killAgentsForTask timeout = %v, want positive", timeout)
+			}
+			got, err := tasks.Get(tk.ID)
+			if err != nil {
+				t.Fatalf("get task mid-kill: %v", err)
+			}
+			if got.Status != task.StatusInProgress || !strings.Contains(got.StatusReason, "verifying before deciding") {
+				t.Errorf("status before kill returns = %q/%q, want an interim in-progress hang reason already written", got.Status, got.StatusReason)
+			}
+		},
+		verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
+			order = append(order, "verify")
+			return true, true, "", "", nil
+		},
+	}
+
+	w.applyVerdict(t.Context(), &agent.Agent{ID: "a1", TaskID: tk.ID}, "loop", agent.InspectorVerdict{
+		Stuck:          true,
+		Reason:         "agent stuck, unclear why",
+		Recommendation: "stop",
+		ReasonKind:     "",
+	})
+
+	if stopAgentCalled {
+		t.Error("stopAgent must not be called when killAgentsForTask is wired")
+	}
+	want := []string{"kill", "verify"}
+	if len(order) != len(want) || order[0] != want[0] || order[1] != want[1] {
+		t.Fatalf("call order = %v, want %v", order, want)
+	}
+}
+
 // TestApplyVerdict_GenericStallAndRewardHackingSkipVerify pins that only an
 // unclassified ("") ReasonKind triggers the verify re-check — generic_stall
 // keeps its existing unconditional-retry treatment and reward_hacking keeps
