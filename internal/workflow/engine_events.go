@@ -956,8 +956,16 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 // A done/cancelled task needs no signal, and a live agent must keep its chance
 // to land the sidecar — HandleAgentComplete bails on a terminal execution,
 // so a failure here would discard the run.
+//
+// human-required is deliberately not skipped, unlike in the resumable path.
+// escalateMissingStep writes the status before the execution, so an escalation
+// whose second write failed sits at human-required with a live execution, which
+// the planning dispatcher refuses to re-plan — the operator would be stuck
+// following advice that cannot work. Re-entering here retries it. Nothing loops:
+// once both writes land, ResumeStalled's own ExecFailed check skips the task
+// before it ever reaches this function.
 func (e *Engine) handleMissingStep(t *TaskInfo) {
-	if _, skip := resumeSkipReasonForStatus(t.Status); skip {
+	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
 		return
 	}
 	if e.agents.HasRunningAgent(t.ID) {

@@ -67,6 +67,49 @@ func TestResumeStalled_MissingStepEscalatesOnce(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_MissingStepRetriesPartialEscalation covers the window
+// escalateMissingStep's write order opens: the status lands first, so a failed
+// SetWorkflow leaves the task human-required with a live execution. The planning
+// dispatcher only re-plans over a terminal execution, so that half-applied state
+// cannot follow the escalation's own advice — the next tick must finish the job
+// rather than skip the task for being human-required.
+func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
+	store := missingStepDef(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Workflow: &Execution{
+			WorkflowID:  "gone-wf",
+			CurrentStep: "deleted_by_a_release",
+			State:       ExecWaiting,
+		},
+	})
+
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	tasks.failSetWorkflow = true
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required after the first write", ti.Status)
+	}
+	if ti.Workflow.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q — the fixture must simulate the failed second write", ti.Workflow.State, ExecWaiting)
+	}
+
+	// Once the store recovers, the next tick must complete the escalation.
+	tasks.failSetWorkflow = false
+	engine.ResumeStalled()
+
+	ti2, _ := tasks.GetTask("t1")
+	if ti2.Workflow.State != ExecFailed {
+		t.Errorf("State = %q, want %q — a half-applied escalation never retried, so the operator's re-plan stays blocked forever",
+			ti2.Workflow.State, ExecFailed)
+	}
+}
+
 // TestResumeStalled_MissingStepSkipsQuietCases pins the escalation's blast
 // radius. Nobody waits on a done/cancelled task, and a live agent must keep its
 // chance to land a sidecar — HandleAgentComplete bails on a terminal execution,
