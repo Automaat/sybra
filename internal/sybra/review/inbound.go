@@ -228,8 +228,8 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 // review so headless agents do not stop to ask the operator, while withholding
 // approval authority: these PRs are other people's work, and an approval from
 // the operator's account can satisfy a required-reviewer gate. Kept in lockstep
-// with the pr-review builtin workflow prompts and enforced by the PreToolUse
-// floor (agent.ForbiddenToolCall).
+// with the pr-review builtin workflow prompts and backed by the gh PATH shim
+// (agent.writeGhShim), which refuses the call if this instruction ever drifts.
 func StaffCodeReviewPrompt(projectID string, prNumber int) string {
 	return fmt.Sprintf(`Run /staff-code-review on https://github.com/%s/pull/%d
 

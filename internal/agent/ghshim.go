@@ -17,8 +17,16 @@ const GhShimReason = "Blocked by Sybra: agents have no PR-approval authority. " 
 
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+	skip=0
 	for arg in "$@"; do
+		if [ "$skip" = "1" ]; then
+			skip=0
+			continue
+		fi
 		case "$arg" in
+		-b|--body|-F|--body-file)
+			skip=1
+			;;
 		--approve|-a|--approve=*)
 			printf '%%s\n' '%[1]s' >&2
 			exit 1
@@ -83,18 +91,48 @@ func writeGhShim(dir string) (string, error) {
 	if strings.ContainsAny(realGh, "'\n") {
 		return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
 	}
+	if !shellSingleQuoteSafe(GhShimReason) {
+		return "", fmt.Errorf("gh shim reason is not shell-safe")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create gh shim dir: %w", err)
 	}
-	path := filepath.Join(dir, "gh")
 	script := fmt.Sprintf(ghShimScript, GhShimReason, realGh)
-	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
-		return "", fmt.Errorf("write gh shim: %w", err)
-	}
-	if err := os.Chmod(path, 0o755); err != nil {
-		return "", fmt.Errorf("chmod gh shim: %w", err)
+	if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
+		return "", err
 	}
 	return dir, nil
+}
+
+func shellSingleQuoteSafe(s string) bool {
+	return !strings.ContainsAny(s, "'\n")
+}
+
+// writeExecutableAtomic stages the script under a temp name and renames it into
+// place, so an agent already running when the manager restarts can never exec a
+// half-written or not-yet-executable shim.
+func writeExecutableAtomic(path, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".gh-shim-*")
+	if err != nil {
+		return fmt.Errorf("create gh shim temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write gh shim: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close gh shim: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o755); err != nil {
+		return fmt.Errorf("chmod gh shim: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("install gh shim: %w", err)
+	}
+	return nil
 }
 
 // resolveGhShimDir materializes the shim once per manager and returns the dir

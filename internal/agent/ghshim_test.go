@@ -75,6 +75,9 @@ func TestGhShim_BlocksApproval(t *testing.T) {
 		{"flag after number", []string{"pr", "review", "1", "--approve"}},
 		{"flag with value", []string{"pr", "review", "1", "--approve=true"}},
 		{"approve with body", []string{"pr", "review", "1", "--approve", "-b", "lgtm"}},
+		{"approve after a body flag", []string{"pr", "review", "-b", "lgtm", "--approve", "1"}},
+		{"approve after a body-file flag", []string{"pr", "review", "-F", "notes.md", "--approve", "1"}},
+		{"approve after an inline body", []string{"pr", "review", "--body=lgtm", "--approve", "1"}},
 		{"repo flag first", []string{"pr", "review", "-R", "owner/repo", "--approve", "1"}},
 		{"rest event", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews", "-f", "event=APPROVE"}},
 		{"rest pending submit", []string{"api", "-X", "POST", "repos/owner/repo/pulls/1/reviews/99/events", "-f", "event=APPROVE"}},
@@ -115,6 +118,11 @@ func TestGhShim_AllowsLegitimateReviews(t *testing.T) {
 		{"body quotes approve command", []string{"pr", "review", "--comment", "-b", "never run gh pr review --approve", "1"}},
 		{"body has apostrophe", []string{"pr", "review", "--request-changes", "-b", "Don't use -a here", "1"}},
 		{"body mentions approve event", []string{"pr", "review", "--comment", "-b", "event: APPROVED is banned", "1"}},
+		{"body is exactly the approve flag", []string{"pr", "review", "--comment", "-b", "--approve", "1"}},
+		{"body is exactly the short flag", []string{"pr", "review", "--request-changes", "-b", "-a", "1"}},
+		{"long body flag value is the approve flag", []string{"pr", "review", "--comment", "--body", "--approve", "1"}},
+		{"body file named like the approve flag", []string{"pr", "review", "--comment", "-F", "--approve", "1"}},
+		{"body-file flag value is the short flag", []string{"pr", "review", "--comment", "--body-file", "-a", "1"}},
 		{"reading reviews", []string{"pr", "view", "1", "--json", "reviews"}},
 		{"listing approved reviews", []string{"api", "graphql", "-f", `query=query { reviews(states: APPROVED) { id } }`}},
 		{"merge is gated elsewhere", []string{"pr", "merge", "1", "--squash"}},
@@ -147,6 +155,44 @@ func TestGhShim_ForwardsArgvVerbatim(t *testing.T) {
 	want := "REAL-GH: [pr] [review] [--comment] [-b] [two  spaces and 'quotes' and $VAR] [1]"
 	if strings.TrimSpace(stdout) != want {
 		t.Fatalf("argv not forwarded verbatim:\n got %q\nwant %q", strings.TrimSpace(stdout), want)
+	}
+}
+
+// A restart rewrites the shim while agents may be exec'ing it, so the install
+// must be atomic and leave no staging files behind on PATH.
+func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
+	fakeGhOnPath(t)
+	dir := t.TempDir()
+
+	for range 3 {
+		if _, err := writeGhShim(dir); err != nil {
+			t.Fatalf("writeGhShim: %v", err)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != "gh" {
+		t.Fatalf("shim dir = %v, want exactly [gh] (no staging leftovers)", names)
+	}
+
+	info, err := os.Stat(filepath.Join(dir, "gh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("shim mode = %v, want executable", info.Mode().Perm())
+	}
+
+	_, _, code := runShim(t, dir, "pr", "review", "--approve", "1")
+	if code == 0 {
+		t.Fatal("rewritten shim allowed an approval")
 	}
 }
 
