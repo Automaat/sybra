@@ -14,11 +14,15 @@ import * as abtest$0 from "../abtest/models.js";
  * reliability metrics derivable from stats run records. Landing-derived metrics
  * (autonomy, throughput) are not broken down because task.landed events don't
  * carry provider/role/project yet — see Report.Notes.
+ * Runs counts every run in the group (stalls included — they burn real
+ * wall-clock and spend). Stalled counts the retried subset, and FailureRate
+ * divides by Runs-Stalled so a stall-prone provider cannot look reliable.
  */
 export class Breakdown {
     "key": string;
     "runs": number;
     "failures": number;
+    "stalled": number;
     "failureRate": number;
     "totalCostUsd": number;
     "turns": number;
@@ -34,6 +38,9 @@ export class Breakdown {
         }
         if (!("failures" in $$source)) {
             this["failures"] = 0;
+        }
+        if (!("stalled" in $$source)) {
+            this["stalled"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
@@ -73,6 +80,7 @@ export class ComparisonBreakdown {
     "subject"?: abtest$0.Subject | null;
     "runs": number;
     "failures": number;
+    "stalled": number;
     "failureRate": number;
     "failureEstimate": RateEstimate;
     "landed": number;
@@ -119,6 +127,9 @@ export class ComparisonBreakdown {
         }
         if (!("failures" in $$source)) {
             this["failures"] = 0;
+        }
+        if (!("stalled" in $$source)) {
+            this["stalled"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
@@ -213,41 +224,41 @@ export class ComparisonBreakdown {
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
         const $$createField9_0 = $$createType1;
-        const $$createField13_0 = $$createType2;
-        const $$createField15_0 = $$createType2;
-        const $$createField24_0 = $$createType2;
+        const $$createField14_0 = $$createType2;
+        const $$createField16_0 = $$createType2;
         const $$createField25_0 = $$createType2;
         const $$createField26_0 = $$createType2;
         const $$createField27_0 = $$createType2;
         const $$createField28_0 = $$createType2;
-        const $$createField43_0 = $$createType4;
+        const $$createField29_0 = $$createType2;
+        const $$createField44_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
         }
         if ("failureEstimate" in $$parsedSource) {
-            $$parsedSource["failureEstimate"] = $$createField13_0($$parsedSource["failureEstimate"]);
+            $$parsedSource["failureEstimate"] = $$createField14_0($$parsedSource["failureEstimate"]);
         }
         if ("landedEstimate" in $$parsedSource) {
-            $$parsedSource["landedEstimate"] = $$createField15_0($$parsedSource["landedEstimate"]);
+            $$parsedSource["landedEstimate"] = $$createField16_0($$parsedSource["landedEstimate"]);
         }
         if ("mergeEstimate" in $$parsedSource) {
-            $$parsedSource["mergeEstimate"] = $$createField24_0($$parsedSource["mergeEstimate"]);
+            $$parsedSource["mergeEstimate"] = $$createField25_0($$parsedSource["mergeEstimate"]);
         }
         if ("ciFirstPassEstimate" in $$parsedSource) {
-            $$parsedSource["ciFirstPassEstimate"] = $$createField25_0($$parsedSource["ciFirstPassEstimate"]);
+            $$parsedSource["ciFirstPassEstimate"] = $$createField26_0($$parsedSource["ciFirstPassEstimate"]);
         }
         if ("mergedWithEditsEstimate" in $$parsedSource) {
-            $$parsedSource["mergedWithEditsEstimate"] = $$createField26_0($$parsedSource["mergedWithEditsEstimate"]);
+            $$parsedSource["mergedWithEditsEstimate"] = $$createField27_0($$parsedSource["mergedWithEditsEstimate"]);
         }
         if ("reworkEstimate" in $$parsedSource) {
-            $$parsedSource["reworkEstimate"] = $$createField27_0($$parsedSource["reworkEstimate"]);
+            $$parsedSource["reworkEstimate"] = $$createField28_0($$parsedSource["reworkEstimate"]);
         }
         if ("revertEstimate" in $$parsedSource) {
-            $$parsedSource["revertEstimate"] = $$createField28_0($$parsedSource["revertEstimate"]);
+            $$parsedSource["revertEstimate"] = $$createField29_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField43_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField44_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -674,10 +685,14 @@ export class Scorecard {
     "autonomyRate": number;
 
     /**
-     * Reliability (from stats run outcomes).
+     * Reliability (from stats run outcomes). AgentStalls counts runs that were
+     * retried rather than resolved (stats.OutcomeStalled); they are excluded
+     * from FailureRate's numerator and denominator alike, so the rate is
+     * failures over runs that actually reached a result.
      */
     "agentRuns": number;
     "agentFailures": number;
+    "agentStalls": number;
     "failureRate": number;
 
     /**
@@ -754,6 +769,9 @@ export class Scorecard {
         }
         if (!("agentFailures" in $$source)) {
             this["agentFailures"] = 0;
+        }
+        if (!("agentStalls" in $$source)) {
+            this["agentStalls"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;

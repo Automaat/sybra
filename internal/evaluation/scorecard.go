@@ -41,9 +41,13 @@ type Scorecard struct {
 	HumanTouchedLandings int     `json:"humanTouchedLandings"`
 	AutonomyRate         float64 `json:"autonomyRate"` // autonomous / landed
 
-	// Reliability (from stats run outcomes).
+	// Reliability (from stats run outcomes). AgentStalls counts runs that were
+	// retried rather than resolved (stats.OutcomeStalled); they are excluded
+	// from FailureRate's numerator and denominator alike, so the rate is
+	// failures over runs that actually reached a result.
 	AgentRuns         int     `json:"agentRuns"`
 	AgentFailures     int     `json:"agentFailures"`
+	AgentStalls       int     `json:"agentStalls"`
 	FailureRate       float64 `json:"failureRate"`
 	CIFirstPassRate   float64 `json:"ciFirstPassRate"`   // landed without a CI-fix / landed
 	Reverted          int     `json:"reverted"`          // merged landings later reverted on the default branch
@@ -61,10 +65,14 @@ type Scorecard struct {
 // reliability metrics derivable from stats run records. Landing-derived metrics
 // (autonomy, throughput) are not broken down because task.landed events don't
 // carry provider/role/project yet — see Report.Notes.
+// Runs counts every run in the group (stalls included — they burn real
+// wall-clock and spend). Stalled counts the retried subset, and FailureRate
+// divides by Runs-Stalled so a stall-prone provider cannot look reliable.
 type Breakdown struct {
 	Key          string  `json:"key"`
 	Runs         int     `json:"runs"`
 	Failures     int     `json:"failures"`
+	Stalled      int     `json:"stalled"`
 	FailureRate  float64 `json:"failureRate"`
 	TotalCostUSD float64 `json:"totalCostUsd"`
 	Turns        int     `json:"turns"`
@@ -93,6 +101,7 @@ type ComparisonBreakdown struct {
 	Subject                   *abtest.Subject       `json:"subject,omitempty"`
 	Runs                      int                   `json:"runs"`
 	Failures                  int                   `json:"failures"`
+	Stalled                   int                   `json:"stalled"`
 	FailureRate               float64               `json:"failureRate"`
 	FailureEstimate           RateEstimate          `json:"failureEstimate"`
 	Landed                    int                   `json:"landed"`
@@ -235,12 +244,12 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 
 	lg := scanLandings(events, win)
 	sigs := scanTaskSignals(events) // not window-bound: capture full task history
-	runs, fails := scanReliability(records, win)
+	runs, fails, stalls := scanReliability(records, win)
 	cost, turns, tools := scanEfficiency(records, win)
 
 	sc.TasksLanded, sc.Merged, sc.Closed = lg.count, lg.merged, lg.closed
 	sc.MergedWithEdits = lg.mergedWithEdits
-	sc.AgentRuns, sc.AgentFailures = runs, fails
+	sc.AgentRuns, sc.AgentFailures, sc.AgentStalls = runs, fails, stalls
 	sc.Reverted = countReverts(events, win, lg.tasks)
 	sc.TotalCostUSD = cost
 	autonomous, humanTouched, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
@@ -255,8 +264,8 @@ func Compute(records []stats.RunRecord, events []audit.Event, since, until time.
 		sc.TurnsPerLanded = float64(turns) / n
 		sc.ToolsPerLanded = float64(tools) / n
 	}
-	if sc.AgentRuns > 0 {
-		sc.FailureRate = float64(sc.AgentFailures) / float64(sc.AgentRuns)
+	if resolved := sc.AgentRuns - sc.AgentStalls; resolved > 0 {
+		sc.FailureRate = float64(sc.AgentFailures) / float64(resolved)
 	}
 	if mergedLandings := sc.Merged + sc.MergedWithEdits; mergedLandings > 0 {
 		sc.ChangeFailureRate = float64(sc.Reverted) / float64(mergedLandings)
@@ -361,18 +370,21 @@ func countReverts(events []audit.Event, win func(time.Time) bool, landed map[str
 	return n
 }
 
-func scanReliability(records []stats.RunRecord, win func(time.Time) bool) (runs, failures int) {
+func scanReliability(records []stats.RunRecord, win func(time.Time) bool) (runs, failures, stalls int) {
 	for i := range records {
 		r := records[i]
 		if !win(r.Timestamp) {
 			continue
 		}
 		runs++
-		if r.Outcome == "failed" {
+		switch {
+		case !stats.IsTerminalOutcome(r.Outcome):
+			stalls++
+		case r.Outcome == stats.OutcomeFailed:
 			failures++
 		}
 	}
-	return runs, failures
+	return runs, failures, stalls
 }
 
 func scanEfficiency(records []stats.RunRecord, win func(time.Time) bool) (cost float64, turns, tools int) {
@@ -433,8 +445,8 @@ func countRework(sigs map[string]*taskSignals, landed map[string]bool) int {
 // reliability per group, sorted by key. Records with an empty key are skipped.
 func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(stats.RunRecord) string) []Breakdown {
 	type acc struct {
-		runs, fails, turns, tools int
-		cost                      float64
+		runs, fails, stalls, turns, tools int
+		cost                              float64
 	}
 	groups := map[string]*acc{}
 	for i := range records {
@@ -452,7 +464,10 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 			groups[k] = a
 		}
 		a.runs++
-		if r.Outcome == "failed" {
+		switch {
+		case !stats.IsTerminalOutcome(r.Outcome):
+			a.stalls++
+		case r.Outcome == stats.OutcomeFailed:
 			a.fails++
 		}
 		a.cost += r.CostUSD
@@ -461,9 +476,9 @@ func BreakdownBy(records []stats.RunRecord, since, until time.Time, key func(sta
 	}
 	out := make([]Breakdown, 0, len(groups))
 	for k, a := range groups {
-		b := Breakdown{Key: k, Runs: a.runs, Failures: a.fails, TotalCostUSD: a.cost, Turns: a.turns, Tools: a.tools}
-		if a.runs > 0 {
-			b.FailureRate = float64(a.fails) / float64(a.runs)
+		b := Breakdown{Key: k, Runs: a.runs, Failures: a.fails, Stalled: a.stalls, TotalCostUSD: a.cost, Turns: a.turns, Tools: a.tools}
+		if resolved := a.runs - a.stalls; resolved > 0 {
+			b.FailureRate = float64(a.fails) / float64(resolved)
 		}
 		out = append(out, b)
 	}
@@ -538,7 +553,10 @@ func compareByAttribution(records []stats.RunRecord, events []audit.Event, since
 		}
 		a := ensure(r, k)
 		a.row.Runs++
-		if r.Outcome == "failed" {
+		switch {
+		case !stats.IsTerminalOutcome(r.Outcome):
+			a.row.Stalled++
+		case r.Outcome == stats.OutcomeFailed:
 			a.row.Failures++
 		}
 		a.row.TotalCostUSD += r.CostUSD
@@ -871,7 +889,9 @@ func comparisonRows(groups map[string]*comparisonAcc, minSamples int) []Comparis
 	out := make([]ComparisonBreakdown, 0, len(groups))
 	for _, a := range groups {
 		row := a.row
-		row.FailureEstimate = wilson95(row.Failures, row.Runs)
+		// Landing stays rated over all runs (a stall still consumed a dispatch
+		// of this variant); only the failure rate drops the retried ones.
+		row.FailureEstimate = wilson95(row.Failures, row.Runs-row.Stalled)
 		row.LandedEstimate = wilson95(row.Landed, row.Runs)
 		row.MergeEstimate = wilson95(row.Merged, row.Landed)
 		row.MergedWithEditsEstimate = wilson95(row.MergedWithEdits, row.Landed)

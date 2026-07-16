@@ -673,25 +673,35 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// runOutcome derives the stats.RunRecord outcome ("completed"/"failed") for a
-// terminal agent run. Test-runner is special-cased: its exitErr reflects
+// runOutcome derives the stats.RunRecord outcome for a completed agent run.
+//
+// The stall check comes first and mirrors runTerminalOutcome so the stats
+// dataset and the persisted AgentRun.Outcome cannot disagree about the same
+// run: a stall is retried (notifyWorkflowEngine re-drives the step), so it is
+// not a result at all and is recorded as stats.OutcomeStalled — never as a
+// failure. Recording it as "failed" is what put implementation at a reported
+// 92.3% failure rate over runs that were merely retried (#2149).
+//
+// Test-runner is special-cased for the non-stall case: its exitErr reflects
 // whether the *process* exited clean, not whether it correctly did its job
 // (proving or failing to disprove the implementation). A test-runner that
 // produced a protocol-valid PASS/FAIL verdict succeeded at its job even if a
 // benign post-result glitch (e.g. a trailing stream hiccup) left exitErr
-// non-nil, so it is recorded as "completed" rather than inflating the role's
-// failure_rate with a run that was never actually a failure. Other roles are
-// unaffected: their exitErr already reflects whether they completed the task.
-func runOutcome(role agent.Role, exitErr error, resultContent string) string {
+// non-nil, so it is recorded as completed rather than inflating the role's
+// failure_rate with a run that was never actually a failure.
+func runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
+	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
+		return stats.OutcomeStalled
+	}
 	if exitErr == nil {
-		return "completed"
+		return stats.OutcomeCompleted
 	}
 	if role == agent.RoleTestRunner {
 		if v := workflow.ExtractTestVerdict(resultContent); v == "PASS" || v == "FAIL" {
-			return "completed"
+			return stats.OutcomeCompleted
 		}
 	}
-	return "failed"
+	return stats.OutcomeFailed
 }
 
 func (h *Handler) roleForAgentName(name string) agent.Role {
@@ -717,7 +727,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := runOutcome(role, exitErr, resultContent)
+	outcome := runOutcome(ag, role, exitErr, resultContent)
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {

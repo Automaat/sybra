@@ -91,6 +91,96 @@ func TestCompute(t *testing.T) {
 	}
 }
 
+// #2149: a stalled run is retried, not resolved, so it must stay out of both
+// sides of every failure rate. Codex stalls on ~96% of implementation runs, so
+// leaving stalls in the denominator would rank the stall-prone provider as the
+// most reliable one — the same corrupted evidence Prompt Lab gates on.
+func TestComputeExcludesStallsFromFailureRate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", CostUSD: 1.0, Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{TaskID: "A", CostUSD: 1.0, Outcome: stats.OutcomeFailed, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+	}
+
+	got := Compute(records, nil, since, base)
+
+	if got.AgentRuns != 5 {
+		t.Errorf("AgentRuns = %d, want 5 (stalls burn real wall-clock, so they stay counted)", got.AgentRuns)
+	}
+	if got.AgentStalls != 3 {
+		t.Errorf("AgentStalls = %d, want 3", got.AgentStalls)
+	}
+	if got.AgentFailures != 1 {
+		t.Errorf("AgentFailures = %d, want 1", got.AgentFailures)
+	}
+	if got.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5 (1 failure over 2 resolved runs, not 5 dispatched)", got.FailureRate)
+	}
+}
+
+func TestBreakdownByExcludesStallsFromFailureRate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		// codex: stalls constantly, and every run that resolved failed.
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		// claude: never stalls, resolves half its runs into failures.
+		{Provider: "claude", Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{Provider: "claude", Outcome: stats.OutcomeFailed, Timestamp: in},
+	}
+
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string { return r.Provider })
+	if len(got) != 2 {
+		t.Fatalf("got %d groups, want 2: %+v", len(got), got)
+	}
+	cl, cx := got[0], got[1]
+	if cl.Key != "claude" || cl.Stalled != 0 || cl.FailureRate != 0.5 {
+		t.Errorf("claude breakdown = %+v, want stalled=0 failureRate=0.5", cl)
+	}
+	if cx.Key != "codex" || cx.Runs != 4 || cx.Stalled != 3 || cx.Failures != 1 {
+		t.Errorf("codex breakdown = %+v, want runs=4 stalled=3 failures=1", cx)
+	}
+	if cx.FailureRate != 1.0 {
+		t.Errorf("codex FailureRate = %v, want 1.0: its one resolved run failed. Counting the 3 stalls in the denominator would report 0.25 and rank the stall-prone provider above claude", cx.FailureRate)
+	}
+}
+
+func TestCompareByExcludesStallsFromFailureEstimate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeCompleted, Timestamp: in},
+	}
+
+	rows := CompareByLatestAuthor(records, nil, since, base, 0, func(r stats.RunRecord) string { return r.Provider })
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Runs != 4 || row.Stalled != 2 {
+		t.Errorf("row = %+v, want runs=4 stalled=2", row)
+	}
+	if row.FailureEstimate.Denominator != 2 {
+		t.Errorf("FailureEstimate.Denominator = %d, want 2 (resolved runs only)", row.FailureEstimate.Denominator)
+	}
+	if row.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5", row.FailureRate)
+	}
+}
+
 func TestBreakdownBy(t *testing.T) {
 	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	since := base.AddDate(0, 0, -7)

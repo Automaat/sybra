@@ -16,6 +16,22 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
+// sigkillErr SIGKILLs a live process and returns its Wait error, so tests can
+// exercise the real signal-kill shape (WaitStatus.Signaled) rather than a
+// hand-made error that isSignalKill would classify differently.
+func sigkillErr(t *testing.T) error {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	return cmd.Wait()
+}
+
 func TestRunOutcome(t *testing.T) {
 	t.Parallel()
 	errBoom := errors.New("boom")
@@ -23,12 +39,13 @@ func TestRunOutcome(t *testing.T) {
 	cases := []struct {
 		name          string
 		role          agent.Role
+		agent         func() *agent.Agent
 		exitErr       error
 		resultContent string
 		want          string
 	}{
-		{"clean_exit_any_role", agent.RoleImplementation, nil, "", "completed"},
-		{"non_test_runner_errors_are_failed", agent.RoleImplementation, errBoom, "TEST_VERDICT: PASS", "failed"},
+		{name: "clean_exit_any_role", role: agent.RoleImplementation, want: "completed"},
+		{name: "non_test_runner_errors_are_failed", role: agent.RoleImplementation, exitErr: errBoom, resultContent: "TEST_VERDICT: PASS", want: "failed"},
 		{
 			name:          "test_runner_genuine_pass_survives_trailing_process_error",
 			role:          agent.RoleTestRunner,
@@ -54,12 +71,70 @@ func TestRunOutcome(t *testing.T) {
 			resultContent: "crashed before concluding anything",
 			want:          "failed",
 		},
+		{
+			// #2149: the ~96% codex stall case. The workflow engine retries
+			// this run, so recording it as "failed" is what drove the reported
+			// 92.3% implementation failure rate over runs that never resolved.
+			name:    "signal_killed_run_is_a_stall_not_a_failure",
+			role:    agent.RoleImplementation,
+			exitErr: sigkillErr(t),
+			want:    "stalled",
+		},
+		{
+			name: "stopped_before_result_is_a_stall",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.MarkStopped()
+				return ag
+			},
+			want: "stalled",
+		},
+		{
+			name: "rate_limited_run_is_a_stall",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError("rate_limit", "rate_limited")
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "stalled",
+		},
+		{
+			name: "malformed_tool_call_is_a_stall",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.SetError("malformed_tool_call", "tool rejected malformed input")
+				return ag
+			},
+			want: "stalled",
+		},
+		{
+			// A budget breach is a deliberate hard-stop, not an infra stall —
+			// it must stay countable as a real failure (classifyStall).
+			name: "cost_guardrail_stop_stays_a_failure",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.MarkStopped()
+				ag.SetEscalationReason(agent.EscalationReasonCost)
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "failed",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := runOutcome(tc.role, tc.exitErr, tc.resultContent); got != tc.want {
+			ag := &agent.Agent{}
+			if tc.agent != nil {
+				ag = tc.agent()
+			}
+			if got := runOutcome(ag, tc.role, tc.exitErr, tc.resultContent); got != tc.want {
 				t.Errorf("runOutcome(%v, %v, %q) = %q, want %q", tc.role, tc.exitErr, tc.resultContent, got, tc.want)
 			}
 		})
@@ -111,20 +186,6 @@ func TestIsSignalKill(t *testing.T) {
 			t.Fatalf("exit code mismatch: got %d want %d", ee.ExitCode(), code)
 		}
 		return err
-	}
-
-	// Helper: send SIGKILL to a running process and return the Wait error.
-	sigkillErr := func(t *testing.T) error {
-		t.Helper()
-		cmd := exec.Command("sleep", "60")
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start sleep: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-		if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
-			t.Fatalf("signal: %v", err)
-		}
-		return cmd.Wait()
 	}
 
 	tests := []struct {
