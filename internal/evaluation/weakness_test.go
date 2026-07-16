@@ -21,12 +21,15 @@ func TestWeaknesses_FlagsShortfalls(t *testing.T) {
 			AutonomyRate:    0.4, // < 0.7 → autonomy
 			CIFirstPassRate: 0.5, // < 0.6 → ci_first_pass
 			ReworkTasks:     5,   // 5/10 = 0.5 > 0.3 → rework
-			AgentRuns:       20,
-			FailureRate:     0.3, // > 0.2 → failure_rate
+			// Rates read over resolved runs, so a fixture must say how many of
+			// its dispatches resolved — the gate no longer infers it.
+			AgentRuns:         20,
+			AgentResolvedRuns: 20,
+			FailureRate:       0.3, // > 0.2 → failure_rate
 		},
 		ByProvider: []Breakdown{
-			{Key: "codex", Runs: 10, FailureRate: 0.6}, // 0.6 > 0.3+0.15 → outlier
-			{Key: "claude", Runs: 10, FailureRate: 0.3},
+			{Key: "codex", Runs: 10, ResolvedRuns: 10, FailureRate: 0.6}, // 0.6 > 0.3+0.15 → outlier
+			{Key: "claude", Runs: 10, ResolvedRuns: 10, FailureRate: 0.3},
 		},
 	}
 	ws := Weaknesses(r)
@@ -53,7 +56,7 @@ func TestWeaknesses_HealthyAndLowData(t *testing.T) {
 	// Healthy fleet with enough data → no weaknesses.
 	healthy := Report{Overall: Scorecard{
 		TasksLanded: 10, AutonomyRate: 0.95, CIFirstPassRate: 0.9, ReworkTasks: 0,
-		AgentRuns: 20, FailureRate: 0.05,
+		AgentRuns: 20, AgentResolvedRuns: 20, FailureRate: 0.05,
 	}}
 	if ws := Weaknesses(healthy); len(ws) != 0 {
 		t.Errorf("healthy fleet flagged: %+v", ws)
@@ -62,10 +65,50 @@ func TestWeaknesses_HealthyAndLowData(t *testing.T) {
 	// Too little data → gates suppress everything despite bad ratios.
 	sparse := Report{Overall: Scorecard{
 		TasksLanded: 1, AutonomyRate: 0, CIFirstPassRate: 0, ReworkTasks: 1,
-		AgentRuns: 1, FailureRate: 1,
+		AgentRuns: 1, AgentResolvedRuns: 1, FailureRate: 1,
 	}}
 	if ws := Weaknesses(sparse); len(ws) != 0 {
 		t.Errorf("sparse window flagged (should be gated): %+v", ws)
+	}
+}
+
+// Weaknesses tell the operator to go fix a prompt or route work away from a
+// provider. A window of stalls is no evidence for either, so a role/provider
+// whose runs mostly stalled must not clear the signal gate on the strength of
+// its dispatch count (#2149).
+func TestWeaknesses_GateCountsResolvedRunsNotStalls(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{
+			// 20 dispatches but only 4 resolved: below minRunsForSignal.
+			AgentRuns: 20, AgentStalls: 16, AgentResolvedRuns: 4, FailureRate: 1,
+		},
+		ByProvider: []Breakdown{
+			// 10 dispatches, 1 resolved, and it failed: a sample of one.
+			{Key: "codex", Runs: 10, Stalled: 9, ResolvedRuns: 1, Failures: 1, FailureRate: 1},
+		},
+	}
+	if ws := Weaknesses(r); len(ws) != 0 {
+		t.Errorf("Weaknesses = %+v, want none: 4 resolved fleet runs and 1 resolved codex run are below the signal gate", ws)
+	}
+}
+
+// Stalls alongside a sufficient number of resolved runs neither block the gate
+// nor change the rate the weakness narrates.
+func TestWeaknesses_StallsDoNotBlockAGenuineSignal(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{AgentRuns: 40, AgentStalls: 20, AgentResolvedRuns: 20, AgentFailures: 6, FailureRate: 0.3},
+		ByProvider: []Breakdown{
+			{Key: "codex", Runs: 20, Stalled: 10, ResolvedRuns: 10, Failures: 6, FailureRate: 0.6},
+		},
+	}
+	ws := Weaknesses(r)
+	if !hasMetric(ws, "failure_rate") || !hasMetric(ws, "provider:codex") {
+		t.Errorf("Weaknesses = %+v, want failure_rate and provider:codex flagged", ws)
+	}
+	for _, w := range ws {
+		if w.Metric == "failure_rate" && !strings.Contains(w.Detail, "resolved") {
+			t.Errorf("failure_rate detail = %q, want it to name the resolved-run basis", w.Detail)
+		}
 	}
 }
 

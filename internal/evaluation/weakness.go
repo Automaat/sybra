@@ -15,7 +15,9 @@ type Weakness struct {
 }
 
 // Signal gates: don't emit weaknesses from a near-empty window, where a single
-// task or run swings every ratio.
+// task or run swings every ratio. Run gates count resolved runs, never
+// dispatches — a window of stalls carries no evidence about prompts or
+// guardrails, which is what these weaknesses tell the operator to go fix.
 const (
 	minLandedForSignal = 3
 	minRunsForSignal   = 5
@@ -58,11 +60,11 @@ func Weaknesses(r Report) []Weakness {
 		}
 	}
 
-	if o.AgentRuns >= minRunsForSignal && o.FailureRate > 0.2 {
+	if o.AgentResolvedRuns >= minRunsForSignal && o.FailureRate > 0.2 {
 		out = append(out, Weakness{
 			Severity:   "warn",
 			Metric:     "failure_rate",
-			Detail:     fmt.Sprintf("%.0f%% of agent runs failed", o.FailureRate*100),
+			Detail:     fmt.Sprintf("%.0f%% of resolved agent runs failed", o.FailureRate*100),
 			Suggestion: "investigate the failing roles/providers below; check guardrails and prompts",
 		})
 	}
@@ -95,7 +97,7 @@ func outlierWeaknesses(groups []Breakdown, overallFailure float64, dimension str
 	var out []Weakness
 	for i := range groups {
 		b := groups[i]
-		if b.Runs < minRunsForSignal || b.FailureRate <= overallFailure+outlierMargin {
+		if b.ResolvedRuns < minRunsForSignal || b.FailureRate <= overallFailure+outlierMargin {
 			continue
 		}
 		out = append(out, Weakness{

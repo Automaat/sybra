@@ -6,6 +6,33 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 )
 
+// Outcome values recorded on RunRecord.Outcome.
+//
+// OutcomeStalled marks a run that never produced a definitive result — a signal
+// kill, a stop before the terminal event, a provider rate limit, or a malformed
+// tool call (see completion.classifyStall). Sybra retries those runs, so a stall
+// is neither a success nor a failure: it must stay out of both the numerator and
+// the denominator of any failure rate, or a provider that stalls often reads as
+// more reliable than one that stalls rarely. Use IsTerminalOutcome to gate a
+// record into an outcome-derived rate.
+const (
+	OutcomeCompleted = "completed"
+	OutcomeFailed    = "failed"
+	OutcomeStalled   = "stalled"
+)
+
+// IsTerminalOutcome reports whether an outcome represents a definitive result
+// and therefore belongs in a failure-rate denominator.
+//
+// Deliberately an allowlist. A denylist ("anything but stalled") would quietly
+// count an empty, corrupt, or newly-added outcome as a resolved non-failure —
+// the same false dichotomy that caused this bug, where runOutcome assumed any
+// non-nil exit error meant failure. Anything not known to be definitive is not
+// definitive.
+func IsTerminalOutcome(outcome string) bool {
+	return outcome == OutcomeCompleted || outcome == OutcomeFailed
+}
+
 // RunRecord captures a single agent execution for analytics.
 //
 // Cache token fields are recorded so the stats UI can show actual API
