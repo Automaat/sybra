@@ -73,6 +73,13 @@ func checkLiveBackgroundTasksAtExit(m *Manager, a *Agent) error {
 // log file for new NDJSON lines.
 const headlessTailPoll = 100 * time.Millisecond
 
+// postResultFastCloseDelay is the short debounce before a pipe-backed
+// headless run cancels a process that already emitted a clean terminal
+// result with no live cleanup work. Any further output within this window
+// proves the earlier result was not the final close boundary and suppresses
+// the cancel.
+var postResultFastCloseDelay = 100 * time.Millisecond
+
 // postResultGrace bounds how long the tailer waits for a headless process to
 // exit on its own after it has emitted a terminal (non-error) result event.
 // CC normally exits within a second or two; a skill that spawns subagents or
@@ -846,8 +853,14 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 		if keepGoing := m.handleHeadlessResult(ctx, a, event); !keepGoing {
 			return true
 		}
-	} else if m.stopAfterClearedBackgroundTasks(a) {
-		return true
+	} else {
+		if reason, _, ok := a.PostResultWait(); ok {
+			resolution := "pipe_fast_close"
+			if reason == postResultWaitBackgroundTask {
+				resolution = "background_tasks_cleared"
+			}
+			m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), resolution)
+		}
 	}
 	return false
 }
@@ -891,6 +904,41 @@ func (m *Manager) stopTailPostResultWait(a *Agent, waitExit func()) bool {
 	m.signalKill(a)
 	waitExit()
 	return true
+}
+
+func (m *Manager) maybeArmPipePostResultClose(a *Agent, observedAt time.Time, resolution string) {
+	if a.isDetached() || a.cancel == nil {
+		return
+	}
+	reason, _, ok := a.PostResultWait()
+	if !ok {
+		return
+	}
+	if reason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
+		return
+	}
+	go func() {
+		time.Sleep(postResultFastCloseDelay)
+		if a.GetState() == StateStopped || a.WasStopped() {
+			return
+		}
+		currentReason, _, ok := a.PostResultWait()
+		if !ok {
+			return
+		}
+		if currentReason != postResultWaitFastClose && currentReason != postResultWaitBackgroundTask {
+			return
+		}
+		if currentReason == postResultWaitBackgroundTask && a.HasBackgroundTasks() {
+			return
+		}
+		if a.GetLastEventAt().After(observedAt) {
+			return
+		}
+		m.logPostResultWaitDone(a, resolution)
+		a.setCompletedByResult(true)
+		a.cancel()
+	}()
 }
 
 func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
@@ -987,18 +1035,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	}
 	a.SetPostResultWait(postResultWaitFastClose, event.Timestamp)
 	m.saveRegistry(ctx, a)
-	m.logPostResultWaitDone(a, "result_seen")
-	a.setCompletedByResult(true)
-	return false
-}
-
-func (m *Manager) stopAfterClearedBackgroundTasks(a *Agent) bool {
-	reason, _, ok := a.PostResultWait()
-	if !ok || reason != postResultWaitBackgroundTask || a.HasBackgroundTasks() || !shouldTrackPostResultWait(a) {
-		return false
-	}
-	m.logPostResultWaitDone(a, "background_tasks_cleared")
-	a.setCompletedByResult(true)
+	m.maybeArmPipePostResultClose(a, a.GetLastEventAt(), "pipe_fast_close")
 	return true
 }
 
