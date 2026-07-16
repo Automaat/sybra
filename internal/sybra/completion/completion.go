@@ -203,7 +203,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		auditData["premium_requests"] = premiumRequests
 	}
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
-	if reason := ag.GetEscalationReason(); reason == agent.EscalationReasonCheckpoint || reason == agent.EscalationReasonCheckpointFailed {
+	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
 			"reason":     reason,
 			"turn_count": ag.GetTurnCount(),

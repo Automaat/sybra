@@ -1057,7 +1057,7 @@ func (m *Manager) checkCostGuardrail(a *Agent, costNow, maxCost float64) bool {
 	m.logger.Warn("agent.guardrail.cost", "id", a.ID, "cost", costNow, "limit", maxCost)
 	a.MarkStopped()
 	// Stamping "cost" over a checkpoint discards a handoff whose work is already committed. EXC:FILE011:load-bearing-invariant
-	if a.GetEscalationReason() != EscalationReasonCheckpoint {
+	if !IsCheckpointEscalation(a.GetEscalationReason()) {
 		a.SetEscalationReason(EscalationReasonCost)
 	}
 	a.setCompletedByResult(true)

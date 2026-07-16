@@ -794,6 +794,14 @@ const EscalationReasonCheckpoint = "checkpoint"
 // EscalationReasonCheckpointFailed marks a turn-ceiling run whose checkpoint commit failed.
 const EscalationReasonCheckpointFailed = "checkpoint_failed"
 
+// IsCheckpointEscalation reports whether reason records a turn-ceiling
+// checkpoint outcome. Both values steer terminal handling — one reschedules the
+// handoff, the other stamps errCheckpointCommitFailed — so neither may be
+// overwritten by a later guardrail that fires on the same run.
+func IsCheckpointEscalation(reason string) bool {
+	return reason == EscalationReasonCheckpoint || reason == EscalationReasonCheckpointFailed
+}
+
 // SetEscalationReason updates the escalation reason string.
 func (a *Agent) SetEscalationReason(reason string) {
 	a.mu.Lock()
