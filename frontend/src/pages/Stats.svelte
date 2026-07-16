@@ -7,6 +7,7 @@
     closedTasksSeries,
     type StatsPeriod,
   } from '$lib/stats-charts.js'
+  import { runOutcomeClasses } from '$lib/agent-run.js'
   import StatsLineChart from '../components/stats/StatsLineChart.svelte'
   import StatsBarChart from '../components/stats/StatsBarChart.svelte'
 
@@ -358,9 +359,7 @@
                   <td class="py-1.5 text-right text-xs">{formatDuration(run.durationS)}</td>
                   <td class="py-1.5 text-right text-xs text-surface-400">{run.reasoningTokens ? formatTokens(run.reasoningTokens) : '—'}</td>
                   <td class="py-1.5">
-                    <span class="rounded px-1.5 py-0.5 text-xs {run.outcome === 'completed'
-                      ? 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'
-                      : 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-200'}">
+                    <span class="rounded px-1.5 py-0.5 text-xs {runOutcomeClasses(run.outcome)}">
                       {run.outcome}
                     </span>
                   </td>

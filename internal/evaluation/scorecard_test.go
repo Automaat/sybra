@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,206 @@ func TestCompute(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
+	}
+}
+
+// #2149: a stalled run is retried, not resolved, so it must stay out of both
+// sides of every failure rate. Codex stalls on ~96% of implementation runs, so
+// leaving stalls in the denominator would rank the stall-prone provider as the
+// most reliable one — the same corrupted evidence Prompt Lab gates on.
+func TestComputeExcludesStallsFromFailureRate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{TaskID: "A", CostUSD: 1.0, Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{TaskID: "A", CostUSD: 1.0, Outcome: stats.OutcomeFailed, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+		{TaskID: "A", CostUSD: 0, Outcome: stats.OutcomeStalled, Timestamp: in},
+	}
+
+	got := Compute(records, nil, since, base)
+
+	if got.AgentRuns != 5 {
+		t.Errorf("AgentRuns = %d, want 5 (stalls burn real wall-clock, so they stay counted)", got.AgentRuns)
+	}
+	if got.AgentStalls != 3 {
+		t.Errorf("AgentStalls = %d, want 3", got.AgentStalls)
+	}
+	if got.AgentFailures != 1 {
+		t.Errorf("AgentFailures = %d, want 1", got.AgentFailures)
+	}
+	if got.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5 (1 failure over 2 resolved runs, not 5 dispatched)", got.FailureRate)
+	}
+}
+
+func TestBreakdownByExcludesStallsFromFailureRate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		// codex: stalls constantly, and every run that resolved failed.
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		// claude: never stalls, resolves half its runs into failures.
+		{Provider: "claude", Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{Provider: "claude", Outcome: stats.OutcomeFailed, Timestamp: in},
+	}
+
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string { return r.Provider })
+	if len(got) != 2 {
+		t.Fatalf("got %d groups, want 2: %+v", len(got), got)
+	}
+	cl, cx := got[0], got[1]
+	if cl.Key != "claude" || cl.Stalled != 0 || cl.FailureRate != 0.5 {
+		t.Errorf("claude breakdown = %+v, want stalled=0 failureRate=0.5", cl)
+	}
+	if cx.Key != "codex" || cx.Runs != 4 || cx.Stalled != 3 || cx.Failures != 1 {
+		t.Errorf("codex breakdown = %+v, want runs=4 stalled=3 failures=1", cx)
+	}
+	if cx.FailureRate != 1.0 {
+		t.Errorf("codex FailureRate = %v, want 1.0: its one resolved run failed. Counting the 3 stalls in the denominator would report 0.25 and rank the stall-prone provider above claude", cx.FailureRate)
+	}
+}
+
+func TestCompareByExcludesStallsFromFailureEstimate(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeCompleted, Timestamp: in},
+	}
+
+	rows := CompareByLatestAuthor(records, nil, since, base, 0, func(r stats.RunRecord) string { return r.Provider })
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Runs != 4 || row.Stalled != 2 {
+		t.Errorf("row = %+v, want runs=4 stalled=2", row)
+	}
+	if row.FailureEstimate.Denominator != 2 {
+		t.Errorf("FailureEstimate.Denominator = %d, want 2 (resolved runs only)", row.FailureEstimate.Denominator)
+	}
+	if row.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5", row.FailureRate)
+	}
+}
+
+// The failure rate and the check on whether it has enough samples must count
+// the same population. Gating on dispatches while rating over resolved runs
+// lets a row declare itself actionable at a 100% failure rate off n=1.
+func TestCompareByGatesSamplesOnResolvedRuns(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := make([]stats.RunRecord, 0, 30)
+	for range 29 {
+		records = append(records, stats.RunRecord{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in})
+	}
+	records = append(records, stats.RunRecord{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in})
+
+	rows := CompareByLatestAuthor(records, nil, since, base, 30, func(r stats.RunRecord) string { return r.Provider })
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if !rows[0].InsufficientData {
+		t.Errorf("InsufficientData = false for a row with 1 resolved run against minSamples=30 (runs=%d stalled=%d failureRate=%v)",
+			rows[0].Runs, rows[0].Stalled, rows[0].FailureRate)
+	}
+}
+
+// Stall records only exist going forward, so a window straddling the upgrade
+// shows an inflated failure rate next to a stall count of ~0 — which reads as
+// if the fix never landed. The report has to say so itself; the operator
+// looking at the dashboard is the one who needs to know.
+func TestReportNotesFlagsPreFixStallsRecordedAsFailures(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		// Pre-fix stalls: recorded as failures, and a stall's usage event never
+		// arrived, so they cost nothing and produced nothing.
+		{Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Outcome: stats.OutcomeFailed, Timestamp: in},
+		// A genuine failure that actually did work.
+		{Outcome: stats.OutcomeFailed, CostUSD: 0.76, OutputTokens: 900, Timestamp: in},
+		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
+	}
+
+	notes := reportNotes(records, since, base)
+	found := ""
+	for _, n := range notes {
+		if strings.Contains(n, "zero cost and zero tokens") {
+			found = n
+		}
+	}
+	if found == "" {
+		t.Fatalf("reportNotes = %v, want a note about failed runs that recorded no cost or tokens", notes)
+	}
+	if !strings.Contains(found, "2 of 3") {
+		t.Errorf("note = %q, want it to count 2 of 3 failed runs", found)
+	}
+}
+
+// Once the window is clear of pre-fix records the note must disappear, or it
+// becomes permanent furniture that no one reads.
+func TestReportNotesOmitsStallCaveatWhenFailuresAreAccounted(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Outcome: stats.OutcomeFailed, CostUSD: 0.76, OutputTokens: 900, Timestamp: in},
+		{Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Outcome: stats.OutcomeCompleted, CostUSD: 1.2, OutputTokens: 500, Timestamp: in},
+	}
+
+	for _, n := range reportNotes(records, since, base) {
+		if strings.Contains(n, "zero cost and zero tokens") {
+			t.Errorf("note %q present, but the only failure is fully accounted and the stall is recorded as a stall", n)
+		}
+	}
+}
+
+// An outcome nothing can currently produce must still be handled: it is not a
+// definitive result, so it belongs in no rate — and it is not a stall either,
+// so it must not be counted as one. Runs, Stalled and ResolvedRuns are counted
+// independently precisely so an unknown value lands in Runs alone.
+func TestUnknownOutcomeCountsAsNeitherResolvedNorStalled(t *testing.T) {
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -7)
+	in := base.Add(-1 * time.Hour)
+	records := []stats.RunRecord{
+		{Provider: "codex", Outcome: stats.OutcomeFailed, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeCompleted, Timestamp: in},
+		{Provider: "codex", Outcome: stats.OutcomeStalled, Timestamp: in},
+		{Provider: "codex", Outcome: "", Timestamp: in},
+		{Provider: "codex", Outcome: "some-future-outcome", Timestamp: in},
+	}
+
+	got := BreakdownBy(records, since, base, func(r stats.RunRecord) string { return r.Provider })
+	if len(got) != 1 {
+		t.Fatalf("got %d groups, want 1", len(got))
+	}
+	b := got[0]
+	if b.Runs != 5 || b.Stalled != 1 || b.ResolvedRuns != 2 || b.Failures != 1 {
+		t.Errorf("breakdown = %+v, want runs=5 stalled=1 resolvedRuns=2 failures=1", b)
+	}
+	if b.FailureRate != 0.5 {
+		t.Errorf("FailureRate = %v, want 0.5 (1 of 2 definitive results; the unknown pair must not dilute it)", b.FailureRate)
+	}
+
+	sc := Compute(records, nil, since, base)
+	if sc.AgentRuns != 5 || sc.AgentStalls != 1 || sc.AgentResolvedRuns != 2 || sc.FailureRate != 0.5 {
+		t.Errorf("scorecard = runs:%d stalls:%d resolved:%d rate:%v, want 5/1/2/0.5",
+			sc.AgentRuns, sc.AgentStalls, sc.AgentResolvedRuns, sc.FailureRate)
 	}
 }
 

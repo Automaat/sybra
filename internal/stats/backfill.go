@@ -71,9 +71,9 @@ func (s *Store) Backfill(auditDir string) error {
 			r.DurationS = v
 		}
 		if run.Failed {
-			r.Outcome = "failed"
+			r.Outcome = OutcomeFailed
 		} else {
-			r.Outcome = "completed"
+			r.Outcome = OutcomeCompleted
 		}
 		if v, ok := run.TerminalEvent.Data["provider"].(string); ok {
 			r.Provider = v
