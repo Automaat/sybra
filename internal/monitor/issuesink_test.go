@@ -447,6 +447,33 @@ func TestDefaultGHExecer_NoAppAuthInheritsAmbientEnv(t *testing.T) {
 	}
 }
 
+func TestDefaultGHExecer_AppAuthInjectsGHToken(t *testing.T) {
+	origGHEnv := ghEnv
+	ghEnv = func() []string { return append(os.Environ(), "GH_TOKEN=ghs_monitor_installation") }
+	t.Cleanup(func() { ghEnv = origGHEnv })
+
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	captured := filepath.Join(dir, "captured-token.txt")
+	script := "#!/bin/bash\n[[ -n \"$GH_TOKEN\" ]] && printf '%s' \"$GH_TOKEN\" > " + captured + "\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	if _, err := (defaultGHExecer{}).run(context.Background(), "issue", "list"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	got, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatalf("read captured token: %v", err)
+	}
+	if string(got) != "ghs_monitor_installation" {
+		t.Fatalf("GH_TOKEN = %q, want %q", got, "ghs_monitor_installation")
+	}
+}
+
 // containsPair returns true if args contains key followed immediately by val.
 func containsPair(args []string, key, val string) bool {
 	for i := range len(args) - 1 {

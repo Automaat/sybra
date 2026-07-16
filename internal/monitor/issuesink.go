@@ -34,6 +34,8 @@ type ghExecer interface {
 
 type defaultGHExecer struct{}
 
+var ghEnv = github.GHEnv
+
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	// Share the same credential source as every other gh call in the
@@ -41,7 +43,7 @@ func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) 
 	// GitHub App installation token when one is configured, so this sink
 	// isn't silently dependent on an ambient `gh auth login`/GH_TOKEN that
 	// the App-auth setup was specifically meant to replace. See #2032.
-	if env := github.GHEnv(); env != nil {
+	if env := ghEnv(); env != nil {
 		cmd.Env = env
 	}
 	return cmd.CombinedOutput()
