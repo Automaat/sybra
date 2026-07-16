@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -165,7 +164,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		if podName != "" {
 			logs, err := r.podLogs(ctx, podName)
 			if err == nil && logOffset < len(logs) {
-				logOffset += processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), &lastEmit)
+				logOffset += processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), false, &lastEmit)
 			}
 		}
 
@@ -180,7 +179,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		}
 		if podName != "" {
 			if logs, err := r.podLogs(ctx, podName); err == nil && logOffset < len(logs) {
-				processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), &lastEmit)
+				processK8sLogChunk(ctx, m, a, logProvider, []byte(logs[logOffset:]), true, &lastEmit)
 			}
 		}
 		if failed {
@@ -197,14 +196,28 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 	}
 }
 
-func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName string, chunk []byte, lastEmit *time.Time) int {
-	scanner := bufio.NewScanner(bytes.NewReader(chunk))
-	scanner.Buffer(make([]byte, 0, 64*1024), headlessScannerBuffer)
+func processK8sLogChunk(ctx context.Context, m *Manager, a *Agent, providerName string, chunk []byte, final bool, lastEmit *time.Time) int {
 	prov := providerByName(providerName)
 	processed := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		processed += len(line) + 1
+	for len(chunk) > 0 {
+		nl := bytes.IndexByte(chunk, '\n')
+		if nl < 0 {
+			if !final {
+				return processed
+			}
+			line := chunk
+			processed += len(line)
+			if len(line) > 0 {
+				m.processHeadlessLine(ctx, a, line, lastEmit, prov)
+			}
+			return processed
+		}
+		line := chunk[:nl]
+		processed += nl + 1
+		chunk = chunk[nl+1:]
+		if len(line) == 0 {
+			continue
+		}
 		m.processHeadlessLine(ctx, a, line, lastEmit, prov)
 	}
 	return processed

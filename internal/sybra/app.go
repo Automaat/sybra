@@ -56,6 +56,7 @@ import (
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
+	"github.com/google/uuid"
 )
 
 type App struct {
@@ -621,12 +622,26 @@ func (a *App) StartK8sPocAgent(prompt string) (*agent.Agent, error) {
 	if a == nil || a.agents == nil {
 		return nil, fmt.Errorf("agent manager unavailable")
 	}
-	return a.agents.Run(agent.RunConfig{
-		Name:   string(agent.RoleImplementation),
-		Mode:   "headless",
-		Prompt: prompt,
-		Dir:    os.TempDir(),
+	if a.cfg == nil || !a.cfg.Agent.K8sJobs.Enabled {
+		return nil, fmt.Errorf("kubernetes job runner is not enabled")
+	}
+	home, err := os.MkdirTemp("", "sybra-k8s-poc-*")
+	if err != nil {
+		return nil, fmt.Errorf("create k8s poc home: %w", err)
+	}
+	ag, err := a.agents.Run(agent.RunConfig{
+		TaskID:   "k8s-poc-" + uuid.NewString()[:8],
+		Name:     string(agent.RoleImplementation),
+		Mode:     "headless",
+		Prompt:   prompt,
+		Dir:      home,
+		ExtraEnv: []string{"SYBRA_HOME=" + home, "SYBRA_CONTROL_HOME=" + home},
 	})
+	if err != nil {
+		_ = os.RemoveAll(home)
+		return nil, err
+	}
+	return ag, nil
 }
 
 // AgentQueueSnapshot exposes the read-only queue snapshot to Wails/web clients.

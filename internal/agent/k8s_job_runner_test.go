@@ -64,7 +64,7 @@ func TestK8sRunnerVolumeSpecProjectsPVCMounts(t *testing.T) {
 		Volumes: []K8sJobVolume{{
 			Name:      "sybra-home",
 			ClaimName: "sybra-home",
-			MountPath: "/home/sybra/.sybra",
+			MountPath: "/data/sybra/home",
 		}},
 	})
 
@@ -79,8 +79,8 @@ func TestK8sRunnerVolumeSpecProjectsPVCMounts(t *testing.T) {
 	if pvc["claimName"] != "sybra-home" {
 		t.Fatalf("claimName = %#v, want sybra-home", pvc["claimName"])
 	}
-	if mounts[0]["mountPath"] != "/home/sybra/.sybra" {
-		t.Fatalf("mountPath = %#v, want /home/sybra/.sybra", mounts[0]["mountPath"])
+	if mounts[0]["mountPath"] != "/data/sybra/home" {
+		t.Fatalf("mountPath = %#v, want /data/sybra/home", mounts[0]["mountPath"])
 	}
 }
 
