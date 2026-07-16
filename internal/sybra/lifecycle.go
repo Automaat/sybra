@@ -431,18 +431,37 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		Model:     a.cfg.Monitor.Model,
 		IssueRepo: a.cfg.Monitor.IssueRepo,
 	})
+	// Auth preflight: monitor issue filing depends on the same credential
+	// source as the rest of internal/github (App auth or ambient `gh auth
+	// login`). Neither is fatal to skip — the durable outbox below queues
+	// and retries filings that fail auth — but an operator should see this
+	// loudly at startup instead of only discovering it after an anomaly
+	// silently failed to file. See #2032.
+	if !github.Authenticated() {
+		a.logger.Error("monitor.issue_filing.auth_unavailable",
+			"hint", "configure github.app or run `gh auth login`; issue filing will queue and retry via the durable outbox once credentials are available")
+	}
 	// Work-Data Confidentiality: wrap the GH sink so anomalies on work-typed
 	// tasks become scrubbed local sybra tasks instead of public issues. The
 	// DowngradeLLMForTask closure forces work-typed LLM anomalies through the
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
+	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger)
+	if err != nil {
+		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
+		durableSink = nil
+	}
+	var sink monitor.IssueSink = innerSink
+	if durableSink != nil {
+		sink = durableSink
+	}
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
 	// not an explicit parameter threaded through the closure. contextcheck no
 	// longer flags this call site (verified with a clean build+lint cache),
 	// so no suppression directive is needed here.
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
+	routingSink := newMonitorRoutingSink(sink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
 		if a.workflowEngine == nil {
 			return
 		}

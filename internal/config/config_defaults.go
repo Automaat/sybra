@@ -699,24 +699,35 @@ func WriteRawConfig(data []byte) error {
 // Directories returns the resolved paths for all sybra data directories.
 func (c *Config) Directories() map[string]string {
 	return map[string]string{
-		"tasks":       c.TasksDir,
-		"skills":      c.SkillsDir,
-		"projects":    c.ProjectsDir,
-		"clones":      c.ClonesDir,
-		"worktrees":   c.WorktreesDir,
-		"logs":        c.Logging.Dir,
-		"audit":       c.AuditDir(),
-		"loop_agents": c.LoopAgentsDir,
-		"artifacts":   ArtifactsDir(),
-		"experiences": c.ExperiencesDir(),
-		"agentqueue":  AgentQueueDir(),
-		"learning":    LearningDir(),
+		"tasks":           c.TasksDir,
+		"skills":          c.SkillsDir,
+		"projects":        c.ProjectsDir,
+		"clones":          c.ClonesDir,
+		"worktrees":       c.WorktreesDir,
+		"logs":            c.Logging.Dir,
+		"audit":           c.AuditDir(),
+		"loop_agents":     c.LoopAgentsDir,
+		"artifacts":       ArtifactsDir(),
+		"experiences":     c.ExperiencesDir(),
+		"agentqueue":      AgentQueueDir(),
+		"learning":        LearningDir(),
+		"gh_issue_outbox": GHIssueOutboxDir(),
 	}
 }
 
 // AgentQueueDir is the directory under ~/.sybra that persists agent queue items.
 func AgentQueueDir() string {
 	return filepath.Join(HomeDir(), "agentqueue")
+}
+
+// GHIssueOutboxDir is the directory under ~/.sybra that persists pending
+// GitHub issue filings (monitor.DurableGHIssueSink) that failed with an
+// authentication error and are waiting to be retried once credentials
+// recover. Callers namespace a subdirectory per sink (e.g. "monitor",
+// "human-review") so the monitor anomaly sink and the human-review sink
+// don't collide.
+func GHIssueOutboxDir() string {
+	return filepath.Join(HomeDir(), "gh-issue-outbox")
 }
 
 // LearningDir is the directory under ~/.sybra that holds persisted Learning
