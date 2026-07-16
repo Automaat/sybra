@@ -42,6 +42,10 @@ data:
         enabled: false
       opencode:
         enabled: true
+    # agent-only: the provider-mode smoke starts its agent explicitly via
+    # App.StartAgent, so nothing here should auto-orchestrate or auto-dispatch.
+    orchestrator:
+      role: agent-only
     github:
       enabled: false
     todoist:

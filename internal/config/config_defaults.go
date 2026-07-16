@@ -593,6 +593,7 @@ func DefaultConfig() *Config {
 			Role: ClusterRoleStandalone,
 		},
 		Orchestrator: OrchestratorConfig{
+			Role: InstanceRoleFull,
 			// Seed the pressure thresholds here (not in applyPressureDefaults) so
 			// an explicit `0` in YAML — the documented "disable this dimension"
 			// sentinel — survives loading. A config missing the block entirely

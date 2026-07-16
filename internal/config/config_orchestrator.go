@@ -1,6 +1,40 @@
 package config
 
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+)
+
+const (
+	InstanceRoleFull      = "full"
+	InstanceRoleAgentOnly = "agent-only"
+)
+
+// OrchestratorConfig gates and paces the self-starting automations. Role
+// "full" runs the orchestrator brain session and the auto-dispatch scheduler,
+// preserving single-node behavior. Role "agent-only" fails closed on both: it
+// serves the HTTP API and runs explicitly-started agents but never orchestrates
+// on its own — the posture for a secondary/test deployment (a Kubernetes
+// agent-only server, a scratch instance) that must not race a full instance.
 type OrchestratorConfig struct {
+	// Role declares which self-starting automations this instance owns:
+	// "full" (default) or "agent-only". An invalid value falls back to "full"
+	// with a warning, so a typo never silently parks an instance that was meant
+	// to orchestrate.
+	Role string `yaml:"role,omitempty" json:"role"`
+	// Enabled overrides Role for the orchestrator brain session — the
+	// conversational context auto-started while tasks are active. nil (default)
+	// derives from Role. Explicit true re-enables the brain on an agent-only
+	// instance; explicit false parks it on a full one. Never gates an
+	// operator's manual StartOrchestrator call.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled"`
+	// SchedulerEnabled overrides Role for the auto-dispatch scheduler — the
+	// pass that reconciles board tasks, drains the admission queue, releases
+	// unblocked children, and restarts stale in-progress agents. nil (default)
+	// derives from Role. Maintenance cleanup (orphan worktrees/sandboxes,
+	// metrics) always runs, so a parked instance still collects its garbage.
+	SchedulerEnabled *bool `yaml:"scheduler_enabled,omitempty" json:"schedulerEnabled"`
 	// DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
 	// dispatch pass (start the orchestrator, release unblocked children). Kept
 	// short — and also fired on demand on every status change — so a
@@ -49,4 +83,48 @@ type PressureConfig struct {
 	// deny-log throttle window. <=0 falls back to
 	// pressure.DefaultSampleIntervalSeconds (15). Default 15.
 	SampleIntervalSeconds int `yaml:"sample_interval_seconds" json:"sampleIntervalSeconds"`
+}
+
+// NormalizeInstanceRole canonicalizes an orchestrator instance role. Trim and
+// lowercase first so a formatting slip ("Full", "agent-only ") never silently
+// changes posture; empty maps to full; unknown values are rejected.
+func NormalizeInstanceRole(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", InstanceRoleFull:
+		return InstanceRoleFull, nil
+	case InstanceRoleAgentOnly:
+		return InstanceRoleAgentOnly, nil
+	default:
+		return "", fmt.Errorf("invalid orchestrator.role %q (valid: full, agent-only)", s)
+	}
+}
+
+// InstanceRole returns this instance's resolved role. An invalid config value
+// is logged and treated as full, so a misconfigured instance keeps the
+// behavior it had before the key existed rather than silently going idle.
+func (c OrchestratorConfig) InstanceRole() string {
+	role, err := NormalizeInstanceRole(c.Role)
+	if err != nil {
+		slog.Warn("config: invalid orchestrator.role; falling back to full", "value", c.Role)
+		return InstanceRoleFull
+	}
+	return role
+}
+
+// RunsOrchestrator reports whether this instance may auto-start the
+// orchestrator brain session. An explicit orchestrator.enabled wins over Role.
+func (c OrchestratorConfig) RunsOrchestrator() bool {
+	if c.Enabled != nil {
+		return *c.Enabled
+	}
+	return c.InstanceRole() == InstanceRoleFull
+}
+
+// RunsScheduler reports whether this instance may auto-dispatch work. An
+// explicit orchestrator.scheduler_enabled wins over Role.
+func (c OrchestratorConfig) RunsScheduler() bool {
+	if c.SchedulerEnabled != nil {
+		return *c.SchedulerEnabled
+	}
+	return c.InstanceRole() == InstanceRoleFull
 }

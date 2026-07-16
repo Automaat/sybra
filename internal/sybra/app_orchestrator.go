@@ -56,11 +56,28 @@ func (a *App) orchestratorLoop(ctx context.Context) {
 // refuse active workflows/running agents.
 func (a *App) dispatchPass(ctx context.Context) {
 	a.maybeStartOrchestrator(ctx)
+	if !a.runsScheduler() {
+		return
+	}
 	a.releaseUnblockedChildren()
 	a.reconcileRunnableBoardTasks()
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
 	}
+}
+
+// runsScheduler reports whether this instance may auto-dispatch work. An
+// agent-only instance still serves the HTTP API and runs explicitly-started
+// agents; it just never schedules any itself.
+func (a *App) runsScheduler() bool {
+	return a.cfg == nil || a.cfg.Orchestrator.RunsScheduler()
+}
+
+// runsOrchestratorBrain reports whether this instance may auto-start the
+// orchestrator session. Only gates the automatic start — an operator's manual
+// StartOrchestrator call stays available on every instance.
+func (a *App) runsOrchestratorBrain() bool {
+	return a.cfg == nil || a.cfg.Orchestrator.RunsOrchestrator()
 }
 
 const clusterHealthProbeInterval = 30 * time.Second
@@ -85,7 +102,9 @@ func (a *App) maintenancePass(ctx context.Context) {
 	a.queueDrainPass(ctx)
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
-	a.recovery.RestartStaleInProgress(ctx)
+	if a.runsScheduler() {
+		a.recovery.RestartStaleInProgress(ctx)
+	}
 	a.recovery.ReconcileLostPRNumber(ctx)
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
@@ -107,6 +126,9 @@ func (a *App) maintenancePass(ctx context.Context) {
 }
 
 func (a *App) queueDrainPass(ctx context.Context) {
+	if !a.runsScheduler() {
+		return
+	}
 	a.drainManualQueue(ctx)
 	a.reconcileRunnableBoardTasks()
 	if a.workflowEngine != nil {
@@ -345,6 +367,9 @@ func (a *App) maintenanceInterval() time.Duration {
 }
 
 func (a *App) maybeStartOrchestrator(ctx context.Context) {
+	if !a.runsOrchestratorBrain() {
+		return
+	}
 	if a.orchSvc.IsOrchestratorRunning() {
 		return
 	}

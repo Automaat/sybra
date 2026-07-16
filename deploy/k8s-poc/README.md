@@ -44,6 +44,50 @@ k3d cluster delete sybra-poc
 The default agent Job uses `busybox:1.36` and emits Claude-shaped NDJSON so the
 existing Sybra stream parser can consume it.
 
+## Instance role
+
+A Kubernetes deployment should not start orchestrator sessions or dispatch tasks
+just because tasks are active — a shared or test cluster would race the machine
+that actually owns the board. Every config here sets:
+
+```yaml
+orchestrator:
+  role: agent-only
+```
+
+`agent-only` fails closed on both self-starting automations:
+
+| | `full` (default) | `agent-only` |
+|---|---|---|
+| Orchestrator brain session (auto-start) | yes | no |
+| Auto-dispatch scheduler (board reconcile, queue drain, stale-agent restart) | yes | no |
+| HTTP API, explicitly-started agents (`App.StartAgent`, `sybra-cli`) | yes | yes |
+| Maintenance cleanup (orphan worktrees/sandboxes, metrics) | yes | yes |
+
+Cleanup keeps running under `agent-only`, so a parked instance still collects its
+own garbage. An operator's manual `StartOrchestrator` call is never gated.
+
+Re-enable either half independently — these win over `role`:
+
+```yaml
+orchestrator:
+  role: agent-only
+  enabled: true            # orchestrator brain only
+  scheduler_enabled: true  # auto-dispatch only
+```
+
+An invalid `role` falls back to `full` with a warning, so a typo never silently
+parks an instance that was meant to orchestrate. Confirm the resolved role in the
+startup log:
+
+```bash
+kubectl -n sybra-poc logs deploy/sybra-server | grep app.automations
+```
+
+```
+level=INFO msg=app.automations instance_role=agent-only orchestrator=false scheduler=false ...
+```
+
 ## Fake repo e2e mode
 
 Use this path when you want a fully local k3d test that exercises the real

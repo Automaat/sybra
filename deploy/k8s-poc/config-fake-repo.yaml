@@ -45,7 +45,12 @@ data:
         enabled: false
       opencode:
         enabled: false
+    # agent-only fails closed on auto-orchestration, so the smoke only ever runs
+    # the agent it was explicitly asked to. The long intervals below predate the
+    # role control and are now redundant; kept so the documented smoke timings
+    # do not shift.
     orchestrator:
+      role: agent-only
       dispatch_interval_seconds: 3600
       maintenance_interval_seconds: 3600
     monitor:

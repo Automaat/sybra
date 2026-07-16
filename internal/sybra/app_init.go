@@ -289,6 +289,9 @@ func (a *App) logAutomationsSummary() {
 	}
 	promptevalRunner := prompteval.SelectRunner(a.cfg.Evaluation.Offline)
 	a.logger.Info("app.automations",
+		"instance_role", a.cfg.Orchestrator.InstanceRole(),
+		"orchestrator", a.cfg.Orchestrator.RunsOrchestrator(),
+		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
