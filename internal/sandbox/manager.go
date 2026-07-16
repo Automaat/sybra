@@ -56,6 +56,11 @@ type Manager struct {
 	logger       *slog.Logger
 	dataDir      string        // e.g. ~/.sybra/sandboxes
 	retention    time.Duration // see SetRetentionWindow
+
+	// normalizeOwnership and removeAll are overridden in tests; nil defaults
+	// to dockerChownNormalizer and fsutil.RemoveAllForce respectively.
+	normalizeOwnership ownershipNormalizer
+	removeAll          func(string) error
 }
 
 // NewManager creates a Manager that stores per-task files under dataDir.
@@ -203,6 +208,22 @@ func (m *Manager) Remove(taskID string) {
 // RemoveContext tears down any running sandbox for taskID using ctx for any
 // external teardown commands, then removes its per-task data dir under
 // Manager.dataDir. Safe to call when no sandbox is running.
+//
+// Removal escalates through three steps before giving up:
+//  1. RemoveAllForce's own best-effort chmod-and-retry pass (handles a
+//     read-only bit left by a build/cache tool the host process itself owns).
+//  2. Ownership normalization through the privileged cleanup boundary (see
+//     dockerChownNormalizer) when any entry's UID/GID no longer matches the
+//     record written at creation (see prepareTaskDir) — e.g. a docker/k8s
+//     sandbox wrote host-visible files as root via a bind mount, which a
+//     plain chmod cannot fix without CAP_CHOWN.
+//  3. A bounded backoff retry for transient busy errors (EBUSY/ETXTBSY),
+//     which commonly follow StopContext killing a container/cluster whose
+//     mount hasn't fully released yet.
+//
+// A failure that survives all three is quarantined (see QuarantineEntry)
+// instead of being retried on every future CleanupOrphaned tick, and
+// reported via Manager.QuarantinedEntries.
 func (m *Manager) RemoveContext(ctx context.Context, taskID string) {
 	m.StopContext(ctx, taskID)
 	taskDir, err := m.taskDir(taskID)
@@ -210,11 +231,75 @@ func (m *Manager) RemoveContext(ctx context.Context, taskID string) {
 		m.logger.Warn("sandbox.remove.path", "task_id", taskID, "err", err)
 		return
 	}
-	if err := fsutil.RemoveAllForce(taskDir); err != nil {
-		m.logger.Warn("sandbox.remove", "task_id", taskID, "path", taskDir, "err", err)
+	if _, err := os.Stat(taskDir); os.IsNotExist(err) {
+		m.clearQuarantine(taskID)
 		return
 	}
+
+	if err := m.removeSandboxDir(ctx, taskID, taskDir); err != nil {
+		m.quarantine(taskID, taskDir, err)
+		return
+	}
+	m.clearQuarantine(taskID)
 	m.logger.Info("sandbox.removed", "task_id", taskID, "path", taskDir)
+}
+
+// removeSandboxDir performs the normalize-then-retry escalation described on
+// RemoveContext, returning the final error (if any) for the caller to
+// quarantine.
+func (m *Manager) removeSandboxDir(ctx context.Context, taskID, taskDir string) error {
+	if rec, ok := readOwnerRecord(taskDir); ok && mismatchedOwnership(taskDir, rec) {
+		normalize := m.normalizeOwnership
+		if normalize == nil {
+			normalize = dockerChownNormalizer
+		}
+		if err := normalize(ctx, taskDir, rec.UID, rec.GID); err != nil {
+			m.logger.Warn("sandbox.remove.normalize", "task_id", taskID, "path", taskDir, "err", err)
+		}
+	}
+
+	removeAll := m.removeAll
+	if removeAll == nil {
+		removeAll = fsutil.RemoveAllForce
+	}
+
+	err := removeAll(taskDir)
+	for attempt := 0; err != nil && isTransientRemoveErr(err) && attempt < len(sandboxRemoveBackoffs); attempt++ {
+		m.logger.Warn("sandbox.remove.retry", "task_id", taskID, "attempt", attempt+1, "err", err)
+		sandboxRemoveSleep(sandboxRemoveBackoffs[attempt])
+		err = removeAll(taskDir)
+	}
+	return err
+}
+
+// quarantine records taskDir as a genuinely unsafe (or at least not
+// automatically recoverable) cleanup failure, bumping the attempt count and
+// preserving the original first-failure time if a record already exists.
+func (m *Manager) quarantine(taskID, taskDir string, cause error) {
+	size, sizeErr := dirSize(taskDir)
+	if sizeErr != nil {
+		m.logger.Warn("sandbox.quarantine.size", "task_id", taskID, "path", taskDir, "err", sizeErr)
+	}
+
+	now := time.Now()
+	entry := QuarantineEntry{
+		TaskID:        taskID,
+		Path:          taskDir,
+		BytesRetained: size,
+		Attempts:      1,
+		LastError:     cause.Error(),
+		FirstFailedAt: now,
+		LastFailedAt:  now,
+	}
+	if existing, ok := m.loadQuarantine(taskID); ok {
+		entry.Attempts = existing.Attempts + 1
+		entry.FirstFailedAt = existing.FirstFailedAt
+	}
+	if err := m.saveQuarantine(entry); err != nil {
+		m.logger.Warn("sandbox.quarantine.save", "task_id", taskID, "err", err)
+	}
+	m.logger.Error("sandbox.remove.quarantined", "task_id", taskID, "path", taskDir,
+		"bytes_retained", size, "attempts", entry.Attempts, "err", cause)
 }
 
 // cleanupEligible reports whether a task's sandbox dir is a candidate for
@@ -252,26 +337,39 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 			continue
 		}
 		taskID := e.Name()
+		if taskID == quarantineDirName {
+			continue
+		}
 		t, exists := active[taskID]
 		switch {
 		case !exists:
-			// Deleted task — remove regardless of age.
+			// Deleted task — remove regardless of age, and regardless of any
+			// prior quarantine: an explicit delete deserves one more attempt.
 		case !cleanupEligible(t.Status):
 			continue
 		case hasAgent != nil && hasAgent(taskID):
 			continue
-		case retention < 0:
-			// Age-based pruning disabled — eligible dirs wait for task deletion.
-			continue
-		case retention > 0:
-			staleSince := t.StatusChangedAt
-			if staleSince.IsZero() {
-				if info, err := e.Info(); err == nil {
-					staleSince = info.ModTime()
-				}
-			}
-			if staleSince.IsZero() || time.Since(staleSince) < retention {
+		default:
+			if _, quarantined := m.loadQuarantine(taskID); quarantined {
+				// Already reported via health.checkSandboxCleanupFailures;
+				// retrying every tick would just repeat the same failing
+				// normalize+remove work for no progress.
 				continue
+			}
+			switch {
+			case retention < 0:
+				// Age-based pruning disabled — eligible dirs wait for task deletion.
+				continue
+			case retention > 0:
+				staleSince := t.StatusChangedAt
+				if staleSince.IsZero() {
+					if info, err := e.Info(); err == nil {
+						staleSince = info.ModTime()
+					}
+				}
+				if staleSince.IsZero() || time.Since(staleSince) < retention {
+					continue
+				}
 			}
 		}
 		m.RemoveContext(ctx, taskID)
@@ -286,13 +384,33 @@ func (m *Manager) CleanupOrphaned(ctx context.Context, tasks []task.Task, hasAge
 // against a fresh home (see docs/manual-testing.md). Kept on Manager anyway
 // so per-task sandbox state lives under one dataDir regardless of kind.
 func (m *Manager) SybraHomeDir(taskID string) (string, error) {
-	taskDir, err := m.taskDir(taskID)
+	taskDir, err := m.prepareTaskDir(taskID)
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Join(taskDir, "sybra-home")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir sybra home: %w", err)
+	}
+	return dir, nil
+}
+
+// prepareTaskDir returns (creating on first call) the per-task sandbox dir
+// under dataDir, recording the creating process's UID/GID (see
+// writeOwnerRecord) the first time it is created so RemoveContext can later
+// detect ownership drift left by a docker/k8s sandbox.
+func (m *Manager) prepareTaskDir(taskID string) (string, error) {
+	dir, err := m.taskDir(taskID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("sandbox dir: %w", err)
+	}
+	if _, ok := readOwnerRecord(dir); !ok {
+		if err := writeOwnerRecord(dir); err != nil {
+			m.logger.Warn("sandbox.owner.write", "task_id", taskID, "err", err)
+		}
 	}
 	return dir, nil
 }
