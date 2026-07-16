@@ -1,13 +1,15 @@
 package config
 
 type AgentDefaults struct {
-	Provider           string  `yaml:"provider" json:"provider"`
-	Model              string  `yaml:"model" json:"model"`
-	Mode               string  `yaml:"mode" json:"mode"`
-	MaxConcurrent      int     `yaml:"max_concurrent" json:"maxConcurrent"`
-	ResearchMachineDir string  `yaml:"research_machine_dir" json:"researchMachineDir"`
-	MaxCostUSD         float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
-	MaxTurns           int     `yaml:"max_turns" json:"maxTurns"`
+	Provider           string `yaml:"provider" json:"provider"`
+	Model              string `yaml:"model" json:"model"`
+	Mode               string `yaml:"mode" json:"mode"`
+	MaxConcurrent      int    `yaml:"max_concurrent" json:"maxConcurrent"`
+	ResearchMachineDir string `yaml:"research_machine_dir" json:"researchMachineDir"`
+	// Caps one run's spend. Providers report cost only on their terminal result, so a breach is already paid for when this fires — it is a circuit breaker against a repeat, not a budget. EXC:FILE011:documents-a-non-obvious-limit
+	MaxCostUSD float64 `yaml:"max_cost_usd" json:"maxCostUsd"`
+	// Bounds a run's length in assistant stream events, not in CLI turns as the provider counts them. One CLI turn emits several events, so a run set to 150 typically stops near a CLI-reported 80. EXC:FILE011:documents-a-non-obvious-unit
+	MaxTurns int `yaml:"max_turns" json:"maxTurns"`
 	// MaxCheckpoints bounds how many times a single workflow step may
 	// checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means
 	// use DefaultMaxCheckpoints (3).

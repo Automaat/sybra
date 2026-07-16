@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/stats"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -631,6 +633,37 @@ func (a *Agent) AddResultStats(sessionID string, cost float64, in, out, reasonin
 // AddCacheStats merges cache token counts into the running totals.
 // Kept separate from AddResultStats so the existing 5-arg signature stays
 // stable across runners.
+// BankEstimatedCost returns the run's cost, deriving it from banked token
+// totals when the provider reported none, and storing the derived figure so
+// mid-run spend ceilings can see it. A provider-reported cost is returned
+// untouched. Call it only after every stat for the terminal event is banked:
+// the estimate reads accumulated totals rather than one event's delta, so it is
+// naturally cumulative and safe to re-run.
+func (a *Agent) BankEstimatedCost() float64 {
+	a.mu.Lock()
+	usage := stats.AgentUsage{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		CostUSD:         a.CostUSD,
+		InputTokens:     a.InputTokens,
+		OutputTokens:    a.OutputTokens,
+		CacheRead:       a.CacheReadInputTokens,
+		ReasoningTokens: a.ReasoningTokens,
+		PremiumRequests: a.PremiumRequests,
+		StartedAt:       a.StartedAt,
+	}
+	a.mu.Unlock()
+
+	estimated := stats.EstimateAgentCost(usage)
+	if estimated <= usage.CostUSD {
+		return usage.CostUSD
+	}
+	a.mu.Lock()
+	a.CostUSD = estimated
+	a.mu.Unlock()
+	return estimated
+}
+
 func (a *Agent) AddCacheStats(cacheCreate, cacheRead int) {
 	a.mu.Lock()
 	a.CacheCreationInputTokens += cacheCreate

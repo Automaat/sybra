@@ -163,3 +163,72 @@ func TestStripModelSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestEstimateAgentCost(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		usage AgentUsage
+		want  float64
+		delta float64
+	}{
+		{
+			name: "codex run priced from tokens with cached input discounted",
+			usage: AgentUsage{
+				Provider: "codex", Model: "gpt-5.4",
+				InputTokens: 2304369, CacheRead: 2188672, OutputTokens: 9709,
+				ReasoningTokens: 3684, StartedAt: at,
+			},
+			want:  0.5153,
+			delta: 0.001,
+		},
+		{
+			name: "codex cached input is a subset of gross input, never billed twice",
+			usage: AgentUsage{
+				Provider: "codex", Model: "gpt-5.4",
+				InputTokens: 1_000_000, CacheRead: 1_000_000, StartedAt: at,
+			},
+			want:  0.125,
+			delta: 0.0001,
+		},
+		{
+			name: "provider-reported cost always wins over the estimate",
+			usage: AgentUsage{
+				Provider: "codex", Model: "gpt-5.4", CostUSD: 1.23,
+				InputTokens: 2304369, CacheRead: 2188672, StartedAt: at,
+			},
+			want:  1.23,
+			delta: 0.0001,
+		},
+		{
+			name:  "copilot priced from premium requests",
+			usage: AgentUsage{Provider: "copilot", Model: "sonnet-5", PremiumRequests: 12, StartedAt: at},
+			want:  0.12,
+			delta: 0.0001,
+		},
+		{
+			name:  "claude reports its own cost so it is never estimated",
+			usage: AgentUsage{Provider: "claude", Model: "sonnet-5", InputTokens: 999999, StartedAt: at},
+			want:  0,
+			delta: 0.0001,
+		},
+		{
+			name:  "unknown codex model yields no estimate rather than a wrong one",
+			usage: AgentUsage{Provider: "codex", Model: "not-a-real-model", InputTokens: 1_000_000, StartedAt: at},
+			want:  0,
+			delta: 0.0001,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := EstimateAgentCost(tc.usage)
+			if diff := got - tc.want; diff > tc.delta || diff < -tc.delta {
+				t.Errorf("EstimateAgentCost = %.4f, want %.4f (±%.4f)", got, tc.want, tc.delta)
+			}
+		})
+	}
+}

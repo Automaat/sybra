@@ -154,12 +154,30 @@ func fieldTag(f *ast.Field) (yamlName string, skip bool) {
 
 func fieldDoc(f *ast.Field) string {
 	if f.Doc != nil {
-		return strings.TrimSpace(f.Doc.Text())
+		return stripDirectives(f.Doc.Text())
 	}
 	if f.Comment != nil {
-		return strings.TrimSpace(f.Comment.Text())
+		return stripDirectives(f.Comment.Text())
 	}
 	return ""
+}
+
+// Without this a field can carry its lint exception token or be documented, not both. EXC:FILE011:load-bearing-invariant
+func stripDirectives(doc string) string {
+	var kept []string
+	for line := range strings.Lines(doc) {
+		var words []string
+		for w := range strings.FieldsSeq(line) {
+			if strings.HasPrefix(w, "EXC:") || strings.HasPrefix(w, "nolint:") {
+				continue
+			}
+			words = append(words, w)
+		}
+		if len(words) > 0 {
+			kept = append(kept, strings.Join(words, " "))
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, " "))
 }
 
 func structFields(st *ast.StructType) []fieldInfo {

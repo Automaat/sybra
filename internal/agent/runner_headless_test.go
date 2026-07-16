@@ -2878,3 +2878,67 @@ func TestCheckCostGuardrail_StampsCostWhenNoCheckpoint(t *testing.T) {
 		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
 	}
 }
+
+// Codex reports tokens but no USD on turn.completed, so its runs banked $0 and
+// no spend ceiling could ever fire on them — one observed run burned 21.3M
+// input tokens logged as free. Drive the real parser and assert the guardrail
+// now stops the stream on a codex run that blows the ceiling.
+func TestProcessHeadlessLine_CostGuardrailFiresOnCodexRun(t *testing.T) {
+	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
+	m.SetGuardrails(Guardrails{MaxCostUSD: 0.10})
+
+	a := &Agent{
+		ID: "codex-cost", TaskID: "t", Mode: "headless",
+		Provider: "codex", Model: "gpt-5.4", StartedAt: time.Now().UTC(),
+		done: make(chan struct{}),
+	}
+	lastEmit := time.Now().Add(-time.Minute)
+	line := []byte(`{"type":"turn.completed","usage":{"input_tokens":2304369,"cached_input_tokens":2188672,"output_tokens":9709,"reasoning_output_tokens":3684}}`)
+
+	stop := m.processHeadlessLine(context.Background(), a, line, &lastEmit, providerByName("codex"))
+
+	if !stop {
+		t.Fatal("stream not stopped: a codex run past the cost ceiling must trip the guardrail, not read as free")
+	}
+	if got := a.GetCostUSD(); got < 0.5 || got > 0.6 {
+		t.Fatalf("banked cost = %.4f, want ~0.5153 derived from the run's tokens", got)
+	}
+	if got := a.GetEscalationReason(); got != EscalationReasonCost {
+		t.Fatalf("escalation reason = %q, want %q", got, EscalationReasonCost)
+	}
+}
+
+// The estimate must not fire for a provider that reports real cost, and must
+// never overwrite a reported figure with a derived one.
+func TestBankEstimatedCost_LeavesProviderReportedCostAlone(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{ID: "claude-cost", Provider: "claude", Model: "sonnet-5", StartedAt: time.Now().UTC()}
+	a.AddResultStats("sess-1", 0.25, 1_000_000, 500, 0)
+
+	if got := a.BankEstimatedCost(); got != 0.25 {
+		t.Fatalf("BankEstimatedCost = %.4f, want the provider-reported 0.25", got)
+	}
+	if got := a.GetCostUSD(); got != 0.25 {
+		t.Fatalf("CostUSD = %.4f, want the provider-reported 0.25 untouched", got)
+	}
+}
+
+// BankEstimatedCost reads accumulated totals rather than one event's delta, so
+// calling it repeatedly must converge rather than compound.
+func TestBankEstimatedCost_IsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{ID: "codex-idem", Provider: "codex", Model: "gpt-5.4", StartedAt: time.Now().UTC()}
+	a.AddResultStats("", 0, 1_000_000, 1000, 0)
+	a.AddCacheStats(0, 900_000)
+
+	first := a.BankEstimatedCost()
+	second := a.BankEstimatedCost()
+	if first != second {
+		t.Fatalf("estimate compounded across calls: %.4f then %.4f", first, second)
+	}
+	if first <= 0 {
+		t.Fatalf("estimate = %.4f, want a positive derived cost", first)
+	}
+}

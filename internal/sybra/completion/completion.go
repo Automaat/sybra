@@ -772,24 +772,17 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 }
 
 func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
-	if cost > 0 {
-		return cost
-	}
-	if ag.Provider == "copilot" {
-		return stats.EstimateCopilotCost(premiumRequests)
-	}
-	if ag.Provider == "codex" {
-		return stats.EstimateCostDetailed(
-			ag.Model,
-			ag.GetInputTokens(),
-			ag.GetOutputTokens(),
-			0,
-			ag.GetCacheReadInputTokens(),
-			ag.GetReasoningTokens(),
-			ag.StartedAt,
-		)
-	}
-	return 0
+	return stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        ag.Provider,
+		Model:           ag.Model,
+		CostUSD:         cost,
+		InputTokens:     ag.GetInputTokens(),
+		OutputTokens:    ag.GetOutputTokens(),
+		CacheRead:       ag.GetCacheReadInputTokens(),
+		ReasoningTokens: ag.GetReasoningTokens(),
+		PremiumRequests: premiumRequests,
+		StartedAt:       ag.StartedAt,
+	})
 }
 
 // isRateLimitedRun reports whether a run was rejected by a transient provider

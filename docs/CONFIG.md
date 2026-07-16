@@ -113,8 +113,8 @@ couldn't catch).
 | `agent.mode` | `string` |  |  |
 | `agent.max_concurrent` | `int` | `25` |  |
 | `agent.research_machine_dir` | `string` |  |  |
-| `agent.max_cost_usd` | `float64` | `5` |  |
-| `agent.max_turns` | `int` | `150` |  |
+| `agent.max_cost_usd` | `float64` | `5` | Caps one run's spend. Providers report cost only on their terminal result, so a breach is already paid for when this fires — it is a circuit breaker against a repeat, not a budget. |
+| `agent.max_turns` | `int` | `150` | Bounds a run's length in assistant stream events, not in CLI turns as the provider counts them. One CLI turn emits several events, so a run set to 150 typically stops near a CLI-reported 80. |
 | `agent.max_checkpoints` | `int` | `3` | MaxCheckpoints bounds how many times a single workflow step may checkpoint-and-handoff after hitting the per-run turn ceiling. 0 means use DefaultMaxCheckpoints (3). |
 | `agent.checkpoint_on_turn_ceiling` | `*bool` | _(nil)_ | CheckpointOnTurnCeiling swaps the legacy raise-MaxTurns auto-continue for a checkpoint-and-handoff to a fresh run when an eligible code-author headless run hits its per-run turn ceiling. nil means not configured (defaults to true). Set false to restore the legacy in-process auto-continue behavior with no code revert. |
 | `agent.max_task_cost_usd` | `float64` |  | MaxTaskCostUSD caps the cumulative USD cost across every AgentRun a task has ever had (unlike MaxCostUSD, which resets every run). Closes the gap where each retry stays under the per-run cap but the task's total spend still balloons unbounded. Checked once per dispatch, before an agent is started — StartAgentWithAssignment refuses to start and flips the task to human-required when the task's already-recorded AgentRuns.CostUSD sum meets or exceeds this. 0 (default) disables the check. |
@@ -357,7 +357,7 @@ Per-machine toggle: enable on the machine where you review before publishing.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `review_hold.enabled` | `bool` |  | Enabled turns the hold on. Default off — preserves the live-reply behavior. |
-| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held:   push       — reply held as a pending review; code fixes still committed                and pushed to the PR branch (default).   push_nits  — reply held; code pushed only when the diff is at most                NitMaxLines changed lines (a nit), otherwise held for review.   hold       — reply held AND code held; nothing is pushed, the human                reviews the diff too. In a coalesced fix this also holds                bundled non-reply changes (e.g. a CI fix), so CI stays red                until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
+| `review_hold.mode` | `string` |  | Mode controls what the fix-review agent may push once its replies are held: push — reply held as a pending review; code fixes still committed and pushed to the PR branch (default). push_nits — reply held; code pushed only when the diff is at most NitMaxLines changed lines (a nit), otherwise held for review. hold — reply held AND code held; nothing is pushed, the human reviews the diff too. In a coalesced fix this also holds bundled non-reply changes (e.g. a CI fix), so CI stays red until the human pushes — the "review everything" tradeoff. Unknown/empty values fall back to "push". |
 | `review_hold.nit_max_lines` | `int` |  | NitMaxLines is the changed-line ceiling that still counts as a "nit" for the push_nits mode. Zero falls back to DefaultReviewHoldNitMaxLines. |
 
 ## MonitorConfig (`monitor`)
