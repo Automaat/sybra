@@ -463,6 +463,29 @@ func TestAutoCommitUncommitted(t *testing.T) {
 	}
 }
 
+func TestIsSafeProtectedPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"frontend/bindings", true},
+		{"vendor", true},
+		{"", false},
+		{"/etc/passwd", false},
+		{"../outside", false},
+		{"frontend/../../../etc", false},
+		{"frontend/./bindings", false},
+		{":(exclude)frontend", false},
+		{":(glob)**", false},
+	}
+	for _, tc := range cases {
+		if got := isSafeProtectedPath(tc.path); got != tc.want {
+			t.Errorf("isSafeProtectedPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestAutoCommitUncommitted_RestoresProtectedPathBeforeCommitting(t *testing.T) {
 	t.Parallel()
 
