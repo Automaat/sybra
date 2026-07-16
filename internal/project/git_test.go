@@ -463,6 +463,112 @@ func TestAutoCommitUncommitted(t *testing.T) {
 	}
 }
 
+func TestIsSafeProtectedPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"frontend/bindings", true},
+		{"vendor", true},
+		{"", false},
+		{"/etc/passwd", false},
+		{"../outside", false},
+		{"frontend/../../../etc", false},
+		{"frontend/./bindings", false},
+		{":(exclude)frontend", false},
+		{":(glob)**", false},
+	}
+	for _, tc := range cases {
+		if got := isSafeProtectedPath(tc.path); got != tc.want {
+			t.Errorf("isSafeProtectedPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestAutoCommitUncommitted_RestoresProtectedPathBeforeCommitting(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	if err := os.MkdirAll(filepath.Join(dir, "frontend", "bindings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "frontend", "bindings", "app.ts"), []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte("protected_paths:\n  - frontend/bindings\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "."},
+		{"git", "-C", dir, "commit", "-m", "seed bindings"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "frontend", "bindings")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real-work.txt"), []byte("finished work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: recovered work"); !got {
+		t.Fatal("expected a commit for the unrelated real-work.txt change")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "frontend", "bindings", "app.ts")); err != nil {
+		t.Fatalf("frontend/bindings/app.ts should have been restored from HEAD, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "real-work.txt")); err != nil {
+		t.Fatalf("real-work.txt should still be present and committed: %v", err)
+	}
+
+	statusOut, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("worktree still dirty after commit: %q", statusOut)
+	}
+}
+
+func TestAutoCommitUncommitted_ProtectedPathOnlyDeletionCommitsNothing(t *testing.T) {
+	t.Parallel()
+
+	dir := initRepoWithCommit(t)
+	if err := os.MkdirAll(filepath.Join(dir, "frontend", "bindings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "frontend", "bindings", "app.ts"), []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".sybra.yaml"), []byte("protected_paths:\n  - frontend/bindings\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "."},
+		{"git", "-C", dir, "commit", "-m", "seed bindings"},
+	} {
+		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "frontend", "bindings")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := AutoCommitUncommitted(context.Background(), dir, "wip: should not commit"); got {
+		t.Fatal("a protected-path-only deletion must be restored, not preserved as a commit")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "frontend", "bindings", "app.ts")); err != nil {
+		t.Fatalf("frontend/bindings/app.ts should have been restored from HEAD, got: %v", err)
+	}
+}
+
 func TestSanitizeWorktree_AbortsRebase(t *testing.T) {
 	t.Parallel()
 	src := initRepoWithCommit(t)

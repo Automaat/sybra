@@ -491,6 +491,7 @@ func resolveRef(ctx context.Context, barePath, ref string) (string, bool) {
 // swallowed, matching the SanitizeWorktree call site this was extracted
 // from — callers must not depend on the commit having landed.
 func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
+	restoreProtectedPaths(ctx, wtPath)
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = wtPath
 	statusOut, err := statusCmd.Output()
@@ -503,6 +504,34 @@ func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 		return false
 	}
 	return runRecoveryCommit(ctx, wtPath, message) == nil
+}
+
+func restoreProtectedPaths(ctx context.Context, wtPath string) {
+	cfg, err := LoadRepoConfig(wtPath)
+	if err != nil || cfg == nil {
+		return
+	}
+	for _, p := range cfg.ProtectedPaths {
+		p = strings.TrimSpace(p)
+		if !isSafeProtectedPath(p) {
+			continue
+		}
+		restore := exec.CommandContext(ctx, "git", "checkout", "--", ":(literal)"+p)
+		restore.Dir = wtPath
+		_ = restore.Run()
+	}
+}
+
+func isSafeProtectedPath(p string) bool {
+	if p == "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, ":") {
+		return false
+	}
+	for part := range strings.SplitSeq(p, "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckpointCommit stages and commits the current worktree state with message.

@@ -44,7 +44,8 @@ type RepoConfig struct {
 	Setup []string `yaml:"setup,omitempty" json:"setup,omitempty"`
 	// ManualTest tells the testing workflow how this project can be exercised
 	// through a user/operator-facing surface instead of only via unit tests.
-	ManualTest *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
+	ManualTest     *ManualTestConfig `yaml:"manual_test,omitempty" json:"manualTest,omitempty"`
+	ProtectedPaths []string          `yaml:"protected_paths,omitempty" json:"protectedPaths,omitempty"`
 }
 
 // ManualTestKind identifies the runnable surface a test-runner should drive.
