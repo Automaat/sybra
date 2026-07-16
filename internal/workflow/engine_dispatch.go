@@ -39,9 +39,6 @@ func (e *Engine) StartWorkflowWithVars(taskID, workflowID string, vars map[strin
 // Used by recovery flows that must resume at the interrupted step rather than
 // replaying the workflow from the beginning.
 func (e *Engine) StartWorkflowFromStepWithVars(taskID, workflowID, startStepID string, vars map[string]string) error {
-	if e.dispatchDisabled {
-		return ErrAutoDispatchDisabled
-	}
 	// startWorkflowLocked holds the `starting` marker; it is released by the
 	// time this returns, so firing the completion here cannot re-enter against
 	// it. This is what lets a synchronous mechanical workflow (e.g.
@@ -81,6 +78,12 @@ func (e *Engine) startWorkflowLocked(taskID, workflowID, startStepID string, var
 // cancel-then-start atomically without re-acquiring e.starting — see
 // ReplaceWorkflow's doc for why re-acquiring deadlocks.
 func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars map[string]string) (*CompletionInfo, error) {
+	// The gate lives here, not on the exported Start*/Replace* entries: every
+	// one of them funnels through this function, so a caller cannot start a
+	// workflow by reaching past it.
+	if e.dispatchDisabled {
+		return nil, ErrAutoDispatchDisabled
+	}
 	// Guard against sequential duplicate starts: the starting map only prevents
 	// overlapping entries. If caller A has completed its Start* call (defer
 	// removed the marker) while caller B is queued behind the mutex, B would

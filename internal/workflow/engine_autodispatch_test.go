@@ -21,6 +21,13 @@ func TestSetAutoDispatch_GatesEveryEntryPoint(t *testing.T) {
 			_, err := e.DispatchEvent("t1", "task.created", nil, nil)
 			return err
 		}},
+		{name: "ReplaceWorkflow", call: func(e *Engine) error {
+			return e.ReplaceWorkflow("t1", "superseded", "test-simple", nil)
+		}},
+		{name: "ReplaceWorkflowForEvent", call: func(e *Engine) error {
+			_, err := e.ReplaceWorkflowForEvent("t1", "task.created", nil, nil, "superseded")
+			return err
+		}},
 	}
 	for _, entry := range entries {
 		t.Run(entry.name+"/disabled", func(t *testing.T) {
