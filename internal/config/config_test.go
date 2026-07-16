@@ -657,6 +657,47 @@ func TestLoadWatchdogDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadWatchdogRunRateDefaults(t *testing.T) {
+	tests := []struct {
+		name           string
+		yaml           string
+		wantMaxRuns    int
+		wantWindowMins int
+	}{
+		{
+			name:           "missing block defaults to 30 runs per 30m",
+			yaml:           "agent:\n  max_concurrent: 10\n",
+			wantMaxRuns:    30,
+			wantWindowMins: 30,
+		},
+		{
+			name:           "explicit overrides preserved",
+			yaml:           "watchdog:\n  max_runs_per_window: 50\n  run_window_minutes: 15\n",
+			wantMaxRuns:    50,
+			wantWindowMins: 15,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("SYBRA_HOME", dir)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Watchdog.MaxRunsPerWindow != tc.wantMaxRuns {
+				t.Errorf("MaxRunsPerWindow = %d, want %d", cfg.Watchdog.MaxRunsPerWindow, tc.wantMaxRuns)
+			}
+			if cfg.Watchdog.RunWindowMinutes != tc.wantWindowMins {
+				t.Errorf("RunWindowMinutes = %d, want %d", cfg.Watchdog.RunWindowMinutes, tc.wantWindowMins)
+			}
+		})
+	}
+}
+
 func TestLoadEnvOverride(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	t.Setenv("SYBRA_LOG_LEVEL", "error")

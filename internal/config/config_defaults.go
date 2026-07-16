@@ -1122,6 +1122,12 @@ func applyWatchdogDefaults(cfg *Config) {
 	if w.Model == "" {
 		w.Model = "claude-haiku-4-5-20251001"
 	}
+	if w.MaxRunsPerWindow <= 0 {
+		w.MaxRunsPerWindow = 30
+	}
+	if w.RunWindowMinutes <= 0 {
+		w.RunWindowMinutes = 30
+	}
 }
 
 // applyEvaluationDefaults fills zero values for the Evaluation block so older
