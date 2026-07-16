@@ -735,19 +735,34 @@ func (a *Agent) GetToolCalls() int {
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
-// the loop detector and returns the resulting consecutive-repeat streak. An
+// the loop detector and returns the resulting low-progress repeat score. An
 // empty signature (an assistant turn with no tool calls — pure text/thinking)
-// carries no loop signal and leaves the streak untouched, so interleaved
-// reasoning between identical calls does not reset a genuine loop. A new
-// signature resets the streak to 1.
+// carries no loop signal and leaves the current window untouched.
 func (a *Agent) NoteToolSignature(sig string) int {
-	return a.loops.noteSignature(sig)
+	return a.loops.noteAction(sig, "")
 }
 
-// ToolLoopStreak returns the current count of consecutive identical tool-call
-// signatures. A high value means the agent is repeating the same call.
+// NoteToolAction records one semantic tool-action family plus its human-
+// readable label for watchdog loop detection.
+func (a *Agent) NoteToolAction(sig, label string) int {
+	return a.loops.noteAction(sig, label)
+}
+
+// NoteToolProgress resets the current low-progress loop window after a
+// successful mutating action.
+func (a *Agent) NoteToolProgress() {
+	a.loops.noteProgress()
+}
+
+// ToolLoopStreak returns the current semantic repeat score. A high value means
+// the agent is cycling through the same low-progress action family/window.
 func (a *Agent) ToolLoopStreak() int {
 	return a.loops.currentStreak()
+}
+
+// ToolLoopEvidence returns the current semantic loop evidence snapshot.
+func (a *Agent) ToolLoopEvidence() ToolLoopEvidence {
+	return a.loops.currentEvidence()
 }
 
 // AckToolLoop records the current loop signature as already inspected, so the
@@ -1266,6 +1281,13 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolResults {
 		a.ClearForegroundCommand(ev.toolResults[i].ToolUseID)
+		if ev.toolResults[i].IsError {
+			continue
+		}
+		name, input, ok := a.ToolUseByID(ev.toolResults[i].ToolUseID)
+		if ok && toolResultSignalsProgress(name, input) {
+			a.NoteToolProgress()
+		}
 	}
 }
 

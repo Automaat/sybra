@@ -73,10 +73,14 @@ type StreamEvent struct {
 	// assistant output.
 	LimitSnapshot *limits.Snapshot `json:"limit_snapshot,omitempty"`
 	// toolSig is a canonical fingerprint of this event's tool calls (name +
-	// input), used by the watchdog's real-time loop detector to spot an agent
-	// repeating the same call. Unexported so it is never serialized to the
-	// NDJSON log or emitted to the frontend; it lives only in memory.
+	// normalized semantic family), used by the watchdog's real-time loop
+	// detector to spot an agent repeating the same low-progress action.
+	// Unexported so it is never serialized to the NDJSON log or emitted to the
+	// frontend; it lives only in memory.
 	toolSig string
+	// toolLoopLabel is the human-readable semantic family paired with toolSig.
+	// Also in-memory only.
+	toolLoopLabel string
 	// toolUses/toolResults preserve structured tool lifecycle metadata for the
 	// live runner and reattach replay (foreground-command tracking). Unexported
 	// so the NDJSON log and frontend wire format stay unchanged.

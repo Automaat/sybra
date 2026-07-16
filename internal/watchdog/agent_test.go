@@ -126,6 +126,60 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	}
 }
 
+func TestInspectHeadless_PassesSemanticLoopSummaryToInspector(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	var got agent.InspectInput
+	w := &Watchdog{
+		tasks:         tasks,
+		logger:        slog.New(slog.DiscardHandler),
+		wg:            &sync.WaitGroup{},
+		loopThreshold: 6,
+		emit:          func(string, any) {},
+		stopAgent:     func(string) error { return nil },
+		inspectAgent: func(_ context.Context, _ *slog.Logger, in agent.InspectInput) (agent.InspectorVerdict, error) {
+			got = in
+			return agent.InspectorVerdict{Recommendation: "continue"}, nil
+		},
+	}
+
+	now := time.Now().UTC()
+	ag := &agent.Agent{
+		ID:          "a1",
+		TaskID:      tk.ID,
+		StartedAt:   now.Add(-10 * time.Minute),
+		LastEventAt: now.Add(-time.Minute),
+	}
+	ag.SetLogPath("/tmp/watchdog-a1.ndjson")
+	ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "looping"})
+	for _, step := range []struct {
+		sig   string
+		label string
+	}{
+		{"check:go test ./...", "check:go test ./..."},
+		{"read:build.log", "read:build.log"},
+		{"check:go test ./...", "check:go test ./..."},
+		{"read:build.log", "read:build.log"},
+		{"check:go test ./...", "check:go test ./..."},
+		{"read:build.log", "read:build.log"},
+	} {
+		ag.NoteToolAction(step.sig, step.label)
+	}
+
+	w.inspectHeadless(context.Background(), newState(), now, ag)
+	w.wg.Wait()
+
+	if got.Trigger != "loop" {
+		t.Fatalf("Trigger = %q, want loop", got.Trigger)
+	}
+	if !strings.Contains(got.LoopSummary, "cycled across 2 semantic families") {
+		t.Fatalf("LoopSummary = %q, want semantic cycle summary", got.LoopSummary)
+	}
+	if !strings.Contains(got.LoopSummary, "check:go test ./...") || !strings.Contains(got.LoopSummary, "read:build.log") {
+		t.Fatalf("LoopSummary = %q, want both repeated families", got.LoopSummary)
+	}
+}
+
 func TestIsLongRunningCheckCommand(t *testing.T) {
 	tests := []struct {
 		command string
@@ -998,6 +1052,39 @@ func TestApplyVerdict_NudgeHeadlessPersistsSteerAndStops(t *testing.T) {
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (recovery must resume, not park)", got.Status)
+	}
+}
+
+func TestApplyVerdict_NudgeWithoutExplicitSteerUsesLoopEvidence(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+
+	stopped := false
+	w := &Watchdog{
+		tasks:      tasks,
+		logger:     slog.New(slog.DiscardHandler),
+		stopAgent:  func(string) error { stopped = true; return nil },
+		nudgeAgent: func(_, _ string) error { return errors.New("no active transport") },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID}
+	ag.NoteToolAction("check:mise run verify", "check:mise run verify")
+	ag.NoteToolAction("read:verify.log", "read:verify.log")
+	ag.NoteToolAction("check:mise run verify", "check:mise run verify")
+	ag.NoteToolAction("read:verify.log", "read:verify.log")
+
+	w.applyVerdict(ag, "loop", agent.InspectorVerdict{
+		Recommendation: "nudge",
+	})
+
+	if !stopped {
+		t.Fatal("headless nudge must stop the agent so recovery re-dispatches")
+	}
+	got, _ := tasks.Get(tk.ID)
+	if !strings.Contains(got.SupervisorSteer, "check:mise run verify") {
+		t.Fatalf("supervisor_steer = %q, want focused steer naming the repeated family", got.SupervisorSteer)
+	}
+	if !strings.Contains(got.SupervisorSteer, "inspect the latest error/output") {
+		t.Fatalf("supervisor_steer = %q, want focused next action", got.SupervisorSteer)
 	}
 }
 

@@ -603,13 +603,14 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 	defer cancel()
 
 	verdict, err := w.inspectAgent(ictx, w.logger, agent.InspectInput{
-		AgentID:   ag.ID,
-		TaskTitle: t.Title,
-		LogPath:   ag.GetLogPath(),
-		StallSec:  stallSec,
-		TotalSec:  totalSec,
-		Trigger:   trigger,
-		Model:     w.model,
+		AgentID:     ag.ID,
+		TaskTitle:   t.Title,
+		LogPath:     ag.GetLogPath(),
+		StallSec:    stallSec,
+		TotalSec:    totalSec,
+		LoopSummary: ag.ToolLoopEvidence().Summary(),
+		Trigger:     trigger,
+		Model:       w.model,
 	})
 	if err != nil {
 		w.logger.Warn("agent.watchdog.inspect.failed", "id", ag.ID, "err", err)
@@ -685,6 +686,11 @@ func (w *Watchdog) applyVerdict(ag *agent.Agent, trigger string, verdict agent.I
 		steer := verdict.Nudge
 		if steer == "" {
 			steer = verdict.Reason
+		}
+		if steer == "" && trigger == "loop" {
+			if evidence := ag.ToolLoopEvidence(); evidence.Label != "" {
+				steer = "stop cycling on " + evidence.Label + "; inspect the latest error/output and change the code or command before retrying"
+			}
 		}
 		if steer == "" {
 			steer = "you appear to be repeating the same action; stop and reconsider your approach"
