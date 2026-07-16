@@ -21,21 +21,23 @@ const DefaultSampleIntervalSeconds = 15
 // it as "gating disabled" and admits unconditionally. Call sites may still keep
 // explicit nil guards when they need enabled-only side effects such as audit.
 type Gate struct {
-	minDiskFreePct float64
-	minMemAvailPct float64
-	maxLoadPerCPU  float64
-	interval       time.Duration
-	probeDir       string
-	logger         *slog.Logger
+	minDiskFreePct     float64
+	minMemAvailPct     float64
+	maxLoadPerCPU      float64
+	warningDiskFreePct float64
+	interval           time.Duration
+	probeDir           string
+	logger             *slog.Logger
 	// sampleFn is swapped out in tests so Admit's threshold/caching logic is
 	// exercised without real syscalls.
 	sampleFn func(probeDir string) (Sample, error)
 
-	mu         sync.Mutex
-	cached     Sample
-	cachedAt   time.Time
-	lastReason string
-	lastLogAt  time.Time
+	mu             sync.Mutex
+	cached         Sample
+	cachedAt       time.Time
+	lastReason     string
+	lastLogAt      time.Time
+	reclaimTrigger func()
 }
 
 // New constructs a Gate from cfg. Returns a genuine nil *Gate when
@@ -51,16 +53,56 @@ func New(cfg config.PressureConfig, probeDir string, logger *slog.Logger) *Gate 
 		interval = DefaultSampleIntervalSeconds * time.Second
 	}
 	return &Gate{
-		minDiskFreePct: cfg.MinDiskFreePercent,
-		minMemAvailPct: cfg.MinMemAvailablePercent,
-		maxLoadPerCPU:  cfg.MaxLoadPerCPU,
-		interval:       interval,
-		probeDir:       probeDir,
-		logger:         logger,
+		minDiskFreePct:     cfg.MinDiskFreePercent,
+		minMemAvailPct:     cfg.MinMemAvailablePercent,
+		maxLoadPerCPU:      cfg.MaxLoadPerCPU,
+		warningDiskFreePct: cfg.WarningDiskFreePercent,
+		interval:           interval,
+		probeDir:           probeDir,
+		logger:             logger,
 		sampleFn: func(probeDir string) (Sample, error) {
 			return readSample(probeDir), nil
 		},
 	}
+}
+
+// SetReclaimTrigger wires in a callback invoked whenever a sample crosses
+// WarningDiskFreePercent — i.e. before disk free space reaches
+// MinDiskFreePercent and dispatch starts being denied for disk pressure. The
+// callback must not block: it is expected to own its own rate limiting and
+// dedup (see internal/diskreclaim.Reclaimer.TryRun, the intended caller) so
+// Admit stays cheap on every dispatch tick. Optional — nil (the default,
+// and the state after calling on a nil *Gate) disables the warning-watermark
+// trigger entirely, e.g. in tests or when the feature is off.
+func (g *Gate) SetReclaimTrigger(fn func()) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.reclaimTrigger = fn
+	g.mu.Unlock()
+}
+
+// Status returns the most recently sampled resource-pressure snapshot — the
+// same cached value Admit consults — for telemetry callers (e.g. health
+// reporting) that need current readings without affecting the deny-log
+// throttle. Every field is NaN on a nil Gate.
+func (g *Gate) Status() Sample {
+	if g == nil {
+		return Sample{DiskFreePct: math.NaN(), MemAvailablePct: math.NaN(), LoadPerCPU: math.NaN()}
+	}
+	s, _ := g.sample()
+	return s
+}
+
+// Thresholds returns the configured warning and critical (MinDiskFreePercent)
+// disk-free-percent thresholds, for telemetry callers. Both are zero on a
+// nil Gate.
+func (g *Gate) Thresholds() (warningDiskFreePct, criticalDiskFreePct float64) {
+	if g == nil {
+		return 0, 0
+	}
+	return g.warningDiskFreePct, g.minDiskFreePct
 }
 
 // Admit reports whether new agent work should be dispatched right now. A
@@ -82,6 +124,7 @@ func (g *Gate) Admit() (ok bool, reason string) {
 		g.clearReason()
 		return true, ""
 	}
+	g.maybeTriggerReclaim(s)
 	switch {
 	case thresholdTripped(s.DiskFreePct, g.minDiskFreePct, true):
 		reason = fmt.Sprintf("disk free %.1f%% below minimum %.1f%%", s.DiskFreePct, g.minDiskFreePct)
@@ -95,6 +138,26 @@ func (g *Gate) Admit() (ok bool, reason string) {
 	}
 	g.recordDeny(reason)
 	return false, reason
+}
+
+// maybeTriggerReclaim fires the reclaim trigger (see SetReclaimTrigger) when
+// disk free space has crossed WarningDiskFreePercent. Checked before the
+// critical-threshold switch in Admit so cleanup gets a chance to run before
+// dispatch is ever denied for disk pressure — and still fires even once the
+// critical threshold has also been crossed, since a low-but-shrinking disk
+// benefits from cleanup at every dispatch tick, not just the first one below
+// the warning line.
+func (g *Gate) maybeTriggerReclaim(s Sample) {
+	g.mu.Lock()
+	trigger := g.reclaimTrigger
+	g.mu.Unlock()
+	if trigger == nil {
+		return
+	}
+	if !thresholdTripped(s.DiskFreePct, g.warningDiskFreePct, true) {
+		return
+	}
+	trigger()
 }
 
 var errAllSignalsUnreadable = errors.New("all resource-pressure signals unreadable")
