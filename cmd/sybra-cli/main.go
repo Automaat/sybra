@@ -99,11 +99,19 @@ func run(args []string) int {
 	// points at its sandbox; `--home` lets an agent explicitly inspect the
 	// sandbox/app-under-test store instead (see docs/manual-testing.md).
 	effectiveHome := homeOverride
+	fromControlHome := false
+	fromSybraHome := false
 	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_CONTROL_HOME")
+		if controlHome := os.Getenv("SYBRA_CONTROL_HOME"); controlHome != "" {
+			effectiveHome = controlHome
+			fromControlHome = true
+		}
 	}
 	if effectiveHome == "" {
-		effectiveHome = os.Getenv("SYBRA_HOME")
+		if sybraHome := os.Getenv("SYBRA_HOME"); sybraHome != "" {
+			effectiveHome = sybraHome
+			fromSybraHome = true
+		}
 	}
 
 	restoreHome := func() {}
@@ -148,7 +156,14 @@ func run(args []string) int {
 	}
 
 	cmd, rest := filtered[0], filtered[1:]
-	return dispatch(cmd, rest, cfg, store, projStore, homeOverride == "", jsonOut)
+	// HTTP auto-detect is only safe on the default control path: either no
+	// explicit home override at all, or the task-scoped control-home bridge
+	// back to the real operator store. A bare SYBRA_HOME override means the
+	// caller explicitly targeted an on-disk store (common in tests/manual
+	// harnesses), so reaching some unrelated reachable server would violate that
+	// contract.
+	allowHTTP := homeOverride == "" && (fromControlHome || !fromSybraHome)
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
 }
 
 // dispatch routes a parsed subcommand (with its own args and the global
