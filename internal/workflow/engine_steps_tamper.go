@@ -1147,7 +1147,8 @@ func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathTo
 	if len(words) > 5 {
 		return false
 	}
-	return documentedDeletionLeadWholeFileDescriptor(words)
+	return documentedDeletionLeadWholeFileDescriptor(words) ||
+		documentedDeletionLeadContentGroupFromDescriptor(words)
 }
 
 func documentedDeletionVerbIsNegated(segment string, verb []int) bool {
@@ -1235,6 +1236,27 @@ func documentedDeletionLeadWholeFileDescriptor(words []string) bool {
 		}
 	}
 	return hasFileNoun
+}
+
+func documentedDeletionLeadContentGroupFromDescriptor(words []string) bool {
+	if len(words) < 2 || words[len(words)-1] != "from" {
+		return false
+	}
+	descriptor := words[:len(words)-1]
+	if len(descriptor) == 0 || len(descriptor) > 4 {
+		return false
+	}
+	switch descriptor[len(descriptor)-1] {
+	case "cases", "tests", "snapshots", "fixtures", "specs":
+	default:
+		return false
+	}
+	for _, word := range descriptor[:len(descriptor)-1] {
+		if word == "from" || documentedDeletionNegationWord(word) {
+			return false
+		}
+	}
+	return true
 }
 
 func redactDocumentedPathTokens(s string) string {

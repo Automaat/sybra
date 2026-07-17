@@ -399,6 +399,25 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("documented_delete_cases_from_test_file_is_downgraded", func(t *testing.T) {
+		body := "## Scope\n- delete mode cases from mesh_helpers_test.go\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/mesh/mesh_helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 0 {
+			t.Fatalf("highCount = %d, want 0 (%v)", r.highCount(), r.Findings)
+		}
+		if len(r.Findings) != 1 {
+			t.Fatalf("Findings = %v, want 1 downgraded deletion finding", r.Findings)
+		}
+		if r.Findings[0].Rule != "deleted-verification-file" || r.Findings[0].Severity != tamperMedium {
+			t.Fatalf("finding = %+v, want deleted-verification-file downgraded to medium", r.Findings[0])
+		}
+		if !strings.Contains(r.Findings[0].Detail, "documented in task spec") {
+			t.Fatalf("detail = %q, want documented marker", r.Findings[0].Detail)
+		}
+	})
+
 	t.Run("negated_delete_instruction_keeps_deleted_test_file_high", func(t *testing.T) {
 		body := "## Scope\n- Do not delete `internal/foo/bar_test.go` under any circumstances\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
@@ -579,6 +598,17 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		}
 		if got.Basenames["c_test.go"] {
 			t.Fatalf("Basenames = %v, did not want basename from exact path", got.Basenames)
+		}
+	})
+
+	t.Run("extracts_delete_cases_from_file_phrase", func(t *testing.T) {
+		body := "## Scope\n- delete mode cases from mesh_helpers_test.go\n"
+		got := documentedDeletionAllowlist(body)
+		if !got.ExactPaths["mesh_helpers_test.go"] {
+			t.Fatalf("ExactPaths = %v, want mesh_helpers_test.go", got.ExactPaths)
+		}
+		if !got.Basenames["mesh_helpers_test.go"] {
+			t.Fatalf("Basenames = %v, want mesh_helpers_test.go", got.Basenames)
 		}
 	})
 
