@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -1071,5 +1073,141 @@ func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "head-empty") {
 		t.Errorf("declined silently; logs = %q", buf.String())
+	}
+}
+
+func reviewRun(started time.Time) task.AgentRun {
+	return task.AgentRun{AgentID: "a", Role: string(agent.RoleReview), StartedAt: started}
+}
+
+// The blast-radius cap. Every other gate assumes something: the per-head budget
+// assumes the head is a meaningful key, the phase gates assume the phase machine
+// is sane. This one only assumes the clock, so it is what bounds a loop nobody
+// has thought of yet.
+func TestReviewRateLimitExceeded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		runs  []task.AgentRun
+		limit int
+		want  bool
+	}{
+		{"no runs", nil, 3, false},
+		{"under the limit", []task.AgentRun{reviewRun(now.Add(-5 * time.Minute))}, 3, false},
+		{
+			name: "at the limit",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-5 * time.Minute)),
+				reviewRun(now.Add(-20 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// The incident sustained ~5/hour for 23 hours.
+			name: "the #2164 rate trips it",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Minute)), reviewRun(now.Add(-14 * time.Minute)),
+				reviewRun(now.Add(-26 * time.Minute)), reviewRun(now.Add(-38 * time.Minute)),
+				reviewRun(now.Add(-50 * time.Minute)),
+			},
+			limit: 3, want: true,
+		},
+		{
+			// A long-lived PR re-reviewed after each push over weeks is legitimate
+			// and must never be blocked — this is why the cap is a rate, not a total.
+			name: "many rounds, all outside the window",
+			runs: []task.AgentRun{
+				reviewRun(now.Add(-2 * time.Hour)), reviewRun(now.Add(-30 * time.Hour)),
+				reviewRun(now.Add(-72 * time.Hour)), reviewRun(now.Add(-200 * time.Hour)),
+				reviewRun(now.Add(-400 * time.Hour)),
+			},
+			limit: 3, want: false,
+		},
+		{
+			name: "non-review runs never count",
+			runs: []task.AgentRun{
+				{Role: string(agent.RoleImplementation), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RolePRFix), StartedAt: now.Add(-time.Minute)},
+				{Role: string(agent.RoleTestRunner), StartedAt: now.Add(-time.Minute)},
+			},
+			limit: 1, want: false,
+		},
+		{"negative limit disables the cap", []task.AgentRun{
+			reviewRun(now), reviewRun(now), reviewRun(now), reviewRun(now),
+		}, -1, false},
+		{"zero limit disables the cap", []task.AgentRun{reviewRun(now), reviewRun(now)}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := reviewRateLimitExceeded(task.Task{AgentRuns: tt.runs}, now, tt.limit)
+			if got != tt.want {
+				t.Errorf("reviewRateLimitExceeded(%d runs, limit=%d) = %v, want %v",
+					len(tt.runs), tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+// Tripping the breaker parks the task for a human rather than silently
+// declining: a task posting reviews this fast is misbehaving, and the operator
+// needs to learn that the automation blew its budget.
+func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerHour {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0 — dispatched past the rate cap", launcher.startCalls)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — a blown budget must reach a human", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "rate limit") {
+		t.Errorf("StatusReason = %q, want it to name the rate limit", got.StatusReason)
+	}
+}
+
+// The cap must not block a healthy PR: a fresh head under the rate still gets
+// reviewed.
+func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-30*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Fatalf("parked a task well under the rate cap: %q", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
+		t.Fatalf("workflow = %+v, want pr-review", got.Workflow)
 	}
 }

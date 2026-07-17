@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -247,6 +248,58 @@ func nextReviewAttempt(t task.Task, head string) int {
 	return t.ReviewedHeadAttempts + 1
 }
 
+// reviewRoundWindow is the rolling window reviewRoundsSpent counts over.
+const reviewRoundWindow = time.Hour
+
+// reviewRoundsSpent counts automated review runs started on t within the last
+// window, read off the durable AgentRuns list so it survives a restart.
+func reviewRoundsSpent(t task.Task, now time.Time) int {
+	cutoff := now.Add(-reviewRoundWindow)
+	spent := 0
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role != string(agent.RoleReview) {
+			continue
+		}
+		if t.AgentRuns[i].StartedAt.After(cutoff) {
+			spent++
+		}
+	}
+	return spent
+}
+
+// reviewRateLimitExceeded reports whether t has spent its review budget for the
+// current window. limit <= 0 disables the cap.
+func reviewRateLimitExceeded(t task.Task, now time.Time, limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	return reviewRoundsSpent(t, now) >= limit
+}
+
+// reviewRoundsPerHourLimit resolves the cap; a nil cfg (tests) uses the default.
+func (a *App) reviewRoundsPerHourLimit() int {
+	if a.cfg == nil {
+		return config.DefaultReviewRoundsPerHour
+	}
+	return a.cfg.GitHub.ReviewRoundsPerHourLimit()
+}
+
+// parkReviewRateLimited trips the breaker: a task posting reviews this fast is
+// misbehaving, and a tripped breaker needs a human to reset rather than
+// self-healing into the next burst.
+func (a *App) parkReviewRateLimited(t task.Task, limit int) {
+	a.logger.Error("workflow.dispatch.inbound-review.rate-limit",
+		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
+		"rounds", reviewRoundsSpent(t, time.Now()), "limit", limit)
+	reason := fmt.Sprintf("automated review rate limit: %d rounds within an hour on PR #%d", limit, t.PRNumber)
+	if _, err := a.tasks.Update(t.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
+	}
+}
+
 // fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests. The
 // context-aware form is mandatory here: this runs inline on the orchestrator
 // loop, and gh's global request gate is held across the whole subprocess, so an
@@ -279,6 +332,18 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 		return
 	}
 	if a.agents.HasRunningAgentForTask(taskID) {
+		return
+	}
+
+	// The blast-radius cap, and the only gate here that bounds a loop we have
+	// not thought of: the per-head budget above assumes the head is a
+	// meaningful key, and every other gate assumes the phase machine is sane.
+	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
+	// each push over weeks is never blocked while a runaway is stopped inside
+	// the hour. Counted off the durable AgentRuns list, so a restart cannot
+	// launder it. Checked before the GitHub call — it needs no network.
+	if limit := a.reviewRoundsPerHourLimit(); reviewRateLimitExceeded(t, time.Now(), limit) {
+		a.parkReviewRateLimited(t, limit)
 		return
 	}
 
