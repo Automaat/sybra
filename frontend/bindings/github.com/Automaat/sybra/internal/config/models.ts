@@ -587,6 +587,25 @@ export class GitHubConfig {
      */
     "autoResolveCleanMerges": boolean;
 
+    /**
+     * FlakyDetection is a kill-switch for same-commit CI flakiness
+     * classification. When true, a lone ci_failure issue is classified via
+     * ClassifyCIFlakiness (the head commit's full check-run history, not just
+     * the latest attempt) before it is escalated to a fix agent or a human: a
+     * check that both passed and failed on the same SHA at or above
+     * FlakySuccessThreshold is flaky, and gets a targeted rerun plus a
+     * distinct audit event instead. Default off (zero value = false).
+     */
+    "flakyDetection": boolean;
+
+    /**
+     * FlakySuccessThreshold is the minimum same-check success rate (0-1) for
+     * a currently-failing gating check to be classified flaky rather than
+     * deterministic. Zero falls back to the built-in default; see
+     * GitHubConfig.FlakyThreshold().
+     */
+    "flakySuccessThreshold": number;
+
     /** Creates a new GitHubConfig instance. */
     constructor($$source: Partial<GitHubConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -633,6 +652,12 @@ export class GitHubConfig {
         }
         if (!("autoResolveCleanMerges" in $$source)) {
             this["autoResolveCleanMerges"] = false;
+        }
+        if (!("flakyDetection" in $$source)) {
+            this["flakyDetection"] = false;
+        }
+        if (!("flakySuccessThreshold" in $$source)) {
+            this["flakySuccessThreshold"] = 0;
         }
 
         Object.assign(this, $$source);
