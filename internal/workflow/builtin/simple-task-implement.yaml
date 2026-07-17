@@ -145,8 +145,9 @@ steps:
 
   # Mechanical changed-surface gate (no LLM): run configured focused checks
   # derived from the committed diff before the final codegen/tamper/verify
-  # chain. Failures re-enter implementation with surface-linked context; when
-  # no safe mapping matches, the step falls back to the full verify suite once.
+  # chain. Failures re-enter implementation with surface-linked context until
+  # the retry cap parks the task human-required; unmatched diffs skip this step
+  # and still run the downstream verify_checks gate.
   - id: focused_checks
     name: Focused Checks
     type: focused_checks

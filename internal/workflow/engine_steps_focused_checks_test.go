@@ -61,7 +61,7 @@ func TestSelectFocusedChecks(t *testing.T) {
 	if len(selected) != 3 {
 		t.Fatalf("selected len = %d, want 3", len(selected))
 	}
-	if got := focusedSurfaceSummary(selected, ""); got != "workflow, workflow-pkg, project" {
+	if got := focusedSurfaceSummary(selected); got != "workflow, workflow-pkg, project" {
 		t.Fatalf("focused surface summary = %q", got)
 	}
 	if want := []string{"go test ./internal/workflow/...", "go test ./internal/project"}; !slices.Equal(cmds, want) {
@@ -215,6 +215,9 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	if wf.Variables[workflowRetryAfterVar] == "" {
 		t.Fatalf("retry_after not set")
 	}
+	if wf.Variables["step.focused_checks.auto_fix"] != "1" {
+		t.Fatalf("auto_fix counter = %q, want 1", wf.Variables["step.focused_checks.auto_fix"])
+	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
@@ -234,5 +237,37 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	}
 	if !strings.Contains(report.OutputTail, "$ echo boom >&2; exit 1") || !strings.Contains(report.OutputTail, "boom") {
 		t.Fatalf("artifact missing output tail:\n%s", report.OutputTail)
+	}
+}
+
+func TestExecFocusedChecks_FailureCapEscalates(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	wf.Variables["step.focused_checks.auto_fix"] = "2"
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required after cap", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "focused checks failed for workflow") {
+		t.Fatalf("reason = %q, want focused surface", reason)
 	}
 }
