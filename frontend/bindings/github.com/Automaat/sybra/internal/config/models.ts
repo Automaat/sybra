@@ -1091,6 +1091,26 @@ export class PressureConfig {
     "maxLoadPerCpu": number;
 
     /**
+     * WarningDiskFreePercent is the free-disk-space percentage at which
+     * Sybra automatically runs a safe-cache reclaim pass (internal/cleanup's
+     * RiskSafe buckets, via internal/diskreclaim), before disk free space
+     * reaches MinDiskFreePercent and dispatch starts being deferred. Must be
+     * set higher than MinDiskFreePercent for cleanup to get a chance to run
+     * first; the gate still triggers cleanup even once MinDiskFreePercent has
+     * also been crossed. <=0 disables the warning-triggered cleanup entirely.
+     * Default 15.
+     */
+    "warningDiskFreePercent": number;
+
+    /**
+     * ReclaimCooldownSeconds rate-limits how often the warning-triggered safe
+     * cleanup pass may run, so a host hovering right at the watermark doesn't
+     * re-scan/re-delete on every dispatch tick. <=0 falls back to
+     * diskreclaim.DefaultCooldown (5 minutes). Default 300.
+     */
+    "reclaimCooldownSeconds": number;
+
+    /**
      * SampleIntervalSeconds is both the resource-sample cache TTL and the
      * deny-log throttle window. <=0 falls back to
      * pressure.DefaultSampleIntervalSeconds (15). Default 15.
@@ -1110,6 +1130,12 @@ export class PressureConfig {
         }
         if (!("maxLoadPerCpu" in $$source)) {
             this["maxLoadPerCpu"] = 0;
+        }
+        if (!("warningDiskFreePercent" in $$source)) {
+            this["warningDiskFreePercent"] = 0;
+        }
+        if (!("reclaimCooldownSeconds" in $$source)) {
+            this["reclaimCooldownSeconds"] = 0;
         }
         if (!("sampleIntervalSeconds" in $$source)) {
             this["sampleIntervalSeconds"] = 0;
