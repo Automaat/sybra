@@ -441,8 +441,8 @@ func TestFetchCIStatusViaREST_FlakyMixedOutcome(t *testing.T) {
 	t.Parallel()
 	e := &pathExecer{responses: map[string]string{
 		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
-			{"name":"e2e","status":"completed","conclusion":"failure"},
-			{"name":"e2e","status":"completed","conclusion":"success"}
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:10:00Z","completed_at":"2026-01-01T00:15:00Z"}
 		]}`,
 		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
 	}}
@@ -452,6 +452,27 @@ func TestFetchCIStatusViaREST_FlakyMixedOutcome(t *testing.T) {
 	}
 	if status != "FAILURE" || !flaky {
 		t.Errorf("status=%q flaky=%v, want FAILURE/true", status, flaky)
+	}
+}
+
+// TestFetchCIStatusViaREST_ConcurrentMatrixLegs guards the regression where two
+// gating jobs sharing a check name (one consistently red) were misread as
+// flaky. Both start together, so the red leg is a deterministic failure.
+func TestFetchCIStatusViaREST_ConcurrentMatrixLegs(t *testing.T) {
+	t.Parallel()
+	e := &pathExecer{responses: map[string]string{
+		"repos/o/r/commits/sha/check-runs": `{"check_runs":[
+			{"name":"e2e","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:05:00Z"},
+			{"name":"e2e","status":"completed","conclusion":"failure","started_at":"2026-01-01T00:00:01Z","completed_at":"2026-01-01T00:06:00Z"}
+		]}`,
+		"repos/o/r/commits/sha/status": `{"statuses":[]}`,
+	}}
+	status, _, flaky, ok := fetchCIStatusViaREST(e, "o", "r", "sha")
+	if !ok {
+		t.Fatal("ok must be true when both legs fetch cleanly")
+	}
+	if status != "FAILURE" || flaky {
+		t.Errorf("status=%q flaky=%v, want FAILURE/false", status, flaky)
 	}
 }
 
