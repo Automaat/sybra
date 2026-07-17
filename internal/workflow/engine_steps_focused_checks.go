@@ -132,7 +132,7 @@ func changedFilesSinceOriginBase(parentCtx context.Context, wtPath string) ([]st
 	}
 	var changed []string
 	seen := map[string]bool{}
-	for _, raw := range strings.Split(string(out), "\n") {
+	for raw := range strings.SplitSeq(string(out), "\n") {
 		file := strings.TrimSpace(raw)
 		if file == "" || seen[file] {
 			continue
@@ -143,9 +143,7 @@ func changedFilesSinceOriginBase(parentCtx context.Context, wtPath string) ([]st
 	return changed, nil
 }
 
-func selectFocusedChecks(focused []project.FocusedCheck, changedFiles []string) ([]selectedFocusedCheck, []string) {
-	var selected []selectedFocusedCheck
-	var commands []string
+func selectFocusedChecks(focused []project.FocusedCheck, changedFiles []string) (selected []selectedFocusedCheck, commands []string) {
 	seenCmd := map[string]bool{}
 	for _, raw := range focused {
 		fc, ok := normalizeFocusedCheck(raw)
@@ -204,7 +202,7 @@ func safeRepoPattern(pattern string) bool {
 	if pattern == "" || strings.HasPrefix(pattern, "/") {
 		return false
 	}
-	for _, part := range strings.Split(pattern, "/") {
+	for part := range strings.SplitSeq(pattern, "/") {
 		if part == "" || part == "." || part == ".." {
 			return false
 		}
@@ -223,7 +221,7 @@ func safePackagePattern(pattern string) bool {
 	if base == "." || base == "./" || base == "" {
 		return false
 	}
-	for _, part := range strings.Split(strings.TrimPrefix(base, "./"), "/") {
+	for part := range strings.SplitSeq(strings.TrimPrefix(base, "./"), "/") {
 		if part == "" || part == "." || part == ".." {
 			return false
 		}
@@ -269,8 +267,7 @@ func packageForFile(file string) string {
 }
 
 func matchPackagePattern(pattern, pkg string) bool {
-	if strings.HasSuffix(pattern, "/...") {
-		prefix := strings.TrimSuffix(pattern, "/...")
+	if prefix, ok := strings.CutSuffix(pattern, "/..."); ok {
 		return pkg == prefix || strings.HasPrefix(pkg, prefix+"/")
 	}
 	return pkg == pattern
