@@ -152,11 +152,14 @@ func (a *App) initHumanReview() {
 // somewhere the OS process sandbox actually allows writes, instead of being
 // silently confined to the configured Sybra source checkout regardless of
 // which project the task belongs to. Falls back to the Sybra source tree
-// when the task has no worktree yet (e.g. it never made it past triage) —
+// when the task has no worktree yet (e.g. it never made it past triage), or
+// when the recorded worktree no longer exists on disk (e.g. cleaned up) —
 // diagnosing Sybra's own source is still this agent's primary mission.
 func humanReviewDispatchDir(t task.Task, sybraRepoDir string) string {
 	if dir := strings.TrimSpace(t.WorktreeDir); dir != "" {
-		return dir
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
 	}
 	return sybraRepoDir
 }
@@ -261,7 +264,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.logger.Error("human-review.add-run", "task_id", taskID, "agent_id", ag.ID, "err", err)
 	}
 	h.logAudit(audit.EventHumanReviewSpawned, taskID, ag.ID, map[string]any{
-		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(),
+		"prev_status": prevStatus, "model": h.cfg.HumanReviewModel(), "prompt_hash": ag.GetPromptHash(),
 	})
 	return true
 }
@@ -327,13 +330,7 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.handleCrashedVerdict(taskID, ag)
 			return
 		}
-		h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
-		if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
-			h.markVerdictRendered(taskID, ag.ID)
-		}
-		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
-			"decision": "unparseable", "verdict_source": "unparseable", "reason": parseErr.Error(),
-		})
+		h.handleUnparseableVerdict(ag, current, final, parseErr)
 		return
 	}
 	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
@@ -354,6 +351,39 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 			h.markVerdictRendered(taskID, ag.ID)
 		}
 	}
+}
+
+// handleUnparseableVerdict applies the completion side-effects for a run whose
+// output did not parse into a verdict, after onComplete has already deferred
+// the rate_limit and zero-tool-call-crash cases upstream. A run that crashed
+// after doing some work (HadTerminalError with tool calls > 0) records an
+// exit error and often emits no text at all, so the fall-through path below
+// would call appendNote("") — which no-ops and latches nothing, stranding the
+// task in human-required with no rendered diagnosis and no re-trigger. Render
+// an honest, non-empty crash note here and latch instead: the task correctly
+// stays in human-required for a human, now with accurate context. The task is
+// known to be in human-required (caller-guarded).
+func (h *humanReviewHandler) handleUnparseableVerdict(ag *agent.Agent, current task.Task, final string, parseErr error) {
+	taskID := ag.TaskID
+	if exitErr := ag.GetExitErr(); exitErr != nil {
+		h.logger.Warn("human-review.verdict.crashed",
+			"task_id", taskID, "agent_id", ag.ID, "reason", "execution_error", "err", exitErr)
+		note := "The auto-review agent crashed before producing a verdict: " + exitErr.Error()
+		if h.appendNote(taskID, "Auto-review did not complete (execution error)", h.scrubForTask(current.ProjectID, note)) {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
+		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+			"decision": "crashed", "verdict_source": "execution_error", "reason": exitErr.Error(),
+		})
+		return
+	}
+	h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
+	if h.appendNote(taskID, "Auto-review (unparseable verdict)", h.scrubForTask(current.ProjectID, final)) {
+		h.markVerdictRendered(taskID, ag.ID)
+	}
+	h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+		"decision": "unparseable", "verdict_source": "unparseable", "reason": parseErr.Error(),
+	})
 }
 
 // handleCrashedVerdict is onComplete's branch for a review run that produced
@@ -975,8 +1005,10 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 }
 
 // buildPrompt assembles the review agent's instructions and context. The
-// agent runs in the Sybra source tree with skip-permissions, so it can
-// freely grep the codebase + read host logs to diagnose the transition.
+// agent runs in the task's worktree when one exists (so it can fix/verify/
+// push the task's code), otherwise in the Sybra source tree; either way it
+// has skip-permissions and can freely grep the codebase + read host logs to
+// diagnose the transition.
 //
 // When wctx is non-nil the task originates from a work-typed project; the
 // prompt is augmented with explicit redaction rules and the verdict will be

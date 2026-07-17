@@ -486,6 +486,9 @@ func (e *Engine) resolveCompletionRoute(taskID, currentStep string, c AgentCompl
 	if e.pendingStepStart[key] <= 0 {
 		return spawnedStep, taskStepFree
 	}
+	if e.pendingCompletions == nil {
+		e.pendingCompletions = make(map[string][]AgentCompletion)
+	}
 	e.pendingCompletions[key] = append(e.pendingCompletions[key], c)
 	return spawnedStep, taskStepBuffered
 }

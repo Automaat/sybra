@@ -112,6 +112,13 @@ const (
 	// Data.reason distinguishes a committed handoff ("checkpoint") from a
 	// failed commit ("checkpoint_failed").
 	EventAgentCheckpoint = "agent.checkpoint"
+	// EventAgentPromptRendered records, at completion, how a headless run's
+	// canonical prompt was rendered for its provider (rewritten skill
+	// syntax, invoked skills the rewriter recognized vs. left untouched).
+	// Data.prompt_hash matches the same field on that run's agent.started
+	// event, correlating dispatch and completion without ever persisting
+	// prompt text in either.
+	EventAgentPromptRendered = "agent.prompt_rendered"
 
 	// Codex lifecycle hook events — emitted by the sybra-cli hook fast-path
 	// when codex fires its session/subagent lifecycle hooks. Distinct from the

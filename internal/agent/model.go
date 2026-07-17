@@ -85,6 +85,35 @@ type Agent struct {
 	// or fallback run.
 	skillRecoveryAttempt bool
 
+	// hasOutputSchema records whether this run enforced a provider output
+	// schema (--json-schema / --output-schema). It is true only when the
+	// provider actually forwards OutputSchema to its CLI (Provider.
+	// EnforcesOutputSchema) — copilot/opencode silently ignore the schema, so
+	// their runs stay false even with OutputSchema set. A schema-enforced run
+	// must return schema-valid JSON and so cannot also close with the trailing
+	// skill-conformance receipt line; completion skips receipt verification
+	// for these runs rather than downgrading a valid JSON result to
+	// unverified and self-escalating the task to human-required.
+	hasOutputSchema bool
+
+	// promptHash is a privacy-safe hash of the canonical (pre-render) prompt
+	// dispatched for this run, correlating the dispatch (agent.started) and
+	// completion (agent.prompt_rendered) audit records without persisting
+	// prompt text in either.
+	promptHash string
+	// renderedSyntax records how RequestedSkill invocations were rewritten
+	// for the active provider at BuildHeadlessInvocation time:
+	// "slash-to-dollar" (codex), "slash-stripped" (copilot/opencode), or
+	// "none" (claude, which invokes skills natively and rewrites nothing).
+	renderedSyntax string
+	// renderedSkills are invoked skill names the provider rewriter actually
+	// knew about and rewrote/stripped.
+	renderedSkills []string
+	// unrenderedSkills are invoked skill names the provider rewriter did not
+	// recognize and so left untouched in the prompt — a genuine rewrite
+	// failure the headless runner logs explicitly.
+	unrenderedSkills []string
+
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
@@ -446,9 +475,14 @@ func (a *Agent) toRecord() Record {
 		SkillConformance:        a.SkillConformance,
 		OutputSchema:            a.OutputSchema,
 		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
+		HasOutputSchema:         a.hasOutputSchema,
 		PostResultWaitReason:    a.postResultWaitReason,
 		PostResultWaitSince:     a.postResultWaitSince,
 		ForkSubagent:            a.forkSubagent,
+		PromptHash:              a.promptHash,
+		RenderedSyntax:          a.renderedSyntax,
+		RenderedSkills:          slices.Clone(a.renderedSkills),
+		UnrenderedSkills:        slices.Clone(a.unrenderedSkills),
 	}
 }
 
@@ -486,9 +520,14 @@ func fromRecord(r Record) *Agent {
 		SkillConformance:        r.SkillConformance,
 		OutputSchema:            r.OutputSchema,
 		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
+		hasOutputSchema:         r.HasOutputSchema,
 		postResultWaitReason:    r.PostResultWaitReason,
 		postResultWaitSince:     r.PostResultWaitSince,
 		forkSubagent:            r.ForkSubagent,
+		promptHash:              r.PromptHash,
+		renderedSyntax:          r.RenderedSyntax,
+		renderedSkills:          slices.Clone(r.RenderedSkills),
+		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
 }
@@ -610,6 +649,59 @@ func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SessionID
+}
+
+// SetPromptHash records the privacy-safe hash of this run's canonical prompt,
+// correlating the dispatch and completion audit records.
+func (a *Agent) SetPromptHash(hash string) {
+	a.mu.Lock()
+	a.promptHash = hash
+	a.mu.Unlock()
+}
+
+// GetPromptHash returns the recorded prompt hash, if any.
+func (a *Agent) GetPromptHash() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.promptHash
+}
+
+// HasOutputSchema reports whether this run enforced a provider output schema.
+// Completion consults it to skip the skill-conformance receipt check, which is
+// unsatisfiable when the provider forces schema-valid JSON output.
+func (a *Agent) HasOutputSchema() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasOutputSchema
+}
+
+// SetHasOutputSchema records whether this run enforced a provider output
+// schema. Production sets it once at construction from RunConfig.OutputSchema;
+// it is exported for out-of-package tests that build Agent values directly.
+func (a *Agent) SetHasOutputSchema(v bool) {
+	a.mu.Lock()
+	a.hasOutputSchema = v
+	a.mu.Unlock()
+}
+
+// SetPromptRender records how provider-specific skill invocation syntax was
+// rendered for this run's prompt: syntax names the rewrite scheme
+// ("slash-to-dollar", "slash-stripped", or "none"), rendered lists invoked
+// skill names actually rewritten/stripped, and unrendered lists invoked
+// skill names left untouched (a genuine rewrite failure).
+func (a *Agent) SetPromptRender(syntax string, rendered, unrendered []string) {
+	a.mu.Lock()
+	a.renderedSyntax = syntax
+	a.renderedSkills = slices.Clone(rendered)
+	a.unrenderedSkills = slices.Clone(unrendered)
+	a.mu.Unlock()
+}
+
+// GetPromptRender returns the recorded provider render summary for this run.
+func (a *Agent) GetPromptRender() (syntax string, rendered, unrendered []string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.renderedSyntax, slices.Clone(a.renderedSkills), slices.Clone(a.unrenderedSkills)
 }
 
 // GetStartedAt returns the agent's recorded start time.

@@ -88,6 +88,53 @@ func TestRewriteSkillInvocations(t *testing.T) {
 	}
 }
 
+func TestComputeSkillRender(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		prompt         string
+		skillNames     []string
+		wantRendered   []string
+		wantUnrendered []string
+	}{
+		{
+			name:       "no invocations",
+			prompt:     "just do the thing",
+			skillNames: []string{"plan-critic"},
+		},
+		{
+			name:         "all known are rendered",
+			prompt:       "Run /plan-critic then /sybra-triage",
+			skillNames:   []string{"plan-critic", "sybra-triage"},
+			wantRendered: []string{"plan-critic", "sybra-triage"},
+		},
+		{
+			name:           "unknown skill reported unrendered",
+			prompt:         "Run /plan-critic then /some-unknown-skill",
+			skillNames:     []string{"plan-critic"},
+			wantRendered:   []string{"plan-critic"},
+			wantUnrendered: []string{"some-unknown-skill"},
+		},
+		{
+			name:           "all unknown",
+			prompt:         "Run /alpha-skill then /beta-skill",
+			wantUnrendered: []string{"alpha-skill", "beta-skill"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotRendered, gotUnrendered := computeSkillRender(tt.prompt, tt.skillNames)
+			if !slices.Equal(gotRendered, tt.wantRendered) {
+				t.Errorf("rendered = %v, want %v", gotRendered, tt.wantRendered)
+			}
+			if !slices.Equal(gotUnrendered, tt.wantUnrendered) {
+				t.Errorf("unrendered = %v, want %v", gotUnrendered, tt.wantUnrendered)
+			}
+		})
+	}
+}
+
 func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -150,6 +197,30 @@ func TestBuildHeadlessInvocation_CodexKeepsUserConfigIgnoredWithoutSkill(t *test
 	}
 	if !slices.Contains(inv.args, "--ignore-user-config") {
 		t.Fatalf("Codex non-skill args omitted --ignore-user-config: %v", inv.args)
+	}
+}
+
+func TestBuildHeadlessInvocation_CodexStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "staff-code-review")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	a := &Agent{ID: "a", Provider: "codex"}
+	_, err := (codexProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /staff-code-review then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-to-dollar" {
+		t.Fatalf("syntax = %q, want slash-to-dollar", syntax)
+	}
+	if !slices.Contains(rendered, "staff-code-review") {
+		t.Fatalf("rendered = %v, want to contain staff-code-review", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
 	}
 }
 
@@ -217,6 +288,71 @@ func TestBuildHeadlessInvocation_CopilotStripsOperatorSkillSlashInvocation(t *te
 	}
 }
 
+func TestBuildHeadlessInvocation_CopilotStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mkLocalSkill(t, filepath.Join(home, ".copilot", "skills"), "sybra-plan")
+
+	a := &Agent{ID: "a", Provider: "copilot"}
+	_, err := (copilotProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-stripped" {
+		t.Fatalf("syntax = %q, want slash-stripped", syntax)
+	}
+	if !slices.Contains(rendered, "sybra-plan") {
+		t.Fatalf("rendered = %v, want to contain sybra-plan", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
+	}
+}
+
+func TestBuildHeadlessInvocation_OpencodeStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mkLocalSkill(t, filepath.Join(home, ".claude", "skills"), "sybra-plan")
+
+	a := &Agent{ID: "a", Provider: "opencode"}
+	inv, err := (opencodeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-stripped" {
+		t.Fatalf("syntax = %q, want slash-stripped", syntax)
+	}
+	if !slices.Contains(rendered, "sybra-plan") {
+		t.Fatalf("rendered = %v, want to contain sybra-plan", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
+	}
+	// The known slash invocation must be stripped from the dispatched prompt so
+	// opencode never tries to exec /sybra-plan as a shell path.
+	prompt := inv.args[len(inv.args)-1]
+	if strings.Contains(prompt, "/sybra-plan") {
+		t.Fatalf("opencode prompt retained slash invocation: %q", prompt)
+	}
+}
+
+func TestBuildHeadlessInvocation_ClaudeStampsPromptRenderNone(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude"}
+	_, err := (claudeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /some-skill", RequirePermissions: true})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "none" {
+		t.Fatalf("syntax = %q, want none", syntax)
+	}
+	if rendered != nil || unrendered != nil {
+		t.Fatalf("rendered/unrendered = %v/%v, want nil/nil", rendered, unrendered)
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -228,7 +364,7 @@ func TestResolveWorkflowSkillPrompt_NativeCodexSkill(t *testing.T) {
 		Prompt:         "Run /sybra-test now.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeNative {
@@ -259,7 +395,7 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 		Prompt:         "Run /sybra-test now.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
@@ -285,6 +421,62 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 	}
 }
 
+// TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt pins that a run enforcing a
+// provider output schema still delivers the skill but omits the trailing
+// conformance receipt instruction — a schema-enforced run must return
+// schema-valid JSON and cannot close with an HTML comment, so demanding the
+// receipt would make every real run self-escalate to human-required.
+func TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object"}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected skill block:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
+		t.Fatalf("schema-enforced run must not carry a receipt instruction:\n%s", cfg.Prompt)
+	}
+}
+
+// TestResolveWorkflowSkillPrompt_SchemaKeepsReceiptForNonEnforcingProvider pins
+// the mirror of the above: a provider that does NOT forward OutputSchema to its
+// CLI (copilot) never emits schema-valid JSON, so the trailing conformance
+// receipt stays satisfiable and MUST still be appended — otherwise the run
+// bypasses skill-conformance verification entirely.
+func TestResolveWorkflowSkillPrompt_SchemaKeepsReceiptForNonEnforcingProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object"}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, copilotProvider{}); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected skill block:\n%s", cfg.Prompt)
+	}
+	if !strings.Contains(cfg.Prompt, skillattr.ReceiptMarker("sybra-test", cfg.ResolvedSkillSourceHash)) {
+		t.Fatalf("non-enforcing provider must still carry a receipt instruction:\n%s", cfg.Prompt)
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_ForceInjectedSkipsNative(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -298,7 +490,7 @@ func TestResolveWorkflowSkillPrompt_ForceInjectedSkipsNative(t *testing.T) {
 		ForceInjectedSkill:   true,
 		SkillRecoveryAttempt: true,
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeInjected {
@@ -328,7 +520,7 @@ func TestResolveWorkflowSkillPrompt_UsesBundledFallback(t *testing.T) {
 		Prompt:         "Adversarially test with /sybra-test.",
 		RequestedSkill: "sybra-test",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
@@ -398,7 +590,7 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaSkipsReceipt(t *testing.T) {
 				RequestedSkill: "sybra-test",
 				OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
 			}
-			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+			if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 				t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 			}
 			if cfg.SkillExecutionMode != tc.wantMode {
@@ -434,7 +626,7 @@ func TestResolveWorkflowSkillPrompt_OutputSchemaIgnoredByProviderStillReceipts(t
 		RequestedSkill: "sybra-test",
 		OutputSchema:   `{"type":"object","properties":{"verdict":{"type":"string"}}}`,
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "copilot"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, copilotProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeFallback {
@@ -467,7 +659,7 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 		Prompt:         "Run /missing-skill now.",
 		RequestedSkill: "missing-skill",
 	}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.SkillExecutionMode != skillattr.ExecutionModeUnavailable {
@@ -492,7 +684,7 @@ func TestResolveWorkflowSkillPrompt_UnavailableWithoutFallback(t *testing.T) {
 
 func TestResolveWorkflowSkillPrompt_NoRequestedSkillRecordsNone(t *testing.T) {
 	cfg := RunConfig{Prompt: "plain prompt"}
-	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, codexProvider{}); err != nil {
 		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
 	}
 	if cfg.RequestedSkill != "" {

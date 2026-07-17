@@ -122,7 +122,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	}); err != nil {
 		r.logger.Error("task.add-run", "task_id", t.ID, "err", err)
 	}
-	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber})
+	r.logAudit(audit.EventFixReviewStarted, t.ID, ag.ID, map[string]any{"pr": t.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("fix-review.agent-started", "task_id", t.ID, "agent_id", ag.ID, "pr", t.PRNumber)
 	return nil
 }
@@ -189,7 +189,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		}
 		return fmt.Errorf("record review run: %w", err)
 	}
-	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber})
+	r.logAudit(audit.EventReviewStarted, current.ID, ag.ID, map[string]any{"pr": current.PRNumber, "prompt_hash": ag.GetPromptHash()})
 	r.logger.Info("review.agent-started", "task_id", current.ID, "agent_id", ag.ID, "pr", current.PRNumber)
 	return nil
 }
