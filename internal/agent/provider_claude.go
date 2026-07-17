@@ -38,6 +38,9 @@ func (claudeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
+	// Claude invokes skills natively via its own slash syntax — no rewrite
+	// happens on this path.
+	a.SetPromptRender("none", nil, nil)
 	var args []string
 	if cfg.HeadlessSteerable {
 		// Mirrors buildConvoArgs: the prompt is delivered over stdin (as the

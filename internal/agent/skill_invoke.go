@@ -33,6 +33,34 @@ func stripSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.StripInvocations(prompt, skillNames)
 }
 
+// computeSkillRender partitions every slash-invoked skill name found in orig
+// against skillNames (the set the provider's rewriter/stripper actually
+// knows about): a name present in skillNames was rewritten/stripped for the
+// provider (rendered); a name absent from it passed through untouched — a
+// genuine rewrite failure the caller should log (unrendered).
+func computeSkillRender(orig string, skillNames []string) (rendered, unrendered []string) {
+	invoked := skillinvoke.InvokedNames(orig)
+	if len(invoked) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]struct{}, len(skillNames))
+	for _, name := range skillNames {
+		normalized, ok := skillinvoke.NormalizeName(name)
+		if !ok {
+			continue
+		}
+		known[normalized] = struct{}{}
+	}
+	for _, name := range invoked {
+		if _, ok := known[name]; ok {
+			rendered = append(rendered, name)
+		} else {
+			unrendered = append(unrendered, name)
+		}
+	}
+	return rendered, unrendered
+}
+
 type workflowSkillResolution struct {
 	name          string
 	path          string

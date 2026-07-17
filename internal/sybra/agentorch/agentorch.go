@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -947,11 +948,12 @@ func (o *Orchestrator) RecoverFromWorktreePrepFailure(tasks *task.Manager, taskI
 // initial AgentRun record for an implementation agent.
 func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
+	ag.SetPromptHash(skillattr.HashSourceID(fullPrompt))
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
-		"permission_posture": posture,
+		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
 	})
 	var nextStatus *task.Status
 	if t.Status != task.StatusInProgress {

@@ -88,6 +88,53 @@ func TestRewriteSkillInvocations(t *testing.T) {
 	}
 }
 
+func TestComputeSkillRender(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		prompt         string
+		skillNames     []string
+		wantRendered   []string
+		wantUnrendered []string
+	}{
+		{
+			name:       "no invocations",
+			prompt:     "just do the thing",
+			skillNames: []string{"plan-critic"},
+		},
+		{
+			name:         "all known are rendered",
+			prompt:       "Run /plan-critic then /sybra-triage",
+			skillNames:   []string{"plan-critic", "sybra-triage"},
+			wantRendered: []string{"plan-critic", "sybra-triage"},
+		},
+		{
+			name:           "unknown skill reported unrendered",
+			prompt:         "Run /plan-critic then /some-unknown-skill",
+			skillNames:     []string{"plan-critic"},
+			wantRendered:   []string{"plan-critic"},
+			wantUnrendered: []string{"some-unknown-skill"},
+		},
+		{
+			name:           "all unknown",
+			prompt:         "Run /alpha-skill then /beta-skill",
+			wantUnrendered: []string{"alpha-skill", "beta-skill"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotRendered, gotUnrendered := computeSkillRender(tt.prompt, tt.skillNames)
+			if !slices.Equal(gotRendered, tt.wantRendered) {
+				t.Errorf("rendered = %v, want %v", gotRendered, tt.wantRendered)
+			}
+			if !slices.Equal(gotUnrendered, tt.wantUnrendered) {
+				t.Errorf("unrendered = %v, want %v", gotUnrendered, tt.wantUnrendered)
+			}
+		})
+	}
+}
+
 func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -153,6 +200,30 @@ func TestBuildHeadlessInvocation_CodexKeepsUserConfigIgnoredWithoutSkill(t *test
 	}
 }
 
+func TestBuildHeadlessInvocation_CodexStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkLocalSkill(t, filepath.Join(home, ".codex", "skills"), "staff-code-review")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	a := &Agent{ID: "a", Provider: "codex"}
+	_, err := (codexProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /staff-code-review then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-to-dollar" {
+		t.Fatalf("syntax = %q, want slash-to-dollar", syntax)
+	}
+	if !slices.Contains(rendered, "staff-code-review") {
+		t.Fatalf("rendered = %v, want to contain staff-code-review", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
+	}
+}
+
 func TestBuildCodexConvoArgsWithProvider_LoadsUserConfigForSkill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -214,6 +285,43 @@ func TestBuildHeadlessInvocation_CopilotStripsOperatorSkillSlashInvocation(t *te
 				t.Fatalf("Copilot prompt retained slash invocation: %q", got)
 			}
 		})
+	}
+}
+
+func TestBuildHeadlessInvocation_CopilotStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mkLocalSkill(t, filepath.Join(home, ".copilot", "skills"), "sybra-plan")
+
+	a := &Agent{ID: "a", Provider: "copilot"}
+	_, err := (copilotProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-stripped" {
+		t.Fatalf("syntax = %q, want slash-stripped", syntax)
+	}
+	if !slices.Contains(rendered, "sybra-plan") {
+		t.Fatalf("rendered = %v, want to contain sybra-plan", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
+	}
+}
+
+func TestBuildHeadlessInvocation_ClaudeStampsPromptRenderNone(t *testing.T) {
+	a := &Agent{ID: "a", Provider: "claude"}
+	_, err := (claudeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /some-skill", RequirePermissions: true})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "none" {
+		t.Fatalf("syntax = %q, want none", syntax)
+	}
+	if rendered != nil || unrendered != nil {
+		t.Fatalf("rendered/unrendered = %v/%v, want nil/nil", rendered, unrendered)
 	}
 }
 

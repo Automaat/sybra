@@ -81,6 +81,24 @@ type Agent struct {
 	// or fallback run.
 	skillRecoveryAttempt bool
 
+	// promptHash is a privacy-safe hash of the canonical (pre-render) prompt
+	// dispatched for this run, correlating the dispatch (agent.started) and
+	// completion (agent.prompt_rendered) audit records without persisting
+	// prompt text in either.
+	promptHash string
+	// renderedSyntax records how RequestedSkill invocations were rewritten
+	// for the active provider at BuildHeadlessInvocation time:
+	// "slash-to-dollar" (codex), "slash-stripped" (copilot), or "none"
+	// (claude, which invokes skills natively and rewrites nothing).
+	renderedSyntax string
+	// renderedSkills are invoked skill names the provider rewriter actually
+	// knew about and rewrote/stripped.
+	renderedSkills []string
+	// unrenderedSkills are invoked skill names the provider rewriter did not
+	// recognize and so left untouched in the prompt — a genuine rewrite
+	// failure the headless runner logs explicitly.
+	unrenderedSkills []string
+
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
@@ -604,6 +622,41 @@ func (a *Agent) GetSessionID() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SessionID
+}
+
+// SetPromptHash records the privacy-safe hash of this run's canonical prompt,
+// correlating the dispatch and completion audit records.
+func (a *Agent) SetPromptHash(hash string) {
+	a.mu.Lock()
+	a.promptHash = hash
+	a.mu.Unlock()
+}
+
+// GetPromptHash returns the recorded prompt hash, if any.
+func (a *Agent) GetPromptHash() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.promptHash
+}
+
+// SetPromptRender records how provider-specific skill invocation syntax was
+// rendered for this run's prompt: syntax names the rewrite scheme
+// ("slash-to-dollar", "slash-stripped", or "none"), rendered lists invoked
+// skill names actually rewritten/stripped, and unrendered lists invoked
+// skill names left untouched (a genuine rewrite failure).
+func (a *Agent) SetPromptRender(syntax string, rendered, unrendered []string) {
+	a.mu.Lock()
+	a.renderedSyntax = syntax
+	a.renderedSkills = slices.Clone(rendered)
+	a.unrenderedSkills = slices.Clone(unrendered)
+	a.mu.Unlock()
+}
+
+// GetPromptRender returns the recorded provider render summary for this run.
+func (a *Agent) GetPromptRender() (syntax string, rendered, unrendered []string) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.renderedSyntax, slices.Clone(a.renderedSkills), slices.Clone(a.unrenderedSkills)
 }
 
 // GetStartedAt returns the agent's recorded start time.
