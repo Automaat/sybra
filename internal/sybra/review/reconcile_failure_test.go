@@ -27,6 +27,17 @@ func newReconcileFailureHandler(t *testing.T) (*Handler, *task.Manager) {
 	}, tasks
 }
 
+// mustGet reads a task or fails the test — nilaway (rightly) will not accept an
+// ignored error feeding a pointer into production code.
+func mustGet(t *testing.T, tasks *task.Manager, id string) task.Task {
+	t.Helper()
+	got, err := tasks.Get(id)
+	if err != nil {
+		t.Fatalf("get %s: %v", id, err)
+	}
+	return got
+}
+
 func newReviewTaskInPhase(t *testing.T, tasks *task.Manager, phase string) task.Task {
 	t.Helper()
 	tk, err := tasks.Create("Review: external PR", "", "headless")
@@ -56,7 +67,7 @@ func TestRecordReconcileFailure_EscalatesPersistentFailure(t *testing.T) {
 	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
 
 	// The exact error from the incident.
-	err := errors.New("resolve viewer login for Automaat/lightroom-mcp#151: gh api user: HTTP 403")
+	err := errors.New("resolve viewer login for Automaat/lightroom-mcp#151: HTTP 403: Resource not accessible by integration")
 	for range reconcileFailureLimit {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
@@ -174,7 +185,7 @@ func TestReconcileReviewTask_RoutesFailureThroughCircuit(t *testing.T) {
 
 	// The exact failure from #2164, repeated until the circuit should trip.
 	r.fetchMyReviewStateFn = func(string, int) (github.MyReviewState, error) {
-		return github.MyReviewState{}, errors.New("resolve viewer login for Automaat/lightroom-mcp#151: gh api user: HTTP 403")
+		return github.MyReviewState{}, errors.New("resolve viewer login for Automaat/lightroom-mcp#151: HTTP 403: Resource not accessible by integration")
 	}
 	// MERGEABLE keeps stickyConflictPhase from deciding early and avoids a live
 	// FetchPRState call, so the read under test is the one that fails.
@@ -221,11 +232,11 @@ func TestReconcileReviewTask_SuccessClearsTheCircuit(t *testing.T) {
 	// Fail almost to the limit, then succeed — the counter must reset.
 	fail = true
 	for range reconcileFailureLimit - 1 {
-		got, _ := tasks.Get(tk.ID)
+		got := mustGet(t, tasks, tk.ID)
 		r.reconcileReviewTask(&got, requested, map[string]github.PullRequest{})
 	}
 	fail = false
-	got, _ := tasks.Get(tk.ID)
+	got := mustGet(t, tasks, tk.ID)
 	r.reconcileReviewTask(&got, requested, map[string]github.PullRequest{})
 
 	r.failureMu.Lock()
@@ -236,9 +247,9 @@ func TestReconcileReviewTask_SuccessClearsTheCircuit(t *testing.T) {
 	}
 
 	fail = true
-	got, _ = tasks.Get(tk.ID)
+	got = mustGet(t, tasks, tk.ID)
 	r.reconcileReviewTask(&got, requested, map[string]github.PullRequest{})
-	got, _ = tasks.Get(tk.ID)
+	got = mustGet(t, tasks, tk.ID)
 	if got.Status == task.StatusHumanRequired {
 		t.Error("escalated on the first failure after a success; the counter did not reset")
 	}
@@ -254,10 +265,10 @@ func TestRecordReconcileFailure_DoesNotClobberOperatorNote(t *testing.T) {
 
 	err := errors.New("resolve viewer login: HTTP 403")
 	for range reconcileFailureLimit {
-		got, _ := tasks.Get(tk.ID)
+		got := mustGet(t, tasks, tk.ID)
 		r.recordReconcileFailure(&got, err)
 	}
-	escalated, _ := tasks.Get(tk.ID)
+	escalated := mustGet(t, tasks, tk.ID)
 	if escalated.Status != task.StatusHumanRequired {
 		t.Fatalf("precondition: want escalated, got %q", escalated.Status)
 	}
@@ -266,15 +277,15 @@ func TestRecordReconcileFailure_DoesNotClobberOperatorNote(t *testing.T) {
 	if _, uerr := tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr(note)}); uerr != nil {
 		t.Fatal(uerr)
 	}
-	before, _ := tasks.Get(tk.ID)
+	before := mustGet(t, tasks, tk.ID)
 
 	// Keep polling with the same failing read.
 	for range reconcileFailureLimit * 2 {
-		got, _ := tasks.Get(tk.ID)
+		got := mustGet(t, tasks, tk.ID)
 		r.recordReconcileFailure(&got, err)
 	}
 
-	after, _ := tasks.Get(tk.ID)
+	after := mustGet(t, tasks, tk.ID)
 	if after.StatusReason != note {
 		t.Errorf("StatusReason = %q, want the operator's note %q — re-escalation clobbered it",
 			after.StatusReason, note)
@@ -303,7 +314,7 @@ func TestReconcileReviewTask_HealthyCycleClearsStaleFailures(t *testing.T) {
 
 	// Accumulate failures just short of the limit.
 	for range reconcileFailureLimit - 1 {
-		got, _ := tasks.Get(tk.ID)
+		got := mustGet(t, tasks, tk.ID)
 		r.reconcileReviewTask(&got, mergeableReq, map[string]github.PullRequest{})
 	}
 
@@ -312,7 +323,7 @@ func TestReconcileReviewTask_HealthyCycleClearsStaleFailures(t *testing.T) {
 	conflicting := map[string]github.PullRequest{
 		key: {Number: tk.PRNumber, Repository: tk.ProjectID, Mergeable: "CONFLICTING", HeadSHA: "e57e4b5"},
 	}
-	got, _ := tasks.Get(tk.ID)
+	got := mustGet(t, tasks, tk.ID)
 	r.reconcileReviewTask(&got, conflicting, map[string]github.PullRequest{})
 
 	r.failureMu.Lock()
@@ -320,5 +331,34 @@ func TestReconcileReviewTask_HealthyCycleClearsStaleFailures(t *testing.T) {
 	r.failureMu.Unlock()
 	if n != 0 {
 		t.Fatalf("failure count = %d after a healthy cycle, want 0 — one later blip would escalate a healthy task", n)
+	}
+}
+
+// A parked task must not pin a counter entry for the life of the process: the
+// count measures progress toward an escalation that already happened.
+func TestRecordReconcileFailure_ParkedTaskLeavesNoStaleCounter(t *testing.T) {
+	r, tasks := newReconcileFailureHandler(t)
+	tk := newReviewTaskInPhase(t, tasks, "needs-approval")
+
+	err := errors.New("resolve viewer login: HTTP 403: Resource not accessible by integration")
+	for range reconcileFailureLimit {
+		got := mustGet(t, tasks, tk.ID)
+		r.recordReconcileFailure(&got, err)
+	}
+	if mustGet(t, tasks, tk.ID).Status != task.StatusHumanRequired {
+		t.Fatal("precondition: want escalated")
+	}
+
+	// Further polls against the parked task must leave nothing behind.
+	for range 3 {
+		got := mustGet(t, tasks, tk.ID)
+		r.recordReconcileFailure(&got, err)
+	}
+
+	r.failureMu.Lock()
+	n, present := r.reconcileFailures[tk.ID]
+	r.failureMu.Unlock()
+	if present {
+		t.Errorf("parked task still holds a counter entry (%d); it leaks for the life of the process", n)
 	}
 }

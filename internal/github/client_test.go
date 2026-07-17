@@ -938,7 +938,7 @@ func TestIsTransientError_CoversRealNetworkAndRateLimitFailures(t *testing.T) {
 	permanent := []string{
 		// A parse-level EOF is our decoder failing, not a network blip.
 		"parse graphql response: unexpected EOF",
-		"resolve viewer login for owner/repo#151: gh api user: HTTP 403: Resource not accessible by integration",
+		"resolve viewer login for owner/repo#151: HTTP 403: Resource not accessible by integration",
 		"gh: Not Found (HTTP 404)",
 		"gh: Bad credentials (HTTP 401)",
 	}

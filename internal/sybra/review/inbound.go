@@ -312,8 +312,7 @@ func reviewPRKey(projectID string, prNumber int) string {
 // a stranger's PR 112 times. A warn-log is not an alarm.
 const reconcileFailureLimit = 5
 
-// reconcileEscalationReason prefixes the StatusReason this circuit writes, so a
-// re-escalation can recognise its own note and leave an operator's alone.
+// reconcileEscalationReason prefixes the StatusReason this circuit writes.
 const reconcileEscalationReason = "review reconcile failed"
 
 // recordReconcileFailure counts consecutive reconcile failures and escalates
@@ -332,6 +331,10 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	// status alone, not on our own reason string: an operator who replaces the
 	// note must not thereby re-arm the clobber.
 	if t.Status == task.StatusHumanRequired {
+		// Drop the count too: it measures progress toward an escalation that has
+		// already happened, and keeping it would pin an entry for every parked
+		// task for the life of the process.
+		r.clearReconcileFailure(t.ID)
 		return
 	}
 
