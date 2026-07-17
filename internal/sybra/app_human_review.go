@@ -927,11 +927,8 @@ func (h *humanReviewHandler) allowSpawnForTaskLocked(taskID string) bool {
 // further attempt fits within the window before maybeSpawn's own budget
 // checks start rejecting further spawns.
 //
-// Returns maybeSpawn's own report of whether a review agent was actually
-// dispatched — not merely whether this method decided to try. maybeSpawn can
-// still decline (global fleet-wide rate limit, a race on the per-task budget,
-// or the spawn call itself failing) after this method's own pre-check passes,
-// and the caller needs to know that happened rather than assume success.
+// This method has no budget check of its own; maybeSpawn's bool return is
+// the only source of truth on whether a retry actually dispatched.
 //
 // Called from onComplete before its own `defer delete(h.inflight, taskID)`
 // runs, so the crashed run's own slot must be freed here first — otherwise

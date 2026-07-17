@@ -1509,12 +1509,11 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 }
 
 // TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently pins that a
-// retry attempt maybeSpawn silently declines for a reason other than the
-// per-task budget (here: the fleet-wide global cap, allowSpawnLocked) still
-// lands on the distinguishable crashed-exhausted note rather than acting as
-// if a retry actually happened. retryAfterCrash's own pre-check only covers
-// the per-task budget, so this exercises the case where that pre-check would
-// have said "go ahead" but maybeSpawn's independent global check declines.
+// retry maybeSpawn declines for a reason retryAfterCrash never checks itself
+// (here: the fleet-wide global cap, allowSpawnLocked) still lands on the
+// distinguishable crashed-exhausted note rather than acting as if a retry
+// actually happened — retryAfterCrash trusts maybeSpawn's own bool return,
+// it has no budget logic of its own to get out of sync with.
 func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) {
 	t.Parallel()
 	h, tasks, _, cleanup := newReviewTestEnv(t)
