@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/notes"
 )
@@ -343,6 +344,29 @@ func TestSkillReceiptExhaustionSummary_UsesExistingVerdictRecovery(t *testing.T)
 	want := "product_bug: repo does not compile"
 	if got != want {
 		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
+	}
+}
+
+func TestSkillReceiptExhaustionSummary_DoesNotPairMismatchedOutcomeDetail(t *testing.T) {
+	t.Parallel()
+
+	output := `{"verdict":"FAIL","outcome":"ambiguous_requirement","failures_markdown":"## Test Failures\n\n### product_bug: repo does not compile\n\nObserved output: nothing"}`
+
+	got := skillReceiptExhaustionSummary(output)
+	if got != testOutcomeAmbiguousRequirement {
+		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, testOutcomeAmbiguousRequirement)
+	}
+}
+
+func TestTrimReceiptSummary_PreservesUTF8WhenTruncating(t *testing.T) {
+	t.Parallel()
+
+	got := trimReceiptSummary(strings.Repeat("a", 155) + "中文测试内容延长")
+	if !utf8.ValidString(got) {
+		t.Fatalf("trimReceiptSummary returned invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("trimReceiptSummary = %q, want ellipsis suffix", got)
 	}
 }
 

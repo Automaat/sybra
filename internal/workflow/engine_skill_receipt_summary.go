@@ -6,16 +6,16 @@ import "strings"
 // short verdict string for human-required receipt-exhaustion reasons.
 func skillReceiptExhaustionSummary(output string) string {
 	report := currentTestFailureReport(output, "", nil, "")
-	outcome, detail := receiptSummaryOutcomeAndDetail(output, report)
-	if detail == "" {
+	outcome, detail, suppressFallbackDetail := receiptSummaryOutcomeAndDetail(output, report)
+	if detail == "" && !suppressFallbackDetail {
 		detail = firstReceiptSummaryDetail(report,
 			"observed output", "actual output", "verbatim output", "actual behaviour",
 			"actual behavior", "observed behaviour", "observed behavior", "output")
 	}
-	if detail == "" {
+	if detail == "" && !suppressFallbackDetail {
 		detail = firstReceiptSummaryDetail(report, "code evidence")
 	}
-	if detail == "" {
+	if detail == "" && !suppressFallbackDetail {
 		detail = firstReceiptSummaryDetail(report, "expected", "requirement tested")
 	}
 	switch {
@@ -28,7 +28,7 @@ func skillReceiptExhaustionSummary(output string) string {
 	}
 }
 
-func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail string) {
+func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail string, suppressFallbackDetail bool) {
 	if parsed, ok := parseStructuredTestOutput(output); ok {
 		outcome = normalizeTestOutcome(parsed.Outcome)
 	}
@@ -48,11 +48,18 @@ func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail stri
 				if outcome == "" {
 					outcome = reportOutcome
 				}
+				reportDetail := trimReceiptSummary(trimOutcomePrefix(value, reportOutcome))
+				if reportOutcome != outcome {
+					if reportDetail != "" {
+						suppressFallbackDetail = true
+					}
+					continue
+				}
 				if detail == "" {
-					detail = trimReceiptSummary(trimOutcomePrefix(value, reportOutcome))
+					detail = reportDetail
 				}
 				if outcome != "" && detail != "" {
-					return outcome, detail
+					return outcome, detail, suppressFallbackDetail
 				}
 			}
 		}
@@ -60,15 +67,21 @@ func receiptSummaryOutcomeAndDetail(output, report string) (outcome, detail stri
 			if outcome == "" {
 				outcome = reportOutcome
 			}
+			if reportOutcome != outcome {
+				if reportDetail != "" {
+					suppressFallbackDetail = true
+				}
+				continue
+			}
 			if detail == "" {
 				detail = reportDetail
 			}
 			if outcome != "" && detail != "" {
-				return outcome, detail
+				return outcome, detail, suppressFallbackDetail
 			}
 		}
 	}
-	return outcome, detail
+	return outcome, detail, suppressFallbackDetail
 }
 
 func firstReceiptSummaryDetail(report string, labels ...string) string {
@@ -206,7 +219,7 @@ func trimReceiptSummary(s string) string {
 	}
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 160 {
-		return strings.TrimSpace(s[:157]) + "..."
+		return strings.TrimSpace(trimUTF8ToBytes(s, 157)) + "..."
 	}
 	return s
 }
