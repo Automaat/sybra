@@ -694,7 +694,12 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 	if _, err := r.projects.Get(t.ProjectID); err != nil {
 		return false
 	}
-	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, issue.PR.HeadSHA) {
+	shaGate := issue.PR.HeadSHA
+	if issue.PR.CIFlaky {
+		// Flaky reruns do not produce a new commit; cap by attempt count, not SHA.
+		shaGate = ""
+	}
+	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, shaGate) {
 		return false
 	}
 
