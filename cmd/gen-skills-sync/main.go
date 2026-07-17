@@ -8,12 +8,13 @@
 // syncs .claude/skills over it instead — so the embedded copy is only ever
 // read in an embedded-only deployment (e.g. Docker with no repo checkout).
 // Before this generator existed, the two copies were hand-maintained
-// separately and drifted silently: #2179 updated .claude/skills/plan-critic
-// without touching internal/skills/data/plan-critic.md, and the change never
-// reached a running agent in any real deployment. Regenerating from the repo
-// copy keeps .claude/skills as the single edited source; the drift guard in
-// internal/skills/data_sync_generated_test.go fails loudly if this generator
-// was not re-run after an edit.
+// separately and drifted silently: #2179 edited only the embedded copy,
+// internal/skills/data/plan-critic.md, leaving .claude/skills/plan-critic
+// untouched — so the edit changed nothing at runtime on any deployment with
+// a repo checkout, since the repo copy always wins there. Regenerating from
+// the repo copy keeps .claude/skills as the single edited source; the drift
+// guard in internal/skills/data_sync_generated_test.go fails loudly if this
+// generator was not re-run after an edit.
 package main
 
 import (
