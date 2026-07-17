@@ -1183,6 +1183,12 @@ func applyReviewFields(t *Task, u Update) {
 	if u.ReviewPhase != nil {
 		t.ReviewPhase = *u.ReviewPhase
 	}
+	if u.ReviewedHeadSHA != nil {
+		t.ReviewedHeadSHA = *u.ReviewedHeadSHA
+	}
+	if u.ReviewedHeadAttempts != nil {
+		t.ReviewedHeadAttempts = *u.ReviewedHeadAttempts
+	}
 	if u.PRPhase != nil {
 		t.PRPhase = *u.PRPhase
 	}

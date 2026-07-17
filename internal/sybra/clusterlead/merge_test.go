@@ -140,3 +140,38 @@ func TestTaskIDFromEvent(t *testing.T) {
 		}
 	}
 }
+
+// The re-review backstop (#2166) lives on the follower that runs the review, so
+// the leader's canonical copy must carry it. If Merge drops it, a Reassign or a
+// home-node change writes the canonical copy back verbatim, resetting the guard
+// and re-reviewing a commit that was already reviewed — the #2164 loop, via the
+// cluster.
+func TestMergeCarriesReviewGuard(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID: "task-1", AssignedNode: "pet-box", Status: task.StatusTodo,
+		CreatedAt: t0, UpdatedAt: t0, MirrorRev: 1,
+	}
+	follower := task.Task{
+		ID:                   "task-1",
+		Status:               task.StatusInReview,
+		ReviewPhase:          "needs-approval",
+		Reviewed:             true,
+		ReviewedHeadSHA:      "e57e4b5db72c55ba7610140631a80946a7edddf0",
+		ReviewedHeadAttempts: 2,
+		UpdatedAt:            t0.Add(time.Hour),
+	}
+
+	out, ok := Merge(canonical, follower)
+	if !ok {
+		t.Fatal("Merge rejected a newer follower revision")
+	}
+	if out.ReviewedHeadSHA != follower.ReviewedHeadSHA {
+		t.Errorf("ReviewedHeadSHA = %q, want %q — the leader would re-review an already-reviewed commit",
+			out.ReviewedHeadSHA, follower.ReviewedHeadSHA)
+	}
+	if out.ReviewedHeadAttempts != follower.ReviewedHeadAttempts {
+		t.Errorf("ReviewedHeadAttempts = %d, want %d — the review budget would reset on reassign",
+			out.ReviewedHeadAttempts, follower.ReviewedHeadAttempts)
+	}
+}
