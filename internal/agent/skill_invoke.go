@@ -64,13 +64,28 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	cfg.SkillConformance = resolution.conformance
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
-		return nil
+		// The skill runs natively, but native invocation alone doesn't prove
+		// the model actually followed it — append the same deterministic
+		// receipt instruction injected/fallback runs get, so completion can
+		// verify conformance from the transcript rather than trusting
+		// delivery mode alone.
+		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
+		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
 	return nil
+}
+
+// appendSkillReceiptInstruction appends the deterministic conformance-receipt
+// instruction (skillattr.ReceiptInstruction) to prompt. Called for every
+// mode that actually hands the model mandatory-skill instructions (native,
+// injected, fallback) — never for "unavailable", where there is nothing to
+// receipt-check.
+func appendSkillReceiptInstruction(prompt string, resolution workflowSkillResolution) string {
+	return prompt + "\n\n" + skillattr.ReceiptInstruction(resolution.name, resolution.sourceHash)
 }
 
 func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillResolution {
