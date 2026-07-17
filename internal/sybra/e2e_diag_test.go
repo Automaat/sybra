@@ -3,6 +3,7 @@
 package sybra
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -146,5 +147,36 @@ func TestDropParkedTestGoroutines_NothingToDrop(t *testing.T) {
 	}
 	if strings.Contains(got, "omitted") {
 		t.Error("reported an omission when nothing was dropped")
+	}
+}
+
+// The cap is a memory bound, not just a display bound: appending first and
+// trimming the length afterwards leaves the grown capacity allocated for the
+// rest of the test, so one oversized record would hold megabytes to show 64KB.
+func TestE2ELogBuffer_NeverAllocatesAboveTheCap(t *testing.T) {
+	t.Parallel()
+
+	b := &e2eLogBuffer{}
+	huge := bytes.Repeat([]byte("x"), 4*e2eLogTailBytes)
+	n, err := b.Write(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(huge) {
+		t.Errorf("Write returned %d, want %d: io.Writer must report the caller's length", n, len(huge))
+	}
+	if got := cap(b.buf); got > e2eLogTailBytes {
+		t.Errorf("cap = %d, want <= %d: the oversized write was allocated before being discarded", got, e2eLogTailBytes)
+	}
+
+	// And the tail it keeps is still the newest bytes.
+	if _, err := b.Write([]byte("NEWEST")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(b.String(), "NEWEST") {
+		t.Error("the newest bytes were dropped")
+	}
+	if cap(b.buf) > e2eLogTailBytes {
+		t.Errorf("cap = %d after a follow-up write, want <= %d", cap(b.buf), e2eLogTailBytes)
 	}
 }

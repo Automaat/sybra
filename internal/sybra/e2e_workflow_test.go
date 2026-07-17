@@ -159,14 +159,21 @@ type e2eLogBuffer struct {
 }
 
 func (b *e2eLogBuffer) Write(p []byte) (int, error) {
+	written := len(p) // io.Writer must report the caller's length, not the kept tail
+	// Discard before allocating, not after. Appending first and trimming the
+	// length afterwards leaves the grown capacity in place for the rest of the
+	// test, so one oversized record would hold megabytes to show 64KB.
+	if len(p) > e2eLogTailBytes {
+		p = p[len(p)-e2eLogTailBytes:]
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if excess := len(b.buf) - e2eLogTailBytes; excess > 0 {
-		n := copy(b.buf, b.buf[excess:])
-		b.buf = b.buf[:n]
+	if drop := len(b.buf) + len(p) - e2eLogTailBytes; drop > 0 {
+		kept := copy(b.buf, b.buf[drop:])
+		b.buf = b.buf[:kept]
 	}
-	return len(p), nil
+	b.buf = append(b.buf, p...)
+	return written, nil
 }
 
 func (b *e2eLogBuffer) String() string {
