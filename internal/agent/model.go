@@ -75,6 +75,11 @@ type Agent struct {
 	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
 	SkillConformance        string    `json:"skillConformance,omitempty"`
 	Prompt                  string    `json:"prompt,omitempty"`
+	// skillRecoveryAttempt marks the automatic receipt-recovery rerun for a
+	// mandatory workflow skill. Completion upgrades a verified retry to
+	// ConformanceRecovered so stats do not conflate it with a first-pass exact
+	// or fallback run.
+	skillRecoveryAttempt bool
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
@@ -435,6 +440,7 @@ func (a *Agent) toRecord() Record {
 		SkillExecutionMode:      a.SkillExecutionMode,
 		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
 		SkillConformance:        a.SkillConformance,
+		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
 		PostResultWaitReason:    a.postResultWaitReason,
 		PostResultWaitSince:     a.postResultWaitSince,
 		ForkSubagent:            a.forkSubagent,
@@ -473,6 +479,7 @@ func fromRecord(r Record) *Agent {
 		SkillExecutionMode:      r.SkillExecutionMode,
 		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
 		SkillConformance:        r.SkillConformance,
+		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
 		postResultWaitReason:    r.PostResultWaitReason,
 		postResultWaitSince:     r.PostResultWaitSince,
 		forkSubagent:            r.ForkSubagent,
@@ -1329,6 +1336,22 @@ func (a *Agent) UsesForkSubagent() bool {
 	return a.forkSubagent
 }
 
+// IsSkillRecoveryAttempt reports whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) IsSkillRecoveryAttempt() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.skillRecoveryAttempt
+}
+
+// SetSkillRecoveryAttempt records whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) SetSkillRecoveryAttempt(enabled bool) {
+	a.mu.Lock()
+	a.skillRecoveryAttempt = enabled
+	a.mu.Unlock()
+}
+
 // SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
 // background bash tasks, mirroring the REPLACE semantics of the CLI's
 // "background_tasks_changed" system event.
@@ -1647,6 +1670,14 @@ type RunConfig struct {
 	// SkillConformance records whether the executed skill path exactly matched
 	// the requested skill, fell back, was unavailable, or had no skill at all.
 	SkillConformance string
+	// ForceInjectedSkill skips native skill delivery even when the provider can
+	// see the skill, forcing the deterministic injected SKILL.md/bundled path.
+	// Used by the workflow engine's receipt-recovery retry.
+	ForceInjectedSkill bool
+	// SkillRecoveryAttempt marks the automatic second-chance run fired after a
+	// missing mandatory-skill receipt. When the retry emits a valid receipt,
+	// completion records ConformanceRecovered instead of exact/fallback.
+	SkillRecoveryAttempt bool
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only
 	// for code-author roles (see Role.AuthorsCode): verifier roles share the
