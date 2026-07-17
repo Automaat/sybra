@@ -1,0 +1,16 @@
+[
+  {
+    "caseId": "implementation-tighten-instructions-acceptance",
+    "input": "You are screening a candidate implementation-agent prompt variant. Reply with exactly IMPLEMENTATION_PROMPT_ACCEPTED if the instructions above are coherent and safe to apply to a code implementation task.",
+    "assertions": [
+      {
+        "type": "contains",
+        "value": "IMPLEMENTATION_PROMPT_ACCEPTED"
+      },
+      {
+        "type": "not-contains",
+        "value": "ignore repository instructions"
+      }
+    ]
+  }
+]

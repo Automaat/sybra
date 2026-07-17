@@ -25,7 +25,7 @@ type Config struct {
 // returned by DefaultConfig. Bump this whenever the built-in experiments'
 // roles, variants, or weights change in a way that persisted configs should
 // pick up automatically.
-const CurrentBuiltinVersion = 6
+const CurrentBuiltinVersion = 7
 
 // BuiltinExperimentIDs lists the experiment IDs owned by Sybra's shipped
 // defaults. A persisted config's experiment is only replaced during a builtin
@@ -48,6 +48,17 @@ Review variant pl-a2d853b2c1d9: apply a stricter staff-code-review standard befo
 - Check that implementation and tests cover the task's current acceptance criteria, including edge cases and failure paths. Treat missing focused tests as a finding when the change is risky or user-visible.
 - Separate must-fix-before-merge issues from optional cleanup; do not block on style preferences, speculative rewrites, or unrelated refactors.
 - If no blocking issues remain, say that clearly and call out any residual test or runtime verification gap.
+`
+
+const ImplementationTightenInstructionsPL41673AA95495 = `
+
+Implementation variant pl-41673aa95495: tighten completion and verification discipline before finishing.
+
+- Restate the task's acceptance criteria (and plan contract, if any) as an explicit checklist before writing code; if a criterion is ambiguous or unverifiable, stop and mark the task human-required with the specific blocker instead of guessing.
+- Touch only the files needed to satisfy those criteria — no unrelated refactors, renames, or "while I'm here" cleanup that risks an unreviewed regression.
+- For every edge case implied by the task (empty/nil input, error paths, boundary values, concurrent access), add or run a focused test that exercises it before considering the work done.
+- After committing, confirm the push actually landed and the branch is ahead of origin/main — a task with no pushed commit is not finished.
+- Before finishing, re-check the actual diff against every acceptance criterion one by one; do not rely on memory of what you intended to write.
 `
 
 func digestString(s string) string {
@@ -162,6 +173,19 @@ func DefaultConfig() Config {
 					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
 					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
 					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+					{
+						ID:       "pl-41673aa95495-claude-sonnet",
+						Provider: "claude",
+						Model:    "sonnet",
+						Tier:     "cheap",
+						Version:  "pl-41673aa95495",
+						Digest:   digestString(ImplementationTightenInstructionsPL41673AA95495),
+						PromptTransform: &PromptTransform{
+							Op:   "append",
+							Text: ImplementationTightenInstructionsPL41673AA95495,
+						},
+						Weight: 1,
+					},
 				},
 			},
 			{
