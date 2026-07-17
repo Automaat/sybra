@@ -159,7 +159,7 @@ kc rollout status deployment/sybra-server --timeout=180s
 if [ "$GITHUB_MODE" = "1" ]; then
   log "Registering the real testbed project ($TESTBED)"
   PROJECT="$TESTBED"
-  in_pod sybra-cli project create "https://github.com/$TESTBED.git" >/dev/null
+  in_pod sybra-cli project create --url "https://github.com/$TESTBED.git" >/dev/null
 else
   PROJECT=FakeOrg/k8s-testbed
   log "Seeding fake repo project"

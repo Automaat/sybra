@@ -512,14 +512,40 @@ func detectK8sGitWorkspace(ctx context.Context, dir string) (k8sGitWorkspace, er
 	return k8sGitWorkspace{Remote: strings.TrimSpace(remote), Branch: branch}, nil
 }
 
+// pushK8sGitWorkspace carries local commits to the remote so the Job's clone can
+// see them. It skips entirely when the remote already has everything HEAD does,
+// which is the normal k8s case: the agent works inside the Job, so a fresh task
+// has nothing local, and the wrapper creates the branch itself when it is
+// missing.
+//
+// The skip is what lets a Kubernetes server run without a GitHub credential.
+// Pushing unconditionally meant a real GitHub remote failed here with "could not
+// read Username", which aborted job creation — so the server could only dispatch
+// at all if it held a token, exactly the coupling the k8s split removes. When
+// there really are local commits, a failure here is still fatal: the Job would
+// silently work from the wrong base.
 func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorkspace) error {
 	if workspace.Remote == "" || workspace.Branch == "" {
+		return nil
+	}
+	if !hasUnpushedCommits(ctx, dir) {
 		return nil
 	}
 	if _, err := gitOutput(ctx, dir, "push", "-u", "origin", "HEAD:"+workspace.Branch); err != nil {
 		return fmt.Errorf("push k8s workspace branch: %w", err)
 	}
 	return nil
+}
+
+// hasUnpushedCommits reports whether HEAD holds commits that no remote branch
+// contains. Errs toward true: if the count cannot be read, push and let a real
+// failure surface rather than silently dropping work.
+func hasUnpushedCommits(ctx context.Context, dir string) bool {
+	out, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(out) != "0"
 }
 
 func syncK8sGitWorkspace(ctx context.Context, dir string) error {

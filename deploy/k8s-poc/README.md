@@ -304,7 +304,7 @@ kubectl -n sybra-poc rollout restart deployment/sybra-server
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 
 kubectl -n sybra-poc exec deploy/sybra-server -- \
-  sybra-cli project create https://github.com/Automaat/sybra-testbed.git
+  sybra-cli project create --url https://github.com/Automaat/sybra-testbed.git
 ```
 
 For a fully disposable k3d run that does not push branches to GitHub, point the
