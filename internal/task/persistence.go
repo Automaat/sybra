@@ -34,6 +34,7 @@ type taskFrontmatter struct {
 	SupervisorSteer        string              `yaml:"supervisor_steer,omitempty"`
 	ReviewPhase            string              `yaml:"review_phase,omitempty"`
 	ReviewedHeadSHA        string              `yaml:"reviewed_head_sha,omitempty"`
+	ReviewedHeadAttempts   int                 `yaml:"reviewed_head_attempts,omitempty"`
 	PRPhase                string              `yaml:"pr_phase,omitempty"`
 	TodoistID              string              `yaml:"todoist_id,omitempty"`
 	Priority               Priority            `yaml:"priority,omitempty"`
@@ -118,6 +119,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		SupervisorSteer:        fm.SupervisorSteer,
 		ReviewPhase:            fm.ReviewPhase,
 		ReviewedHeadSHA:        fm.ReviewedHeadSHA,
+		ReviewedHeadAttempts:   fm.ReviewedHeadAttempts,
 		PRPhase:                fm.PRPhase,
 		TodoistID:              fm.TodoistID,
 		Priority:               fm.Priority,
@@ -179,6 +181,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		SupervisorSteer:        t.SupervisorSteer,
 		ReviewPhase:            t.ReviewPhase,
 		ReviewedHeadSHA:        t.ReviewedHeadSHA,
+		ReviewedHeadAttempts:   t.ReviewedHeadAttempts,
 		PRPhase:                t.PRPhase,
 		TodoistID:              t.TodoistID,
 		Priority:               t.Priority,

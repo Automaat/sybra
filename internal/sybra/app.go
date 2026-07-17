@@ -65,7 +65,7 @@ type App struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
-	fetchPRHeadSHA    func(repo string, number int) (string, error)
+	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
 	tasks             *task.Manager
 	projects          *project.Store
 	loopAgents        *loopagent.Store

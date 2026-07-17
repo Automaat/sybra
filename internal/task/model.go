@@ -339,12 +339,10 @@ type Task struct {
 	// human). Computed by the PR poller; drives the board's PR Reviews lane.
 	// Empty for non-review tasks.
 	ReviewPhase string `json:"reviewPhase,omitempty"`
-	// ReviewedHeadSHA is the PR head an automated review was last dispatched
-	// against; the dispatcher refuses to re-review it. Durable backstop against
-	// a re-dispatch loop (#2164 posted 112 reviews on one unchanged commit).
-	// Stamped at dispatch, not completion, so a crashing run cannot re-review
-	// forever — a real push moves the head and re-opens review.
-	ReviewedHeadSHA string `json:"reviewedHeadSha,omitempty"`
+	// Bounds automated re-review per PR commit: the durable backstop against a
+	// re-dispatch loop (#2164 spent 112 reviews on one unchanged commit).
+	ReviewedHeadSHA      string `json:"reviewedHeadSha,omitempty"`
+	ReviewedHeadAttempts int    `json:"reviewedHeadAttempts,omitempty"`
 	// PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
 	// not tag `review`) sits in its lifecycle: draft → building → fixing →
 	// changes-requested → awaiting-approval → approved. Computed by the PR poller;

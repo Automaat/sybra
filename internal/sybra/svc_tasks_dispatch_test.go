@@ -523,7 +523,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		t.Fatal(err)
 	}
 
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(t.Context())
 	a.wg.Wait()
 
 	assertWorkflow := func(id, want string) {
@@ -809,18 +809,21 @@ func TestDispatchInboundReview_SkipsAlreadyReviewedHead(t *testing.T) {
 
 	const head = "e57e4b5db72c55ba7610140631a80946a7edddf0"
 	var headCalls atomic.Int64
-	a.fetchPRHeadSHA = func(string, int) (string, error) {
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
 		headCalls.Add(1)
 		return head, nil
 	}
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
-	// Already reviewed this exact commit.
-	if _, err := a.tasks.Update(tk.ID, task.Update{ReviewedHeadSHA: task.Ptr(head)}); err != nil {
+	// This commit's review budget is already spent.
+	if _, err := a.tasks.Update(tk.ID, task.Update{
+		ReviewedHeadSHA:      task.Ptr(head),
+		ReviewedHeadAttempts: task.Ptr(maxReviewAttemptsPerHead),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	a.dispatchInboundReviewWorkflow(tk.ID)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
 
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
@@ -844,14 +847,17 @@ func TestDispatchInboundReview_NewHeadIsReviewed(t *testing.T) {
 	svc, a := setupDispatchTestService(t, launcher)
 	a.workflowEngine = svc.workflowEngine
 
-	a.fetchPRHeadSHA = func(string, int) (string, error) { return "new-head-sha", nil }
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "new-head-sha", nil }
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
-	if _, err := a.tasks.Update(tk.ID, task.Update{ReviewedHeadSHA: task.Ptr("old-head-sha")}); err != nil {
+	if _, err := a.tasks.Update(tk.ID, task.Update{
+		ReviewedHeadSHA:      task.Ptr("old-head-sha"),
+		ReviewedHeadAttempts: task.Ptr(maxReviewAttemptsPerHead),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	a.dispatchInboundReviewWorkflow(tk.ID)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
 
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
@@ -872,12 +878,14 @@ func TestDispatchInboundReview_HeadLookupFailureDefers(t *testing.T) {
 	svc, a := setupDispatchTestService(t, launcher)
 	a.workflowEngine = svc.workflowEngine
 
-	a.fetchPRHeadSHA = func(string, int) (string, error) {
-		return "", errors.New("gh: HTTP 502")
+	// A non-empty SHA alongside the error: with "" the fail-closed branch in
+	// reviewCoversHead would mask a deleted error check, making this tautological.
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) {
+		return "unreviewed-head-sha", errors.New("gh: HTTP 502")
 	}
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
-	a.dispatchInboundReviewWorkflow(tk.ID)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
 
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
@@ -904,12 +912,13 @@ func TestDispatchInboundReview_CooldownOpenButHeadUnchanged(t *testing.T) {
 	a.workflowEngine = svc.workflowEngine
 
 	const head = "e57e4b5db72c55ba7610140631a80946a7edddf0"
-	a.fetchPRHeadSHA = func(string, int) (string, error) { return head, nil }
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return head, nil }
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
 	completedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
 	if _, err := a.tasks.UpdateMap(tk.ID, map[string]any{
-		"reviewed_head_sha": head,
+		"reviewed_head_sha":      head,
+		"reviewed_head_attempts": maxReviewAttemptsPerHead,
 		"workflow": &workflow.Execution{
 			WorkflowID: "pr-review", State: workflow.ExecCompleted,
 			CompletedAt: &completedAt, Variables: map[string]string{},
@@ -926,7 +935,7 @@ func TestDispatchInboundReview_CooldownOpenButHeadUnchanged(t *testing.T) {
 		t.Fatal("precondition: the phase/cooldown gates must be open for this test to exercise the SHA guard")
 	}
 
-	a.dispatchInboundReviewWorkflow(tk.ID)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
 
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 — re-reviewed an unchanged head with the cooldown open (the #2164 loop)", launcher.startCalls)
@@ -938,23 +947,86 @@ func TestReviewCoversHead(t *testing.T) {
 	tests := []struct {
 		name     string
 		reviewed string
+		attempts int
 		head     string
 		want     bool
 	}{
-		{"same head is covered", "abc", "abc", true},
-		{"new head is not covered", "abc", "def", false},
-		{"never reviewed is not covered", "", "abc", false},
-		{"unknown head is covered (fail closed)", "abc", "", true},
-		{"unknown head with no prior review still fails closed", "", "", true},
+		{"never reviewed", "", 0, "abc", false},
+		{"same head, budget left", "abc", 1, "abc", false},
+		{"same head, budget spent", "abc", maxReviewAttemptsPerHead, "abc", true},
+		{"same head, over budget", "abc", maxReviewAttemptsPerHead + 5, "abc", true},
+		{"new head resets the budget", "abc", maxReviewAttemptsPerHead, "def", false},
+		{"unknown head fails closed", "abc", 0, "", true},
+		{"unknown head with no prior review fails closed", "", 0, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := reviewCoversHead(task.Task{ReviewedHeadSHA: tt.reviewed}, tt.head)
-			if got != tt.want {
-				t.Errorf("reviewCoversHead(%q, %q) = %v, want %v", tt.reviewed, tt.head, got, tt.want)
+			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
+			if got := reviewCoversHead(tk, tt.head); got != tt.want {
+				t.Errorf("reviewCoversHead(sha=%q attempts=%d, head=%q) = %v, want %v",
+					tt.reviewed, tt.attempts, tt.head, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNextReviewAttempt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		reviewed string
+		attempts int
+		head     string
+		want     int
+	}{
+		{"first ever review", "", 0, "abc", 1},
+		{"retry on the same head", "abc", 1, "abc", 2},
+		{"a new push restarts the budget", "abc", 9, "def", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tk := task.Task{ReviewedHeadSHA: tt.reviewed, ReviewedHeadAttempts: tt.attempts}
+			if got := nextReviewAttempt(tk, tt.head); got != tt.want {
+				t.Errorf("nextReviewAttempt = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// The blocking regression the adversary found in the first cut: stamping at
+// dispatch and refusing forever turned any transient provider failure into a PR
+// that is never reviewed again. A run that fails to start must not spend budget.
+func TestDispatchInboundReview_FailedStartDoesNotSpendBudget(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "head-1", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	// Auto-dispatch off models StartWorkflow refusing before anything runs.
+	a.workflowEngine.SetAutoDispatch(false)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewedHeadSHA != "" || got.ReviewedHeadAttempts != 0 {
+		t.Fatalf("charged the head (sha=%q attempts=%d) for a review that never started — "+
+			"the PR would never be reviewed again", got.ReviewedHeadSHA, got.ReviewedHeadAttempts)
+	}
+
+	// With dispatch re-enabled the review must still happen.
+	a.workflowEngine.SetAutoDispatch(true)
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+	got, err = a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewedHeadAttempts != 1 {
+		t.Errorf("attempts = %d, want 1 once a run actually started", got.ReviewedHeadAttempts)
 	}
 }
 

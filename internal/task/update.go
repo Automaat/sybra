@@ -35,6 +35,7 @@ type Update struct {
 	SupervisorSteer       *string
 	ReviewPhase           *string
 	ReviewedHeadSHA       *string
+	ReviewedHeadAttempts  *int
 	PRPhase               *string
 	TodoistID             *string
 	Priority              *Priority
@@ -109,6 +110,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyTagsField(u, k, v)
 	case "pr_number":
 		return applyPRNumberField(u, k, v)
+	case "reviewed_head_attempts":
+		return applyReviewedHeadAttemptsField(u, k, v)
 	case "max_turns":
 		return applyMaxTurnsField(u, v)
 	case "fork_subagent":
@@ -335,6 +338,19 @@ func applyDependsOnField(u *Update, k string, v any) error {
 		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyReviewedHeadAttemptsField(u *Update, k string, v any) error {
+	switch n := v.(type) {
+	case int:
+		u.ReviewedHeadAttempts = &n
+	case float64:
+		i := int(n)
+		u.ReviewedHeadAttempts = &i
+	default:
+		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
 	}
 	return nil
 }

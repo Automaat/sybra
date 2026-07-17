@@ -69,7 +69,7 @@ func setupApp(t *testing.T) *App {
 		// Default the PR-head lookup to a stub so no test can reach GitHub. A
 		// distinct per-PR SHA keeps the review dispatcher's already-reviewed
 		// guard inert unless a test opts in by stamping reviewed_head_sha.
-		fetchPRHeadSHA: func(_ string, number int) (string, error) {
+		fetchPRHeadSHA: func(_ context.Context, _ string, number int) (string, error) {
 			return fmt.Sprintf("head-sha-pr-%d", number), nil
 		},
 	}

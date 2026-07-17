@@ -62,7 +62,7 @@ func (a *App) dispatchPass(ctx context.Context) {
 		return
 	}
 	a.releaseUnblockedChildren()
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(ctx)
 	if a.assigner != nil {
 		a.assigner.Tick(ctx)
 	}
@@ -163,7 +163,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	if !a.runsScheduler() {
 		return
 	}
-	a.reconcileRunnableBoardTasks()
+	a.reconcileRunnableBoardTasks(ctx)
 	if a.workflowEngine != nil {
 		// workflow.Engine derives its shell-step context from its own e.ctx
 		// field (Engine.SetContext, bound once from App's root ctx), not an
@@ -172,7 +172,7 @@ func (a *App) queueDrainPass(ctx context.Context) {
 	}
 }
 
-func (a *App) reconcileRunnableBoardTasks() {
+func (a *App) reconcileRunnableBoardTasks(ctx context.Context) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -205,7 +205,7 @@ func (a *App) reconcileRunnableBoardTasks() {
 			a.dispatchPlanningWorkflow(t.ID)
 		case task.StatusInReview:
 			if isInboundReviewTask(t) {
-				a.dispatchInboundReviewWorkflow(t.ID)
+				a.dispatchInboundReviewWorkflow(ctx, t.ID)
 				continue
 			}
 		case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
@@ -219,25 +219,46 @@ func isInboundReviewTask(t task.Task) bool {
 	return slices.Contains(t.Tags, "review") && t.ProjectID != "" && t.PRNumber != 0
 }
 
-// reviewCoversHead reports whether an automated review was already dispatched
-// against head. An unknown head ("") is treated as covered: the caller could
-// not establish what to review, and declining is the safe direction.
+// maxReviewAttemptsPerHead bounds automated review runs against one PR commit.
+// Above 1 so a transient provider failure gets a retry: refusing after a single
+// dispatch would trade #2164's re-review loop for a PR nobody ever reviews
+// again, which is the worse outcome for a contributor.
+const maxReviewAttemptsPerHead = 2
+
+// reviewCoversHead reports whether head's review budget is spent. An unknown
+// head ("") counts as covered: we cannot tell a new push from the commit we
+// just reviewed, and declining is the safe direction.
 func reviewCoversHead(t task.Task, head string) bool {
 	if head == "" {
 		return true
 	}
-	return t.ReviewedHeadSHA == head
+	if t.ReviewedHeadSHA != head {
+		return false
+	}
+	return t.ReviewedHeadAttempts >= maxReviewAttemptsPerHead
 }
 
-// fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests.
-func (a *App) fetchPRHeadSHAFunc() func(repo string, number int) (string, error) {
+// nextReviewAttempt returns the attempt number head is about to consume. A new
+// head restarts the budget, so a real push always re-opens review.
+func nextReviewAttempt(t task.Task, head string) int {
+	if t.ReviewedHeadSHA != head {
+		return 1
+	}
+	return t.ReviewedHeadAttempts + 1
+}
+
+// fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests. The
+// context-aware form is mandatory here: this runs inline on the orchestrator
+// loop, and gh's global request gate is held across the whole subprocess, so an
+// uncancellable call would stall every other dispatch behind it.
+func (a *App) fetchPRHeadSHAFunc() func(ctx context.Context, repo string, number int) (string, error) {
 	if a.fetchPRHeadSHA != nil {
 		return a.fetchPRHeadSHA
 	}
-	return github.FetchPRHeadSHA
+	return github.FetchPRHeadSHAContext
 }
 
-func (a *App) dispatchInboundReviewWorkflow(taskID string) {
+func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -261,12 +282,14 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 		return
 	}
 
-	// Everything above is a function of local state, so a stale or frozen phase
-	// re-opens the gate every cooldown. Ask GitHub what the head actually is and
-	// refuse to review a commit we already reviewed — the durable backstop that
-	// #2164 lacked. The lookup is TTL-cached and only runs once the cheap gates
-	// pass, so it costs at most one call per cooldown per task.
-	head, err := a.fetchPRHeadSHAFunc()(t.ProjectID, t.PRNumber)
+	// Every gate above is a function of local state, so a stale or frozen phase
+	// re-opens them every cooldown — that is how #2164 spent 112 reviews on one
+	// commit. Ask GitHub for the real head and spend a bounded budget per
+	// commit. Cached 30s (github.prHeadSHACache), so a task whose gates are
+	// stuck open costs ~2 lookups/min, not one per tick.
+	headCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	head, err := a.fetchPRHeadSHAFunc()(headCtx, t.ProjectID, t.PRNumber)
 	if err != nil {
 		// Fail closed: without the head we cannot tell a new push from the
 		// commit we already reviewed, and guessing is what produced 112 reviews.
@@ -276,16 +299,23 @@ func (a *App) dispatchInboundReviewWorkflow(taskID string) {
 	if reviewCoversHead(t, head) {
 		return
 	}
-	// Stamp before dispatching: a run that crashes or loops must not be able to
-	// re-review the same commit on the next tick.
-	if _, err := a.tasks.Update(taskID, task.Update{ReviewedHeadSHA: task.Ptr(head)}); err != nil {
-		a.logger.Error("workflow.dispatch.inbound-review.stamp", "task_id", taskID, "err", err)
+
+	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil {
+		if !errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+			!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
+			a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
+		}
+		// Nothing ran, so nothing is charged; the next tick stays free to retry.
 		return
 	}
-	if err := a.workflowEngine.StartWorkflow(taskID, "pr-review"); err != nil &&
-		!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
-		!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
-		a.logger.Error("workflow.dispatch.inbound-review", "task_id", taskID, "err", err)
+	// Charge only once a run is underway. A run that then crashes or loops still
+	// burns its attempt, which is what bounds the loop.
+	attempt := nextReviewAttempt(t, head)
+	if _, err := a.tasks.Update(taskID, task.Update{
+		ReviewedHeadSHA:      task.Ptr(head),
+		ReviewedHeadAttempts: task.Ptr(attempt),
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.stamp", "task_id", taskID, "err", err)
 	}
 }
 

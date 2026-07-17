@@ -42,6 +42,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		SupervisorSteer:        "read the failure",
 		ReviewPhase:            "awaiting-author",
 		ReviewedHeadSHA:        "e57e4b5db72c55ba7610140631a80946a7edddf0",
+		ReviewedHeadAttempts:   2,
 		PRPhase:                "fixing",
 		TodoistID:              "todoist-1",
 		Priority:               PriorityHigh,
@@ -241,6 +242,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.ReviewPhase = "awaiting-author"
 	case "ReviewedHeadSHA":
 		task.ReviewedHeadSHA = "e57e4b5db72c55ba7610140631a80946a7edddf0"
+	case "ReviewedHeadAttempts":
+		task.ReviewedHeadAttempts = 2
 	case "PRPhase":
 		task.PRPhase = "fixing"
 	case "TodoistID":
