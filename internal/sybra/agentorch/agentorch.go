@@ -390,6 +390,11 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 type startOptions struct {
 	admissionGate bool
 	manualDrain   bool
+	// outputSchema is the workflow step's OutputSchema, threaded onto the
+	// implementation RunConfig so a run_agent step with output_schema reaches
+	// the provider with --json-schema / --output-schema. Empty for the
+	// manual/drain entry points, which carry no schema.
+	outputSchema string
 }
 
 // StartAgent is the manual/direct dispatch entry point (App.StartAgent,
@@ -505,8 +510,8 @@ func translatePoolBusy(err error) error {
 // when the agent pool is saturated it offers the task to the queue and
 // returns workflow.ErrAgentPoolBusy instead of dispatching, so run_agent
 // parks ExecWaiting and ResumeStalled retries once a slot frees.
-func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
-	return o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true})
+func (o *Orchestrator) StartAgentWithAssignment(taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef, outputSchema string, assignment workflow.AgentAssignment) (*agent.Agent, string, error) {
+	return o.startAgent(o.baseCtx(), taskID, mode, prompt, includeTaskDescription, oneShot, cleanRetryRef, assignment, startOptions{admissionGate: true, outputSchema: outputSchema})
 }
 
 func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt string, includeTaskDescription, oneShot bool, cleanRetryRef string, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
@@ -607,6 +612,7 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 		RequirePermissions:      requirePerm,
 		HeadlessPermissionMode:  posture,
 		OneShot:                 oneShot,
+		OutputSchema:            opts.outputSchema,
 		IgnoreConcurrencyLimit:  ignoreConcurrencyLimit,
 		ResumeSessionID:         resumeSessionID,
 		ExtraEnv:                extraEnv,

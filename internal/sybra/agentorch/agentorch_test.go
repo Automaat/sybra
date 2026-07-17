@@ -116,7 +116,7 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 		Agent: config.AgentDefaults{MaxTaskCostUSD: 8.0},
 	})
 
-	_, _, err = o.StartAgentWithAssignment(created.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(created.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("expected dispatch to be refused once cumulative task cost meets the cap, got nil error")
 	}
@@ -333,13 +333,13 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	o.SetQueue(q)
 
 	first := newResearchTask(t, tm, "occupies the only pool slot")
-	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
 	second := newResearchTask(t, tm, "pool-busy, falls back to the queue")
-	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
 	}
@@ -354,7 +354,7 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	// Re-dispatching the same still-pool-busy task must refresh the existing
 	// queue entry in place (agentqueue.Offer's dedup contract), not add a
 	// second entry.
-	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("re-dispatch(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
 	}
@@ -424,18 +424,18 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	o.SetQueue(q)
 
 	first := newResearchTask(t, tm, "occupies the only pool slot")
-	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+	if _, _, err := o.StartAgentWithAssignment(first.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(first) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
 	second := newResearchTask(t, tm, "fills the queue to max depth")
-	if _, _, err := o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+	if _, _, err := o.StartAgentWithAssignment(second.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(second) err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
 	}
 
 	third := newResearchTask(t, tm, "rejected: queue already at max depth")
-	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", workflow.AgentAssignment{})
+	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("expected a non-nil error once the queue is at max depth")
 	}
@@ -471,13 +471,13 @@ func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
 	o.SetQueue(q)
 
 	blocker := newResearchTask(t, tm, "occupies the only pool slot")
-	if _, _, err := o.StartAgentWithAssignment(blocker.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); err != nil {
+	if _, _, err := o.StartAgentWithAssignment(blocker.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); err != nil {
 		t.Fatalf("StartAgentWithAssignment(blocker) unexpected err: %v", err)
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(blocker.ID, 5*time.Second) })
 
 	firstQueued := newResearchTask(t, tm, "fills the only queue slot")
-	if _, _, err := o.StartAgentWithAssignment(firstQueued.ID, "headless", "go", false, false, "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
+	if _, _, err := o.StartAgentWithAssignment(firstQueued.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{}); !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgentWithAssignment(firstQueued) err = %v, want workflow.ErrAgentPoolBusy", err)
 	}
 

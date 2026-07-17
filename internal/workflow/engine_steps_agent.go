@@ -201,16 +201,28 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// (e.g. evaluate). Without this, the workflow stalls on implement forever.
 	oneShot := mode == "interactive" && !step.Config.ReuseAgent && step.Config.WaitForStatus == ""
 
-	// Mark the step as starting before the (potentially multi-second,
-	// worktree-prep-bound) StartAgent call so a stale/untracked agent
+	// The step-starting marker below brackets the (potentially multi-second,
+	// worktree-prep-bound) StartAgent call, so a stale/untracked agent
 	// completion arriving mid-start (e.g. a reattached agent from a prior
 	// step) sees this step as claimed instead of falling through to the
 	// "nothing tracked yet, credit the current step" fallback in
-	// HandleAgentComplete. Cleared by the deferred unmark when execRunAgent
-	// returns, at which point either agentRoutes (success) or the parked/failed
-	// step state takes over.
+	// HandleAgentComplete. The deferred unmark clears it once this function
+	// is done, at which point either agentRoutes (success) or the
+	// parked/failed step state takes over.
+	//
+	// A completion for this very start can also beat the agentRoutes write a
+	// few lines down. e.mu is not held across the StartAgent call here on
+	// purpose: this is the hot path and worktree prep can be slow.
+	// HandleAgentComplete buffers a completion that arrives in that window
+	// instead of dropping it (#2176's hang was exactly that silent drop). The
+	// deferred replay hands it back once this function's outcome — route
+	// registered, or parked/failed — is settled.
 	e.markStepStarting(taskID, step.ID)
-	defer e.unmarkStepStarting(taskID, step.ID)
+	defer func() {
+		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+			e.HandleAgentComplete(taskID, buffered)
+		}
+	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
