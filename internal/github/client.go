@@ -579,7 +579,12 @@ func ViewerLoginCtx(ctx context.Context) string {
 }
 
 // IsTransientError reports whether err is a transient GitHub API failure
-// (HTTP 5xx or network timeout) that is expected to resolve on its own.
+// (HTTP 5xx, rate limiting, or a network blip) that is expected to resolve on
+// its own.
+//
+// Callers escalate on the non-transient side, and these errors arrive on every
+// in-flight request at once, so a gap here turns a ten-second network wobble
+// into a board-wide escalation storm.
 func IsTransientError(err error) bool {
 	if err == nil {
 		return false
@@ -594,9 +599,17 @@ func IsTransientError(err error) bool {
 	if strings.Contains(msg, "http 5") {
 		return true
 	}
+	// Rate limiting is backpressure, not a defect — GitHub is telling us to wait.
+	if isRateLimitedMessage(msg) {
+		return true
+	}
 	return strings.Contains(msg, "dial tcp") ||
 		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "context deadline exceeded")
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "no route to host")
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an
