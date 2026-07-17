@@ -14,9 +14,14 @@ type PullRequest struct {
 	HeadSHA          string   `json:"headSha"`
 	CIStatus         string   `json:"ciStatus"`         // SUCCESS, FAILURE, PENDING, or ""
 	HasPendingChecks bool     `json:"hasPendingChecks"` // true when any check is still in-progress/queued
-	ReviewDecision   string   `json:"reviewDecision"`   // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
-	Mergeable        string   `json:"mergeable"`        // MERGEABLE, CONFLICTING, UNKNOWN, or ""
-	UnresolvedCount  int      `json:"unresolvedCount"`
+	// CIFlaky reports whether every gating check name in CIStatus's FAILURE
+	// verdict also shows a SUCCESS outcome for the same head commit (see
+	// flakyOnlyFailure) — an intermittent failure rather than a deterministic
+	// one. Only meaningful when CIStatus == "FAILURE"; zero value otherwise.
+	CIFlaky         bool   `json:"ciFlaky"`
+	ReviewDecision  string `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or ""
+	Mergeable       string `json:"mergeable"`      // MERGEABLE, CONFLICTING, UNKNOWN, or ""
+	UnresolvedCount int    `json:"unresolvedCount"`
 	// ActionableCount is the subset of unresolved threads where a reviewer
 	// (human or bot) left the last comment — i.e. the ball is in the agent's
 	// court. A thread the fix agent already replied to is unresolved but NOT

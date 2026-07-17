@@ -153,6 +153,45 @@ func effectiveCheckState(c gqlCheckContext) string {
 	}
 }
 
+// flakyOnlyFailure reports whether every gating check name with a FAILURE
+// outcome also has at least one SUCCESS outcome among the same-named
+// contexts — i.e. the check is intermittently failing, not consistently
+// broken. GitHub's statusCheckRollup carries one context per check *name*
+// per commit, so a same-SHA mixed outcome only shows up when a check was
+// manually rerun (`gh run rerun --failed`) and the contexts list still
+// includes the earlier failed attempt alongside the rerun's outcome, or when
+// a workflow itself reports the same check name more than once (e.g. a
+// matrix job re-registering under a shared name). Names that never show
+// FAILURE, and PENDING-only names, are ignored — they carry no signal either
+// way. Returns false when there is no FAILURE at all (nothing to classify)
+// or when at least one FAILURE name never shows a SUCCESS (a deterministic,
+// consistently-broken check).
+func flakyOnlyFailure(contexts []gqlCheckContext) bool {
+	sawSuccess := make(map[string]bool, len(contexts))
+	sawFailure := make(map[string]bool, len(contexts))
+	for i := range contexts {
+		name := contexts[i].effectiveName()
+		if isNonGatingCheck(name) {
+			continue
+		}
+		switch effectiveCheckState(contexts[i]) {
+		case "SUCCESS":
+			sawSuccess[name] = true
+		case "FAILURE":
+			sawFailure[name] = true
+		}
+	}
+	if len(sawFailure) == 0 {
+		return false
+	}
+	for name := range sawFailure {
+		if !sawSuccess[name] {
+			return false
+		}
+	}
+	return true
+}
+
 // rollupFromContexts computes (ciStatus, hasPendingChecks) ignoring
 // informational reporters. Returns ("", false) when contexts is empty
 // so callers can fall back to the GitHub-supplied rollup state for
