@@ -1181,7 +1181,13 @@ func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
 
 func TestReapIdleInteractive_ReleasesHumanRequiredTaskAgent(t *testing.T) {
 	tasks, tk := newTestTasks(t)
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	// The agent predates the human-required transition — a genuine leftover
+	// from before the status flipped (e.g. the task was in-progress with a
+	// live interactive session, then got parked externally) — so it is safe
+	// for the reaper to release.
+	before := time.Now()
+	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)})
+	if err != nil {
 		t.Fatalf("set human-required: %v", err)
 	}
 
@@ -1192,11 +1198,41 @@ func TestReapIdleInteractive_ReleasesHumanRequiredTaskAgent(t *testing.T) {
 		stopAgent: func(id string) error { stopped = id; return nil },
 	}
 
-	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "interactive", StartedAt: time.Now(), LastEventAt: time.Now()}
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "interactive", StartedAt: before, LastEventAt: before}
 	w.reapIdleInteractive(ag, time.Now())
 
 	if stopped != "a1" {
 		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+	if !got.StatusChangedAt.After(before) {
+		t.Fatalf("test setup invalid: StatusChangedAt %v not after agent StartedAt %v", got.StatusChangedAt, before)
+	}
+}
+
+// TestReapIdleInteractive_SparesAgentDispatchedForCurrentStatus guards
+// against #2221: a human-review (or any other) agent freshly dispatched
+// specifically to act on a just-set human-required status must not be killed
+// by the same-tick status-release reaper before it can do its job.
+func TestReapIdleInteractive_SparesAgentDispatchedForCurrentStatus(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)})
+	if err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	startedAt := got.StatusChangedAt.Add(time.Millisecond)
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "interactive", StartedAt: startedAt, LastEventAt: startedAt}
+	w.reapIdleInteractive(ag, startedAt.Add(time.Second))
+
+	if stopped != "" {
+		t.Fatalf("stopAgent called with %q, want agent left running", stopped)
 	}
 }
 
@@ -1223,6 +1259,64 @@ func TestReapIdleInteractive_HardStopsHungTaskAgent(t *testing.T) {
 	}
 	if stopped != "a1" {
 		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
+func TestReapTaskAgentForStatus_ReleasesOrphanedHeadlessAgent(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	before := time.Now()
+	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)})
+	if err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+	if !got.StatusChangedAt.After(before) {
+		t.Fatalf("test setup invalid: StatusChangedAt %v not after agent StartedAt %v", got.StatusChangedAt, before)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless", StartedAt: before, LastEventAt: before}
+	if !w.reapTaskAgentForStatus(ag) {
+		t.Fatal("reapTaskAgentForStatus = false, want true for a pre-existing agent")
+	}
+	if stopped != "a1" {
+		t.Fatalf("stopAgent called with %q, want a1", stopped)
+	}
+}
+
+// TestReapTaskAgentForStatus_SparesAgentDispatchedForCurrentStatus is the
+// regression guard for the human-review self-defeat bug: the human-review
+// agent (internal/sybra/app_human_review.go) is dispatched the moment a task
+// becomes human-required specifically to diagnose and unblock it. Before this
+// fix, the very next watchdog tick treated it as an orphan of the status it
+// was launched to handle and killed it seconds in — both e153081f and
+// 27dd0478 landed here with an empty verdict because of this race.
+func TestReapTaskAgentForStatus_SparesAgentDispatchedForCurrentStatus(t *testing.T) {
+	tasks, tk := newTestTasks(t)
+	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)})
+	if err != nil {
+		t.Fatalf("set human-required: %v", err)
+	}
+
+	stopped := ""
+	w := &Watchdog{
+		tasks:     tasks,
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(id string) error { stopped = id; return nil },
+	}
+
+	startedAt := got.StatusChangedAt.Add(time.Millisecond)
+	ag := &agent.Agent{ID: "a1", TaskID: tk.ID, Mode: "headless", StartedAt: startedAt, LastEventAt: startedAt}
+	if w.reapTaskAgentForStatus(ag) {
+		t.Fatal("reapTaskAgentForStatus = true, want false for an agent dispatched after the status change")
+	}
+	if stopped != "" {
+		t.Fatalf("stopAgent called with %q, want agent left running", stopped)
 	}
 }
 
