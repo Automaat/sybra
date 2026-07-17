@@ -196,11 +196,19 @@ type Position struct {
 // Only fields relevant to the step type are populated.
 type StepConfig struct {
 	// run_agent
-	Role          string   `yaml:"role,omitempty" json:"role"`
-	Mode          string   `yaml:"mode,omitempty" json:"mode"`
-	Model         string   `yaml:"model,omitempty" json:"model"`
-	Provider      string   `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "cross"
-	Prompt        string   `yaml:"prompt,omitempty" json:"prompt"`
+	Role     string `yaml:"role,omitempty" json:"role"`
+	Mode     string `yaml:"mode,omitempty" json:"mode"`
+	Model    string `yaml:"model,omitempty" json:"model"`
+	Provider string `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "cross"
+	Prompt   string `yaml:"prompt,omitempty" json:"prompt"`
+	// AllowedTools is advisory, not a capability boundary. Only claude enforces
+	// it (as --allowedTools); codex has no per-tool allowlist at all, and
+	// copilot spawns with --allow-all-tools. Since provider: ab / cross pick the
+	// provider at dispatch, the same step is enforced on a claude spawn and
+	// unenforced on the copilot spawn beside it — dispatch logs
+	// agent.run.allowed_tools.unenforced whenever that happens. For containment
+	// that binds every provider, rely on the OS-level sandbox instead (see
+	// internal/agent/procsandbox_darwin.go).
 	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
 	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`
 

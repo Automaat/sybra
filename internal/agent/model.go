@@ -1583,10 +1583,15 @@ func (a *Agent) Output() []StreamEvent {
 
 // RunConfig is the single entry point for starting any agent.
 type RunConfig struct {
-	TaskID             string
-	Name               string
-	Mode               string // "headless", "interactive", or "conversational"
-	Prompt             string
+	TaskID string
+	Name   string
+	Mode   string // "headless", "interactive", or "conversational"
+	Prompt string
+	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
+	// reports true — claude alone today. Elsewhere it is silently ignored, and
+	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
+	// the provider long after the step declared its list. Treat it as advisory:
+	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools       []string
 	Dir                string
 	Provider           string // "claude", "codex", or "copilot"

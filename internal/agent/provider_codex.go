@@ -17,6 +17,11 @@ func init() {
 
 func (codexProvider) Name() string { return "codex" }
 
+// HonorsAllowedTools is false: the codex CLI has no per-tool allowlist. Its
+// only containment is -s/--sandbox, which is filesystem-level and unrelated to
+// which tools the model may call, so allowed_tools cannot be mapped onto it.
+func (codexProvider) HonorsAllowedTools() bool { return false }
+
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.

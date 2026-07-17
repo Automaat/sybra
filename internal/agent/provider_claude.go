@@ -20,6 +20,10 @@ func init() {
 
 func (claudeProvider) Name() string { return "claude" }
 
+// HonorsAllowedTools is true here alone: claudePermissionArgs turns the list
+// into --allowedTools. Every other provider inherits the false default.
+func (claudeProvider) HonorsAllowedTools() bool { return true }
+
 func (claudeProvider) NormalizeModel(model string) string {
 	// [1m] is a Claude-Code-only context marker. Fable 5 ships a 1M context
 	// window by default, so CC 2.1.173 strips the redundant suffix; Sybra

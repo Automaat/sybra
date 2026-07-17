@@ -33,11 +33,23 @@ type Provider interface {
 	ParseConvoLine(line []byte) (ConvoEvent, error)
 	SessionFilePath(sessionID string) string
 	ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration)
+	// HonorsAllowedTools reports whether this provider actually enforces
+	// RunConfig.AllowedTools on the spawned CLI. False means the list is
+	// silently ignored and the agent runs with the provider's own default
+	// reach — see warnUnenforceableAllowedTools.
+	HonorsAllowedTools() bool
 }
 
 type baseProvider struct{}
 
 func (baseProvider) SandboxArgs(bool, bool) []string { return nil }
+
+// HonorsAllowedTools defaults to false so a provider only claims to enforce the
+// list by saying so. codex has no per-tool allowlist at all (only --sandbox,
+// which is filesystem-level), and copilot's --allow-tool vocabulary is
+// unrelated to claude's tool names — a guessed mapping would manufacture a
+// boundary that does not hold, which is worse than an honest gap.
+func (baseProvider) HonorsAllowedTools() bool { return false }
 
 func (baseProvider) OutputSchemaAsFile() bool { return false }
 
