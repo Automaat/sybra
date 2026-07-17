@@ -49,7 +49,6 @@ func (r *Handler) triageReview(t task.Task) {
 	if start == nil {
 		start = r.StartReviewAgent
 	}
-
 	statsFn := r.fetchPRStatsFn
 	if statsFn == nil {
 		statsFn = github.FetchPRStats
