@@ -259,10 +259,23 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	defs := completionDefinitionCache{engine: e, task: t}
 	if !tracked {
 		spawnedStep = t.Workflow.CurrentStep
-		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
+		if e.trackedForTaskStep(taskID, spawnedStep) {
 			e.logger.Info("workflow.agent-complete.bail",
 				"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
 			e.clearAgentStep(c.AgentID)
+			return
+		}
+		if e.hasPendingStepStart(taskID, spawnedStep) {
+			// The step's own execRunAgent call is still registering its route
+			// (StartAgent returned but agentRoutes isn't written yet) — this is
+			// almost certainly that agent's own completion beating the
+			// bookkeeping, not a stale phantom. Dropping it here is the #2176
+			// hang: the workflow never gets another completion for this step.
+			// Buffer it; execRunAgent replays it once the route is registered,
+			// or discards it if the start ultimately failed.
+			e.bufferPendingCompletion(taskID, spawnedStep, c)
+			e.logger.Info("workflow.agent-complete.buffered",
+				"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
 			return
 		}
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
@@ -409,8 +422,61 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
 }
 
+// trackedForTaskStep reports whether an agentRoutes entry already exists for
+// taskID+stepID — unlike hasTrackedAgentForTaskStep, it does not also count an
+// in-flight, not-yet-registered start. HandleAgentComplete needs the two cases
+// told apart: an actual route means some other agent already legitimately
+// owns this step (drop the completion as a genuine phantom); a pending start
+// with no route yet means this step's own agent may simply have beaten the
+// route registration (buffer and replay — see bufferPendingCompletion).
+func (e *Engine) trackedForTaskStep(taskID, stepID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, entry := range e.agentRoutes {
+		if entry.taskID == taskID && entry.stepID == stepID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPendingStepStart reports whether a run_agent start for taskID+stepID is
+// currently between StartAgent returning and its route being registered.
+func (e *Engine) hasPendingStepStart(taskID, stepID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
+}
+
 func pendingStepStartKey(taskID, stepID string) string {
 	return taskID + "|" + stepID
+}
+
+// bufferPendingCompletion holds an untracked completion that raced a
+// still-registering route for the same task+step, so execRunAgent can replay
+// it once the route exists (see replayPendingCompletions).
+func (e *Engine) bufferPendingCompletion(taskID, stepID string, c AgentCompletion) {
+	e.mu.Lock()
+	key := pendingStepStartKey(taskID, stepID)
+	e.pendingCompletions[key] = append(e.pendingCompletions[key], c)
+	e.mu.Unlock()
+}
+
+// replayPendingCompletions delivers any completion(s) buffered while
+// taskID+stepID's start was in flight (see bufferPendingCompletion). Called
+// by execRunAgent after it finishes — whether it registered a route (the
+// buffered completion is now a normal tracked delivery) or failed before
+// registering one (the buffered completion is genuinely orphaned and
+// HandleAgentComplete's usual untracked-phantom handling applies to it).
+func (e *Engine) replayPendingCompletions(taskID, stepID string) {
+	key := pendingStepStartKey(taskID, stepID)
+	e.mu.Lock()
+	buffered := e.pendingCompletions[key]
+	delete(e.pendingCompletions, key)
+	e.mu.Unlock()
+	for _, c := range buffered {
+		e.HandleAgentComplete(taskID, c)
+	}
 }
 
 type completionDefinitionCache struct {
