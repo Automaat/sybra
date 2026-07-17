@@ -33,7 +33,14 @@
   }
 
   function rowState(row: ComparisonRowLike): string {
-    if (row.baseline) return 'baseline'
+    if (row.baseline) {
+      // Surface the caveat on the baseline row too — a parity-unknown/low-sample
+      // baseline is an untrustworthy comparison basis and must not read as clean.
+      if (row.sampleStatus && row.sampleStatus !== 'actionable') {
+        return `baseline · ${sampleLabel(row.sampleStatus)}`
+      }
+      return 'baseline'
+    }
     if (row.baselineVariantId && !row.failureEstimate?.hasDelta) return 'no baseline'
     return sampleLabel(row.sampleStatus)
   }
@@ -155,8 +162,6 @@
                       {/if}
                       {#if rowState(row)}
                         <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)} {isDominantSample(row) ? 'experiment-caveat--dominant' : ''}">{rowState(row)}</span>
-                      {:else if row.insufficientData}
-                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                       {/if}
                     </td>
                     <td class="py-1.5 text-right text-xs">
@@ -214,8 +219,6 @@
                         {/if}
                         {#if rowState(child)}
                           <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)} {isDominantSample(child) ? 'experiment-caveat--dominant' : ''}">{rowState(child)}</span>
-                        {:else if child.insufficientData}
-                          <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
                         {/if}
                       </td>
                       <td class="py-1.5 text-right text-xs">

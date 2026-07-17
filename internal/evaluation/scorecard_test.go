@@ -1454,6 +1454,17 @@ func TestExperimentSampleStatusBlocksReadinessOnSkillParityUnknown(t *testing.T)
 	if byVariant["treatment"].SampleStatus != SampleStatusActionable {
 		t.Fatalf("treatment variant sample status = %q, want %q", byVariant["treatment"].SampleStatus, SampleStatusActionable)
 	}
+	// A parity-unknown baseline is not a trustworthy comparison basis: no variant
+	// (including the baseline itself) may report a delta measured against it.
+	if rows["control"].FailureEstimate.HasDelta {
+		t.Fatalf("control (parity-unknown baseline) failure delta = %+v, want suppressed", rows["control"].FailureEstimate)
+	}
+	if rows["treatment"].FailureEstimate.HasDelta {
+		t.Fatalf("treatment failure delta = %+v, want suppressed against a parity-unknown baseline", rows["treatment"].FailureEstimate)
+	}
+	if !rows["control"].Baseline {
+		t.Fatalf("control row = %+v, want Baseline flag retained (configured baseline)", rows["control"])
+	}
 }
 
 func TestReportNotesFlagsIndeterminateSkillConformance(t *testing.T) {

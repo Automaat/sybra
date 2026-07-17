@@ -1293,6 +1293,14 @@ func applyBaselineDeltas(rows map[string]*ComparisonBreakdown, baselineVariantID
 		return
 	}
 	baseline.Baseline = true
+	// A parity-unknown baseline (mixed skill/direct delivery, or all-indeterminate)
+	// is not a trustworthy comparison basis: every variant's delta would be measured
+	// against contaminated data. Keep the Baseline flag (it is the configured
+	// baseline) but suppress delta math so no variant is reported as better/worse
+	// than an untrustworthy reference.
+	if baseline.SkillParityUnknown {
+		return
+	}
 	applyDelta := func(est *RateEstimate, base RateEstimate) {
 		if !est.HasData || !base.HasData {
 			return
