@@ -4510,7 +4510,13 @@ steps:
 		}},
 	})
 
-	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "still no receipt", Success: true})
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "agent-2",
+		Result: `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\nClassification: product_bug: repo does not compile\n\nObserved output:\n` +
+			"```text\npkg/api-server/resource_inspect_endpoints.go:14: dangling import\n```" +
+			`"}`,
+		Success: true,
+	})
 
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
@@ -4521,6 +4527,9 @@ steps:
 	}
 	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
 		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "product_bug: repo does not compile") {
+		t.Fatalf("StatusReason = %q, want parsed verdict summary", ti.StatusReason)
 	}
 	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
 		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
