@@ -212,6 +212,8 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.PRNumber = follower.PRNumber
 	out.PRPhase = follower.PRPhase
 	out.ReviewPhase = follower.ReviewPhase
+	out.ReviewedHeadSHA = follower.ReviewedHeadSHA
+	out.ReviewedHeadAttempts = follower.ReviewedHeadAttempts
 	out.Reviewed = follower.Reviewed
 	out.RunRole = follower.RunRole
 	out.Outcome = follower.Outcome

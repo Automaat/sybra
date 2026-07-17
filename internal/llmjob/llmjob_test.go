@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/llmexec"
+	"github.com/Automaat/sybra/internal/provider"
 )
 
 type testOut struct {
@@ -285,5 +286,31 @@ func stubRunner(fn runnerFunc) func() {
 	runJSON = fn
 	return func() {
 		runJSON = prev
+	}
+}
+
+// TestAvoidingGate_TypedNilBaseIsAbsentNotFatal covers the wrapper's own nil
+// guard, which cannot catch the case that actually reaches it.
+//
+// `g.base == nil` is false when base holds a nil *provider.Checker — the shape
+// the disabled-health-check config hands every gate consumer — so the wrapper
+// delegates straight through, and only the base's nil-receiver contract keeps
+// that from panicking (see provider.Checker's HealthGate section).
+func TestAvoidingGate_TypedNilBaseIsAbsentNotFatal(t *testing.T) {
+	t.Parallel()
+
+	g := avoidingGate{base: (*provider.Checker)(nil), avoid: "codex"}
+
+	if !g.IsHealthy("claude") {
+		t.Error("IsHealthy(claude) = false; an absent base gate blocks nothing")
+	}
+	if g.IsHealthy("codex") {
+		t.Error("IsHealthy(codex) = true; the avoided provider must still be refused")
+	}
+	if got := g.Reason("claude"); got != "" {
+		t.Errorf("Reason(claude) = %q, want empty", got)
+	}
+	if got := g.Reason("codex"); got != "avoided for independence" {
+		t.Errorf("Reason(codex) = %q, want the avoid reason", got)
 	}
 }

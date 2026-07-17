@@ -12,9 +12,11 @@ trigger:
       operator: not_contains
       value: handoff-pr
 steps:
-  # Mechanical heuristic: pick simple vs staff review based on PR diff size.
-  # Same step type used by simple-task; here it falls back to `gh pr diff`
-  # since this workflow has no worktree.
+  # Mechanical heuristic: pick adversarial vs staff review based on PR diff
+  # size + shape. Same step type used by simple-task; here it falls back to
+  # `gh pr diff` since this workflow has no worktree. Unlike simple-task, this
+  # workflow DOES still route to staff on a big+complex diff — the review lands
+  # publicly under the operator's name, so depth is worth the spend here.
   - id: triage_review
     name: Triage Review
     type: triage_review
@@ -50,7 +52,7 @@ steps:
       - goto: review_staff
 
   - id: review_simple
-    name: Review PR (simple)
+    name: Review PR (adversarial)
     type: run_agent
     config:
       role: review
@@ -58,7 +60,7 @@ steps:
       model: sonnet
       provider: cross
       prompt: >-
-        Run /pr-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
+        Run /adversarial-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
         This task is an authorized Sybra PR review for the linked project. Do not
         ask the operator for confirmation before posting your review.

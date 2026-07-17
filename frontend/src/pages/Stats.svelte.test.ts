@@ -42,6 +42,7 @@ function makeStatsData(): StatsResponse {
     byRole: [],
     byMode: [],
     byModel: [],
+    bySkillExecutionMode: [],
     closedTasksDaily: [],
     recentRuns: [],
   })
@@ -119,6 +120,7 @@ describe('Stats', () => {
     expect(screen.getByText('By Role')).toBeDefined()
     expect(screen.getByText('By Mode')).toBeDefined()
     expect(screen.getByText('By Model')).toBeDefined()
+    expect(screen.getByText('By Skill Execution')).toBeDefined()
   })
 
   it('shows no data message for empty breakdowns', () => {
@@ -258,17 +260,34 @@ describe('Stats', () => {
       byProject: [],
       byProjectType: [],
       byRole: [
-        { key: 'triage', stats: makeSummary({ totalRuns: 5, totalCostUsd: 0.25, totalDurationS: 100 }) },
-        { key: 'plan', stats: makeSummary({ totalRuns: 3, totalCostUsd: 0.5, totalDurationS: 200 }) },
+        {
+          key: 'triage',
+          stats: makeSummary({ totalRuns: 5, failedRuns: 1, totalCostUsd: 0.25, totalDurationS: 100, outcomeCounts: { completed: 4, failed: 1 } }),
+        },
+        {
+          key: 'plan',
+          stats: makeSummary({ totalRuns: 3, totalCostUsd: 0.5, totalDurationS: 200, outcomeCounts: { completed: 3 } }),
+        },
       ],
       byMode: [],
       byModel: [],
+      bySkillExecutionMode: [
+        {
+          key: 'native',
+          stats: makeSummary({ totalRuns: 2, failedRuns: 1, totalCostUsd: 0.1, totalDurationS: 10, outcomeCounts: { completed: 1, failed: 1 } }),
+        },
+      ],
       closedTasksDaily: [],
       recentRuns: [],
     })
     render(Stats, { props: {} })
+    expect(screen.getAllByText('Failures').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Outcomes').length).toBeGreaterThan(0)
     expect(screen.getByText('triage')).toBeDefined()
     expect(screen.getByText('plan')).toBeDefined()
+    expect(screen.getByText('Native')).toBeDefined()
+    expect(screen.getByText('4 completed · 1 failed')).toBeDefined()
+    expect(screen.getByText('1 completed · 1 failed')).toBeDefined()
   })
 
   it('renders recent runs rows', () => {
@@ -283,6 +302,11 @@ describe('Stats', () => {
           taskId: 'task-1',
           role: 'triage',
           mode: 'headless',
+          requestedSkill: 'sybra-test',
+          skillExecutionMode: 'injected',
+          resolvedSkillSourceHash: 'deadbeefcafebabe',
+          skillConformance: 'exact',
+          subagentCallCount: 2,
           model: 'sonnet',
           costUsd: 0.05,
           durationS: 60,
@@ -309,6 +333,8 @@ describe('Stats', () => {
     expect(screen.getByText('task-2')).toBeDefined()
     expect(screen.getByText('triage')).toBeDefined()
     expect(screen.getByText('eval')).toBeDefined()
+    expect(screen.getByText('sybra-test')).toBeDefined()
+    expect(screen.getByText('Injected · exact · src deadbeefcafebabe · 2 subagents')).toBeDefined()
     expect(screen.getByText('completed')).toBeDefined()
     expect(screen.getByText('failed')).toBeDefined()
   })
@@ -405,5 +431,64 @@ describe('Stats', () => {
     render(Stats, { props: {} })
     const dashes = screen.getAllByText('—')
     expect(dashes.length).toBeGreaterThan(0)
+  })
+})
+
+describe('Stats review rounds', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockStatsStore.data = null
+    mockStatsStore.error = ''
+    mockStatsStore.loading = false
+  })
+
+  afterEach(() => cleanup())
+
+  function withReviewRounds(rows: unknown[]): StatsResponse {
+    const data = makeStatsData()
+    return StatsResponse.createFrom({ ...data, reviewRounds: rows })
+  }
+
+  it('renders rounds per implementing model', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 3, totalRounds: 5, avgRounds: 1.6666, maxRounds: 3, cleanFirstPass: 2 },
+    ])
+    render(Stats, { props: {} })
+
+    expect(screen.getByText('Review rounds by implementing model')).toBeTruthy()
+    expect(screen.getByText('opus')).toBeTruthy()
+    // avgRounds is rounded for display rather than shown raw.
+    expect(screen.getByText('1.67')).toBeTruthy()
+    // Clean-first-pass shows the share, not just the count.
+    expect(screen.getByText('(67%)')).toBeTruthy()
+  })
+
+  it('flags models whose average mixes implementation models', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 2, totalRounds: 4, avgRounds: 2, maxRounds: 3, cleanFirstPass: 0, mixedImplModels: 1 },
+    ])
+    render(Stats, { props: {} })
+
+    // The marker appears on the row and again in the footnote that explains it.
+    expect(screen.getAllByText('*')).toHaveLength(2)
+    expect(
+      screen.getByLabelText('1 of 2 tasks had mixed implementation models; average is approximate'),
+    ).toBeTruthy()
+  })
+
+  it('omits the mixed-model footnote when no model is affected', () => {
+    mockStatsStore.data = withReviewRounds([
+      { key: 'opus', tasks: 1, totalRounds: 1, avgRounds: 1, maxRounds: 1, cleanFirstPass: 1 },
+    ])
+    render(Stats, { props: {} })
+
+    expect(screen.queryByText('*')).toBeNull()
+  })
+
+  it('shows an empty state when nothing reached review', () => {
+    mockStatsStore.data = withReviewRounds([])
+    render(Stats, { props: {} })
+
+    expect(screen.getByText('No reviewed tasks yet')).toBeTruthy()
   })
 })

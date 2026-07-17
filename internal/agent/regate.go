@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 
+	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/providerid"
 )
 
@@ -30,6 +31,12 @@ import (
 // set to "rate_limit" so the existing isRateLimitedRun /
 // RescheduleRateLimitedAgent reschedule-and-park behavior stays reachable,
 // exactly as it would for an in-flight run that hit the same cap.
+//
+// That error must stay strictly narrower than what dispatch admits. Refusing a
+// turn on a reason gateProvider tolerates does not park the task — the
+// reschedule hands it straight back to dispatch, which starts it again — so a
+// divergence here is a spin loop, not a safety net (see the soft-threshold last
+// resort below).
 //
 // logWriter, if non-nil, receives the convoProviderMarker line for a switch
 // before the registry is persisted (saveRegistry below) — writing the
@@ -121,14 +128,41 @@ func (m *Manager) regate(ctx context.Context, a *Agent, cfg RunConfig, logWriter
 		}
 	}
 	if alt == "" {
+		gateUnhealthy := g != nil && !g.IsHealthy(current)
 		reason := "no healthy per-turn-capable provider peer available"
 		switch {
-		case g != nil && !g.IsHealthy(current):
+		case gateUnhealthy:
 			reason = g.Reason(current)
 		case lg != nil:
 			if ok, r := lg.ProviderAvailable(current, lp); !ok && r != "" {
 				reason = r
 			}
+		}
+		// Redirect failed, so mirror what dispatch does when it cannot
+		// redirect either: keep the turn on current unless the reason is one
+		// gateProvider itself fails closed on. Refusing anything dispatch
+		// admits closes a loop rather than parking the task — recorded
+		// rate-limited, rescheduled, re-admitted, refused again ~20s later,
+		// forever, doing no work. It ran 1847 times on one task (#2150).
+		//
+		// Two reasons dispatch tolerates, so this must too. A soft reserve
+		// threshold leaves budget, and stranding a task on it is exactly what
+		// limits.IsSoftThresholdReason forbids (softLimitLastResort). A full
+		// in-flight cap only ever redirects a *new* dispatch (see
+		// MaxInFlightPerProvider), and gateProvider admits an at-cap provider
+		// once no peer is free; refusing here could not reduce concurrency
+		// anyway, since this agent already holds the slot it would
+		// re-dispatch into — the count is self-count-aware, so an exceeded cap
+		// means someone else's slot.
+		//
+		// A hard block (rate limit actually reached, provider disabled) and an
+		// unhealthy health gate are what dispatch does fail closed on, so they
+		// still gate the turn.
+		if !gateUnhealthy && (!currentMustBePerTurn || perTurnCapable(current)) &&
+			(limitAvailable(current) || limits.IsSoftThresholdReason(reason)) {
+			m.logger.Info("agent.convo.regate.last_resort",
+				"id", a.ID, "task", cfg.TaskID, "provider", current, "reason", reason)
+			return cfg, false, nil
 		}
 		a.SetError("rate_limit", reason)
 		return cfg, false, fmt.Errorf("agent regate: %s capped, no per-turn-capable peer available: %s", current, reason)

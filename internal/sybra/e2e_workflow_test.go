@@ -3093,8 +3093,9 @@ func agentRunRoles(t task.Task) []string {
 func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	// Single-opus plan flow scenarios:
 	//   triage → plan → require_plan → validate_plan_refs → maybe_critique →
-	//   critique_plan → require_plan_critique → reset_for_address →
-	//   address_critique → review_plan.
+	//   critique_plan → require_plan_critique → review_plan.
+	// The critique is advisory context for the human gate, not a router (#2152),
+	// so no second plan-role run sits between critique_plan and review_plan.
 	// triage is a deterministic classify_task step (no agent dispatch, so it
 	// consumes no scenario) — env.classifier.setVerdict below drives it to
 	// status=planning, tags=large the way the old "triage_to_planning"
@@ -3102,7 +3103,6 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	env := setupE2EMulti(t, []string{
 		"write_sidecar_success", // plan — writes the plan sidecar
 		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
-		"revise_plan_sidecars",  // address_critique — rewrites all plan artifacts and flips plan-review
 	})
 	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
@@ -3151,6 +3151,19 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	roles := agentRunRoles(tk)
 	if !slices.Contains(roles, "plan-critic") {
 		t.Errorf("plan-critic agent role missing from task agent runs\nroles: %v", roles)
+	}
+
+	// #2152: the critique must not trigger a second opus plan run. Exactly one
+	// plan-role run may reach the human gate — the dead route_critique_verdict
+	// gate previously forced an address_critique rerun on every critiqued plan.
+	planRuns := 0
+	for _, r := range roles {
+		if r == "plan" {
+			planRuns++
+		}
+	}
+	if planRuns != 1 {
+		t.Errorf("plan-role agent runs = %d, want 1 (critique must not force a replan)\nroles: %v", planRuns, roles)
 	}
 
 	if tk.PlanCritique == "" {
@@ -3212,8 +3225,14 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	if !slices.Contains(stepIDs, "require_plan_critique") {
 		t.Errorf("require_plan_critique guard did not execute\nhistory: %v", stepIDs)
 	}
-	if slices.Contains(stepIDs, "address_critique") {
-		t.Errorf("address_critique ran despite missing critique — guard failed to soft-skip\nhistory: %v", stepIDs)
+	planRuns := 0
+	for _, r := range agentRunRoles(tk) {
+		if r == "plan" {
+			planRuns++
+		}
+	}
+	if planRuns != 1 {
+		t.Errorf("plan-role agent runs = %d, want 1 — a missing critique must soft-skip to review_plan, not re-plan\nhistory: %v", planRuns, stepIDs)
 	}
 	if tk.PlanCritique != "" {
 		t.Errorf("PlanCritique unexpectedly non-empty after no_save scenario: %q", tk.PlanCritique)
@@ -3746,7 +3765,7 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 }
 
 func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
-	for _, name := range []string{"pr-review", "staff-code-review"} {
+	for _, name := range []string{"adversarial-review", "staff-code-review"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)

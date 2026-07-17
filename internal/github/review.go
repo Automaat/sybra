@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -690,13 +691,13 @@ func fetchMyReviewStateWith(e execer, repo string, number int) (MyReviewState, e
 		return MyReviewState{}, err
 	}
 
-	me := viewerLogin(e)
-	if me == "" {
+	me, err := viewerLoginE(context.Background(), e)
+	if err != nil {
 		// Without the viewer's login we cannot attribute submitted reviews, and
-		// guessing would misclassify the phase. Surface a (transient) error so
-		// the caller leaves the task's phase untouched this cycle rather than
-		// flapping it to "manual".
-		return MyReviewState{}, fmt.Errorf("resolve viewer login for %s#%d", repo, number)
+		// guessing would misclassify the phase. Surface the underlying cause so
+		// a persistent auth-mode failure is diagnosable from the log line rather
+		// than looking like a transient blip (#2164).
+		return MyReviewState{}, fmt.Errorf("resolve viewer login for %s#%d: %w", repo, number, err)
 	}
 
 	var st MyReviewState

@@ -204,6 +204,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// ReviewUntilClean reports whether simple-task-review re-reviews after each
+// fix until the verdict is CLEAN. Defaults to true when unset.
+func (c *Config) ReviewUntilClean() bool {
+	if c != nil && c.Agent.ReviewUntilClean != nil {
+		return *c.Agent.ReviewUntilClean
+	}
+	return true
+}
+
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
 // its authoring workflow without a human click. Defaults to true, but is
 // hard-gated on evaluation.offline.enabled regardless of the setting.

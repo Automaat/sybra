@@ -60,6 +60,18 @@ export class AgentDefaults {
     "requirePermissions": boolean | null;
 
     /**
+     * ReviewUntilClean keeps simple-task-review cycling review→fix→review
+     * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
+     * never the last word. nil means not configured (falls back to true).
+     * The cycle is uncapped by design — a round cap would censor the
+     * review-rounds distribution the stats page reports — and is bounded only
+     * by MaxTaskCostUSD, which is enforced before every dispatch. false falls
+     * back to a single review pass per task: cheaper and more predictable when
+     * no per-task budget is configured.
+     */
+    "reviewUntilClean": boolean | null;
+
+    /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
      * claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
      * vars (claude has no equivalent CLI flag). 0 means use
@@ -261,6 +273,9 @@ export class AgentDefaults {
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
         }
+        if (!("reviewUntilClean" in $$source)) {
+            this["reviewUntilClean"] = null;
+        }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
         }
@@ -323,22 +338,22 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField27_0 = $$createType0;
-        const $$createField28_0 = $$createType1;
-        const $$createField29_0 = $$createType2;
-        const $$createField30_0 = $$createType3;
+        const $$createField28_0 = $$createType0;
+        const $$createField29_0 = $$createType1;
+        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField27_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField28_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField29_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField30_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

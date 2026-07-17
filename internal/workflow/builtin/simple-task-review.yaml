@@ -45,22 +45,53 @@ steps:
         goto: triage_review
       - goto: done_review
 
-  # Mechanical heuristic (no LLM): inspects diff size + file shape and emits
-  # "simple" or "staff" so pick_review_method below can pick between the
-  # lightweight /pr-review skill and the deeper /staff-code-review skill.
-  # Force-staff-review tag is checked by the picker, not here, so the
-  # decision rationale is still logged for tagged tasks.
+  # Mechanical heuristic (no LLM): inspects diff size + file shape. Only its
+  # "skip" verdict is load-bearing here — the post-implement stage never routes
+  # to staff on a size/shape judgement (see pick_review_method). Kept so a
+  # zero-net-line diff still short-circuits the review cycle.
   - id: triage_review
     name: Triage Review
     type: triage_review
     next:
       - goto: pick_review_method
 
-  # Routes to the simple or staff review based on:
-  #   - task.tags contains force-staff-review → always staff (escape hatch)
+  # Back-edge only — reachable from detect_tampering, never on first entry.
+  # Every RE-review must start from a fresh sidecar: the file is imported only
+  # when the agent succeeds (engine_events.go), and require_code_review only
+  # rejects an EMPTY sidecar, so a reviewer that dies after round 1 would leave
+  # task.code_review holding round 1's stale NEEDS_FIXES — re-running
+  # fix_review against findings it already fixed, forever. Clearing first makes
+  # a dead reviewer fail closed into require_code_review -> human-required.
+  #
+  # This must NOT sit on the triage_review -> pick_review_method path.
+  # `_dir` is set by execRunAgent (engine_steps_agent.go) only once the first
+  # run_agent of THIS execution has started, and execShell rejects an empty dir
+  # outright ("resolved to empty path"), so on first entry the step would fail
+  # the workflow before any reviewer ran. On the back-edge the review and fix
+  # agents have both run, so `_dir` is populated.
+  #
+  # Round 1 needs no clearing anyway: the reviewer writes the file fresh, and
+  # nothing has yet re-read a previous round's verdict.
+  #
+  # `rm -f` is exit-0 on a missing file, so a round whose reviewer never wrote
+  # one is still a no-op.
+  - id: clear_review_sidecar
+    name: Clear Stale Review Sidecar
+    type: shell
+    config:
+      command: rm -f .sybra-review-{{.Task.ID}}.md
+      dir: '{{getvar .Vars "_dir"}}'
+    next:
+      - goto: pick_review_method
+
+  # Post-implement review is ALWAYS adversarial. Staff review is reserved for
+  # PRs a human is asked to review (pr-review.yaml); running an 11-subagent
+  # staff pass on every landing is what made review 34% of fleet spend while
+  # the "simple" branch sat dead — triage picked staff on 62 of 62 reviews.
+  # Routes:
+  #   - task.tags contains force-staff-review → staff (the only route to staff)
   #   - vars.step.triage_review.output equals skip → trivial diff, skip review
-  #   - vars.step.triage_review.output equals simple → /pr-review
-  #   - otherwise → /staff-code-review (covers "staff", error fallbacks)
+  #   - otherwise → /adversarial-review
   - id: pick_review_method
     name: Pick Review Method
     type: condition
@@ -75,18 +106,14 @@ steps:
           operator: equals
           value: skip
         goto: done_review
-      - when:
-          field: vars.step.triage_review.output
-          operator: equals
-          value: simple
-        goto: code_review_simple
-      - goto: code_review_staff
+      - goto: code_review_simple
 
-  # Lightweight review for small, low-risk diffs. Writes to the same
-  # sidecar path as code_review_staff so fix_review reads either one
-  # transparently.
+  # Default review depth for every landing. Writes to the same sidecar path as
+  # code_review_staff so fix_review reads either one transparently.
+  # /adversarial-review emits `Review Verdict: CLEAN|NEEDS_FIXES` natively, so
+  # the mapping below is identity — no verdict translation to get wrong.
   - id: code_review_simple
-    name: Code Review (simple)
+    name: Code Review (adversarial)
     type: run_agent
     config:
       role: review
@@ -100,18 +127,16 @@ steps:
 
         Steps:
           1. git diff origin/main..HEAD > .sybra-diff-{{.Task.ID}}.patch
-          2. Run /pr-review against that patch and the worktree source
+          2. Run /adversarial-review against that patch and the worktree source
           3. Save the full review to .sybra-review-{{.Task.ID}}.md
 
-        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly one
-        verdict marker:
-          - `Review Verdict: CLEAN` when /pr-review found no bug-risk,
-            correctness, reliability, security, data-loss, test-breaking,
-            or otherwise actionable implementation issue that should be fixed
-            before PR creation. Style-only comments, simplification ideas,
-            unused-code observations that do not affect behavior, and optional
-            consistency suggestions stay CLEAN.
-          - `Review Verdict: NEEDS_FIXES` when any /pr-review finding should
+        The FIRST line of .sybra-review-{{.Task.ID}}.md MUST be exactly the
+        verdict line /adversarial-review emits, copied verbatim:
+          - `Review Verdict: CLEAN` when no surviving finding requires a code
+            change before PR creation. Style-only comments, simplification
+            ideas, unused-code observations that do not affect behavior, and
+            optional consistency suggestions stay CLEAN.
+          - `Review Verdict: NEEDS_FIXES` when any surviving finding should
             trigger code changes before PR creation.
         This line gates whether a fix-review agent runs next — get it right.
 
@@ -126,9 +151,10 @@ steps:
     next:
       - goto: require_code_review
 
-  # Deep review for non-trivial diffs. Same sidecar contract as
-  # code_review_simple. Used by default whenever triage cannot prove a
-  # diff is small + low-risk.
+  # Deep review. Same sidecar contract as code_review_simple. Reachable ONLY
+  # via the force-staff-review tag — triage no longer routes here. Tag a task
+  # when you want the architectural/convention/dead-code lenses that
+  # /adversarial-review deliberately drops.
   - id: code_review_staff
     name: Code Review (staff)
     type: run_agent
@@ -191,11 +217,15 @@ steps:
         goto: ""
       - goto: route_review_verdict
 
-  # Mirrors route_critique_verdict in simple-task-plan: a clean review (zero
-  # actionable findings) skips the fix_review agent entirely — the exact
-  # analog of #1490, which gated address_critique on the plan-critique
-  # verdict but left review ungated (#1524). Saves ~1 wasted agent run per
-  # clean-review task, which is nearly every landing.
+  # A clean review (zero actionable findings) skips the fix_review agent
+  # entirely, saving ~1 wasted agent run per clean-review task — which is
+  # nearly every landing.
+  #
+  # Unlike the plan-side verdict gate this replaced (deleted: it tested for a
+  # literal the critic never emitted, so it never fired), the reviewer's
+  # verdict format is mandated by this workflow's own review prompt. Keep the
+  # prompt and this check in sync — an unenforced format is how the plan-side
+  # gate silently rotted.
   - id: route_review_verdict
     name: Route on Review Verdict
     type: condition
@@ -240,6 +270,30 @@ steps:
   # the review-fix agent has added commits (the implement-stage scan only saw
   # the original diff). A high-severity finding flips the task to
   # human-required. Skips gracefully without a worktree.
+  #
+  # On a clean scan this goes BACK to pick_review_method rather than handing
+  # off to testing: the fix agent just rewrote code that no reviewer has seen,
+  # and detect_tampering only inspects test/CI tampering, not whether the fix
+  # is right or introduced a fresh bug. Re-review until CLEAN shuts that gap.
+  #
+  # No round cap here, deliberately. A cap would censor the very distribution
+  # the review-rounds stat exists to measure (ReviewRoundsByModel in
+  # internal/stats), and every round is gated by a fresh reviewer that must
+  # reach CLEAN to exit.
+  #
+  # There is NO bound under stock config. agent.max_task_cost_usd is the only
+  # thing that can stop a non-converging cycle, and it is disabled at its
+  # default of 0 (enforceTaskCostBudget returns early on <= 0), so a reviewer
+  # and fixer that disagree can ride this indefinitely.
+  # App.warnUnboundedReviewLoop warns at startup when that pairing is live.
+  # A real ceiling requires agent.max_task_cost_usd; agent.review_until_clean:
+  # false gives the single-pass posture instead, routing straight to testing
+  # after the first fix.
+  #
+  # A backward goto to a sync step is safe because the run_agent steps in the
+  # cycle are async: each agent completion re-enters executeSteps with a fresh
+  # `visited` set, so no sync step repeats within one pass and the CycleError
+  # guard never trips.
   - id: detect_tampering
     name: Detect Test Tampering
     type: detect_tampering
@@ -249,7 +303,12 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: done_review
+      - when:
+          field: config.review_until_clean
+          operator: equals
+          value: "false"
+        goto: done_review
+      - goto: clear_review_sidecar
 
   # Hand the reviewed (and fixed) branch to the testing phase. The PR is NOT
   # created here — testing-task validates the feature first, then simple-task-pr

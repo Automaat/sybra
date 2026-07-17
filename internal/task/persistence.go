@@ -33,6 +33,8 @@ type taskFrontmatter struct {
 	RunRole                string              `yaml:"run_role,omitempty"`
 	SupervisorSteer        string              `yaml:"supervisor_steer,omitempty"`
 	ReviewPhase            string              `yaml:"review_phase,omitempty"`
+	ReviewedHeadSHA        string              `yaml:"reviewed_head_sha,omitempty"`
+	ReviewedHeadAttempts   int                 `yaml:"reviewed_head_attempts,omitempty"`
 	PRPhase                string              `yaml:"pr_phase,omitempty"`
 	TodoistID              string              `yaml:"todoist_id,omitempty"`
 	Priority               Priority            `yaml:"priority,omitempty"`
@@ -59,34 +61,38 @@ type taskFrontmatter struct {
 }
 
 type agentRunRecord struct {
-	AgentID                string    `yaml:"agent_id"`
-	Role                   string    `yaml:"role,omitempty"`
-	Mode                   string    `yaml:"mode"`
-	Provider               string    `yaml:"provider,omitempty"`
-	Model                  string    `yaml:"model,omitempty"`
-	ExperimentID           string    `yaml:"experiment_id,omitempty"`
-	VariantID              string    `yaml:"variant_id,omitempty"`
-	AssignmentUnit         string    `yaml:"assignment_unit,omitempty"`
-	AssignmentKey          string    `yaml:"assignment_key,omitempty"`
-	ReasoningEffort        string    `yaml:"reasoning_effort,omitempty"`
-	SkillExecutionMode     string    `yaml:"skill_execution_mode,omitempty"`
-	State                  string    `yaml:"state"`
-	Outcome                string    `yaml:"outcome,omitempty"`
-	EscalationReason       string    `yaml:"escalation_reason,omitempty"`
-	StartedAt              time.Time `yaml:"started_at"`
-	CostUSD                float64   `yaml:"cost_usd,omitempty"`
-	PremiumRequests        float64   `yaml:"premium_requests,omitempty"`
-	Prompt                 string    `yaml:"prompt,omitempty"`
-	Result                 string    `yaml:"result,omitempty"`
-	OneShot                bool      `yaml:"one_shot,omitempty"`
-	Verdict                string    `yaml:"verdict,omitempty"`
-	VerdictRendered        bool      `yaml:"verdict_rendered,omitempty"`
-	LogFile                string    `yaml:"log_file,omitempty"`
-	SessionID              string    `yaml:"session_id,omitempty"`
-	ProtocolViolation      string    `yaml:"protocol_violation,omitempty"`
-	TestOutcome            string    `yaml:"test_outcome,omitempty"`
-	TestFailureFingerprint string    `yaml:"test_failure_fingerprint,omitempty"`
-	HeadSHA                string    `yaml:"head_sha,omitempty"`
+	AgentID                 string    `yaml:"agent_id"`
+	Role                    string    `yaml:"role,omitempty"`
+	Mode                    string    `yaml:"mode"`
+	Provider                string    `yaml:"provider,omitempty"`
+	Model                   string    `yaml:"model,omitempty"`
+	ExperimentID            string    `yaml:"experiment_id,omitempty"`
+	VariantID               string    `yaml:"variant_id,omitempty"`
+	AssignmentUnit          string    `yaml:"assignment_unit,omitempty"`
+	AssignmentKey           string    `yaml:"assignment_key,omitempty"`
+	ReasoningEffort         string    `yaml:"reasoning_effort,omitempty"`
+	RequestedSkill          string    `yaml:"requested_skill,omitempty"`
+	SkillExecutionMode      string    `yaml:"skill_execution_mode,omitempty"`
+	ResolvedSkillSourceHash string    `yaml:"resolved_skill_source_hash,omitempty"`
+	SkillConformance        string    `yaml:"skill_conformance,omitempty"`
+	State                   string    `yaml:"state"`
+	Outcome                 string    `yaml:"outcome,omitempty"`
+	EscalationReason        string    `yaml:"escalation_reason,omitempty"`
+	StartedAt               time.Time `yaml:"started_at"`
+	CostUSD                 float64   `yaml:"cost_usd,omitempty"`
+	PremiumRequests         float64   `yaml:"premium_requests,omitempty"`
+	Prompt                  string    `yaml:"prompt,omitempty"`
+	Result                  string    `yaml:"result,omitempty"`
+	OneShot                 bool      `yaml:"one_shot,omitempty"`
+	Verdict                 string    `yaml:"verdict,omitempty"`
+	VerdictRendered         bool      `yaml:"verdict_rendered,omitempty"`
+	LogFile                 string    `yaml:"log_file,omitempty"`
+	SessionID               string    `yaml:"session_id,omitempty"`
+	ProtocolViolation       string    `yaml:"protocol_violation,omitempty"`
+	TestOutcome             string    `yaml:"test_outcome,omitempty"`
+	TestFailureFingerprint  string    `yaml:"test_failure_fingerprint,omitempty"`
+	HeadSHA                 string    `yaml:"head_sha,omitempty"`
+	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading
@@ -116,6 +122,8 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		RunRole:                fm.RunRole,
 		SupervisorSteer:        fm.SupervisorSteer,
 		ReviewPhase:            fm.ReviewPhase,
+		ReviewedHeadSHA:        fm.ReviewedHeadSHA,
+		ReviewedHeadAttempts:   fm.ReviewedHeadAttempts,
 		PRPhase:                fm.PRPhase,
 		TodoistID:              fm.TodoistID,
 		Priority:               fm.Priority,
@@ -176,6 +184,8 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		RunRole:                t.RunRole,
 		SupervisorSteer:        t.SupervisorSteer,
 		ReviewPhase:            t.ReviewPhase,
+		ReviewedHeadSHA:        t.ReviewedHeadSHA,
+		ReviewedHeadAttempts:   t.ReviewedHeadAttempts,
 		PRPhase:                t.PRPhase,
 		TodoistID:              t.TodoistID,
 		Priority:               t.Priority,

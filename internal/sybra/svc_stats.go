@@ -3,6 +3,7 @@ package sybra
 import (
 	"cmp"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
@@ -201,7 +202,8 @@ func (s *StatsService) projectTypes() map[string]string {
 // "(unknown)". Result is sorted by total cost desc to match the other groups.
 func aggregateByProjectType(byProject []stats.GroupedStat, types map[string]string) []stats.GroupedStat {
 	buckets := map[string]stats.Summary{}
-	for _, g := range byProject {
+	for i := range byProject {
+		g := byProject[i]
 		key, ok := types[g.Key]
 		if !ok || key == "" {
 			key = "(unknown)"
@@ -227,6 +229,7 @@ func addSummary(a, b stats.Summary) stats.Summary {
 	return stats.Summary{
 		TotalCostUSD:                  a.TotalCostUSD + b.TotalCostUSD,
 		TotalRuns:                     a.TotalRuns + b.TotalRuns,
+		FailedRuns:                    a.FailedRuns + b.FailedRuns,
 		TotalDurationS:                a.TotalDurationS + b.TotalDurationS,
 		TotalInputTokens:              a.TotalInputTokens + b.TotalInputTokens,
 		TotalOutputTokens:             a.TotalOutputTokens + b.TotalOutputTokens,
@@ -234,6 +237,19 @@ func addSummary(a, b stats.Summary) stats.Summary {
 		TotalCacheReadInputTokens:     a.TotalCacheReadInputTokens + b.TotalCacheReadInputTokens,
 		TotalReasoningTokens:          a.TotalReasoningTokens + b.TotalReasoningTokens,
 		TotalPremiumRequests:          a.TotalPremiumRequests + b.TotalPremiumRequests,
+		OutcomeCounts:                 mergeOutcomeCounts(a.OutcomeCounts, b.OutcomeCounts),
 		TasksDone:                     a.TasksDone + b.TasksDone,
 	}
+}
+
+func mergeOutcomeCounts(a, b map[string]int) map[string]int {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(a)+len(b))
+	maps.Copy(out, a)
+	for key, count := range b {
+		out[key] += count
+	}
+	return out
 }

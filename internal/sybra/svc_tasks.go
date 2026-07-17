@@ -967,6 +967,13 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		return
 	}
 	viewer := s.viewerLoginFunc()()
+	if viewer == "" {
+		// Guessing "not mine" is irreversible: it points a review agent at our
+		// own PR and, via u.Tags, drops the enrich-pending marker reconcile
+		// retries on. Bail before any Update so the retry survives.
+		s.logger.Warn("enrich-pr.no-viewer", "task_id", taskID, "repo", repo, "number", number)
+		return
+	}
 
 	slug := task.Slugify(pr.Title)
 	u := task.Update{
@@ -985,7 +992,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	labels := pr.Labels
 	u.Tags = &labels
 
-	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
+	isMyPR := strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
 		u.Status = task.Ptr(task.StatusInReview)
 		if _, err := s.tasks.Update(taskID, u); err != nil {

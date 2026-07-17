@@ -890,28 +890,32 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 
 	patch := RunPatch{
-		State:                  Ptr("done"),
-		Outcome:                Ptr(RunOutcomeSuccess),
-		EscalationReason:       Ptr("cost"),
-		CostUSD:                Ptr(1.23),
-		PremiumRequests:        Ptr(2.5),
-		Result:                 Ptr("completed with result"),
-		Verdict:                Ptr("sybra_bug"),
-		VerdictRendered:        Ptr(true),
-		LogFile:                Ptr("/tmp/sybra/agent-payload.ndjson"),
-		Provider:               Ptr("codex"),
-		Model:                  Ptr("gpt-5"),
-		ExperimentID:           Ptr("exp-123"),
-		VariantID:              Ptr("variant-b"),
-		AssignmentUnit:         Ptr("task"),
-		AssignmentKey:          Ptr("task-abc123"),
-		ReasoningEffort:        Ptr("high"),
-		SkillExecutionMode:     Ptr("injected"),
-		SessionID:              Ptr("session-123"),
-		ProtocolViolation:      Ptr("missing-json"),
-		TestOutcome:            Ptr("product_bug"),
-		TestFailureFingerprint: Ptr("fingerprint-123"),
-		HeadSHA:                Ptr("0123456789abcdef0123456789abcdef01234567"),
+		State:                   Ptr("done"),
+		Outcome:                 Ptr(RunOutcomeSuccess),
+		EscalationReason:        Ptr("cost"),
+		CostUSD:                 Ptr(1.23),
+		PremiumRequests:         Ptr(2.5),
+		Result:                  Ptr("completed with result"),
+		Verdict:                 Ptr("sybra_bug"),
+		VerdictRendered:         Ptr(true),
+		LogFile:                 Ptr("/tmp/sybra/agent-payload.ndjson"),
+		Provider:                Ptr("codex"),
+		Model:                   Ptr("gpt-5"),
+		ExperimentID:            Ptr("exp-123"),
+		VariantID:               Ptr("variant-b"),
+		AssignmentUnit:          Ptr("task"),
+		AssignmentKey:           Ptr("task-abc123"),
+		ReasoningEffort:         Ptr("high"),
+		RequestedSkill:          Ptr("sybra-test"),
+		SkillExecutionMode:      Ptr("injected"),
+		ResolvedSkillSourceHash: Ptr("deadbeefcafebabe"),
+		SkillConformance:        Ptr("exact"),
+		SessionID:               Ptr("session-123"),
+		ProtocolViolation:       Ptr("missing-json"),
+		TestOutcome:             Ptr("product_bug"),
+		TestFailureFingerprint:  Ptr("fingerprint-123"),
+		HeadSHA:                 Ptr("0123456789abcdef0123456789abcdef01234567"),
+		SubagentCallCount:       Ptr(3),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -932,31 +936,35 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 
 	assertAgentRunPayload(t, reloaded.AgentRuns[0], AgentRun{
-		AgentID:                "agent-payload",
-		Role:                   "implementation",
-		Mode:                   "headless",
-		Provider:               "codex",
-		Model:                  "gpt-5",
-		ExperimentID:           "exp-123",
-		VariantID:              "variant-b",
-		AssignmentUnit:         "task",
-		AssignmentKey:          "task-abc123",
-		ReasoningEffort:        "high",
-		SkillExecutionMode:     "injected",
-		State:                  "done",
-		Outcome:                RunOutcomeSuccess,
-		EscalationReason:       "cost",
-		CostUSD:                1.23,
-		PremiumRequests:        2.5,
-		Result:                 "completed with result",
-		Verdict:                "sybra_bug",
-		VerdictRendered:        true,
-		LogFile:                "/tmp/sybra/agent-payload.ndjson",
-		SessionID:              "session-123",
-		ProtocolViolation:      "missing-json",
-		TestOutcome:            "product_bug",
-		TestFailureFingerprint: "fingerprint-123",
-		HeadSHA:                "0123456789abcdef0123456789abcdef01234567",
+		AgentID:                 "agent-payload",
+		Role:                    "implementation",
+		Mode:                    "headless",
+		Provider:                "codex",
+		Model:                   "gpt-5",
+		ExperimentID:            "exp-123",
+		VariantID:               "variant-b",
+		AssignmentUnit:          "task",
+		AssignmentKey:           "task-abc123",
+		ReasoningEffort:         "high",
+		RequestedSkill:          "sybra-test",
+		SkillExecutionMode:      "injected",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        "exact",
+		State:                   "done",
+		Outcome:                 RunOutcomeSuccess,
+		EscalationReason:        "cost",
+		CostUSD:                 1.23,
+		PremiumRequests:         2.5,
+		Result:                  "completed with result",
+		Verdict:                 "sybra_bug",
+		VerdictRendered:         true,
+		LogFile:                 "/tmp/sybra/agent-payload.ndjson",
+		SessionID:               "session-123",
+		ProtocolViolation:       "missing-json",
+		TestOutcome:             "product_bug",
+		TestFailureFingerprint:  "fingerprint-123",
+		HeadSHA:                 "0123456789abcdef0123456789abcdef01234567",
+		SubagentCallCount:       3,
 	})
 }
 
@@ -1004,8 +1012,17 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	if got.ReasoningEffort != want.ReasoningEffort {
 		t.Errorf("ReasoningEffort = %q, want %q", got.ReasoningEffort, want.ReasoningEffort)
 	}
+	if got.RequestedSkill != want.RequestedSkill {
+		t.Errorf("RequestedSkill = %q, want %q", got.RequestedSkill, want.RequestedSkill)
+	}
 	if got.SkillExecutionMode != want.SkillExecutionMode {
 		t.Errorf("SkillExecutionMode = %q, want %q", got.SkillExecutionMode, want.SkillExecutionMode)
+	}
+	if got.ResolvedSkillSourceHash != want.ResolvedSkillSourceHash {
+		t.Errorf("ResolvedSkillSourceHash = %q, want %q", got.ResolvedSkillSourceHash, want.ResolvedSkillSourceHash)
+	}
+	if got.SkillConformance != want.SkillConformance {
+		t.Errorf("SkillConformance = %q, want %q", got.SkillConformance, want.SkillConformance)
 	}
 	if got.State != want.State {
 		t.Errorf("State = %q, want %q", got.State, want.State)
@@ -1048,6 +1065,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.HeadSHA != want.HeadSHA {
 		t.Errorf("HeadSHA = %q, want %q", got.HeadSHA, want.HeadSHA)
+	}
+	if got.SubagentCallCount != want.SubagentCallCount {
+		t.Errorf("SubagentCallCount = %d, want %d", got.SubagentCallCount, want.SubagentCallCount)
 	}
 }
 
