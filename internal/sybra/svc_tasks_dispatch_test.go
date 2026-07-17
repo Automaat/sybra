@@ -1,8 +1,10 @@
 package sybra
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1047,4 +1049,27 @@ func newInboundReviewTask(t *testing.T, a *App, prNumber int, phase string) task
 		t.Fatal(err)
 	}
 	return updated
+}
+
+// An empty SHA with no error means gh returned something we don't understand.
+// Declining is right, but it must be visible: a PR quietly never reviewed again
+// is precisely what made #2164 hard to diagnose.
+func TestDispatchInboundReview_EmptyHeadIsLoggedNotSilent(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+
+	var buf bytes.Buffer
+	a.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	if launcher.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0 — an unknown head must not dispatch", launcher.startCalls)
+	}
+	if !strings.Contains(buf.String(), "head-empty") {
+		t.Errorf("declined silently; logs = %q", buf.String())
+	}
 }

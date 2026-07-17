@@ -296,6 +296,14 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 		a.logger.Warn("workflow.dispatch.inbound-review.head", "task_id", taskID, "err", err)
 		return
 	}
+	if head == "" {
+		// Declining is right, but silence is not: an empty SHA with no error means
+		// gh returned something we don't understand, and a PR that is quietly
+		// never reviewed again is exactly what #2164 was hard to diagnose about.
+		a.logger.Warn("workflow.dispatch.inbound-review.head-empty",
+			"task_id", taskID, "repo", t.ProjectID, "pr", t.PRNumber)
+		return
+	}
 	if reviewCoversHead(t, head) {
 		return
 	}
