@@ -519,6 +519,18 @@ func (a *checkConfigGetterAdapter) FocusedChecks(ctx context.Context, taskID str
 	return merged.Focused
 }
 
+func (a *checkConfigGetterAdapter) WorktreeBaseRef(ctx context.Context, taskID string) string {
+	t, err := a.tasks.Get(taskID)
+	if err != nil || t.ProjectID == "" || a.projects == nil {
+		return project.WorktreeBaseRefFresh
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil || p.WorktreeBaseRef != project.WorktreeBaseRefHead {
+		return project.WorktreeBaseRefFresh
+	}
+	return project.WorktreeBaseRefHead
+}
+
 func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID string) *project.ChecksConfig {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {

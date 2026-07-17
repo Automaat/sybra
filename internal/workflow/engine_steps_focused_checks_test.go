@@ -106,7 +106,7 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 	}
 }
 
-func TestExecFocusedChecks_FallbackUsesVerifyCommands(t *testing.T) {
+func TestExecFocusedChecks_UnmappedChangesSkipWithoutVerifyFallback(t *testing.T) {
 	t.Parallel()
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -125,14 +125,56 @@ func TestExecFocusedChecks_FallbackUsesVerifyCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "fallback verify clean" {
-		t.Fatalf("Output = %q, want fallback verify clean", out.Output)
+	if out.Output != "skipped: no safe focused mapping matched changed files" {
+		t.Fatalf("Output = %q, want focused skip", out.Output)
 	}
-	if !strings.Contains(rec.puts[0].content, `"fallback": "no safe focused mapping matched changed files"`) {
-		t.Fatalf("artifact content missing fallback:\n%s", rec.puts[0].content)
+	if strings.Contains(rec.puts[0].content, `"fallback"`) {
+		t.Fatalf("artifact content unexpectedly includes fallback:\n%s", rec.puts[0].content)
 	}
-	if !strings.Contains(rec.puts[0].content, `"true"`) {
-		t.Fatalf("artifact content missing verify fallback command:\n%s", rec.puts[0].content)
+	if strings.Contains(rec.puts[0].content, `"commands":`) {
+		t.Fatalf("artifact content should not include verify fallback commands:\n%s", rec.puts[0].content)
+	}
+	if strings.Contains(rec.puts[0].content, `"true"`) {
+		t.Fatalf("artifact content should not include verify fallback command:\n%s", rec.puts[0].content)
+	}
+}
+
+func TestExecFocusedChecks_HeadBaseExcludesLocalDefaultBranchChanges(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "frontend/src/App.svelte", "<script></script>\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: local default frontend")
+	gitRun(t, wt, "checkout", "-b", "task")
+	writeRepoFile(t, wt, "internal/project/model.go", "package project\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: task project")
+
+	engine, tasks, rec := newFocusedChecksEngine(t, wt, []project.FocusedCheck{
+		{
+			Name:     "frontend",
+			Paths:    []string{"frontend/**"},
+			Commands: []string{"false"},
+		},
+		{
+			Name:     "project",
+			Paths:    []string{"internal/project/**"},
+			Commands: []string{"true"},
+		},
+	}, nil)
+	engine.checks.(*fakeCheckGetter).worktreeBaseRef = project.WorktreeBaseRefHead
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
+
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if !strings.Contains(rec.puts[0].content, `"project"`) || strings.Contains(rec.puts[0].content, `"frontend"`) {
+		t.Fatalf("artifact content selected wrong focused surface:\n%s", rec.puts[0].content)
 	}
 }
 
