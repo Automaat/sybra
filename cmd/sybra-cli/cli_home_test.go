@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // TestHomeFlag_OverridesEverything pins --home as the top of the precedence
@@ -87,6 +90,42 @@ func TestControlHomeEnv_WinsOverSybraHome(t *testing.T) {
 	}
 	if strings.Contains(out, "via control home") {
 		t.Fatalf("sandbox home leaked the SYBRA_CONTROL_HOME task: %s", out)
+	}
+}
+
+func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) {
+	realHome := t.TempDir()
+	sandboxHome := t.TempDir()
+	tasksDir := filepath.Join(realHome, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_HOME", sandboxHome)
+	t.Setenv("SYBRA_CONTROL_HOME", realHome)
+
+	code, out := runCLI(t, "--json", "create", "--title", "control home target")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+
+	tasks, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := tasks.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+	}
+	id := list[0].ID
+
+	port := startFakeAPIServer(t, tasksDir)
+	t.Setenv("SYBRA_PORT", port)
+
+	lockdownDir(t, tasksDir)
+
+	code, _ = runCLI(t, "--json", "update", id, "--status", "todo")
+	if code == 0 {
+		t.Fatal("SYBRA_CONTROL_HOME must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
 	}
 }
 
