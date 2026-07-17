@@ -118,6 +118,66 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	}
 }
 
+// TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep pins that a
+// present (non-skipped) plan critique routes through flag_plan_critique_verdict
+// before review_plan, not directly to review_plan. A regression that
+// re-points require_plan_critique's default transition straight at
+// review_plan would silently disable the whole REFINE/REJECT-visibility
+// feature (issue #2222) while still passing every unit test against
+// execFlagPlanCritique itself, since those call it directly without going
+// through this wiring.
+func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	var simple *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-plan" {
+			simple = &defs[i]
+			break
+		}
+	}
+	if simple == nil {
+		t.Fatal("simple-task-plan builtin definition not found")
+		return
+	}
+
+	require := simple.StepByID("require_plan_critique")
+	if require == nil {
+		t.Fatal("require_plan_critique step not found in simple-task-plan")
+		return
+	}
+	got, err := ResolveTransition(require.Next, map[string]string{
+		"vars.step.require_plan_critique.output": "plan critique present",
+		"task.status":                            "planning",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "flag_plan_critique_verdict" {
+		t.Fatalf("present critique next = %q, want flag_plan_critique_verdict", got)
+	}
+
+	flag := simple.StepByID("flag_plan_critique_verdict")
+	if flag == nil {
+		t.Fatal("flag_plan_critique_verdict step not found in simple-task-plan")
+		return
+	}
+	if flag.Type != StepFlagPlanCritique {
+		t.Fatalf("flag_plan_critique_verdict type = %q, want %q", flag.Type, StepFlagPlanCritique)
+	}
+	got, err = ResolveTransition(flag.Next, map[string]string{})
+	if err != nil {
+		t.Fatalf("ResolveTransition: %v", err)
+	}
+	if got != "review_plan" {
+		t.Fatalf("flag_plan_critique_verdict next = %q, want review_plan", got)
+	}
+}
+
 // TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
 // iteration cap: task.replan_count is start_replan's own step-history count
 // as of the current reject, so 0/1/2 still have budget for another full

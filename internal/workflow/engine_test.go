@@ -7293,6 +7293,21 @@ func TestParsePlanCritiqueVerdict(t *testing.T) {
 		{"mention in prose is not the verdict line", "# Plan Review: APPROVE\n\nNo REFINE needed here.", "APPROVE"},
 		{"no marker at all", "Looks fine to me.", ""},
 		{"empty", "", ""},
+		{
+			"bare title falls back to Verdict section prose",
+			"# Plan Review\n\n## Verdict\n\nThis plan needs REFINE — the rollback step is missing and the test command doesn't match the project.",
+			"REFINE",
+		},
+		{
+			"verdict section fallback is bounded to that section",
+			"# Plan Review\n\n## Verdict\n\nSound overall.\n\n## Findings\n\n- [nit] refine the error message wording",
+			"",
+		},
+		{
+			"whole-word match rejects a substring hit",
+			"# Plan Review\n\n## Verdict\n\nThis was rejected previously but is now fine.",
+			"",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

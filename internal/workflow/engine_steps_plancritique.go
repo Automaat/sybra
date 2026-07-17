@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -30,26 +31,40 @@ func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (St
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "verdict: " + verdict + " — flagged"}, nil
 }
 
+// verdictWordRe matches a whole-word APPROVE/REFINE/REJECT, so prose like
+// "rejected previously" or "refine the error message" (a finding's own
+// wording, not a verdict) can't false-match.
+var verdictWordRe = regexp.MustCompile(`(?i)\b(APPROVE|REFINE|REJECT)\b`)
+
+// planReviewTitleRe matches the /plan-critic skill's required title line,
+// "# Plan Review: <VERDICT>", within the first few lines of the sidecar.
+var planReviewTitleRe = regexp.MustCompile(`(?im)^#\s*Plan Review:?\s*([A-Z]*)`)
+
+// verdictSectionRe isolates the skill's "## Verdict" section (its prose
+// body, up to the next heading or end of content) as a fallback location.
+var verdictSectionRe = regexp.MustCompile(`(?is)##\s*Verdict\s*\n(.*?)(\n##|\z)`)
+
 // parsePlanCritiqueVerdict extracts the verdict word from a plan-critique
-// sidecar. The /plan-critic skill's output contract fixes the verdict to a
-// "# Plan Review: <APPROVE|REFINE|REJECT>" heading, but scans only the first
-// few lines for a "PLAN REVIEW:" marker rather than requiring it as literally
-// line one (tolerating a leading blank line or code fence) — and stops well
-// short of scanning the whole document, since the word REFINE/REJECT can
-// legitimately appear in later findings prose without being the verdict.
+// sidecar. The /plan-critic skill's output contract states the verdict twice
+// — the "# Plan Review: <VERDICT>" title line, and again in prose inside the
+// "## Verdict" section — so this checks the title line first (the more
+// precise, contract-exact location) and falls back to the Verdict section
+// when a critic drifts from the exact title format (e.g. a bare "# Plan
+// Review" heading with the actual verdict stated only in the section below).
+// Deliberately does not scan the rest of the document (findings, required
+// changes, etc.), where REFINE/REJECT can appear in unrelated prose. Returns
+// "" — treated identically to APPROVE by the caller — when neither location
+// yields a recognizable verdict, preserving today's "any non-empty sidecar
+// is fine" behavior for critics that don't follow the contract at all.
 func parsePlanCritiqueVerdict(content string) string {
-	const marker = "PLAN REVIEW:"
-	lines := strings.SplitN(content, "\n", 6)
-	for _, line := range lines {
-		upper := strings.ToUpper(line)
-		_, rest, found := strings.Cut(upper, marker)
-		if !found {
-			continue
+	if m := planReviewTitleRe.FindStringSubmatch(content); m != nil {
+		if v := verdictWordRe.FindString(m[1]); v != "" {
+			return strings.ToUpper(v)
 		}
-		for _, v := range []string{"APPROVE", "REFINE", "REJECT"} {
-			if strings.Contains(rest, v) {
-				return v
-			}
+	}
+	if m := verdictSectionRe.FindStringSubmatch(content); m != nil {
+		if v := verdictWordRe.FindString(m[1]); v != "" {
+			return strings.ToUpper(v)
 		}
 	}
 	return ""
