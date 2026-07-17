@@ -530,10 +530,53 @@ with:
 
 Only `sybra-home` needs backup coverage. `sybra-clones`/`sybra-worktrees` are
 capacity-planning concerns (they grow with registered-project count and
-concurrent-task count), not data-loss concerns — losing them costs re-clone
-time, not history. `sybra-home` carries the label `sybra.io/backup: "true"`
-so a backup job can select it (`kubectl get pvc -n sybra-poc -l
-sybra.io/backup=true`) without hardcoding its name.
+concurrent-task count — 5Gi each is a starting point, not a sized estimate;
+watch actual usage and resize per-cluster), not data-loss concerns — losing
+them costs re-clone time, not history. `sybra-home` carries the label
+`sybra.io/backup: "true"` so a backup job can select it (`kubectl get pvc -n
+sybra-poc -l sybra.io/backup=true`) without hardcoding its name.
+
+**Migrating an existing single-PVC deployment.** Applying this three-PVC
+topology to a deployment that's already running the old single-`sybra-home`
+layout does **not** delete `clones/`/`worktrees/` data already on that PVC —
+but it does make it invisible: the moment the new empty `sybra-clones`/
+`sybra-worktrees` PVCs mount over `/home/sybra/.sybra/clones` and
+`/home/sybra/.sybra/worktrees`, the old content underneath is shadowed for as
+long as they stay mounted there. Every registered project's bare clone
+becomes unreachable (forcing a silent re-clone) and, more importantly, any
+in-flight task's worktree — including uncommitted/unpushed agent work —
+disappears from the running deployment's view with no warning. Copy the old
+data across **before** rolling out the new manifest:
+
+```bash
+kubectl -n sybra-poc scale deployment/sybra-server --replicas=0
+kubectl -n sybra-poc wait --for=delete pod -l app=sybra-server --timeout=60s
+kubectl apply -f deploy/k8s-poc/deployment.yaml   # creates sybra-clones/sybra-worktrees; does not yet mount them anywhere
+kubectl -n sybra-poc run sybra-migrate --rm -i --restart=Never --image=busybox:1.36 --overrides='
+{
+  "spec": {
+    "containers": [{
+      "name": "sybra-migrate",
+      "image": "busybox:1.36",
+      "command": ["sh", "-c", "cp -a /old/clones/. /new-clones/ 2>/dev/null; cp -a /old/worktrees/. /new-worktrees/ 2>/dev/null; echo migrated"],
+      "volumeMounts": [
+        {"name": "old", "mountPath": "/old"},
+        {"name": "new-clones", "mountPath": "/new-clones"},
+        {"name": "new-worktrees", "mountPath": "/new-worktrees"}
+      ]
+    }],
+    "volumes": [
+      {"name": "old", "persistentVolumeClaim": {"claimName": "sybra-home"}},
+      {"name": "new-clones", "persistentVolumeClaim": {"claimName": "sybra-clones"}},
+      {"name": "new-worktrees", "persistentVolumeClaim": {"claimName": "sybra-worktrees"}}
+    ]
+  }
+}'
+kubectl -n sybra-poc scale deployment/sybra-server --replicas=1
+```
+
+A fresh cluster (nothing on `sybra-home` yet) skips this entirely — there's
+nothing to migrate.
 
 **Storage class.** None of the three PVCs sets `storageClassName` — they use
 whatever the cluster's default StorageClass is, which for this PoC's
@@ -563,42 +606,64 @@ stronger guarantee for a particular backup run.
 
 ```bash
 kubectl -n sybra-poc exec deploy/sybra-server -- \
-  tar czf - -C /home/sybra/.sybra tasks projects config.yaml agents learning experience agentqueue \
+  tar czf - -C /home/sybra/.sybra tasks projects config.yaml agents learning experience agentqueue logs artifacts \
   > sybra-home-backup-$(date +%Y%m%d-%H%M%S).tar.gz
 ```
 
-**Restore** into a fresh (or wiped) `sybra-home` PVC — scale down first so
-nothing is writing to the volume while it's being repopulated:
+**Restore** into a fresh (or wiped) `sybra-home` PVC — scale down and wait for
+the old pod to actually release the volume first (on `local-path` this
+finishes instantly; a real CSI driver's attach/detach can take longer, and
+starting a second pod against the same `ReadWriteOnce` volume before the
+first one detaches fails with a Multi-Attach error):
 
 ```bash
 kubectl -n sybra-poc scale deployment/sybra-server --replicas=0
+kubectl -n sybra-poc wait --for=delete pod -l app=sybra-server --timeout=60s
+```
+
+`local-path`-backed PVs are pinned to whichever node first mounted them —
+find that node before copying the tarball anywhere, or the restore pod can
+schedule onto a different node than the one holding the file and fail with
+`no such file or directory` even though the `docker cp` below "worked":
+
+```bash
+PVNAME=$(kubectl -n sybra-poc get pvc sybra-home -o jsonpath='{.spec.volumeName}')
+NODE=$(kubectl get pv "$PVNAME" -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}')
+echo "sybra-home is pinned to node: $NODE"
+
+# k3d: NODE is also the docker container name for that node.
+docker exec "$NODE" mkdir -p /tmp/sybra-restore
+docker cp sybra-home-backup-*.tar.gz "$NODE:/tmp/sybra-restore/backup.tar.gz"
+
 kubectl -n sybra-poc run sybra-restore --rm -i --restart=Never \
-  --image=busybox:1.36 --overrides='
+  --image=busybox:1.36 --overrides="
 {
-  "spec": {
-    "containers": [{
-      "name": "sybra-restore",
-      "image": "busybox:1.36",
-      "command": ["sh", "-c", "tar xzf /backup/backup.tar.gz -C /home/sybra/.sybra && echo restored"],
-      "volumeMounts": [
-        {"name": "sybra-home", "mountPath": "/home/sybra/.sybra"},
-        {"name": "backup", "mountPath": "/backup"}
+  \"spec\": {
+    \"nodeSelector\": {\"kubernetes.io/hostname\": \"$NODE\"},
+    \"containers\": [{
+      \"name\": \"sybra-restore\",
+      \"image\": \"busybox:1.36\",
+      \"command\": [\"sh\", \"-c\", \"tar xzf /backup/backup.tar.gz -C /home/sybra/.sybra && echo restored\"],
+      \"volumeMounts\": [
+        {\"name\": \"sybra-home\", \"mountPath\": \"/home/sybra/.sybra\"},
+        {\"name\": \"backup\", \"mountPath\": \"/backup\"}
       ]
     }],
-    "volumes": [
-      {"name": "sybra-home", "persistentVolumeClaim": {"claimName": "sybra-home"}},
-      {"name": "backup", "hostPath": {"path": "/tmp/sybra-restore"}}
+    \"volumes\": [
+      {\"name\": \"sybra-home\", \"persistentVolumeClaim\": {\"claimName\": \"sybra-home\"}},
+      {\"name\": \"backup\", \"hostPath\": {\"path\": \"/tmp/sybra-restore\"}}
     ]
   }
-}' -- true
+}"
 kubectl -n sybra-poc scale deployment/sybra-server --replicas=1
 ```
 
-(The `backup` `hostPath` above assumes a k3d/local cluster where the node can
-see your local filesystem — copy the tarball to `/tmp/sybra-restore/backup.tar.gz`
-on the node first, e.g. via `docker cp` into the k3d server container. A
-production cluster restoring from off-cluster backup storage would instead
-mount that storage, e.g. an S3-backed init container, in place of `hostPath`.)
+On a production cluster with a real CSI driver, skip the node-pinning dance
+entirely: restore from off-cluster backup storage (e.g. an S3-backed init
+container) instead of `hostPath`, since a CSI `ReadWriteOnce` volume can
+attach to whichever node the restore pod schedules onto — the node-pinning
+problem above is specifically a `local-path`/k3d artifact, not a general
+Kubernetes one.
 
 `tasks-snapshots.git` — a background git-versioned history of the tasks
 directory Sybra maintains on its own (`internal/tasksnapshot`, enabled by
