@@ -672,6 +672,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
 		SkillConformance:        cfg.SkillConformance,
 		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
+		hasOutputSchema:         cfg.OutputSchema != "",
 		Prompt:                  cfg.Prompt,
 		// Stamp the canonical dispatch prompt hash centrally for every run
 		// (all providers, all roles, both modes). cfg.Prompt is the fully

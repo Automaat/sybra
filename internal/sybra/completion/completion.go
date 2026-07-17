@@ -412,7 +412,12 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	// receipt so the workflow engine's skill-conformance gate (see
 	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
 	// incomplete artifact.
-	if ag.RequestedSkill != "" {
+	//
+	// Schema-enforced runs are exempt: the provider forces schema-valid JSON,
+	// so the trailing receipt line was never requested (see resolveWorkflow
+	// SkillPrompt) and can never appear. Receipt-verifying them would downgrade
+	// every real run to unverified and self-escalate the task to human-required.
+	if ag.RequestedSkill != "" && !ag.HasOutputSchema() {
 		transcript := skillReceiptTranscript(ag, resultContent)
 		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
 		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {

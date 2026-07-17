@@ -90,6 +90,12 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	cfg.SkillExecutionMode = resolution.mode
 	cfg.ResolvedSkillSourceHash = resolution.sourceHash
 	cfg.SkillConformance = resolution.conformance
+	// A trailing conformance receipt is unsatisfiable when the provider is
+	// forced to emit schema-valid JSON (--json-schema / --output-schema): the
+	// LAST line cannot be an HTML comment. Skip the receipt for schema-enforced
+	// runs; completion mirrors this by not receipt-verifying them (see
+	// Agent.HasOutputSchema). The skill content is still delivered.
+	wantReceipt := cfg.OutputSchema == ""
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
 		// The skill runs natively, but native invocation alone doesn't prove
@@ -97,10 +103,14 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 		// receipt instruction injected/fallback runs get, so completion can
 		// verify conformance from the transcript rather than trusting
 		// delivery mode alone.
-		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		if wantReceipt {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
 	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
-		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		if wantReceipt {
+			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+		}
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}

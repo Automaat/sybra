@@ -421,6 +421,34 @@ func TestResolveWorkflowSkillPrompt_InjectedFromCrossProviderPath(t *testing.T) 
 	}
 }
 
+// TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt pins that a run enforcing a
+// provider output schema still delivers the skill but omits the trailing
+// conformance receipt instruction — a schema-enforced run must return
+// schema-valid JSON and cannot close with an HTML comment, so demanding the
+// receipt would make every real run self-escalate to human-required.
+func TestResolveWorkflowSkillPrompt_SchemaSkipsReceipt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetCodexSkillsCache(t)
+	mkNamedSkillRoot(t, filepath.Join(home, ".claude", "skills", "sybra-test"), "sybra-test", "\n")
+	withCodexPluginListJSON(t, []byte(`{"installed":[]}`))
+
+	cfg := RunConfig{
+		Prompt:         "Run /sybra-test now.",
+		RequestedSkill: "sybra-test",
+		OutputSchema:   `{"type":"object"}`,
+	}
+	if err := (&Manager{}).resolveWorkflowSkillPrompt(&cfg, "codex"); err != nil {
+		t.Fatalf("resolveWorkflowSkillPrompt: %v", err)
+	}
+	if !strings.Contains(cfg.Prompt, "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("Prompt missing injected skill block:\n%s", cfg.Prompt)
+	}
+	if strings.Contains(cfg.Prompt, skillattr.ReceiptTag) {
+		t.Fatalf("schema-enforced run must not carry a receipt instruction:\n%s", cfg.Prompt)
+	}
+}
+
 func TestResolveWorkflowSkillPrompt_ForceInjectedSkipsNative(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

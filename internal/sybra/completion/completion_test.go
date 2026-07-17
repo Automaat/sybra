@@ -246,6 +246,30 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 	}
 }
 
+// TestBuildRunPatchSkipsReceiptForSchemaEnforcedRun pins the schema exemption:
+// a run enforcing a provider output schema returns schema-valid JSON and can
+// never carry the trailing receipt comment, so its pre-execution
+// ConformanceExact must survive unchanged (not downgrade to Unverified) — the
+// downgrade would self-escalate every real schema+skill run to human-required.
+func TestBuildRunPatchSkipsReceiptForSchemaEnforcedRun(t *testing.T) {
+	t.Parallel()
+
+	ag := &agent.Agent{
+		ID:                      "ag-1",
+		TaskID:                  "task-1",
+		Name:                    agent.RoleTestRunner.AgentName("Test"),
+		RequestedSkill:          "sybra-test",
+		ResolvedSkillSourceHash: "deadbeefcafebabe",
+		SkillConformance:        skillattr.ConformanceExact,
+	}
+	ag.SetHasOutputSchema(true)
+
+	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
+	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
+		t.Fatalf("SkillConformance = %v, want %q (schema-enforced run is receipt-exempt)", patch.SkillConformance, skillattr.ConformanceExact)
+	}
+}
+
 func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	t.Parallel()
 

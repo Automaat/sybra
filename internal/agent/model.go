@@ -81,6 +81,14 @@ type Agent struct {
 	// or fallback run.
 	skillRecoveryAttempt bool
 
+	// hasOutputSchema records whether this run enforced a provider output
+	// schema (--json-schema / --output-schema). A schema-enforced run must
+	// return schema-valid JSON and so cannot also close with the trailing
+	// skill-conformance receipt line; completion skips receipt verification
+	// for these runs rather than downgrading a valid JSON result to
+	// unverified and self-escalating the task to human-required.
+	hasOutputSchema bool
+
 	// promptHash is a privacy-safe hash of the canonical (pre-render) prompt
 	// dispatched for this run, correlating the dispatch (agent.started) and
 	// completion (agent.prompt_rendered) audit records without persisting
@@ -459,6 +467,7 @@ func (a *Agent) toRecord() Record {
 		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
 		SkillConformance:        a.SkillConformance,
 		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
+		HasOutputSchema:         a.hasOutputSchema,
 		PostResultWaitReason:    a.postResultWaitReason,
 		PostResultWaitSince:     a.postResultWaitSince,
 		ForkSubagent:            a.forkSubagent,
@@ -502,6 +511,7 @@ func fromRecord(r Record) *Agent {
 		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
 		SkillConformance:        r.SkillConformance,
 		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
+		hasOutputSchema:         r.HasOutputSchema,
 		postResultWaitReason:    r.PostResultWaitReason,
 		postResultWaitSince:     r.PostResultWaitSince,
 		forkSubagent:            r.ForkSubagent,
@@ -645,6 +655,24 @@ func (a *Agent) GetPromptHash() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.promptHash
+}
+
+// HasOutputSchema reports whether this run enforced a provider output schema.
+// Completion consults it to skip the skill-conformance receipt check, which is
+// unsatisfiable when the provider forces schema-valid JSON output.
+func (a *Agent) HasOutputSchema() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasOutputSchema
+}
+
+// SetHasOutputSchema records whether this run enforced a provider output
+// schema. Production sets it once at construction from RunConfig.OutputSchema;
+// it is exported for out-of-package tests that build Agent values directly.
+func (a *Agent) SetHasOutputSchema(v bool) {
+	a.mu.Lock()
+	a.hasOutputSchema = v
+	a.mu.Unlock()
 }
 
 // SetPromptRender records how provider-specific skill invocation syntax was

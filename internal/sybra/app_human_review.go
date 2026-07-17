@@ -212,7 +212,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		Mode:                   "headless",
 		Model:                  h.cfg.HumanReviewModel(),
 		Prompt:                 prompt,
-		Dir:                    h.cfg.HumanReview.SybraRepoDir,
+		Dir:                    h.reviewRunDir(t),
 		RequirePermissions:     false,
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
@@ -983,9 +983,40 @@ func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[stri
 	}
 }
 
+// reviewRunDir picks the agent's working directory. When the task has a live
+// worktree the agent runs there, so its UNBLOCK phase (fix/verify/commit/push
+// the task's own code) lands in the task checkout and the enforce OS sandbox
+// opens that write root — running in the Sybra repo instead would target the
+// wrong checkout and be blocked from writing the worktree. Pure-diagnosis
+// tasks with no worktree fall back to the Sybra source tree (reads there stay
+// unrestricted regardless of the working directory).
+func (h *humanReviewHandler) reviewRunDir(t task.Task) string {
+	if wd := strings.TrimSpace(t.WorktreeDir); wd != "" {
+		if info, err := os.Stat(wd); err == nil && info.IsDir() {
+			return wd
+		}
+	}
+	return h.cfg.HumanReview.SybraRepoDir
+}
+
+// writeWorkingDirHint tells the agent where its process actually starts so it
+// cd's correctly: the task worktree when one exists (fix/verify/push land in
+// the task repo), else the Sybra source tree. Either way the Sybra source is
+// readable — reads are unrestricted regardless of the working directory.
+func (h *humanReviewHandler) writeWorkingDirHint(b *strings.Builder, t task.Task) {
+	sybraSrc := strings.TrimSpace(h.cfg.HumanReview.SybraRepoDir)
+	if runDir := h.reviewRunDir(t); strings.TrimSpace(runDir) != "" && runDir != sybraSrc {
+		fmt.Fprintf(b, "- Working directory is the task's worktree (%s) — cd here to fix/verify/commit/push the task's code. The Sybra source tree is at %s; Grep/Read there when a stack trace or error message points into internal/.\n", runDir, sybraSrc)
+		return
+	}
+	b.WriteString("- Working directory is the Sybra source tree. Use Grep/Read/Glob to inspect Go code under internal/ when a stack trace or error message points there.\n")
+}
+
 // buildPrompt assembles the review agent's instructions and context. The
-// agent runs in the Sybra source tree with skip-permissions, so it can
-// freely grep the codebase + read host logs to diagnose the transition.
+// agent runs in the task's worktree when one exists (so it can fix/verify/
+// push the task's code), otherwise in the Sybra source tree; either way it
+// has skip-permissions and can freely grep the codebase + read host logs to
+// diagnose the transition.
 //
 // When wctx is non-nil the task originates from a work-typed project; the
 // prompt is augmented with explicit redaction rules and the verdict will be
@@ -1082,7 +1113,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, wctx *WorkScrubContext) st
 	}
 
 	b.WriteString("## Investigation hints\n")
-	b.WriteString("- Working directory is the Sybra source tree. Use Grep/Read/Glob to inspect Go code under internal/ when a stack trace or error message points there.\n")
+	h.writeWorkingDirHint(&b, t)
 	fmt.Fprintf(&b, "- Audit events live under %s (newest file is today's). Run `gh issue list --repo %s --label %s` first to avoid duplicate filings.\n",
 		filepath.Join(h.homeDir, "audit"), h.cfg.HumanReviewRepo(), h.cfg.HumanReviewIssueLabel())
 	b.WriteString("- Trust deterministic workflow signals before inferring from weak provider metadata: status history, exit state, parsed verdict, protocol_violation, test_outcome, failure fingerprint, task body delta, and log tail. Do NOT classify a Codex run as crashed solely because cost=0 or session is empty; confirm from log contents or exit failure.\n")
