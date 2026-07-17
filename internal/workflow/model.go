@@ -199,7 +199,7 @@ type StepConfig struct {
 	Role     string `yaml:"role,omitempty" json:"role"`
 	Mode     string `yaml:"mode,omitempty" json:"mode"`
 	Model    string `yaml:"model,omitempty" json:"model"`
-	Provider string `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "cross"
+	Provider string `yaml:"provider,omitempty" json:"provider"` // "", "claude", "codex", "copilot", "opencode", "cross", "ab"
 	Prompt   string `yaml:"prompt,omitempty" json:"prompt"`
 	// AllowedTools is advisory, not a capability boundary. Only claude enforces
 	// it (as --allowedTools); codex has no per-tool allowlist at all, and
@@ -208,7 +208,7 @@ type StepConfig struct {
 	// unenforced on the copilot spawn beside it — dispatch logs
 	// agent.run.allowed_tools.unenforced whenever that happens. For containment
 	// that binds every provider, rely on the OS-level sandbox instead (see
-	// internal/agent/procsandbox_darwin.go).
+	// internal/agent/procsandbox_*.go).
 	AllowedTools  []string `yaml:"allowed_tools,omitempty" json:"allowedTools"`
 	NeedsWorktree bool     `yaml:"needs_worktree,omitempty" json:"needsWorktree"`
 

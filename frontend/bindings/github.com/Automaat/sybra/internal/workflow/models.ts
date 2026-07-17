@@ -529,7 +529,7 @@ export class StepConfig {
     "model": string;
 
     /**
-     * "", "claude", "codex", "copilot", "cross"
+     * "", "claude", "codex", "copilot", "opencode", "cross", "ab"
      */
     "provider": string;
     "prompt": string;
@@ -542,7 +542,7 @@ export class StepConfig {
      * unenforced on the copilot spawn beside it — dispatch logs
      * agent.run.allowed_tools.unenforced whenever that happens. For containment
      * that binds every provider, rely on the OS-level sandbox instead (see
-     * internal/agent/procsandbox_darwin.go).
+     * internal/agent/procsandbox_*.go).
      */
     "allowedTools": string[];
     "needsWorktree": boolean;

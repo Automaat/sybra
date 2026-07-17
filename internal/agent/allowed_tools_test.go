@@ -25,8 +25,8 @@ func TestHonorsAllowedTools_MatchesTheSpawnedArgv(t *testing.T) {
 	for _, name := range []string{"claude", "codex", "copilot", "opencode"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			prov := providerByName(name)
-			if prov == nil {
+			prov, err := lookupProvider(name)
+			if err != nil {
 				t.Skipf("provider %s not registered", name)
 			}
 			a := &Agent{ID: "a1", Provider: name}
@@ -66,8 +66,8 @@ func TestPrepareRunConfig_WarnsWhenProviderIgnoresAllowedTools(t *testing.T) {
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			buf.Reset()
-			prov := providerByName(tc.provider)
-			if prov == nil {
+			prov, err := lookupProvider(tc.provider)
+			if err != nil {
 				t.Skipf("provider %s not registered", tc.provider)
 			}
 			m.warnUnenforceableAllowedTools(RunConfig{
