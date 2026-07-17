@@ -119,6 +119,25 @@ export class ComparisonBreakdown {
     "toolsPerLanded": number;
     "insufficientData": boolean;
     "qualityAttributionLimited": boolean;
+
+    /**
+     * SkillConformance is this row's skill-conformance bucket
+     * (SkillCohortSkill/SkillCohortDirect/SkillCohortIndeterminate) when every
+     * run credited to the row shares one, "" when the row blends more than
+     * one — see SkillParityUnknown, the same condition reified as a bool for
+     * API consumers that would rather not special-case an empty string.
+     */
+    "skillConformance"?: string;
+
+    /**
+     * SkillParityUnknown reports whether this row's population is not purely
+     * SkillCohortSkill or SkillCohortDirect — either it blends runs with
+     * different skill delivery, or every run in it has indeterminate
+     * conformance. Either way the row can't support a skill-parity
+     * comparison regardless of sample size, so it always forces
+     * InsufficientData.
+     */
+    "skillParityUnknown"?: boolean;
     "baseline": boolean;
     "baselineVariantId"?: string;
     "sampleStatus"?: string;
@@ -245,7 +264,7 @@ export class ComparisonBreakdown {
         const $$createField28_0 = $$createType2;
         const $$createField29_0 = $$createType2;
         const $$createField30_0 = $$createType2;
-        const $$createField45_0 = $$createType4;
+        const $$createField47_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -272,7 +291,7 @@ export class ComparisonBreakdown {
             $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField45_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField47_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
