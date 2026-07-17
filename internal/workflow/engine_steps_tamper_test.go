@@ -489,6 +489,16 @@ func TestBuildTamperReport(t *testing.T) {
 			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
 		}
 	})
+
+	t.Run("prior_delete_clause_does_not_bless_ensured_test_file", func(t *testing.T) {
+		body := "## Scope\n- delete cache and ensure `internal/foo/bar_test.go` still passes\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/bar_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
 }
 
 func TestDocumentedDeletionAllowlist(t *testing.T) {
@@ -557,6 +567,24 @@ func TestDocumentedDeletionAllowlist(t *testing.T) {
 		got := documentedDeletionAllowlist(body)
 		if got.ExactPaths["internal/foo/bar_test.go"] {
 			t.Fatalf("ExactPaths = %v, did not want unrelated test path", got.ExactPaths)
+		}
+	})
+
+	t.Run("ignores_path_after_short_prior_delete_clause", func(t *testing.T) {
+		body := "## Files\n- delete cache and ensure `internal/foo/bar_test.go` still passes.\n"
+		got := documentedDeletionAllowlist(body)
+		if got.ExactPaths["internal/foo/bar_test.go"] {
+			t.Fatalf("ExactPaths = %v, did not want unrelated ensured test path", got.ExactPaths)
+		}
+	})
+
+	t.Run("keeps_comma_separated_deletion_list", func(t *testing.T) {
+		body := "## Files\n- delete `a_test.go` and `b_test.go`, plus internal/foo/c_test.go\n"
+		got := documentedDeletionAllowlist(body)
+		for _, path := range []string{"a_test.go", "b_test.go", "internal/foo/c_test.go"} {
+			if !got.ExactPaths[path] {
+				t.Fatalf("ExactPaths = %v, want %s", got.ExactPaths, path)
+			}
 		}
 	})
 

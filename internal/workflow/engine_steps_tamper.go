@@ -1116,8 +1116,6 @@ func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathTo
 	if lead == "" {
 		return true
 	}
-	// Keep backward association local. Existing path tokens in a deletion list
-	// are list syntax, not explanatory distance from the deletion verb.
 	lead = redactDocumentedPathTokens(lead)
 	lead = strings.TrimSpace(lead)
 	lead = strings.TrimSpace(strings.Trim(lead, "`\"'"))
@@ -1127,10 +1125,47 @@ func tokenHasDeletionVerbLead(segment string, verb []int, token documentedPathTo
 	if strings.ContainsAny(lead, ".?!") {
 		return false
 	}
-	words := strings.FieldsFunc(lead, func(r rune) bool {
+	parts := strings.Split(lead, ",")
+	for _, part := range parts[:len(parts)-1] {
+		if !documentedDeletionLeadConnectorOnly(part) {
+			return false
+		}
+	}
+	lead = strings.TrimSpace(parts[len(parts)-1])
+	if lead == "" || documentedDeletionLeadConnectorOnly(lead) {
+		return true
+	}
+	words := documentedDeletionLeadWords(lead)
+	if len(words) == 0 {
+		return true
+	}
+	if len(words) > 5 {
+		return false
+	}
+	return slices.Contains([]string{"at", "for", "from", "in", "inside", "under", "within"}, words[len(words)-1])
+}
+
+func documentedDeletionLeadConnectorOnly(s string) bool {
+	words := documentedDeletionLeadWords(s)
+	if len(words) == 0 {
+		return true
+	}
+	for _, word := range words {
+		if !slices.Contains([]string{"and", "or", "plus"}, word) {
+			return false
+		}
+	}
+	return true
+}
+
+func documentedDeletionLeadWords(s string) []string {
+	words := strings.FieldsFunc(s, func(r rune) bool {
 		return (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
 	})
-	return len(words) <= 5
+	for i := range words {
+		words[i] = strings.ToLower(words[i])
+	}
+	return words
 }
 
 func redactDocumentedPathTokens(s string) string {
