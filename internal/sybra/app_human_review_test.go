@@ -1123,12 +1123,14 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	}
 }
 
-// TestOnComplete_ExecutionCrashDefersForRetry pins the retry contract: a
-// human-review run that crashes (error_during_execution → exit error) before
-// emitting any verdict must NOT append an unparseable note or latch
-// VerdictRendered, so the per-task review budget can re-dispatch. Latching here
-// would strand the task in human-required with no diagnosis ever completed.
-func TestOnComplete_ExecutionCrashDefersForRetry(t *testing.T) {
+// TestOnComplete_ExecutionCrashRendersDiagnosis pins the no-dead-end contract:
+// a human-review run that crashes (error_during_execution → exit error) before
+// emitting any verdict has no retry trigger (maybeSpawn only fires on a fresh
+// transition, and a directly-spawned review agent is not a rescheduled workflow
+// step). So it must render an honest, non-empty crash note and latch
+// VerdictRendered — leaving the task in human-required for a human WITH a
+// diagnosis, rather than deferring into a dead-end that strands it silently.
+func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	t.Parallel()
 	h, tasks, sink, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -1146,7 +1148,9 @@ func TestOnComplete_ExecutionCrashDefersForRetry(t *testing.T) {
 
 	ag := &agent.Agent{ID: "hr-crash", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
 	// Transient crash before any verdict: error result event + recorded exit
-	// error, no parseable verdict text.
+	// error, no parseable verdict text (and, critically, no assistant text —
+	// the fall-through unparseable path would append an empty note and latch
+	// nothing).
 	ag.SetExitErr(errors.New("provider result error error_during_execution"))
 	ag.AppendOutput(agent.StreamEvent{Type: "result", Subtype: "error_during_execution"})
 	h.onComplete(ag)
@@ -1156,15 +1160,27 @@ func TestOnComplete_ExecutionCrashDefersForRetry(t *testing.T) {
 		t.Fatalf("re-load: %v", err)
 	}
 	if strings.Contains(got.Body, "unparseable verdict") {
-		t.Errorf("crashed human-review must not append unparseable verdict noise; got:\n%s", got.Body)
+		t.Errorf("crashed human-review must not mislabel the crash as unparseable; got:\n%s", got.Body)
 	}
+	if !strings.Contains(got.Body, "Auto-review did not complete (execution error)") {
+		t.Errorf("crashed human-review must render an honest crash note; got:\n%s", got.Body)
+	}
+	rendered := false
 	for _, run := range got.AgentRuns {
 		if run.AgentID == "hr-crash" && run.VerdictRendered {
-			t.Fatal("crashed human-review must not latch verdict_rendered — retry would be blocked")
+			rendered = true
 		}
 	}
-	if verdictAlreadyRendered(got) {
-		t.Fatal("verdictAlreadyRendered must stay false so the per-task budget can retry")
+	if !rendered {
+		t.Fatal("crashed human-review must latch verdict_rendered — there is no retry trigger, so the diagnosis must be durable")
+	}
+	if !verdictAlreadyRendered(got) {
+		t.Fatal("verdictAlreadyRendered must be true so a restart does not silently drop the crashed task")
+	}
+	// The task stays in human-required — a human still owns it, the auto-review
+	// just could not diagnose it.
+	if got.Status != task.StatusHumanRequired {
+		t.Errorf("crashed review must leave task in human-required; got %s", got.Status)
 	}
 	if sink.calls != 0 {
 		t.Errorf("sink should not be called on execution crash; calls=%d", sink.calls)

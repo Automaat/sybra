@@ -340,11 +340,15 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 }
 
 // handleUnparseableVerdict applies the completion side-effects for a run whose
-// output did not parse into a verdict. It distinguishes retryable failures
-// (rate limit, execution crash) — which defer without latching VerdictRendered
-// so the per-task review budget can re-dispatch — from a clean run that emitted
-// genuinely unparseable/placeholder output, which is latched as a non-retryable
-// failure. The task is known to be in human-required (caller-guarded).
+// output did not parse into a verdict. A provider rate-limit defers without
+// latching VerdictRendered because the agent manager reschedules that run
+// (RescheduleRateLimitedAgent) — a genuine retry trigger. Every other failure
+// (execution crash or clean-but-unparseable output) has NO retry trigger:
+// maybeSpawn only fires on a fresh transition into human-required, and a
+// directly-spawned review agent is not a workflow step that gets re-driven. So
+// those latch a rendered diagnosis and leave the task in human-required for a
+// human, rather than deferring into a dead-end. The task is known to be in
+// human-required (caller-guarded).
 func (h *humanReviewHandler) handleUnparseableVerdict(ag *agent.Agent, current task.Task, final string, parseErr error) {
 	taskID := ag.TaskID
 	if ag.GetErrorKind() == "rate_limit" {
@@ -354,17 +358,22 @@ func (h *humanReviewHandler) handleUnparseableVerdict(ag *agent.Agent, current t
 		return
 	}
 	// A run that crashed before emitting a terminal verdict (transient
-	// error_during_execution, provider error) records an exit error and produces
-	// no diagnosis. Marking VerdictRendered here would strand the task in
-	// human-required behind the idempotency gate with no review ever completed.
-	// Defer instead — like the rate_limit branch — so the per-task review budget
-	// can retry. A run that exits cleanly (no exit error) but emits an
-	// unparseable/placeholder verdict is a genuine, non-retryable failure worth
-	// latching, so it falls through to the note below.
-	if ag.GetExitErr() != nil {
-		h.logger.Warn("human-review.verdict.deferred",
-			"task_id", taskID, "agent_id", ag.ID, "reason", "execution_error", "err", parseErr)
-		h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "execution_error"})
+	// error_during_execution, provider error) records an exit error and often
+	// emits no text at all, so the fall-through path below would call
+	// appendNote("") — which no-ops and latches nothing, stranding the task in
+	// human-required with no rendered diagnosis and no re-trigger. Render an
+	// honest, non-empty crash note here and latch instead: the task correctly
+	// stays in human-required for a human, now with accurate context.
+	if exitErr := ag.GetExitErr(); exitErr != nil {
+		h.logger.Warn("human-review.verdict.crashed",
+			"task_id", taskID, "agent_id", ag.ID, "reason", "execution_error", "err", exitErr)
+		note := "The auto-review agent crashed before producing a verdict: " + exitErr.Error()
+		if h.appendNote(taskID, "Auto-review did not complete (execution error)", h.scrubForTask(current.ProjectID, note)) {
+			h.markVerdictRendered(taskID, ag.ID)
+		}
+		h.logAudit(audit.EventHumanReviewVerdict, taskID, ag.ID, map[string]any{
+			"decision": "crashed", "verdict_source": "execution_error", "reason": exitErr.Error(),
+		})
 		return
 	}
 	h.logger.Warn("human-review.verdict.parse", "task_id", taskID, "agent_id", ag.ID, "err", parseErr)
