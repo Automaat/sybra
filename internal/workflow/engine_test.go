@@ -1793,6 +1793,66 @@ func TestCancelWorkflow(t *testing.T) {
 	}
 }
 
+func TestStartWorkflowRejectsTamperFlaggedRestart(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	originalWorkflow := &Execution{
+		WorkflowID: "simple-task-implement",
+		State:      ExecCompleted,
+		Variables:  map[string]string{tamperDeletionAllowlistVar: `{"exact_paths":{},"basenames":{}}`},
+	}
+	tasks.Put(TaskInfo{
+		ID:           "tamper",
+		Status:       "human-required",
+		StatusReason: TamperFlaggedReasonPrefix + " removed tests/foo_test.go",
+		Tags:         []string{TamperBlessedTag},
+		Workflow:     originalWorkflow,
+	})
+
+	err := engine.StartWorkflow("tamper", "test-simple")
+	if !errors.Is(err, ErrTamperBlessRequired) {
+		t.Fatalf("StartWorkflow err = %v, want ErrTamperBlessRequired", err)
+	}
+	got, getErr := tasks.GetTask("tamper")
+	if getErr != nil {
+		t.Fatalf("get task: %v", getErr)
+	}
+	if got.Workflow.WorkflowID != originalWorkflow.WorkflowID ||
+		got.Workflow.State != originalWorkflow.State ||
+		got.Workflow.CurrentStep != originalWorkflow.CurrentStep {
+		t.Fatalf("workflow changed: %+v, want original %+v", got.Workflow, originalWorkflow)
+	}
+	if agents.HasRunningAgent("tamper") {
+		t.Fatal("StartWorkflow launched an agent for a tamper-flagged task")
+	}
+}
+
+func TestStartWorkflowAllowsNonTamperHumanRequiredRestart(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "human",
+		Status:       "human-required",
+		StatusReason: "operator needs more context",
+		Workflow:     &Execution{WorkflowID: "old", State: ExecCompleted},
+	})
+
+	if err := engine.StartWorkflow("human", "test-simple"); err != nil {
+		t.Fatalf("StartWorkflow err = %v, want nil", err)
+	}
+	if !agents.HasRunningAgent("human") {
+		t.Fatal("StartWorkflow did not launch an agent for non-tamper human-required task")
+	}
+}
+
 func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
