@@ -963,13 +963,11 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 			if !tamperDeletionVerbRe.MatchString(segment) {
 				continue
 			}
-			candidate, ok := deletionPathFromSegment(segment)
-			if !ok {
-				continue
-			}
-			allow.ExactPaths[candidate] = true
-			if !strings.Contains(candidate, "/") {
-				allow.Basenames[candidate] = true
+			for _, candidate := range deletionPathsFromSegment(segment) {
+				allow.ExactPaths[candidate] = true
+				if !strings.Contains(candidate, "/") {
+					allow.Basenames[candidate] = true
+				}
 			}
 		}
 	}
@@ -980,24 +978,20 @@ type documentedPathToken struct {
 	start, end int
 }
 
-func deletionPathFromSegment(segment string) (string, bool) {
+func deletionPathsFromSegment(segment string) []string {
 	verbs := tamperDeletionVerbRe.FindAllStringIndex(segment, -1)
 	if len(verbs) == 0 {
-		return "", false
+		return nil
 	}
 	tokens := deletionPathTokensFromSegment(segment, verbs)
 	if len(tokens) == 0 {
-		return "", false
+		return nil
 	}
-	best := tokens[0]
-	bestDistance := pathTokenVerbDistance(best, verbs)
-	for _, token := range tokens[1:] {
-		if distance := pathTokenVerbDistance(token, verbs); distance < bestDistance {
-			best = token
-			bestDistance = distance
-		}
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		out = append(out, token.path)
 	}
-	return best.path, true
+	return out
 }
 
 func deletionPathTokensFromSegment(segment string, deletionVerbs [][]int) []documentedPathToken {
@@ -1034,23 +1028,6 @@ func verbRangeInList(needle []int, haystack [][]int) bool {
 		}
 	}
 	return false
-}
-
-func pathTokenVerbDistance(token documentedPathToken, verbs [][]int) int {
-	best := -1
-	for _, verb := range verbs {
-		distance := 0
-		switch {
-		case token.end < verb[0]:
-			distance = verb[0] - token.end
-		case token.start > verb[1]:
-			distance = token.start - verb[1]
-		}
-		if best == -1 || distance < best {
-			best = distance
-		}
-	}
-	return best
 }
 
 func pathTokensFromSegment(segment string) []documentedPathToken {
