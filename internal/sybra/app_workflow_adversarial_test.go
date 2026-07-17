@@ -42,7 +42,13 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 		"  codegen:\n" +
 		"    - echo TRUSTED_CODEGEN\n" +
 		"  verify:\n" +
-		"    - echo TRUSTED_VERIFY\n"
+		"    - echo TRUSTED_VERIFY\n" +
+		"  focused:\n" +
+		"    - name: trusted\n" +
+		"      paths:\n" +
+		"        - internal/workflow/**\n" +
+		"      commands:\n" +
+		"        - echo TRUSTED_FOCUSED\n"
 	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte(repoCfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +74,7 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 	// trusted default-branch .sybra.yaml wins over both worktree edits and the
 	// app-level fallback.
 	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
-		"\nclone_path: " + bare + "\ntype: pet\nchecks:\n  codegen:\n    - echo APP_CODEGEN\n  verify:\n    - echo APP_VERIFY\n"
+		"\nclone_path: " + bare + "\ntype: pet\nchecks:\n  codegen:\n    - echo APP_CODEGEN\n  verify:\n    - echo APP_VERIFY\n  focused:\n    - name: app\n      paths:\n        - internal/project/**\n      commands:\n        - echo APP_FOCUSED\n"
 	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +109,7 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 
 	// Attacker-controlled .sybra.yaml planted directly in the task's own
 	// worktree (e.g. by a compromised implementation agent).
-	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  codegen:\n    - echo UNTRUSTED_CODEGEN\n  verify:\n    - echo UNTRUSTED_VERIFY\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  codegen:\n    - echo UNTRUSTED_CODEGEN\n  verify:\n    - echo UNTRUSTED_VERIFY\n  focused:\n    - name: untrusted\n      paths:\n        - internal/workflow/**\n      commands:\n        - echo UNTRUSTED_FOCUSED\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,6 +159,21 @@ func TestAdversarialCodegenCommandsIgnoreWorktreeRepoConfig(t *testing.T) {
 		"echo TRUSTED_CODEGEN",
 		func(a *checkConfigGetterAdapter, ctx context.Context, taskID string) []string {
 			return a.CodegenCommands(ctx, taskID)
+		},
+	)
+}
+
+func TestAdversarialFocusedChecksIgnoreWorktreeRepoConfig(t *testing.T) {
+	testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(
+		t,
+		"FocusedChecks",
+		"echo TRUSTED_FOCUSED",
+		func(a *checkConfigGetterAdapter, ctx context.Context, taskID string) []string {
+			got := a.FocusedChecks(ctx, taskID)
+			if len(got) != 1 {
+				return nil
+			}
+			return got[0].Commands
 		},
 	)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 )
 
@@ -158,6 +159,7 @@ type CheckConfigGetter interface {
 	CodegenCommands(ctx context.Context, taskID string) []string
 	VerifyCommands(ctx context.Context, taskID string) []string
 	SetupCommands(ctx context.Context, taskID string) []string
+	FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck
 }
 
 // ManualTestConfigGetter resolves repo/project-declared black-box testing hints.

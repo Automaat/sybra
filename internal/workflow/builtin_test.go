@@ -389,9 +389,10 @@ func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 }
 
 // TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
-// implementation workflow ordering: verify_commits flows into codegen_gate,
-// which must run before detect_tampering and verify_checks so downstream
-// review/testing validate the final committed branch content.
+// implementation workflow ordering: verify_commits flows into focused_checks,
+// then codegen_gate, which must still run before detect_tampering and
+// verify_checks so downstream review/testing validate the final committed
+// branch content.
 func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	t.Parallel()
 
@@ -420,8 +421,22 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "done"}); err != nil || got != "" {
 		t.Fatalf("verify_commits done goto = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "codegen_gate" {
-		t.Fatalf("verify_commits clean goto = %q, err=%v; want codegen_gate", got, err)
+	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "focused_checks" {
+		t.Fatalf("verify_commits clean goto = %q, err=%v; want focused_checks", got, err)
+	}
+
+	focused := impl.StepByID("focused_checks")
+	if focused == nil {
+		t.Fatal("focused_checks step not found in simple-task-implement")
+	}
+	if focused.Type != StepFocusedChecks {
+		t.Fatalf("focused_checks type = %q, want %q", focused.Type, StepFocusedChecks)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("focused_checks human-required goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "codegen_gate" {
+		t.Fatalf("focused_checks clean goto = %q, err=%v; want codegen_gate", got, err)
 	}
 
 	codegen := impl.StepByID("codegen_gate")
