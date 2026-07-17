@@ -11,8 +11,8 @@ const (
 	// author rebases. Passive — the lane sinks it to the bottom; the human waits
 	// on the author, so it never asserts the needs-you (human-required) signal.
 	ReviewPhaseConflict = "conflict"
-	// ReviewPhaseManual: the PR was too small for an agent and was punted to
-	// the human to review by hand.
+	// ReviewPhaseManual: no draft/submitted review exists and the task is parked
+	// for a human follow-up instead of an active review run.
 	ReviewPhaseManual = "manual"
 	// ReviewPhaseDrafted: a PENDING (draft) review sits on the PR, waiting for
 	// the human to verify and submit it on GitHub.
@@ -147,8 +147,7 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 
 	// No draft and no submitted review after a cost-stopped review run means an
 	// agent attempted the review but was killed before it could checkpoint its
-	// findings. Keep the manual phase, but surface the distinct reason instead
-	// of making it look like a small-PR punt.
+	// findings. Keep the manual phase, but surface the distinct reason.
 	if s.CostGuardrailStopped {
 		return reviewPhaseResult{
 			Phase:  ReviewPhaseManual,
@@ -157,10 +156,9 @@ func computeReviewPhase(s reviewSignals) reviewPhaseResult {
 		}
 	}
 
-	// No agent, no draft, no submitted review: the human owns it (typically a
-	// small PR punted by triage). Assert human-required for the needs-you
-	// signal, but emit no reason so applyReviewPhase keeps whatever reason
-	// triage already set (e.g. "PR too small for agent review").
+	// No agent, no draft, no submitted review: the human owns the next step.
+	// Assert human-required for the needs-you signal, but emit no reason so
+	// applyReviewPhase keeps whatever blocker triage/reconciliation already set.
 	return reviewPhaseResult{Phase: ReviewPhaseManual, Status: task.StatusHumanRequired}
 }
 
