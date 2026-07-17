@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 )
@@ -72,6 +73,24 @@ func TestSelectFocusedChecks(t *testing.T) {
 	}
 	if !slices.Equal(selected[2].ChangedFiles, []string{"internal/project/model.go"}) {
 		t.Fatalf("project changed files = %v", selected[2].ChangedFiles)
+	}
+}
+
+func TestMatchRepoPath_MemoizesRepeatedDoubleStar(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- matchRepoPath(strings.Repeat("**/", 12)+"target.go", strings.TrimSuffix(strings.Repeat("seg/", 25), "/"))
+	}()
+
+	select {
+	case matched := <-done:
+		if matched {
+			t.Fatal("matchRepoPath = true, want false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("matchRepoPath did not finish for repeated ** pattern")
 	}
 }
 

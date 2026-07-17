@@ -308,27 +308,42 @@ func matchPackagePattern(pattern, pkg string) bool {
 }
 
 func matchRepoPath(pattern, name string) bool {
-	return matchRepoPathSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
+	patterns := strings.Split(pattern, "/")
+	parts := strings.Split(name, "/")
+	memo := make(map[repoPathMatchState]bool, len(patterns)*len(parts))
+	return matchRepoPathSegments(patterns, parts, 0, 0, memo)
 }
 
-func matchRepoPathSegments(patterns, parts []string) bool {
-	if len(patterns) == 0 {
-		return len(parts) == 0
+type repoPathMatchState struct {
+	pattern int
+	part    int
+}
+
+func matchRepoPathSegments(patterns, parts []string, patternIdx, partIdx int, memo map[repoPathMatchState]bool) bool {
+	state := repoPathMatchState{pattern: patternIdx, part: partIdx}
+	if matched, ok := memo[state]; ok {
+		return matched
 	}
-	if patterns[0] == "**" {
-		if matchRepoPathSegments(patterns[1:], parts) {
-			return true
+
+	var matched bool
+	switch {
+	case patternIdx == len(patterns):
+		matched = partIdx == len(parts)
+	case patterns[patternIdx] == "**":
+		if matchRepoPathSegments(patterns, parts, patternIdx+1, partIdx, memo) {
+			matched = true
+		} else {
+			matched = partIdx < len(parts) && matchRepoPathSegments(patterns, parts, patternIdx, partIdx+1, memo)
 		}
-		return len(parts) > 0 && matchRepoPathSegments(patterns, parts[1:])
+	case partIdx == len(parts):
+		matched = false
+	default:
+		ok, err := path.Match(patterns[patternIdx], parts[partIdx])
+		matched = err == nil && ok && matchRepoPathSegments(patterns, parts, patternIdx+1, partIdx+1, memo)
 	}
-	if len(parts) == 0 {
-		return false
-	}
-	ok, err := path.Match(patterns[0], parts[0])
-	if err != nil || !ok {
-		return false
-	}
-	return matchRepoPathSegments(patterns[1:], parts[1:])
+
+	memo[state] = matched
+	return matched
 }
 
 func focusedArtifactSelections(selected []selectedFocusedCheck) []focusedCheckArtifact {
