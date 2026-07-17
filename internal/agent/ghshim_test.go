@@ -233,3 +233,119 @@ func TestPrependPATH(t *testing.T) {
 		t.Fatalf("prependPATH left %d PATH entries: %v", pathCount, got)
 	}
 }
+
+// The bypasses that let 28 approvals onto Automaat/lightroom-mcp#151 while the
+// shim was on PATH for every run (agent.gh-shim.ready, never unguarded).
+//
+// Both defeat argv scanning the same way — they move APPROVE somewhere argv
+// cannot see it. The shim cannot read a request body, so a payload it cannot
+// inspect on a reviews endpoint is refused rather than assumed benign.
+func TestGhShim_BlocksApprovalsInvisibleToArgv(t *testing.T) {
+	shim := newShim(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			// The body never appears in argv at all.
+			name: "review body piped on stdin",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "--method", "POST", "--input", "-"},
+		},
+		{
+			name: "review body read from a file",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "--method", "POST", "--input", "/tmp/body.json"},
+		},
+		{
+			name: "review body via --input=",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "--input=/tmp/body.json"},
+		},
+		{
+			// EVENT and APPROVE land in different argv elements, so the
+			// event=APPROVE glob never matches either one.
+			name: "graphql mutation with the event in a variable",
+			args: []string{
+				"api", "graphql",
+				"-f", "query=mutation($e:PullRequestReviewEvent!){addPullRequestReview(input:{event:$e}){clientMutationId}}",
+				"-F", "e=APPROVE",
+			},
+		},
+		{
+			name: "graphql mutation with the event inline",
+			args: []string{
+				"api", "graphql",
+				"-f", "query=mutation{addPullRequestReview(input:{pullRequestId:\"x\",event:APPROVE}){clientMutationId}}",
+			},
+		},
+		{
+			// -F key=@path reads the value from a file, so the whole mutation
+			// stays out of argv — the same hole as --input, one field wide.
+			name: "graphql query read from a file",
+			args: []string{"api", "graphql", "-F", "query=@/tmp/mutation.graphql"},
+		},
+		{
+			name: "graphql query read from stdin",
+			args: []string{"api", "graphql", "-F", "query=@-"},
+		},
+		{
+			name: "review event read from a file",
+			args: []string{"api", "repos/o/r/pulls/151/reviews", "-F", "event=@/tmp/event.txt"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, code := runShim(t, shim, tt.args...)
+			if code == 0 {
+				t.Fatalf("shim allowed an approval it could not inspect: %v", tt.args)
+			}
+			if !strings.Contains(stderr, GhShimReason) {
+				t.Errorf("stderr = %q, want the shim's refusal reason", stderr)
+			}
+		})
+	}
+}
+
+// The tightening must not cost the agent the reviews it is supposed to post.
+// A guard that blocks legitimate work gets routed around by the next person.
+func TestGhShim_AllowsInspectableAndUnrelatedCalls(t *testing.T) {
+	shim := newShim(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"comment review", []string{"pr", "review", "151", "--comment", "-b", "looks good"}},
+		{"request changes", []string{"pr", "review", "151", "--request-changes", "-b", "fix this"}},
+		{
+			// The body is prose; "approve" and "event" in it mean nothing.
+			name: "body that merely mentions approving an event",
+			args: []string{"pr", "review", "151", "--comment", "-b", "I approve of this event handler"},
+		},
+		{"reading reviews", []string{"api", "repos/o/r/pulls/151/reviews"}},
+		{
+			// --input is only suspicious when the target is a reviews endpoint.
+			name: "input body on a non-review endpoint",
+			args: []string{"api", "repos/o/r/issues/1/comments", "--method", "POST", "--input", "-"},
+		},
+		{"unrelated graphql", []string{"api", "graphql", "-f", "query=query{viewer{login}}"}},
+		{
+			// Variables are fine; it is a file-sourced *value* that hides intent.
+			name: "graphql read query with variables",
+			args: []string{
+				"api", "graphql",
+				"-f", "query=query($n:Int!){repository(owner:\"o\",name:\"r\"){pullRequest(number:$n){id}}}",
+				"-F", "n=151",
+			},
+		},
+		{
+			name: "file-sourced body on a non-review endpoint",
+			args: []string{"api", "repos/o/r/issues/1/comments", "-F", "body=@/tmp/note.md"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, stderr, _ := runShim(t, shim, tt.args...)
+			if strings.Contains(stderr, GhShimReason) {
+				t.Fatalf("shim blocked a legitimate call: %v", tt.args)
+			}
+		})
+	}
+}
