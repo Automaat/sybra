@@ -220,8 +220,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// parked/failed — is settled.
 	e.markStepStarting(taskID, step.ID)
 	defer func() {
-		e.unmarkStepStarting(taskID, step.ID)
-		e.replayPendingCompletions(taskID, step.ID)
+		for _, buffered := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+			e.HandleAgentComplete(taskID, buffered)
+		}
 	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {

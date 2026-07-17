@@ -86,3 +86,84 @@ func TestExecRunAgent_CompletionRacingRouteRegistrationIsNotDropped(t *testing.T
 		t.Fatal("buffered completion was never replayed: workflow is stuck on triage forever, reproducing #2176")
 	}
 }
+
+// TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered is the happy
+// path underlying the test above, isolated at the bookkeeping level: a
+// completion that arrives while a start is pending is captured, and the
+// matching unmark call pops exactly it back out.
+func TestCheckOrBufferForTaskStep_BufferedBeforeUnmarkIsDelivered(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	engine.markStepStarting("t1", "s1")
+	c := AgentCompletion{AgentID: "agent-1", Success: true}
+	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status != taskStepBuffered {
+		t.Fatalf("status = %v, want taskStepBuffered", status)
+	}
+
+	popped := engine.unmarkStepStartingAndTakePending("t1", "s1")
+	if len(popped) != 1 || popped[0].AgentID != "agent-1" {
+		t.Fatalf("popped = %+v, want exactly the buffered completion", popped)
+	}
+}
+
+// TestCheckOrBufferForTaskStep_NeverStrandsAcrossUnmarkRace is the adversarial
+// review's finding: a prior version checked pendingStepStart and appended to
+// pendingCompletions as two separate locked operations, so an unmark that won
+// the race against the buffer write would pop an empty list, and the
+// completion would then land in a pendingCompletions entry nothing would ever
+// pop again — a silent, permanent stall reproducing #2176 through the fix
+// meant to close it.
+//
+// checkOrBufferForTaskStep and unmarkStepStartingAndTakePending now share one
+// lock acquisition each, so the two operations can't interleave — this test
+// drives them in the exact bad order (unmark first, buffer attempt second)
+// and asserts the completion is reported taskStepFree, not silently
+// swallowed into taskStepBuffered.
+func TestCheckOrBufferForTaskStep_NeverStrandsAcrossUnmarkRace(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	engine.markStepStarting("t1", "s1")
+
+	popped := engine.unmarkStepStartingAndTakePending("t1", "s1")
+	if len(popped) != 0 {
+		t.Fatalf("popped = %+v, want none: nothing was buffered yet", popped)
+	}
+
+	c := AgentCompletion{AgentID: "agent-1", Success: true}
+	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status == taskStepBuffered {
+		t.Fatal("completion was buffered after its start's unmark already ran — nothing will ever pop it, reproducing #2176")
+	}
+}
+
+// TestClearAgentStepsForTask_DropsBufferedCompletions covers the adversarial
+// review's third finding: a completion buffered for a superseded dispatch
+// attempt must not survive the (re)dispatch that stops and supersedes it,
+// the same way its agentRoutes entry does not.
+func TestClearAgentStepsForTask_DropsBufferedCompletions(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	engine.markStepStarting("t1", "s1")
+	c := AgentCompletion{AgentID: "agent-1", Success: true}
+	if status := engine.checkOrBufferForTaskStep("t1", "s1", c); status != taskStepBuffered {
+		t.Fatalf("status = %v, want taskStepBuffered", status)
+	}
+
+	engine.clearAgentStepsForTask("t1")
+
+	// A fresh dispatch marks its own start next; its unmark must not
+	// resurrect the completion the clear above already dropped.
+	engine.markStepStarting("t1", "s1")
+	popped := engine.unmarkStepStartingAndTakePending("t1", "s1")
+	if len(popped) != 0 {
+		t.Fatalf("popped = %+v, want none: clearAgentStepsForTask should have dropped the superseded completion", popped)
+	}
+}
