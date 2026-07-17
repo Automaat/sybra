@@ -255,16 +255,20 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// flight for that task+step. If one is, this is a phantom completion (e.g.
 	// a manual implementation agent completing during a code_review step) and
 	// must be dropped to prevent it from advancing the wrong step.
-	spawnedStep, tracked := e.lookupAgentStep(c.AgentID)
+	spawnedStep, routeStatus := e.resolveCompletionRoute(taskID, t.Workflow.CurrentStep, c)
 	defs := completionDefinitionCache{engine: e, task: t}
-	if !tracked {
-		spawnedStep = t.Workflow.CurrentStep
-		if e.hasTrackedAgentForTaskStep(taskID, spawnedStep) {
-			e.logger.Info("workflow.agent-complete.bail",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
-			e.clearAgentStep(c.AgentID)
-			return
-		}
+	switch routeStatus {
+	case taskStepTracked:
+	case taskStepRouted:
+		e.logger.Info("workflow.agent-complete.bail",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "untracked-ignored", "current_step", spawnedStep)
+		e.clearAgentStep(c.AgentID)
+		return
+	case taskStepBuffered:
+		e.logger.Info("workflow.agent-complete.buffered",
+			"task_id", taskID, "agent_id", c.AgentID, "reason", "start-in-flight", "current_step", spawnedStep)
+		return
+	case taskStepFree:
 		if runRole := agentRunRole(t.AgentRuns, c.AgentID); runRole != "" {
 			if def, ok := defs.get(); ok && !untrackedCompletionMatchesCurrentStep(def, spawnedStep, runRole) {
 				e.logger.Info("workflow.agent-complete.bail",
@@ -409,6 +413,38 @@ func (e *Engine) hasTrackedAgentForTaskStep(taskID, stepID string) bool {
 	return e.pendingStepStart[pendingStepStartKey(taskID, stepID)] > 0
 }
 
+type taskStepStatus int
+
+const (
+	taskStepFree taskStepStatus = iota
+	taskStepTracked
+	taskStepRouted
+	taskStepBuffered
+)
+
+func (e *Engine) resolveCompletionRoute(taskID, currentStep string, c AgentCompletion) (spawnedStep string, status taskStepStatus) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if entry, ok := e.agentRoutes[c.AgentID]; ok {
+		return entry.stepID, taskStepTracked
+	}
+	spawnedStep = currentStep
+	for _, entry := range e.agentRoutes {
+		if entry.taskID == taskID && entry.stepID == spawnedStep {
+			return spawnedStep, taskStepRouted
+		}
+	}
+	key := pendingStepStartKey(taskID, spawnedStep)
+	if e.pendingStepStart[key] <= 0 {
+		return spawnedStep, taskStepFree
+	}
+	if e.pendingCompletions == nil {
+		e.pendingCompletions = make(map[string][]AgentCompletion)
+	}
+	e.pendingCompletions[key] = append(e.pendingCompletions[key], c)
+	return spawnedStep, taskStepBuffered
+}
+
 func pendingStepStartKey(taskID, stepID string) string {
 	return taskID + "|" + stepID
 }
@@ -460,7 +496,7 @@ func untrackedCompletionMatchesCurrentStep(def *Definition, stepID, runRole stri
 // markStepStarting records that a run_agent step's agent-start sequence
 // (which may block for seconds on worktree prep) is underway for taskID/stepID,
 // before an agent ID exists to register in agentRoutes. Paired with
-// unmarkStepStarting, always via defer, on every return path.
+// unmarkStepStartingAndTakePending, always via defer, on every return path.
 func (e *Engine) markStepStarting(taskID, stepID string) {
 	e.mu.Lock()
 	key := pendingStepStartKey(taskID, stepID)
@@ -468,16 +504,18 @@ func (e *Engine) markStepStarting(taskID, stepID string) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) unmarkStepStarting(taskID, stepID string) {
+func (e *Engine) unmarkStepStartingAndTakePending(taskID, stepID string) []AgentCompletion {
 	e.mu.Lock()
 	key := pendingStepStartKey(taskID, stepID)
 	if e.pendingStepStart[key] <= 1 {
 		delete(e.pendingStepStart, key)
-		e.mu.Unlock()
-		return
+	} else {
+		e.pendingStepStart[key]--
 	}
-	e.pendingStepStart[key]--
+	buffered := e.pendingCompletions[key]
+	delete(e.pendingCompletions, key)
 	e.mu.Unlock()
+	return buffered
 }
 
 // clearAgentStep removes the agent→step mapping. Safe to call for unknown IDs.
@@ -507,6 +545,12 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	for id, entry := range e.agentRoutes {
 		if entry.taskID == taskID {
 			delete(e.agentRoutes, id)
+		}
+	}
+	prefix := taskID + "|"
+	for key := range e.pendingCompletions {
+		if strings.HasPrefix(key, prefix) {
+			delete(e.pendingCompletions, key)
 		}
 	}
 	e.mu.Unlock()

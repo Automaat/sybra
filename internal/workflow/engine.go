@@ -320,21 +320,22 @@ type Engine struct {
 	// dispatchDisabled is stored negated so the zero value keeps a
 	// struct-literal Engine dispatching, matching its behavior before this
 	// gate existed.
-	dispatchDisabled bool
-	logger           *slog.Logger
-	ctx              context.Context
-	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
-	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
-	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
-	agentRoutes      map[string]agentRoute      // agentID → {taskID, stepID}
-	pendingStepStart map[string]int             // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
-	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
-	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
-	resumeError      *logging.ErrorThrottle
-	demotionThrottle *logging.ErrorThrottle
-	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	dispatchDisabled   bool
+	logger             *slog.Logger
+	ctx                context.Context
+	mu                 sync.Mutex
+	inflightMutexes    map[string]*sync.Mutex // taskID → advance serializer (parallel-aware)
+	dispatching        map[string]struct{}    // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
+	starting           map[string]struct{}    // taskID → StartWorkflowWithVars in progress
+	humanAction        map[string]struct{}    // taskID → HandleHumanAction in progress
+	agentRoutes        map[string]agentRoute  // agentID → {taskID, stepID}
+	pendingStepStart   map[string]int         // "taskID|stepID" → run_agent starts in flight; held until execRunAgent returns, agentID not yet assigned
+	pendingCompletions map[string][]AgentCompletion
+	cascadeDepth       map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
+	pendingRecovery    map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
+	resumeError        *logging.ErrorThrottle
+	demotionThrottle   *logging.ErrorThrottle
+	maxTestAttempts    int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
 	// config.ReviewUntilClean's default of true.
@@ -389,6 +390,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		humanAction:            make(map[string]struct{}),
 		agentRoutes:            make(map[string]agentRoute),
 		pendingStepStart:       make(map[string]int),
+		pendingCompletions:     make(map[string][]AgentCompletion),
 		cascadeDepth:           make(map[string]int),
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),

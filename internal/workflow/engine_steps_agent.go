@@ -211,7 +211,11 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// returns, at which point either agentRoutes (success) or the parked/failed
 	// step state takes over.
 	e.markStepStarting(taskID, step.ID)
-	defer e.unmarkStepStarting(taskID, step.ID)
+	defer func() {
+		for _, pending := range e.unmarkStepStartingAndTakePending(taskID, step.ID) {
+			e.HandleAgentComplete(taskID, pending)
+		}
+	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {

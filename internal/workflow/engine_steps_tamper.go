@@ -771,19 +771,20 @@ func tamperBaselineVar(stepID string) string {
 	return "step." + stepID + ".tamper_base"
 }
 
-func tamperDeletionAllowlistVar(stepID string) string {
-	return "step." + stepID + ".tamper_deletion_allowlist"
-}
+const tamperDeletionAllowlistVar = "tamper_deletion_allowlist"
 
 func captureTamperDeletionAllowlist(wfExec *Execution, stepID, role string, t TaskInfo) {
 	if wfExec == nil || stepID == "" || !tamperCodeAuthorRole(role) {
+		return
+	}
+	if strings.TrimSpace(wfExec.Variables[tamperDeletionAllowlistVar]) != "" {
 		return
 	}
 	data, err := json.Marshal(documentedDeletionAllowlistForTrustedSpec(t))
 	if err != nil {
 		return
 	}
-	wfExec.SetVar(tamperDeletionAllowlistVar(stepID), string(data))
+	wfExec.SetVar(tamperDeletionAllowlistVar, string(data))
 }
 
 func tamperCodeAuthorRole(role string) bool {
@@ -827,11 +828,7 @@ func documentedDeletionAllowlistSnapshot(t TaskInfo) tamperDeletionAllowlist {
 	if t.Workflow == nil {
 		return tamperDeletionAllowlist{}
 	}
-	stepID := t.Workflow.LastAgentStepID()
-	if stepID == "" {
-		return tamperDeletionAllowlist{}
-	}
-	raw := strings.TrimSpace(t.Workflow.Variables[tamperDeletionAllowlistVar(stepID)])
+	raw := strings.TrimSpace(t.Workflow.Variables[tamperDeletionAllowlistVar])
 	if raw == "" {
 		return tamperDeletionAllowlist{}
 	}

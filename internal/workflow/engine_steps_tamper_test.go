@@ -1011,6 +1011,42 @@ func TestExecDetectTampering_DocumentedDeletionUsesPreAgentSnapshot(t *testing.T
 	}
 }
 
+func TestExecDetectTampering_DocumentedDeletionIgnoresLaterAuthorSnapshot(t *testing.T) {
+	t.Parallel()
+	base := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {}\n"
+	wt := makeBaseRepo(t, map[string]string{
+		"README.md":                "init\n",
+		"internal/foo/foo_test.go": base,
+	})
+	gitRun(t, wt, "rm", "internal/foo/foo_test.go")
+	gitRun(t, wt, "commit", "-m", "test: remove foo")
+
+	engine, tasks := newTamperEngine(t, wt)
+	wf := &Execution{Variables: map[string]string{}}
+	captureTamperDeletionAllowlist(wf, "implement", "implementation",
+		TaskInfo{ID: "t1", Body: "## Scope\n- update implementation only\n"})
+	wf.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "agent-1"})
+	captureTamperDeletionAllowlist(wf, "fix_review", "fix-review",
+		TaskInfo{ID: "t1", Body: "## Scope\n- delete `internal/foo/foo_test.go`\n"})
+	wf.RecordStep(StepRecord{StepID: "fix_review", Status: "completed", AgentID: "agent-2"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
+
+	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{
+		ID:       "t1",
+		Status:   "in-progress",
+		Workflow: wf,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged; later fix-review snapshots must not bless deleted tests", out.Output)
+	}
+	if ti, _ := tasks.GetTask("t1"); ti.Status != "human-required" {
+		t.Errorf("status = %q, want human-required", ti.Status)
+	}
+}
+
 func TestExecDetectTampering_DocumentedDeletionSnapshotDowngrades(t *testing.T) {
 	t.Parallel()
 	base := "package foo\n\nimport \"testing\"\n\nfunc TestFoo(t *testing.T) {}\n"
