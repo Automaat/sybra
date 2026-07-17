@@ -474,16 +474,41 @@ kubectl -n sybra-poc describe pod -l sybra.agent/id=<agent-id>
 
 **Stale Jobs** — a Job that exists in the cluster but no longer maps to an
 agent Sybra is actively tracking, typically after a server crash/restart
-during a run. Every agent Job carries `app.kubernetes.io/name=sybra-agent`,
-`sybra.agent/id=<id>`, and `sybra.task/id=<id>` labels
-(`internal/agent/k8s_job_runner.go`), so today an operator can find candidates
-manually by listing Jobs with that selector and cross-referencing the ids
-against `ListAgents`/`sybra-cli list`:
+during a run.
+
+For the common case — the orphaned Job still finishes on its own — TTL
+already covers it: `ttlSecondsAfterFinished` deletes a Job once it reaches
+Complete/Failed regardless of whether anything in Sybra still tracks its
+`sybra.agent/id`, since Kubernetes' TTL controller only looks at the Job's
+own status, never at Sybra's registry. A restart doesn't stop the pod that's
+already running; it just orphans Sybra's reference to it, and the two TTLs
+above still reap it on the same schedule as a normally-tracked run.
+
+What TTL *cannot* reach is a Job that never finishes at all — stuck
+`Pending`/`Running` forever with no terminal condition to start either TTL's
+countdown. That's a timeout/liveness problem, not a retention-window problem,
+and it's tracked separately: #2106 (resource/timeout/concurrency controls)
+and #2109 (observability and stuck-Job alerts) own detecting and acting on a
+Job that's actually hung, rather than one that finished and is just waiting
+out its TTL.
+
+What's left for a human to do manually today is inspection, not cleanup: every
+agent Job carries `app.kubernetes.io/name=sybra-agent`, `sybra.agent/id=<id>`,
+and `sybra.task/id=<id>` labels (`internal/agent/k8s_job_runner.go`), so an
+operator can list Jobs with that selector and cross-reference the ids against
+`ListAgents`/`sybra-cli list` to see what's currently orphaned before its TTL
+elapses:
 
 ```bash
 kubectl -n sybra-poc get jobs -l app.kubernetes.io/name=sybra-agent \
   -o jsonpath='{range .items[*]}{.metadata.labels.sybra\.agent/id}{"\n"}{end}'
 ```
+
+Automating that lookup into a scheduled sweep (rather than an operator running
+it by hand), and extending the same garbage collection to branches and
+worktrees left behind by an orphaned run, is #2111. Reattaching Sybra's own
+tracking to a still-running Job after a restart — so it stops looking
+"orphaned" from Sybra's side in the first place — is #2112.
 
 Automatically *detecting and pruning* stale Jobs — not just finding them by
 hand — is out of scope here; it's tracked in #2111. Automatically
