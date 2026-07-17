@@ -346,3 +346,247 @@ func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
 		t.Fatal("unexpected pr-fix workflow; a work project's transient rerun should wait for GitHub checks")
 	}
 }
+
+// TestPollAndMonitorPRs_FlakyCIFailureRerunsInsteadOfEscalating is the
+// counterpart to TestPollAndMonitorPRs_CIFailureDispatchesFix: a ci_failure
+// classified as flaky (CIFlaky=true) must log the pattern and get a rerun,
+// never a fix agent, and must not touch the deterministic ci_failure retry
+// budget or escalate to human-required on first detection.
+func TestPollAndMonitorPRs_FlakyCIFailureRerunsInsteadOfEscalating(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flakyPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-flaky",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		CIFlaky:     true,
+		Author:      "me",
+	}
+
+	var rerunCalled bool
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{flakyPR}}, nil
+	})
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	r.rerunFailedChecks = func(repo string, number int) error {
+		rerunCalled = true
+		return nil
+	}
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if !rerunCalled {
+		t.Fatal("flaky ci_failure did not trigger a rerun")
+	}
+	if got := r.prTracker.Retries(created.ID, github.PRIssueCIFailure); got != 0 {
+		t.Errorf("ci_failure retries = %d, want 0 (flaky issues never touch this budget)", got)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q, want in-review (no premature escalation)", got.Status)
+	}
+}
+
+func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flakyPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-flaky",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		CIFlaky:     true,
+		Author:      "me",
+	}
+
+	var reruns int
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{flakyPR}}, nil
+	})
+	r.prTracker = github.NewIssueTracker(0)
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	r.rerunFailedChecks = func(string, int) error {
+		reruns++
+		return nil
+	}
+
+	for range github.MaxRetries {
+		r.pollAndMonitorPRs(context.Background())
+	}
+
+	if reruns != github.MaxRetries {
+		t.Fatalf("reruns = %d, want %d for repeated flaky CI on the same SHA", reruns, github.MaxRetries)
+	}
+	if got := r.prTracker.Retries(created.ID, ciInfraRerunKind); got != github.MaxRetries {
+		t.Fatalf("ci rerun retries = %d, want %d", got, github.MaxRetries)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q after final rerun, want in-review until next poll observes cap", got.Status)
+	}
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if reruns != github.MaxRetries {
+		t.Fatalf("reruns = %d after cap, want still %d", reruns, github.MaxRetries)
+	}
+	got, err = tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q after capped flaky CI, want human-required", got.Status)
+	}
+	if got.StatusReason != persistentFlakyCIReason {
+		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)
+	}
+}
+
+// TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted
+// verifies the only path a flaky ci_failure escalates: the ci-infra rerun
+// budget itself (not the deterministic ci_failure budget) is spent.
+func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *testing.T) {
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:    task.Ptr(task.StatusInReview),
+		ProjectID: task.Ptr("o/r"),
+		PRNumber:  task.Ptr(4242),
+		Branch:    task.Ptr("feat/x"),
+		Tags:      task.Ptr([]string{reconciledLatchTag, "keep"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	flakyPR := github.PullRequest{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		HeadSHA:     "sha-flaky",
+		URL:         "https://github.com/o/r/pull/4242",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "FAILURE",
+		CIFlaky:     true,
+		Author:      "me",
+	}
+
+	r := buildPRFixHandler(t, tasks, func() (github.ReviewSummary, error) {
+		return github.ReviewSummary{CreatedByMe: []github.PullRequest{flakyPR}}, nil
+	})
+	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
+		t.Fatal(err)
+	}
+	for i := range github.MaxRetries {
+		r.prTracker.MarkHandled(created.ID, ciInfraRerunKind, fmt.Sprintf("sha-prior-%d", i))
+	}
+	var rerunCalled bool
+	r.rerunFailedChecks = func(string, int) error { rerunCalled = true; return nil }
+
+	r.pollAndMonitorPRs(context.Background())
+
+	if rerunCalled {
+		t.Fatal("rerun attempted after the ci-infra rerun budget was already exhausted")
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != nil {
+		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want human-required once the rerun budget is spent", got.Status)
+	}
+	if got.StatusReason != persistentFlakyCIReason {
+		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)
+	}
+	for _, tag := range got.Tags {
+		if tag == reconciledLatchTag {
+			t.Fatalf("reconciliation latch still present after flaky escalation: tags=%v", got.Tags)
+		}
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.reconcileHumanRequiredBlockers(all, []github.PullRequest{{
+		Number:      4242,
+		Repository:  "o/r",
+		HeadRefName: "feat/x",
+		Mergeable:   "MERGEABLE",
+		CIStatus:    "SUCCESS",
+	}})
+	got, err = tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview {
+		t.Fatalf("status = %q after green PR reconciliation, want in-review", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("statusReason = %q after green PR reconciliation, want cleared", got.StatusReason)
+	}
+}

@@ -334,6 +334,53 @@ func (r *Handler) escalateExhaustedFix(issue github.PRIssue) {
 		"kind", string(issue.Kind), "attempts", github.MaxRetries)
 }
 
+// handleFlakyCI handles a ci_failure issue classified as flaky (see
+// github.flakyOnlyFailure: every failing workflow/check also shows a later
+// successful rerun outcome on the same head SHA). It never dispatches a fix
+// agent, since code changes do not fix noise, and never touches the
+// deterministic ci_failure retry budget (handleTaskPRIssues routes a flaky
+// issue around that budget entirely). It logs the pattern, then gives the
+// check another shot through the same ci-infra rerun budget a deterministic
+// ci_failure's first attempt uses (rerunCIFailure / ciInfraRerunKind). Only
+// once that budget itself is exhausted, meaning reruns alone never cleared it,
+// does it escalate to human-required, with a reason distinct from
+// exhaustedFixReason so a human can tell "the fix agent gave up" apart from
+// "this looks like a genuinely unstable test."
+func (r *Handler) handleFlakyCI(issue github.PRIssue) {
+	r.logAudit(audit.EventPRCIFlakyDetected, issue.TaskID, "", map[string]any{
+		"pr": issue.PR.Number, "repo": issue.PR.Repository, "head_sha": issue.PR.HeadSHA,
+	})
+	r.logger.Info("pr-monitor.ci-flaky-detected", "task_id", issue.TaskID, "pr", issue.PR.Number)
+
+	t, err := r.tasks.Get(issue.TaskID)
+	if err != nil || t.Status == task.StatusHumanRequired {
+		return
+	}
+
+	if r.prTracker != nil && r.prTracker.AtCap(t.ID, ciInfraRerunKind) {
+		tags := slices.DeleteFunc(slices.Clone(t.Tags), func(tag string) bool {
+			return tag == reconciledLatchTag
+		})
+		if _, err := r.tasks.Update(t.ID, task.Update{
+			Status:       task.Ptr(task.StatusHumanRequired),
+			StatusReason: task.Ptr(persistentFlakyCIReason),
+			Tags:         task.Ptr(tags),
+		}); err != nil {
+			r.logger.Error("pr-monitor.ci-flaky.escalate", "task_id", t.ID, "err", err)
+			return
+		}
+		r.prTracker.Clear(t.ID, ciInfraRerunKind)
+		r.logAudit(audit.EventPRFixExhausted, t.ID, "", map[string]any{
+			"pr": issue.PR.Number, "repo": issue.PR.Repository,
+			"kind": string(ciInfraRerunKind), "attempts": github.MaxRetries,
+		})
+		r.logger.Warn("pr-monitor.ci-flaky.exhausted", "task_id", t.ID, "pr", issue.PR.Number)
+		return
+	}
+
+	r.rerunCIFailure(t, issue)
+}
+
 // ciFailurePrompt is the pr-fix agent prompt for a failing-CI issue.
 func ciFailurePrompt(pr github.PullRequest) string {
 	return fmt.Sprintf(
@@ -647,7 +694,12 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 	if _, err := r.projects.Get(t.ProjectID); err != nil {
 		return false
 	}
-	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, issue.PR.HeadSHA) {
+	shaGate := issue.PR.HeadSHA
+	if issue.PR.CIFlaky {
+		// Flaky reruns do not produce a new commit; cap by attempt count, not SHA.
+		shaGate = ""
+	}
+	if !r.prTracker.ShouldHandle(t.ID, ciInfraRerunKind, shaGate) {
 		return false
 	}
 
