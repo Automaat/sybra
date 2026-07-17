@@ -22,7 +22,13 @@ func (codexProvider) Name() string { return "codex" }
 // which tools the model may call, so allowed_tools cannot be mapped onto it.
 func (codexProvider) HonorsAllowedTools() bool { return false }
 
+// SupportsOutputSchema is true: codex receives OutputSchema as a temp file via
+// --output-schema (OutputSchemaAsFile), forcing schema-valid JSON output.
 func (codexProvider) SupportsOutputSchema() bool { return true }
+
+// EnforcesOutputSchema mirrors SupportsOutputSchema: codex forwards
+// OutputSchema to the CLI, forcing schema-valid JSON output.
+func (codexProvider) EnforcesOutputSchema() bool { return true }
 
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
@@ -40,6 +46,8 @@ func (p codexProvider) BuildCommand(cfg RunConfig, model string) string {
 func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
 	skillNames := discoverCodexSkills()
 	prompt := rewriteSkillInvocations(cfg.Prompt, skillNames)
+	rendered, unrendered := computeSkillRender(cfg.Prompt, skillNames)
+	a.SetPromptRender("slash-to-dollar", rendered, unrendered)
 	args := codexExecBaseArgs(prompt != cfg.Prompt)
 	// headless=true: --sandbox workspace-write requires approval prompts
 	// which auto-reject in headless mode (no TTY/UI). Always bypass.

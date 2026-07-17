@@ -93,6 +93,9 @@ func (m *Manager) buildOneShotConvoArgs(a *Agent, cfg RunConfig) []string {
 // convoCommonArgs returns the resume/permission/model/approval-hook flags
 // shared by the interactive and one-shot conversational invocations.
 func (m *Manager) convoCommonArgs(a *Agent, cfg RunConfig) []string {
+	// Claude invokes skills natively via its own slash syntax — no rewrite
+	// happens on this path (mirrors BuildHeadlessInvocation).
+	a.SetPromptRender("none", nil, nil)
 	args := make([]string, 0, 8)
 	if sid := a.GetSessionID(); sid != "" {
 		args = append(args, "--resume", sid)

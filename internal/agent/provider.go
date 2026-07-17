@@ -28,6 +28,12 @@ type Provider interface {
 	ParseHeadlessLine(line []byte) (StreamEvent, error)
 	SandboxArgs(requirePerms, headless bool) []string
 	OutputSchemaAsFile() bool
+	// EnforcesOutputSchema reports whether this provider actually passes
+	// RunConfig.OutputSchema to the spawned CLI so the model is forced to emit
+	// schema-valid JSON. Only such providers make a trailing conformance
+	// receipt unsatisfiable — copilot/opencode silently ignore the schema, so a
+	// receipt must still be appended and verified for them.
+	EnforcesOutputSchema() bool
 	UsesPerTurnConvo() bool
 	BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation
 	ParseConvoLine(line []byte) (ConvoEvent, error)
@@ -62,6 +68,11 @@ func (baseProvider) HonorsAllowedTools() bool { return false }
 // saying so, rather than assuming support and finding out via a silently
 // unverifiable run.
 func (baseProvider) SupportsOutputSchema() bool { return false }
+
+// EnforcesOutputSchema defaults to false for the same reason
+// SupportsOutputSchema does — only a provider that actually forwards the
+// schema flag to its CLI overrides this to true.
+func (baseProvider) EnforcesOutputSchema() bool { return false }
 
 func (baseProvider) OutputSchemaAsFile() bool { return false }
 

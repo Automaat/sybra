@@ -71,12 +71,25 @@ type Record struct {
 	// engine's automatic second-chance retry after a missing conformance
 	// receipt.
 	SkillRecoveryAttempt bool `yaml:"skill_recovery_attempt,omitempty"`
+	// HasOutputSchema preserves whether this run enforced a provider output
+	// schema across restart, so a reattached completion still skips the
+	// unsatisfiable skill-conformance receipt check for schema-enforced runs
+	// instead of downgrading them to unverified and parking on human-required.
+	HasOutputSchema bool `yaml:"has_output_schema,omitempty"`
 	// PostResultWait* preserve the runner's post-terminal-result teardown
 	// decision so reattach can continue the same fast-close/grace path instead
 	// of starting a fresh wait window from restart time.
 	PostResultWaitReason string    `yaml:"post_result_wait_reason,omitempty"`
 	PostResultWaitSince  time.Time `yaml:"post_result_wait_since,omitempty"`
 	ForkSubagent         bool      `yaml:"fork_subagent,omitempty"`
+	// PromptHash and the RenderedSyntax/RenderedSkills/UnrenderedSkills triple
+	// preserve the dispatch-time prompt hash and provider render summary across
+	// restart so a reattached completion still emits agent.prompt_rendered
+	// instead of dropping it on an empty hash.
+	PromptHash       string   `yaml:"prompt_hash,omitempty"`
+	RenderedSyntax   string   `yaml:"rendered_syntax,omitempty"`
+	RenderedSkills   []string `yaml:"rendered_skills,omitempty"`
+	UnrenderedSkills []string `yaml:"unrendered_skills,omitempty"`
 }
 
 // survivalRegistry implementations must be safe for concurrent use.

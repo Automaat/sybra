@@ -24,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -389,7 +390,11 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 type startOptions struct {
 	admissionGate bool
 	manualDrain   bool
-	outputSchema  string
+	// outputSchema is the workflow step's OutputSchema, threaded onto the
+	// implementation RunConfig so a run_agent step with output_schema reaches
+	// the provider with --json-schema / --output-schema. Empty for the
+	// manual/drain entry points, which carry no schema.
+	outputSchema string
 }
 
 // StartAgent is the manual/direct dispatch entry point (App.StartAgent,
@@ -586,6 +591,15 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
+	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts)
+}
+
+// runImplementationAgent builds the RunConfig for an implementation dispatch,
+// launches it, and translates a launch failure through the same
+// capacity-race / provider-gate handling startAgent used inline before this
+// was split out to satisfy funlen.
+func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions) (*agent.Agent, string, error) {
+	ignoreConcurrencyLimit := effMode == "interactive"
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
@@ -980,11 +994,23 @@ func (o *Orchestrator) RecoverFromWorktreePrepFailure(tasks *task.Manager, taskI
 // initial AgentRun record for an implementation agent.
 func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID, effMode, posture string, requirePerm, oneShot bool, fullPrompt string) {
 	skipPerm := !requirePerm && len(t.AllowedTools) == 0
+	// Hash the prompt the agent was actually dispatched with (ag.Prompt, set by
+	// Run after prepareRunConfig appended NOTES.md, the background-task
+	// guardrail, and any injected/fallback skill instructions), NOT the
+	// pre-preparation fullPrompt. This is the same canonical prompt the provider
+	// render summary (agent.prompt_rendered) is computed against, so the shared
+	// prompt_hash uniquely identifies the dispatched prompt variant: re-running
+	// the task after editing NOTES.md or changing the resolved skill source
+	// yields a different hash, as it must. Run/newRunningAgent already stamps
+	// this same value centrally for every run; the re-stamp here is idempotent
+	// and keeps the agent.started payload correct for callers (and tests) that
+	// invoke recordImplAgentStart on an agent built outside that path.
+	ag.SetPromptHash(skillattr.HashSourceID(ag.Prompt))
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "task_type": string(t.TaskType), "provider": ag.Provider,
 		"model": ag.Model, "experiment_id": ag.ExperimentID, "variant_id": ag.VariantID,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
-		"permission_posture": posture,
+		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
 	})
 	var nextStatus *task.Status
 	if t.Status != task.StatusInProgress {
@@ -1231,7 +1257,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	o.LogAudit(audit.EventAgentStarted, taskID, ag.ID, map[string]any{
 		"mode": effMode, "title": t.Title, "role": "pr-fix", "task_type": string(t.TaskType), "provider": ag.Provider,
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
-		"permission_posture": posture,
+		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
 	})
 	if err := o.tasks.AddRun(taskID, task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,

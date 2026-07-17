@@ -33,6 +33,34 @@ func stripSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.StripInvocations(prompt, skillNames)
 }
 
+// computeSkillRender partitions every slash-invoked skill name found in orig
+// against skillNames (the set the provider's rewriter/stripper actually
+// knows about): a name present in skillNames was rewritten/stripped for the
+// provider (rendered); a name absent from it passed through untouched — a
+// genuine rewrite failure the caller should log (unrendered).
+func computeSkillRender(orig string, skillNames []string) (rendered, unrendered []string) {
+	invoked := skillinvoke.InvokedNames(orig)
+	if len(invoked) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]struct{}, len(skillNames))
+	for _, name := range skillNames {
+		normalized, ok := skillinvoke.NormalizeName(name)
+		if !ok {
+			continue
+		}
+		known[normalized] = struct{}{}
+	}
+	for _, name := range invoked {
+		if _, ok := known[name]; ok {
+			rendered = append(rendered, name)
+		} else {
+			unrendered = append(unrendered, name)
+		}
+	}
+	return rendered, unrendered
+}
+
 type workflowSkillResolution struct {
 	name          string
 	path          string
@@ -44,7 +72,8 @@ type workflowSkillResolution struct {
 	conformance   string
 }
 
-func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string) error {
+func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, prov Provider) error {
+	providerName := prov.Name()
 	name, ok := skillinvoke.NormalizeName(cfg.RequestedSkill)
 	if !ok {
 		cfg.RequestedSkill = ""
@@ -62,28 +91,28 @@ func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string
 	cfg.SkillExecutionMode = resolution.mode
 	cfg.ResolvedSkillSourceHash = resolution.sourceHash
 	cfg.SkillConformance = resolution.conformance
-	// A step that also enforces OutputSchema constrains the model's final
-	// response to a structured tool-call payload with no room for a trailing
-	// comment line, so the receipt instruction below can never be satisfied.
-	// The schema itself, enforced via structured output, is already a
-	// stronger conformance signal than a string match — skip the receipt.
-	// Gated on the resolved provider actually applying the schema (see
-	// Provider.SupportsOutputSchema): a provider that silently drops it (e.g.
-	// copilot) falls back to the step's own plain-text contract, which has
-	// room for a receipt line same as any other unschemed run.
-	schemaEnforced := cfg.OutputSchema != "" && ProviderSupportsOutputSchema(providerName)
+	// A trailing conformance receipt is unsatisfiable when the provider is
+	// forced to emit schema-valid JSON (--json-schema / --output-schema): the
+	// LAST line cannot be an HTML comment. Skip the receipt only for runs the
+	// provider actually schema-enforces; completion mirrors this exact
+	// condition via Agent.HasOutputSchema. Providers that ignore OutputSchema
+	// (copilot/opencode) never receive the flag, so the receipt stays
+	// satisfiable and must still be appended and verified for them. The skill
+	// content is delivered regardless.
+	wantReceipt := cfg.OutputSchema == "" || !prov.EnforcesOutputSchema()
 	switch resolution.mode {
 	case skillattr.ExecutionModeNative:
-		// Native invocation alone doesn't prove the model actually followed
-		// it — append the same deterministic receipt instruction
-		// injected/fallback runs get, so completion can verify conformance
-		// from the transcript rather than trusting delivery mode alone.
-		if !schemaEnforced {
+		// The skill runs natively, but native invocation alone doesn't prove
+		// the model actually followed it — append the same deterministic
+		// receipt instruction injected/fallback runs get, so completion can
+		// verify conformance from the transcript rather than trusting
+		// delivery mode alone.
+		if wantReceipt {
 			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 		}
 	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
-		if !schemaEnforced {
+		if wantReceipt {
 			cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 		}
 	default:
@@ -324,6 +353,21 @@ func cloneSkillNames(names []string) []string {
 }
 
 func discoverCopilotSkills() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return discoverCopilotSkillsInHome(home)
+}
+
+// discoverOpencodeSkills returns the skill names Sybra strips from opencode
+// prompts. opencode has no native slash-skill support (providerSkillVisible
+// returns false for it, so workflow skills are always injected), and Sybra
+// syncs no dedicated ~/.opencode/skills dir — so it reuses the same generic
+// cross-provider skill set copilot strips against. Without stripping, a stray
+// Claude-style /skill invocation would be handed to opencode verbatim and run
+// as a shell path.
+func discoverOpencodeSkills() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil

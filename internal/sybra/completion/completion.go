@@ -238,6 +238,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	h.emitPermissionDenialAudits(ag)
 	h.emitMalformedToolCallAudits(ag)
+	h.emitPromptRenderedAudit(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
@@ -320,6 +321,40 @@ func (h *Handler) emitPermissionDenialAudits(ag *agent.Agent) {
 			"posture": posture,
 		})
 	}
+}
+
+// emitPromptRenderedAudit emits agent.prompt_rendered, correlating this run's
+// provider-specific skill render summary with its dispatch record via
+// prompt_hash. The hash is stamped centrally for every headless run in
+// newRunningAgent, so this fires for every headless role/provider (review,
+// fix-review, pr-fix, human-review, workflow) — not just implementation
+// dispatches. Never carries prompt text — only the render summary.
+//
+// Headless-only by design: a headless run is one-shot, so its (prompt_hash,
+// render) pair is stamped once and stays immutable. Interactive conversational
+// sessions re-render per turn via SetPromptRender while prompt_hash stays
+// pinned to the initial prompt, so emitting here would join turn 1's hash to a
+// later turn's render — false audit data rather than a harmless omission.
+func (h *Handler) emitPromptRenderedAudit(ag *agent.Agent) {
+	if ag.Mode != "headless" {
+		return
+	}
+	hash := ag.GetPromptHash()
+	if hash == "" {
+		return
+	}
+	syntax, rendered, unrendered := ag.GetPromptRender()
+	requested := make([]string, 0, len(rendered)+len(unrendered))
+	requested = append(requested, rendered...)
+	requested = append(requested, unrendered...)
+	h.logAudit(audit.EventAgentPromptRendered, ag.TaskID, ag.ID, map[string]any{
+		"prompt_hash":       hash,
+		"provider":          ag.Provider,
+		"rendered_syntax":   syntax,
+		"rendered_skills":   rendered,
+		"unrendered_skills": unrendered,
+		"requested_skills":  requested,
+	})
 }
 
 func (h *Handler) emitMalformedToolCallAudits(ag *agent.Agent) {
