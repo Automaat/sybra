@@ -30,7 +30,9 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 	t.Cleanup(func() {
 		for name, content := range prev {
 			path := filepath.Join(root, "internal", "skills", "data", name+".md")
-			_ = os.WriteFile(path, content, 0o644)
+			if err := os.WriteFile(path, content, 0o644); err != nil {
+				t.Errorf("restore %s: %v — working tree may be left mutated", path, err)
+			}
 		}
 	})
 
