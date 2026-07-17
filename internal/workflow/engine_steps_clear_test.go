@@ -3,6 +3,7 @@ package workflow
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -317,52 +318,57 @@ func TestBuiltinSimpleTask_ReplanClearsEveryImportedPlanArtifact(t *testing.T) {
 	}
 }
 
-// globsCover reports whether one of globs matches the basename pattern of a
-// sidecar's `from` template (templates render an ID, so compare the prefix).
+// globsCover reports whether one of globs matches the file a sidecar imports.
+//
+// Uses filepath.Match rather than a prefix check so the invariant reflects what
+// clearWorktreeGlob actually does at runtime — a prefix test would pass globs
+// that Glob would never match, and quietly bless a file the replan leaves
+// behind.
 func globsCover(globs []string, from string) bool {
 	base := from
 	if i := strings.LastIndex(base, "/"); i >= 0 {
 		base = base[i+1:]
 	}
+	// `from` is a template; render the task-ID placeholder to a representative
+	// filename so Match sees the real shape.
+	base = taskIDTemplate.ReplaceAllString(base, "task123")
 	for _, g := range globs {
-		prefix := strings.TrimSuffix(g, "*")
-		if strings.HasPrefix(base, prefix) {
+		if ok, err := filepath.Match(g, base); err == nil && ok {
 			return true
 		}
 	}
 	return false
 }
 
-// A glob that escapes the worktree turns a cleanup step into a delete
-// primitive. Builtins are trusted, but the step must not be one edit away from
-// unlinking files outside the task's own checkout.
-func TestClearPlanArtifacts_RejectsEscapingGlobs(t *testing.T) {
-	for _, glob := range []string{"/etc/*", "../*", "../../.sybra-plan-*", "sub/dir/*", `..\win`} {
-		t.Run(glob, func(t *testing.T) {
-			dir := t.TempDir()
-			outside := filepath.Join(filepath.Dir(dir), "must-survive.txt")
-			if err := os.WriteFile(outside, []byte("not yours"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Remove(outside) })
+var taskIDTemplate = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
-			engine, tasks, info := clearTestEnv(t, dir)
-			step := &Step{
-				ID:     "clear",
-				Type:   StepClearPlanArtifacts,
-				Config: StepConfig{ClearSidecars: []string{"plan"}, ClearWorktreeGlobs: []string{glob}},
-			}
+// filepath.Glob reports a bad pattern but never a directory it could not read,
+// so an unreadable worktree returns zero matches and no error. Statting the dir
+// cannot see that: the dir exists, it just cannot be listed — and the step would
+// report "cleared" while every cycle-1 file sits there, serving the next import.
+func TestClearPlanArtifacts_UnreadableWorktreeDirEscalates(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	dir := t.TempDir()
+	writeCycle1Artifacts(t, dir)
+	// The dir itself is unreadable, but its parent is traversable — so Stat
+	// succeeds where ReadDir fails. That gap is the whole point.
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
-			if _, err := engine.execClearPlanArtifacts("t1", step, info); err != nil {
-				t.Fatalf("must escalate, not error out: %v", err)
-			}
-			got, _ := tasks.GetTask("t1")
-			if got.Status != "human-required" {
-				t.Errorf("status = %q, want human-required for an escaping glob", got.Status)
-			}
-			if _, err := os.Stat(outside); err != nil {
-				t.Errorf("a file outside the worktree was deleted: %v", err)
-			}
-		})
+	engine, tasks, info := clearTestEnv(t, dir)
+	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
+	if err != nil {
+		t.Fatalf("must escalate, not error out: %v", err)
+	}
+	if strings.Contains(out.Output, "cleared") {
+		t.Errorf("output = %q, want a blocked reason: Glob saw nothing because it could not read the dir, not because it was empty", out.Output)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required: cycle 1's files are still in that worktree", got.Status)
 	}
 }

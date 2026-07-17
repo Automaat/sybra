@@ -87,14 +87,16 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 	if dir == "" {
 		return 0, fmt.Errorf("worktree files matching %s (worktree dir unknown)", glob)
 	}
-	if _, statErr := os.Stat(dir); statErr != nil {
-		// Only a genuinely absent worktree is safe to pass: it holds no stale
-		// files to serve. Any other stat error (EACCES on a parent traverse,
-		// ESTALE, EIO) means the files may be sitting right there — reading
-		// that as "gone" reports success over a worktree still holding cycle
-		// 1's decisions, which walks straight back into #2191's fail-open.
-		if !errors.Is(statErr, fs.ErrNotExist) {
-			return 0, fmt.Errorf("worktree files matching %s (stat %s: %w)", glob, dir, statErr)
+	// List the dir rather than stat it. Only a genuinely absent worktree is safe
+	// to pass, since it holds no stale files to serve; every other error has to
+	// escalate. filepath.Glob reports a bad *pattern* but never a directory it
+	// could not read, so an unreadable worktree yields zero matches and no
+	// error, and this step would report "cleared" over cycle 1's decisions file
+	// sitting right there. A stat cannot see that, and also passes for a
+	// non-directory — the same fail-open through a different hole.
+	if _, readErr := os.ReadDir(dir); readErr != nil {
+		if !errors.Is(readErr, fs.ErrNotExist) {
+			return 0, fmt.Errorf("worktree files matching %s (read %s: %w)", glob, dir, readErr)
 		}
 		e.logger.Info("workflow.clear-plan-artifacts.no-worktree", "task_id", taskID, "step", step.ID, "dir", dir)
 		return 0, nil
