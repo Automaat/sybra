@@ -954,7 +954,14 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 		if inFence || !tamperDeletionVerbRe.MatchString(trimmed) {
 			continue
 		}
-		for _, candidate := range pathTokensFromLine(line) {
+		for segment := range strings.SplitSeq(line, ";") {
+			if !tamperDeletionVerbRe.MatchString(segment) {
+				continue
+			}
+			candidate, ok := deletionPathFromSegment(segment)
+			if !ok {
+				continue
+			}
 			allow.ExactPaths[candidate] = true
 			if !strings.Contains(candidate, "/") {
 				allow.Basenames[candidate] = true
@@ -963,25 +970,67 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 	}
 }
 
-func pathTokensFromLine(line string) []string {
+type documentedPathToken struct {
+	path       string
+	start, end int
+}
+
+func deletionPathFromSegment(segment string) (string, bool) {
+	verbs := tamperDeletionVerbRe.FindAllStringIndex(segment, -1)
+	if len(verbs) == 0 {
+		return "", false
+	}
+	tokens := pathTokensFromSegment(segment)
+	if len(tokens) == 0 {
+		return "", false
+	}
+	best := tokens[0]
+	bestDistance := pathTokenVerbDistance(best, verbs)
+	for _, token := range tokens[1:] {
+		if distance := pathTokenVerbDistance(token, verbs); distance < bestDistance {
+			best = token
+			bestDistance = distance
+		}
+	}
+	return best.path, true
+}
+
+func pathTokenVerbDistance(token documentedPathToken, verbs [][]int) int {
+	best := -1
+	for _, verb := range verbs {
+		distance := 0
+		switch {
+		case token.end < verb[0]:
+			distance = verb[0] - token.end
+		case token.start > verb[1]:
+			distance = token.start - verb[1]
+		}
+		if best == -1 || distance < best {
+			best = distance
+		}
+	}
+	return best
+}
+
+func pathTokensFromSegment(segment string) []documentedPathToken {
 	seen := map[string]bool{}
-	var out []string
-	add := func(raw string) {
+	var out []documentedPathToken
+	add := func(raw string, start, end int) {
 		token, ok := normalizeDocumentedPath(raw)
 		if !ok || seen[token] {
 			return
 		}
 		seen[token] = true
-		out = append(out, token)
+		out = append(out, documentedPathToken{path: token, start: start, end: end})
 	}
-	for _, m := range tamperBacktickTokenRe.FindAllStringSubmatch(line, -1) {
-		if len(m) == 2 {
-			add(m[1])
+	for _, m := range tamperBacktickTokenRe.FindAllStringSubmatchIndex(segment, -1) {
+		if len(m) >= 4 {
+			add(segment[m[2]:m[3]], m[2], m[3])
 		}
 	}
-	for _, m := range tamperBarePathTokenRe.FindAllStringSubmatch(line, -1) {
-		if len(m) >= 3 {
-			add(m[2])
+	for _, m := range tamperBarePathTokenRe.FindAllStringSubmatchIndex(segment, -1) {
+		if len(m) >= 6 {
+			add(segment[m[4]:m[5]], m[4], m[5])
 		}
 	}
 	return out

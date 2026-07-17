@@ -409,6 +409,16 @@ func TestBuildTamperReport(t *testing.T) {
 		}
 	})
 
+	t.Run("mixed_action_line_does_not_bless_updated_test_file", func(t *testing.T) {
+		body := "## Files\n- remove old helper from `internal/foo/helpers.go`; update `internal/foo/helpers_test.go`\n"
+		r := buildTamperReport("t1", "origin/main", []tamperChange{
+			{Status: "D", Path: "internal/foo/helpers_test.go"},
+		}, documentedDeletionAllowlist(body))
+		if r.highCount() != 1 {
+			t.Fatalf("highCount = %d, want 1 (%v)", r.highCount(), r.Findings)
+		}
+	})
+
 	t.Run("non_deletion_mentions_do_not_bless_deleted_test_file", func(t *testing.T) {
 		body := "## Scope\n- inspect mesh_helpers_test.go while fixing runtime logic\n"
 		r := buildTamperReport("t1", "origin/main", []tamperChange{
