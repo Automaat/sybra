@@ -31,6 +31,18 @@ type ChecksConfig struct {
 	// cannot reach a PR. Opt-in: unset means the check is skipped. Each entry
 	// is a shell command run in the worktree root, in order.
 	Verify []string `yaml:"verify,omitempty" json:"verify,omitempty"`
+	// Focused maps changed-file surfaces to cheap static commands the
+	// implementation workflow can run before the final full verify suite.
+	Focused []FocusedCheck `yaml:"focused,omitempty" json:"focused,omitempty"`
+}
+
+// FocusedCheck maps repo-relative paths and/or packages to cheap commands.
+// Selectors are static repo config, never derived from untrusted branch input.
+type FocusedCheck struct {
+	Name     string   `yaml:"name,omitempty" json:"name,omitempty"`
+	Paths    []string `yaml:"paths,omitempty" json:"paths,omitempty"`
+	Packages []string `yaml:"packages,omitempty" json:"packages,omitempty"`
+	Commands []string `yaml:"commands,omitempty" json:"commands,omitempty"`
 }
 
 // RepoConfig is the subset of Sybra config that can be defined in a repo's
@@ -113,7 +125,12 @@ func MergeChecks(repo, app *ChecksConfig) *ChecksConfig {
 	} else if app != nil {
 		out.Verify = app.Verify
 	}
-	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 && len(out.Codegen) == 0 && len(out.Verify) == 0 {
+	if repo != nil && len(repo.Focused) > 0 {
+		out.Focused = repo.Focused
+	} else if app != nil {
+		out.Focused = app.Focused
+	}
+	if len(out.PreCommit) == 0 && len(out.PrePush) == 0 && len(out.Codegen) == 0 && len(out.Verify) == 0 && len(out.Focused) == 0 {
 		return nil
 	}
 	return out

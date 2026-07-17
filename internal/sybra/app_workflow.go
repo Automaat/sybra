@@ -511,6 +511,14 @@ func (a *checkConfigGetterAdapter) VerifyCommands(ctx context.Context, taskID st
 	return merged.Verify
 }
 
+func (a *checkConfigGetterAdapter) FocusedChecks(ctx context.Context, taskID string) []project.FocusedCheck {
+	merged := a.mergedChecks(ctx, taskID)
+	if merged == nil {
+		return nil
+	}
+	return merged.Focused
+}
+
 func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID string) *project.ChecksConfig {
 	t, err := a.tasks.Get(taskID)
 	if err != nil {
@@ -525,7 +533,7 @@ func (a *checkConfigGetterAdapter) mergedChecks(ctx context.Context, taskID stri
 	if t.ProjectID != "" {
 		if p, pErr := a.projects.Get(t.ProjectID); pErr == nil {
 			appChecks = p.Checks
-			// Read checks.{codegen,verify} from the project's trusted default
+			// Read checks.{codegen,verify,focused} from the project's trusted default
 			// branch, never the checked-out worktree: the worktree's own
 			// .sybra.yaml may carry malicious commands planted by a
 			// compromised or prompt-injected agent, and these commands run

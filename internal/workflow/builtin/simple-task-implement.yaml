@@ -68,6 +68,10 @@ steps:
 
         {{getvar .Vars "verify_reask_note"}}
         {{- end}}
+        {{- if getvar .Vars "focused_checks_reask_note"}}
+
+        {{getvar .Vars "focused_checks_reask_note"}}
+        {{- end}}
         {{- if getvar .Vars "watchdog_reask_note"}}
 
         {{getvar .Vars "watchdog_reask_note"}}
@@ -136,6 +140,21 @@ steps:
           field: task.status
           operator: equals
           value: done
+        goto: ""
+      - goto: focused_checks
+
+  # Mechanical changed-surface gate (no LLM): run configured focused checks
+  # derived from the committed diff before the final codegen/tamper/verify
+  # chain. Failures re-enter implementation with surface-linked context; when
+  # no safe mapping matches, the step falls back to the full verify suite once.
+  - id: focused_checks
+    name: Focused Checks
+    type: focused_checks
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
         goto: ""
       - goto: codegen_gate
 

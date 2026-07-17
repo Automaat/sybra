@@ -1,0 +1,196 @@
+package workflow
+
+import (
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/Automaat/sybra/internal/project"
+)
+
+func newFocusedChecksStep() *Step { return &Step{ID: "focused_checks", Type: StepFocusedChecks} }
+
+func newFocusedChecksEngine(t *testing.T, wt string, focused []project.FocusedCheck, verify []string) (*Engine, *memTasks, *recordingArtifactRecorder) {
+	t.Helper()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: focused, cmds: verify})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	return engine, engine.tasks.(*memTasks), rec
+}
+
+func TestSelectFocusedChecks(t *testing.T) {
+	t.Parallel()
+
+	focused := []project.FocusedCheck{
+		{
+			Name:     "workflow",
+			Paths:    []string{"internal/workflow/**"},
+			Commands: []string{"go test ./internal/workflow/...", "go test ./internal/workflow/..."},
+		},
+		{
+			Name:     "workflow-pkg",
+			Packages: []string{"./internal/workflow/..."},
+			Commands: []string{"go test ./internal/workflow/..."},
+		},
+		{
+			Name:     "project",
+			Packages: []string{"./internal/project"},
+			Commands: []string{"go test ./internal/project"},
+		},
+		{
+			Name:     "unsafe-path",
+			Paths:    []string{"../secret/**"},
+			Commands: []string{"echo nope"},
+		},
+		{
+			Name:     "no-selectors",
+			Commands: []string{"echo nope"},
+		},
+	}
+	changed := []string{
+		"internal/workflow/model.go",
+		"internal/project/model.go",
+		"frontend/src/App.svelte",
+	}
+
+	selected, cmds := selectFocusedChecks(focused, changed)
+	if len(selected) != 3 {
+		t.Fatalf("selected len = %d, want 3", len(selected))
+	}
+	if got := focusedSurfaceSummary(selected, ""); got != "workflow, workflow-pkg, project" {
+		t.Fatalf("focused surface summary = %q", got)
+	}
+	if want := []string{"go test ./internal/workflow/...", "go test ./internal/project"}; !slices.Equal(cmds, want) {
+		t.Fatalf("commands = %v, want %v", cmds, want)
+	}
+	if !slices.Equal(selected[0].ChangedFiles, []string{"internal/workflow/model.go"}) {
+		t.Fatalf("workflow changed files = %v", selected[0].ChangedFiles)
+	}
+	if !slices.Equal(selected[2].ChangedFiles, []string{"internal/project/model.go"}) {
+		t.Fatalf("project changed files = %v", selected[2].ChangedFiles)
+	}
+}
+
+func TestExecFocusedChecks_PassIsClean(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, rec := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Packages: []string{"./internal/workflow/..."},
+		Commands: []string{"true"},
+	}}, []string{"false"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if len(rec.puts) != 1 || rec.puts[0].name != "focused-checks.json" {
+		t.Fatalf("artifacts = %+v, want one focused-checks.json", rec.puts)
+	}
+	if !strings.Contains(rec.puts[0].content, `"workflow"`) || !strings.Contains(rec.puts[0].content, `"internal/workflow/model.go"`) {
+		t.Fatalf("artifact content missing focused selection:\n%s", rec.puts[0].content)
+	}
+}
+
+func TestExecFocusedChecks_FallbackUsesVerifyCommands(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "docs/readme.md", "hi\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "docs: touch readme")
+
+	engine, tasks, rec := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"false"},
+	}}, []string{"true"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "fallback verify clean" {
+		t.Fatalf("Output = %q, want fallback verify clean", out.Output)
+	}
+	if !strings.Contains(rec.puts[0].content, `"fallback": "no safe focused mapping matched changed files"`) {
+		t.Fatalf("artifact content missing fallback:\n%s", rec.puts[0].content)
+	}
+	if !strings.Contains(rec.puts[0].content, `"true"`) {
+		t.Fatalf("artifact content missing verify fallback command:\n%s", rec.puts[0].content)
+	}
+}
+
+func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, rec := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Packages: []string{"./internal/workflow/..."},
+		Commands: []string{"echo boom >&2; exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	if out.StepID != "" || out.Status != "" {
+		t.Fatalf("parked output should be zero, got %+v", out)
+	}
+	if wf.CurrentStep != verifyChecksImplStepID {
+		t.Fatalf("CurrentStep = %q, want %q", wf.CurrentStep, verifyChecksImplStepID)
+	}
+	if wf.State != ExecWaiting {
+		t.Fatalf("State = %q, want %q", wf.State, ExecWaiting)
+	}
+	note := wf.Variables[focusedChecksReaskNoteVar]
+	if !strings.Contains(note, "FAILED Sybra's focused checks") || !strings.Contains(note, "workflow") || !strings.Contains(note, "internal/workflow/model.go") {
+		t.Fatalf("reask note missing focused failure context:\n%s", note)
+	}
+	if wf.Variables[workflowRetryAfterVar] == "" {
+		t.Fatalf("retry_after not set")
+	}
+	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", ti.Status)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "focused checks failed for workflow") {
+		t.Fatalf("reason = %q, want focused surface", reason)
+	}
+	if len(rec.puts) != 1 {
+		t.Fatalf("artifacts = %+v, want 1 artifact", rec.puts)
+	}
+	t.Log(rec.puts[0].content)
+	var report focusedChecksReport
+	if err := json.Unmarshal([]byte(rec.puts[0].content), &report); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if report.FailedCmd != "echo boom >&2; exit 1" {
+		t.Fatalf("FailedCmd = %q", report.FailedCmd)
+	}
+	if !strings.Contains(report.OutputTail, "$ echo boom >&2; exit 1") || !strings.Contains(report.OutputTail, "boom") {
+		t.Fatalf("artifact missing output tail:\n%s", report.OutputTail)
+	}
+}
