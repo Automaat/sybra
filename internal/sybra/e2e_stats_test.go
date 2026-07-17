@@ -94,7 +94,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+			t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)

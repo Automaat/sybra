@@ -69,7 +69,7 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
 		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: "claude"},

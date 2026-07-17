@@ -161,7 +161,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	bare := bestOfNE2EBareRepo(t)
 	projectsDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-projects-*")
