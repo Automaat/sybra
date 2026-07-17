@@ -88,8 +88,8 @@ type Agent struct {
 	promptHash string
 	// renderedSyntax records how RequestedSkill invocations were rewritten
 	// for the active provider at BuildHeadlessInvocation time:
-	// "slash-to-dollar" (codex), "slash-stripped" (copilot), or "none"
-	// (claude, which invokes skills natively and rewrites nothing).
+	// "slash-to-dollar" (codex), "slash-stripped" (copilot/opencode), or
+	// "none" (claude, which invokes skills natively and rewrites nothing).
 	renderedSyntax string
 	// renderedSkills are invoked skill names the provider rewriter actually
 	// knew about and rewrote/stripped.

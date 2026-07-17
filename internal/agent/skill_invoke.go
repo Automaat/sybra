@@ -328,6 +328,21 @@ func discoverCopilotSkills() []string {
 	return discoverCopilotSkillsInHome(home)
 }
 
+// discoverOpencodeSkills returns the skill names Sybra strips from opencode
+// prompts. opencode has no native slash-skill support (providerSkillVisible
+// returns false for it, so workflow skills are always injected), and Sybra
+// syncs no dedicated ~/.opencode/skills dir — so it reuses the same generic
+// cross-provider skill set copilot strips against. Without stripping, a stray
+// Claude-style /skill invocation would be handed to opencode verbatim and run
+// as a shell path.
+func discoverOpencodeSkills() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return discoverCopilotSkillsInHome(home)
+}
+
 func discoverCopilotSkillsInHome(home string) []string {
 	seen := make(map[string]struct{}, 64)
 	for _, dir := range []string{

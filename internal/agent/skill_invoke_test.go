@@ -310,6 +310,34 @@ func TestBuildHeadlessInvocation_CopilotStampsPromptRender(t *testing.T) {
 	}
 }
 
+func TestBuildHeadlessInvocation_OpencodeStampsPromptRender(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mkLocalSkill(t, filepath.Join(home, ".claude", "skills"), "sybra-plan")
+
+	a := &Agent{ID: "a", Provider: "opencode"}
+	inv, err := (opencodeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
+	if err != nil {
+		t.Fatalf("BuildHeadlessInvocation: %v", err)
+	}
+	syntax, rendered, unrendered := a.GetPromptRender()
+	if syntax != "slash-stripped" {
+		t.Fatalf("syntax = %q, want slash-stripped", syntax)
+	}
+	if !slices.Contains(rendered, "sybra-plan") {
+		t.Fatalf("rendered = %v, want to contain sybra-plan", rendered)
+	}
+	if !slices.Contains(unrendered, "totally-unknown-skill") {
+		t.Fatalf("unrendered = %v, want to contain totally-unknown-skill", unrendered)
+	}
+	// The known slash invocation must be stripped from the dispatched prompt so
+	// opencode never tries to exec /sybra-plan as a shell path.
+	prompt := inv.args[len(inv.args)-1]
+	if strings.Contains(prompt, "/sybra-plan") {
+		t.Fatalf("opencode prompt retained slash invocation: %q", prompt)
+	}
+}
+
 func TestBuildHeadlessInvocation_ClaudeStampsPromptRenderNone(t *testing.T) {
 	a := &Agent{ID: "a", Provider: "claude"}
 	_, err := (claudeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /some-skill", RequirePermissions: true})

@@ -70,7 +70,10 @@ func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
 
 	o := New(tm, nil, nil, al, discardSlogLogger(), nil, &config.Config{})
 
-	ag := &agent.Agent{ID: "agent-1", TaskID: tk.ID, Provider: "codex"}
+	// ag.Prompt is the prepared prompt Run dispatched (post NOTES.md/guardrail/
+	// skill preparation) — recordImplAgentStart hashes this, not the
+	// pre-preparation prompt passed as fullPrompt.
+	ag := &agent.Agent{ID: "agent-1", TaskID: tk.ID, Provider: "codex", Prompt: "Run /plan-critic now\n\n<NOTES.md scratchpad>"}
 	// Mirrors what codexProvider.BuildHeadlessInvocation stamps before
 	// dispatch records the run.
 	ag.SetPromptRender("slash-to-dollar", []string{"plan-critic"}, nil)

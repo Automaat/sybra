@@ -32,7 +32,15 @@ func (p opencodeProvider) BuildCommand(cfg RunConfig, model string) string {
 }
 
 func (p opencodeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headlessInvocation, error) {
-	args := buildOpenCodeRunArgs(a, cfg, cfg.Prompt)
+	// opencode invokes no skill natively — a Claude-style /skill is stripped
+	// (and the workflow skill inlined upstream), mirroring copilot. Stamping the
+	// render summary keeps the agent.prompt_rendered contract satisfied for this
+	// provider instead of emitting an empty rendered_syntax.
+	skillNames := discoverOpencodeSkills()
+	prompt := stripSkillInvocations(cfg.Prompt, skillNames)
+	rendered, unrendered := computeSkillRender(cfg.Prompt, skillNames)
+	a.SetPromptRender("slash-stripped", rendered, unrendered)
+	args := buildOpenCodeRunArgs(a, cfg, prompt)
 	return headlessInvocation{
 		name:    "opencode",
 		args:    args,
@@ -51,6 +59,10 @@ func (opencodeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 func (opencodeProvider) UsesPerTurnConvo() bool { return true }
 
 func (p opencodeProvider) BuildPerTurnConvoInvocation(a *Agent, cfg RunConfig, prompt string) perTurnConvoInvocation {
+	skillNames := discoverOpencodeSkills()
+	rendered, unrendered := computeSkillRender(prompt, skillNames)
+	a.SetPromptRender("slash-stripped", rendered, unrendered)
+	prompt = stripSkillInvocations(prompt, skillNames)
 	return perTurnConvoInvocation{bin: "opencode", args: buildOpenCodeRunArgs(a, cfg, prompt)}
 }
 
