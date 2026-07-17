@@ -4525,6 +4525,13 @@ steps:
 	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
 		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
 	}
+	// The exhausted workflow must be marked terminal before parking on a human.
+	// Otherwise TaskService.DispatchFromHumanRequired rejects the redispatch
+	// with "task has active workflow", stranding the task until someone clears
+	// the workflow by hand.
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("Workflow.State = %q, want ExecFailed so DispatchFromHumanRequired can redispatch", ti.Workflow.State)
+	}
 	if len(agents.calls) != 0 {
 		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
