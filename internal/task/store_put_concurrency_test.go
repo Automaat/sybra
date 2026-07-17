@@ -48,12 +48,13 @@ func TestAdversarialStorePutTOCTOU(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
+		var staleErr, advancingErr error
 		start := make(chan struct{})
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = store.Put(Task{
+			_, staleErr = store.Put(Task{
 				ID: "task-race", Title: "t", Status: StatusTodo,
 				CreatedAt: t0, UpdatedAt: t0, // stale: identical to original on-disk UpdatedAt
 			})
@@ -61,13 +62,19 @@ func TestAdversarialStorePutTOCTOU(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = store.Put(Task{
+			_, advancingErr = store.Put(Task{
 				ID: "task-race", Title: "t", Status: StatusInProgress,
 				CreatedAt: t0, UpdatedAt: t5, // genuinely advancing
 			})
 		}()
 		close(start)
 		wg.Wait()
+		if staleErr != nil {
+			t.Fatalf("stale Put: %v", staleErr)
+		}
+		if advancingErr != nil {
+			t.Fatalf("advancing Put: %v", advancingErr)
+		}
 
 		got, err := store.Get("task-race")
 		if err != nil {
@@ -115,12 +122,13 @@ func TestAdversarialManagerPutSerializesSameID(t *testing.T) {
 		}
 
 		var wg sync.WaitGroup
+		var staleErr, advancingErr error
 		start := make(chan struct{})
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _, _ = mgr.Put(Task{
+			_, _, staleErr = mgr.Put(Task{
 				ID: "task-race", Title: "t", Status: StatusTodo,
 				CreatedAt: t0, UpdatedAt: t0,
 			})
@@ -128,13 +136,19 @@ func TestAdversarialManagerPutSerializesSameID(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _, _ = mgr.Put(Task{
+			_, _, advancingErr = mgr.Put(Task{
 				ID: "task-race", Title: "t", Status: StatusInProgress,
 				CreatedAt: t0, UpdatedAt: t5,
 			})
 		}()
 		close(start)
 		wg.Wait()
+		if staleErr != nil {
+			t.Fatalf("stale Put: %v", staleErr)
+		}
+		if advancingErr != nil {
+			t.Fatalf("advancing Put: %v", advancingErr)
+		}
 
 		got, err := store.Get("task-race")
 		if err != nil {

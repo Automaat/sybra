@@ -219,6 +219,99 @@ func TestStorePutTrustsGenuinelyAdvancingUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestStorePutRejectedWriteDoesNotRegressMirrorRev pins a Copilot review
+// finding on PR #2216: the reject branch restored Status/UpdatedAt but left
+// the caller's MirrorRev/MirrorUpdatedAt writing through untouched. A stale
+// or duplicate mirror push carrying a MirrorRev below what's on disk would
+// then regress the mirror bookkeeping itself, corrupting the very signal
+// the mirror-authoritative branch relies on to judge freshness on the next
+// legitimate Put for this task.
+func TestStorePutRejectedWriteDoesNotRegressMirrorRev(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	currentMirror := current
+	if _, err := store.Put(Task{
+		ID: "task-mrev", Title: "t", Status: StatusInProgress,
+		CreatedAt: current, UpdatedAt: current,
+		MirrorRev: 5, MirrorUpdatedAt: &currentMirror,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+
+	stale := current.Add(-time.Hour)
+	staleMirror := stale
+	if _, err := store.Put(Task{
+		ID: "task-mrev", Title: "t", Status: StatusBlocked,
+		CreatedAt: current, UpdatedAt: stale,
+		MirrorRev: 2, MirrorUpdatedAt: &staleMirror,
+	}); err != nil {
+		t.Fatalf("second (rejected) Put: %v", err)
+	}
+
+	got, err := store.Get("task-mrev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusInProgress {
+		t.Fatalf("status = %q, want it to stay in-progress", got.Status)
+	}
+	if got.MirrorRev != 5 {
+		t.Fatalf("MirrorRev = %d, want it to stay 5 — a rejected write must not regress mirror bookkeeping", got.MirrorRev)
+	}
+	if got.MirrorUpdatedAt == nil || !got.MirrorUpdatedAt.Equal(currentMirror) {
+		t.Fatalf("MirrorUpdatedAt = %v, want it to stay %v", got.MirrorUpdatedAt, currentMirror)
+	}
+}
+
+// TestStorePutMirrorAuthoritativeAlwaysAdvancesPastFutureExisting pins
+// another Copilot finding on PR #2216: stamping UpdatedAt with the
+// process's wall clock alone isn't guaranteed to advance past what's on
+// disk if a prior (trusted, non-guarded) Put wrote a caller-supplied
+// UpdatedAt ahead of real wall-clock time. The mirror-authoritative branch
+// must still leave the write strictly newer than existing in that case,
+// or it reintroduces the exact non-monotonic-UpdatedAt class #2203 exists
+// to fix, just one level removed.
+func TestStorePutMirrorAuthoritativeAlwaysAdvancesPastFutureExisting(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	future := time.Now().UTC().Add(24 * time.Hour)
+	if _, err := store.Put(Task{
+		ID: "task-future", Title: "t", Status: StatusBlocked,
+		CreatedAt: future, UpdatedAt: future,
+	}); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+
+	mirrorTS := future.Add(-time.Hour)
+	if _, err := store.Put(Task{
+		ID: "task-future", Title: "t", Status: StatusInProgress,
+		CreatedAt: future, UpdatedAt: mirrorTS,
+		MirrorRev: 1, MirrorUpdatedAt: &mirrorTS,
+	}); err != nil {
+		t.Fatalf("mirror-authoritative Put: %v", err)
+	}
+
+	got, err := store.Get("task-future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusInProgress {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if !got.UpdatedAt.After(future) {
+		t.Fatalf("UpdatedAt = %v, want it strictly after the prior on-disk value %v", got.UpdatedAt, future)
+	}
+}
+
 func TestStorePutRejectsUnsafeID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -47,7 +47,6 @@ func TestMergeSnapshotGapSurvivesInterveningLeaderEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if saved.Status != task.StatusInProgress {
-		t.Fatalf("got status=%q title=%q, want status=in-progress title=%q",
-			saved.Status, saved.Title, follower.Title)
+		t.Fatalf("status = %q, want in-progress", saved.Status)
 	}
 }

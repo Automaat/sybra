@@ -7,7 +7,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-// TestMirrorApplyRejectsLegitimateFollowerUpdateAfterLeaderLocalEdit probes
+// TestMirrorApplyAppliesLegitimateFollowerUpdateAfterLeaderLocalEdit probes
 // #2203's acceptance criterion #4 — "The cluster mirror's own Merge→Put path
 // is unaffected for legitimate follower updates (still trusts a genuinely
 // newer follower timestamp verbatim)" — against a scenario the criterion
@@ -23,7 +23,7 @@ import (
 // the leader's freshly-bumped canonical.UpdatedAt, Store.Put's guard rejects
 // it and silently keeps the stale status — reproducing the exact class of
 // bug #2203 exists to fix, through the fix's own new code path.
-func TestMirrorApplyRejectsLegitimateFollowerUpdateAfterLeaderLocalEdit(t *testing.T) {
+func TestMirrorApplyAppliesLegitimateFollowerUpdateAfterLeaderLocalEdit(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)
 	mgr := newManager(t)

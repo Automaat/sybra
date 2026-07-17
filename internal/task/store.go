@@ -587,10 +587,10 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 // written by this path.
 // Put is a blind, verbatim upsert used by the cluster leader/follower mirror
 // — most fields are trusted from the caller with no merge logic. Its #2203
-// stale-status guard reads the existing on-disk task before deciding whether
-// to write, so concurrent Puts for the same ID need external serialization;
-// callers should go through Manager.Put, which holds a per-ID lock around
-// this call, rather than calling Store.Put directly.
+// stale-status guard reads the existing on-disk task under s.lockTask, so
+// concurrent Puts for the same ID are race-safe on their own; go through
+// Manager.Put instead when the caller also needs Manager's lifecycle side
+// effects (status-change hooks, created/updated events).
 func (s *Store) Put(t Task) (Task, error) {
 	if err := ValidateID(t.ID); err != nil {
 		return Task{}, err
@@ -625,12 +625,25 @@ func (s *Store) Put(t Task) (Task, error) {
 	} else if existing.Status != t.Status {
 		if t.MirrorUpdatedAt != nil && t.MirrorRev > existing.MirrorRev {
 			if !t.UpdatedAt.After(existing.UpdatedAt) {
-				t.UpdatedAt = now
+				// now alone isn't guaranteed to advance past existing.UpdatedAt
+				// (a prior genuinely-advancing Put can carry a caller-supplied
+				// timestamp ahead of this process's wall clock) — fall back to
+				// one tick past it so this write is never itself non-monotonic.
+				t.UpdatedAt = existing.UpdatedAt.Add(time.Nanosecond)
+				if now.After(t.UpdatedAt) {
+					t.UpdatedAt = now
+				}
 			}
 		} else if !t.UpdatedAt.After(existing.UpdatedAt) {
 			t.Status = existing.Status
 			t.UpdatedAt = existing.UpdatedAt
 			t.StatusChangedAt = existing.StatusChangedAt
+			// A rejected write's MirrorRev/MirrorUpdatedAt must not reach
+			// disk either — otherwise a stale/duplicate push regresses the
+			// mirror bookkeeping this same guard relies on to judge freshness
+			// on the next mirror-authoritative Put for this task.
+			t.MirrorRev = existing.MirrorRev
+			t.MirrorUpdatedAt = existing.MirrorUpdatedAt
 		}
 	}
 	if t.StatusChangedAt.IsZero() {
