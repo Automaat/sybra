@@ -14,10 +14,11 @@ import (
 // embedded bundle first, then syncs repoDir/.claude/skills over the top of it
 // whenever repoDir/go.mod exists — true for the server's own checkout — so
 // the repo copy is what agents actually read. Before #2189's generator and
-// drift guard (data_sync_generated_test.go), an edit to
-// .claude/skills/plan-critic/SKILL.md alone left data/plan-critic.md
-// silently stale, which is exactly how the council vocabulary below
-// survived a prompt update that had supposedly removed it.
+// drift guard (data_sync_generated_test.go), an edit to only the embedded
+// data/plan-critic.md left .claude/skills/plan-critic/SKILL.md — the copy
+// that actually reaches a running agent — silently stale, which is exactly
+// how the council vocabulary below survived a prompt update that had
+// supposedly removed it.
 func planCriticSources(t *testing.T) map[string]string {
 	t.Helper()
 
