@@ -332,6 +332,20 @@ func TestExtractFailuresMarkdownFieldRegex_StopsAtTrailingSchemaFields(t *testin
 	}
 }
 
+func TestSkillReceiptExhaustionSummary_UsesExistingVerdictRecovery(t *testing.T) {
+	t.Parallel()
+
+	malformed := `{"verdict":"FAIL","outcome":"product_bug","failures_markdown":"## Test Failures\n\n### product_bug: repo does not compile\n\nObserved output:\n` +
+		"```text\npkg/api-server/resource_inspect_endpoints.go:14: dangling import\n```" +
+		`"}`
+
+	got := skillReceiptExhaustionSummary(malformed)
+	want := "product_bug: repo does not compile"
+	if got != want {
+		t.Fatalf("skillReceiptExhaustionSummary = %q, want %q", got, want)
+	}
+}
+
 func TestHasGroundedFailureEvidence_AcceptsAnnotatedLabels(t *testing.T) {
 	t.Parallel()
 

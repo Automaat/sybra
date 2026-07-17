@@ -302,7 +302,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		out.TerminalStatus = "human-required"
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
-	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, def, def.StepByID(t.Workflow.CurrentStep)) {
+	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
 		e.clearAgentStep(c.AgentID)
 		return
 	}
