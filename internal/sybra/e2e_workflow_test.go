@@ -5,6 +5,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -87,11 +88,17 @@ var (
 // TestMain tears down the shared binary directory after all tests complete.
 // SYBRA_HOME is seeded by the package-level init in main_test.go before
 // this runs.
+// e2eSuiteStart anchors the binary's -timeout budget. Waits are clamped against
+// the time left in it (clampToReportingDeadline), so a hung wait fails its own
+// test instead of panicking the process with no evidence.
+var e2eSuiteStart = time.Now()
+
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(os.Stderr, "internal/sybra e2e tests require git on PATH:", err)
 		os.Exit(1)
 	}
+	e2eSuiteStart = time.Now()
 	code := m.Run()
 	if testBinDir != "" {
 		_ = os.RemoveAll(testBinDir)
@@ -146,8 +153,9 @@ const e2eLogTailBytes = 64 << 10
 // The app writes from many goroutines (runners, engine, pollers) while the test
 // body reads on failure, so every access is locked.
 type e2eLogBuffer struct {
-	mu  sync.Mutex
-	buf []byte
+	mu     sync.Mutex
+	buf    []byte
+	dumped atomic.Bool
 }
 
 func (b *e2eLogBuffer) Write(p []byte) (int, error) {
@@ -167,6 +175,28 @@ func (b *e2eLogBuffer) String() string {
 	return string(b.buf)
 }
 
+// dump prints the captured tail. Safe to call more than once — the binary
+// deadline guard and the per-test cleanup can race for the same buffer, and
+// printing the same evidence twice beats printing it never.
+func (b *e2eLogBuffer) dump(tb testing.TB) {
+	tb.Helper()
+	if !b.dumped.CompareAndSwap(false, true) {
+		return
+	}
+	if s := b.String(); s != "" {
+		tb.Logf("--- app log tail (what the app was doing) ---\n%s", s)
+	}
+}
+
+// e2eLogBuffers holds one buffer per test, keyed by name.
+//
+// A test builds several loggers (setup, the completion handler, engine
+// rebuilds), and the lines that explain a hang span them: the agent's
+// headless.done and the handler's OnComplete must be read against each other.
+// Per-call buffers would print those as separate tails for the reader to merge
+// by timestamp, so every component of one test shares a stream.
+var e2eLogBuffers sync.Map // test name -> *e2eLogBuffer
+
 // e2eLogger returns the app logger for an e2e test, capturing its output and
 // printing the tail only when the test fails.
 //
@@ -176,15 +206,17 @@ func (b *e2eLogBuffer) String() string {
 // tail is printed on failure only — on success it would bury the suite.
 func e2eLogger(tb testing.TB) *slog.Logger {
 	tb.Helper()
-	buf := &e2eLogBuffer{}
-	tb.Cleanup(func() {
-		if !tb.Failed() {
-			return
-		}
-		if s := buf.String(); s != "" {
-			tb.Logf("--- app log tail (what the app was doing) ---\n%s", s)
-		}
-	})
+	v, loaded := e2eLogBuffers.LoadOrStore(tb.Name(), &e2eLogBuffer{})
+	buf, _ := v.(*e2eLogBuffer)
+	if !loaded {
+		tb.Cleanup(func() {
+			e2eLogBuffers.Delete(tb.Name())
+			if !tb.Failed() {
+				return
+			}
+			buf.dump(tb)
+		})
+	}
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
@@ -301,7 +333,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
 	var env *e2eEnv
 	var engine *workflow.Engine
@@ -428,7 +460,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
 	scale := e2eTimeoutScale()
-	scaled := time.Duration(int64(timeout) * scale)
+	scaled := clampToReportingDeadline(time.Duration(int64(timeout) * scale))
 	deadline := time.After(scaled)
 	for {
 		select {
@@ -440,6 +472,72 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 			}
 		}
 	}
+}
+
+// keepAgentLogsOnFailure deletes the agent log dir only when the test passed.
+//
+// The provider subprocess writes its stdout/stderr there, and the app log's
+// chain runs agent.headless.start pid=… → agent.headless.result. A hang between
+// those two leaves the subprocess's own output as the only remaining evidence
+// of what it did, so deleting it unread on failure discards exactly what a
+// reader needs. On a pass it is noise, and the suite should not hoard temp dirs.
+func keepAgentLogsOnFailure(tb testing.TB, logDir string) {
+	tb.Helper()
+	if !tb.Failed() {
+		_ = os.RemoveAll(logDir)
+		return
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	tb.Logf("--- agent logs kept for inspection: %s (%s)", logDir, strings.Join(names, ", "))
+}
+
+// e2eReportReserve is how much of the binary's remaining budget a wait leaves
+// behind so its own failure can be printed: the Fatalf, the filtered goroutine
+// dump, and the log tail.
+const e2eReportReserve = 20 * time.Second
+
+// clampToReportingDeadline shortens a wait that would outlive the test binary.
+//
+// go test's -timeout panics the whole process, and that panic runs no
+// t.Cleanup and no t.Fatalf — so a wait allowed to exceed it produces none of
+// the evidence this file exists to capture. CI runs -timeout 20m while the CI
+// scale is 12-20x, which makes waitFor(t, 90*time.Second) an 18-30 minute
+// deadline: structurally incapable of ever reporting. Clamping cannot lose a
+// pass that would otherwise have happened — the binary would have died first
+// either way — it only converts a silent process panic into a test failure that
+// names its cause.
+func clampToReportingDeadline(scaled time.Duration) time.Duration {
+	budget := e2eBinaryTimeout()
+	if budget <= 0 {
+		return scaled // no -timeout set: nothing to outlive
+	}
+	remaining := budget - time.Since(e2eSuiteStart) - e2eReportReserve
+	if remaining < time.Second {
+		remaining = time.Second
+	}
+	return min(scaled, remaining)
+}
+
+// e2eBinaryTimeout reads the -timeout the binary was started with, or 0 when
+// unset (go test's own default is 10m, but an unset flag reports 0s here).
+func e2eBinaryTimeout() time.Duration {
+	f := flag.Lookup("test.timeout")
+	if f == nil {
+		return 0
+	}
+	g, ok := f.Value.(flag.Getter)
+	if !ok {
+		return 0
+	}
+	d, _ := g.Get().(time.Duration)
+	return d
 }
 
 func e2eGoroutineDump() string {

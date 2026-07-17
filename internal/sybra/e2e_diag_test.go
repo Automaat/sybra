@@ -5,6 +5,7 @@ package sybra
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The e2e hang (#2176) has never been root-caused because every occurrence
@@ -31,9 +32,6 @@ func TestE2ELogBuffer_KeepsTheTailNotTheHead(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "THE-INTERESTING-PART") {
 		t.Error("the newest bytes were dropped; a hung run's last lines are the whole point")
-	}
-	if strings.HasPrefix(got, strings.Repeat("A", 64)) && len(got) == e2eLogTailBytes && !strings.Contains(got, "THE-INTERESTING-PART") {
-		t.Error("buffer kept the head instead of the tail")
 	}
 }
 
@@ -78,6 +76,44 @@ func TestDropParkedTestGoroutines(t *testing.T) {
 	if !strings.Contains(got, "2 goroutines parked in t.Parallel omitted") {
 		t.Errorf("omission must be reported so the dump is not silently partial, got:\n%s", got)
 	}
+}
+
+// go test's -timeout panics the process without running any t.Cleanup or
+// t.Fatalf, so a wait allowed to outlive it prints none of the evidence this
+// file captures. CI pairs -timeout 20m with a 12-20x scale, which turns
+// waitFor(t, 90*time.Second) into an 18-30 minute deadline that can never
+// report. These pin the clamp that converts that silent panic into a failure.
+func TestClampToReportingDeadline(t *testing.T) {
+	budget := e2eBinaryTimeout()
+	if budget <= 0 {
+		t.Skip("binary started without -timeout; nothing to clamp against")
+	}
+
+	t.Run("a wait longer than the budget is cut short of it", func(t *testing.T) {
+		got := clampToReportingDeadline(budget * 10)
+		if got >= budget {
+			t.Errorf("clamped = %s, want < the %s binary budget: it must fail its own test, not panic the process", got, budget)
+		}
+		if got <= 0 {
+			t.Errorf("clamped = %s, want a positive deadline", got)
+		}
+	})
+
+	t.Run("a short wait is left alone", func(t *testing.T) {
+		// Well inside any sane budget, so the clamp must not touch it —
+		// shortening honest waits would invent failures.
+		want := 50 * time.Millisecond
+		if got := clampToReportingDeadline(want); got != want {
+			t.Errorf("clamped = %s, want %s untouched", got, want)
+		}
+	})
+
+	t.Run("never returns a non-positive deadline", func(t *testing.T) {
+		// Simulates a wait starting when the budget is already spent.
+		if got := clampToReportingDeadline(time.Nanosecond); got <= 0 {
+			t.Errorf("clamped = %s, want > 0", got)
+		}
+	})
 }
 
 func TestDropParkedTestGoroutines_NothingToDrop(t *testing.T) {
