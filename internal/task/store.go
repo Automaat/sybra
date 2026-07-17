@@ -612,14 +612,26 @@ func (s *Store) Put(t Task) (Task, error) {
 	// Fabricating a fresh timestamp on top of it would let the stale status
 	// masquerade as the latest legitimate state to a consumer like the
 	// cluster mirror's Merge — discard it instead and keep what's on disk.
+	//
+	// A mirror-applied task (MirrorUpdatedAt set, only by clusterlead.Merge)
+	// proves freshness via MirrorRev instead: Merge runs fully serialized,
+	// so an incoming MirrorRev past the on-disk value is race-free proof
+	// even if an unrelated edit bumped UpdatedAt in the gap between Merge's
+	// snapshot and this write reaching the lock above.
 	if existing, err := s.read(t.ID); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", err)
 		}
-	} else if existing.Status != t.Status && !t.UpdatedAt.After(existing.UpdatedAt) {
-		t.Status = existing.Status
-		t.UpdatedAt = existing.UpdatedAt
-		t.StatusChangedAt = existing.StatusChangedAt
+	} else if existing.Status != t.Status {
+		if t.MirrorUpdatedAt != nil && t.MirrorRev > existing.MirrorRev {
+			if !t.UpdatedAt.After(existing.UpdatedAt) {
+				t.UpdatedAt = now
+			}
+		} else if !t.UpdatedAt.After(existing.UpdatedAt) {
+			t.Status = existing.Status
+			t.UpdatedAt = existing.UpdatedAt
+			t.StatusChangedAt = existing.StatusChangedAt
+		}
 	}
 	if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = t.UpdatedAt
