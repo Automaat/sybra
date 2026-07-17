@@ -10,11 +10,12 @@ allowed-tools: Read, Grep, Bash, Write, Edit, Agent
 
 Review an implementation plan before code is written. Reject plans that are vague, ungrounded, risky, or missing verification.
 
-Sybra planning stores research/council evidence separately from the canonical
-plan. Treat the canonical plan as an execution contract: compact is good when it
-names the decision, scope, files, ordered steps, verification, and stop
-conditions. Do not require council synthesis, critique history, persona names,
-or long rationale inside the execution contract.
+Sybra planning stores research evidence — including the planner's scrutiny
+answers — separately from the canonical plan. Treat the canonical plan as an
+execution contract: compact is good when it names the decision, scope, files,
+ordered steps, verification, and stop conditions. Do not require scrutiny
+answers, critique history, or long rationale inside the execution contract;
+flag them as bloat when they appear there.
 
 ## Inputs
 

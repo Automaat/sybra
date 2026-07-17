@@ -10,9 +10,20 @@ deployment.
 docker build -t sybra-server:poc .
 k3d cluster create sybra-poc --agents 1 --wait
 k3d image import sybra-server:poc -c sybra-poc
+kubectl apply -f deploy/k8s-poc/namespace.yaml
+kubectl -n sybra-poc create secret generic sybra-server-auth \
+  --from-literal=token=poc-token \
+  --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -k deploy/k8s-poc
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 ```
+
+`sybra-server-auth` holds the bearer token the Deployment reads via
+`SYBRA_AUTH_TOKEN` (`deploy/k8s-poc/deployment.yaml`) — it is never a plain
+manifest value, so `kubectl apply -k` alone will not start the pod until this
+Secret exists. See [Production secret management](#production-secret-management)
+for how to handle it (and `sybra-provider-api-keys` below) outside a
+throwaway k3d cluster.
 
 Start a fake headless agent Job through Sybra:
 
@@ -44,9 +55,103 @@ k3d cluster delete sybra-poc
 The default agent Job uses `busybox:1.36` and emits Claude-shaped NDJSON so the
 existing Sybra stream parser can consume it.
 
+## Instance role
+
+A Kubernetes deployment should not start orchestrator sessions or dispatch tasks
+just because tasks are active — a shared or test cluster would race the machine
+that actually owns the board. Every config here sets:
+
+```yaml
+orchestrator:
+  role: agent-only
+```
+
+`agent-only` fails closed on both self-starting automations:
+
+| | `full` (default) | `agent-only` |
+|---|---|---|
+| Orchestrator brain session (auto-start) | yes | no |
+| Workflows of any kind — dispatch, resume, status-change, **or a manual start** | yes | no |
+| Board reconcile, stale-agent restart | yes | no |
+| Auto-spawned human-review agent | yes | no |
+| HTTP API, explicitly-started agents (`App.StartAgent`, `sybra-cli`) | yes | yes |
+| Draining an explicitly-started agent queued behind a busy pool | yes | yes |
+| Maintenance cleanup (orphan worktrees/sandboxes, metrics) | yes | yes |
+
+**An `agent-only` instance runs agents, not workflows.** The workflow engine is
+the single gate: `StartWorkflow`, `DispatchEvent`, `HandleStatusChange` and
+`ResumeStalled` all refuse with `workflow dispatch is disabled on this instance`.
+That is deliberately blunt — it stops an operator-initiated workflow start too,
+not just automatic ones — because the engine has callers spread across the task
+service, the review fixer, completion, PR integrations and the watcher, and
+gating those individually kept missing routes. Direct agent starts never touch
+the engine, so they keep working. Opt back in with `scheduler_enabled: true`.
+
+Two things deliberately keep running under `agent-only`. Cleanup, so a parked
+instance still collects its own garbage. And the manual queue drain — that is the
+resume path for an agent an operator already explicitly started, not
+auto-dispatch, so gating it would strand any start that landed while the pool was
+busy. An operator's manual `StartOrchestrator` call is never gated either.
+
+Re-enable either half independently — these win over `role`:
+
+```yaml
+orchestrator:
+  role: agent-only
+  enabled: true            # orchestrator brain only
+  scheduler_enabled: true  # auto-dispatch only
+```
+
+An invalid `role` falls back to `full` and logs `config.orchestrator.role.invalid`,
+so a typo never silently parks an instance that was meant to orchestrate. Note the
+direction: a typo'd role starts orchestrating, it does not go idle — check the log
+after changing it.
+
+The role is sampled once at startup (like `orchestrator.dispatch_interval_seconds`),
+so changing it needs a restart; a reload logs `config.reload.restart_required`
+with field `orchestrator.role`.
+
+Confirm the resolved role in the startup log. Note `kubectl logs` will *not* show
+it: Sybra's slog handler writes to a rotating file, not stdout, so the pod's
+stdout carries only a few bootstrap lines. Read the real sink instead:
+
+```bash
+kubectl -n sybra-poc exec deploy/sybra-server -- \
+  grep app.automations /home/sybra/.sybra/logs/sybra.log
+```
+
+```json
+{"level":"INFO","msg":"app.automations","instance_role":"agent-only","orchestrator":false,"scheduler":false}
+```
+
+## Automated smoke
+
+`scripts/smoke-k3d.sh` runs the "Fake repo e2e mode" flow below end to end and
+asserts it, so the Job runner has regression cover without a model API key or
+any provider spend. CI runs it on every PR as the `k3d Job Runner Smoke` job.
+
+```bash
+mise run smoke:k3d              # build, run, tear down
+SMOKE_KEEP=1 mise run smoke:k3d # leave the cluster up to poke at it
+```
+
+It needs `docker`, and `k3d`/`kubectl` come from `mise install`. It never
+touches your kubectl context: the cluster is created with
+`--kubeconfig-update-default=false` and every command runs against an isolated
+kubeconfig, so a `sybra-poc` cluster or a work context nearby is safe.
+
+Deliberately excluded from `mise run verify`, which stays a fast deterministic
+pre-commit loop — this needs Docker and a real cluster.
+
+For a real-model run against OpenRouter, see the manual
+`.github/workflows/k3d-provider-smoke.yml` (needs an `OPENROUTER_API_KEY`
+secret) or run `SMOKE_PROVIDER=opencode OPENROUTER_API_KEY=... mise run
+smoke:k3d` locally. That path costs money, so it never runs on a PR.
+
 ## Fake repo e2e mode
 
-Use this path when you want a fully local k3d test that exercises the real
+The manual version of what the smoke automates. Use this path when you want a
+fully local k3d test that exercises the real
 Sybra project/worktree path without model API keys or GitHub pushes. The server
 and agent Job share the `sybra-home` PVC, the Job runs `/usr/local/bin/fake-claude`,
 and the fake provider writes `k8s-agent-output.txt` into the checked-out repo.
@@ -141,14 +246,9 @@ kubectl -n sybra-poc exec deploy/sybra-server -- \
     --data '[]' \
   | jq '.[] | select(.taskId == "'$TASK_ID'") | {id, taskId, state, command, provider, model, costUsd}'
 
-kubectl -n sybra-poc exec deploy/sybra-server -- \
-  sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
-
 WT=$(
   kubectl -n sybra-poc exec deploy/sybra-server -- \
-    sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
+    sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID | head -1"
 )
 kubectl -n sybra-poc exec deploy/sybra-server -- \
   sh -ceu "test -f '$WT/k8s-agent-output.txt' && cat '$WT/k8s-agent-output.txt' && git -C '$WT' log --oneline -2"
@@ -201,6 +301,221 @@ review/test stages see the pod's files. The `GITHUB_TOKEN` value is optional for
 public HTTPS remotes, but required for private GitHub HTTPS remotes and pushes.
 SSH remotes are not wired in this PoC.
 
+## Production secret management
+
+The PoC keeps two Secrets out of every manifest and out of git:
+
+- `sybra-server-auth` (`deploy/k8s-poc/server-auth-secret.example.yaml`) — the
+  Deployment's `SYBRA_AUTH_TOKEN`.
+- `sybra-provider-api-keys` (`deploy/k8s-poc/api-key-secret.example.yaml`) —
+  provider/GitHub credentials referenced by `agent.k8s_jobs.secret_env` and
+  injected straight into the agent Job's container as `valueFrom.secretKeyRef`
+  (`internal/agent/k8s_job_runner.go`). Kubernetes resolves the reference at
+  pod start; `sybra-server` never reads the secret value itself, so a
+  compromised server process cannot exfiltrate provider or GitHub credentials
+  it was never handed. `sybra-cli config doctor` catches a `secret_env` entry
+  with a missing `name`/`secret_name`/`secret_key` before it fails silently at
+  Job-creation time.
+
+The `.example.yaml` files are templates only (`replace-me` placeholders) and
+are not part of `kustomization.yaml` — nothing applies them automatically, and
+`kubectl create secret generic ... --from-literal=...` never writes a
+manifest to disk. That is enough for a throwaway k3d cluster. A real
+deployment needs the Secret's desired state to be reviewable and
+reproducible without ever putting plaintext credentials in git history. Pick
+one:
+
+- **SOPS** — encrypt a Secret manifest (or just the values) with `sops`,
+  commit the ciphertext, decrypt at deploy time and `kubectl apply` the
+  result (or `kubectl create secret --from-literal` from the decrypted
+  values, as `server-auth-secret.example.yaml` and
+  `api-key-secret.example.yaml` are shaped for). This is the option to
+  reach for if your deploy pipeline already runs `sops` for other
+  environments — the encrypted file lives next to the rest of the manifests
+  and needs no extra cluster component.
+- **Sealed Secrets** (bitnami-labs/sealed-secrets) — a cluster-side
+  controller decrypts a `SealedSecret` CRD that is safe to commit (encrypted
+  with the controller's public key) into a real `Secret`. Best fit when the
+  encryption key must stay cluster-local rather than shared with a CI
+  pipeline.
+- **External Secrets Operator** — a cluster-side controller syncs Secrets
+  from an external store (Vault, AWS/GCP/Azure secret managers, etc.) via an
+  `ExternalSecret` CRD; nothing encrypted ever touches git. Best fit when
+  provider/GitHub credentials are already centrally managed in one of those
+  stores.
+
+Whichever mechanism renders the final `Secret`, the object names/keys must
+match what `deployment.yaml` and `agent.k8s_jobs.secret_env` expect:
+`sybra-server-auth`/`token`, and `sybra-provider-api-keys`/
+`openrouter_api_key`+`github_token` (or whatever `secret_name`/`secret_key`
+pairs a given ConfigMap declares). None of the three tools are wired into
+this PoC's kustomization — pick one and add its manifests/controller to your
+own deployment overlay.
+
+## Versioned production images
+
+`docker build -t sybra-server:poc .` + `k3d image import` above is a local
+dev/smoke loop only — the resulting image never leaves the machine that built
+it, which is fine for a throwaway k3d cluster but not reproducible or
+immutable enough to run in production.
+
+`.github/workflows/docker-publish.yml` builds the same root `Dockerfile` (its
+`ENTRYPOINT` is `sybra-server`) and pushes it to GHCR under two repository
+names sharing one digest per build: `ghcr.io/automaat/sybra` and
+`ghcr.io/automaat/sybra-server`. Each push is tagged three ways:
+
+- `vX.Y.Z` — the exact released version
+- `X.Y` — floating latest-patch alias for that minor
+- `sha-<short-sha>` — the commit it was built from, for bisecting a bad
+  deploy back to source independent of the version bump
+
+It runs on `workflow_dispatch` (`gh workflow run docker-publish.yml -f
+version=vX.Y.Z`, or leave `version` empty to auto-bump the minor via
+`scripts/resolve-release-version.sh`) — publishing a new production image is
+a deliberate, CI-run action, not something that fires on every merge to
+`main`.
+
+The first push under a new GHCR repository name defaults to **private** —
+`ghcr.io/automaat/sybra-server` will not exist as a package until
+`docker-publish.yml` runs once, and after that first run it is only pullable
+by an authenticated, authorized principal until someone flips its visibility
+in the package's GHCR settings (Package → Package settings → Danger Zone →
+Change visibility). Decide deliberately rather than by default:
+
+- **Public** — simplest; an unauthenticated `docker pull` (as shown below)
+  and a plain Kubernetes image reference both just work, no cluster-side
+  credential needed.
+- **Private** — safer default for a production image, but then the cluster
+  needs an `imagePullSecrets` entry: `kubectl create secret docker-registry
+  ghcr-pull --docker-server=ghcr.io --docker-username=<user>
+  --docker-password=<a token with read:packages>`, referenced from the
+  Deployment's `spec.template.spec.imagePullSecrets` (or the ServiceAccount,
+  so every pod using it inherits the credential without repeating the field).
+
+For a production deploy, pin by digest rather than a mutable tag — a tag can
+be re-pointed (accidentally or via `docker-publish.yml` re-running the same
+version), a digest cannot. If the package is still private, log in first
+(a token with `read:packages` is enough — no need for `write:packages` just
+to pull):
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <user> --password-stdin
+docker pull ghcr.io/automaat/sybra-server:vX.Y.Z
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/automaat/sybra-server:vX.Y.Z
+# ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+Point a deployment at it without ever building locally — either patch the
+image directly:
+
+```bash
+kubectl -n sybra-poc set image deployment/sybra-server \
+  sybra-server=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+or, in a kustomize overlay (see issue #2110 for splitting the PoC base from a
+real production overlay), add an `images:` transformer instead of hand-editing
+`deployment.yaml`:
+
+```bash
+cd your-production-overlay
+kustomize edit set image sybra-server:poc=ghcr.io/automaat/sybra-server@sha256:<digest>
+```
+
+## Job cleanup and log retention
+
+Every agent Job runs with `backoffLimit: 0` and `restartPolicy: Never`
+(`deploy/k8s-poc/deployment.yaml` config, applied in
+`internal/agent/k8s_job_runner.go`), so it reaches a terminal Kubernetes Job
+condition — Complete or Failed — on its first pod exit, success or failure
+alike. Kubernetes' [TTL-after-finished
+controller](https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/)
+then deletes the Job (and, via its pod's ownerReference, the Pod) once
+`spec.ttlSecondsAfterFinished` elapses from that terminal condition — deleting
+the Pod is also what makes `kubectl logs` on it stop working, so this number
+is really "how long do I have to pull a Job's logs before they're gone."
+
+**Two separate defaults, not one**, because a five-minute window is fine for
+a Job that worked but far too short to debug one that didn't:
+
+- `agent.k8s_jobs.ttl_seconds_after_finished` — applied at Job creation,
+  covers the **successful** case. Default **300s** if unset.
+- `agent.k8s_jobs.failed_ttl_seconds_after_finished` — Kubernetes has no
+  native way to set a different TTL for Failed vs Complete at creation time
+  (`ttlSecondsAfterFinished` is one scalar), so the runner instead PATCHes it
+  onto the Job the moment it observes `status.failed > 0`, before finalizing
+  the agent run. Default **86400s (24h)** if unset — long enough that an
+  operator investigating a page the next morning still has the evidence.
+  Requires the `patch` verb on `batch/jobs` in the Role bound to
+  `sybra-server`'s ServiceAccount (already granted in
+  `deploy/k8s-poc/rbac.yaml`); without it the patch attempt is logged as a
+  warning (`agent.k8s.failed_ttl_patch`) and the Job silently falls back to
+  the success TTL.
+
+Both are configurable per-deployment via the `agent.k8s_jobs` ConfigMap key —
+see `deploy/k8s-poc/config-provider-example.yaml` for the surrounding block.
+
+**Inspecting a failed run before it's cleaned up:**
+
+```bash
+# Sybra's own parsed view — cost, tokens, session id, exit state
+kubectl -n sybra-poc exec deploy/sybra-server -- \
+  curl -sS -X POST 'http://127.0.0.1:8080/api/AgentService/ListAgents' \
+    -H 'Authorization: Bearer poc-token' -H 'Content-Type: application/json' --data '[]' \
+  | jq '.[] | select(.taskId == "<task-id>")'
+
+# Raw provider stdout/stderr for the pod (works until failedTTL elapses)
+kubectl -n sybra-poc logs job/sybra-agent-<agent-id>
+
+# Why the pod itself failed (OOMKilled, image pull error, etc. — not just
+# a nonzero exit from the provider CLI)
+kubectl -n sybra-poc describe pod -l sybra.agent/id=<agent-id>
+```
+
+**Stale Jobs** — a Job that exists in the cluster but no longer maps to an
+agent Sybra is actively tracking, typically after a server crash/restart
+during a run.
+
+For the common case — the orphaned Job still finishes on its own — TTL
+already covers it: `ttlSecondsAfterFinished` deletes a Job once it reaches
+Complete/Failed regardless of whether anything in Sybra still tracks its
+`sybra.agent/id`, since Kubernetes' TTL controller only looks at the Job's
+own status, never at Sybra's registry. A restart doesn't stop the pod that's
+already running; it just orphans Sybra's reference to it, and the two TTLs
+above still reap it on the same schedule as a normally-tracked run.
+
+What TTL *cannot* reach is a Job that never finishes at all — stuck
+`Pending`/`Running` forever with no terminal condition to start either TTL's
+countdown. That's a timeout/liveness problem, not a retention-window problem,
+and it's tracked separately: #2106 (resource/timeout/concurrency controls)
+and #2109 (observability and stuck-Job alerts) own detecting and acting on a
+Job that's actually hung, rather than one that finished and is just waiting
+out its TTL.
+
+What's left for a human to do manually today is inspection, not cleanup: every
+agent Job carries `app.kubernetes.io/name=sybra-agent`, `sybra.agent/id=<id>`,
+and `sybra.task/id=<id>` labels (`internal/agent/k8s_job_runner.go`), so an
+operator can list Jobs with that selector and cross-reference the ids against
+`ListAgents`/`sybra-cli list` to see what's currently orphaned before its TTL
+elapses:
+
+```bash
+kubectl -n sybra-poc get jobs -l app.kubernetes.io/name=sybra-agent \
+  -o jsonpath='{range .items[*]}{.metadata.labels.sybra\.agent/id}{"\n"}{end}'
+```
+
+Automating that lookup into a scheduled sweep (rather than an operator running
+it by hand), and extending the same garbage collection to branches and
+worktrees left behind by an orphaned run, is #2111. Reattaching Sybra's own
+tracking to a still-running Job after a restart — so it stops looking
+"orphaned" from Sybra's side in the first place — is #2112.
+
+Automatically *detecting and pruning* stale Jobs — not just finding them by
+hand — is out of scope here; it's tracked in #2111. Automatically
+*reattaching* to a Job that outlived a server restart, so it stops looking
+stale in the first place, is #2112. This section defines the retention
+policy and the manual inspection path; those two issues own the automation.
+
 ## Real OpenCode testbed e2e
 
 This is the end-to-end path used to prove the PoC with a real model. It uses
@@ -215,7 +530,7 @@ kubectl -n sybra-poc rollout restart deployment/sybra-server
 kubectl -n sybra-poc rollout status deployment/sybra-server --timeout=120s
 
 kubectl -n sybra-poc exec deploy/sybra-server -- \
-  sybra-cli project create https://github.com/Automaat/sybra-testbed.git
+  sybra-cli project create --url https://github.com/Automaat/sybra-testbed.git
 ```
 
 For a fully disposable k3d run that does not push branches to GitHub, point the
@@ -272,8 +587,7 @@ Verify the branch commit and runtime behavior in the server worktree:
 ```bash
 WT=$(
   kubectl -n sybra-poc exec deploy/sybra-server -- \
-    sybra-cli --json get "$TASK_ID" \
-  | jq -r .worktreeDir
+    sh -ceu "ls -d /home/sybra/.sybra/worktrees/*$TASK_ID | head -1"
 )
 
 kubectl -n sybra-poc exec deploy/sybra-server -- \

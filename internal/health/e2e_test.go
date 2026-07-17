@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -211,6 +212,141 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	}
 	if report.Processes == nil {
 		t.Fatal("Processes = nil, want non-nil summary")
+	}
+}
+
+// TestE2E_SandboxCleanupFailureSurfacesHealthFinding drives the real,
+// observable workflow behind the sandbox-repair task's third acceptance
+// criterion: a sandbox cleanup failure that survived sandbox.Manager's
+// normalize-then-retry escalation and landed in quarantine (exercised at
+// the decision-logic level, with full control over the injected failure, by
+// internal/sandbox's own TestManager_RemoveContext_QuarantinesPersistentFailure)
+// surfaces as exactly one deduplicated health.Finding carrying bytes
+// retained, through the same Checker.check pipeline the other e2e tests
+// exercise. The quarantine record is seeded on disk in the exact layout
+// sandbox.Manager itself writes (dataDir/.quarantine/<taskID>.json) so this
+// test reads it back through the real, unmodified QuarantinedEntries.
+func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	sandboxDir := filepath.Join(home, "sandboxes")
+	mgr := sandbox.NewManager(sandboxDir, slog.New(slog.DiscardHandler))
+
+	quarantineDir := filepath.Join(sandboxDir, ".quarantine")
+	if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
+		t.Fatalf("mkdir quarantine dir: %v", err)
+	}
+	entry := sandbox.QuarantineEntry{
+		TaskID:        "task-locked",
+		Path:          filepath.Join(sandboxDir, "task-locked"),
+		BytesRetained: 4096,
+		Attempts:      3,
+		LastError:     "permission denied",
+		FirstFailedAt: time.Now().Add(-time.Hour).UTC(),
+		LastFailedAt:  time.Now().UTC(),
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal quarantine entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantineDir, "task-locked.json"), data, 0o644); err != nil {
+		t.Fatalf("write quarantine entry: %v", err)
+	}
+
+	entries := mgr.QuarantinedEntries()
+	if len(entries) != 1 {
+		t.Fatalf("QuarantinedEntries = %+v, want exactly 1 entry", entries)
+	}
+	if entries[0].BytesRetained <= 0 {
+		t.Fatalf("QuarantinedEntries[0].BytesRetained = %d, want > 0", entries[0].BytesRetained)
+	}
+
+	auditDir := filepath.Join(home, "audit")
+	tasksDir := filepath.Join(home, "tasks")
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	tasks := task.NewManager(store, nil)
+
+	c := New(auditDir, tasks, home, slog.New(slog.DiscardHandler), nil, nil)
+	c.SetSandboxQuarantine(mgr.QuarantinedEntries)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	c.Run(ctx)
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Category == CatSandboxCleanup {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q finding, got %v", CatSandboxCleanup, findingCategories(report.Findings))
+	}
+	if found.TaskID != "task-locked" {
+		t.Errorf("TaskID = %q, want task-locked", found.TaskID)
+	}
+	wantFingerprint := string(CatSandboxCleanup) + ":task-locked"
+	if found.Fingerprint != wantFingerprint {
+		t.Errorf("Fingerprint = %q, want %q", found.Fingerprint, wantFingerprint)
+	}
+	if bytes, ok := found.Evidence["bytes_retained"].(int64); !ok || bytes <= 0 {
+		t.Errorf("Evidence[bytes_retained] = %v, want positive int64", found.Evidence["bytes_retained"])
+	}
+	if report.Score != ScoreCritical {
+		t.Errorf("Score = %q, want critical", report.Score)
+	}
+
+	// Persisted health-report.json is what sybra-cli health reads — verify
+	// the finding, including bytes retained, round-trips through it.
+	persistedData, err := os.ReadFile(filepath.Join(home, "health-report.json"))
+	if err != nil {
+		t.Fatalf("read persisted report: %v", err)
+	}
+	var persisted struct {
+		Findings []struct {
+			Category string         `json:"category"`
+			TaskID   string         `json:"taskId"`
+			Evidence map[string]any `json:"evidence"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(persistedData, &persisted); err != nil {
+		t.Fatalf("parse persisted report: %v", err)
+	}
+	var persistedFound bool
+	for _, f := range persisted.Findings {
+		if f.Category == string(CatSandboxCleanup) && f.TaskID == "task-locked" {
+			persistedFound = true
+			if bytes, ok := f.Evidence["bytes_retained"].(float64); !ok || bytes <= 0 {
+				t.Errorf("persisted Evidence[bytes_retained] = %v, want positive number", f.Evidence["bytes_retained"])
+			}
+		}
+	}
+	if !persistedFound {
+		t.Errorf("persisted report missing %q finding for task-locked", CatSandboxCleanup)
+	}
+
+	// A second tick against the same still-quarantined entry must not
+	// duplicate the finding — CleanupOrphaned-style dedup via Fingerprint.
+	c.check(t.Context())
+	report = c.LatestReport()
+	var count int
+	for _, f := range report.Findings {
+		if f.Category == CatSandboxCleanup && f.TaskID == "task-locked" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("sandbox cleanup findings after second tick = %d, want 1 (deduplicated)", count)
 	}
 }
 

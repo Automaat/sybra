@@ -116,8 +116,12 @@ func (m *Manager) StopAgents(agents []*Agent) {
 
 // KillAgentsForTask stops all running agents for the given task ID and waits
 // for their goroutines to exit (up to timeout). Safe to call from DeleteTask
-// before worktree cleanup.
-func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
+// before worktree cleanup. allExited is false when the deadline hit before
+// every targeted agent's goroutine confirmed exit — callers that need to know
+// whether it is now actually safe to touch the task's worktree (as opposed to
+// callers that just want a best-effort stop, like DeleteTask) must check it
+// rather than assume a timed-out call still stopped everything.
+func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) (allExited bool) {
 	m.mu.RLock()
 	var targets []*Agent
 	for _, a := range m.agents {
@@ -138,9 +142,10 @@ func (m *Manager) KillAgentsForTask(taskID string, timeout time.Duration) {
 		case <-a.done:
 		case <-deadline:
 			m.logger.Warn("agent.kill-timeout", "agent_id", a.ID, "task_id", taskID)
-			return
+			return false
 		}
 	}
+	return true
 }
 
 func (m *Manager) StopAgent(agentID string) error {

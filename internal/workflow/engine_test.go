@@ -26,9 +26,9 @@ import (
 )
 
 // TestTaskFields_PlanCritiqueAndReplanCount locks the two fields the
-// simple-task-plan replan/critique gates depend on: task.plan_critique
-// mirrors TaskInfo.PlanCritique verbatim (route_critique_verdict substring-
-// matches its verdict heading), and task.replan_count is start_replan's own
+// simple-task-plan replan/critique path depends on: task.plan_critique
+// mirrors TaskInfo.PlanCritique verbatim (the human gate renders it as
+// advisory context), and task.replan_count is start_replan's own
 // step-history count as of the current call — the number of full opus
 // replan cycles already spent, not counting the one about to start.
 func TestTaskFields_PlanCritiqueAndReplanCount(t *testing.T) {
@@ -105,17 +105,31 @@ func newTestStoreWith(t *testing.T, files ...string) *Store {
 	return store
 }
 
+func newInlineTestStore(t *testing.T, name, yaml string) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write inline workflow %s: %v", name, err)
+	}
+	return store
+}
+
 // --- In-memory TaskProvider ---
 
 type memTasks struct {
-	mu        sync.Mutex
-	tasks     map[string]*TaskInfo
-	reasons   map[string]string
-	steers    map[string]string
-	gets      map[string]int
-	onGet     func(id string, t *TaskInfo, count int)
-	appendErr error
-	failGet   bool
+	mu              sync.Mutex
+	tasks           map[string]*TaskInfo
+	reasons         map[string]string
+	steers          map[string]string
+	gets            map[string]int
+	onGet           func(id string, t *TaskInfo, count int)
+	appendErr       error
+	failGet         bool
+	failSetWorkflow bool
 }
 
 func newMemTasks() *memTasks {
@@ -314,6 +328,9 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failSetWorkflow {
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -4350,6 +4367,166 @@ func TestPendingStepStartRefcountKeepsWinnerClaimed(t *testing.T) {
 	tiFinal, _ := tasks.GetTask("t1")
 	if tiFinal.Workflow.CurrentStep == "implement" {
 		t.Fatalf("CurrentStep still implement — claim should clear after final unmark")
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillRetriesWithInjectedSkill(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+        kind: plan
+        required: true
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	recorder := &recordingArtifactRecorder{}
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetArtifactRecorder(recorder)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Plan:      "# fake first pass\n",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir: t.TempDir(),
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-1",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "native",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-1", Result: "done", Success: true})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ti.Workflow.CurrentStep; got != "run" {
+		t.Fatalf("CurrentStep = %q, want run", got)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "1" {
+		t.Fatalf("skill receipt retry var = %q, want 1", got)
+	}
+	if len(ti.Workflow.StepHistory) != 0 {
+		t.Fatalf("StepHistory = %+v, want no recorded completion before retry", ti.Workflow.StepHistory)
+	}
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 retry", len(agents.calls))
+	}
+	if !agents.calls[0].Assignment.ForceInjectedSkill {
+		t.Fatal("retry assignment did not force injected skill delivery")
+	}
+	if !agents.calls[0].Assignment.SkillRecoveryAttempt {
+		t.Fatal("retry assignment missing recovery-attempt marker")
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.puts) != 1 {
+		t.Fatalf("diagnostic artifacts = %+v, want one preserved first-pass sidecar", recorder.puts)
+	}
+	if recorder.puts[0].name != "skill-receipt-first-run-plan.md" {
+		t.Fatalf("diagnostic artifact name = %q, want skill-receipt-first-run-plan.md", recorder.puts[0].name)
+	}
+	if recorder.puts[0].content != "# fake first pass\n" {
+		t.Fatalf("diagnostic artifact content = %q, want first-pass plan", recorder.puts[0].content)
+	}
+}
+
+func TestHandleAgentComplete_UnverifiedSkillAfterRetryEscalatesHumanRequired(t *testing.T) {
+	store := newInlineTestStore(t, "skill-receipt", `id: skill-receipt
+name: Skill Receipt
+trigger:
+  on: task.created
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now."
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "skill-receipt",
+			CurrentStep: "run",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				skillReceiptRecoveryKey("run"): "1",
+			},
+		},
+		AgentRuns: []AgentRunInfo{{
+			AgentID:            "agent-2",
+			Role:               "plan-critic",
+			Provider:           "codex",
+			RequestedSkill:     "sybra-test",
+			SkillExecutionMode: "injected",
+			SkillConformance:   "unverified",
+		}},
+	})
+
+	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "agent-2", Result: "still no receipt", Success: true})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
+		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
+	}
+	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
+		t.Fatalf("skill receipt retry var = %q, want cleared after exhaustion", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no third attempt", len(agents.calls))
 	}
 }
 

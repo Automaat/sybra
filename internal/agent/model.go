@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,32 +53,43 @@ type Agent struct {
 	ReasoningTokens          int     `json:"reasoningTokens,omitempty"`
 	// PremiumRequests is Copilot's billing unit (AI credits). Sybra keeps the
 	// raw count alongside the estimated USD equivalent persisted on task runs.
-	PremiumRequests    float64   `json:"premiumRequests,omitempty"`
-	StartedAt          time.Time `json:"startedAt"`
-	LastEventAt        time.Time `json:"lastEventAt"`
-	LogPath            string    `json:"logPath,omitempty"`
-	External           bool      `json:"external"`
-	PID                int       `json:"pid,omitempty"`
-	Command            string    `json:"command,omitempty"`
-	Name               string    `json:"name,omitempty"`
-	Project            string    `json:"project,omitempty"`
-	Provider           string    `json:"provider,omitempty"`
-	Node               string    `json:"node,omitempty"`
-	Model              string    `json:"model,omitempty"`
-	ExperimentID       string    `json:"experimentId,omitempty"`
-	VariantID          string    `json:"variantId,omitempty"`
-	AssignmentUnit     string    `json:"assignmentUnit,omitempty"`
-	AssignmentKey      string    `json:"assignmentKey,omitempty"`
-	ReasoningEffort    string    `json:"reasoningEffort,omitempty"`
-	SkillExecutionMode string    `json:"skillExecutionMode,omitempty"`
-	Prompt             string    `json:"prompt,omitempty"`
+	PremiumRequests         float64   `json:"premiumRequests,omitempty"`
+	StartedAt               time.Time `json:"startedAt"`
+	LastEventAt             time.Time `json:"lastEventAt"`
+	LogPath                 string    `json:"logPath,omitempty"`
+	External                bool      `json:"external"`
+	PID                     int       `json:"pid,omitempty"`
+	Command                 string    `json:"command,omitempty"`
+	Name                    string    `json:"name,omitempty"`
+	Project                 string    `json:"project,omitempty"`
+	Provider                string    `json:"provider,omitempty"`
+	Node                    string    `json:"node,omitempty"`
+	Model                   string    `json:"model,omitempty"`
+	ExperimentID            string    `json:"experimentId,omitempty"`
+	VariantID               string    `json:"variantId,omitempty"`
+	AssignmentUnit          string    `json:"assignmentUnit,omitempty"`
+	AssignmentKey           string    `json:"assignmentKey,omitempty"`
+	ReasoningEffort         string    `json:"reasoningEffort,omitempty"`
+	RequestedSkill          string    `json:"requestedSkill,omitempty"`
+	SkillExecutionMode      string    `json:"skillExecutionMode,omitempty"`
+	ResolvedSkillSourceHash string    `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance        string    `json:"skillConformance,omitempty"`
+	Prompt                  string    `json:"prompt,omitempty"`
+	// skillRecoveryAttempt marks the automatic receipt-recovery rerun for a
+	// mandatory workflow skill. Completion upgrades a verified retry to
+	// ConformanceRecovered so stats do not conflate it with a first-pass exact
+	// or fallback run.
+	skillRecoveryAttempt bool
 
 	TurnCount int `json:"turnCount,omitempty"`
 	// ToolCalls counts tool_use blocks observed across the run. Persisted to
 	// stats.RunRecord at completion so efficiency (tools per turn, tools per
 	// landed PR) can be measured. Tracked in-memory during the run.
 	ToolCalls int `json:"toolCalls,omitempty"`
-	loops     loopDetector
+	// SubagentCallCount counts distinct Claude parent_tool_use_id fan-outs
+	// observed during the run.
+	SubagentCallCount int `json:"subagentCallCount,omitempty"`
+	loops             loopDetector
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// oneShot marks workflow-owned interactive runs that must complete after
@@ -157,6 +169,16 @@ type Agent struct {
 	// queuing a message that would never be delivered — the child is on its
 	// way out.
 	finalizing bool
+	// postResultWaitReason/postResultWaitSince track a headless run that
+	// already emitted a clean terminal result and is now only waiting for the
+	// process to exit. Persisted so a restart does not re-arm a fresh grace
+	// window for a run already known to be done.
+	postResultWaitReason string
+	postResultWaitSince  time.Time
+	// forkSubagent mirrors RunConfig.ForkSubagent for the active invocation.
+	// Forked subagents can keep emitting stream events after the parent result,
+	// so post-result teardown must use the idle grace instead of fast-close.
+	forkSubagent bool
 
 	// backgroundTaskIDs mirrors the CLI's last "background_tasks_changed"
 	// system event (REPLACE semantics: the full set of currently-live
@@ -201,6 +223,9 @@ type Agent struct {
 	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
 	// malformed tool_result back to the original tool name + input.
 	toolUsesByID map[string]trackedToolUse
+	// subagentToolUseIDs dedupes Claude parent_tool_use_id values so repeated
+	// child turns from the same spawned subagent only count once.
+	subagentToolUseIDs map[string]struct{}
 	// malformedToolCalls accumulates corrected vs unrecoverable malformed
 	// tool-call outcomes observed during the run. Flushed to audit in OnComplete.
 	malformedToolCalls []MalformedToolCall
@@ -268,9 +293,13 @@ type View struct {
 	AssignmentKey            string    `json:"assignmentKey,omitempty"`
 	ReasoningEffort          string    `json:"reasoningEffort,omitempty"`
 	SkillExecutionMode       string    `json:"skillExecutionMode,omitempty"`
+	RequestedSkill           string    `json:"requestedSkill,omitempty"`
+	ResolvedSkillSourceHash  string    `json:"resolvedSkillSourceHash,omitempty"`
+	SkillConformance         string    `json:"skillConformance,omitempty"`
 	Prompt                   string    `json:"prompt,omitempty"`
 	TurnCount                int       `json:"turnCount,omitempty"`
 	ToolCalls                int       `json:"toolCalls,omitempty"`
+	SubagentCallCount        int       `json:"subagentCallCount,omitempty"`
 	MaxTurns                 int       `json:"maxTurns,omitempty"`
 	PluginErrors             []string  `json:"pluginErrors,omitempty"`
 	EscalationReason         string    `json:"escalationReason,omitempty"`
@@ -322,9 +351,13 @@ func (a *Agent) viewLocked(hasStdinPipe bool) View {
 		AssignmentKey:            a.AssignmentKey,
 		ReasoningEffort:          a.ReasoningEffort,
 		SkillExecutionMode:       a.SkillExecutionMode,
+		RequestedSkill:           a.RequestedSkill,
+		ResolvedSkillSourceHash:  a.ResolvedSkillSourceHash,
+		SkillConformance:         a.SkillConformance,
 		Prompt:                   a.Prompt,
 		TurnCount:                a.TurnCount,
 		ToolCalls:                a.ToolCalls,
+		SubagentCallCount:        a.SubagentCallCount,
 		MaxTurns:                 a.MaxTurns,
 		PluginErrors:             slices.Clone(a.PluginErrors),
 		EscalationReason:         a.EscalationReason,
@@ -380,30 +413,37 @@ func (a *Agent) toRecord() Record {
 	defer a.mu.RUnlock()
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
 	return Record{
-		ID:                 a.ID,
-		TaskID:             a.TaskID,
-		Name:               a.Name,
-		Mode:               a.Mode,
-		Provider:           a.Provider,
-		Model:              a.Model,
-		ExperimentID:       a.ExperimentID,
-		VariantID:          a.VariantID,
-		AssignmentUnit:     a.AssignmentUnit,
-		AssignmentKey:      a.AssignmentKey,
-		PID:                a.PID,
-		SessionID:          a.SessionID,
-		LogPath:            a.LogPath,
-		CWD:                a.sessionCWD,
-		SandboxHomeDir:     a.sandboxHomeDir,
-		StartedAt:          a.StartedAt,
-		StdinPath:          a.convo.stdinPath,
-		PendingPrompts:     pendingPrompts,
-		OneShot:            a.oneShot,
-		MaxTurns:           a.MaxTurns,
-		RequirePermissions: a.requirePermissions,
-		SandboxMode:        a.sandboxMode,
-		ReasoningEffort:    a.ReasoningEffort,
-		SkillExecutionMode: a.SkillExecutionMode,
+		ID:                      a.ID,
+		TaskID:                  a.TaskID,
+		Name:                    a.Name,
+		Mode:                    a.Mode,
+		Provider:                a.Provider,
+		Model:                   a.Model,
+		ExperimentID:            a.ExperimentID,
+		VariantID:               a.VariantID,
+		AssignmentUnit:          a.AssignmentUnit,
+		AssignmentKey:           a.AssignmentKey,
+		PID:                     a.PID,
+		SessionID:               a.SessionID,
+		LogPath:                 a.LogPath,
+		CWD:                     a.sessionCWD,
+		SandboxHomeDir:          a.sandboxHomeDir,
+		StartedAt:               a.StartedAt,
+		StdinPath:               a.convo.stdinPath,
+		PendingPrompts:          pendingPrompts,
+		OneShot:                 a.oneShot,
+		MaxTurns:                a.MaxTurns,
+		RequirePermissions:      a.requirePermissions,
+		SandboxMode:             a.sandboxMode,
+		ReasoningEffort:         a.ReasoningEffort,
+		RequestedSkill:          a.RequestedSkill,
+		SkillExecutionMode:      a.SkillExecutionMode,
+		ResolvedSkillSourceHash: a.ResolvedSkillSourceHash,
+		SkillConformance:        a.SkillConformance,
+		SkillRecoveryAttempt:    a.skillRecoveryAttempt,
+		PostResultWaitReason:    a.postResultWaitReason,
+		PostResultWaitSince:     a.postResultWaitSince,
+		ForkSubagent:            a.forkSubagent,
 	}
 }
 
@@ -411,32 +451,39 @@ func (a *Agent) toRecord() Record {
 // Reattach callers own runtime wiring such as cancel, done, cmd, and promptCh.
 func fromRecord(r Record) *Agent {
 	return &Agent{
-		ID:                 r.ID,
-		TaskID:             r.TaskID,
-		Name:               r.Name,
-		Mode:               r.Mode,
-		Provider:           r.Provider,
-		Model:              r.Model,
-		ExperimentID:       r.ExperimentID,
-		VariantID:          r.VariantID,
-		AssignmentUnit:     r.AssignmentUnit,
-		AssignmentKey:      r.AssignmentKey,
-		PID:                r.PID,
-		SessionID:          r.SessionID,
-		LogPath:            r.LogPath,
-		sessionCWD:         r.CWD,
-		sandboxHomeDir:     r.SandboxHomeDir,
-		StartedAt:          r.StartedAt,
-		LastEventAt:        time.Now().UTC(),
-		State:              StateRunning,
-		MaxTurns:           r.MaxTurns,
-		oneShot:            r.OneShot,
-		convo:              convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
-		requirePermissions: r.RequirePermissions,
-		sandboxMode:        r.SandboxMode,
-		ReasoningEffort:    r.ReasoningEffort,
-		SkillExecutionMode: r.SkillExecutionMode,
-		detached:           true,
+		ID:                      r.ID,
+		TaskID:                  r.TaskID,
+		Name:                    r.Name,
+		Mode:                    r.Mode,
+		Provider:                r.Provider,
+		Model:                   r.Model,
+		ExperimentID:            r.ExperimentID,
+		VariantID:               r.VariantID,
+		AssignmentUnit:          r.AssignmentUnit,
+		AssignmentKey:           r.AssignmentKey,
+		PID:                     r.PID,
+		SessionID:               r.SessionID,
+		LogPath:                 r.LogPath,
+		sessionCWD:              r.CWD,
+		sandboxHomeDir:          r.SandboxHomeDir,
+		StartedAt:               r.StartedAt,
+		LastEventAt:             time.Now().UTC(),
+		State:                   StateRunning,
+		MaxTurns:                r.MaxTurns,
+		oneShot:                 r.OneShot,
+		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		requirePermissions:      r.RequirePermissions,
+		sandboxMode:             r.SandboxMode,
+		ReasoningEffort:         r.ReasoningEffort,
+		RequestedSkill:          r.RequestedSkill,
+		SkillExecutionMode:      r.SkillExecutionMode,
+		ResolvedSkillSourceHash: r.ResolvedSkillSourceHash,
+		SkillConformance:        r.SkillConformance,
+		skillRecoveryAttempt:    r.SkillRecoveryAttempt,
+		postResultWaitReason:    r.PostResultWaitReason,
+		postResultWaitSince:     r.PostResultWaitSince,
+		forkSubagent:            r.ForkSubagent,
+		detached:                true,
 	}
 }
 
@@ -764,6 +811,32 @@ func (a *Agent) GetToolCalls() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ToolCalls
+}
+
+// NoteSubagentCall records one distinct Claude parent_tool_use_id. Repeated
+// events for the same child call do not increment the exposed count.
+func (a *Agent) NoteSubagentCall(parentToolUseID string) {
+	if strings.TrimSpace(parentToolUseID) == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.subagentToolUseIDs == nil {
+		a.subagentToolUseIDs = make(map[string]struct{}, 4)
+	}
+	if _, ok := a.subagentToolUseIDs[parentToolUseID]; ok {
+		return
+	}
+	a.subagentToolUseIDs[parentToolUseID] = struct{}{}
+	a.SubagentCallCount++
+}
+
+// GetSubagentCallCount returns the number of distinct forked subagent calls
+// observed so far.
+func (a *Agent) GetSubagentCallCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.SubagentCallCount
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
@@ -1241,6 +1314,44 @@ func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
 // a run forever — the guard still fires, just later, once this is exhausted.
 const backgroundTaskGrace = 15 * time.Minute
 
+const (
+	postResultWaitFastClose      = "fast_close"
+	postResultWaitBackgroundTask = "background_tasks"
+	postResultWaitForkSubagent   = "fork_subagent"
+)
+
+// SetForkSubagent records whether the active headless invocation enabled
+// Claude Code fork subagents.
+func (a *Agent) SetForkSubagent(enabled bool) {
+	a.mu.Lock()
+	a.forkSubagent = enabled
+	a.mu.Unlock()
+}
+
+// UsesForkSubagent reports whether the active headless invocation enabled
+// Claude Code fork subagents.
+func (a *Agent) UsesForkSubagent() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.forkSubagent
+}
+
+// IsSkillRecoveryAttempt reports whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) IsSkillRecoveryAttempt() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.skillRecoveryAttempt
+}
+
+// SetSkillRecoveryAttempt records whether this run is the workflow engine's
+// automatic second-chance retry after a missing mandatory-skill receipt.
+func (a *Agent) SetSkillRecoveryAttempt(enabled bool) {
+	a.mu.Lock()
+	a.skillRecoveryAttempt = enabled
+	a.mu.Unlock()
+}
+
 // SetBackgroundTaskIDs replaces the agent's tracked set of live CLI
 // background bash tasks, mirroring the REPLACE semantics of the CLI's
 // "background_tasks_changed" system event.
@@ -1276,6 +1387,61 @@ func (a *Agent) EffectiveHangGrace(base time.Duration) time.Duration {
 		return base + backgroundTaskGrace
 	}
 	return base
+}
+
+// SetPostResultWait records that the run already produced a clean terminal
+// result and is only waiting on process teardown. The first observed timestamp
+// is preserved across later reason updates so total wait time survives
+// background-task clear events and restart reattach.
+func (a *Agent) SetPostResultWait(reason string, since time.Time) {
+	if reason == "" {
+		a.ClearPostResultWait()
+		return
+	}
+	if since.IsZero() {
+		since = time.Now().UTC()
+	}
+	a.mu.Lock()
+	if !a.postResultWaitSince.IsZero() && a.postResultWaitSince.Before(since) {
+		since = a.postResultWaitSince
+	}
+	a.postResultWaitReason = reason
+	a.postResultWaitSince = since
+	a.mu.Unlock()
+}
+
+// ClearPostResultWait forgets any recorded post-result wait state.
+func (a *Agent) ClearPostResultWait() {
+	a.mu.Lock()
+	a.postResultWaitReason = ""
+	a.postResultWaitSince = time.Time{}
+	a.mu.Unlock()
+}
+
+// PostResultWait reports the current post-result wait state, if any.
+func (a *Agent) PostResultWait() (reason string, since time.Time, ok bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.postResultWaitReason == "" || a.postResultWaitSince.IsZero() {
+		return "", time.Time{}, false
+	}
+	return a.postResultWaitReason, a.postResultWaitSince, true
+}
+
+// PostResultWaitDuration reports how long the current post-result wait has
+// lasted. ok=false means no post-result wait is active.
+func (a *Agent) PostResultWaitDuration(now time.Time) (reason string, d time.Duration, ok bool) {
+	reason, since, ok := a.PostResultWait()
+	if !ok {
+		return "", 0, false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if now.Before(since) {
+		return reason, 0, true
+	}
+	return reason, now.Sub(since), true
 }
 
 // SetForegroundCommand records a live foreground Bash/command_execution call.
@@ -1495,9 +1661,23 @@ type RunConfig struct {
 	// visibility or inject the resolved instructions.
 	RequestedSkill string
 	// SkillExecutionMode records how RequestedSkill actually ran after provider
-	// preparation: native invocation, injected SKILL.md, bundled fallback, or
-	// unavailable. Empty means this run did not carry a mandatory workflow skill.
+	// preparation: none, native invocation, injected SKILL.md, bundled
+	// fallback, or unavailable. Legacy empty values normalize to unknown.
 	SkillExecutionMode string
+	// ResolvedSkillSourceHash is the privacy-safe hash of the resolved local or
+	// bundled skill source identifier. Empty when no external source was used.
+	ResolvedSkillSourceHash string
+	// SkillConformance records whether the executed skill path exactly matched
+	// the requested skill, fell back, was unavailable, or had no skill at all.
+	SkillConformance string
+	// ForceInjectedSkill skips native skill delivery even when the provider can
+	// see the skill, forcing the deterministic injected SKILL.md/bundled path.
+	// Used by the workflow engine's receipt-recovery retry.
+	ForceInjectedSkill bool
+	// SkillRecoveryAttempt marks the automatic second-chance run fired after a
+	// missing mandatory-skill receipt. When the retry emits a valid receipt,
+	// completion records ConformanceRecovered instead of exact/fallback.
+	SkillRecoveryAttempt bool
 	// SeedWorkingMemory, when true, inlines the worktree's NOTES.md scratchpad
 	// into the prompt (read/maintain instruction + current contents). Set only
 	// for code-author roles (see Role.AuthorsCode): verifier roles share the

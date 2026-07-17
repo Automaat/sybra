@@ -1428,3 +1428,46 @@ func TestTaskService_ReconcilePendingEnrichment_SkipsNonStubs(t *testing.T) {
 		t.Fatal("reconcile fetched GitHub for a non-URL / unmarked task")
 	}
 }
+
+// An unresolvable viewer identity must not be guessed into "not my PR": that
+// branch spawns a /staff-code-review agent against what may be our own PR and,
+// by writing u.Tags, drops the enrich-pending marker
+// ReconcilePendingEnrichment retries on — permanently misrouting the task.
+// Reachable whenever the startup GET /app has not resolved yet (2165).
+func TestTaskService_EnrichFromPR_UnknownViewerDefersInsteadOfMisrouting(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	var fetched atomic.Bool
+	svc.fetchPR = func(string, int) (github.PullRequest, error) {
+		fetched.Store(true)
+		return github.PullRequest{
+			Number:      151,
+			Title:       "fix(plugin): recover from stale connection",
+			HeadRefName: "fix/windows-stale-connection",
+			Author:      "sybra-app[bot]",
+			Labels:      []string{"bug"},
+		}, nil
+	}
+	svc.viewerLogin = func() string { return "" }
+
+	created, err := svc.CreateTask("https://github.com/owner/repo/pull/151", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	if !fetched.Load() {
+		t.Fatal("fetchPR was never called; test does not exercise enrichFromPR")
+	}
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The marker is what ReconcilePendingEnrichment retries on. Any Update in
+	// enrichFromPR replaces Tags and would drop it.
+	if !slices.Contains(got.Tags, enrichPendingTag) {
+		t.Errorf("tags = %v, want %q retained so reconcile retries once identity resolves", got.Tags, enrichPendingTag)
+	}
+	if slices.Contains(got.Tags, "review") {
+		t.Error("task was tagged for review on an unidentified PR; it may be our own")
+	}
+}

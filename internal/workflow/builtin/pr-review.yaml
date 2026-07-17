@@ -12,9 +12,11 @@ trigger:
       operator: not_contains
       value: handoff-pr
 steps:
-  # Mechanical heuristic: pick simple vs staff review based on PR diff size.
-  # Same step type used by simple-task; here it falls back to `gh pr diff`
-  # since this workflow has no worktree.
+  # Mechanical heuristic: pick adversarial vs staff review based on PR diff
+  # size + shape. Same step type used by simple-task; here it falls back to
+  # `gh pr diff` since this workflow has no worktree. Unlike simple-task, this
+  # workflow DOES still route to staff on a big+complex diff — the review lands
+  # publicly under the operator's name, so depth is worth the spend here.
   - id: triage_review
     name: Triage Review
     type: triage_review
@@ -49,8 +51,11 @@ steps:
         goto: review_simple
       - goto: review_staff
 
+  # Orchestration owner: /adversarial-review (internal/skills/data/
+  # adversarial-review.md). Below is a thin posting contract (no approvals,
+  # attribution footer) — the review methodology lives solely in the skill.
   - id: review_simple
-    name: Review PR (simple)
+    name: Review PR (adversarial)
     type: run_agent
     config:
       role: review
@@ -58,14 +63,21 @@ steps:
       model: sonnet
       provider: cross
       prompt: >-
-        Run /pr-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
+        Run /adversarial-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
         This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before taking the visible GitHub
-        review action. If the PR is clean, submit an approve review. If there
-        are blocking correctness issues, submit a review with the required
-        change comments. If only non-blocking notes remain, submit a regular
-        review comment/summary.
+        ask the operator for confirmation before posting your review.
+
+        NEVER submit an approving review. You have no approval authority —
+        approval is a human decision, and the harness blocks the call. Do not
+        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
+        no matter how clean the PR looks.
+
+        - Blocking correctness issues: submit a review requesting changes, with
+          the required change comments.
+        - Otherwise: submit a plain comment review with your summary —
+          including when the PR looks clean. Say so in the summary and leave
+          the approval to a human.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:
@@ -74,6 +86,9 @@ steps:
     next:
       - goto: set_in_review
 
+  # Orchestration owner: /staff-code-review (marketplace plugin skill — no
+  # bundled fallback in this repo). Thin posting contract only, mirroring
+  # review_simple above.
   - id: review_staff
     name: Review PR (staff)
     type: run_agent
@@ -89,11 +104,18 @@ steps:
         Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
         This task is an authorized Sybra PR review for the linked project. Do not
-        ask the operator for confirmation before taking the visible GitHub
-        review action. If the PR is clean, submit an approve review. If there
-        are blocking correctness issues, submit a review with the required
-        change comments. If only non-blocking notes remain, submit a regular
-        review comment/summary.
+        ask the operator for confirmation before posting your review.
+
+        NEVER submit an approving review. You have no approval authority —
+        approval is a human decision, and the harness blocks the call. Do not
+        run `gh pr review --approve` or submit an APPROVE event via `gh api`,
+        no matter how clean the PR looks.
+
+        - Blocking correctness issues: submit a review requesting changes, with
+          the required change comments.
+        - Otherwise: submit a plain comment review with your summary —
+          including when the PR looks clean. Say so in the summary and leave
+          the approval to a human.
 
         End the review summary and every review comment you post with a blank
         line then exactly this standalone harness attribution footer:

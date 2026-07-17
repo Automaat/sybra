@@ -133,6 +133,13 @@ const (
 	// skipped, safety_refused, failed, or recovered. Data carries "outcome"
 	// and, when applicable, "reason" — never planner prompts or agent output.
 	EventUmbrellaRecovery = "umbrella.recovery"
+	// EventGHIssueAuthFailed records the first time a monitor.DurableGHIssueSink
+	// queues a filing after an authentication failure (a newly-seen
+	// fingerprint, not a repeat retry) — see internal/health's
+	// checkGHIssueAuthFailure, which surfaces this as an actionable health
+	// finding. Data carries "sink" (e.g. "monitor", "human-review") and a
+	// secrets-redacted "err"; never issue titles/bodies.
+	EventGHIssueAuthFailed = "gh_issue.auth_failed"
 )
 
 type Event struct {

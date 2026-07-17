@@ -121,6 +121,7 @@ couldn't catch).
 | `agent.turn_cost_fraction` | `float64` |  | TurnCostFraction is the fraction of MaxCostUSD below which a turns escalation is auto-continued. Default 0.8 when unset. |
 | `agent.turn_multiplier` | `float64` |  | TurnMultiplier scales the turn limit on each auto-continuation. Default 2 when unset. |
 | `agent.require_permissions` | `*bool` | _(nil)_ | RequirePermissions sets the default permission requirement for agents. nil means not configured (falls back to true — safe default). Set to false in config to opt all tasks into skip-permissions mode. |
+| `agent.review_until_clean` | `*bool` | _(nil)_ | ReviewUntilClean keeps simple-task-review cycling review→fix→review until the reviewer returns a CLEAN verdict, so the fix agent's diff is never the last word. nil means not configured (falls back to true). The cycle is uncapped by design — a round cap would censor the review-rounds distribution the stats page reports — and is bounded only by MaxTaskCostUSD, which is enforced before every dispatch. false falls back to a single review pass per task: cheaper and more predictable when no per-task budget is configured. |
 | `agent.bash_timeout_seconds` | `int` |  | BashTimeoutSeconds sets the per-bash-tool-call timeout passed to claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env vars (claude has no equivalent CLI flag). 0 means use DefaultBashTimeoutSeconds (300). |
 | `agent.retry_watchdog` | `int` |  | RetryWatchdog sets CLAUDE_CODE_RETRY_WATCHDOG on the claude subprocess for headless (unattended) runs. Replaces CLAUDE_CODE_MAX_RETRIES (now capped at 15) for server/unattended sessions. 0 means use DefaultRetryWatchdog (30). Negative (e.g. -1) disables the watchdog entirely (env var omitted), matching the zero-omit semantics at the RunConfig level. |
 | `agent.fallback_model` | `string` |  | FallbackModel, when set, passes --fallback-model to claude for headless runs. Paired with RetryWatchdog so the watchdog can retry with a less loaded model when the primary is overloaded. |
@@ -165,7 +166,9 @@ in-cluster service account.
 | `agent.k8s_jobs.image` | `string` |  |  |
 | `agent.k8s_jobs.command` | `[]string` |  |  |
 | `agent.k8s_jobs.ttl_seconds_after_finished` | `int` |  |  |
+| `agent.k8s_jobs.failed_ttl_seconds_after_finished` | `int` |  | FailedTTL overrides TTL for a Job that finishes Failed rather than Succeeded, via a post-completion patch once the runner observes the failure — Kubernetes' own ttlSecondsAfterFinished is a single value that cannot vary by outcome at creation time. Defaults much longer than TTL's own default so a failed run's logs survive long enough for an operator to pull them before Kubernetes garbage-collects the Pod. |
 | `agent.k8s_jobs.mode` | `string` |  |  |
+| `agent.k8s_jobs.create_pr` | `bool` |  | CreatePR lets the agent Job open its own pull request once it has pushed its branch, instead of the server shelling gh in the task worktree. Only fires when the task's remote is a GitHub URL — a PVC-backed bare clone has no PR to open. Default false: the server-side create_pr workflow step still owns the normal path, and this would otherwise open a PR after every agent run rather than at the pr stage. |
 | `agent.k8s_jobs.env` | `[]K8sJobEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.secret_env` | `[]K8sJobSecretEnvVar` | _(see below)_ |  |
 | `agent.k8s_jobs.volumes` | `[]K8sJobVolume` | _(see below)_ |  |
@@ -225,8 +228,18 @@ real-app/cluster load independently of Agent.MaxConcurrent.
 
 ## OrchestratorConfig (`orchestrator`)
 
+OrchestratorConfig gates and paces the self-starting automations. Role
+"full" runs the orchestrator brain session and the auto-dispatch scheduler,
+preserving single-node behavior. Role "agent-only" fails closed on both: it
+serves the HTTP API and runs explicitly-started agents but never orchestrates
+on its own — the posture for a secondary/test deployment (a Kubernetes
+agent-only server, a scratch instance) that must not race a full instance.
+
 | YAML key | Type | Default | Description |
 |---|---|---|---|
+| `orchestrator.role` | `string` | `full` | Role declares which self-starting automations this instance owns: "full" (default) or "agent-only". An invalid value falls back to "full" with a warning, so a typo never silently parks an instance that was meant to orchestrate. |
+| `orchestrator.enabled` | `*bool` | _(nil)_ | Enabled overrides Role for the orchestrator brain session — the conversational context auto-started while tasks are active. nil (default) derives from Role. Explicit true re-enables the brain on an agent-only instance; explicit false parks it on a full one. Never gates an operator's manual StartOrchestrator call. |
+| `orchestrator.scheduler_enabled` | `*bool` | _(nil)_ | SchedulerEnabled overrides Role for the auto-dispatch scheduler — the pass that reconciles board tasks, drains the admission queue, releases unblocked children, and restarts stale in-progress agents. nil (default) derives from Role. Maintenance cleanup (orphan worktrees/sandboxes, metrics) always runs, so a parked instance still collects its garbage. |
 | `orchestrator.dispatch_interval_seconds` | `int` |  | DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive dispatch pass (start the orchestrator, release unblocked children). Kept short — and also fired on demand on every status change — so a freshly-ready task is not left idle for a full tick. Default 10. |
 | `orchestrator.maintenance_interval_seconds` | `int` |  | MaintenanceIntervalSeconds is the cadence of the expensive recovery/cleanup pass (resume stalled workflows, restart stale agents, prune orphan worktrees) which hits git and may spawn agents, so it must not run hot. Default 60. |
 | `orchestrator.auto_approve_plans_without_decisions` | `bool` |  | AutoApprovePlansWithoutDecisions lets the workflow engine advance a validated simple-task plan from plan-review to implementation when the planner explicitly recorded that there are no open human decisions. Default false. |
@@ -274,6 +287,7 @@ requires a restart to take effect (see diffConfig's
 | `github.reviews_enabled` | `bool` | `true` | ReviewsEnabled gates PR reviewer poll registration specifically. Defaults to true (see DefaultConfig). Effective state is Enabled && ReviewsEnabled — use RunsReviewer() rather than reading this field directly. |
 | `github.poller_role` | `string` |  | PollerRole splits GitHub search polling (reviews/issues/renovate) across machines sharing one token. "primary" (or empty) runs the search pollers; "secondary" skips them so a sibling instance owns the searches and the shared token isn't billed twice. On-demand per-PR/issue calls still run on every machine — only the periodic searches are gated. |
 | `github.reviews_fast_seconds` | `int` |  | Poll-interval overrides in seconds. Zero falls back to the built-in default. Raised defaults (vs. the original 1m/5m) cut steady-state request volume; lower them only on a high-limit (App-token) instance. |
+| `github.review_rounds_per_hour` | `int` |  | ReviewRoundsPerHour caps automated review runs one PR may receive in a rolling hour before the task is parked for a human. 0 uses the default; negative disables the cap. Rate-based rather than a lifetime total so a long-lived PR that is legitimately re-reviewed after each push is never blocked, while a runaway loop is stopped within the hour (#2164 sustained ~5/hour for 23 hours). |
 | `github.reviews_slow_seconds` | `int` |  |  |
 | `github.reviews_max_prs_per_tick` | `int` |  | ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR poller fetches in one tick. Zero falls back to the built-in default; resolved non-positive values mean "unlimited". |
 | `github.reviews_stable_backoff_max_ticks` | `int` |  | ReviewsStableBackoffMaxTicks caps the exponential skip window for linked PRs whose head SHA and updatedAt stay unchanged across polls. Zero falls back to the built-in default; resolved non-positive values disable the backoff entirely. |
@@ -392,12 +406,18 @@ call (real-time loop detection), then stops/escalates/nudges based on the
 verdict. Enabled defaults to true — the watchdog is an always-on safety net,
 not an opt-in automation. Model selects the cheap judge model; LoopThreshold
 is the number of consecutive identical tool-call signatures that flags a loop.
+MaxRunsPerWindow and RunWindowMinutes bound how many agent runs of the same
+role a single task may accumulate within a trailing window before being
+escalated to human-required — a rate-based backstop for a redispatch loop
+that the dwell budget (hours) would only catch much later.
 
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `watchdog.enabled` | `bool` | `true` |  |
 | `watchdog.model` | `string` |  |  |
 | `watchdog.loop_threshold` | `int` | `6` |  |
+| `watchdog.max_runs_per_window` | `int` | `30` |  |
+| `watchdog.run_window_minutes` | `int` | `30` |  |
 
 ## SelfMonitorConfig (`self_monitor`)
 

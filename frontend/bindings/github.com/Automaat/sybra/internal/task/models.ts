@@ -36,13 +36,28 @@ export class AgentRun {
     "assignmentUnit"?: string;
     "assignmentKey"?: string;
     "reasoningEffort"?: string;
+    "requestedSkill"?: string;
 
     /**
      * SkillExecutionMode records how a mandatory workflow skill actually ran:
-     * native invocation, injected SKILL.md, bundled fallback, or unavailable.
-     * Empty means the run had no mandatory workflow skill.
+     * none, native invocation, injected SKILL.md, bundled fallback, or
+     * unavailable. Legacy empty values remain readable and normalize to
+     * unknown at query time.
      */
     "skillExecutionMode"?: string;
+
+    /**
+     * ResolvedSkillSourceHash is a privacy-safe hash of the resolved local or
+     * bundled skill source identifier. Empty when the skill ran natively or no
+     * source was resolved.
+     */
+    "resolvedSkillSourceHash"?: string;
+
+    /**
+     * SkillConformance records whether the executed skill path exactly matched
+     * the requested skill, fell back, was unavailable, or had no skill at all.
+     */
+    "skillConformance"?: string;
     "state": string;
 
     /**
@@ -112,6 +127,13 @@ export class AgentRun {
      * human edits after the agent (merged_with_edits) and measure edit distance.
      */
     "headSha"?: string;
+
+    /**
+     * SubagentCallCount is the number of distinct forked-Claude subagent calls
+     * observed in the run. Zero for non-Claude runs and runs recorded before
+     * fan-out counting existed.
+     */
+    "subagentCallCount"?: number;
 
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
@@ -347,6 +369,13 @@ export class Task {
     "reviewPhase"?: string;
 
     /**
+     * Bounds automated re-review per PR commit: the durable backstop against a
+     * re-dispatch loop (#2164 spent 112 reviews on one unchanged commit).
+     */
+    "reviewedHeadSha"?: string;
+    "reviewedHeadAttempts"?: number;
+
+    /**
      * PRPhase tracks where an outbound own-PR task (status in-review/ready-review,
      * not tag `review`) sits in its lifecycle: draft → building → fixing →
      * changes-requested → awaiting-approval → approved. Computed by the PR poller;
@@ -560,9 +589,9 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField37_0 = $$createType2;
-        const $$createField38_0 = $$createType4;
-        const $$createField54_0 = $$createType5;
+        const $$createField39_0 = $$createType2;
+        const $$createField40_0 = $$createType4;
+        const $$createField56_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -574,13 +603,13 @@ export class Task {
             $$parsedSource["dependsOn"] = $$createField18_0($$parsedSource["dependsOn"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField37_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField39_0($$parsedSource["agentRuns"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField38_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField40_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField54_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField56_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -643,6 +672,8 @@ export class Update {
     "RunRole": string | null;
     "SupervisorSteer": string | null;
     "ReviewPhase": string | null;
+    "ReviewedHeadSHA": string | null;
+    "ReviewedHeadAttempts": number | null;
     "PRPhase": string | null;
     "TodoistID": string | null;
     "Priority": Priority | null;
@@ -731,6 +762,12 @@ export class Update {
         if (!("ReviewPhase" in $$source)) {
             this["ReviewPhase"] = null;
         }
+        if (!("ReviewedHeadSHA" in $$source)) {
+            this["ReviewedHeadSHA"] = null;
+        }
+        if (!("ReviewedHeadAttempts" in $$source)) {
+            this["ReviewedHeadAttempts"] = null;
+        }
         if (!("PRPhase" in $$source)) {
             this["PRPhase"] = null;
         }
@@ -798,7 +835,7 @@ export class Update {
     static createFrom($$source: any = {}): Update {
         const $$createField6_0 = $$createType6;
         const $$createField10_0 = $$createType6;
-        const $$createField26_0 = $$createType7;
+        const $$createField28_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("DependsOn" in $$parsedSource) {
             $$parsedSource["DependsOn"] = $$createField6_0($$parsedSource["DependsOn"]);
@@ -807,7 +844,7 @@ export class Update {
             $$parsedSource["Tags"] = $$createField10_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField26_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField28_0($$parsedSource["Workflow"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

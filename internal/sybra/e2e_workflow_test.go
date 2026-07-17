@@ -462,6 +462,31 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 	}
 }
 
+// TestE2E_HeadlessAgent_TerminalResultFastCloseAdvancesWorkflow verifies the
+// observable workflow behavior behind the runner change: a headless agent that
+// emits its clean terminal result but then hangs must now be closed promptly
+// by the runner itself, without waiting for a later watchdog/manual reap, so
+// the workflow advances past the completed step on its own.
+func TestE2E_HeadlessAgent_TerminalResultFastCloseAdvancesWorkflow(t *testing.T) {
+	env := setupE2E(t, "success_then_hang")
+
+	created, err := env.tasks.Create("terminal result fast close", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "workflow advances past triage after a hanging post-result process", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage" && !env.agents.HasRunningAgentForTask(created.ID)
+	})
+}
+
 // TestE2E_AgentRunPromptPersisted verifies that the prompt passed to an agent
 // is captured on the persisted AgentRun and survives a parse round-trip.
 // The triage step of test-simple.yaml uses prompt "Triage {{.Task.ID}}", so
@@ -3068,8 +3093,9 @@ func agentRunRoles(t task.Task) []string {
 func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	// Single-opus plan flow scenarios:
 	//   triage → plan → require_plan → validate_plan_refs → maybe_critique →
-	//   critique_plan → require_plan_critique → reset_for_address →
-	//   address_critique → review_plan.
+	//   critique_plan → require_plan_critique → review_plan.
+	// The critique is advisory context for the human gate, not a router (#2152),
+	// so no second plan-role run sits between critique_plan and review_plan.
 	// triage is a deterministic classify_task step (no agent dispatch, so it
 	// consumes no scenario) — env.classifier.setVerdict below drives it to
 	// status=planning, tags=large the way the old "triage_to_planning"
@@ -3077,7 +3103,6 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	env := setupE2EMulti(t, []string{
 		"write_sidecar_success", // plan — writes the plan sidecar
 		"plan_critic_success",   // critique_plan — saves critique via sybra-cli
-		"revise_plan_sidecars",  // address_critique — rewrites all plan artifacts and flips plan-review
 	})
 	env.classifier.setVerdict(triage.Verdict{Tags: []string{"large"}, Size: "large", Type: "feature", Mode: "headless"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
@@ -3126,6 +3151,19 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	roles := agentRunRoles(tk)
 	if !slices.Contains(roles, "plan-critic") {
 		t.Errorf("plan-critic agent role missing from task agent runs\nroles: %v", roles)
+	}
+
+	// #2152: the critique must not trigger a second opus plan run. Exactly one
+	// plan-role run may reach the human gate — the dead route_critique_verdict
+	// gate previously forced an address_critique rerun on every critiqued plan.
+	planRuns := 0
+	for _, r := range roles {
+		if r == "plan" {
+			planRuns++
+		}
+	}
+	if planRuns != 1 {
+		t.Errorf("plan-role agent runs = %d, want 1 (critique must not force a replan)\nroles: %v", planRuns, roles)
 	}
 
 	if tk.PlanCritique == "" {
@@ -3187,8 +3225,14 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	if !slices.Contains(stepIDs, "require_plan_critique") {
 		t.Errorf("require_plan_critique guard did not execute\nhistory: %v", stepIDs)
 	}
-	if slices.Contains(stepIDs, "address_critique") {
-		t.Errorf("address_critique ran despite missing critique — guard failed to soft-skip\nhistory: %v", stepIDs)
+	planRuns := 0
+	for _, r := range agentRunRoles(tk) {
+		if r == "plan" {
+			planRuns++
+		}
+	}
+	if planRuns != 1 {
+		t.Errorf("plan-role agent runs = %d, want 1 — a missing critique must soft-skip to review_plan, not re-plan\nhistory: %v", planRuns, stepIDs)
 	}
 	if tk.PlanCritique != "" {
 		t.Errorf("PlanCritique unexpectedly non-empty after no_save scenario: %q", tk.PlanCritique)
@@ -3527,6 +3571,32 @@ steps:
       - goto: ""
 `
 
+const testMandatorySkillSidecarWorkflowYAML = `id: test-mandatory-skill-sidecar
+name: Test Mandatory Skill Sidecar
+steps:
+  - id: run
+    name: Run
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      provider: codex
+      prompt: "Run /sybra-test now and write .sybra-plan-{{.Task.ID}}.md."
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-plan-{{.Task.ID}}.md'
+        kind: plan
+        required: true
+    next:
+      - goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
 const testUnavailableSkillWorkflowYAML = `id: test-unavailable-skill
 name: Test Unavailable Skill
 steps:
@@ -3678,6 +3748,99 @@ func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
 	}
 }
 
+func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDiagnostic(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkillFixture(t, home, ".codex", "sybra-test")
+	argsLog := filepath.Join(t.TempDir(), "codex-recovery-args.log")
+	t.Setenv("FAKE_CODEX_ARGS_LOG", argsLog)
+
+	env := setupE2EMultiProvider(t, "codex", []string{"write_sidecar_success_no_receipt", "write_sidecar_success"})
+	writeWorkflowFixture(t, env, "test-mandatory-skill-sidecar", testMandatorySkillSidecarWorkflowYAML)
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+		Artifacts:      env.artifacts,
+	})
+	env.onAgentComplete = h.OnComplete
+	env.engine.SetArtifactRecorder(&artifactRecorderAdapter{store: env.artifacts})
+
+	created, err := env.tasks.Create("codex receipt recovery", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-mandatory-skill-sidecar"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "workflow settles after receipt recovery", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil &&
+			tk.Workflow != nil &&
+			tk.Workflow.State == workflow.ExecCompleted &&
+			!env.agents.HasRunningAgentForTask(created.ID) &&
+			env.pendingCompletions.Load() == 0
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("read codex args log: %v", err)
+	}
+	if !strings.Contains(string(args), "BEGIN INJECTED SKILL: sybra-test") {
+		t.Fatalf("recovery retry prompt missing injected skill block:\n%s", args)
+	}
+	if strings.Contains(string(args), "Run $sybra-test now and write") {
+		t.Fatalf("recovery retry prompt still used native invocation:\n%s", args)
+	}
+
+	if len(tk.AgentRuns) != 2 {
+		t.Fatalf("AgentRuns len = %d, want 2", len(tk.AgentRuns))
+	}
+	if tk.AgentRuns[0].SkillConformance != "unverified" {
+		t.Fatalf("first run SkillConformance = %q, want unverified", tk.AgentRuns[0].SkillConformance)
+	}
+	if tk.AgentRuns[0].SkillExecutionMode != "native" {
+		t.Fatalf("first run SkillExecutionMode = %q, want native", tk.AgentRuns[0].SkillExecutionMode)
+	}
+	if tk.AgentRuns[1].SkillConformance != "recovered" {
+		t.Fatalf("second run SkillConformance = %q, want recovered", tk.AgentRuns[1].SkillConformance)
+	}
+	if tk.AgentRuns[1].SkillExecutionMode != "injected" {
+		t.Fatalf("second run SkillExecutionMode = %q, want injected", tk.AgentRuns[1].SkillExecutionMode)
+	}
+	if strings.TrimSpace(tk.Plan) == "" {
+		t.Fatal("Plan sidecar empty after recovered retry")
+	}
+
+	artifacts, err := env.artifacts.List(created.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	foundDiag := false
+	for _, meta := range artifacts {
+		if meta.Name == "skill-receipt-first-run-plan.md" {
+			foundDiag = true
+			data, _, readErr := env.artifacts.Read(created.ID, meta.Name)
+			if readErr != nil {
+				t.Fatalf("read diagnostic artifact: %v", readErr)
+			}
+			if !strings.Contains(string(data), "# Execution Plan") {
+				t.Fatalf("diagnostic artifact content = %q, want preserved first-pass sidecar", string(data))
+			}
+		}
+	}
+	if !foundDiag {
+		t.Fatal("missing preserved first-pass diagnostic artifact")
+	}
+}
+
 func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -3721,7 +3884,7 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 }
 
 func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
-	for _, name := range []string{"pr-review", "staff-code-review"} {
+	for _, name := range []string{"adversarial-review", "staff-code-review"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)

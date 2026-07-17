@@ -5,6 +5,7 @@
   import type { UmbrellaProgress } from '../lib/umbrella-progress.js'
   import TaskCard from './TaskCard.svelte'
   import InlineTaskAdd from './InlineTaskAdd.svelte'
+  import InlineReviewAdd from './InlineReviewAdd.svelte'
   import ClusterHealth from './ClusterHealth.svelte'
   import { clusterStore } from '../stores/cluster.svelte.js'
   import { agentStore } from '../stores/agents.svelte.js'
@@ -204,6 +205,9 @@
               Nothing to review.
             </p>
           {/if}
+          <div class="px-2 pb-2">
+            <InlineReviewAdd />
+          </div>
         {:else if col.kind !== 'umbrella'}
           <div class="px-2 pb-2">
             <InlineTaskAdd status={col.status} />

@@ -60,6 +60,18 @@ export class AgentDefaults {
     "requirePermissions": boolean | null;
 
     /**
+     * ReviewUntilClean keeps simple-task-review cycling review→fix→review
+     * until the reviewer returns a CLEAN verdict, so the fix agent's diff is
+     * never the last word. nil means not configured (falls back to true).
+     * The cycle is uncapped by design — a round cap would censor the
+     * review-rounds distribution the stats page reports — and is bounded only
+     * by MaxTaskCostUSD, which is enforced before every dispatch. false falls
+     * back to a single review pass per task: cheaper and more predictable when
+     * no per-task budget is configured.
+     */
+    "reviewUntilClean": boolean | null;
+
+    /**
      * BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
      * claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
      * vars (claude has no equivalent CLI flag). 0 means use
@@ -261,6 +273,9 @@ export class AgentDefaults {
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
         }
+        if (!("reviewUntilClean" in $$source)) {
+            this["reviewUntilClean"] = null;
+        }
         if (!("bashTimeoutSeconds" in $$source)) {
             this["bashTimeoutSeconds"] = 0;
         }
@@ -323,22 +338,22 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField27_0 = $$createType0;
-        const $$createField28_0 = $$createType1;
-        const $$createField29_0 = $$createType2;
-        const $$createField30_0 = $$createType3;
+        const $$createField28_0 = $$createType0;
+        const $$createField29_0 = $$createType1;
+        const $$createField30_0 = $$createType2;
+        const $$createField31_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField27_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField28_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField29_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField30_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -514,6 +529,16 @@ export class GitHubConfig {
      * volume; lower them only on a high-limit (App-token) instance.
      */
     "reviewsFastSeconds": number;
+
+    /**
+     * ReviewRoundsPerHour caps automated review runs one PR may receive in a
+     * rolling hour before the task is parked for a human. 0 uses the default;
+     * negative disables the cap. Rate-based rather than a lifetime total so a
+     * long-lived PR that is legitimately re-reviewed after each push is never
+     * blocked, while a runaway loop is stopped within the hour (#2164 sustained
+     * ~5/hour for 23 hours).
+     */
+    "reviewRoundsPerHour": number;
     "reviewsSlowSeconds": number;
 
     /**
@@ -579,6 +604,9 @@ export class GitHubConfig {
         if (!("reviewsFastSeconds" in $$source)) {
             this["reviewsFastSeconds"] = 0;
         }
+        if (!("reviewRoundsPerHour" in $$source)) {
+            this["reviewRoundsPerHour"] = 0;
+        }
         if (!("reviewsSlowSeconds" in $$source)) {
             this["reviewsSlowSeconds"] = 0;
         }
@@ -614,10 +642,10 @@ export class GitHubConfig {
      * Creates a new GitHubConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): GitHubConfig {
-        const $$createField11_0 = $$createType4;
+        const $$createField12_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("app" in $$parsedSource) {
-            $$parsedSource["app"] = $$createField11_0($$parsedSource["app"]);
+            $$parsedSource["app"] = $$createField12_0($$parsedSource["app"]);
         }
         return new GitHubConfig($$parsedSource as Partial<GitHubConfig>);
     }
@@ -718,7 +746,27 @@ export class K8sJobsConfig {
     "image": string;
     "command": string[];
     "ttlSecondsAfterFinished": number;
+
+    /**
+     * FailedTTL overrides TTL for a Job that finishes Failed rather than
+     * Succeeded, via a post-completion patch once the runner observes the
+     * failure — Kubernetes' own ttlSecondsAfterFinished is a single value
+     * that cannot vary by outcome at creation time. Defaults much longer
+     * than TTL's own default so a failed run's logs survive long enough for
+     * an operator to pull them before Kubernetes garbage-collects the Pod.
+     */
+    "failedTtlSecondsAfterFinished": number;
     "mode": string;
+
+    /**
+     * CreatePR lets the agent Job open its own pull request once it has pushed
+     * its branch, instead of the server shelling gh in the task worktree. Only
+     * fires when the task's remote is a GitHub URL — a PVC-backed bare clone
+     * has no PR to open. Default false: the server-side create_pr workflow step
+     * still owns the normal path, and this would otherwise open a PR after
+     * every agent run rather than at the pr stage.
+     */
+    "createPr": boolean;
     "env": K8sJobEnvVar[];
     "secretEnv": K8sJobSecretEnvVar[];
     "volumes": K8sJobVolume[];
@@ -740,8 +788,14 @@ export class K8sJobsConfig {
         if (!("ttlSecondsAfterFinished" in $$source)) {
             this["ttlSecondsAfterFinished"] = 0;
         }
+        if (!("failedTtlSecondsAfterFinished" in $$source)) {
+            this["failedTtlSecondsAfterFinished"] = 0;
+        }
         if (!("mode" in $$source)) {
             this["mode"] = "";
+        }
+        if (!("createPr" in $$source)) {
+            this["createPr"] = false;
         }
         if (!("env" in $$source)) {
             this["env"] = [];
@@ -761,21 +815,21 @@ export class K8sJobsConfig {
      */
     static createFrom($$source: any = {}): K8sJobsConfig {
         const $$createField3_0 = $$createType5;
-        const $$createField6_0 = $$createType7;
-        const $$createField7_0 = $$createType9;
-        const $$createField8_0 = $$createType11;
+        const $$createField8_0 = $$createType7;
+        const $$createField9_0 = $$createType9;
+        const $$createField10_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("command" in $$parsedSource) {
             $$parsedSource["command"] = $$createField3_0($$parsedSource["command"]);
         }
         if ("env" in $$parsedSource) {
-            $$parsedSource["env"] = $$createField6_0($$parsedSource["env"]);
+            $$parsedSource["env"] = $$createField8_0($$parsedSource["env"]);
         }
         if ("secretEnv" in $$parsedSource) {
-            $$parsedSource["secretEnv"] = $$createField7_0($$parsedSource["secretEnv"]);
+            $$parsedSource["secretEnv"] = $$createField9_0($$parsedSource["secretEnv"]);
         }
         if ("volumes" in $$parsedSource) {
-            $$parsedSource["volumes"] = $$createField8_0($$parsedSource["volumes"]);
+            $$parsedSource["volumes"] = $$createField10_0($$parsedSource["volumes"]);
         }
         return new K8sJobsConfig($$parsedSource as Partial<K8sJobsConfig>);
     }
@@ -904,7 +958,41 @@ export class NotificationConfig {
     }
 }
 
+/**
+ * OrchestratorConfig gates and paces the self-starting automations. Role
+ * "full" runs the orchestrator brain session and the auto-dispatch scheduler,
+ * preserving single-node behavior. Role "agent-only" fails closed on both: it
+ * serves the HTTP API and runs explicitly-started agents but never orchestrates
+ * on its own — the posture for a secondary/test deployment (a Kubernetes
+ * agent-only server, a scratch instance) that must not race a full instance.
+ */
 export class OrchestratorConfig {
+    /**
+     * Role declares which self-starting automations this instance owns:
+     * "full" (default) or "agent-only". An invalid value falls back to "full"
+     * with a warning, so a typo never silently parks an instance that was meant
+     * to orchestrate.
+     */
+    "role": string;
+
+    /**
+     * Enabled overrides Role for the orchestrator brain session — the
+     * conversational context auto-started while tasks are active. nil (default)
+     * derives from Role. Explicit true re-enables the brain on an agent-only
+     * instance; explicit false parks it on a full one. Never gates an
+     * operator's manual StartOrchestrator call.
+     */
+    "enabled": boolean | null;
+
+    /**
+     * SchedulerEnabled overrides Role for the auto-dispatch scheduler — the
+     * pass that reconciles board tasks, drains the admission queue, releases
+     * unblocked children, and restarts stale in-progress agents. nil (default)
+     * derives from Role. Maintenance cleanup (orphan worktrees/sandboxes,
+     * metrics) always runs, so a parked instance still collects its garbage.
+     */
+    "schedulerEnabled": boolean | null;
+
     /**
      * DispatchIntervalSeconds is the cadence of the cheap, latency-sensitive
      * dispatch pass (start the orchestrator, release unblocked children). Kept
@@ -938,6 +1026,15 @@ export class OrchestratorConfig {
 
     /** Creates a new OrchestratorConfig instance. */
     constructor($$source: Partial<OrchestratorConfig> = {}) {
+        if (!("role" in $$source)) {
+            this["role"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = null;
+        }
+        if (!("schedulerEnabled" in $$source)) {
+            this["schedulerEnabled"] = null;
+        }
         if (!("dispatchIntervalSeconds" in $$source)) {
             this["dispatchIntervalSeconds"] = 0;
         }
@@ -958,10 +1055,10 @@ export class OrchestratorConfig {
      * Creates a new OrchestratorConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): OrchestratorConfig {
-        const $$createField3_0 = $$createType13;
+        const $$createField6_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
-            $$parsedSource["pressure"] = $$createField3_0($$parsedSource["pressure"]);
+            $$parsedSource["pressure"] = $$createField6_0($$parsedSource["pressure"]);
         }
         return new OrchestratorConfig($$parsedSource as Partial<OrchestratorConfig>);
     }

@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -153,27 +154,7 @@ func runDurationSeconds(ag *agent.Agent) float64 {
 	return max(ag.GetLastEventAt().Sub(ag.StartedAt).Seconds(), 0)
 }
 
-func (h *Handler) OnComplete(ag *agent.Agent) {
-	resultContent := terminalResultContent(ag)
-
-	// Snapshot mutable fields once under the agent's lock so both the
-	// persistence write and the audit entry see a consistent view.
-	state := ag.GetState()
-	cost := ag.GetCostUSD()
-	premiumRequests := ag.GetPremiumRequests()
-	cost = estimatedRunCost(ag, cost, premiumRequests)
-	exitErr := ag.GetExitErr()
-	input := ag.GetInputTokens()
-	output := ag.GetOutputTokens()
-	cacheCreate := ag.GetCacheCreationInputTokens()
-	cacheRead := ag.GetCacheReadInputTokens()
-	reasoning := ag.GetReasoningTokens()
-
-	// Audit logging always fires — orchestrator brain agents have no
-	// parent task and skip the storage paths below, but their lifecycle
-	// still belongs in the audit trail.
-	duration := runDurationSeconds(ag)
-	role := h.roleForAgentName(ag.Name)
+func buildCompletionAuditData(ag *agent.Agent, state agent.State, role agent.Role, cost, duration, premiumRequests float64, input, output, cacheCreate, cacheRead, reasoning int) map[string]any {
 	auditData := map[string]any{
 		"mode":       ag.Mode,
 		"cost_usd":   cost,
@@ -202,6 +183,35 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if premiumRequests > 0 {
 		auditData["premium_requests"] = premiumRequests
 	}
+	if reason, waited, ok := ag.PostResultWaitDuration(time.Now().UTC()); ok {
+		auditData["post_result_wait_reason"] = reason
+		auditData["post_result_wait_s"] = waited.Seconds()
+	}
+	return auditData
+}
+
+func (h *Handler) OnComplete(ag *agent.Agent) {
+	resultContent := terminalResultContent(ag)
+
+	// Snapshot mutable fields once under the agent's lock so both the
+	// persistence write and the audit entry see a consistent view.
+	state := ag.GetState()
+	cost := ag.GetCostUSD()
+	premiumRequests := ag.GetPremiumRequests()
+	cost = estimatedRunCost(ag, cost, premiumRequests)
+	exitErr := ag.GetExitErr()
+	input := ag.GetInputTokens()
+	output := ag.GetOutputTokens()
+	cacheCreate := ag.GetCacheCreationInputTokens()
+	cacheRead := ag.GetCacheReadInputTokens()
+	reasoning := ag.GetReasoningTokens()
+
+	// Audit logging always fires — orchestrator brain agents have no
+	// parent task and skip the storage paths below, but their lifecycle
+	// still belongs in the audit trail.
+	duration := runDurationSeconds(ag)
+	role := h.roleForAgentName(ag.Name)
+	auditData := buildCompletionAuditData(ag, state, role, cost, duration, premiumRequests, input, output, cacheCreate, cacheRead, reasoning)
 	h.logAudit(audit.EventAgentCompleted, ag.TaskID, ag.ID, auditData)
 	if reason := ag.GetEscalationReason(); agent.IsCheckpointEscalation(reason) {
 		h.logAudit(audit.EventAgentCheckpoint, ag.TaskID, ag.ID, map[string]any{
@@ -347,9 +357,33 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 	if ag.ReasoningEffort != "" {
 		updates.ReasoningEffort = task.Ptr(ag.ReasoningEffort)
 	}
+	if ag.RequestedSkill != "" {
+		updates.RequestedSkill = task.Ptr(ag.RequestedSkill)
+	}
+	if ag.ResolvedSkillSourceHash != "" {
+		updates.ResolvedSkillSourceHash = task.Ptr(ag.ResolvedSkillSourceHash)
+	}
+	if ag.SkillConformance != "" {
+		updates.SkillConformance = task.Ptr(ag.SkillConformance)
+	}
+	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
+	// A mandatory skill's pre-execution ConformanceExact/ConformanceFallback
+	// only reflects that the instructions were delivered (natively or
+	// injected) — not that the model actually followed them. Downgrade to
+	// ConformanceUnverified when the transcript never produced the matching
+	// receipt so the workflow engine's skill-conformance gate (see
+	// workflow.HandleAgentComplete) can retry instead of trusting a fake or
+	// incomplete artifact.
+	if ag.RequestedSkill != "" {
+		transcript := finalAssistantText(ag) + "\n" + resultContent
+		ag.SkillConformance = skillattr.VerifyReceipt(ag.SkillConformance, transcript, ag.RequestedSkill, ag.ResolvedSkillSourceHash)
+		if ag.IsSkillRecoveryAttempt() && (ag.SkillConformance == skillattr.ConformanceExact || ag.SkillConformance == skillattr.ConformanceFallback) {
+			ag.SkillConformance = skillattr.ConformanceRecovered
+		}
+	}
 	truncated := resultContent
 	if len(truncated) > maxResultLen {
 		truncated = truncated[:maxResultLen] + "\n... (truncated)"
@@ -673,25 +707,35 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// runOutcome derives the stats.RunRecord outcome ("completed"/"failed") for a
-// terminal agent run. Test-runner is special-cased: its exitErr reflects
+// runOutcome derives the stats.RunRecord outcome for a completed agent run.
+//
+// The stall check comes first and mirrors runTerminalOutcome so the stats
+// dataset and the persisted AgentRun.Outcome cannot disagree about the same
+// run: a stall is retried (notifyWorkflowEngine re-drives the step), so it is
+// not a result at all and is recorded as stats.OutcomeStalled — never as a
+// failure. Recording it as "failed" is what put implementation at a reported
+// 92.3% failure rate over runs that were merely retried (#2149).
+//
+// Test-runner is special-cased for the non-stall case: its exitErr reflects
 // whether the *process* exited clean, not whether it correctly did its job
 // (proving or failing to disprove the implementation). A test-runner that
 // produced a protocol-valid PASS/FAIL verdict succeeded at its job even if a
 // benign post-result glitch (e.g. a trailing stream hiccup) left exitErr
-// non-nil, so it is recorded as "completed" rather than inflating the role's
-// failure_rate with a run that was never actually a failure. Other roles are
-// unaffected: their exitErr already reflects whether they completed the task.
-func runOutcome(role agent.Role, exitErr error, resultContent string) string {
+// non-nil, so it is recorded as completed rather than inflating the role's
+// failure_rate with a run that was never actually a failure.
+func runOutcome(ag *agent.Agent, role agent.Role, exitErr error, resultContent string) string {
+	if stalled, _, _, _, _ := classifyStall(ag, exitErr); stalled {
+		return stats.OutcomeStalled
+	}
 	if exitErr == nil {
-		return "completed"
+		return stats.OutcomeCompleted
 	}
 	if role == agent.RoleTestRunner {
 		if v := workflow.ExtractTestVerdict(resultContent); v == "PASS" || v == "FAIL" {
-			return "completed"
+			return stats.OutcomeCompleted
 		}
 	}
-	return "failed"
+	return stats.OutcomeFailed
 }
 
 func (h *Handler) roleForAgentName(name string) agent.Role {
@@ -717,7 +761,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
-	outcome := runOutcome(role, exitErr, resultContent)
+	outcome := runOutcome(ag, role, exitErr, resultContent)
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -737,6 +781,10 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		VariantID:                ag.VariantID,
 		AssignmentUnit:           ag.AssignmentUnit,
 		AssignmentKey:            ag.AssignmentKey,
+		RequestedSkill:           ag.RequestedSkill,
+		SkillExecutionMode:       ag.SkillExecutionMode,
+		ResolvedSkillSourceHash:  ag.ResolvedSkillSourceHash,
+		SkillConformance:         ag.SkillConformance,
 		CostUSD:                  agCost,
 		DurationS:                duration,
 		InputTokens:              in,
@@ -747,6 +795,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, cost, duratio
 		PremiumRequests:          ag.GetPremiumRequests(),
 		TurnCount:                ag.GetTurnCount(),
 		ToolCalls:                ag.GetToolCalls(),
+		SubagentCallCount:        ag.GetSubagentCallCount(),
 		Outcome:                  outcome,
 		Timestamp:                time.Now(),
 	})

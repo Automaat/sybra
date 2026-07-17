@@ -1,12 +1,16 @@
 package clusterlead
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -342,4 +346,129 @@ func TestMirrorIgnoresUnownedTask(t *testing.T) {
 	if mirror.applyFollowerTask("pet-box", task.Task{ID: "ghost", UpdatedAt: time.Unix(100, 0)}) {
 		t.Error("a task the leader does not own must be ignored")
 	}
+}
+
+// TestMirrorRunPollsOnlyNeverSubscribes covers #2188: Run must sync purely by
+// polling ListTasks and never attempt an SSE /events subscription — the SSE
+// path never fired for filesystem-direct follower writes and is no longer
+// part of Mirror at all.
+func TestMirrorRunPollsOnlyNeverSubscribes(t *testing.T) {
+	var eventsHit atomic.Bool
+	var mu sync.Mutex
+	follower := task.Task{
+		ID: "task-pet", Status: task.StatusDone, AssignedNode: "pet-box",
+		UpdatedAt: time.Now().Add(time.Hour),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
+		eventsHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/TaskService/ListTasks" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewEncoder(w).Encode([]task.Task{follower})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+	if _, _, err := mgr.Put(task.Task{
+		ID: "task-pet", Status: task.StatusTodo, ProjectID: "owner/pet",
+		AssignedNode: "pet-box", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	mirror.Run(ctx)
+
+	got, err := mgr.Get("task-pet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done — reconcile polling should have applied the follower's state", got.Status)
+	}
+	if eventsHit.Load() {
+		t.Error("Mirror.Run hit /events — it must sync purely by polling ListTasks")
+	}
+}
+
+// TestMirrorReconcileEscalatesLogLevelOnRepeatedFailure covers #2188: a
+// reconcile failure must never be silently invisible again (the previous
+// Debug-only log level is exactly how a fleet-wide desync went unnoticed for
+// 30+ hours) — Warn on any failure, Error once it's clearly not transient.
+func TestMirrorReconcileEscalatesLogLevelOnRepeatedFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	})
+	mux.HandleFunc("POST /api/{service}/{method}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"unauthorized","code":"unauthorized"}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, err := NewRoster(cfg, nil)
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	mgr := newManager(t)
+
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mirror := NewMirror(cfg, mgr, roster, logger, 5*time.Millisecond)
+
+	var consecutiveFailures int
+	for range reconcileFailureEscalateThreshold - 1 {
+		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	}
+	beforeThreshold := buf.String()
+	if !strings.Contains(beforeThreshold, "level=WARN") {
+		t.Errorf("expected a Warn-level reconcile failure log below the threshold, got:\n%s", beforeThreshold)
+	}
+	if strings.Contains(beforeThreshold, "level=ERROR") {
+		t.Errorf("escalated to Error before reaching the %d-failure threshold, got:\n%s", reconcileFailureEscalateThreshold, beforeThreshold)
+	}
+
+	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
+	atThreshold := buf.String()
+	if !strings.Contains(atThreshold, "level=ERROR") {
+		t.Errorf("expected escalation to Error exactly at %d consecutive failures, got:\n%s", reconcileFailureEscalateThreshold, atThreshold)
+	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

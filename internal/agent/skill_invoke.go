@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	bundledskills "github.com/Automaat/sybra/internal/skills"
 	"gopkg.in/yaml.v3"
@@ -32,53 +33,69 @@ func stripSkillInvocations(prompt string, skillNames []string) string {
 	return skillinvoke.StripInvocations(prompt, skillNames)
 }
 
-const (
-	skillExecutionModeNative      = "native"
-	skillExecutionModeInjected    = "injected"
-	skillExecutionModeFallback    = "fallback"
-	skillExecutionModeUnavailable = "unavailable"
-)
-
 type workflowSkillResolution struct {
 	name          string
 	path          string
 	text          string
 	nativeVisible bool
 	mode          string
+	sourceHash    string
+	sourceLabel   string
+	conformance   string
 }
 
 func (m *Manager) resolveWorkflowSkillPrompt(cfg *RunConfig, providerName string) error {
 	name, ok := skillinvoke.NormalizeName(cfg.RequestedSkill)
 	if !ok {
 		cfg.RequestedSkill = ""
-		cfg.SkillExecutionMode = ""
+		cfg.SkillExecutionMode = skillattr.ExecutionModeNone
+		cfg.ResolvedSkillSourceHash = ""
+		cfg.SkillConformance = skillattr.ConformanceNone
 		return nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	resolution := resolveWorkflowSkill(home, providerName, name)
+	resolution := resolveWorkflowSkill(home, providerName, name, cfg.ForceInjectedSkill)
 	cfg.RequestedSkill = resolution.name
 	cfg.SkillExecutionMode = resolution.mode
+	cfg.ResolvedSkillSourceHash = resolution.sourceHash
+	cfg.SkillConformance = resolution.conformance
 	switch resolution.mode {
-	case skillExecutionModeNative:
-		return nil
-	case skillExecutionModeInjected, skillExecutionModeFallback:
+	case skillattr.ExecutionModeNative:
+		// The skill runs natively, but native invocation alone doesn't prove
+		// the model actually followed it — append the same deterministic
+		// receipt instruction injected/fallback runs get, so completion can
+		// verify conformance from the transcript rather than trusting
+		// delivery mode alone.
+		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
+	case skillattr.ExecutionModeInjected, skillattr.ExecutionModeFallback:
 		cfg.Prompt = injectWorkflowSkillPrompt(cfg.Prompt, providerName, resolution)
+		cfg.Prompt = appendSkillReceiptInstruction(cfg.Prompt, resolution)
 	default:
 		cfg.Prompt = unavailableWorkflowSkillPrompt(cfg.Prompt, providerName, resolution.name)
 	}
 	return nil
 }
 
-func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillResolution {
+// appendSkillReceiptInstruction appends the deterministic conformance-receipt
+// instruction (skillattr.ReceiptInstruction) to prompt. Called for every
+// mode that actually hands the model mandatory-skill instructions (native,
+// injected, fallback) — never for "unavailable", where there is nothing to
+// receipt-check.
+func appendSkillReceiptInstruction(prompt string, resolution workflowSkillResolution) string {
+	return prompt + "\n\n" + skillattr.ReceiptInstruction(resolution.name, resolution.sourceHash)
+}
+
+func resolveWorkflowSkill(home, providerName, skillName string, forceInjected bool) workflowSkillResolution {
 	resolution := workflowSkillResolution{
 		name:          skillName,
 		nativeVisible: providerSkillVisible(providerName, home, skillName),
 	}
-	if resolution.nativeVisible {
-		resolution.mode = skillExecutionModeNative
+	if resolution.nativeVisible && !forceInjected {
+		resolution.mode = skillattr.ExecutionModeNative
+		resolution.conformance = skillattr.ConformanceExact
 		return resolution
 	}
 	resolution.path = findSkillPathInHome(home, skillName)
@@ -86,16 +103,23 @@ func resolveWorkflowSkill(home, providerName, skillName string) workflowSkillRes
 		data, err := os.ReadFile(resolution.path)
 		if err == nil {
 			resolution.text = string(data)
-			resolution.mode = skillExecutionModeInjected
+			resolution.mode = skillattr.ExecutionModeInjected
+			resolution.sourceHash = skillattr.HashSourceID("file:" + resolution.path)
+			resolution.sourceLabel = "local skill source"
+			resolution.conformance = skillattr.ConformanceExact
 			return resolution
 		}
 	}
 	if data, err := bundledskills.FS.ReadFile("data/" + skillName + ".md"); err == nil {
 		resolution.text = string(data)
-		resolution.mode = skillExecutionModeFallback
+		resolution.mode = skillattr.ExecutionModeFallback
+		resolution.sourceHash = skillattr.HashSourceID("bundled:" + skillName)
+		resolution.sourceLabel = "bundled skill fallback"
+		resolution.conformance = skillattr.ConformanceFallback
 		return resolution
 	}
-	resolution.mode = skillExecutionModeUnavailable
+	resolution.mode = skillattr.ExecutionModeUnavailable
+	resolution.conformance = skillattr.ConformanceUnavailable
 	return resolution
 }
 
@@ -119,9 +143,12 @@ func providerSkillVisible(providerName, home, skillName string) bool {
 
 func injectWorkflowSkillPrompt(prompt, providerName string, resolution workflowSkillResolution) string {
 	basePrompt := stripSkillInvocations(prompt, []string{resolution.name})
-	source := resolution.path
+	source := resolution.sourceLabel
 	if source == "" {
-		source = "bundled skill fallback"
+		source = "resolved skill source"
+	}
+	if resolution.sourceHash != "" {
+		source += " #" + resolution.sourceHash
 	}
 	return fmt.Sprintf(
 		"Mandatory workflow skill %q is not natively visible to provider %s. Follow the injected instructions below instead of invoking the skill directly.\n\n--- BEGIN INJECTED SKILL: %s (%s) ---\n%s\n--- END INJECTED SKILL: %s ---\n\n%s",

@@ -57,6 +57,7 @@ const (
 // from its directory name. Such resources are always reported as ineligible
 // — they are never deleted, with or without --force.
 const unknownTaskID = "unknown"
+const sandboxQuarantineDirName = ".quarantine"
 
 // AllBucketNames returns every bucket name Scan/Apply understand, in display order.
 func AllBucketNames() []string {
@@ -285,6 +286,13 @@ func sandboxesDir() string {
 	return filepath.Join(config.HomeDir(), "sandboxes")
 }
 
+func sandboxTaskIDFromDir(name string) string {
+	if name == sandboxQuarantineDirName {
+		return unknownTaskID
+	}
+	return name
+}
+
 func goBuildCacheDir() string {
 	return filepath.Join(buildcache.SharedRoot(), "go-build")
 }
@@ -493,7 +501,7 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.now()); !ok {
+		if ok, _ := eligible(snap, sandboxTaskIDFromDir(e.Name()), p, retention, disabled, s.now()); !ok {
 			continue
 		}
 		size, err := dirSize(p)
@@ -701,7 +709,11 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		return s.ageEligible(bucketName, path, opts)
 	case BucketSandboxes, BucketGoBuildCache:
 		retention, disabled := s.sandboxRetention()
-		return eligible(snap, filepath.Base(path), path, retention, disabled, s.now())
+		taskID := filepath.Base(path)
+		if bucketName == BucketSandboxes {
+			taskID = sandboxTaskIDFromDir(taskID)
+		}
+		return eligible(snap, taskID, path, retention, disabled, s.now())
 	case BucketWorktrees:
 		retention, disabled := s.sandboxRetention()
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))

@@ -26,7 +26,14 @@ type GitHubConfig struct {
 	// default. Raised defaults (vs. the original 1m/5m) cut steady-state request
 	// volume; lower them only on a high-limit (App-token) instance.
 	ReviewsFastSeconds int `yaml:"reviews_fast_seconds" json:"reviewsFastSeconds"`
-	ReviewsSlowSeconds int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
+	// ReviewRoundsPerHour caps automated review runs one PR may receive in a
+	// rolling hour before the task is parked for a human. 0 uses the default;
+	// negative disables the cap. Rate-based rather than a lifetime total so a
+	// long-lived PR that is legitimately re-reviewed after each push is never
+	// blocked, while a runaway loop is stopped within the hour (#2164 sustained
+	// ~5/hour for 23 hours).
+	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
+	ReviewsSlowSeconds  int `yaml:"reviews_slow_seconds" json:"reviewsSlowSeconds"`
 	// ReviewsMaxPRsPerTick caps how many non-active linked PRs the known-PR
 	// poller fetches in one tick. Zero falls back to the built-in default;
 	// resolved non-positive values mean "unlimited".

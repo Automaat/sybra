@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/github"
 )
 
 // ErrGHRateLimit is returned by IssueSink when gh reports an API rate limit.
@@ -32,8 +34,18 @@ type ghExecer interface {
 
 type defaultGHExecer struct{}
 
+var ghEnv = github.GHEnv
+
 func (defaultGHExecer) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	// Share the same credential source as every other gh call in the
+	// process (internal/github's ghExecer/ghRunCtx): inject the cached
+	// GitHub App installation token when one is configured, so this sink
+	// isn't silently dependent on an ambient `gh auth login`/GH_TOKEN that
+	// the App-auth setup was specifically meant to replace. See #2032.
+	if env := ghEnv(); env != nil {
+		cmd.Env = env
+	}
 	return cmd.CombinedOutput()
 }
 
@@ -267,6 +279,7 @@ func classifyGHError(op string, out []byte, err error) error {
 	if err == nil {
 		return nil
 	}
+	out = redactSecrets(out)
 	msg := err.Error() + "\n" + string(out)
 	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
 		return ErrGHRateLimit
@@ -275,6 +288,25 @@ func classifyGHError(op string, out []byte, err error) error {
 		return fmt.Errorf("%s: %s: %w", op, detail, err)
 	}
 	return fmt.Errorf("%s: %w", op, err)
+}
+
+// ghTokenPattern matches GitHub's token formats (personal access, OAuth, App
+// installation, refresh). Applied to gh's combined output before it's ever
+// wrapped into an error, logged, or written to an audit event, so a `gh`
+// subprocess that echoes its own credentials (verbose/debug output, an odd
+// error message) can't leak them downstream. See #2032.
+var ghTokenPattern = regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`)
+
+// redactSecrets strips GitHub token-shaped substrings from gh's combined
+// output, plus the exact currently-cached App installation token as a
+// belt-and-suspenders exact-match pass for token shapes the pattern above
+// doesn't cover.
+func redactSecrets(out []byte) []byte {
+	s := ghTokenPattern.ReplaceAllString(string(out), "[redacted]")
+	if token := github.CurrentAppToken(); token != "" {
+		s = strings.ReplaceAll(s, token, "[redacted]")
+	}
+	return []byte(s)
 }
 
 func sanitizeGHOutput(out []byte) string {

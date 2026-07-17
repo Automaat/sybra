@@ -76,6 +76,9 @@ type Handler struct {
 	// global-search fetch path (pollAndMonitorPRs) and backs off instead of
 	// retrying at pollFast cadence once tripped. See poll.AuthCircuit.
 	authCircuit *poll.AuthCircuit
+	// reconcileFailures tracks consecutive non-transient phase-reconcile
+	// failures per task ID, escalating at reconcileFailureLimit (#2164).
+	reconcileFailures map[string]int
 	// wtFailures tracks consecutive worktree-creation failures per task ID.
 	// Once a task hits wtFailureLimit, it is escalated to human-required.
 	wtFailures map[string]int
@@ -149,6 +152,10 @@ type Handler struct {
 	// fetchReviewsFn fetches the PR review summary. Overridable in tests; nil
 	// falls back to github.FetchReviews.
 	fetchReviewsFn func() (github.ReviewSummary, error)
+	// fetchMyReviewStateFn reads the viewer's own review state on a PR — the
+	// signal that decides whether a review task still needs an agent.
+	// Overridable in tests; nil falls back to github.FetchMyReviewState.
+	fetchMyReviewStateFn func(repo string, number int) (github.MyReviewState, error)
 	// viewerLoginFn returns the authenticated GitHub login (the identity the fix
 	// agent posts as), used to tell the agent's own thread replies from a human
 	// collaborator's. Overridable in tests; nil falls back to github.ViewerLogin.
@@ -177,11 +184,11 @@ type Handler struct {
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
-func (r *Handler) agentLogin() string {
+func (r *Handler) agentLogin(ctx context.Context) string {
 	if r.viewerLoginFn != nil {
 		return r.viewerLoginFn()
 	}
-	return github.ViewerLogin()
+	return github.ViewerLoginCtx(ctx)
 }
 
 // pollFast/pollSlow resolve the review poll cadence from config (github.*),
@@ -331,7 +338,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.reconcilePRPhases(tasks, monitoredPRs)
 	r.reconcileHumanRequiredBlockers(tasks, monitoredPRs)
 	r.closeFinishedReviewTasks(tasks, nil)
@@ -453,7 +460,7 @@ func (r *Handler) pollAndMonitorPRs(ctx context.Context) time.Duration {
 	}
 
 	r.scanForReverts(ctx, tasks)
-	r.resolveAddressedCopilotThreads(tasks, monitoredPRs)
+	r.resolveAddressedCopilotThreads(ctx, tasks, monitoredPRs)
 	r.maybeCreateReviewTasks(tasks, summary.ReviewRequested)
 	// reconcileReviewTask's gh calls (FetchMyReviewState, FetchPRState,
 	// FetchPRHeadSHA) use the package's legacy ctx-less runGHAPIWith path,

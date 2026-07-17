@@ -289,6 +289,9 @@ func (a *App) logAutomationsSummary() {
 	}
 	promptevalRunner := prompteval.SelectRunner(a.cfg.Evaluation.Offline)
 	a.logger.Info("app.automations",
+		"instance_role", a.cfg.Orchestrator.InstanceRole(),
+		"orchestrator", a.cfg.Orchestrator.RunsOrchestrator(),
+		"scheduler", a.cfg.Orchestrator.RunsScheduler(),
 		"todoist", a.cfg.Todoist.Enabled && a.cfg.Todoist.APIToken != "",
 		"github", a.cfg.GitHub.Enabled,
 		"github_issues", a.cfg.GitHub.RunsIssuesFetcher(),
@@ -406,6 +409,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		Artifacts:   a.artifacts,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
+		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
@@ -480,7 +484,9 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 		Image:     cfg.Image,
 		Command:   cfg.Command,
 		TTL:       cfg.TTL,
+		FailedTTL: cfg.FailedTTL,
 		Mode:      cfg.Mode,
+		CreatePR:  cfg.CreatePR,
 	}
 	for _, e := range cfg.Env {
 		out.Env = append(out.Env, agent.K8sJobEnvVar{Name: e.Name, Value: e.Value})
@@ -662,7 +668,7 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.humanReview != nil {
+			if local && a.runsScheduler() && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
@@ -829,11 +835,25 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
+	if !a.runsScheduler() {
+		return
+	}
 	if a.workflowEngine == nil {
 		return
 	}
-	if t, err := a.tasks.Get(taskID); err == nil && !a.runsTaskLocally(t) {
-		return
+	if t, err := a.tasks.Get(taskID); err == nil {
+		if !a.runsTaskLocally(t) {
+			return
+		}
+		// Umbrella/chat tasks run no agent (agentorch.startAgent refuses
+		// them at the dispatch choke point). Every status-triggered
+		// workflow here ends in a run_agent step, so dispatching one onto
+		// a tracker is a guaranteed 3-attempt circuit-breaker trip that
+		// flips the tracker to human-required — and umbrella.rollup then
+		// flips it back to in-progress on the next tick, looping forever.
+		if t.TaskType == task.TaskTypeChat || t.TaskType == task.TaskTypeUmbrella {
+			return
+		}
 	}
 
 	statusValue := string(status)
@@ -871,7 +891,18 @@ func expectedHumanKind(t task.Task) string {
 // parked task back in todo/planning. Mirrors TaskService.startCreatedWorkflow.
 // Idempotent: DispatchEvent serializes per task and rejects a task that already
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
+// dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
+// are the three sinks through which a task auto-starts work, so each gates on
+// runsScheduler itself rather than trusting its callers. Gating call sites was
+// tried and leaked twice: the watcher reaches these both via the status hook and
+// via maybeStartWorkflowForExternalTask, and because the task store writes
+// atomically (temp file + rename) fsnotify reports every external write — even a
+// tags-only update — as CREATE, so the create path is far hotter than its name
+// suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
+	if !a.runsScheduler() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -919,7 +950,8 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 			return
 		}
 		if _, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil); err != nil &&
-			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) {
+			!errors.Is(err, workflow.ErrWorkflowAlreadyActive) &&
+			!errors.Is(err, workflow.ErrAutoDispatchDisabled) {
 			a.logger.Error("workflow.task-created.failed", "task_id", taskID, "err", err)
 		}
 	})
@@ -1211,7 +1243,28 @@ func (a *App) getPressureGate() *pressure.Gate {
 // funlen cap).
 func (a *App) configureTestingEscalation() {
 	a.workflowEngine.SetTestingMaxAttempts(a.cfg.TestingMaxAttempts())
+	a.workflowEngine.SetReviewUntilClean(a.cfg.ReviewUntilClean())
 	a.workflowEngine.SetOpenPROnUnrunnableGate(a.cfg.TestingOpenPROnUnrunnableGateEnabled())
+	a.warnUnboundedReviewLoop()
+}
+
+// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
+// has no stopping condition at all. The cycle has no round cap by design, so
+// agent.max_task_cost_usd is its only bound — and that guardrail is disabled at
+// its default of 0 (enforceTaskCostBudget returns early on <= 0). Stock config
+// therefore pairs an uncapped loop with no ceiling, which a reviewer and fixer
+// that disagree can ride indefinitely. Operators should not have to read the
+// workflow YAML to discover that.
+func (a *App) warnUnboundedReviewLoop() {
+	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.MaxTaskCostUSD > 0 {
+		return
+	}
+	a.logger.Warn("review.loop.unbounded",
+		"review_until_clean", true,
+		"max_task_cost_usd", 0,
+		"detail", "review→fix cycles until CLEAN with no round cap and no cost ceiling; "+
+			"set agent.max_task_cost_usd to bound it, or agent.review_until_clean: false for a single review pass",
+	)
 }
 
 func (a *App) initAgentConfig() {
@@ -1329,7 +1382,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
 		},
-		DispatchGate: a.runsTaskLocally,
+		// Also gate on the instance role: RunStartupCleanup calls
+		// RestartStaleInProgress outside the (gated) maintenance pass, so an
+		// agent-only instance would otherwise restart a stale in-progress task
+		// on boot with no operator action. Evaluated per call, so it sees the
+		// role applyInstanceRole resolves at the top of startLifecycle.
+		DispatchGate: func(t task.Task) bool { return a.runsScheduler() && a.runsTaskLocally(t) },
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

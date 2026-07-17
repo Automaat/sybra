@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runStateClasses, runRoleLabel, runRoleClasses } from './agent-run.js'
+import { runStateClasses, runOutcomeClasses, runRoleLabel, runRoleClasses } from './agent-run.js'
 
 describe('runStateClasses', () => {
   // The actual persisted terminal state for finished runs — must be neutral,
@@ -31,6 +31,24 @@ describe('runStateClasses', () => {
   it('falls back to neutral grey for unknown states', () => {
     expect(runStateClasses('mystery')).toMatch(/surface/)
     expect(runStateClasses('mystery')).not.toMatch(/primary/)
+  })
+})
+
+describe('runOutcomeClasses', () => {
+  it('renders a completed run green', () => {
+    expect(runOutcomeClasses('completed')).toMatch(/success/)
+  })
+
+  // A stall was retried, not failed (#2149) — dressing it in the failure colour
+  // is the UI half of the same miscount that broke the failure rate.
+  it('renders a stalled run neutral, never the failure colour', () => {
+    const cls = runOutcomeClasses('stalled')
+    expect(cls).toMatch(/surface/)
+    expect(cls).not.toMatch(/error/)
+  })
+
+  it('renders a failed run coral', () => {
+    expect(runOutcomeClasses('failed')).toMatch(/error/)
   })
 })
 

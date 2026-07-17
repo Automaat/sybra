@@ -1,0 +1,85 @@
+# Agent Jobs against a real GitHub remote: the Job clones from GitHub, pushes
+# its branch there, and opens its own PR. Still runs fake-claude, so it proves
+# the GitHub path without model spend. Used by scripts/smoke-k3d.sh SMOKE_GITHUB=1.
+#
+# Needs a sybra-provider-api-keys Secret carrying github_token — see
+# deploy/k8s-poc/README.md for the required token permissions.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sybra-config
+  namespace: sybra-poc
+data:
+  config.yaml: |
+    agent:
+      provider: claude
+      model: sonnet
+      mode: headless
+      max_concurrent: 2
+      require_permissions: false
+      survive_restart: false
+      sandbox_mode: "off"
+      headless_steerable: false
+      k8s_jobs:
+        enabled: true
+        mode: provider
+        create_pr: true
+        namespace: sybra-poc
+        image: sybra-server:poc
+        ttl_seconds_after_finished: 300
+        env:
+          - name: SYBRA_K8S_PROVIDER_BIN
+            value: /usr/local/bin/fake-claude
+          - name: FAKE_CLAUDE_SCENARIO
+            value: k8s_repo_change
+          # sybra-cli in the Job records the new PR number through the server's
+          # HTTP API rather than writing the task file underneath it.
+          - name: SYBRA_SERVER_TARGET
+            value: sybra-server:8080
+          - name: SYBRA_AUTH_TOKEN
+            value: poc-token
+        secret_env:
+          # The Job authenticates to GitHub; the server holds no credential.
+          - name: GITHUB_TOKEN
+            secret_name: sybra-provider-api-keys
+            secret_key: github_token
+        volumes:
+          - name: sybra-home
+            claim_name: sybra-home
+            mount_path: /home/sybra/.sybra
+    ab_testing:
+      enabled: false
+    providers:
+      health_check:
+        enabled: false
+      auto_failover: false
+      limits:
+        enabled: false
+      claude:
+        enabled: true
+      codex:
+        enabled: false
+      copilot:
+        enabled: false
+      opencode:
+        enabled: false
+    # agent-only fails closed on auto-orchestration, so the smoke only ever runs
+    # the agent it was explicitly asked to. The long intervals below predate the
+    # role control and are now redundant; kept so the documented smoke timings
+    # do not shift.
+    orchestrator:
+      role: agent-only
+      dispatch_interval_seconds: 3600
+      maintenance_interval_seconds: 3600
+    monitor:
+      enabled: false
+    github:
+      enabled: false
+    todoist:
+      enabled: false
+    renovate:
+      enabled: false
+    umbrella:
+      enabled: false
+    triage:
+      enabled: false

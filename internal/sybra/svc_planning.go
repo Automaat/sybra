@@ -135,8 +135,7 @@ func completedPlanReviewRecoveryProblems(t workflow.TaskInfo) []string {
 			problems = append(problems, "plan_contract "+problem)
 		}
 	}
-	if !hasCompletedStep(t.Workflow, "validate_plan_contract") &&
-		!hasCompletedStep(t.Workflow, "validate_plan_contract_after_address") {
+	if !hasCompletedStep(t.Workflow, "validate_plan_contract") {
 		problems = append(problems, "plan validation step did not complete")
 	}
 	return problems

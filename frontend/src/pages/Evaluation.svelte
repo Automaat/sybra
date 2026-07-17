@@ -78,6 +78,17 @@
   function kindGroup(kind: string): ExperimentKindBreakdown | undefined {
     return report?.byExperimentKind?.find((g) => g.kind === kind)
   }
+
+  function skillExecutionModeLabel(mode: string): string {
+    switch (mode) {
+      case 'none': return 'No skill'
+      case 'native': return 'Native'
+      case 'injected': return 'Injected'
+      case 'fallback': return 'Fallback'
+      case 'unavailable': return 'Unavailable'
+      default: return 'Unknown'
+    }
+  }
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
@@ -124,7 +135,7 @@
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Failure rate</span>
         <p class="mt-1 text-2xl font-bold {goodScale(1 - o.failureRate)}">{pct(o.failureRate)}</p>
-        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentRuns} runs · {o.reverted} reverted ({pct(o.changeFailureRate)})</p>
+        <p class="mt-0.5 text-xs text-surface-400">{o.agentFailures}/{o.agentResolvedRuns} resolved runs · {o.agentStalls} stalled · {o.reverted} reverted ({pct(o.changeFailureRate)})</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Cost / landed</span>
@@ -263,6 +274,7 @@
       {#each [
         { title: 'By Provider', data: report?.byProvider },
         { title: 'By Role', data: report?.byRole },
+        { title: 'By Skill Execution', data: report?.bySkillExecutionMode },
       ] as section (section.title)}
         <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
           <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
@@ -272,6 +284,7 @@
                 <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
                   <th class="pb-2">Name</th>
                   <th class="pb-2 text-right">Runs</th>
+                  <th class="pb-2 text-right">Stalled</th>
                   <th class="pb-2 text-right">Fail %</th>
                   <th class="pb-2 text-right">Cost</th>
                   <th class="pb-2 text-right">Turns</th>
@@ -281,9 +294,10 @@
               <tbody>
                 {#each section.data as row (row.key)}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 font-mono text-xs">{row.key}</td>
+                    <td class="py-1.5 font-mono text-xs">{section.title === 'By Skill Execution' ? skillExecutionModeLabel(row.key) : row.key}</td>
                     <td class="py-1.5 text-right">{row.runs}</td>
-                    <td class="py-1.5 text-right">{pct(row.failureRate)}</td>
+                    <td class="py-1.5 text-right text-surface-400">{row.stalled}</td>
+                    <td class="py-1.5 text-right" title="{row.failures}/{row.resolvedRuns} resolved runs">{pct(row.failureRate)}</td>
                     <td class="py-1.5 text-right">${row.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.turns}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.tools}</td>

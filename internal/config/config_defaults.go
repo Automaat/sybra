@@ -204,6 +204,15 @@ func (c *Config) DefaultRequirePermissions() bool {
 	return true
 }
 
+// ReviewUntilClean reports whether simple-task-review re-reviews after each
+// fix until the verdict is CLEAN. Defaults to true when unset.
+func (c *Config) ReviewUntilClean() bool {
+	if c != nil && c.Agent.ReviewUntilClean != nil {
+		return *c.Agent.ReviewUntilClean
+	}
+	return true
+}
+
 // PromptLabAutoApprove reports whether a filed Prompt Lab proposal may start
 // its authoring workflow without a human click. Defaults to true, but is
 // hard-gated on evaluation.offline.enabled regardless of the setting.
@@ -381,6 +390,7 @@ const (
 	DefaultReviewsFastSeconds           = 120 // was 60
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
+	DefaultReviewRoundsPerHour          = 3
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
@@ -404,6 +414,15 @@ func (c GitHubConfig) RunsIssuesFetcher() bool {
 // the top-level kill-switch AND the reviews-specific sub-toggle.
 func (c GitHubConfig) RunsReviewer() bool {
 	return c.Enabled && c.ReviewsEnabled
+}
+
+// ReviewRoundsPerHourLimit resolves the per-PR review rate cap. 0 means unset
+// (use the default); a negative value disables the cap entirely.
+func (c GitHubConfig) ReviewRoundsPerHourLimit() int {
+	if c.ReviewRoundsPerHour == 0 {
+		return DefaultReviewRoundsPerHour
+	}
+	return c.ReviewRoundsPerHour
 }
 
 func (c GitHubConfig) reviewsFast() time.Duration {
@@ -581,8 +600,10 @@ func DefaultConfig() *Config {
 			Enabled: true,
 		},
 		Watchdog: WatchdogConfig{
-			Enabled:       true,
-			LoopThreshold: 6,
+			Enabled:          true,
+			LoopThreshold:    6,
+			MaxRunsPerWindow: 30,
+			RunWindowMinutes: 30,
 		},
 		ABTesting: abtest.DefaultConfig(),
 		AutoUpdate: AutoUpdateConfig{
@@ -615,6 +636,7 @@ func DefaultConfig() *Config {
 			Role: ClusterRoleStandalone,
 		},
 		Orchestrator: OrchestratorConfig{
+			Role: InstanceRoleFull,
 			// Seed the pressure thresholds here (not in applyPressureDefaults) so
 			// an explicit `0` in YAML — the documented "disable this dimension"
 			// sentinel — survives loading. A config missing the block entirely
@@ -698,24 +720,35 @@ func WriteRawConfig(data []byte) error {
 // Directories returns the resolved paths for all sybra data directories.
 func (c *Config) Directories() map[string]string {
 	return map[string]string{
-		"tasks":       c.TasksDir,
-		"skills":      c.SkillsDir,
-		"projects":    c.ProjectsDir,
-		"clones":      c.ClonesDir,
-		"worktrees":   c.WorktreesDir,
-		"logs":        c.Logging.Dir,
-		"audit":       c.AuditDir(),
-		"loop_agents": c.LoopAgentsDir,
-		"artifacts":   ArtifactsDir(),
-		"experiences": c.ExperiencesDir(),
-		"agentqueue":  AgentQueueDir(),
-		"learning":    LearningDir(),
+		"tasks":           c.TasksDir,
+		"skills":          c.SkillsDir,
+		"projects":        c.ProjectsDir,
+		"clones":          c.ClonesDir,
+		"worktrees":       c.WorktreesDir,
+		"logs":            c.Logging.Dir,
+		"audit":           c.AuditDir(),
+		"loop_agents":     c.LoopAgentsDir,
+		"artifacts":       ArtifactsDir(),
+		"experiences":     c.ExperiencesDir(),
+		"agentqueue":      AgentQueueDir(),
+		"learning":        LearningDir(),
+		"gh_issue_outbox": GHIssueOutboxDir(),
 	}
 }
 
 // AgentQueueDir is the directory under ~/.sybra that persists agent queue items.
 func AgentQueueDir() string {
 	return filepath.Join(HomeDir(), "agentqueue")
+}
+
+// GHIssueOutboxDir is the directory under ~/.sybra that persists pending
+// GitHub issue filings (monitor.DurableGHIssueSink) that failed with an
+// authentication error and are waiting to be retried once credentials
+// recover. Callers namespace a subdirectory per sink (e.g. "monitor",
+// "human-review") so the monitor anomaly sink and the human-review sink
+// don't collide.
+func GHIssueOutboxDir() string {
+	return filepath.Join(HomeDir(), "gh-issue-outbox")
 }
 
 // LearningDir is the directory under ~/.sybra that holds persisted Learning
@@ -1122,6 +1155,11 @@ func applyWatchdogDefaults(cfg *Config) {
 	if w.Model == "" {
 		w.Model = "claude-haiku-4-5-20251001"
 	}
+	// MaxRunsPerWindow and RunWindowMinutes are deliberately NOT defaulted
+	// here, same as LoopThreshold above — both are seeded by DefaultConfig
+	// (30/30), so a config missing the watchdog block keeps that default
+	// while an explicit 0 (disabling the run-rate check) survives instead
+	// of being clobbered back.
 }
 
 // applyEvaluationDefaults fills zero values for the Evaluation block so older

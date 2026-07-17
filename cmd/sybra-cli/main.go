@@ -169,7 +169,7 @@ func run(args []string) int {
 func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
 	var api *apiClient
 	switch cmd {
-	case "create", "update", "link-pr", "delete":
+	case "create", "update", "link-pr", "delete", "pr":
 		if allowHTTP {
 			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
 				api = c
@@ -191,6 +191,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
 		return cmdLinkPR(store, api, rest, jsonOut)
+	case "pr":
+		return cmdPR(store, api, rest, jsonOut)
 	case "delete":
 		return cmdDelete(store, api, rest, jsonOut)
 	case "reopen":
@@ -2042,6 +2044,10 @@ Commands:
            Link a PR number to a task and advance it to in-review. Use when a PR
            was opened outside of Sybra; the PR monitor will then auto-merge or
            advance the task to done once the PR lands.
+  pr create <id> --repo owner/name --head branch [--title T] [--body B] [--draft] [--dir D]
+           Open a PR for an already-pushed branch and link it, in one step. Runs
+           gh in --dir (default cwd), so it must sit inside the repo clone. Lets
+           a Kubernetes agent Job open its own PR instead of the server doing it.
   delete   <id>
            Soft-deletes: moves the task file and its sidecars into the trash
            dir instead of unlinking them. See trash list / trash restore.
@@ -2061,7 +2067,15 @@ Commands:
            internal/tasksnapshot). Recovery is a plain git checkout against
            that repo — see docs/tasks-snapshots.md.
 
-  project list
+`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList())
+	usageProjectAndOps()
+}
+
+// usageProjectAndOps prints the non-task half of the command list. Split out of
+// usage() only to keep each function under the funlen cap — the list grows every
+// time a subcommand lands.
+func usageProjectAndOps() {
+	fmt.Fprintf(os.Stderr, `  project list
   project get <id>
   project create --url <github-url> [--type pet|work]
   project update <id> --type pet|work
@@ -2107,7 +2121,7 @@ Commands:
 
 Global flags:
   --json   Output as JSON
-`, statusListForUsage(), handoffStageUsageLines(), handoffStageSourceRequirementList(), doctorUsageBlock())
+`, doctorUsageBlock())
 }
 
 func doctorUsageBlock() string {
@@ -2602,6 +2616,9 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		add("error", "github.app.enabled is true but github.app.private_key_path is empty")
 	}
 
+	addK8sSecretEnvFindings(cfg, add)
+	addK8sFailedTTLFindings(cfg, add)
+
 	if len(findings) == 0 {
 		add("ok", "no issues found")
 	}
@@ -2631,6 +2648,48 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+// addK8sSecretEnvFindings validates agent.k8s_jobs.secret_env whenever k8s_jobs
+// is enabled at all: baseEnv (internal/agent/k8s_job_runner.go) injects these
+// entries into the Job container regardless of agent.k8s_jobs.mode, and an
+// incomplete entry is silently dropped there rather than erroring.
+func addK8sSecretEnvFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if !cfg.Agent.K8sJobs.Enabled {
+		return
+	}
+	for i, e := range cfg.Agent.K8sJobs.SecretEnv {
+		var missing []string
+		if strings.TrimSpace(e.Name) == "" {
+			missing = append(missing, "name")
+		}
+		if strings.TrimSpace(e.SecretName) == "" {
+			missing = append(missing, "secret_name")
+		}
+		if strings.TrimSpace(e.SecretKey) == "" {
+			missing = append(missing, "secret_key")
+		}
+		if len(missing) > 0 {
+			add("error", "agent.k8s_jobs.secret_env[%d]: missing %s", i, strings.Join(missing, ", "))
+		}
+	}
+}
+
+// addK8sFailedTTLFindings warns when ttl_seconds_after_finished is set low
+// enough to undermine failed_ttl_seconds_after_finished: the runner extends a
+// failed Job's TTL by PATCHing it after the fact
+// (internal/agent/k8s_job_runner.go), but per Kubernetes' own
+// ttlSecondsAfterFinished docs a late-extended TTL is not guaranteed to be
+// honored once the original, shorter window has elapsed.
+func addK8sFailedTTLFindings(cfg *config.Config, add func(severity, format string, a ...any)) {
+	if !cfg.Agent.K8sJobs.Enabled {
+		return
+	}
+	ttl := cfg.Agent.K8sJobs.TTL
+	failedTTL := cfg.Agent.K8sJobs.FailedTTL
+	if ttl > 0 && ttl < 30 && failedTTL != ttl {
+		add("warning", "agent.k8s_jobs.ttl_seconds_after_finished is %ds — Kubernetes does not guarantee honoring the failed_ttl_seconds_after_finished extension once such a short window has already elapsed", ttl)
+	}
 }
 
 func addConfigPermFindings(add func(severity, format string, a ...any)) {

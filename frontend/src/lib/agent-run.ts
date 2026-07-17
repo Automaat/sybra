@@ -22,6 +22,22 @@ export function runStateClasses(state: string): string {
   }
 }
 
+// Treatment for a stats run record's outcome pill.
+//
+// "stalled" is neither a success nor a failure — the run never produced a
+// result and Sybra retried it — so it reads neutral grey rather than the error
+// coral it wore while stalls were miscounted as failures.
+export function runOutcomeClasses(outcome: string): string {
+  switch (outcome) {
+    case 'completed':
+      return 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'
+    case 'stalled':
+      return 'bg-surface-200 text-surface-700 dark:bg-surface-700 dark:text-surface-300'
+    default:
+      return 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-200'
+  }
+}
+
 // Human-readable label for an agent run's pipeline role (AgentRun.role). Roles
 // are the lowercase technical values the backend persists (see
 // internal/agent/role.go and lib/agent-name.ts). An empty/absent role carries

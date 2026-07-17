@@ -34,6 +34,8 @@ type Update struct {
 	RunRole               *string
 	SupervisorSteer       *string
 	ReviewPhase           *string
+	ReviewedHeadSHA       *string
+	ReviewedHeadAttempts  *int
 	PRPhase               *string
 	TodoistID             *string
 	Priority              *Priority
@@ -90,7 +92,7 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "todoist_id", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
-		"review_phase", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
+		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
 		return applyDependsOnField(u, k, v)
@@ -108,6 +110,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyTagsField(u, k, v)
 	case "pr_number":
 		return applyPRNumberField(u, k, v)
+	case "reviewed_head_attempts":
+		return applyReviewedHeadAttemptsField(u, k, v)
 	case "max_turns":
 		return applyMaxTurnsField(u, v)
 	case "fork_subagent":
@@ -202,6 +206,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.CodeReview = &s
 	case "review_phase":
 		u.ReviewPhase = &s
+	case "reviewed_head_sha":
+		u.ReviewedHeadSHA = &s
 	case "pr_phase":
 		u.PRPhase = &s
 	case "outcome":
@@ -270,6 +276,12 @@ func applyTagsField(u *Update, k string, v any) error {
 		cp := make([]string, len(tv))
 		copy(cp, tv)
 		u.Tags = &cp
+	case []any:
+		parts, err := stringSlice(k, tv)
+		if err != nil {
+			return err
+		}
+		u.Tags = &parts
 	case string:
 		parts := strings.Split(tv, ",")
 		u.Tags = &parts
@@ -279,25 +291,66 @@ func applyTagsField(u *Update, k string, v any) error {
 	return nil
 }
 
+// compactRefs trims and drops empty dependency refs. A blank ref is worse than a
+// loud error: umbrella.Build skips empty keys, so depsSatisfied never finds one
+// and the child task stays blocked forever. Applied to every shape — the
+// comma-separated CLI shorthand guarded against this, but a JSON array
+// ["t1", ""] reached the same field unguarded.
+func compactRefs(in []string) []string {
+	var out []string
+	for _, p := range in {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// stringSlice coerces a JSON-decoded array. Every update that arrives over HTTP
+// (the CLI writes that way, and so does the web GUI) decodes to []any, never
+// []string — without this, any tags/depends_on update 500s.
+func stringSlice(k string, in []any) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, e := range in {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("field %q: want a string element, got %T", k, e)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 func applyDependsOnField(u *Update, k string, v any) error {
 	switch dv := v.(type) {
 	case []string:
-		cp := make([]string, len(dv))
-		copy(cp, dv)
-		u.DependsOn = &cp
-	case string:
-		// Comma-separated shorthand from the CLI; trim and drop empties so a
-		// trailing comma or stray space cannot inject a blank dependency ref
-		// (which would otherwise resolve to "" and never satisfy).
-		var parts []string
-		for p := range strings.SplitSeq(dv, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				parts = append(parts, p)
-			}
+		parts := compactRefs(dv)
+		u.DependsOn = &parts
+	case []any:
+		raw, err := stringSlice(k, dv)
+		if err != nil {
+			return err
 		}
+		parts := compactRefs(raw)
+		u.DependsOn = &parts
+	case string:
+		parts := compactRefs(strings.Split(dv, ","))
 		u.DependsOn = &parts
 	default:
 		return fmt.Errorf("field %q: want []string or string, got %T", k, v)
+	}
+	return nil
+}
+
+func applyReviewedHeadAttemptsField(u *Update, k string, v any) error {
+	switch n := v.(type) {
+	case int:
+		u.ReviewedHeadAttempts = &n
+	case float64:
+		i := int(n)
+		u.ReviewedHeadAttempts = &i
+	default:
+		return fmt.Errorf("field %q: want int or float64, got %T", k, v)
 	}
 	return nil
 }

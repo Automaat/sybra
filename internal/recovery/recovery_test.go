@@ -832,6 +832,70 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 	}
 }
 
+func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("interactive stale without workflow", "", "interactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inProg := task.StatusInProgress
+	projID := "owner/repo"
+	if _, err := tasks.Update(created.ID, task.Update{Status: &inProg, ProjectID: &projID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "ag-interactive-stale",
+		Mode:      "interactive",
+		State:     string(agent.StateStopped),
+		StartedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	r := &recovery.Recovery{
+		Tasks:        tasks,
+		Agents:       agents,
+		Worktrees:    wm,
+		Orchestrator: &stub,
+		Projects:     stubProjects{},
+		Logger:       logger,
+		Throttle:     logging.NewErrorThrottle(),
+		WG:           &wg,
+		LogDir:       t.TempDir(),
+	}
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if stub.startCalls != 1 {
+		t.Fatalf("dispatch count = %d, want 1", stub.startCalls)
+	}
+	if stub.lastMode != "interactive" {
+		t.Fatalf("mode = %q, want interactive", stub.lastMode)
+	}
+	if stub.lastOneShot {
+		t.Fatal("interactive stale redispatch without workflow must not force oneShot")
+	}
+}
+
 // TestRestartStaleInteractiveModeMismatchRedispatches covers the Copilot
 // review finding on this PR: a task whose AgentMode was flipped to
 // interactive (e.g. by selfmonitor's flipAgentMode) after its last recorded
@@ -1356,6 +1420,29 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	}
 	if !strings.Contains(updated.StatusReason, "no project/PR context") {
 		t.Errorf("status reason = %q, want precise no-context reason", updated.StatusReason)
+	}
+
+	// Tick 2: once parked off in-progress, repeated maintenance passes must
+	// stay inert instead of re-triggering the same recovery path.
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if wfStub.startWorkflowCalls != 0 {
+		t.Errorf("StartWorkflow calls after tick 2 = %d; want no additional calls", wfStub.startWorkflowCalls)
+	}
+	if stub.startCalls != 0 || stub.prFixCalls != 0 {
+		t.Errorf("orchestrator called (start=%d prFix=%d) on tick 2; want 0", stub.startCalls, stub.prFixCalls)
+	}
+
+	parked, err := tasks.Get(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != task.StatusHumanRequired {
+		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusHumanRequired)
+	}
+	if parked.StatusReason != updated.StatusReason {
+		t.Errorf("status reason after tick 2 = %q; want unchanged %q", parked.StatusReason, updated.StatusReason)
 	}
 }
 

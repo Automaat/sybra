@@ -7,6 +7,7 @@
     closedTasksSeries,
     type StatsPeriod,
   } from '$lib/stats-charts.js'
+  import { runOutcomeClasses } from '$lib/agent-run.js'
   import StatsLineChart from '../components/stats/StatsLineChart.svelte'
   import StatsBarChart from '../components/stats/StatsBarChart.svelte'
 
@@ -39,6 +40,12 @@
   const costSeries = $derived(dailyCost(recentRuns, cutoff, now).map((p) => ({ date: p.date, value: p.cost })))
   const taskSeries = $derived(closedTasksSeries(statsStore.data?.closedTasksDaily ?? [], cutoff, now))
   const projectCosts = $derived(costByProject(recentRuns, cutoff))
+
+  // Review rounds are aggregated per task across its whole lifetime, so the
+  // backend reports them all-time only — the period selector above does not
+  // apply and the caption says so rather than letting the table look filtered.
+  const reviewRounds = $derived(statsStore.data?.reviewRounds ?? [])
+  const anyMixedImplModels = $derived(reviewRounds.some((r) => (r.mixedImplModels ?? 0) > 0))
 
   $effect(() => {
     void refreshStats()
@@ -120,6 +127,69 @@
       default: return 'bg-surface-200 text-surface-800 dark:bg-surface-700 dark:text-surface-200'
     }
   }
+
+  function skillExecutionModeLabel(mode?: string): string {
+    switch (mode) {
+      case 'none': return 'No skill'
+      case 'native': return 'Native'
+      case 'injected': return 'Injected'
+      case 'fallback': return 'Fallback'
+      case 'unavailable': return 'Unavailable'
+      default: return 'Unknown'
+    }
+  }
+
+  function breakdownLabel(sectionKind: string, key: string): string {
+    if (sectionKind === 'skill') return skillExecutionModeLabel(key)
+    return key
+  }
+
+  function outcomeCountsLabel(outcomeCounts?: Record<string, number | undefined>): string {
+    if (!outcomeCounts) return '—'
+    const preferred = ['completed', 'failed', 'unknown']
+    const seen = new Set<string>()
+    const entries: Array<[string, number]> = []
+    for (const key of preferred) {
+      const count = outcomeCounts[key]
+      if (count) {
+        entries.push([key, count])
+        seen.add(key)
+      }
+    }
+    const extra = Object.entries(outcomeCounts)
+      .filter((entry): entry is [string, number] => (entry[1] ?? 0) > 0 && !seen.has(entry[0]))
+      .sort(([a], [b]) => a.localeCompare(b))
+    entries.push(...extra)
+    if (entries.length === 0) return '—'
+    return entries.map(([key, count]) => `${count} ${key}`).join(' · ')
+  }
+
+  function skillCellPrimary(run: any): string {
+    if (run.requestedSkill) return run.requestedSkill
+    return skillExecutionModeLabel(run.skillExecutionMode)
+  }
+
+  function skillCellMeta(run: any): string {
+    const parts: string[] = []
+    if (run.requestedSkill) parts.push(skillExecutionModeLabel(run.skillExecutionMode))
+    if (run.skillConformance && run.skillConformance !== 'none' && run.skillConformance !== 'unknown') parts.push(run.skillConformance)
+    if (run.resolvedSkillSourceHash) parts.push(`src ${run.resolvedSkillSourceHash}`)
+    if (run.subagentCallCount) parts.push(`${run.subagentCallCount} subagents`)
+    return parts.join(' · ')
+  }
+
+  const breakdownSections = $derived(
+    statsStore.data
+      ? [
+          { title: 'By Project Type', data: statsStore.data.byProjectType, kind: 'default' },
+          { title: 'By Project', data: statsStore.data.byProject, kind: 'default' },
+          { title: 'By Role', data: statsStore.data.byRole, kind: 'default' },
+          { title: 'By Mode', data: statsStore.data.byMode, kind: 'default' },
+          { title: 'By Model', data: statsStore.data.byModel, kind: 'default' },
+          { title: 'By Skill Execution', data: statsStore.data.bySkillExecutionMode, kind: 'skill' },
+        ]
+      : [],
+  )
 </script>
 
 <div class="flex flex-col gap-4 p-4 md:gap-6 md:p-6">
@@ -286,13 +356,7 @@
   <!-- Breakdowns -->
   {#if statsStore.data}
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {#each [
-        { title: 'By Project Type', data: statsStore.data.byProjectType },
-        { title: 'By Project', data: statsStore.data.byProject },
-        { title: 'By Role', data: statsStore.data.byRole },
-        { title: 'By Mode', data: statsStore.data.byMode },
-        { title: 'By Model', data: statsStore.data.byModel },
-      ] as section (section.title)}
+      {#each breakdownSections as section (section.title)}
         <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
           <h3 class="mb-3 text-sm font-semibold text-surface-500">{section.title}</h3>
           {#if section.data && section.data.length > 0}
@@ -301,18 +365,22 @@
                 <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
                   <th class="pb-2">Name</th>
                   <th class="pb-2 text-right">Runs</th>
+                  <th class="pb-2 text-right">Failures</th>
                   <th class="pb-2 text-right">Cost</th>
                   <th class="pb-2 text-right">Duration</th>
+                  <th class="pb-2">Outcomes</th>
                   <th class="pb-2 text-right">Reasoning</th>
                 </tr>
               </thead>
               <tbody>
                 {#each section.data as row (row.key)}
                   <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
-                    <td class="py-1.5 font-mono text-xs">{row.key}</td>
+                    <td class="py-1.5 font-mono text-xs">{breakdownLabel(section.kind, row.key)}</td>
                     <td class="py-1.5 text-right">{row.stats.totalRuns}</td>
+                    <td class="py-1.5 text-right">{row.stats.failedRuns}</td>
                     <td class="py-1.5 text-right">${row.stats.totalCostUsd.toFixed(2)}</td>
                     <td class="py-1.5 text-right">{formatDuration(row.stats.totalDurationS)}</td>
+                    <td class="py-1.5 text-xs text-surface-500">{outcomeCountsLabel(row.stats.outcomeCounts)}</td>
                     <td class="py-1.5 text-right text-surface-400">{row.stats.totalReasoningTokens ? formatTokens(row.stats.totalReasoningTokens) : '—'}</td>
                   </tr>
                 {/each}
@@ -323,6 +391,58 @@
           {/if}
         </div>
       {/each}
+    </div>
+
+    <!-- Review rounds by implementing model -->
+    <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+      <div class="mb-3 flex items-baseline justify-between gap-2">
+        <h3 class="text-sm font-semibold text-surface-500">Review rounds by implementing model</h3>
+        <span class="text-[10px] text-surface-400">All Time · tasks that reached review</span>
+      </div>
+      {#if reviewRounds.length > 0}
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                <th class="pb-2">Model</th>
+                <th class="pb-2 text-right">Tasks</th>
+                <th class="pb-2 text-right">Avg rounds</th>
+                <th class="pb-2 text-right">Max</th>
+                <th class="pb-2 text-right">Clean 1st pass</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each reviewRounds as row (row.key)}
+                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                  <td class="py-1.5 font-mono text-xs">
+                    {row.key}
+                    {#if (row.mixedImplModels ?? 0) > 0}
+                      <span
+                        class="ml-1 cursor-help text-surface-400"
+                        title="{row.mixedImplModels} of {row.tasks} task(s) had implementation runs on more than one model (provider failover, or a test failure re-entering implement). Attributed to the earliest run, so this average is approximate."
+                        aria-label="{row.mixedImplModels} of {row.tasks} tasks had mixed implementation models; average is approximate"
+                      >*</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">{row.tasks}</td>
+                  <td class="py-1.5 text-right">{row.avgRounds.toFixed(2)}</td>
+                  <td class="py-1.5 text-right">{row.maxRounds}</td>
+                  <td class="py-1.5 text-right text-surface-400">
+                    {row.cleanFirstPass}{#if row.tasks > 0}<span class="ml-1 text-[10px]">({Math.round((row.cleanFirstPass / row.tasks) * 100)}%)</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="mt-3 text-[10px] leading-relaxed text-surface-400">
+          Rounds a model's code needed before a reviewer stopped finding issues. 1 round means the first
+          reviewer found nothing actionable. Tasks that skipped review are excluded.
+          {#if anyMixedImplModels}<span class="font-mono">*</span> marks models whose average includes tasks implemented by more than one model.{/if}
+        </p>
+      {:else}
+        <p class="text-xs text-surface-400">No reviewed tasks yet</p>
+      {/if}
     </div>
 
     <!-- Recent runs -->
@@ -337,6 +457,7 @@
                 <th class="pb-2">Task</th>
                 <th class="pb-2">Role</th>
                 <th class="pb-2">Mode</th>
+                <th class="pb-2">Skill</th>
                 <th class="pb-2">Model</th>
                 <th class="pb-2 text-right">Cost</th>
                 <th class="pb-2 text-right">Duration</th>
@@ -353,14 +474,18 @@
                     <span class="rounded px-1.5 py-0.5 text-xs {roleBadgeClasses(run.role)}">{run.role}</span>
                   </td>
                   <td class="py-1.5 text-xs">{run.mode}</td>
+                  <td class="py-1.5">
+                    <div class="font-mono text-xs">{skillCellPrimary(run)}</div>
+                    {#if skillCellMeta(run)}
+                      <div class="text-xs text-surface-400">{skillCellMeta(run)}</div>
+                    {/if}
+                  </td>
                   <td class="py-1.5 text-xs">{run.model || '—'}</td>
                   <td class="py-1.5 text-right text-xs">${run.costUsd.toFixed(4)}</td>
                   <td class="py-1.5 text-right text-xs">{formatDuration(run.durationS)}</td>
                   <td class="py-1.5 text-right text-xs text-surface-400">{run.reasoningTokens ? formatTokens(run.reasoningTokens) : '—'}</td>
                   <td class="py-1.5">
-                    <span class="rounded px-1.5 py-0.5 text-xs {run.outcome === 'completed'
-                      ? 'bg-success-200 text-success-800 dark:bg-success-800 dark:text-success-200'
-                      : 'bg-error-200 text-error-800 dark:bg-error-800 dark:text-error-200'}">
+                    <span class="rounded px-1.5 py-0.5 text-xs {runOutcomeClasses(run.outcome)}">
                       {run.outcome}
                     </span>
                   </td>

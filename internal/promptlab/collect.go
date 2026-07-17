@@ -24,7 +24,7 @@ var (
 // filtered evidence backs both the gating metrics (samples, failure rate,
 // effect size vs the fleet baseline) and the representative project/task
 // attribution. A role is only surfaced when it clears BOTH gates —
-// MinSamples (enough runs to trust the number) and MinEffectSize (the
+// MinSamples (enough resolved runs to trust the number) and MinEffectSize (the
 // failure rate is actually worse than the fleet baseline, not noise) — so a
 // single unlucky run never triggers a proposal. Results are sorted by effect
 // size, worst first.
@@ -36,7 +36,12 @@ func CollectWeakSubjects(records []stats.RunRecord, minSamples int, minEffectSiz
 
 	var out []WeakSubject
 	for _, b := range byRole {
-		if b.Runs < minSamples {
+		// Gate on resolved runs, not dispatches: b.FailureRate is rated over
+		// resolved runs only, so gating on b.Runs would let a role whose runs
+		// mostly stalled clear MinSamples on a rate derived from one run —
+		// exactly the single unlucky run this is supposed to exclude.
+		resolved := b.ResolvedRuns
+		if resolved < minSamples {
 			continue
 		}
 		effect := b.FailureRate - overall.FailureRate
@@ -46,9 +51,9 @@ func CollectWeakSubjects(records []stats.RunRecord, minSamples int, minEffectSiz
 		out = append(out, WeakSubject{
 			Subject: Subject{Role: b.Key},
 			Metric:  "failure_rate",
-			Detail: fmt.Sprintf("role %s fails %.0f%% vs %.0f%% overall over %d runs",
-				b.Key, b.FailureRate*100, overall.FailureRate*100, b.Runs),
-			Samples:    b.Runs,
+			Detail: fmt.Sprintf("role %s fails %.0f%% vs %.0f%% overall over %d resolved runs (%d stalled)",
+				b.Key, b.FailureRate*100, overall.FailureRate*100, resolved, b.Stalled),
+			Samples:    resolved,
 			EffectSize: effect,
 			ProjectIDs: projectIDsForRole(records, b.Key),
 			TaskIDs:    taskIDsForRole(records, b.Key, 5),

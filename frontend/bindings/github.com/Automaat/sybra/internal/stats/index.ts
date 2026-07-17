@@ -3,6 +3,7 @@
 
 export {
     GroupedStat,
+    ReviewRoundsStat,
     RunRecord,
     StatsResponse,
     Summary,

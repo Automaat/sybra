@@ -140,7 +140,9 @@ followers:
 
 On the follower, the same secret is `server.auth_token`, overridable with
 `SYBRA_AUTH_TOKEN`. Keep it in the unit file's `EnvironmentFile=`, not in
-`config.yaml`.
+`config.yaml`. Set `SYBRA_SERVER_TARGET=127.0.0.1:8080` there too so local
+`sybra-cli` calls have an explicit, validated control-plane target instead of
+guessing from listen env.
 
 **Known limitation (tracked, not fixed):** the RPC allowlist is coarse — a leaked
 follower token grants any allowlisted method on that follower, not a read-only

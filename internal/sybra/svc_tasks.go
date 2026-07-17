@@ -509,6 +509,15 @@ func (s *TaskService) AssignTask(t task.Task) error {
 		s.logger.Debug("cluster.task.assign.noop", "task", current.ID, "assigned_node", current.AssignedNode, "status", string(current.Status))
 		return nil
 	}
+	// Leader-owned mirror bookkeeping (see normalizeAssignedTaskForCompare)
+	// must never reach the local store: Assigner.Route forwards the leader's
+	// canonical copy as-is, so a task re-routed after prior mirror cycles
+	// still carries a stale MirrorRev/MirrorUpdatedAt here. Store.Put reads
+	// those fields as proof this Put came through Merge; left untouched,
+	// this write would masquerade as mirror-authoritative and bypass its
+	// plain staleness guard.
+	t.MirrorRev = 0
+	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
 		return fmt.Errorf("assign task: %w", err)
@@ -668,11 +677,17 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if skipTaskCreatedWorkflow(t) {
 		return
 	}
+	// An agent-only instance refuses the start below, so bail before announcing
+	// an auto-start that will not happen — the log line read like a leak.
+	if !s.workflowEngine.AutoDispatchEnabled() {
+		return
+	}
 	info := taskToInfo(t)
 	if def := s.workflowEngine.MatchWorkflow(info, "task.created"); def != nil {
 		s.logger.Info("workflow.auto-start", "task_id", t.ID, "workflow", def.ID)
 		s.wg.Go(func() {
-			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil {
+			if wfErr := s.workflowEngine.StartWorkflow(t.ID, def.ID); wfErr != nil &&
+				!errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
 				s.logger.Error("workflow.auto-start.failed", "task_id", t.ID, "err", wfErr)
 			}
 		})
@@ -737,7 +752,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	// and flipped status back to `planning` instead of running implement.
 	// DispatchEvent matches against current trigger conditions, which is what
 	// the user wants: in-progress → simple-task-implement.
-	if s.workflowEngine != nil {
+	if s.workflowEngine != nil && s.workflowEngine.AutoDispatchEnabled() {
 		if newStatus, ok := updates["status"].(string); ok &&
 			newStatus == string(task.StatusInProgress) &&
 			cur.Workflow != nil &&
@@ -746,6 +761,9 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			s.logger.Info("workflow.restart", "task_id", id, "from_workflow", cur.Workflow.WorkflowID, "status", newStatus)
 			s.wg.Go(func() {
 				dispatched, wfErr := s.redispatchStatusChanged(id, newStatus)
+				if errors.Is(wfErr, workflow.ErrAutoDispatchDisabled) {
+					return
+				}
 				if wfErr != nil {
 					s.logger.Error("workflow.restart.failed", "task_id", id, "err", wfErr)
 					return
@@ -958,6 +976,13 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 		return
 	}
 	viewer := s.viewerLoginFunc()()
+	if viewer == "" {
+		// Guessing "not mine" is irreversible: it points a review agent at our
+		// own PR and, via u.Tags, drops the enrich-pending marker reconcile
+		// retries on. Bail before any Update so the retry survives.
+		s.logger.Warn("enrich-pr.no-viewer", "task_id", taskID, "repo", repo, "number", number)
+		return
+	}
 
 	slug := task.Slugify(pr.Title)
 	u := task.Update{
@@ -976,7 +1001,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	labels := pr.Labels
 	u.Tags = &labels
 
-	isMyPR := viewer != "" && strings.EqualFold(pr.Author, viewer)
+	isMyPR := strings.EqualFold(pr.Author, viewer)
 	if isMyPR {
 		u.Status = task.Ptr(task.StatusInReview)
 		if _, err := s.tasks.Update(taskID, u); err != nil {

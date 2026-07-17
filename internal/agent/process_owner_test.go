@@ -50,6 +50,24 @@ func TestProcessOwnerFromAnyEnv_FallsBackToMCPOwner(t *testing.T) {
 	}
 }
 
+func TestProcessOwnerFromAnyEnv_PrefersMCPOwnerOverInheritedProcessOwner(t *testing.T) {
+	t.Parallel()
+
+	got := processOwnerFromAnyEnv([]string{
+		processOwnerFlagEnv + "=" + processOwnerFlagTrue,
+		processAgentIDEnv + "=outer-agent",
+		processAgentModeEnv + "=headless",
+		mcpOwnerFlagEnv + "=" + mcpOwnerFlagTrue,
+		mcpAgentIDEnv + "=mcp-agent",
+		mcpTaskIDEnv + "=task-1",
+		mcpAgentModeEnv + "=interactive",
+	})
+	want := processOwner{AgentID: "mcp-agent", TaskID: "task-1", Mode: "interactive"}
+	if got != want {
+		t.Fatalf("owner = %+v, want %+v", got, want)
+	}
+}
+
 func TestInjectProcessOwnerEnv(t *testing.T) {
 	t.Parallel()
 

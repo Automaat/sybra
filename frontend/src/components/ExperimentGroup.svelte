@@ -1,6 +1,7 @@
 <script lang="ts">
   import { interpretExperiment } from '$lib/evaluation-interpretation.js'
   import {
+    estimateBasis,
     guardrailClasses,
     num,
     rateCell,
@@ -138,6 +139,9 @@
                     <td class="py-1.5 text-xs font-medium">All roles</td>
                     <td class="py-1.5 text-right">
                       {row.runs}
+                      {#if row.stalled > 0}
+                        <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700" title="retried, excluded from the failure rate">{row.stalled} stalled</span>
+                      {/if}
                       {#if rowState(row)}
                         <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(row.sampleStatus)} {isDominantSample(row) ? 'experiment-caveat--dominant' : ''}">{rowState(row)}</span>
                       {:else if row.insufficientData}
@@ -154,7 +158,7 @@
                         {row.landed} · {rateCell(row, 'landedEstimate', undefined, true)}
                       {/if}
                     </td>
-                    <td class="py-1.5 text-right text-xs">{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
+                    <td class="py-1.5 text-right text-xs" title={estimateBasis(row, 'failureEstimate')}>{rateCell(row, 'failureEstimate', row.failureRate, true)}</td>
                     <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergeEstimate', row.mergeRate, true)}</td>
                     <td class="py-1.5 text-right text-xs">{rateCell(row, 'ciFirstPassEstimate', row.ciFirstPassRate, true)}</td>
                     <td class="py-1.5 text-right text-xs">{rateCell(row, 'mergedWithEditsEstimate', row.mergedWithEditsRate, true)}</td>
@@ -194,6 +198,9 @@
                       <td class="py-1.5 text-xs">{child.role || '—'}</td>
                       <td class="py-1.5 text-right">
                         {child.runs}
+                        {#if child.stalled > 0}
+                          <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700" title="retried, excluded from the failure rate">{child.stalled} stalled</span>
+                        {/if}
                         {#if rowState(child)}
                           <span class="ml-1 rounded px-1 text-[10px] {sampleClasses(child.sampleStatus)} {isDominantSample(child) ? 'experiment-caveat--dominant' : ''}">{rowState(child)}</span>
                         {:else if child.insufficientData}
@@ -210,7 +217,7 @@
                           {child.landed} · {rateCell(child, 'landedEstimate', undefined, true)}
                         {/if}
                       </td>
-                      <td class="py-1.5 text-right text-xs">{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
+                      <td class="py-1.5 text-right text-xs" title={estimateBasis(child, 'failureEstimate')}>{rateCell(child, 'failureEstimate', child.failureRate, true)}</td>
                       <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergeEstimate', child.mergeRate, true)}</td>
                       <td class="py-1.5 text-right text-xs">{rateCell(child, 'ciFirstPassEstimate', child.ciFirstPassRate, true)}</td>
                       <td class="py-1.5 text-right text-xs">{rateCell(child, 'mergedWithEditsEstimate', child.mergedWithEditsRate, true)}</td>

@@ -14,11 +14,22 @@ import * as abtest$0 from "../abtest/models.js";
  * reliability metrics derivable from stats run records. Landing-derived metrics
  * (autonomy, throughput) are not broken down because task.landed events don't
  * carry provider/role/project yet — see Report.Notes.
+ * 
+ * Every dispatch counts toward Runs, stalls included, since they burn real
+ * wall-clock and spend. FailureRate divides by ResolvedRuns instead — the only
+ * honest denominator, and the only honest sample count for gating on it: a
+ * stall carries no signal about the subject's quality, so 29 stalls and 1
+ * failure is a sample of one, not 30. Anything that rates or gates on failures
+ * must agree on that population, or a rate and its own sufficiency check end up
+ * measuring different things. Resolved runs are counted rather than derived by
+ * subtracting stalls, so a run with an unknown outcome lands in neither.
  */
 export class Breakdown {
     "key": string;
     "runs": number;
     "failures": number;
+    "stalled": number;
+    "resolvedRuns": number;
     "failureRate": number;
     "totalCostUsd": number;
     "turns": number;
@@ -34,6 +45,12 @@ export class Breakdown {
         }
         if (!("failures" in $$source)) {
             this["failures"] = 0;
+        }
+        if (!("stalled" in $$source)) {
+            this["stalled"] = 0;
+        }
+        if (!("resolvedRuns" in $$source)) {
+            this["resolvedRuns"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
@@ -73,6 +90,8 @@ export class ComparisonBreakdown {
     "subject"?: abtest$0.Subject | null;
     "runs": number;
     "failures": number;
+    "stalled": number;
+    "resolvedRuns": number;
     "failureRate": number;
     "failureEstimate": RateEstimate;
     "landed": number;
@@ -119,6 +138,12 @@ export class ComparisonBreakdown {
         }
         if (!("failures" in $$source)) {
             this["failures"] = 0;
+        }
+        if (!("stalled" in $$source)) {
+            this["stalled"] = 0;
+        }
+        if (!("resolvedRuns" in $$source)) {
+            this["resolvedRuns"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
@@ -213,41 +238,41 @@ export class ComparisonBreakdown {
      */
     static createFrom($$source: any = {}): ComparisonBreakdown {
         const $$createField9_0 = $$createType1;
-        const $$createField13_0 = $$createType2;
         const $$createField15_0 = $$createType2;
-        const $$createField24_0 = $$createType2;
-        const $$createField25_0 = $$createType2;
+        const $$createField17_0 = $$createType2;
         const $$createField26_0 = $$createType2;
         const $$createField27_0 = $$createType2;
         const $$createField28_0 = $$createType2;
-        const $$createField43_0 = $$createType4;
+        const $$createField29_0 = $$createType2;
+        const $$createField30_0 = $$createType2;
+        const $$createField45_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
         }
         if ("failureEstimate" in $$parsedSource) {
-            $$parsedSource["failureEstimate"] = $$createField13_0($$parsedSource["failureEstimate"]);
+            $$parsedSource["failureEstimate"] = $$createField15_0($$parsedSource["failureEstimate"]);
         }
         if ("landedEstimate" in $$parsedSource) {
-            $$parsedSource["landedEstimate"] = $$createField15_0($$parsedSource["landedEstimate"]);
+            $$parsedSource["landedEstimate"] = $$createField17_0($$parsedSource["landedEstimate"]);
         }
         if ("mergeEstimate" in $$parsedSource) {
-            $$parsedSource["mergeEstimate"] = $$createField24_0($$parsedSource["mergeEstimate"]);
+            $$parsedSource["mergeEstimate"] = $$createField26_0($$parsedSource["mergeEstimate"]);
         }
         if ("ciFirstPassEstimate" in $$parsedSource) {
-            $$parsedSource["ciFirstPassEstimate"] = $$createField25_0($$parsedSource["ciFirstPassEstimate"]);
+            $$parsedSource["ciFirstPassEstimate"] = $$createField27_0($$parsedSource["ciFirstPassEstimate"]);
         }
         if ("mergedWithEditsEstimate" in $$parsedSource) {
-            $$parsedSource["mergedWithEditsEstimate"] = $$createField26_0($$parsedSource["mergedWithEditsEstimate"]);
+            $$parsedSource["mergedWithEditsEstimate"] = $$createField28_0($$parsedSource["mergedWithEditsEstimate"]);
         }
         if ("reworkEstimate" in $$parsedSource) {
-            $$parsedSource["reworkEstimate"] = $$createField27_0($$parsedSource["reworkEstimate"]);
+            $$parsedSource["reworkEstimate"] = $$createField29_0($$parsedSource["reworkEstimate"]);
         }
         if ("revertEstimate" in $$parsedSource) {
-            $$parsedSource["revertEstimate"] = $$createField28_0($$parsedSource["revertEstimate"]);
+            $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField43_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField45_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -349,6 +374,7 @@ export class ExperimentSampleStatus {
     "variants": VariantSampleStatus[];
     "readyVariants": number;
     "totalRuns": number;
+    "totalResolvedRuns": number;
     "status": string;
 
     /** Creates a new ExperimentSampleStatus instance. */
@@ -373,6 +399,9 @@ export class ExperimentSampleStatus {
         }
         if (!("totalRuns" in $$source)) {
             this["totalRuns"] = 0;
+        }
+        if (!("totalResolvedRuns" in $$source)) {
+            this["totalResolvedRuns"] = 0;
         }
         if (!("status" in $$source)) {
             this["status"] = "";
@@ -553,6 +582,7 @@ export class Report {
     "overall": Scorecard;
     "byProvider"?: Breakdown[];
     "byRole"?: Breakdown[];
+    "bySkillExecutionMode"?: Breakdown[];
     "byAgentModel"?: ComparisonBreakdown[];
     "byAgentModelContribution"?: ComparisonBreakdown[];
     "byExperimentKind"?: ExperimentKindBreakdown[];
@@ -584,11 +614,12 @@ export class Report {
         const $$createField3_0 = $$createType15;
         const $$createField4_0 = $$createType17;
         const $$createField5_0 = $$createType17;
-        const $$createField6_0 = $$createType4;
+        const $$createField6_0 = $$createType17;
         const $$createField7_0 = $$createType4;
-        const $$createField8_0 = $$createType19;
-        const $$createField9_0 = $$createType21;
-        const $$createField10_0 = $$createType22;
+        const $$createField8_0 = $$createType4;
+        const $$createField9_0 = $$createType19;
+        const $$createField10_0 = $$createType21;
+        const $$createField11_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField3_0($$parsedSource["overall"]);
@@ -599,20 +630,23 @@ export class Report {
         if ("byRole" in $$parsedSource) {
             $$parsedSource["byRole"] = $$createField5_0($$parsedSource["byRole"]);
         }
+        if ("bySkillExecutionMode" in $$parsedSource) {
+            $$parsedSource["bySkillExecutionMode"] = $$createField6_0($$parsedSource["bySkillExecutionMode"]);
+        }
         if ("byAgentModel" in $$parsedSource) {
-            $$parsedSource["byAgentModel"] = $$createField6_0($$parsedSource["byAgentModel"]);
+            $$parsedSource["byAgentModel"] = $$createField7_0($$parsedSource["byAgentModel"]);
         }
         if ("byAgentModelContribution" in $$parsedSource) {
-            $$parsedSource["byAgentModelContribution"] = $$createField7_0($$parsedSource["byAgentModelContribution"]);
+            $$parsedSource["byAgentModelContribution"] = $$createField8_0($$parsedSource["byAgentModelContribution"]);
         }
         if ("byExperimentKind" in $$parsedSource) {
-            $$parsedSource["byExperimentKind"] = $$createField8_0($$parsedSource["byExperimentKind"]);
+            $$parsedSource["byExperimentKind"] = $$createField9_0($$parsedSource["byExperimentKind"]);
         }
         if ("weaknesses" in $$parsedSource) {
-            $$parsedSource["weaknesses"] = $$createField9_0($$parsedSource["weaknesses"]);
+            $$parsedSource["weaknesses"] = $$createField10_0($$parsedSource["weaknesses"]);
         }
         if ("notes" in $$parsedSource) {
-            $$parsedSource["notes"] = $$createField10_0($$parsedSource["notes"]);
+            $$parsedSource["notes"] = $$createField11_0($$parsedSource["notes"]);
         }
         return new Report($$parsedSource as Partial<Report>);
     }
@@ -674,10 +708,16 @@ export class Scorecard {
     "autonomyRate": number;
 
     /**
-     * Reliability (from stats run outcomes).
+     * Reliability (from stats run outcomes). AgentRuns counts every run;
+     * AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
+     * those that reached a definitive result, which is FailureRate's
+     * denominator. The three are counted independently, so runs with an unknown
+     * outcome are in AgentRuns alone and never reach a rate.
      */
     "agentRuns": number;
     "agentFailures": number;
+    "agentStalls": number;
+    "agentResolvedRuns": number;
     "failureRate": number;
 
     /**
@@ -754,6 +794,12 @@ export class Scorecard {
         }
         if (!("agentFailures" in $$source)) {
             this["agentFailures"] = 0;
+        }
+        if (!("agentStalls" in $$source)) {
+            this["agentStalls"] = 0;
+        }
+        if (!("agentResolvedRuns" in $$source)) {
+            this["agentResolvedRuns"] = 0;
         }
         if (!("failureRate" in $$source)) {
             this["failureRate"] = 0;
@@ -835,10 +881,16 @@ export class TaskPhases {
 /**
  * VariantSampleStatus describes whether one configured or observed A/B variant
  * has enough samples for the configured minimum.
+ * 
+ * Runs counts dispatches, matching Breakdown.Runs — "runs" means the same
+ * population in every struct in this package. ResolvedRuns is what Ready gates
+ * on, so a variant that stalled away most of its dispatches reads as
+ * observed-but-not-ready rather than as never dispatched.
  */
 export class VariantSampleStatus {
     "variantId": string;
     "runs": number;
+    "resolvedRuns": number;
     "ready": boolean;
     "configured": boolean;
     "observed": boolean;
@@ -851,6 +903,9 @@ export class VariantSampleStatus {
         }
         if (!("runs" in $$source)) {
             this["runs"] = 0;
+        }
+        if (!("resolvedRuns" in $$source)) {
+            this["resolvedRuns"] = 0;
         }
         if (!("ready" in $$source)) {
             this["ready"] = false;

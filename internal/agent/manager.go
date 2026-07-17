@@ -69,6 +69,7 @@ type Manager struct {
 	maxConcurrent int
 	defaultProv   string
 	approvalAddr  string // localhost:port for the HTTP tool approval server
+	ghShimDir     string // dir holding the gh approval-guard shim, prepended to agent PATH
 	guardrails    Guardrails
 	bashTimeoutMs int
 	retryWatchdog int
@@ -208,6 +209,10 @@ type ManagerConfig struct {
 	// every task-scoped agent subprocess so sybra-cli task commands reach the
 	// real operator store (typically config.HomeDir()).
 	ControlHome string
+	// GhShimDir holds the `gh` approval-guard shim. It must sit outside the
+	// agent's sandbox write roots (typically under config.HomeDir()) so a run
+	// cannot overwrite its own guard. Empty disables the shim.
+	GhShimDir string
 }
 
 // ManagerRuntimeConfig holds settings that affect future runs and may change
@@ -258,6 +263,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		logger:                 logger,
 		logDir:                 logDir,
 		approvalAddr:           cfg.ApprovalAddr,
+		ghShimDir:              resolveGhShimDir(cfg.GhShimDir, logger),
 		defaultProv:            defaultProv,
 		defaultModel:           cfg.Runtime.DefaultModel,
 		maxConcurrent:          cfg.Runtime.MaxConcurrent,

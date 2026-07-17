@@ -519,12 +519,13 @@ func rehydrateFromLogWithArtifacts(a *Agent, path, taskID, producerRole string, 
 		ev.Timestamp = time.Now().UTC()
 		a.applyStreamEventState(ev)
 		a.AppendOutput(ev)
+		a.NoteSubagentCall(ev.parentToolUseID)
 		// Restore per-run effort the same way the live stream loop accumulates
 		// it (processHeadlessLine + checkTurnsGuardrail). Without this a run
 		// that crosses an app restart — or completes while the app is down and
 		// is finalized on reattach — records zero turns/tool calls.
 		a.AddToolCalls(ev.ToolCalls)
-		if ev.Type == "assistant" {
+		if ev.Type == "assistant" && ev.parentToolUseID == "" {
 			a.IncTurnCount()
 			// Copilot reports output tokens per assistant message (claude/codex
 			// carry 0 here and total on the result event instead).

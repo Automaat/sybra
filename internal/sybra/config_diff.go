@@ -81,6 +81,13 @@ func diffConfig(old, next config.Config) (hot, restart []string) {
 		old.Orchestrator.MaintenanceIntervalSeconds != next.Orchestrator.MaintenanceIntervalSeconds {
 		restart = append(restart, "orchestrator.intervals")
 	}
+	// The instance-role gates are sampled once by App.applyInstanceRole (they
+	// would otherwise race this reload), same rationale as the intervals above.
+	if old.Orchestrator.Role != next.Orchestrator.Role ||
+		!reflect.DeepEqual(old.Orchestrator.Enabled, next.Orchestrator.Enabled) ||
+		!reflect.DeepEqual(old.Orchestrator.SchedulerEnabled, next.Orchestrator.SchedulerEnabled) {
+		restart = append(restart, "orchestrator.role")
+	}
 	// pressure.Gate captures its thresholds at construction, same rationale
 	// as orchestrator.intervals above.
 	restart = appendDeepChanged(restart, "orchestrator.pressure", old.Orchestrator.Pressure, next.Orchestrator.Pressure)

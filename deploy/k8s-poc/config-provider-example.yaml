@@ -20,6 +20,10 @@ data:
         namespace: sybra-poc
         image: sybra-server:poc
         ttl_seconds_after_finished: 300
+        # Longer TTL for a Failed Job, patched on by the runner once it
+        # observes the failure — see "Job cleanup and log retention" in
+        # README.md. Omit to fall back to the built-in 86400s default.
+        failed_ttl_seconds_after_finished: 86400
         secret_env:
           - name: OPENROUTER_API_KEY
             secret_name: sybra-provider-api-keys
@@ -42,6 +46,10 @@ data:
         enabled: false
       opencode:
         enabled: true
+    # agent-only: the provider-mode smoke starts its agent explicitly via
+    # App.StartAgent, so nothing here should auto-orchestrate or auto-dispatch.
+    orchestrator:
+      role: agent-only
     github:
       enabled: false
     todoist:

@@ -821,7 +821,7 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 		Number: 21, Repository: "pet-owner/pet-repo", HeadRefName: "feat",
 		Mergeable: "MERGEABLE", CIStatus: "SUCCESS", CopilotReviewed: true, UnresolvedCount: 3,
 	}}
-	r.resolveAddressedCopilotThreads(all, prs)
+	r.resolveAddressedCopilotThreads(context.Background(), all, prs)
 
 	if len(resolvedIDs) != 2 || resolvedIDs[0] != "T1" || resolvedIDs[1] != "T5" {
 		t.Fatalf("resolvedIDs = %v, want [T1 T5]", resolvedIDs)

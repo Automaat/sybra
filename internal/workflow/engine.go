@@ -78,6 +78,9 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	RequestedSkill         string
+	SkillExecutionMode     string
+	SkillConformance       string
 	StartedAt              time.Time
 	ProtocolViolation      string
 	TestOutcome            string
@@ -312,6 +315,10 @@ type Engine struct {
 	attemptWorktrees AttemptWorktreeManager
 	onComplete       func(CompletionInfo)
 	dispatchGate     func(TaskInfo) bool
+	// dispatchDisabled is stored negated so the zero value keeps a
+	// struct-literal Engine dispatching, matching its behavior before this
+	// gate existed.
+	dispatchDisabled bool
 	logger           *slog.Logger
 	ctx              context.Context
 	mu               sync.Mutex
@@ -326,6 +333,10 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
+	// keeps the review→fix→review cycle running, matching
+	// config.ReviewUntilClean's default of true.
+	reviewLoopDisabled bool
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
@@ -394,6 +405,29 @@ func (e *Engine) SetContext(ctx context.Context) { e.ctx = ctx }
 // leader-follower mode a task homed on a remote follower executes there, and the
 // leader only mirrors its state. A nil gate (the default) runs every task.
 func (e *Engine) SetDispatchGate(gate func(TaskInfo) bool) { e.dispatchGate = gate }
+
+// SetAutoDispatch turns workflow dispatch on or off for this instance. It is
+// the single chokepoint behind Sybra's agent-only instance role. Every workflow
+// start funnels through startWorkflowCore, which is where the flag is checked,
+// so StartWorkflow*, DispatchEvent, ReplaceWorkflow and ReplaceWorkflowForEvent
+// are all covered; HandleStatusChange and ResumeStalled check it too, to avoid
+// the scan. A caller cannot start a workflow by reaching past it. Gating the
+// call sites instead was tried and leaked three times — the engine has callers
+// in TaskService, review, completion, PR integrations, promptlab, planning and
+// the watcher.
+//
+// Deliberately blunt: it stops operator-initiated workflow starts too, not just
+// automatic ones. An agent-only instance runs agents, not workflows; direct
+// agent starts (App.StartAgent, sybra-cli) never touch the engine and keep
+// working. Set orchestrator.scheduler_enabled true to opt an agent-only
+// instance back into workflows.
+func (e *Engine) SetAutoDispatch(on bool) { e.dispatchDisabled = !on }
+
+// AutoDispatchEnabled reports whether this instance dispatches workflows. The
+// gate in startWorkflowCore is what actually enforces it; this lets a caller
+// avoid announcing an auto-start that is about to be refused, and avoid
+// spawning a goroutine that would only no-op.
+func (e *Engine) AutoDispatchEnabled() bool { return !e.dispatchDisabled }
 
 // SetAutoApprovePlansWithoutDecisions enables automatic approval of validated
 // simple-task plans whose decision sidecar explicitly says there are no open
@@ -506,6 +540,12 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
 func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+
+// SetReviewUntilClean controls whether simple-task-review re-reviews after
+// every fix until the verdict is CLEAN (true, the default) or runs a single
+// review pass per task (false). The cycle has no round cap; false is the way
+// to bound it when a per-task cost ceiling is not configured.
+func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle

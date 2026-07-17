@@ -155,6 +155,8 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
+	m.injectGhShim(&cfg)
+
 	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -631,26 +633,30 @@ func validateRunDir(dir string) error {
 func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.CancelFunc) *Agent {
 	now := time.Now().UTC()
 	a := &Agent{
-		ID:                     id,
-		TaskID:                 cfg.TaskID,
-		Name:                   cfg.Name,
-		Mode:                   cfg.Mode,
-		Provider:               prov.Name(),
-		Model:                  prov.NormalizeModel(cfg.Model),
-		ReasoningEffort:        cfg.ReasoningEffort,
-		SkillExecutionMode:     cfg.SkillExecutionMode,
-		Prompt:                 cfg.Prompt,
-		State:                  StateRunning,
-		StartedAt:              now,
-		LastEventAt:            now,
-		cancel:                 cancel,
-		sessionCWD:             cfg.Dir,
-		sandboxHomeDir:         cfg.resolvedSandboxHome,
-		MaxTurns:               cfg.MaxTurns,
-		oneShot:                cfg.OneShot,
-		requirePermissions:     cfg.RequirePermissions,
-		sandboxMode:            cfg.SandboxMode,
-		headlessPermissionMode: cfg.HeadlessPermissionMode,
+		ID:                      id,
+		TaskID:                  cfg.TaskID,
+		Name:                    cfg.Name,
+		Mode:                    cfg.Mode,
+		Provider:                prov.Name(),
+		Model:                   prov.NormalizeModel(cfg.Model),
+		ReasoningEffort:         cfg.ReasoningEffort,
+		RequestedSkill:          cfg.RequestedSkill,
+		SkillExecutionMode:      cfg.SkillExecutionMode,
+		ResolvedSkillSourceHash: cfg.ResolvedSkillSourceHash,
+		SkillConformance:        cfg.SkillConformance,
+		skillRecoveryAttempt:    cfg.SkillRecoveryAttempt,
+		Prompt:                  cfg.Prompt,
+		State:                   StateRunning,
+		StartedAt:               now,
+		LastEventAt:             now,
+		cancel:                  cancel,
+		sessionCWD:              cfg.Dir,
+		sandboxHomeDir:          cfg.resolvedSandboxHome,
+		MaxTurns:                cfg.MaxTurns,
+		oneShot:                 cfg.OneShot,
+		requirePermissions:      cfg.RequirePermissions,
+		sandboxMode:             cfg.SandboxMode,
+		headlessPermissionMode:  cfg.HeadlessPermissionMode,
 	}
 	if cfg.ResumeSessionID != "" {
 		a.SetSessionID(cfg.ResumeSessionID)

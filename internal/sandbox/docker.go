@@ -174,9 +174,9 @@ func extendArgs(base []string, extra ...string) []string {
 
 func (m *Manager) startDocker(ctx context.Context, taskID, worktreePath string, cfg *project.SandboxConfig) (*Instance, error) {
 	proj := projectName(taskID)
-	taskDir := filepath.Join(m.dataDir, taskID)
-	if err := os.MkdirAll(taskDir, 0o755); err != nil {
-		return nil, fmt.Errorf("sandbox dir: %w", err)
+	taskDir, err := m.prepareTaskDir(taskID)
+	if err != nil {
+		return nil, err
 	}
 
 	var composeArgs []string

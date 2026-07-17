@@ -34,6 +34,10 @@ var KnownTriggerFields = map[string]bool{
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.
 	"pr.issue_kind": true,
+	// Populated by Engine.resolveNext from engine config, not from the task.
+	// Transition-only: taskFields does not carry it, so a trigger condition
+	// on this key would never match.
+	"config.review_until_clean": true,
 }
 
 // isKnownField reports whether a YAML trigger/transition field name refers

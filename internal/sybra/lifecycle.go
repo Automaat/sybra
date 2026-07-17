@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdog"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // LifecycleManager orchestrates background-service startup in discrete phases.
@@ -46,7 +48,13 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 	a := lm.app
 
 	if a.cfg.Watchdog.Enabled {
-		wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg, a.cfg.Watchdog, a.getPressureGate())
+		verifyNow := func(vctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
+			if a.workflowEngine == nil {
+				return false, false, "", "", nil
+			}
+			return a.workflowEngine.VerifyTaskNow(vctx, taskID)
+		}
+		wdog := watchdog.New(a.agents, a.tasks, a.logger, emit, &a.wg, a.cfg.Watchdog, a.getPressureGate(), verifyNow)
 		a.wg.Go(func() { wdog.Run(ctx) })
 	} else {
 		a.logger.Info("watchdog.disabled")
@@ -75,6 +83,9 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		}
 		return owned
 	})
+	if a.sandboxes != nil {
+		hcheck.SetSandboxQuarantine(a.sandboxes.QuarantinedEntries)
+	}
 	a.wg.Go(func() { hcheck.Run(ctx) })
 
 	lm.startMonitorService(ctx, emit)
@@ -429,23 +440,45 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		Model:     a.cfg.Monitor.Model,
 		IssueRepo: a.cfg.Monitor.IssueRepo,
 	})
+	// Auth preflight: monitor issue filing depends on the same credential
+	// source as the rest of internal/github (App auth or ambient `gh auth
+	// login`). Neither is fatal to skip — the durable outbox below queues
+	// and retries filings that fail auth — but an operator should see this
+	// loudly at startup instead of only discovering it after an anomaly
+	// silently failed to file. See #2032.
+	if !github.Authenticated() {
+		a.logger.Error("monitor.issue_filing.auth_unavailable",
+			"hint", "configure github.app or run `gh auth login`; issue filing will queue and retry via the durable outbox once credentials are available")
+	}
 	// Work-Data Confidentiality: wrap the GH sink so anomalies on work-typed
 	// tasks become scrubbed local sybra tasks instead of public issues. The
 	// DowngradeLLMForTask closure forces work-typed LLM anomalies through the
 	// deterministic path so they hit this sink (and get scrubbed) rather than
 	// being dispatched to an agent that would file an issue itself.
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
+	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
+	if err != nil {
+		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
+		durableSink = nil
+	}
+	var sink monitor.IssueSink = innerSink
+	if durableSink != nil {
+		sink = durableSink
+	}
 	// This callback's DispatchEvent -> execShell eventually derives its
 	// context from workflow.Engine's own e.ctx field (Engine.SetContext),
 	// not an explicit parameter threaded through the closure. contextcheck no
 	// longer flags this call site (verified with a clean build+lint cache),
 	// so no suppression directive is needed here.
-	routingSink := newMonitorRoutingSink(innerSink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
+	routingSink := newMonitorRoutingSink(sink, a.tasks, a.workScrubContextForTask, a.cfg.Monitor.IssueRepo, func(taskID string) {
 		if a.workflowEngine == nil {
 			return
 		}
 		a.wg.Go(func() {
 			dispatched, err := a.workflowEngine.DispatchEvent(taskID, "task.created", nil, nil)
+			if errors.Is(err, workflow.ErrAutoDispatchDisabled) {
+				return
+			}
 			if err != nil {
 				a.logger.Error("monitor.routing.workflow.failed", "task_id", taskID, "err", err)
 				return
@@ -581,13 +614,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	if a.stats != nil {
 		deps.Stats = a.stats
 	}
-	// a.providerHealth is a typed *provider.Checker that stays nil when
-	// health-checking is disabled; assigning a nil pointer straight into the
-	// Gate interface field would produce a non-nil interface wrapping a nil
-	// receiver, and Checker's methods are not nil-receiver-safe.
-	if a.providerHealth != nil {
-		deps.Gate = a.providerHealth
-	}
+	deps.Gate = a.providerHealth
 	svc := learning.NewService(deps)
 	a.learningDigestSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })

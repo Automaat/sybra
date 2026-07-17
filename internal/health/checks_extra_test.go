@@ -192,6 +192,58 @@ func TestCheckStatusBottleneck(t *testing.T) {
 	})
 }
 
+func TestCheckGHIssueAuthFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	t.Run("no auth failures", func(t *testing.T) {
+		t.Parallel()
+		events := []audit.Event{
+			{Type: audit.EventTaskCreated, Timestamp: now},
+		}
+		if got := checkGHIssueAuthFailure(events, now); len(got) != 0 {
+			t.Errorf("expected no findings, got %d", len(got))
+		}
+	})
+
+	t.Run("single sink failure", func(t *testing.T) {
+		t.Parallel()
+		events := []audit.Event{
+			{Type: audit.EventGHIssueAuthFailed, Timestamp: now, Data: map[string]any{"sink": "monitor", "err": "gh auth login"}},
+		}
+		got := checkGHIssueAuthFailure(events, now)
+		if len(got) != 1 {
+			t.Fatalf("expected one finding, got %d", len(got))
+		}
+		if got[0].Category != CatGHAuthFailure {
+			t.Errorf("category = %s, want %s", got[0].Category, CatGHAuthFailure)
+		}
+		if sinks, _ := got[0].Evidence["sinks"].([]string); len(sinks) != 1 || sinks[0] != "monitor" {
+			t.Errorf("sinks evidence = %v, want [monitor]", got[0].Evidence["sinks"])
+		}
+	})
+
+	t.Run("multiple sinks collapse into one finding", func(t *testing.T) {
+		t.Parallel()
+		events := []audit.Event{
+			{Type: audit.EventGHIssueAuthFailed, Timestamp: now, Data: map[string]any{"sink": "monitor", "err": "gh auth login"}},
+			{Type: audit.EventGHIssueAuthFailed, Timestamp: now, Data: map[string]any{"sink": "human-review", "err": "gh auth login"}},
+			{Type: audit.EventGHIssueAuthFailed, Timestamp: now, Data: map[string]any{"sink": "monitor", "err": "gh auth login"}},
+		}
+		got := checkGHIssueAuthFailure(events, now)
+		if len(got) != 1 {
+			t.Fatalf("expected exactly one finding across sinks, got %d", len(got))
+		}
+		if got[0].Evidence["count"] != 3 {
+			t.Errorf("count evidence = %v, want 3", got[0].Evidence["count"])
+		}
+		sinks, _ := got[0].Evidence["sinks"].([]string)
+		if len(sinks) != 2 {
+			t.Errorf("sinks evidence = %v, want 2 distinct sinks", sinks)
+		}
+	})
+}
+
 func TestRollupScore(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

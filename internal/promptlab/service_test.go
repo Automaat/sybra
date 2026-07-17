@@ -94,9 +94,9 @@ func TestRunCapsProposalsAndLogs(t *testing.T) {
 func weakRoleRecords(role string, fails, runs int) []stats.RunRecord {
 	out := make([]stats.RunRecord, runs)
 	for i := range out {
-		outcome := "ok"
+		outcome := stats.OutcomeCompleted
 		if i < fails {
-			outcome = "failed"
+			outcome = stats.OutcomeFailed
 		}
 		out[i] = stats.RunRecord{Role: role, Outcome: outcome, TaskID: role + string(rune('a'+i))}
 	}
