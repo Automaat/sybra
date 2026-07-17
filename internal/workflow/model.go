@@ -248,12 +248,15 @@ type StepConfig struct {
 	// follows. Same values as Sidecar.
 	ClearSidecars []string `yaml:"clear_sidecars,omitempty" json:"clearSidecars,omitempty"`
 	// ClearWorktreeGlobs names the agent-written files to unlink, relative to
-	// the worktree. Every sidecar in ClearSidecars needs its file covered by
-	// one of these, since either half alone still serves the previous cycle's
-	// content: a surviving file is exactly what the next import reads back, and
-	// a surviving sidecar is exactly what an absent file leaves untouched
-	// (#2191). Note the families do not share a prefix — plan_critique's file
-	// is .sybra-critique-<id>.md, not .sybra-plan-*.
+	// the worktree. Each entry must be a bare filename pattern: no absolute
+	// path, no "..", no path separator — clearWorktreeGlob rejects anything
+	// that would let a pattern escape the worktree. Every sidecar in
+	// ClearSidecars needs its file covered by one of these, since either half
+	// alone still serves the previous cycle's content: a surviving file is
+	// exactly what the next import reads back, and a surviving sidecar is
+	// exactly what an absent file leaves untouched (#2191). Note the families
+	// do not share a prefix — plan_critique's file is .sybra-critique-<id>.md,
+	// not .sybra-plan-*.
 	ClearWorktreeGlobs []string `yaml:"clear_worktree_globs,omitempty" json:"clearWorktreeGlobs,omitempty"`
 
 	// run_agent: when set, the engine ingests a file produced by the agent

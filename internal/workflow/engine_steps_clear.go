@@ -11,7 +11,7 @@ import (
 
 // execClearPlanArtifacts wipes the previous planning cycle's outputs before the
 // next one runs: the task sidecars named in ClearSidecars, and the files in the
-// agent's worktree matching ClearWorktreeGlob.
+// agent's worktree matching ClearWorktreeGlobs.
 //
 // Both halves are load-bearing. A replan reuses the same worktree, and the
 // planning files are git-excluded rather than deleted, so clearing only the
@@ -53,10 +53,16 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 	if len(failed) > 0 {
 		reason := "replan blocked: could not clear " + strings.Join(failed, ", ") +
 			" — the next cycle would re-import the previous plan's content"
+		e.logger.Warn("workflow.clear-plan-artifacts.blocked", "task_id", taskID, "step", step.ID, "failed", strings.Join(failed, ", "))
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.clear-plan-artifacts.status", "task_id", taskID, "err", statusErr)
+			// The status flip is what halts the workflow at the human-required
+			// edge; if it fails, that edge never fires and the unconditional
+			// goto:plan would carry on over the very half-cleared cycle this
+			// step exists to catch. Returning a hard error here is what stops
+			// AdvanceStep instead — see engine_advance.go's execSyncStep path.
+			return StepOutput{}, fmt.Errorf("clear_plan_artifacts: %s, and could not set human-required: %w", reason, statusErr)
 		}
-		e.logger.Warn("workflow.clear-plan-artifacts.blocked", "task_id", taskID, "step", step.ID, "failed", strings.Join(failed, ", "))
 		// Escalate exactly as require_sidecar does: flip the status and let the
 		// step's human-required edge halt the workflow. errStepParked would be
 		// wrong — its contract is that the step already persisted its own
@@ -78,7 +84,11 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 // they are gone.
 func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob string) (int, error) {
 	if glob == "" {
-		return 0, nil
+		// A blank entry in clear_worktree_globs is a config mistake, not a
+		// no-op: silently succeeding here would let the "nothing configured
+		// to clear" guard above pass on a list like ["  "] while clearing
+		// nothing, exactly the half-cleared state this step exists to catch.
+		return 0, errors.New("worktree glob is empty")
 	}
 	dir := ""
 	if t.Workflow != nil {

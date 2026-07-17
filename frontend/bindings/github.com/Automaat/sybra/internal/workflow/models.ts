@@ -593,12 +593,15 @@ export class StepConfig {
 
     /**
      * ClearWorktreeGlobs names the agent-written files to unlink, relative to
-     * the worktree. Every sidecar in ClearSidecars needs its file covered by
-     * one of these, since either half alone still serves the previous cycle's
-     * content: a surviving file is exactly what the next import reads back, and
-     * a surviving sidecar is exactly what an absent file leaves untouched
-     * (#2191). Note the families do not share a prefix — plan_critique's file
-     * is .sybra-critique-<id>.md, not .sybra-plan-*.
+     * the worktree. Each entry must be a bare filename pattern: no absolute
+     * path, no "..", no path separator — clearWorktreeGlob rejects anything
+     * that would let a pattern escape the worktree. Every sidecar in
+     * ClearSidecars needs its file covered by one of these, since either half
+     * alone still serves the previous cycle's content: a surviving file is
+     * exactly what the next import reads back, and a surviving sidecar is
+     * exactly what an absent file leaves untouched (#2191). Note the families
+     * do not share a prefix — plan_critique's file is .sybra-critique-<id>.md,
+     * not .sybra-plan-*.
      */
     "clearWorktreeGlobs"?: string[];
 

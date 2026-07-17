@@ -214,6 +214,30 @@ func TestClearPlanArtifacts_UnreadableWorktreeEscalates(t *testing.T) {
 	}
 }
 
+// If the escalation flip itself cannot be persisted, the human-required edge
+// never fires, and the unconditional goto:plan would carry on over the very
+// half-cleared cycle this step exists to catch. A failure at that point must
+// halt the workflow with a hard error instead of quietly reporting completed.
+func TestClearPlanArtifacts_StatusUpdateFailureIsHardError(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	// The task is never Put, so UpdateTaskStatus fails with "not found" —
+	// standing in for a store write failure at exactly the point it matters.
+	info := TaskInfo{
+		ID:       "missing-task",
+		Workflow: &Execution{Variables: map[string]string{}}, // no _dir, so clearWorktreeGlob fails too
+	}
+	step := &Step{
+		ID:     "clear_plan_artifacts",
+		Type:   StepClearPlanArtifacts,
+		Config: StepConfig{ClearWorktreeGlobs: []string{".sybra-plan-*"}},
+	}
+
+	if _, err := engine.execClearPlanArtifacts("missing-task", step, info); err == nil {
+		t.Fatal("a status-update failure must halt the workflow with a hard error, not report completed")
+	}
+}
+
 func TestClearPlanArtifacts_NothingConfiguredIsAnError(t *testing.T) {
 	engine, _, info := clearTestEnv(t, t.TempDir())
 	step := &Step{ID: "clear", Type: StepClearPlanArtifacts}
@@ -309,7 +333,7 @@ func TestBuiltinSimpleTask_ReplanClearsEveryImportedPlanArtifact(t *testing.T) {
 				continue
 			}
 			if !cleared[imp.Kind] {
-				t.Errorf("step %q imports sidecar %q but clear_plan_artifacts does not clearStep it: a replan would re-serve the previous cycle's value", step.ID, imp.Kind)
+				t.Errorf("step %q imports sidecar %q but clear_plan_artifacts does not clear it: a replan would re-serve the previous cycle's value", step.ID, imp.Kind)
 			}
 			if !globsCover(clearStep.Config.ClearWorktreeGlobs, imp.From) {
 				t.Errorf("step %q imports %q from %q, which no clear_worktree_globs entry matches: the file survives and is read straight back", step.ID, imp.Kind, imp.From)
@@ -370,5 +394,89 @@ func TestClearPlanArtifacts_UnreadableWorktreeDirEscalates(t *testing.T) {
 	got, _ := tasks.GetTask("t1")
 	if got.Status != "human-required" {
 		t.Errorf("status = %q, want human-required: cycle 1's files are still in that worktree", got.Status)
+	}
+}
+
+// A configured glob that escapes the worktree ('..', an absolute path, or a
+// nested path separator) would turn this cleanup step into a delete primitive
+// pointed anywhere this process can reach. Every shape must escalate rather
+// than run, and — the actual guarantee, not just the error path — must never
+// touch a file planted outside the worktree it was scoped to.
+func TestClearPlanArtifacts_EscapingGlobEscalatesAndLeavesOutsideFilesAlone(t *testing.T) {
+	tests := []struct {
+		name string
+		glob string
+	}{
+		{"parent traversal", "../*"},
+		{"absolute path", "/etc/*"},
+		{"nested path", "sub/dir/*"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "worktree")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeCycle1Artifacts(t, dir)
+			outside := filepath.Join(parent, "outside-marker")
+			if err := os.WriteFile(outside, []byte("must survive"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			engine, tasks, info := clearTestEnv(t, dir)
+			step := &Step{
+				ID:   "clear_plan_artifacts",
+				Type: StepClearPlanArtifacts,
+				Config: StepConfig{
+					ClearSidecars:      []string{"plan"},
+					ClearWorktreeGlobs: []string{tt.glob},
+				},
+			}
+
+			out, err := engine.execClearPlanArtifacts("t1", step, info)
+			if err != nil {
+				t.Fatalf("must escalate, not error out: %v", err)
+			}
+			if strings.Contains(out.Output, "cleared") {
+				t.Errorf("output = %q, want a blocked reason", out.Output)
+			}
+			got, _ := tasks.GetTask("t1")
+			if got.Status != "human-required" {
+				t.Errorf("status = %q, want human-required: an escaping glob must never run", got.Status)
+			}
+			if _, err := os.Stat(outside); err != nil {
+				t.Errorf("outside marker file did not survive: %v", err)
+			}
+		})
+	}
+}
+
+// A blank entry is a config mistake, not a request to clear nothing: it must
+// not let the "nothing configured to clear" guard pass while actually
+// clearing zero files.
+func TestClearPlanArtifacts_BlankGlobEscalates(t *testing.T) {
+	dir := t.TempDir()
+	writeCycle1Artifacts(t, dir)
+	engine, tasks, info := clearTestEnv(t, dir)
+	step := &Step{
+		ID:   "clear_plan_artifacts",
+		Type: StepClearPlanArtifacts,
+		Config: StepConfig{
+			ClearSidecars:      []string{"plan"},
+			ClearWorktreeGlobs: []string{"  "},
+		},
+	}
+
+	out, err := engine.execClearPlanArtifacts("t1", step, info)
+	if err != nil {
+		t.Fatalf("must escalate, not error out: %v", err)
+	}
+	if strings.Contains(out.Output, "cleared") {
+		t.Errorf("output = %q, want a blocked reason", out.Output)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != "human-required" {
+		t.Errorf("status = %q, want human-required: a blank glob must not pass as a no-op", got.Status)
 	}
 }
