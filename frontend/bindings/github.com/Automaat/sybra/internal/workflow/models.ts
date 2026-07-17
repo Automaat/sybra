@@ -837,6 +837,13 @@ export enum StepType {
     StepVerifyChecks = "verify_checks",
 
     /**
+     * StepFocusedChecks runs cheap changed-surface checks selected from the
+     * project's configured checks.focused mappings. It is an author-loop speed
+     * gate only; the final full project contract remains verify_checks.
+     */
+    StepFocusedChecks = "focused_checks",
+
+    /**
      * StepRoutePRFixResult inspects the completed pr-fix agent output before
      * mechanical PR relinking can overwrite a human-required escalation.
      */
