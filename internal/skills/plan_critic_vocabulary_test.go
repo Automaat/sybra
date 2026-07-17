@@ -10,12 +10,15 @@ import (
 // planCriticSources lists every on-disk copy of the plan-critic skill that can
 // reach a running agent.
 //
-// There are two, and the embedded one loses. skillsync writes the embedded
-// bundle first, then syncs repoDir/.claude/skills over the top of it whenever
-// repoDir/go.mod exists — true for the server's own checkout — so the repo copy
-// is what agents actually read. Editing only data/plan-critic.md changes
-// nothing at runtime, which is exactly how the council vocabulary below
-// survived a prompt change that had supposedly removed it.
+// There are two, and the embedded one loses at runtime: skillsync writes the
+// embedded bundle first, then syncs repoDir/.claude/skills over the top of it
+// whenever repoDir/go.mod exists — true for the server's own checkout — so
+// the repo copy is what agents actually read. Before #2189's generator and
+// drift guard (data_sync_generated_test.go), an edit to only the embedded
+// data/plan-critic.md left .claude/skills/plan-critic/SKILL.md — the copy
+// that actually reaches a running agent — silently stale, which is exactly
+// how the council vocabulary below survived a prompt update that had
+// supposedly removed it.
 func planCriticSources(t *testing.T) map[string]string {
 	t.Helper()
 
