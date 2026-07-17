@@ -71,11 +71,11 @@ func TestE2E_EvaluationReportSplitsDirectAndSkillReviewCohorts(t *testing.T) {
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
 		Tasks:        env.tasks,
-		Logger:       e2eLogger(),
+		Logger:       e2eLogger(t),
 		AgentChecker: env.agents.HasRunningAgentForTask,
 	})
 	handler := completion.New(completion.Config{
-		Logger:         e2eLogger(),
+		Logger:         e2eLogger(t),
 		Tasks:          env.tasks,
 		Worktrees:      wm,
 		WorkflowEngine: env.engine,
