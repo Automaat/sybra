@@ -956,7 +956,9 @@ func collectDocumentedDeletionTokens(section string, allow tamperDeletionAllowli
 		}
 		for _, candidate := range pathTokensFromLine(line) {
 			allow.ExactPaths[candidate] = true
-			allow.Basenames[pathpkg.Base(candidate)] = true
+			if !strings.Contains(candidate, "/") {
+				allow.Basenames[candidate] = true
+			}
 		}
 	}
 }
